@@ -278,8 +278,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "grey texture flicker on Nvidia GPUs in Luigis Mansion 3."));
 
     INSERT(Settings, depth_clamp, tr("EDS Depth Clamp"),
-           tr("Enabling Toggle turns it ON for EDS0,1,2 and OFF for EDS3.\n
-              Fixes Fog in SMO EDS0,1,2 and TOTK Skybox on EDS3 and SSBU Hyrule Castle on AMD WINDOWS."));
+           tr("Enabling Toggle turns it ON for EDS0,1,2 and OFF for EDS3.\n"
+              "Fixes Fog in SMO EDS0,1,2 and TOTK Skybox on EDS3 and SSBU Hyrule Castle on AMD WINDOWS."));
 
     // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
