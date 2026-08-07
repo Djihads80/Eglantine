@@ -277,7 +277,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "Legacy behavior workaround that fixes line artifacts on AMD and Intel GPUs, and "
               "grey texture flicker on Nvidia GPUs in Luigis Mansion 3."));
 
-    INSERT(Settings, depth_clamp, tr("EDS Depth Clamp"),
+    INSERT(Settings, depth_clamp, tr("EDS3 Depth Clamp"),
            tr("Enabling Toggle turns it ON for EDS0,1,2 and OFF for EDS3.\n"
               "Fixes Fog in SMO EDS0,1,2 and TOTK Skybox on EDS3 and SSBU Hyrule Castle on AMD WINDOWS."));
 
