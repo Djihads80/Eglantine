@@ -100,6 +100,15 @@
         "repo": "FeralInteractive/gamemode",
         "version": "ce6fe122f3"
     },
+    "glaze": {
+        "hash": "fa853b4271cf7d490c306a55b7615ed0d5f57f6ecc2f35310cf8b8b2660240c42e83fd60040ac0ee25fae17ba92f500a6d886c9fb45972b3dbdbc017562750f5",
+        "repo": "stephenberry/glaze",
+        "version": "v8.3.0",
+        "options": [
+            "glaze_ENABLE_SSL ON",
+            "glaze_INCLUDES_WITH_SYSTEM OFF"
+        ]
+    },
     "httplib": {
         "find_args": "MODULE GLOBAL",
         "hash": "159ed94965018f2a371d45a3bfc1961e5fb1549e501ded70a6b4532d7fe99d0579c18b5195aff6e35f96f399b426cea2650ec9fb75ef80d4c9edeccb51f2e6c9",

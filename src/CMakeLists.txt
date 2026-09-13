@@ -169,13 +169,15 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wmissing-declarations>
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wshadow>
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wunused>
-            # Some compilers could particularly misbehave :)
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error-all>)
     endif()
+
     add_compile_options(
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-attributes>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-invalid-offsetof>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-parameter>
+        # Bugged on GCC 16
+        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-maybe-uninitialized>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-field-initializers>)
 
     if (CXX_CLANG OR CXX_ICC OR CXX_APPLE) # Clang, AppleClang, or Intel C++

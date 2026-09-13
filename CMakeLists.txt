@@ -368,7 +368,7 @@ endif()
 # Configure C++ standard
 # ===========================
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Output binaries to bin/
@@ -452,6 +452,9 @@ endif()
 
 # nlohmann
 AddJsonPackage(nlohmann)
+
+# glaze
+AddJsonPackage(glaze)
 
 if (NOT YUZU_STATIC_ROOM)
     # zlib

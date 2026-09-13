@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/net/net.h"
-#include "common/scm_rev.h"
 #include "core/hle/service/bcat/news/builtin_news.h"
 #include "core/hle/service/bcat/news/msgpack.h"
 #include "core/hle/service/bcat/news/news_storage.h"
@@ -15,7 +14,6 @@
 #include <boost/regex.hpp>
 #include <boost/regex/v5/regex_replace.hpp>
 #include <fmt/format.h>
-#include <nlohmann/json.hpp>
 
 #include "common/httplib.h"
 
@@ -292,24 +290,47 @@ std::string FormatBody(std::string body, const std::string_view &title) {
     return body;
 }
 
+static inline u64 ParseIsoTimestamp(const std::string& iso) {
+    if (iso.empty())
+        return 0;
+
+    std::string buf = iso;
+    if (buf.back() == 'Z')
+        buf.pop_back();
+
+    std::tm tm{};
+    std::istringstream ss(buf);
+    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    if (ss.fail())
+        return 0;
+
+#ifdef _WIN32
+    return static_cast<u64>(_mkgmtime(&tm));
+#else
+    return static_cast<u64>(timegm(&tm));
+#endif
+}
+
 void ImportReleases(const std::vector<Common::Net::Release> &releases) {
     std::vector<u32> news_ids;
     for (const auto& rel : releases) {
-        const u32 news_id = u32(rel.id & 0x7FFFFFFF);
+        std::hash<std::string> hash;
+        const u32 news_id = u32(hash(rel.name) & 0x7FFFFFFF);
         news_ids.push_back(news_id);
     }
 
     PreloadNewsImages(news_ids);
 
     for (const auto& rel : releases) {
-        const std::string title = rel.title;
+        const std::string title = rel.name;
         const std::string body = rel.body;
         const std::string html_url = rel.html_url;
 
-        const u32 news_id = u32(rel.id & 0x7FFFFFFF);
-        const u64 published = rel.published;
+        std::hash<std::string> hash;
+        const u32 news_id = u32(hash(rel.name) & 0x7FFFFFFF);
+        const u64 published = rel.published_at ? ParseIsoTimestamp(rel.published_at.value()) : 0;
         const u64 pickup_limit = published + 600000000;
-        const u32 priority = rel.prerelease ? 1500 : 2500;
+        const u32 priority = 2500;
 
         std::string author = "Eden";
 
@@ -317,7 +338,7 @@ void ImportReleases(const std::vector<Common::Net::Release> &releases) {
                                     pickup_limit, priority, {"en"}, author, {},
                                     html_url, news_id);
 
-        const std::string news_id_str = fmt::format("LA{:020}", rel.id);
+        const std::string news_id_str = fmt::format("LA{:020}", news_id);
 
         GithubNewsMeta meta{
             .news_id = news_id_str,
@@ -462,8 +483,8 @@ void EnsureBuiltinNewsLoaded() {
         LoadDefaultLogos();
 
         if (const auto cached = ReadCachedJson()) {
-            const std::string_view body = cached.value();
-            const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_stable_api, Common::g_build_auto_update_stable_repo);
+            const std::string body = cached.value();
+            const auto releases = Common::Net::GetReleasesFromJson(body);
             ImportReleases(releases);
 
             LOG_INFO(Service_BCAT, "news: {} entries loaded from cache", NewsStorage::Instance().ListAll().size());
@@ -471,9 +492,9 @@ void EnsureBuiltinNewsLoaded() {
 
         std::thread([] {
             if (const auto fresh = Common::Net::GetReleasesBody()) {
-                const std::string_view body = fresh.value();
+                const std::string body = fresh.value();
                 WriteCachedJson(body);
-                const auto releases = Common::Net::Release::ListFromJson(body, Common::g_build_auto_update_stable_api, Common::g_build_auto_update_stable_repo);
+                const auto releases = Common::Net::GetReleasesFromJson(body);
                 ImportReleases(releases);
 
                 LOG_INFO(Service_BCAT, "news: {} entries updated from Forgejo", NewsStorage::Instance().ListAll().size());

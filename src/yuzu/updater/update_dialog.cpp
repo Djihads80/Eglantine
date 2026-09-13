@@ -4,6 +4,9 @@
 #include <QRadioButton>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/join.hpp>
+#include <boost/algorithm/string/split.hpp>
 #include <qdesktopservices.h>
 #include "common/logging.h"
 #include "qt_common/abstract/frontend.h"
@@ -26,7 +29,7 @@ UpdateDialog::UpdateDialog(const Common::Net::Release& release, QWidget* parent)
     ui->setupUi(this);
 
     ui->version->setText(
-        tr("%1 is available for download.").arg(QString::fromStdString(release.title)));
+        tr("%1 is available for download.").arg(QString::fromStdString(release.name)));
     ui->url->setText(
         tr("<a href=\"%1\">View on Forgejo</a>").arg(QString::fromStdString(release.html_url)));
 
@@ -38,7 +41,7 @@ UpdateDialog::UpdateDialog(const Common::Net::Release& release, QWidget* parent)
     ui->body->setMarkdown(QString::fromStdString(text));
 
     // TODO(crueter): Find a way to set default
-    const auto assets = release.GetPlatformAssets();
+    const auto assets = Common::Net::GetPlatformAssets(release);
 
     if (assets.empty()) {
         ui->groupBox->setHidden(true);
@@ -52,7 +55,7 @@ UpdateDialog::UpdateDialog(const Common::Net::Release& release, QWidget* parent)
         connect(this, &QDialog::accepted, this, &UpdateDialog::Download);
     } else {
         u32 i = 0;
-        for (const Common::Net::Asset& a : assets) {
+        for (const Common::Net::NamedAsset& a : assets) {
             QRadioButton* r = new QRadioButton(tr(a.name.c_str()), this);
             connect(r, &QRadioButton::toggled, this, [a, this](bool checked) {
                 if (checked)
@@ -78,7 +81,7 @@ UpdateDialog::~UpdateDialog() {
 void UpdateDialog::Download() {
     const auto filename = QtCommon::Frontend::GetSaveFileName(
         tr("New Version Location"),
-        qApp->applicationDirPath() % QStringLiteral("/") % QString::fromStdString(m_asset.filename),
+        qApp->applicationDirPath() % QStringLiteral("/") % QString::fromStdString(m_asset.asset.name),
         tr("All Files (*.*)"));
 
     if (filename.isEmpty())
@@ -92,10 +95,21 @@ void UpdateDialog::Download() {
         return;
     }
 
-    // TODO(crueter): Move to net.cpp
     constexpr std::size_t timeout_seconds = 15;
 
-    std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(m_asset.url);
+    // first 3 will be [protocol, <blank>, host]
+    // everything thereafter is the url
+    const auto url = m_asset.asset.browser_download_url;
+    std::vector<std::string> split;
+    boost::algorithm::split(split, url, boost::is_any_of("/"));
+
+    const std::span<std::string> host_slice(split.begin(), split.begin() + 3);
+    const std::span<std::string> path_slice(split.begin() + 3, split.end());
+
+    const auto host = boost::algorithm::join(host_slice, "/");
+    const auto path = boost::algorithm::join(path_slice, "/");
+
+    std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(host);
     client->set_connection_timeout(timeout_seconds);
     client->set_read_timeout(timeout_seconds);
     client->set_write_timeout(timeout_seconds);
@@ -105,7 +119,7 @@ void UpdateDialog::Download() {
 #endif
 
     if (client == nullptr) {
-        LOG_ERROR(Frontend, "Invalid URL {}{}", m_asset.url, m_asset.path);
+        LOG_ERROR(Frontend, "Invalid URL {}", m_asset.asset.browser_download_url);
         return;
     }
 
@@ -136,7 +150,7 @@ void UpdateDialog::Download() {
     };
 
     // Now send off request
-    auto result = client->Get(m_asset.path, content_receiver, progress_callback);
+    auto result = client->Get(path, content_receiver, progress_callback);
     progress->close();
 
     // commit to file
@@ -147,23 +161,22 @@ void UpdateDialog::Download() {
     }
 
     if (!result) {
-        LOG_ERROR(Frontend, "GET to {}{} returned null", m_asset.url, m_asset.path);
+        LOG_ERROR(Frontend, "GET to {} returned null", url);
         return;
     }
 
     const auto& response = result.value();
     if (response.status >= 400) {
-        LOG_ERROR(Frontend, "GET to {}{} returned error status code: {}", m_asset.url, m_asset.path,
+        LOG_ERROR(Frontend, "GET to {} returned error status code: {}", url,
                   response.status);
         QtCommon::Frontend::Critical(tr("Failed to download file"),
-                                     tr("Could not download from %1%2\nError code: %3")
-                                         .arg(QString::fromStdString(m_asset.url),
-                                              QString::fromStdString(m_asset.path),
+                                     tr("Could not download from %1\nError code: %3")
+                                         .arg(QString::fromStdString(url),
                                               QString::number(response.status)));
         return;
     }
     if (!response.has_header("content-type")) {
-        LOG_ERROR(Frontend, "GET to {}{} returned no content", m_asset.url, m_asset.path);
+        LOG_ERROR(Frontend, "GET to {} returned no content", url);
         return;
     }
 
@@ -171,7 +184,7 @@ void UpdateDialog::Download() {
     auto button =
         QtCommon::Frontend::Question(tr("Download Complete"),
                                      tr("Successfully downloaded %1. Would you like to open it?")
-                                         .arg(QString::fromStdString(m_asset.filename)),
+                                         .arg(QString::fromStdString(m_asset.asset.name)),
                                      QtCommon::Frontend::Yes | QtCommon::Frontend::No);
 
     if (button == QtCommon::Frontend::Yes) {

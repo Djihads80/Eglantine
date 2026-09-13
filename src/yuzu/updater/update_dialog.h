@@ -24,5 +24,5 @@ private slots:
 private:
     Ui::UpdateDialog* ui;
     QList<QRadioButton*> m_buttons;
-    Common::Net::Asset m_asset;
+    Common::Net::NamedAsset m_asset;
 };
