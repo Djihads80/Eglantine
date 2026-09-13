@@ -6,7 +6,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <variant>
 
 namespace Common::Net {
 
@@ -30,7 +29,7 @@ struct Release {
     std::string html_url;
     std::optional<std::string> published_at;
 
-    std::vector<std::variant<std::string, Asset>> assets;
+    std::vector<Asset> assets;
 };
 
 std::vector<Release> GetReleasesFromJson(const std::string& body);

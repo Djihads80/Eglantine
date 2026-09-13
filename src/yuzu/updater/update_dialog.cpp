@@ -20,9 +20,28 @@
 #include <openssl/cert.h>
 #endif
 
+#include <openssl/evp.h>
+
 #include <QDesktopServices>
 
 #undef GetSaveFileName
+
+static std::string sha256_hash(EVP_MD_CTX* ctx, const std::string& input) {
+    char output[65];
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len;
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, input.c_str(), input.size());
+    EVP_DigestFinal_ex(ctx, hash, &hash_len);
+
+    for (unsigned int i = 0; i < hash_len; i++) {
+        sprintf(output + (i * 2), "%02x", hash[i]);
+    }
+    output[hash_len * 2] = '\0';
+
+    return std::string(output);
+}
 
 UpdateDialog::UpdateDialog(const Common::Net::Release& release, QWidget* parent)
     : QDialog(parent), ui(new Ui::UpdateDialog) {
@@ -46,6 +65,7 @@ UpdateDialog::UpdateDialog(const Common::Net::Release& release, QWidget* parent)
     if (assets.empty()) {
         ui->groupBox->setHidden(true);
         connect(this, &QDialog::accepted, this, [release]() {
+            qDebug() << release.html_url;
             QDesktopServices::openUrl(QUrl{QString::fromStdString(release.html_url)});
         });
     } else if (assets.size() == 1) {
@@ -78,6 +98,13 @@ UpdateDialog::~UpdateDialog() {
 }
 
 // TODO: migrate to a net.cpp wrapper
+// TODO: rework UX
+// - download to temp dir
+// - dmg: open
+// - exe: open
+// - zip: prompt user to keep old, then unzip in app dir
+//   * if user says yes, move parent folder to `<name>_old`
+// - tar.gz: something has gone very wrong. cry
 void UpdateDialog::Download() {
     const auto filename = QtCommon::Frontend::GetSaveFileName(
         tr("New Version Location"),
@@ -137,7 +164,9 @@ void UpdateDialog::Download() {
     };
 
     // Write file in chunks.
-    auto content_receiver = [&file, filename](const char* t_data, size_t data_length) -> bool {
+    std::string tmp_data;
+    auto content_receiver = [&file, filename, &tmp_data](const char* t_data, size_t data_length) -> bool {
+        tmp_data += t_data;
         if (file.write(t_data, data_length) == -1) {
             LOG_WARNING(Frontend, "Could not write {} bytes to file {}", data_length,
                         filename.toStdString());
@@ -151,17 +180,19 @@ void UpdateDialog::Download() {
 
     // Now send off request
     auto result = client->Get(path, content_receiver, progress_callback);
-    progress->close();
 
     // commit to file
     if (!file.commit()) {
         LOG_WARNING(Frontend, "Could not commit to file {}", filename.toStdString());
         QtCommon::Frontend::Critical(tr("Failed to save file"),
                                      tr("Could not commit to file %1.").arg(filename));
+        progress->close();
+        return;
     }
 
     if (!result) {
         LOG_ERROR(Frontend, "GET to {} returned null", url);
+        progress->close();
         return;
     }
 
@@ -173,12 +204,38 @@ void UpdateDialog::Download() {
                                      tr("Could not download from %1\nError code: %3")
                                          .arg(QString::fromStdString(url),
                                               QString::number(response.status)));
+        progress->close();
         return;
     }
+
     if (!response.has_header("content-type")) {
         LOG_ERROR(Frontend, "GET to {} returned no content", url);
+        progress->close();
         return;
     }
+
+    // TODO(crueter): Test
+    if (m_asset.asset.digest) {
+        progress->setLabelText(tr("Verifying..."));
+        progress->setValue(0);
+        progress->setMaximum(0);
+
+        auto ctx = EVP_MD_CTX_new();
+        auto actual = std::format("sha256:{}", sha256_hash(ctx, tmp_data));
+        auto expected = m_asset.asset.digest.value();
+
+        // TODO: auto-retry
+        if (actual != expected) {
+            LOG_ERROR(Frontend, "Hash mismatch, expected {}, got {}", expected, actual);
+            QtCommon::Frontend::Critical(
+                tr("Failed to download file"),
+                tr("File has invalid hash.\nGot:%1\nExpected: %2\nPlease re-launch Eden and try "
+                   "again.")
+                    .arg(QString::fromStdString(expected), QString::fromStdString(actual)));
+        }
+    }
+
+    progress->close();
 
     // Download is complete. User may choose to open in the file manager.
     auto button =

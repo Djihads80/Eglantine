@@ -17,6 +17,7 @@
 #include "common/logging.h"
 
 #include "common/httplib.h"
+#include <print>
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -49,7 +50,7 @@ std::vector<NamedAsset> GetPlatformAssets(const Release &r) {
                 });
 
             if (it != assets.end()) {
-                auto asset = std::get<Asset>(*it);
+                auto asset = Asset(*it);
                 found_assets.emplace_back(NamedAsset{
                     .name = name,
                     .asset = asset
