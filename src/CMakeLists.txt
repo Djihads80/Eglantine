@@ -176,8 +176,6 @@ else()
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-attributes>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-invalid-offsetof>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-parameter>
-        # Bugged on GCC 16
-        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-maybe-uninitialized>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-field-initializers>)
 
     if (CXX_CLANG OR CXX_ICC OR CXX_APPLE) # Clang, AppleClang, or Intel C++
@@ -211,7 +209,10 @@ else()
         add_compile_options(
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-array-bounds>
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-stringop-overread>
-            $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-stringop-overflow>)
+            $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-stringop-overflow>
+            # Particularly bugged on GCC 16
+            $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-maybe-uninitialized>
+        )
     endif()
 
     # Set file offset size to 64 bits.
