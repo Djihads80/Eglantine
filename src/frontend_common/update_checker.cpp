@@ -10,7 +10,6 @@
 #include <boost/algorithm/string/split.hpp>
 #endif
 
-#include <fmt/format.h>
 #include "common/net/net.h"
 #include "common/scm_rev.h"
 #include "update_checker.h"

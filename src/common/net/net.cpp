@@ -167,7 +167,7 @@ std::optional<Release> GetLatestRelease() {
     auto ec = glz::read<glz::opts{.error_on_unknown_keys = false}>(release, body_str);
 
     if (ec) {
-        LOG_CRITICAL(Common, "Latest Release JSON Parse error: {}", glz::format_error(ec, body_str));
+        LOG_CRITICAL(Common, "Latest Release JSON parse error: {}", glz::format_error(ec, body_str));
         return std::nullopt;
     }
 
@@ -189,7 +189,7 @@ std::vector<Release> GetReleasesFromJson(const std::string& body) {
     auto ec = glz::read<glz::opts{.error_on_unknown_keys = false}>(releases, body);
 
     if (ec) {
-        LOG_CRITICAL(Common, "Release JSON Parse error: {}", glz::format_error(ec, body));
+        LOG_CRITICAL(Common, "Release JSON parse error: {}", glz::format_error(ec, body));
         return {};
     }
 

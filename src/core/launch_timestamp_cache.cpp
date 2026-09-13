@@ -10,16 +10,19 @@
 #include <string>
 #include "common/container/unordered_map.h"
 
-#include <fmt/format.h>
-#include <nlohmann/json.hpp>
+#include <glaze/glaze.hpp>
 
 #include "common/fs/fs.h"
-#include "common/fs/file.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 
 namespace Core::LaunchTimestampCache {
 namespace {
+
+struct CacheEntry {
+    std::optional<s64> timestamp{};
+    std::optional<u64> launch_count{};
+};
 
 using CacheMap = ::Common::unordered_map<u64, s64>;
 using CountMap = ::Common::unordered_map<u64, u64>;
@@ -74,53 +77,62 @@ void Load() {
         return;
     }
 
-    try {
-        const auto json = nlohmann::json::parse(data->data(), data->data() + data->size());
-        if (!json.is_object()) {
-            return;
+    // legacy format is a raw timestamp only
+    using MixedCache = std::variant<CacheEntry, s64>;
+    std::unordered_map<std::string, MixedCache> raw_cache{};
+    const auto ec = glz::read<glz::opts{.null_terminated = false}>(raw_cache, data.value());
+
+    if (ec) {
+        LOG_WARNING(Core, "Failed to parse launch cache:\n{}", glz::format_error(ec, data.value()));
+        return;
+    }
+
+    for (const auto& [key_str, val] : raw_cache) {
+        u64 key{};
+        try {
+            key = std::stoull(key_str, nullptr, 16);
+        } catch (...) {
+            continue;
         }
-        for (auto it = json.begin(); it != json.end(); ++it) {
-            const auto key_str = it.key();
-            const auto value = it.value();
-            u64 key{};
-            try {
-                key = std::stoull(key_str, nullptr, 16);
-            } catch (...) {
-                continue;
-            }
-            if (value.is_object()) {
-                if (value.contains("timestamp") && value["timestamp"].is_number_integer()) {
-                    g_cache[key] = value["timestamp"].get<s64>();
-                }
-                if (value.contains("launch_count") && value["launch_count"].is_number_unsigned()) {
-                    g_counts[key] = value["launch_count"].get<u64>();
-                }
-            } else if (value.is_number_integer()) {
-                // Legacy format: raw timestamp only
-                g_cache[key] = value.get<s64>();
-            }
+
+        if (std::holds_alternative<CacheEntry>(val)) {
+            const auto& entry = std::get<CacheEntry>(val);
+            if (entry.timestamp)
+                g_cache[key] = entry.timestamp.value();
+            if (entry.launch_count)
+                g_counts[key] = entry.launch_count.value();
+        } else if (std::holds_alternative<s64>(val)) {
+            g_cache[key] = std::get<s64>(val);
         }
-    } catch (const std::exception& e) {
-        LOG_WARNING(Core, "Failed to parse launch timestamp cache: {}", e.what());
     }
 }
 
 void Save() {
-    nlohmann::json json = nlohmann::json::object();
+    std::unordered_map<std::string, CacheEntry> json_map{};
     for (const auto& [key, value] : g_cache) {
-        nlohmann::json entry = nlohmann::json::object();
-        entry["timestamp"] = value;
-        const auto count_it = g_counts.find(key);
-        entry["launch_count"] = count_it != g_counts.end() ? count_it->second : 0;
-        json[fmt::format("{:016X}", key)] = entry;
+        CacheEntry entry{
+            .timestamp = value,
+            .launch_count = 0
+        };
+
+        if (const auto count_it = g_counts.find(key); count_it != g_counts.end()) {
+            entry.launch_count = count_it->second;
+        }
+
+        json_map[std::format("{:016X}", key)] = entry;
+    }
+
+    std::string buffer{};
+    auto ec = glz::write<glz::opts{.prettify = true}>(json_map, buffer);
+    if (ec) {
+        LOG_WARNING(Core, "Failed to serialize launch cache:\n{}", glz::format_error(ec, buffer));
     }
 
     const auto path = GetCachePath();
-    if (!WriteStringToFile(path, json.dump(4))) {
+    if (!WriteStringToFile(path, buffer)) {
         LOG_WARNING(Core, "Failed to write launch timestamp cache: {}",
                     Common::FS::PathToUTF8String(path));
-    }
-}
+    }}
 
 s64 NowSeconds() {
     return std::time(nullptr);
