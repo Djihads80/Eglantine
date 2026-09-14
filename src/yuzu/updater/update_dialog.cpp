@@ -161,7 +161,7 @@ void UpdateDialog::Download() {
             LOG_ERROR(Frontend, "Could not write {} bytes to file {}, error=", data.size(),
                         filename, e.what());
             QtCommon::Frontend::Critical(tr("Failed to save file"),
-                                         tr("Could not write to file %1.").arg(filename));
+                                         tr("Could not write to file %1.").arg(QString::fromStdString(filename)));
             return false;
         }
     };
