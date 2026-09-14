@@ -450,9 +450,6 @@ if (zstd_ADDED)
     add_library(zstd::libzstd ALIAS libzstd_static)
 endif()
 
-# nlohmann
-AddJsonPackage(nlohmann)
-
 # glaze
 AddJsonPackage(glaze)
 
