@@ -1,0 +1,34 @@
+From 422b8e0f640821078bece477e2e37358b7fc193f Mon Sep 17 00:00:00 2001
+From: crueter <crueter@eden-emu.dev>
+Date: Mon, 14 Sep 2026 17:13:36 -0400
+Subject: [PATCH] add synchronous HEAD request
+
+---
+ include/glaze/net/http_client.hpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/include/glaze/net/http_client.hpp b/include/glaze/net/http_client.hpp
+index 6ed703f..317c2f4 100644
+--- a/include/glaze/net/http_client.hpp
++++ b/include/glaze/net/http_client.hpp
+@@ -1198,6 +1198,17 @@ namespace glz
+          return perform_sync_request("GET", *url_result, "", headers);
+       }
+ 
++      // Synchronous HEAD request
++      std::expected<response, std::error_code> head(std::string_view url, const glz::http_headers& headers = {})
++      {
++          auto url_result = parse_url(url);
++          if (!url_result) {
++              return std::unexpected(url_result.error());
++          }
++
++          return perform_sync_request("HEAD", *url_result, "", headers);
++      }
++
+       // Synchronous POST request - truly synchronous, no promises/futures
+       std::expected<response, std::error_code> post(std::string_view url, const std::string& body,
+                                                     const glz::http_headers& headers = {})
+-- 
+2.54.0
+

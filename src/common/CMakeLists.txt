@@ -145,7 +145,6 @@ add_library(
     fs/symlink.h fs/symlink.cpp
     cpu_features.cpp
     cpu_features.h
-    httplib.h
     net/net.h net/net.cpp
     container/unordered_map.h container/unordered_set.h)
 
@@ -234,12 +233,12 @@ if(CXX_CLANG)
 endif()
 
 if (BOOST_NO_HEADERS)
-    target_link_libraries(common PUBLIC Boost::algorithm Boost::heap Boost::icl Boost::pool)
+    target_link_libraries(common PUBLIC Boost::algorithm Boost::heap Boost::icl Boost::pool Boost::asio)
 else()
     target_link_libraries(common PUBLIC Boost::headers)
 endif()
 target_link_libraries(common PRIVATE OpenSSL::SSL glaze::glaze)
-target_link_libraries(common PUBLIC Boost::filesystem Boost::context httplib::httplib)
+target_link_libraries(common PUBLIC Boost::filesystem Boost::context)
 
 if (lz4_ADDED)
     target_include_directories(common PRIVATE ${lz4_SOURCE_DIR}/lib)

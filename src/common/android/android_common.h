@@ -7,6 +7,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <jni.h>
 #include "common/common_types.h"

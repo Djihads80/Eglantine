@@ -7,12 +7,12 @@
 #include <chrono>
 #include <string>
 
+#include <glaze/net/http_client.hpp>
+
 #include <QEventLoop>
 #include <boost/algorithm/string/replace.hpp>
-#include "common/httplib.h"
 
 #include <discord_rpc.h>
-#include <fmt/format.h>
 
 #include "common/common_types.h"
 #include "common/string_util.h"
@@ -98,26 +98,14 @@ void DiscordImpl::Update() {
 
         // Used to format Icon URL for yuzu website game compatibility page
         std::string icon_name = GetGameString(game_title);
-        auto const game_url = fmt::format(
+        auto const game_url = std::format(
             "https://raw.githubusercontent.com/eden-emulator/boxart/refs/heads/master/img/{}.png",
             icon_name);
 
-        httplib::SSLClient client(game_url);
-        client.set_connection_timeout(3);
-        client.set_read_timeout(3);
-        client.set_follow_location(true);
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        httplib::Request request{
-            .method = "HEAD",
-            .path = game_url,
-        };
-
-        auto res = client.send(request);
-        UpdateGameStatus(game_url, res && res->status == 200);
+        // TODO: also net.cpp this?
+        glz::http_client cli;
+        auto res = cli.head(game_url);
+        UpdateGameStatus(game_url, res && res->status_code == 200);
 
         return;
     }

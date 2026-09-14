@@ -3,7 +3,7 @@
 ## Dependencies
 
 * [Android Studio](https://developer.android.com/studio)
-* [NDK 27+ and CMake 3.22.1](https://developer.android.com/studio/projects/install-ndk#default-version)
+* [NDK 30+ and CMake 3.31.6](https://developer.android.com/studio/projects/install-ndk#default-version)
 * [Git](https://git-scm.com/download)
 
 ## WINDOWS ONLY - Additional Dependencies

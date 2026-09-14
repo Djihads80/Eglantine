@@ -15,7 +15,7 @@
 
 #include "common/logging.h"
 
-#include "common/httplib.h"
+#include "glaze/net/http_client.hpp"
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -102,53 +102,37 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
     return found_assets;
 }
 
-std::optional<std::string> MakeRequest(const std::string& url, const std::string& path) {
-    try {
-        constexpr std::size_t timeout_seconds = 15;
-
-        std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(url);
-        client->set_connection_timeout(timeout_seconds);
-        client->set_read_timeout(timeout_seconds);
-        client->set_write_timeout(timeout_seconds);
+std::optional<std::string> MakeRequest(const std::string& url) {
+    glz::http_client client;
 
 #ifdef YUZU_BUNDLED_OPENSSL
-        client->load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        if (client == nullptr) {
-            LOG_ERROR(Common, "Invalid URL {}{}", url, path);
-            return {};
-        }
-
-        httplib::Request request{
-            .method = "GET",
-            .path = path,
-        };
-
-        client->set_follow_location(true);
-        httplib::Result result = client->send(request);
-
-        if (!result) {
-            LOG_ERROR(Common, "GET to {}{} returned null", url, path);
-            return {};
-        }
-
-        const auto& response = result.value();
-        if (response.status >= 400) {
-            LOG_ERROR(Common, "GET to {}{} returned error status code: {}", url, path,
-                      response.status);
-            return {};
-        }
-        if (!response.has_header("content-type")) {
-            LOG_ERROR(Common, "GET to {}{} returned no content", url, path);
-            return {};
-        }
-
-        return response.body;
-    } catch (std::exception& e) {
-        LOG_ERROR(Common, "GET to {}{} failed during update check: {}", url, path, e.what());
+    auto ec = client.add_ca_certificates_pem(std::string{kCert});
+    if (ec) {
+        LOG_ERROR(Common, "Failed to load bundled CA certificate: {}", ec.error().message());
         return std::nullopt;
     }
+#endif
+
+    auto resp = client.get(url);
+
+    if (!resp) {
+        LOG_ERROR(Common, "HTTP request to {} failed: {}", url, resp.error().message());
+        return std::nullopt;
+    }
+
+    // automatically redirect
+    if (resp->status_code > 300 && resp->status_code < 400) {
+        const auto location = resp->response_headers.first_value("location");
+        if (location) return MakeRequest(location.value());
+
+        LOG_WARNING(Common, "Received status code {} but didn't receive Location header", resp->status_code);
+    }
+
+    return resp.value().response_body;
+}
+
+std::optional<std::string> MakeRequest(const std::string_view url) {
+    return MakeRequest(std::string(url));
 }
 
 std::vector<Release> GetReleases() {
@@ -164,9 +148,9 @@ std::vector<Release> GetReleases() {
 
 std::optional<Release> GetLatestRelease() {
     const auto releases_path = Common::g_build_auto_update_api_path;
-    const auto url = std::format("https://{}", std::string{Common::g_build_auto_update_api});
+    const auto url = std::format("https://{}{}", std::string{Common::g_build_auto_update_api}, releases_path);
 
-    const auto body = MakeRequest(url, releases_path);
+    const auto body = MakeRequest(url);
     if (!body) {
         LOG_WARNING(Common, "Failed to get latest release");
         return std::nullopt;
@@ -189,9 +173,9 @@ std::optional<std::string> GetReleasesBody() {
     const auto releases_path =
         std::format("/{}/{}/releases", std::string{Common::g_build_auto_update_stable_api_path},
                     std::string{Common::g_build_auto_update_stable_repo});
-    const auto url = std::format("https://{}", std::string{Common::g_build_auto_update_stable_api});
+    const auto url = std::format("https://{}{}", std::string{Common::g_build_auto_update_stable_api}, releases_path);
 
-    return MakeRequest(url, releases_path);
+    return MakeRequest(url);
 }
 
 std::vector<Release> GetReleasesFromJson(const std::string& body) {

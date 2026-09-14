@@ -13,11 +13,7 @@
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/regex.hpp>
 #include <boost/regex/v5/regex_replace.hpp>
-#include <fmt/format.h>
 
-#include "common/httplib.h"
-
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -25,10 +21,6 @@
 #include <mutex>
 #include <optional>
 #include <thread>
-
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
 
 namespace Service::News {
 namespace {
@@ -53,7 +45,7 @@ std::filesystem::path GetDefaultLogoPath(bool large) {
 }
 
 std::filesystem::path GetNewsImagePath(std::string_view news_id, bool large) {
-    const std::string filename = fmt::format("{}_{}.jpg", news_id, large ? "large" : "small");
+    const std::string filename = std::format("{}_{}.jpg", news_id, large ? "large" : "small");
     return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "news" / "images" / filename;
 }
 
@@ -79,24 +71,16 @@ std::vector<u8> TryLoadFromDisk(const std::filesystem::path& path) {
 
 // TODO(crueter): Migrate to use Common::Net
 std::vector<u8> DownloadImage(const std::string& url_path, const std::filesystem::path& cache_path) {
+    const auto url = std::format("https://eden-emu.dev{}", url_path);
     LOG_DEBUG(Service_BCAT, "Downloading image: https://eden-emu.dev{}", url_path);
     try {
-        httplib::Client cli("https://eden-emu.dev");
-        cli.set_follow_location(true);
-        cli.set_connection_timeout(std::chrono::seconds(2));
-        cli.set_read_timeout(std::chrono::seconds(2));
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        cli.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        if (auto res = cli.Get(url_path); res && res->status == 200 && !res->body.empty()) {
-            std::vector<u8> data(res->body.begin(), res->body.end());
+        if (auto body = Common::Net::MakeRequest(url)) {
+            std::vector<u8> data(body->begin(), body->end());
 
             std::error_code ec;
             std::filesystem::create_directories(cache_path.parent_path(), ec);
             if (std::ofstream out(cache_path, std::ios::binary); out) {
-                out.write(res->body.data(), static_cast<std::streamsize>(res->body.size()));
+                out.write(body->data(), static_cast<std::streamsize>(body->size()));
             }
             return data;
         }
@@ -139,7 +123,7 @@ std::vector<u8> GetNewsImage(std::string_view news_id, bool large) {
     auto data = TryLoadFromDisk(cache_path);
 
     if (data.empty()) {
-        const std::string url = fmt::format("/news/{}_{}.jpg", id_str, large ? "large" : "small");
+        const std::string url = std::format("/news/{}_{}.jpg", id_str, large ? "large" : "small");
         data = DownloadImage(url, cache_path);
     }
 
@@ -161,7 +145,7 @@ void PreloadNewsImages(const std::vector<u32>& news_ids) {
     futures.reserve(news_ids.size() * 2);
 
     for (const u32 id : news_ids) {
-        const std::string id_str = fmt::format("{}", id);
+        const std::string id_str = std::format("{}", id);
 
         {
             std::lock_guard lock{images_mutex};
@@ -338,7 +322,7 @@ void ImportReleases(const std::vector<Common::Net::Release> &releases) {
                                     pickup_limit, priority, {"en"}, author, {},
                                     html_url, news_id);
 
-        const std::string news_id_str = fmt::format("LA{:020}", news_id);
+        const std::string news_id_str = std::format("LA{:020}", news_id);
 
         GithubNewsMeta meta{
             .news_id = news_id_str,
@@ -373,7 +357,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     MsgPack::Writer w;
 
     const u32 news_id = override_id.value_or(HashToNewsId(title.empty() ? "eden" : title));
-    const std::string news_id_str = fmt::format("{}", news_id);
+    const std::string news_id_str = std::format("{}", news_id);
 
     const auto img_small = GetNewsImage(news_id_str, false);
     const auto img_large = GetNewsImage(news_id_str, true);

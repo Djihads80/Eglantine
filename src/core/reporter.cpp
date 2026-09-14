@@ -27,8 +27,6 @@
 #include "core/memory.h"
 #include "core/reporter.h"
 
-namespace {
-
 struct YuzuVersionData {
     std::string scm_rev;
     std::string scm_branch;
@@ -141,6 +139,8 @@ struct FullDataAuto {
     YuzuVersionData yuzu_version;
     ReportCommonData report_common;
 };
+
+namespace {
 
 std::filesystem::path GetPath(std::string_view type, u64 title_id, std::string_view timestamp) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / type /

@@ -8,8 +8,7 @@
 #include <mutex>
 #include <string>
 
-#include <fmt/ranges.h>
-#include "common/httplib.h"
+#include <glaze/net/http_client.hpp>
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -22,8 +21,6 @@
 namespace WebService {
 
 constexpr std::array<const char, 1> API_VERSION{'1'};
-
-constexpr std::size_t TIMEOUT_SECONDS = 30;
 
 struct Client::Impl {
     Impl(std::string host_, std::string username_, std::string token_)
@@ -72,24 +69,18 @@ struct Client::Impl {
                              const std::string& data, const std::string& accept,
                              const std::string& jwt_ = "", const std::string& username_ = "",
                              const std::string& token_ = "") {
-        if (cli == nullptr) {
-            cli = std::make_unique<httplib::Client>(host.c_str());
-            cli->set_connection_timeout(TIMEOUT_SECONDS);
-            cli->set_read_timeout(TIMEOUT_SECONDS);
-            cli->set_write_timeout(TIMEOUT_SECONDS);
 #ifdef YUZU_BUNDLED_OPENSSL
-            cli->load_ca_cert_store(kCert, sizeof(kCert));
+        auto ec = cli.add_ca_certificates_pem(std::string{kCert});
+        if (ec) {
+            LOG_ERROR(Common, "Failed to load bundled CA certificate: {}", ec.error().message());
+            return WebResult{WebResult::Code::LibError, "Could not load CA certificates", ""};
+        }
 #endif
-        }
-        if (!cli->is_valid()) {
-            LOG_ERROR(WebService, "Invalid URL {}", host + path);
-            return WebResult{WebResult::Code::InvalidURL, "Invalid URL", ""};
-        }
+        glz::http_headers params;
 
-        httplib::Headers params;
         if (!jwt_.empty()) {
             params = {
-                {std::string("Authorization"), fmt::format("Bearer {}", jwt_)},
+                {std::string("Authorization"), std::format("Bearer {}", jwt_)},
             };
         } else if (!username_.empty()) {
             params = {
@@ -98,46 +89,38 @@ struct Client::Impl {
             };
         }
 
-        params.emplace(std::string("api-version"),
+        params.add(std::string("api-version"),
                        std::string(API_VERSION.begin(), API_VERSION.end()));
         if (method != "GET") {
-            params.emplace(std::string("Content-Type"), std::string("application/json"));
+            params.add(std::string("Content-Type"), std::string("application/json"));
         }
 
-        httplib::Request request;
-        request.method = method;
-        request.path = path;
-        request.headers = params;
-        request.body = data;
-
-        httplib::Result result = cli->send(request);
+        auto result = cli.post(std::format("{}{}", host, path), data, params);
 
         if (!result) {
             LOG_ERROR(WebService, "{} to {} returned null", method, host + path);
             return WebResult{WebResult::Code::LibError, "Null response", ""};
         }
 
-        httplib::Response response = result.value();
-
-        if (response.status >= 400) {
+        if (result->status_code >= 400) {
             LOG_ERROR(WebService, "{} to {} returned error status code: {}", method, host + path,
-                      response.status);
-            return WebResult{WebResult::Code::HttpError, std::to_string(response.status), ""};
+                      result->status_code);
+            return WebResult{WebResult::Code::HttpError, std::to_string(result->status_code), ""};
         }
 
-        auto content_type = response.headers.find("content-type");
+        auto content_type = result->response_headers.find("content-type");
 
-        if (content_type == response.headers.end()) {
+        if (content_type == result->response_headers.end()) {
             LOG_ERROR(WebService, "{} to {} returned no content", method, host + path);
             return WebResult{WebResult::Code::WrongContent, "", ""};
         }
 
-        if (content_type->second.find(accept) == std::string::npos) {
+        if (content_type->value.find(accept) == std::string::npos) {
             LOG_ERROR(WebService, "{} to {} returned wrong content: {}", method, host + path,
-                      content_type->second);
+                      content_type->value);
             return WebResult{WebResult::Code::WrongContent, "Wrong content", ""};
         }
-        return WebResult{WebResult::Code::Success, "", response.body};
+        return WebResult{WebResult::Code::Success, "", result->response_body};
     }
 
     // Retrieve a new JWT from given username and token
@@ -161,7 +144,7 @@ struct Client::Impl {
     std::string username;
     std::string token;
     std::string jwt;
-    std::unique_ptr<httplib::Client> cli;
+    glz::http_client cli;
 
     struct JWTCache {
         std::mutex mutex;
@@ -199,7 +182,7 @@ WebResult Client::GetImage(const std::string& path, bool allow_anonymous) {
 }
 
 WebResult Client::GetExternalJWT(const std::string& audience) {
-    return impl->GenericRequest("POST", fmt::format("/jwt/external/{}", audience), "", false,
+    return impl->GenericRequest("POST", std::format("/jwt/external/{}", audience), "", false,
                                 "text/html");
 }
 

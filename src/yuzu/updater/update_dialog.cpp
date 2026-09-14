@@ -8,6 +8,7 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <glaze/net/http_client.hpp>
 #include <qdesktopservices.h>
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -17,7 +18,6 @@
 #include "ui_update_dialog.h"
 #include "update_dialog.h"
 
-#include "common/httplib.h"
 #include "common/scm_rev.h"
 
 #ifdef YUZU_BUNDLED_OPENSSL
@@ -128,33 +128,15 @@ void UpdateDialog::Download() {
     const auto absFilename = tmpDir / m_asset.asset.name;
     std::ofstream file(absFilename, std::ios::out | std::ios::binary);
 
-    // first 3 will be [protocol, <blank>, host]
-    // everything thereafter is the url
-    // TODO: just use glaze
-    const auto url = m_asset.asset.browser_download_url;
-    std::vector<std::string> split;
-    boost::algorithm::split(split, url, boost::is_any_of("/"));
-
-    const std::span<std::string> host_slice(split.begin(), split.begin() + 3);
-    const std::span<std::string> path_slice(split.begin() + 3, split.end());
-
-    const auto host = boost::algorithm::join(host_slice, "/");
-    const auto path = boost::algorithm::join(path_slice, "/");
-
-    std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(host);
-    constexpr std::size_t timeout_seconds = 15;
-    client->set_connection_timeout(timeout_seconds);
-    client->set_read_timeout(timeout_seconds);
-    client->set_write_timeout(timeout_seconds);
+    glz::http_client cli;
 
 #ifdef YUZU_BUNDLED_OPENSSL
-    client->load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-    if (client == nullptr) {
-        LOG_ERROR(Frontend, "Invalid URL {}", m_asset.asset.browser_download_url);
+    auto cli_ec = cli.add_ca_certificates_pem(std::string{kCert});
+    if (cli_ec) {
+        LOG_ERROR(Frontend, "Failed to load bundled CA certificate: {}", cli_ec.error().message());
         return;
     }
+#endif
 
     auto progress =
         QtCommon::Frontend::newProgressDialog(tr("Downloading..."), tr("Cancel"), 0, 100);
@@ -169,60 +151,61 @@ void UpdateDialog::Download() {
         return !progress->wasCanceled();
     };
 
-    // Write file in chunks.
+    // write file in chunks
     std::string tmp_data;
-    auto content_receiver = [&file, filename, &tmp_data](const char* t_data, size_t data_length) -> bool {
-        tmp_data += t_data;
+    auto on_data = [&tmp_data, filename, &file](std::string_view data) {
+        tmp_data += data;
         try {
-            file.write(t_data, data_length);
+            file.write(data.data(), data.size());
         } catch (std::exception &e) {
-            LOG_WARNING(Frontend, "Could not write {} bytes to file {}, error=", data_length,
+            LOG_ERROR(Frontend, "Could not write {} bytes to file {}, error=", data.size(),
                         filename, e.what());
             QtCommon::Frontend::Critical(tr("Failed to save file"),
                                          tr("Could not write to file %1.").arg(filename));
             return false;
         }
+    };
 
-        return true;
+    // promise will block until request completes
+    // callbacks handle async ui stuff
+    std::promise<std::error_code> done;
+
+    const auto url = m_asset.asset.browser_download_url;
+    auto on_error = [url, &done](std::error_code ec) {
+        LOG_ERROR(Frontend, "Failed to download {}: {}", url, ec.message());
+        QtCommon::Frontend::Critical(
+            tr("Failed to download file"),
+            tr("Could not download file %1. Check your logs for more information.")
+                .arg(QString::fromStdString(url)));
+
+        done.set_value(ec);
+    };
+
+    // commit to file
+    auto on_disconnect = [&file, filename, &progress, &done]() {
+        try {
+            file.flush();
+            done.set_value({});
+        } catch (std::exception &e) {
+            LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
+            QtCommon::Frontend::Critical(tr("Failed to save file"),
+                                         tr("Could not commit to file %1.").arg(filename));
+            progress->close();
+            return;
+        }
     };
 
     // Now send off request
-    auto result = client->Get(path, content_receiver, progress_callback);
+    auto conn = cli.stream_request_v2({
+        .url = url,
+        .on_data = on_data,
+        .on_error = on_error,
+        .on_progress = progress_callback,
+        .on_disconnect = on_disconnect
+    });
 
-    // commit to file
-    try {
-        file.flush();
-    } catch (std::exception &e) {
-        LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
-        QtCommon::Frontend::Critical(tr("Failed to save file"),
-                                     tr("Could not commit to file %1.").arg(filename));
-        progress->close();
-        return;
-    }
-
-    if (!result) {
-        LOG_ERROR(Frontend, "GET to {} returned null", url);
-        progress->close();
-        return;
-    }
-
-    const auto& response = result.value();
-    if (response.status >= 400) {
-        LOG_ERROR(Frontend, "GET to {} returned error status code: {}", url,
-                  response.status);
-        QtCommon::Frontend::Critical(tr("Failed to download file"),
-                                     tr("Could not download from %1\nError code: %3")
-                                         .arg(QString::fromStdString(url),
-                                              QString::number(response.status)));
-        progress->close();
-        return;
-    }
-
-    if (!response.has_header("content-type")) {
-        LOG_ERROR(Frontend, "GET to {} returned no content", url);
-        progress->close();
-        return;
-    }
+    auto http_ec = done.get_future().get();
+    if (http_ec) return;
 
     // TODO(crueter): Test
     if (m_asset.asset.digest) {

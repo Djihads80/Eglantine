@@ -63,12 +63,6 @@ if (WIN32 AND NOT TARGET LLVM::Demangle)
     add_library(LLVM::Demangle ALIAS demangle)
 endif()
 
-# httplib
-if (IOS)
-    set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF)
-endif()
-AddJsonPackage(httplib)
-
 if (YUZU_STATIC_ROOM)
     return()
 endif()

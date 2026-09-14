@@ -16,13 +16,13 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 
-namespace Core::LaunchTimestampCache {
-namespace {
-
 struct CacheEntry {
     std::optional<s64> timestamp{};
     std::optional<u64> launch_count{};
 };
+
+namespace Core::LaunchTimestampCache {
+namespace {
 
 using CacheMap = ::Common::unordered_map<u64, s64>;
 using CountMap = ::Common::unordered_map<u64, u64>;
