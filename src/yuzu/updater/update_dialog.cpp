@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <filesystem>
 #include <QRadioButton>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -8,13 +9,16 @@
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <qdesktopservices.h>
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "qt_common/abstract/frontend.h"
 #include "qt_common/abstract/progress.h"
+#include "qt_common/util/compress.h"
 #include "ui_update_dialog.h"
 #include "update_dialog.h"
 
 #include "common/httplib.h"
+#include "common/scm_rev.h"
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -97,35 +101,36 @@ UpdateDialog::~UpdateDialog() {
     delete ui;
 }
 
-// TODO: migrate to a net.cpp wrapper
-// TODO: rework UX
-// - download to temp dir
-// - dmg: open
-// - exe: open
-// - zip: prompt user to keep old, then unzip in app dir
-//   * if user says yes, move parent folder to `<name>_old`
-// - tar.gz: something has gone very wrong. cry
+// TODO: migrate progress callback download to Common::Net
+// TODO: migrate to QtCommon
 void UpdateDialog::Download() {
-    const auto filename = QtCommon::Frontend::GetSaveFileName(
-        tr("New Version Location"),
-        qApp->applicationDirPath() % QStringLiteral("/") % QString::fromStdString(m_asset.asset.name),
-        tr("All Files (*.*)"));
+    namespace fs = std::filesystem;
+    fs::path appDir = QCoreApplication::applicationDirPath().toStdString();
+    fs::path parentDir = appDir.parent_path();
+    std::string appDirName = appDir.filename();
+    fs::path oldDir = parentDir / fmt::format("{}_{}", appDirName, Common::g_build_version);
 
-    if (filename.isEmpty())
-        return;
+    std::error_code ec;
+    fs::path tmpDir = fs::temp_directory_path(ec);
 
-    QSaveFile file(filename);
-    if (!file.open(QIODevice::Truncate | QIODevice::WriteOnly)) {
-        LOG_WARNING(Frontend, "Could not open file {}", filename.toStdString());
-        QtCommon::Frontend::Critical(tr("Failed to save file"),
-                                     tr("Could not open file %1 for writing.").arg(filename));
-        return;
+    if (ec) {
+        // tmp dir creation failed, just use cache
+        LOG_WARNING(Frontend, "Failed to create temporary directory: {}", ec.message());
+        tmpDir = Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "update/download";
+    } else {
+        tmpDir /= "eden/update/download";
     }
 
-    constexpr std::size_t timeout_seconds = 15;
+    fs::remove_all(tmpDir);
+    fs::create_directories(tmpDir);
+
+    const auto filename = m_asset.asset.name;
+    const auto absFilename = tmpDir / m_asset.asset.name;
+    std::ofstream file(absFilename, std::ios::out | std::ios::binary);
 
     // first 3 will be [protocol, <blank>, host]
     // everything thereafter is the url
+    // TODO: just use glaze
     const auto url = m_asset.asset.browser_download_url;
     std::vector<std::string> split;
     boost::algorithm::split(split, url, boost::is_any_of("/"));
@@ -137,6 +142,7 @@ void UpdateDialog::Download() {
     const auto path = boost::algorithm::join(path_slice, "/");
 
     std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(host);
+    constexpr std::size_t timeout_seconds = 15;
     client->set_connection_timeout(timeout_seconds);
     client->set_read_timeout(timeout_seconds);
     client->set_write_timeout(timeout_seconds);
@@ -167,9 +173,11 @@ void UpdateDialog::Download() {
     std::string tmp_data;
     auto content_receiver = [&file, filename, &tmp_data](const char* t_data, size_t data_length) -> bool {
         tmp_data += t_data;
-        if (file.write(t_data, data_length) == -1) {
-            LOG_WARNING(Frontend, "Could not write {} bytes to file {}", data_length,
-                        filename.toStdString());
+        try {
+            file.write(t_data, data_length);
+        } catch (std::exception &e) {
+            LOG_WARNING(Frontend, "Could not write {} bytes to file {}, error=", data_length,
+                        filename, e.what());
             QtCommon::Frontend::Critical(tr("Failed to save file"),
                                          tr("Could not write to file %1.").arg(filename));
             return false;
@@ -182,8 +190,10 @@ void UpdateDialog::Download() {
     auto result = client->Get(path, content_receiver, progress_callback);
 
     // commit to file
-    if (!file.commit()) {
-        LOG_WARNING(Frontend, "Could not commit to file {}", filename.toStdString());
+    try {
+        file.flush();
+    } catch (std::exception &e) {
+        LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
         QtCommon::Frontend::Critical(tr("Failed to save file"),
                                      tr("Could not commit to file %1.").arg(filename));
         progress->close();
@@ -237,14 +247,33 @@ void UpdateDialog::Download() {
 
     progress->close();
 
-    // Download is complete. User may choose to open in the file manager.
-    auto button =
-        QtCommon::Frontend::Question(tr("Download Complete"),
-                                     tr("Successfully downloaded %1. Would you like to open it?")
-                                         .arg(QString::fromStdString(m_asset.asset.name)),
-                                     QtCommon::Frontend::Yes | QtCommon::Frontend::No);
+    // Download is complete.
+    if (filename.ends_with(".dmg") || filename.ends_with(".exe")) {
+        // dmg, exe will just open it and let the OS handle the rest.
+        auto localUrl = QUrl::fromLocalFile(QString::fromStdString(filename));
+        QDesktopServices::openUrl(localUrl);
+    } else if (filename.ends_with(".zip")) {
+        // zip will request the user to keep the old version or not,
+        // then unzip to the current app dir and replace everything.
+        auto button = QtCommon::Frontend::Question(
+            tr("Download Complete"),
+            tr("Would you like to keep the old version of Eden? This will be stored in %1 in the "
+               "same directory as your current file.")
+                .arg(QString::fromStdString(oldDir.filename())));
 
-    if (button == QtCommon::Frontend::Yes) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(filename));
+        if (button == QtCommon::Frontend::Yes) {
+            fs::rename(appDir, oldDir);
+        } else {
+            fs::remove_all(appDir);
+        }
+
+        fs::create_directories(appDir);
+
+        progress->setLabelText(tr("Extracting..."));
+        progress->setValue(0);
+        progress->setMaximum(100);
+        progress->show();
+        QtCommon::Compress::extractDir(QString::fromStdString(absFilename.string()),
+                                       QString::fromStdString(appDir.string()), progress_callback);
     }
 }

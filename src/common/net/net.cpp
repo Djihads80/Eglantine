@@ -10,24 +10,26 @@
 #include <boost/algorithm/string/split.hpp>
 #include <glaze/glaze.hpp>
 
-#include <fmt/format.h>
 #include "common/scm_rev.h"
 #include "net.h"
 
 #include "common/logging.h"
 
 #include "common/httplib.h"
-#include <print>
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
+#endif
+
+#ifdef _WIN32
+#include <filesystem>
 #endif
 
 #define QT_TR_NOOP(x) x
 
 namespace Common::Net {
 
-std::vector<NamedAsset> GetPlatformAssets(const Release &r) {
+std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
     // TODO(crueter): Need better handling for this as a whole.
 #ifdef NIGHTLY_BUILD
     std::vector<std::string> result;
@@ -41,35 +43,43 @@ std::vector<NamedAsset> GetPlatformAssets(const Release &r) {
 
     std::vector<NamedAsset> found_assets;
 
-    [[maybe_unused]] const auto find_asset = [&r, &found_assets](const std::string &name, const std::vector<std::string>& suffixes) {
-        const auto &assets = r.assets;
-        for (const auto &s : suffixes) {
-            const auto it = std::ranges::find_if(
-                assets, [&s](const std::variant<std::string, Asset>& a) -> bool {
-                    return std::holds_alternative<Asset>(a) && std::get<Asset>(a).name.ends_with(s);
-                });
+    [[maybe_unused]] const auto find_asset =
+        [&r, &found_assets](const std::string& name, const std::vector<std::string>& suffixes) {
+            const auto& assets = r.assets;
+            for (const auto& s : suffixes) {
+                const auto it = std::ranges::find_if(
+                    assets, [&s](const std::variant<std::string, Asset>& a) -> bool {
+                        return std::holds_alternative<Asset>(a) &&
+                               std::get<Asset>(a).name.ends_with(s);
+                    });
 
-            if (it != assets.end()) {
-                auto asset = Asset(*it);
-                found_assets.emplace_back(NamedAsset{
-                    .name = name,
-                    .asset = asset
-                });
+                if (it != assets.end()) {
+                    auto asset = Asset(*it);
+                    found_assets.emplace_back(NamedAsset{.name = name, .asset = asset});
+                }
             }
-        }
-    };
+        };
 
 #ifdef _WIN32
+    // system.txt is (will be) installed in the same directory as the installed executable
+    const auto is_system = std::filesystem::exists(std::filesystem::current_path() / "system.txt");
+    std::string ext;
+    if (is_system) {
+        ext = ".exe";
+    } else {
+        ext = ".zip";
+    }
+
 #ifdef ARCHITECTURE_x86_64
 #ifdef _MSC_VER
-    find_asset("Standard", {"amd64-msvc-standard.exe", "amd64-msvc-standard.zip"});
-#else // _MSC_VER
-    find_asset("Standard", {BUILD_ID "-gcc-standard.exe", BUILD_ID "-gcc-standard.zip"});
-    find_asset("PGO", {BUILD_ID "-clang-pgo.exe", BUILD_ID "-clang-pgo.zip"});
+    find_asset("Standard", {std::format("amd64-msvc-standard.{}", ext)});
+#else  // _MSC_VER
+    find_asset("Standard", {std::format(BUILD_ID "-gcc-standard.{}", ext)});
+    find_asset("PGO", {std::format(BUILD_ID "-clang-pgo.{}", ext)});
 #endif // _MSC_VER
 #elif defined(ARCHITECTURE_arm64)
-    find_asset("Standard", {"arm64-clang-standard.exe", "arm64-clang-standard.zip"});
-    find_asset("PGO", {"arm64-clang-pgo.exe", "arm64-clang-pgo.zip"});
+    find_asset("Standard", {std::format("arm64-clang-standard.{}", ext)});
+    find_asset("PGO", {std::format("arm64-clang-pgo.{}", ext)});
 #endif // ARCHITECTURE_arm64
 #elif defined(__APPLE__)
 #ifdef ARCHITECTURE_arm64
@@ -153,8 +163,8 @@ std::vector<Release> GetReleases() {
 }
 
 std::optional<Release> GetLatestRelease() {
-    const auto releases_path =  Common::g_build_auto_update_api_path;
-    const auto url = fmt::format("https://{}", Common::g_build_auto_update_api);
+    const auto releases_path = Common::g_build_auto_update_api_path;
+    const auto url = std::format("https://{}", std::string{Common::g_build_auto_update_api});
 
     const auto body = MakeRequest(url, releases_path);
     if (!body) {
@@ -167,19 +177,19 @@ std::optional<Release> GetLatestRelease() {
     auto ec = glz::read<glz::opts{.error_on_unknown_keys = false}>(release, body_str);
 
     if (ec) {
-        LOG_CRITICAL(Common, "Latest Release JSON parse error: {}", glz::format_error(ec, body_str));
+        LOG_CRITICAL(Common, "Latest Release JSON parse error: {}",
+                     glz::format_error(ec, body_str));
         return std::nullopt;
     }
 
     return release;
-
 }
 
 std::optional<std::string> GetReleasesBody() {
     const auto releases_path =
-        fmt::format("/{}/{}/releases", Common::g_build_auto_update_stable_api_path,
-                    Common::g_build_auto_update_stable_repo);
-    const auto url = fmt::format("https://{}", Common::g_build_auto_update_stable_api);
+        std::format("/{}/{}/releases", std::string{Common::g_build_auto_update_stable_api_path},
+                    std::string{Common::g_build_auto_update_stable_repo});
+    const auto url = std::format("https://{}", std::string{Common::g_build_auto_update_stable_api});
 
     return MakeRequest(url, releases_path);
 }
