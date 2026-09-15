@@ -98,7 +98,7 @@
         "version": "ce6fe122f3"
     },
     "glaze": {
-        "hash": "eccabef52f456c9c487f9295e677b43d6c7fd94b7be0d61a597c3b8796e073ca82dc822ee5fcb7846bbd308d0f535a15e717c8a399ac68095cd5ab612fc4fc39",
+        "hash": "83eb932705df7e83d6165e4936114d3b3bf54233df1a70e5485dd99a1b1ec41f726088a3b03636a2292d9f1a27b601da68a155234e2a6512385657f68a92438a",
         "options": [
             "glaze_ENABLE_SSL ON",
             "glaze_INCLUDES_WITH_SYSTEM OFF"
@@ -107,7 +107,7 @@
             "0001-add-synchronous-HEAD-request.patch"
         ],
         "repo": "stephenberry/glaze",
-        "version": "b91062d0ee"
+        "version": "v8.4.0"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",

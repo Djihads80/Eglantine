@@ -48,9 +48,8 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
             const auto& assets = r.assets;
             for (const auto& s : suffixes) {
                 const auto it = std::ranges::find_if(
-                    assets, [&s](const std::variant<std::string, Asset>& a) -> bool {
-                        return std::holds_alternative<Asset>(a) &&
-                               std::get<Asset>(a).name.ends_with(s);
+                    assets, [&s](const Asset& a) -> bool {
+                        return a.name.ends_with(s);
                     });
 
                 if (it != assets.end()) {
@@ -104,6 +103,7 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
 
 std::optional<std::string> MakeRequest(const std::string& url) {
     glz::http_client client;
+    client.max_redirects(10);
 
 #ifdef YUZU_BUNDLED_OPENSSL
     auto ec = client.add_ca_certificates_pem(std::string{kCert});
@@ -118,14 +118,6 @@ std::optional<std::string> MakeRequest(const std::string& url) {
     if (!resp) {
         LOG_ERROR(Common, "HTTP request to {} failed: {}", url, resp.error().message());
         return std::nullopt;
-    }
-
-    // automatically redirect
-    if (resp->status_code > 300 && resp->status_code < 400) {
-        const auto location = resp->response_headers.first_value("location");
-        if (location) return MakeRequest(location.value());
-
-        LOG_WARNING(Common, "Received status code {} but didn't receive Location header", resp->status_code);
     }
 
     return resp.value().response_body;
