@@ -189,7 +189,7 @@ void UpdateDialog::Download() {
         } catch (std::exception &e) {
             LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
             QtCommon::Frontend::Critical(tr("Failed to save file"),
-                                         tr("Could not commit to file %1.").arg(filename));
+                                         tr("Could not commit to file %1.").arg(QString::fromStdString(filename)));
             progress->close();
             return;
         }

@@ -117,7 +117,8 @@
     "libadrenotools": {
         "hash": "f6526620cb752876edc5ed4c0925d57b873a8218ee09ad10859ee476e9333259784f61c1dcc55a2bcba597352d18aff22cd2e4c1925ec2ae94074e09d7da2265",
         "patches": [
-            "0001-use-cpmfile-def-for-linkernsbypass.patch"
+            "0001-use-cpmfile-def-for-linkernsbypass.patch",
+            "0002-fix-clang-21-compilation.patch"
         ],
         "repo": "eden-emulator/libadrenotools",
         "version": "8ba23b42d7"

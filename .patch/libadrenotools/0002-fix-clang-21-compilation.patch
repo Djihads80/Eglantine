@@ -1,0 +1,24 @@
+From b1e5c80fbf075355050845a72a3bb8412589af92 Mon Sep 17 00:00:00 2001
+From: crueter <crueter@eden-emu.dev>
+Date: Mon, 14 Sep 2026 18:09:45 -0400
+Subject: [PATCH] fix clang 21 compilation
+
+---
+ src/driver.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/driver.cpp b/src/driver.cpp
+index 17f0a52..fa7503a 100644
+--- a/src/driver.cpp
++++ b/src/driver.cpp
+@@ -16,6 +16,7 @@
+ #include <adrenotools/driver.h>
+ #include <unistd.h>
+ #include <cstring>
++#include <cstdlib>
+ 
+ #define TAG "adrenotools"
+ #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, TAG, fmt, ##__VA_ARGS__)
+-- 
+2.54.0
+
