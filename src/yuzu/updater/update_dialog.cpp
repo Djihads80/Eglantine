@@ -152,17 +152,19 @@ void UpdateDialog::Download() {
 
     // write file in chunks
     std::string tmp_data;
-    auto on_data = [&tmp_data, filename, &file](std::string_view data) {
-        tmp_data += data;
+    auto on_data = [&tmp_data, filename, &file](std::string_view t_data) {
+        tmp_data += t_data;
         try {
-            file.write(data.data(), data.size());
+            file.write(t_data.data(), t_data.size());
         } catch (std::exception &e) {
-            LOG_ERROR(Frontend, "Could not write {} bytes to file {}, error=", data.size(),
+            LOG_ERROR(Frontend, "Could not write {} bytes to file {}, error{}=", t_data.size(),
                         filename, e.what());
             QtCommon::Frontend::Critical(tr("Failed to save file"),
                                          tr("Could not write to file %1.").arg(QString::fromStdString(filename)));
             return false;
         }
+
+        return true;
     };
 
     // promise will block until request completes
