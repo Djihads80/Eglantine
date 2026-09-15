@@ -172,14 +172,14 @@ void UpdateDialog::Download() {
     std::promise<std::error_code> done;
 
     const auto url = m_asset.asset.browser_download_url;
-    auto on_error = [url, &done](std::error_code ec) {
-        LOG_ERROR(Frontend, "Failed to download {}: {}", url, ec.message());
+    auto on_error = [url, &done](std::error_code error_ec) {
+        LOG_ERROR(Frontend, "Failed to download {}: {}", url, error_ec.message());
         QtCommon::Frontend::Critical(
             tr("Failed to download file"),
             tr("Could not download file %1. Check your logs for more information.")
                 .arg(QString::fromStdString(url)));
 
-        done.set_value(ec);
+        done.set_value(error_ec);
     };
 
     // commit to file
