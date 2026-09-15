@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <filesystem>
+#include <glaze/net/http_client.hpp>
 #include <QRadioButton>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <glaze/net/http_client.hpp>
-#include <qdesktopservices.h>
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "qt_common/abstract/frontend.h"
