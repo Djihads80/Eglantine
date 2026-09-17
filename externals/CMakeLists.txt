@@ -63,6 +63,18 @@ if (WIN32 AND NOT TARGET LLVM::Demangle)
     add_library(LLVM::Demangle ALIAS demangle)
 endif()
 
+# glaze
+AddJsonPackage(glaze)
+
+# curl (http)
+# TODO: Fairly certain this will break horribly because curl's build system sucks
+AddJsonPackage(curl)
+
+# cpr (http)
+# cpr's version detection is broken when we use our own bundled packages
+set(CURL_VERSION_STRING "8.22.0")
+AddJsonPackage(cpr)
+
 if (YUZU_STATIC_ROOM)
     return()
 endif()

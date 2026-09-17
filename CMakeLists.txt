@@ -401,8 +401,6 @@ if (OpenSSL_ADDED)
     add_compile_definitions(YUZU_BUNDLED_OPENSSL)
 endif()
 
-message(STATUS "Fetching needed dependencies with CPM")
-
 set(BUILD_SHARED_LIBS OFF)
 set(BUILD_TESTING OFF)
 set(ENABLE_TESTING OFF)
@@ -449,9 +447,6 @@ if (zstd_ADDED)
     add_library(zstd::zstd ALIAS libzstd_static)
     add_library(zstd::libzstd ALIAS libzstd_static)
 endif()
-
-# glaze
-AddJsonPackage(glaze)
 
 if (NOT YUZU_STATIC_ROOM)
     # zlib

@@ -3,19 +3,17 @@
 
 #include <algorithm>
 #include <optional>
-#include <variant>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <cpr/cpr.h>
 #include <glaze/glaze.hpp>
 
 #include "common/scm_rev.h"
 #include "net.h"
 
 #include "common/logging.h"
-
-#include "glaze/net/http_client.hpp"
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -102,25 +100,22 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
 }
 
 std::optional<std::string> MakeRequest(const std::string& url) {
-    glz::http_client client;
-    client.max_redirects(10);
-
+    cpr::SslOptions opts;
 #ifdef YUZU_BUNDLED_OPENSSL
-    auto ec = client.add_ca_certificates_pem(std::string{kCert});
-    if (ec) {
-        LOG_ERROR(Common, "Failed to load bundled CA certificate: {}", ec.error().message());
-        return std::nullopt;
-    }
+    opts = cpr::Ssl(cpr::ssl::CaBuffer{std::string{kCert}});
 #endif
 
-    auto resp = client.get(url);
+    cpr::Response res = cpr::Get(cpr::Url{url}, opts);
 
-    if (!resp) {
-        LOG_ERROR(Common, "HTTP request to {} failed: {}", url, resp.error().message());
+    if (res.error) {
+        LOG_ERROR(Frontend, "Failed to download {}: {}", url, res.error.message);
+        return std::nullopt;
+    } else if (res.status_code < 200 || res.status_code >= 300) {
+        LOG_ERROR(Frontend, "Received status code {} for {}", res.status_code, url);
         return std::nullopt;
     }
 
-    return resp.value().response_body;
+    return res.text;
 }
 
 std::optional<std::string> MakeRequest(const std::string_view url) {

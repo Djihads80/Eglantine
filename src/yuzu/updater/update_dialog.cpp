@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstdint>
 #include <filesystem>
-#include <glaze/net/http_client.hpp>
+#include <cpr/callback.h>
+#include <cpr/cpr.h>
 #include <QRadioButton>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <cpr/cprtypes.h>
+#include <cpr/response.h>
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "qt_common/abstract/frontend.h"
@@ -127,16 +131,6 @@ void UpdateDialog::Download() {
     const auto absFilename = tmpDir / m_asset.asset.name;
     std::ofstream file(absFilename, std::ios::out | std::ios::binary);
 
-    glz::http_client cli;
-
-#ifdef YUZU_BUNDLED_OPENSSL
-    auto cli_ec = cli.add_ca_certificates_pem(std::string{kCert});
-    if (cli_ec) {
-        LOG_ERROR(Frontend, "Failed to load bundled CA certificate: {}", cli_ec.error().message());
-        return;
-    }
-#endif
-
     auto progress =
         QtCommon::Frontend::newProgressDialog(tr("Downloading..."), tr("Cancel"), 0, 100);
     progress->show();
@@ -152,7 +146,7 @@ void UpdateDialog::Download() {
 
     // write file in chunks
     std::string tmp_data;
-    auto on_data = [&tmp_data, filename, &file](std::string_view t_data) {
+    auto on_data = [&tmp_data, filename, &file](std::string_view t_data, intptr_t) {
         tmp_data += t_data;
         try {
             file.write(t_data.data(), t_data.size());
@@ -167,46 +161,45 @@ void UpdateDialog::Download() {
         return true;
     };
 
-    // promise will block until request completes
-    // callbacks handle async ui stuff
-    std::promise<std::error_code> done;
-
     const auto url = m_asset.asset.browser_download_url;
-    auto on_error = [url, &done](std::error_code error_ec) {
-        LOG_ERROR(Frontend, "Failed to download {}: {}", url, error_ec.message());
+
+    cpr::SslOptions opts;
+#ifdef YUZU_BUNDLED_OPENSSL
+    opts = cpr::Ssl(cpr::ssl::CaBuffer{std::string{kCert}});
+#endif
+
+    const auto res = cpr::Get(
+        cpr::Url{url},
+        cpr::ProgressCallback([&progress_callback](size_t total, size_t now, size_t, size_t, intptr_t) -> bool {
+            return progress_callback(now, total);
+        }),
+        cpr::WriteCallback{on_data},
+        opts
+    );
+
+    progress->close();
+
+    if (res.error || res.status_code < 200 || res.status_code >= 300) {
+        if (res.error)
+            LOG_ERROR(Frontend, "Failed to download {}: {}", url, res.error.message);
+        else
+            LOG_ERROR(Frontend, "Received status code {} for {}", res.status_code, url);
+
         QtCommon::Frontend::Critical(
             tr("Failed to download file"),
             tr("Could not download file %1. Check your logs for more information.")
                 .arg(QString::fromStdString(url)));
+        return;
+    }
 
-        done.set_value(error_ec);
-    };
-
-    // commit to file
-    auto on_disconnect = [&file, filename, &progress, &done]() {
-        try {
-            file.flush();
-            done.set_value({});
-        } catch (std::exception &e) {
-            LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
-            QtCommon::Frontend::Critical(tr("Failed to save file"),
-                                         tr("Could not commit to file %1.").arg(QString::fromStdString(filename)));
-            progress->close();
-            return;
-        }
-    };
-
-    // Now send off request
-    auto conn = cli.stream_request_v2({
-        .url = url,
-        .on_data = on_data,
-        .on_error = on_error,
-        .on_progress = progress_callback,
-        .on_disconnect = on_disconnect
-    });
-
-    auto http_ec = done.get_future().get();
-    if (http_ec) return;
+    try {
+        file.flush();
+    } catch (const std::exception& e) {
+        LOG_WARNING(Frontend, "Could not commit to file {}, error={}", filename, e.what());
+        QtCommon::Frontend::Critical(
+            tr("Failed to save file"),
+            tr("Could not commit to file %1.").arg(QString::fromStdString(filename)));
+    }
 
     // TODO(crueter): Test
     if (m_asset.asset.digest) {

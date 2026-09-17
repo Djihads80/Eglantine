@@ -40,6 +40,16 @@
         "repo": "arun11299/cpp-jwt",
         "version": "7f24eb4c32"
     },
+    "cpr": {
+        "hash": "9907d2936f814924e82aaaf652149c119e2d9b94677efde0c80c570bc8cb50e4a36aa2520e2efb3f1fc82cba10ef61b9262705cd6e5cb49757b0c37af071ae22",
+        "options": [
+            "CPR_USE_SYSTEM_CURL ON",
+            "CPR_CURL_USE_LIBPSL OFF",
+            "CPR_FORCE_OPENSSL_BACKEND"
+        ],
+        "repo": "libcpr/cpr",
+        "version": "1.14.2"
+    },
     "cubeb": {
         "find_args": "CONFIG",
         "hash": "8a4bcb2f83ba590f52c66626e895304a73eb61928dbc57777e1822e55378e3568366f17f9da4b80036cc2ef4ea9723c32abf6e7d9bbe00fb03654f0991596ab0",
@@ -51,6 +61,34 @@
         ],
         "repo": "mozilla/cubeb",
         "version": "fa02160712"
+    },
+    "curl": {
+        "find_args": "COMPONENTS HTTP HTTPS",
+        "hash": "6284a82c908329fda4b5a8c2efe409bf477a1fd79a0b71c04ae62ee407a4f00751722e98c1b73c728b0b79ee032eed1d1903876783c48cc6be71166619c025a7",
+        "min_version": "7.64.0",
+        "options": [
+            "CURL_USE_LIBPSL OFF",
+            "BUILD_CURL_EXE OFF",
+            "CURL_USE_OPENSSL ON",
+            "CURL_USE_LIBSSH2 OFF",
+            "CURL_DISABLE_AWS ON",
+            "CURL_DISABLE_DICT ON",
+            "CURL_DISABLE_FILE ON",
+            "CURL_DISABLE_GOPHER ON",
+            "CURL_DISABLE_IMAP ON",
+            "CURL_DISABLE_LDAP ON",
+            "CURL_DISABLE_MQTT ON",
+            "CURL_DISABLE_IPFS ON",
+            "CURL_DISABLE_SMTP ON",
+            "CURL_DISABLE_TELNET ON",
+            "CURL_DISABLE_TFTP ON",
+            "CURL_BROTLI OFF",
+            "USE_NGHTTP2 OFF",
+            "USE_LIBIDN2 OFF"
+        ],
+        "package": "CURL",
+        "repo": "curl/curl",
+        "version": "curl-8_22_0"
     },
     "discord-rpc": {
         "find_args": "MODULE",

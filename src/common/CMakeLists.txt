@@ -237,7 +237,7 @@ if (BOOST_NO_HEADERS)
 else()
     target_link_libraries(common PUBLIC Boost::headers)
 endif()
-target_link_libraries(common PRIVATE OpenSSL::SSL glaze::glaze)
+target_link_libraries(common PRIVATE OpenSSL::SSL glaze::glaze cpr::cpr)
 target_link_libraries(common PUBLIC Boost::filesystem Boost::context)
 
 if (lz4_ADDED)
