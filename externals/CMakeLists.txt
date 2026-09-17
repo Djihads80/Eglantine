@@ -68,6 +68,11 @@ AddJsonPackage(glaze)
 
 # curl (http)
 # TODO: Fairly certain this will break horribly because curl's build system sucks
+# disable protocols we don't need
+foreach(proto AWS DICT FILE GOPHER IMAP LDAP MQTT IPFS SMTP TELNET TFTP)
+    set(CURL_DISABLE_${proto} ON)
+endforeach()
+
 AddJsonPackage(curl)
 
 # cpr (http)

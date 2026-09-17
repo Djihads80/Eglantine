@@ -71,8 +71,8 @@ std::vector<NamedAsset> GetPlatformAssets(const Release& r) {
 #ifdef _MSC_VER
     find_asset("Standard", {std::format("amd64-msvc-standard.{}", ext)});
 #else  // _MSC_VER
-    find_asset("Standard", {std::format(BUILD_ID "-gcc-standard.{}", ext)});
-    find_asset("PGO", {std::format(BUILD_ID "-clang-pgo.{}", ext)});
+    find_asset("Standard", {std::format(EDEN_BUILD_ID "-gcc-standard.{}", ext)});
+    find_asset("PGO", {std::format(EDEN_BUILD_ID "-clang-pgo.{}", ext)});
 #endif // _MSC_VER
 #elif defined(ARCHITECTURE_arm64)
     find_asset("Standard", {std::format("arm64-clang-standard.{}", ext)});

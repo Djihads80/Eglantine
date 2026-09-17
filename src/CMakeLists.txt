@@ -54,7 +54,7 @@ if (NOT BUILD_ID)
     endif()
 endif()
 
-add_compile_definitions(BUILD_ID="${BUILD_ID}")
+add_compile_definitions(EDEN_BUILD_ID="${BUILD_ID}")
 
 # Set compilation flags
 if (MSVC AND NOT CXX_CLANG)
