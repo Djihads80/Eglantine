@@ -203,10 +203,11 @@
     },
     "openssl-ci": {
         "ci": true,
+        "hash": "35001a02c98b32a53fafa22ab1fd94554701ad3de0a847a87a04c665f48908adc3ba5acced98e048c27ed8c5a4e2d804e759721de76be5316f3f3f3ea4cebc38",
         "name": "openssl",
         "package": "OpenSSL",
         "repo": "crueter-ci/OpenSSL",
-        "version": "4.0.1-1788234794-b64f68a94e"
+        "version": "4.0.1-1789774337-b64f68a94e"
     },
     "openssl-cmake": {
         "bundled": true,
