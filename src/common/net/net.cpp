@@ -7,6 +7,7 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <cpr/api.h>
 #include <cpr/cpr.h>
 #include <glaze/glaze.hpp>
 
@@ -175,6 +176,25 @@ std::vector<Release> GetReleasesFromJson(const std::string& body) {
     }
 
     return releases;
+}
+
+bool HeadRequest(const std::string& url) {
+    cpr::SslOptions opts;
+#ifdef YUZU_BUNDLED_OPENSSL
+    opts = cpr::Ssl(cpr::ssl::CaBuffer{std::string{kCert}});
+#endif
+
+    cpr::Response res = cpr::Get(cpr::Url{url}, opts);
+
+    if (res.error) {
+        LOG_ERROR(Frontend, "Failed to download {}: {}", url, res.error.message);
+        return false;
+    } else if (res.status_code < 200 || res.status_code >= 300) {
+        LOG_ERROR(Frontend, "Received status code {} for {}", res.status_code, url);
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace Common::Net

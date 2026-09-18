@@ -18,7 +18,7 @@ add_library(web_service STATIC
 
 create_target_directory_groups(web_service)
 target_include_directories(web_service PUBLIC ${cpp-jwt_SOURCE_DIR}/include)
-target_link_libraries(web_service PRIVATE common network glaze::glaze cpp-jwt::cpp-jwt)
+target_link_libraries(web_service PRIVATE common network cpr::cpr cpp-jwt::cpp-jwt)
 
 find_package(OpenSSL REQUIRED)
 target_link_libraries(web_service PRIVATE OpenSSL::SSL OpenSSL::Crypto)

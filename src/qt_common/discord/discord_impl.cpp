@@ -7,14 +7,13 @@
 #include <chrono>
 #include <string>
 
-#include <glaze/net/http_client.hpp>
-
 #include <QEventLoop>
 #include <boost/algorithm/string/replace.hpp>
 
 #include <discord_rpc.h>
 
 #include "common/common_types.h"
+#include "common/net/net.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/loader/loader.h"
@@ -102,10 +101,7 @@ void DiscordImpl::Update() {
             "https://raw.githubusercontent.com/eden-emulator/boxart/refs/heads/master/img/{}.png",
             icon_name);
 
-        // TODO: also net.cpp this?
-        glz::http_client cli;
-        auto res = cli.head(game_url);
-        UpdateGameStatus(game_url, res && res->status_code == 200);
+        UpdateGameStatus(game_url, Common::Net::HeadRequest(game_url));
 
         return;
     }

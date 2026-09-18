@@ -5,10 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <format>
 #include <mutex>
 #include <string>
 
-#include <glaze/net/http_client.hpp>
+#include <cpr/cpr.h>
 
 #ifdef YUZU_BUNDLED_OPENSSL
 #include <openssl/cert.h>
@@ -69,14 +70,12 @@ struct Client::Impl {
                              const std::string& data, const std::string& accept,
                              const std::string& jwt_ = "", const std::string& username_ = "",
                              const std::string& token_ = "") {
+        cpr::SslOptions opts;
 #ifdef YUZU_BUNDLED_OPENSSL
-        auto ec = cli.add_ca_certificates_pem(std::string{kCert});
-        if (ec) {
-            LOG_ERROR(Common, "Failed to load bundled CA certificate: {}", ec.error().message());
-            return WebResult{WebResult::Code::LibError, "Could not load CA certificates", ""};
-        }
+        opts = cpr::Ssl(cpr::ssl::CaBuffer{std::string{kCert}});
 #endif
-        glz::http_headers params;
+
+        cpr::Header params{};
 
         if (!jwt_.empty()) {
             params = {
@@ -89,38 +88,39 @@ struct Client::Impl {
             };
         }
 
-        params.add(std::string("api-version"),
+        params.emplace("api-version",
                        std::string(API_VERSION.begin(), API_VERSION.end()));
         if (method != "GET") {
-            params.add(std::string("Content-Type"), std::string("application/json"));
+            params.emplace("Content-Type", "application/json");
         }
 
-        auto result = cli.post(std::format("{}{}", host, path), data, params);
+        // TODO: net.cpp this
+        auto result = cpr::Post(cpr::Url(std::format("{}{}", host, path)), cpr::Body(data), params);
 
-        if (!result) {
-            LOG_ERROR(WebService, "{} to {} returned null", method, host + path);
+        if (result.error) {
+            LOG_ERROR(WebService, "{} to {} returned error {}", method, host + path, result.error.message);
             return WebResult{WebResult::Code::LibError, "Null response", ""};
         }
 
-        if (result->status_code >= 400) {
+        if (result.status_code >= 400) {
             LOG_ERROR(WebService, "{} to {} returned error status code: {}", method, host + path,
-                      result->status_code);
-            return WebResult{WebResult::Code::HttpError, std::to_string(result->status_code), ""};
+                      result.status_code);
+            return WebResult{WebResult::Code::HttpError, std::to_string(result.status_code), ""};
         }
 
-        auto content_type = result->response_headers.find("content-type");
+        auto content_type = result.header.find("content-type");
 
-        if (content_type == result->response_headers.end()) {
+        if (content_type == result.header.end()) {
             LOG_ERROR(WebService, "{} to {} returned no content", method, host + path);
             return WebResult{WebResult::Code::WrongContent, "", ""};
         }
 
-        if (content_type->value.find(accept) == std::string::npos) {
+        if (content_type->second.find(accept) == std::string::npos) {
             LOG_ERROR(WebService, "{} to {} returned wrong content: {}", method, host + path,
-                      content_type->value);
+                      content_type->second);
             return WebResult{WebResult::Code::WrongContent, "Wrong content", ""};
         }
-        return WebResult{WebResult::Code::Success, "", result->response_body};
+        return WebResult{WebResult::Code::Success, "", result.text};
     }
 
     // Retrieve a new JWT from given username and token
@@ -144,7 +144,6 @@ struct Client::Impl {
     std::string username;
     std::string token;
     std::string jwt;
-    glz::http_client cli;
 
     struct JWTCache {
         std::mutex mutex;

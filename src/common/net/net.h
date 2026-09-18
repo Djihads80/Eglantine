@@ -41,6 +41,8 @@ std::vector<NamedAsset> GetPlatformAssets(const Release &r);
 std::optional<std::string> MakeRequest(const std::string &url);
 std::optional<std::string> MakeRequest(const std::string_view url);
 
+bool HeadRequest(const std::string &url);
+
 // Get all of the latest stable releases.
 std::vector<Release> GetReleases();
 

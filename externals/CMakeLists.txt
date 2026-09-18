@@ -66,6 +66,9 @@ endif()
 # glaze
 AddJsonPackage(glaze)
 
+# jacinth (json)
+AddJsonPackage(jacinth)
+
 # curl (http)
 # TODO: Fairly certain this will break horribly because curl's build system sucks
 # disable protocols we don't need
@@ -78,6 +81,8 @@ AddJsonPackage(curl)
 # cpr (http)
 # cpr's version detection is broken when we use our own bundled packages
 set(CURL_VERSION_STRING "8.22.0")
+find_package(OpenSSL REQUIRED)
+message(STATUS "OpenSSL FOUND: ${OpenSSL_FOUND}")
 AddJsonPackage(cpr)
 
 if (YUZU_STATIC_ROOM)

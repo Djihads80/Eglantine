@@ -47,6 +47,9 @@
             "CPR_CURL_USE_LIBPSL OFF",
             "CPR_FORCE_OPENSSL_BACKEND"
         ],
+        "patches": [
+            "0001-fix-openssl-find.patch"
+        ],
         "repo": "libcpr/cpr",
         "version": "1.14.2"
     },
@@ -135,6 +138,16 @@
         ],
         "repo": "stephenberry/glaze",
         "version": "v8.4.0"
+    },
+    "jacinth": {
+        "hash": "327483728cf438829f0b9a44d7f927bf1e38b2e18d63b8f316e379016559f479f96d584c2a6e511a48df15e572208daff58918ee1bf033f8fb810fd4a3802d69",
+        "options": [
+            "JACINTH_USE_SYSTEM_YYJSON OFF",
+            "JACINTH_USE_SYSTEM_PFR OFF",
+            "JACINTH_BUILD_TESTS OFF"
+        ],
+        "repo": "crueter/jacinth",
+        "version": "d70de9e4f9"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",
