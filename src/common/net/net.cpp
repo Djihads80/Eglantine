@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <algorithm>
 #include <optional>
 
 #include <boost/algorithm/string/classification.hpp>
@@ -9,7 +8,6 @@
 #include <boost/algorithm/string/split.hpp>
 #include <cpr/api.h>
 #include <cpr/cpr.h>
-#include <glaze/glaze.hpp>
 
 #include "common/scm_rev.h"
 #include "net.h"
@@ -23,6 +21,8 @@
 #ifdef _WIN32
 #include <filesystem>
 #endif
+
+import jacinth;
 
 #define QT_TR_NOOP(x) x
 
@@ -145,14 +145,15 @@ std::optional<Release> GetLatestRelease() {
     }
 
     const std::string_view body_str = body.value();
-    Release release;
-    auto ec = glz::read<glz::opts{.error_on_unknown_keys = false}>(release, body_str);
+    Release release = jacinth::doc::read(body_str);
+    // TODO: error handling
 
-    if (ec) {
-        LOG_CRITICAL(Common, "Latest Release JSON parse error: {}",
-                     glz::format_error(ec, body_str));
-        return std::nullopt;
-    }
+
+    // if (ec) {
+    //     LOG_CRITICAL(Common, "Latest Release JSON parse error: {}",
+    //                  glz::format_error(ec, body_str));
+    //     return std::nullopt;
+    // }
 
     return release;
 }
@@ -167,13 +168,13 @@ std::optional<std::string> GetReleasesBody() {
 }
 
 std::vector<Release> GetReleasesFromJson(const std::string& body) {
-    std::vector<Release> releases;
-    auto ec = glz::read<glz::opts{.error_on_unknown_keys = false}>(releases, body);
+    std::vector<Release> releases = jacinth::doc::read(body);
 
-    if (ec) {
-        LOG_CRITICAL(Common, "Release JSON parse error: {}", glz::format_error(ec, body));
-        return {};
-    }
+    // TODO(crueter): error handling
+    // if (ec) {
+    //     LOG_CRITICAL(Common, "Release JSON parse error: {}", glz::format_error(ec, body));
+    //     return {};
+    // }
 
     return releases;
 }

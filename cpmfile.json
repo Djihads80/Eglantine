@@ -41,17 +41,15 @@
         "version": "7f24eb4c32"
     },
     "cpr": {
-        "hash": "9907d2936f814924e82aaaf652149c119e2d9b94677efde0c80c570bc8cb50e4a36aa2520e2efb3f1fc82cba10ef61b9262705cd6e5cb49757b0c37af071ae22",
+        "hash": "1b7b897807df6fab11e6b797d8dd8835d928b8f24dfee1fceda53af7d0b147d088312a4402eec4a06caa1e01b05488f81465a2c49bb6e5fbfbb52c1fa537602d",
         "options": [
             "CPR_USE_SYSTEM_CURL ON",
             "CPR_CURL_USE_LIBPSL OFF",
-            "CPR_FORCE_OPENSSL_BACKEND"
-        ],
-        "patches": [
-            "0001-fix-openssl-find.patch"
+            "CPR_FORCE_OPENSSL_BACKEND",
+            "CPR_ENABLE_INSTALL OFF"
         ],
         "repo": "libcpr/cpr",
-        "version": "1.14.2"
+        "version": "b2d95f260f"
     },
     "cubeb": {
         "find_args": "CONFIG",
@@ -76,9 +74,14 @@
             "CURL_USE_LIBSSH2 OFF",
             "CURL_BROTLI OFF",
             "USE_NGHTTP2 OFF",
-            "USE_LIBIDN2 OFF"
+            "USE_LIBIDN2 OFF",
+            "CURL_DISABLE_INSTALL ON",
+            "CURL_ENABLE_EXPORT_TARGET OFF"
         ],
         "package": "CURL",
+        "patches": [
+            "0001-fix-try-compile-with-bundled-zlib-alias.patch"
+        ],
         "repo": "curl/curl",
         "version": "curl-8_22_0"
     },
@@ -127,27 +130,10 @@
         "repo": "FeralInteractive/gamemode",
         "version": "ce6fe122f3"
     },
-    "glaze": {
-        "hash": "83eb932705df7e83d6165e4936114d3b3bf54233df1a70e5485dd99a1b1ec41f726088a3b03636a2292d9f1a27b601da68a155234e2a6512385657f68a92438a",
-        "options": [
-            "glaze_ENABLE_SSL ON",
-            "glaze_INCLUDES_WITH_SYSTEM OFF"
-        ],
-        "patches": [
-            "0001-add-synchronous-HEAD-request.patch"
-        ],
-        "repo": "stephenberry/glaze",
-        "version": "v8.4.0"
-    },
     "jacinth": {
-        "hash": "327483728cf438829f0b9a44d7f927bf1e38b2e18d63b8f316e379016559f479f96d584c2a6e511a48df15e572208daff58918ee1bf033f8fb810fd4a3802d69",
-        "options": [
-            "JACINTH_USE_SYSTEM_YYJSON OFF",
-            "JACINTH_USE_SYSTEM_PFR OFF",
-            "JACINTH_BUILD_TESTS OFF"
-        ],
+        "hash": "5830768407cedf838c452f29d5f860f32cbc7560c6bda54718f38e6f2581d00d0b98e538fedea69ce02e175a4770da509a2f1bfcd79e023a7dee16f6e25c7369",
         "repo": "crueter/jacinth",
-        "version": "d70de9e4f9"
+        "version": "88aa6e9855"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",

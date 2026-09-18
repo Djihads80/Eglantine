@@ -12,8 +12,6 @@
 #include <ranges>
 #include <vector>
 
-#include <glaze/glaze.hpp>
-
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
@@ -26,6 +24,9 @@
 #include "core/hle/service/hle_ipc.h"
 #include "core/memory.h"
 #include "core/reporter.h"
+
+#include "yyjson.h"
+import jacinth;
 
 struct YuzuVersionData {
     std::string scm_rev;
@@ -162,13 +163,14 @@ void SaveToFile(const T& data, const std::filesystem::path& filename) {
         return;
     }
 
-    std::string buffer;
-    const auto ec = glz::write<glz::opts{.prettify = true}>(data, buffer);
-    if (ec) {
-        LOG_ERROR(Core, "Failed to serialize report to '{}'!",
-                  Common::FS::PathToUTF8String(filename));
-        return;
-    }
+    // TODO(crueter): error handling
+    const auto buffer = jacinth::json::dump(data, {.pretty = true});
+
+    // if (ec) {
+    //     LOG_ERROR(Core, "Failed to serialize report to '{}'!",
+    //               Common::FS::PathToUTF8String(filename));
+    //     return;
+    // }
 
     std::ofstream file;
     Common::FS::OpenFileStream(file, filename, std::ios_base::out | std::ios_base::trunc);

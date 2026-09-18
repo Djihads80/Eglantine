@@ -37,7 +37,7 @@ std::vector<Release> GetReleasesFromJson(const std::string& body);
 // Get the relevant list of assets for the current platform.
 std::vector<NamedAsset> GetPlatformAssets(const Release &r);
 
-// Make a request via glaze, and return the response body if applicable.
+// Make a request, and return the response body if applicable.
 std::optional<std::string> MakeRequest(const std::string &url);
 std::optional<std::string> MakeRequest(const std::string_view url);
 

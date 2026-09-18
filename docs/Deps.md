@@ -76,7 +76,6 @@ System packages *can* be used for these libraries, but many are either not packa
 * [libusb](https://github.com/libusb/libusb)
 * [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
 * [sirit](https://github.com/eden-emulator/sirit)
-* [glaze](https://github.com/stephenberry/glaze)
 * [cpp-jwt](https://github.com/arun11299/cpp-jwt) 1.4+ - if `ENABLE_WEB_SERVICE` is on
 
 On amd64:
@@ -123,7 +122,7 @@ sudo emerge -a \
     media-libs/VulkanMemoryAllocator media-libs/libsdl3 media-libs/cubeb \
     net-libs/enet \
     sys-libs/zlib \
-    dev-cpp/simpleini dev-cpp/cpp-jwt \
+    dev-cpp/simpleini dev-cpp/cpp-jwt dev-cpp/jacinth dev-cpp/cpr \
     games-util/gamemode \
     net-wireless/wireless-tools \
     dev-qt/qtbase:6 dev-libs/quazip \
@@ -141,7 +140,6 @@ Required USE flags:
 * `dev-libs/quazip qt6`
 * `media-libs/libsdl3 haptic joystick sound video`
   * Adding `X vulkan udev opengl` is recommended but not required
-* `dev-cpp/glaze ssl`
 
 [Caveats](./Caveats.md#gentoo-linux)
 

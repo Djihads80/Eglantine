@@ -4,52 +4,83 @@
 // SPDX-FileCopyrightText: Copyright 2017 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <glaze/glaze.hpp>
-#include "common/announce_multiplayer_room.h"
 #include "common/logging.h"
 #include "web_service/announce_room_json.h"
 #include "web_service/web_backend.h"
 
-// clang-format off
+import jacinth;
 
-// flattening specializations for member/room
-// TODO: better solutions?
-template <>
-struct glz::meta<AnnounceMultiplayerRoom::Member> {
-    using T = AnnounceMultiplayerRoom::Member;
-    static constexpr auto value = glz::object(
-        "username", &T::username,
-        "nickname", &T::nickname,
-        "avatarUrl", &T::avatarUrl,
+namespace AnnounceMultiplayerRoom {
 
-        "gameName", [](auto& self) -> auto& { return self.game.name; },
-        "gameId", [](auto& self) -> auto& { return self.game.id; }
-    );
-};
+static void to_json(jacinth::mutable_value json, const Member& member)
+{
+    if (!member.username.empty())
+        json["username"] = member.username;
+    json["nickname"] = member.nickname;
+    if (!member.avatar_url.empty())
+        json["avatarUrl"] = member.avatar_url;
+    json["gameName"] = member.game.name;
+    json["gameId"] = member.game.id;
+}
 
-template <>
-struct glz::meta<AnnounceMultiplayerRoom::Room> {
-    using T = AnnounceMultiplayerRoom::Room;
-    static constexpr auto value = glz::object(
-        "port", [](auto& self) -> auto& { return self.information.port; },
-        "name", [](auto& self) -> auto& { return self.information.name; },
-        "description", [](auto& self) -> auto& { return self.information.description; },
-        "maxPlayers", [](auto& self) -> auto& { return self.information.member_slots; },
+static void from_json(const jacinth::value& json, Member& member)
+{
+    member.nickname = json["nickname"].as<std::string>();
+    member.game.name = json["gameName"].as<std::string>();
+    member.game.id = json["gameId"];
 
-        "preferredGameName", [](auto& self) -> auto& { return self.information.preferred_game.name; },
-        "preferredGameId", [](auto& self) -> auto& { return self.information.preferred_game.id; },
+    if (json["username"].is_null()) {
+        member.username = member.avatar_url = "";
+        LOG_DEBUG(Network, "Member '{}' isn't authenticated", member.nickname);
+    } else {
+        member.username = json["username"].as<std::string>();
+        member.avatar_url = json["avatarUrl"].as<std::string>();
+    }
+}
 
-        "netVersion", &T::netVersion,
-        "hasPassword", &T::hasPassword,
-        "players", &T::members
-    );
-};
+static void to_json(jacinth::mutable_value json, const Room& room)
+{
+    json["port"] = room.information.port;
+    json["name"] = room.information.name;
+    if (!room.information.description.empty())
+        json["description"] = room.information.description;
+    json["preferredGameName"] = room.information.preferred_game.name;
+    json["preferredGameId"] = room.information.preferred_game.id;
+    json["maxPlayers"] = room.information.member_slots;
+    json["netVersion"] = room.net_version;
+    json["hasPassword"] = room.has_password;
+    if (!room.members.empty())
+        json["players"] = room.members;
+}
 
-struct RoomWrapper {
-    AnnounceMultiplayerRoom::RoomList rooms;
-};
+static void from_json(const jacinth::value& json, Room& room)
+{
+    room.verify_uid = json["externalGuid"].as<std::string>();
+    room.ip = json["address"].as<std::string>();
+    room.information.name = json["name"].as<std::string>();
 
-// clang-format on
+    if (json["description"].is_null()) {
+        room.information.description = "";
+        LOG_DEBUG(Network, "Room '{}' doesn't contain a description", room.information.name);
+    } else {
+        room.information.description = json["description"].as<std::string>();
+    }
+
+    room.information.host_username = json["owner"].as<std::string>();
+    room.information.port = json["port"];
+    room.information.preferred_game.name = json["preferredGameName"].as<std::string>();
+    room.information.preferred_game.id = json["preferredGameId"];
+    room.information.member_slots = json["maxPlayers"];
+    room.net_version = json["netVersion"];
+    room.has_password = json["hasPassword"];
+
+    if (json["players"].is_null())
+        LOG_DEBUG(Network, "No players key");
+    else
+        room.members = json["players"].as<std::vector<Member>>();
+}
+
+} // namespace AnnounceMultiplayerRoom
 
 namespace WebService {
 
@@ -61,8 +92,8 @@ void RoomJson::SetRoomInformation(const std::string& name, const std::string& de
     room.information.description = description;
     room.information.port = port;
     room.information.member_slots = max_player;
-    room.netVersion = net_version;
-    room.hasPassword = has_password;
+    room.net_version = net_version;
+    room.has_password = has_password;
     room.information.preferred_game = preferred_game;
 }
 void RoomJson::AddPlayer(const AnnounceMultiplayerRoom::Member& member) {
@@ -75,43 +106,22 @@ WebService::WebResult RoomJson::Update() {
         return WebService::WebResult{WebService::WebResult::Code::LibError,
                                      "Room is not registered", ""};
     }
-
-    std::string json;
-    auto ec = glz::write<glz::opts{.skip_null_members = true}>(
-        glz::object("players", std::ref(room.members)), json);
-
-    if (ec) {
-        LOG_ERROR(WebService, "JSON write error when updating room members: {}", ec.custom_error_message);
-        return WebService::WebResult{WebService::WebResult::Code::LibError,
-                                     "Failed to serialize room members", ""};
-    }
-
-    return client.PostJson(std::format("/lobby/{}", room_id), json, false);
+    jacinth::json json;
+    json["players"] = room.members;
+    return client.PostJson(fmt::format("/lobby/{}", room_id), json.dump(), false);
 }
 
 WebService::WebResult RoomJson::Register() {
-    std::string json;
-    auto ec = glz::write<glz::opts{.skip_null_members = true}>(room, json);
-
-    if (ec) {
-        LOG_ERROR(WebService, "JSON write error when updating room: {}", ec.custom_error_message);
-        return WebService::WebResult{WebService::WebResult::Code::LibError,
-                                     "Failed to serialize room data", ""};
-    }
-
-    auto result = client.PostJson("/lobby", json, false);
+    jacinth::json json = room;
+    auto result = client.PostJson("/lobby", json.dump(), false);
     if (result.result_code != WebService::WebResult::Code::Success) {
         return result;
     }
 
-    auto reply_ec = glz::read_json(room, result.returned_data);
-    if (reply_ec) {
-        LOG_ERROR(WebService, "Room JSON parse error:\n{}", glz::format_error(ec, result.returned_data));
-        return WebService::WebResult{WebService::WebResult::Code::LibError,
-                                     "Failed to parse room response", ""};
-    }
+    auto reply_json = jacinth::json::read(result.returned_data);
+    room = reply_json;
+    room_id = reply_json["id"].as<std::string>();
 
-    room_id = room.id;
     return WebService::WebResult{WebService::WebResult::Code::Success, "", room.verify_uid};
 }
 
@@ -124,19 +134,8 @@ AnnounceMultiplayerRoom::RoomList RoomJson::GetRoomList() {
     if (reply.empty()) {
         return {};
     }
-
-    // glaze does not (yet) support glz::obj for reads?
-    RoomWrapper wrapper;
-    AnnounceMultiplayerRoom::RoomList room_list{};
-
-    auto ec = glz::read_json(wrapper, reply);
-    if (ec) {
-        LOG_ERROR(WebService, "Room JSON parse error:\n{}", glz::format_error(ec, reply));
-        return {};
-
-    }
-
-    return wrapper.rooms;}
+    return jacinth::json::read(reply)["rooms"];
+}
 
 void RoomJson::Delete() {
     if (room_id.empty()) {
@@ -146,7 +145,7 @@ void RoomJson::Delete() {
         // Once the thread finishes it will stay resident on the vector -- destroyed and freed by dtor()
         // this is still valid while in dtor, so... yeah
         detached_tasks.emplace_back([this](std::stop_token stop_token) {
-            client.DeleteJson(std::format("/lobby/{}", room_id), "", false);
+            client.DeleteJson(fmt::format("/lobby/{}", room_id), "", false);
         });
     }
 }

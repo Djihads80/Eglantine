@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#define HAS_RESHADE 1
+
 #include <array>
 #include <memory>
 #include <string>
 
 #include <jni.h>
-#include <glaze/glaze.hpp>
 
 #include "common/android/android_common.h"
 #ifdef HAS_RESHADE
@@ -16,30 +17,10 @@
 #include "video_core/post_processing/fx_effect.h"
 #include "video_core/post_processing/fx_preset.h"
 
+import jacinth;
+
 extern std::unique_ptr<AndroidConfig> per_game_config;
 #endif
-
-template <>
-struct glz::meta<VideoCore::FxUniformDesc> {
-    using T = VideoCore::FxUniformDesc;
-    static constexpr auto value = glz::object(
-        "name", &T::name,
-        "label", &T::label,
-        "tooltip", &T::tooltip,
-        "category", &T::category,
-        "kind", &T::kind,
-        "uiType", [](auto& self) -> auto& { return self.ui_type; },
-        "components", &T::components,
-        "min", [](auto& self) -> auto& { return self.ui_min; },
-        "max", [](auto& self) -> auto& { return self.ui_max; },
-        "step", [](auto& self) -> auto& { return self.ui_step; },
-        "items", &T::items,
-        "defaults", [](auto& self) -> std::vector<f32> {
-            return {self.default_value.begin(),
-                    self.default_value.begin() + self.components};
-        }
-    );
-};
 
 namespace {
 
@@ -53,6 +34,28 @@ void BeginFxEdit() {
         return;
     }
     VideoCore::UsePerGameFxSettings();
+}
+
+void to_json(jacinth::mutable_value json, const VideoCore::FxUniformDesc& uniform) {
+    json["name"] = uniform.name;
+    json["label"] = uniform.label;
+    json["tooltip"] = uniform.tooltip;
+    json["category"] = uniform.category;
+    json["kind"] = static_cast<int>(uniform.kind);
+    json["uiType"] = static_cast<int>(uniform.ui_type);
+    json["components"] = uniform.components;
+    json["min"] = uniform.ui_min;
+    json["max"] = uniform.ui_max;
+    json["step"] = uniform.ui_step;
+    json["items"] = uniform.items;
+
+    std::vector<u32> defaults;
+    for (u32 i = 0; i < uniform.components; ++i) {
+        defaults.emplace_back(uniform.default_value[i]);
+    }
+    json["defaults"] = defaults;
+
+    return out;
 }
 
 std::array<f32, 4> DefaultValueOf(size_t index, const std::string& uniform) {
@@ -78,26 +81,24 @@ extern "C" {
 
 jstring Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_getCatalogJson(JNIEnv* env,
                                                                          jobject obj) {
-    std::vector<VideoCore::FxEffectDesc> out;
+    jacinth::json out;
 
 #ifdef HAS_RESHADE
     VideoCore::FxChain::Instance().DropUnknownEntries();
     out = VideoCore::GetFxCatalog();
 #endif
 
-    std::string json;
-    auto ec = glz::write_json(out, json);
-    return Common::Android::ToJString(env, ec ? std::string{} : json);
+    return Common::Android::ToJString(env, out.dump());
 }
 
 jstring Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_getChainJson(JNIEnv* env, jobject obj) {
-    std::vector<VideoCore::FxChainEntry> out;
+    jacinth::json out;
+
 #ifdef HAS_RESHADE
     out = VideoCore::FxChain::Instance().Entries();
 #endif
-    std::string json;
-    auto ec = glz::write_json(out, json);
-    return Common::Android::ToJString(env, ec ? std::string{} : json);
+
+    return Common::Android::ToJString(env, out.dump());
 }
 
 void Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_append(JNIEnv* env, jobject obj,
@@ -219,14 +220,13 @@ jstring Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_getShaderDirectory(JN
 
 jstring Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_getPresetsJson(JNIEnv* env,
                                                                           jobject obj) {
-    std::vector<VideoCore::FxPresetDesc> out;
+    jacinth::json out;
 #ifdef HAS_RESHADE
     VideoCore::ReloadFxPresetCatalog();
+
     out = VideoCore::GetFxPresetCatalog();
 #endif
-    std::string json;
-    auto ec = glz::write_json(out, json);
-    return Common::Android::ToJString(env, ec ? std::string{} : json);
+    return Common::Android::ToJString(env, out.dump());
 }
 
 jstring Java_org_yuzu_yuzu_1emu_utils_NativePostProcessing_getActivePreset(JNIEnv* env,

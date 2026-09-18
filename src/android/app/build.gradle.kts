@@ -34,7 +34,7 @@ val edenDir = project(":Eden").projectDir
 android {
     namespace = "org.yuzu.yuzu_emu"
 
-    compileSdkVersion = "android-37"
+    compileSdkVersion = "android-36"
     ndkVersion = "30.0.16248370"
 
     val isNightly =

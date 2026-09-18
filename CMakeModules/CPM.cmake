@@ -221,7 +221,7 @@ function(CPMAddPackage)
   endif()
 
   # FetchContent args
-  set(fetchContentDeclareExtraArgs "OVERRIDE_FIND_PACKAGE")
+  set(fetchContentDeclareExtraArgs "")
   if(${CPM_ARGS_EXCLUDE_FROM_ALL})
     list(APPEND fetchContentDeclareExtraArgs EXCLUDE_FROM_ALL)
   endif()

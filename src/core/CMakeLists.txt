@@ -1218,7 +1218,6 @@ endif()
 target_link_libraries(core PRIVATE
     OpenSSL::SSL
     fmt::fmt
-    glaze::glaze
     RenderDoc::API
     ZLIB::ZLIB)
 

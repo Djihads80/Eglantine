@@ -29,7 +29,7 @@ if (USE_FASTER_LINKER)
     endmacro()
 
     find_linker(bfd)
-    find_linker(lld)
+    # find_linker(lld)
 
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         find_program(LINKER_MOLD mold)

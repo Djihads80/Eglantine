@@ -4,8 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <glaze/glaze.hpp>
-
 #include "common/string_util.h"
 #include "core/hle/service/nfc/common/device.h"
 #include "input_common/drivers/virtual_amiibo.h"
@@ -19,6 +17,8 @@
 
 #include "yuzu/applets/qt_amiibo_settings.h"
 #include "yuzu/main_window.h"
+
+import jacinth;
 
 struct Amiibo {
     std::string amiiboSeries;
@@ -118,13 +118,13 @@ void QtAmiiboSettingsDialog::LoadAmiiboApiInfo(std::string_view amiibo_id) {
         return;
     }
 
-    AmiiboData amiiboData;
-    auto ec = glz::read_json(amiiboData, amiibo_json);
+    AmiiboData amiiboData = jacinth::doc::read(amiibo_json);
+    // TODO(crueter): error handling
 
-    if (ec) {
-        LOG_WARNING(Frontend, "Failed to parse amiibo data:\n{}", glz::format_error(ec, amiibo_json));
-        return;
-    }
+    // if (ec) {
+    //     LOG_WARNING(Frontend, "Failed to parse amiibo data:\n{}", glz::format_error(ec, amiibo_json));
+    //     return;
+    // }
 
     auto amiibo = amiiboData.amiibo;
 

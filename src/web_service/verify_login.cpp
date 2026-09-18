@@ -4,12 +4,12 @@
 // SPDX-FileCopyrightText: 2017 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <glaze/glaze.hpp>
-
 #include "common/logging.h"
 #include "web_service/verify_login.h"
 #include "web_service/web_backend.h"
 #include "web_service/web_result.h"
+
+import jacinth;
 
 namespace WebService {
 
@@ -24,13 +24,14 @@ bool VerifyLogin(const std::string& host, const std::string& username, const std
         return false;
     }
 
-    Reply reply_s{};
-    auto ec = glz::read_json(reply_s, reply);
+    Reply reply_s = jacinth::doc::read(reply);
 
-    if (ec) {
-        LOG_WARNING(WebService, "Failed to parse verification profile:\n{}", glz::format_error(ec, reply));
-        return false;
-    }
+    // TODO(crueter): error handling
+
+    // if (ec) {
+    //     LOG_WARNING(WebService, "Failed to parse verification profile:\n{}", glz::format_error(ec, reply));
+    //     return false;
+    // }
 
     if (!reply_s.username) return username.empty();
 

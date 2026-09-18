@@ -53,7 +53,7 @@ if (USE_DISCORD_PRESENCE)
         discord/discord_impl.cpp
         discord/discord_impl.h
     )
-    target_link_libraries(qt_common PUBLIC DiscordRPC::discord-rpc glaze::glaze)
+    target_link_libraries(qt_common PUBLIC DiscordRPC::discord-rpc)
 
     if (YUZU_USE_BUNDLED_OPENSSL)
         target_link_libraries(qt_common PUBLIC OpenSSL::SSL OpenSSL::Crypto)

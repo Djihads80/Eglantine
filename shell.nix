@@ -11,16 +11,8 @@ pkgs.mkShellNoCC {
     # essential programs
     git cmake clang gnumake patch jq pkg-config
     # libraries
-<<<<<<< HEAD
-    openssl boost fmt nlohmann_json lz4 zlib zstd
-    enet libopus vulkan-headers vulkan-utility-libraries
-||||||| parent of e9895732f9 (Port HTTP requests to glaze)
-    openssl boost fmt nlohmann_json lz4 zlib zstd
-    enet vulkan-headers vulkan-utility-libraries
-=======
     openssl boost fmt lz4 zlib zstd
     enet vulkan-headers vulkan-utility-libraries
->>>>>>> e9895732f9 (Port HTTP requests to glaze)
     spirv-tools spirv-headers vulkan-loader unzip
     glslang python3 cpp-jwt ffmpeg-headless
     libusb1 cubeb
