@@ -66,12 +66,12 @@ endif()
 # jacinth (json)
 AddJsonPackage(jacinth)
 
-# Remove RTTI
-if(MSVC)
-    string(REGEX REPLACE "/GR" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-    target_compile_options(jacinth PRIVATE /GR-)
+# compile flags that must match the rest of the world
+if(MSVC AND NOT CXX_CLANG)
+    target_compile_options(jacinth PUBLIC /GR-)
 else()
-    target_compile_options(jacinth PRIVATE -fno-rtti -fwrapv)
+    target_compile_options(jacinth PUBLIC
+        -fno-rtti -fwrapv $<$<CXX_COMPILER_ID:Clang>:-fsized-deallocation>)
 endif()
 
 # enable POSIX threads

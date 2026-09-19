@@ -1217,8 +1217,10 @@ endif()
 
 target_link_libraries(core PRIVATE
     OpenSSL::SSL
+    OpenSSL::Crypto
     fmt::fmt
     RenderDoc::API
+    jacinth::jacinth
     ZLIB::ZLIB)
 
 target_link_libraries(core PUBLIC zstd::zstd)
@@ -1267,11 +1269,9 @@ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64 OR ARCHITECTURE_riscv64 OR ARCHITE
     target_link_libraries(core PRIVATE dynarmic::dynarmic)
 endif()
 
-if (TARGET OpenSSL::SSL)
+# reserved for future reimplementations
+if (TRUE)
     target_sources(core PRIVATE hle/service/ssl/ssl_backend_openssl.cpp)
-    target_link_libraries(core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-else()
-    target_sources(core PRIVATE hle/service/ssl/ssl_backend_none.cpp)
 endif()
 
 create_target_directory_groups(core)

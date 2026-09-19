@@ -153,6 +153,8 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-pipe>
             # Disable RTTI (C++ only)
             $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    else()
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/GR->)
     endif()
 
     if (ENABLE_WERROR)
