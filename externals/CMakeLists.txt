@@ -74,6 +74,9 @@ else()
     target_compile_options(jacinth PRIVATE -fno-rtti -fwrapv)
 endif()
 
+# enable POSIX threads
+target_link_libraries(jacinth PRIVATE Threads::Threads)
+
 # curl (http)
 # TODO: Fairly certain this will break horribly because curl's build system sucks
 # disable protocols we don't need

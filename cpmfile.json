@@ -131,9 +131,9 @@
         "version": "ce6fe122f3"
     },
     "jacinth": {
-        "hash": "5830768407cedf838c452f29d5f860f32cbc7560c6bda54718f38e6f2581d00d0b98e538fedea69ce02e175a4770da509a2f1bfcd79e023a7dee16f6e25c7369",
+        "hash": "f41c3d6242c39054315bbd8c53afedbb7397452adf6a5178ef39bd86c270e32b296d589967571ad2a60b17ac42745a5563dd4158b9543d09ba3ea24e9ff0cb92",
         "repo": "crueter/jacinth",
-        "version": "88aa6e9855"
+        "version": "0c24c15f3a"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",
