@@ -93,6 +93,12 @@ find_package(OpenSSL REQUIRED)
 message(STATUS "OpenSSL FOUND: ${OpenSSL_FOUND}")
 AddJsonPackage(cpr)
 
+# Amazing, absolutely incredible
+# TODO: what does MSVC use?
+if (cpr_ADDED AND CXX_CLANG)
+    target_compile_options(cpr PRIVATE -Wno-newline-eof)
+endif()
+
 if (YUZU_STATIC_ROOM)
     return()
 endif()
