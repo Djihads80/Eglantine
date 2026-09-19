@@ -78,7 +78,6 @@ endif()
 target_link_libraries(jacinth PRIVATE Threads::Threads)
 
 # curl (http)
-# TODO: Fairly certain this will break horribly because curl's build system sucks
 # disable protocols we don't need
 foreach(proto AWS DICT FILE GOPHER IMAP LDAP MQTT IPFS SMTP TELNET TFTP)
     set(CURL_DISABLE_${proto} ON)
@@ -94,9 +93,8 @@ message(STATUS "OpenSSL FOUND: ${OpenSSL_FOUND}")
 AddJsonPackage(cpr)
 
 # Amazing, absolutely incredible
-# TODO: what does MSVC use?
 if (cpr_ADDED AND CXX_CLANG)
-    target_compile_options(cpr PRIVATE -Wno-newline-eof)
+    target_compile_options(cpr PRIVATE -w)
 endif()
 
 if (YUZU_STATIC_ROOM)

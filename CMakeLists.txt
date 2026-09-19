@@ -12,7 +12,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/externals/cmake-modul
 
 set(CPM_SOURCE_CACHE ${CMAKE_SOURCE_DIR}/.cache/cpm)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_SCAN_FOR_MODULES 1)
+
+# Some externals die horribly at the sight of the module scanner
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 include(DetectPlatform)
 include(DetectArchitecture)
@@ -529,6 +531,8 @@ endif()
 
 message(STATUS "Platform Libraries: ${PLATFORM_LIBRARIES}")
 
+# Nobody above this line has modules (yet)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 add_subdirectory(externals)
 
 # pass targets from externals
