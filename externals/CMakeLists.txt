@@ -68,9 +68,9 @@ AddJsonPackage(jacinth)
 
 # compile flags that must match the rest of the world
 if(MSVC AND NOT CXX_CLANG)
-    target_compile_options(jacinth PUBLIC /GR-)
+    target_compile_options(jacinth INTERFACE /GR-)
 else()
-    target_compile_options(jacinth PUBLIC
+    target_compile_options(jacinth INTERFACE
         -fno-rtti -fwrapv $<$<CXX_COMPILER_ID:Clang>:-fsized-deallocation>)
 endif()
 
