@@ -25,7 +25,6 @@
 #include "core/memory.h"
 #include "core/reporter.h"
 
-#include "yyjson.h"
 import jacinth;
 
 struct YuzuVersionData {
