@@ -1045,8 +1045,16 @@ function(AddCIPackage)
 
         # download sha512sum file
         # TODO: CI pkgs
-        set(sha512sum_url
-            "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
+        string(SUBSTRING "${ARTIFACT_VERSION}" 0 1 CHAR)
+        math(EXPR FFMPEG_VER "${CHAR}")
+        if(FFMPEG_VER GREATER 8)
+            set(sha512sum_url
+                "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
+        else()
+            set(sha512sum_url
+                "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/v${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
+        endif()
+
         set(sha512sum_file
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
