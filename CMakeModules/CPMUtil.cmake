@@ -1047,7 +1047,7 @@ function(AddCIPackage)
         # TODO: CI pkgs
         string(SUBSTRING "${ARTIFACT_VERSION}" 0 1 CHAR)
         math(EXPR FFMPEG_VER "${CHAR}")
-        if(FFMPEG_VER GREATER 8)
+        if(FFMPEG_VER GREATER 8 AND "${ARTIFACT_REPO}" STREQUAL "FFmpeg")
             set(sha512sum_url
                 "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
         else()
