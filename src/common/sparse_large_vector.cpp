@@ -96,6 +96,17 @@ bool CommitVectorPage(uintptr_t addr, bool write) noexcept {
 #ifndef MAP_NOCORE
 #define MAP_NOCORE 0
 #endif
+#ifndef MADV_FREE
+#define MADV_FREE MADV_DONTNEED
+#endif
+
+void DecommitVectorPage(uintptr_t base) noexcept {
+#ifdef _WIN32
+    VirtualFree(reinterpret_cast<LPVOID>(base), HostPageSize, MEM_DECOMMIT);
+#else
+    madvise(reinterpret_cast<void*>(base), HostPageSize, MADV_FREE);
+#endif
+}
 
 void* AllocateMemoryPages(std::size_t size) noexcept {
     if (auto page = HostPageSize; size % page != 0) {
