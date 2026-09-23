@@ -768,6 +768,10 @@ function(AddPackage)
     if(NOT DEFINED PKG_ARGS_VERSION)
         cpm_utils_message(FATAL_ERROR "${PKG_ARGS_NAME}: VERSION is required")
     endif()
+    
+    if("${PKG_ARGS_REPO}" STREQUAL "crueter-ci/FFmpeg")
+        set(PKG_ARGS_VERSION "${ARTIFACT_TAG}")
+    endif()
 
     set(${PKG_ARGS_NAME}_CUSTOM_DIR "" CACHE STRING
         "Path to a separately-downloaded copy of ${PKG_ARGS_NAME}")
@@ -994,7 +998,20 @@ function(AddCIPackage)
     set(ARTIFACT_NAME ${PKG_ARGS_NAME})
     set(ARTIFACT_REPO ${PKG_ARGS_REPO})
     set(ARTIFACT_PACKAGE ${PKG_ARGS_PACKAGE})
+    
+    if("${ARTIFACT_REPO}" STREQUAL "crueter-ci/FFmpeg")
+    string(SUBSTRING "${ARTIFACT_VERSION}" 0 1 CHAR)
+    math(EXPR FFMPEG_VER "${CHAR}")
 
+    if(FFMPEG_VER LESS 9)
+        set(ARTIFACT_TAG "v${ARTIFACT_VERSION}")
+    else()
+        set(ARTIFACT_TAG "${ARTIFACT_VERSION}")
+    endif()
+    else()
+        set(ARTIFACT_TAG "${ARTIFACT_VERSION}")
+    endif()
+    
     # plat/archname
     if (DEFINED PKG_ARGS_PKGNAME)
         set(pkgname ${PKG_ARGS_PKGNAME})
@@ -1045,16 +1062,8 @@ function(AddCIPackage)
 
         # download sha512sum file
         # TODO: CI pkgs
-        string(SUBSTRING "${ARTIFACT_VERSION}" 0 1 CHAR)
-        math(EXPR FFMPEG_VER "${CHAR}")
-        if(FFMPEG_VER LESS 9 AND "${ARTIFACT_REPO}" STREQUAL "FFmpeg")
-            set(sha512sum_url
-                "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/v${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
-        else()
-            set(sha512sum_url
-                "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/${ARTIFACT_VERSION}/${ARTIFACT}.sha512sum")
-        endif()
-
+        set(sha512sum_url
+            "https://${ARTIFACT_GIT_HOST}/${ARTIFACT_REPO}/releases/download/${ARTIFACT_TAG}/${ARTIFACT}.sha512sum")
         set(sha512sum_file
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
