@@ -11,6 +11,7 @@
 #include "core/hle/service/aoc/addon_content_manager.h"
 #include "core/hle/service/apm/apm.h"
 #include "core/hle/service/audio/audio.h"
+#include "core/hle/service/banana/banana.h"
 #include "core/hle/service/bcat/bcat.h"
 #include "core/hle/service/bpc/bpc.h"
 #include "core/hle/service/btdrv/btdrv.h"
@@ -27,6 +28,8 @@
 #include "core/hle/service/grc/grc.h"
 #include "core/hle/service/gpio/gpio.h"
 #include "core/hle/service/hid/hid.h"
+#include "core/hle/service/htc/htc.h"
+#include "core/hle/service/htcs/htcs.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/i2c/i2c.h"
 #include "core/hle/service/jit/jit.h"
@@ -51,6 +54,7 @@
 #include "core/hle/service/olsc/olsc.h"
 #include "core/hle/service/omm/omm.h"
 #include "core/hle/service/pcie/pcie.h"
+#include "core/hle/service/pcm/pcm.h"
 #include "core/hle/service/pctl/pctl.h"
 #include "core/hle/service/pcv/pcv.h"
 #include "core/hle/service/pm/pm.h"
@@ -65,7 +69,6 @@
 #include "core/hle/service/spl/spl_module.h"
 #include "core/hle/service/ssl/ssl.h"
 #include "core/hle/service/wlan/wlan.h"
-#include "core/hle/service/tma/tma.h"
 #include "core/hle/service/usb/usb.h"
 #include "core/hle/service/vi/vi.h"
 
@@ -104,6 +107,7 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
         {"am",         &AM::LoopProcess},
         {"aoc",        &AOC::LoopProcess},
         {"apm",        &APM::LoopProcess},
+        {"banana",     &Banana::LoopProcess},
         {"bcat",       &BCAT::LoopProcess},
         {"bpc",        &BPC::LoopProcess},
         {"btdrv",      &BtDrv::LoopProcess},
@@ -120,6 +124,8 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
         {"glue",       &Glue::LoopProcess},
         {"grc",        &GRC::LoopProcess},
         {"hid",        &HID::LoopProcess},
+        {"htc",        &HTC::LoopProcess},
+        {"htcs",       &HTCS::LoopProcess},
         {"jit",        &JIT::LoopProcess},
         {"lbl",        &LBL::LoopProcess},
         {"Loader",     &LDR::LoopProcess},
@@ -140,6 +146,7 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
         {"olsc",       &OLSC::LoopProcess},
         {"omm",        &OMM::LoopProcess},
         {"pcie",       &PCIe::LoopProcess},
+        {"pcm",        &PCM::LoopProcess},
         {"pctl",       &PCTL::LoopProcess},
         {"pcv",        &PCV::LoopProcess},
         {"prepo",      &PlayReport::LoopProcess},
@@ -149,7 +156,6 @@ Services::Services(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system
         {"spl",        &SPL::LoopProcess},
         {"ssl",        &SSL::LoopProcess},
         {"wlan",       &WLAN::LoopProcess},
-        {"tma",        &TMA::LoopProcess},
         {"usb",        &USB::LoopProcess},
         {"i2c",        &I2C::LoopProcess},
         {"gpio",        &GPIO::LoopProcess},
