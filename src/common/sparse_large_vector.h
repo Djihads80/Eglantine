@@ -131,7 +131,6 @@ public:
             }
 
             if (end - page >= HostPageSize) {
-                std::memset(reinterpret_cast<void*>(page), 0, HostPageSize);
                 DecommitPage(index);
             } else {
                 std::memset(reinterpret_cast<void*>(page), 0, end - page);

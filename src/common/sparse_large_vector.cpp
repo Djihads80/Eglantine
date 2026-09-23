@@ -101,10 +101,14 @@ bool CommitVectorPage(uintptr_t addr, bool write) noexcept {
 #endif
 
 void DecommitVectorPage(uintptr_t base) noexcept {
-#ifdef _WIN32
+#if defined(_WIN32)
     VirtualFree(reinterpret_cast<LPVOID>(base), HostPageSize, MEM_DECOMMIT);
+#elif defined(__linux__)
+    // Linux's MADV_DONTNEED zeros out pages for us
+    madvise(reinterpret_cast<void*>(base), HostPageSize, MADV_DONTNEED);
 #else
     madvise(reinterpret_cast<void*>(base), HostPageSize, MADV_FREE);
+    std::memset(reinterpret_cast<void*>(base), 0, HostPageSize);
 #endif
 }
 
