@@ -61,7 +61,7 @@ FSP_SRV::FSP_SRV(Core::System& system_)
         {11, nullptr, "OpenBisFileSystem"},
         {12, nullptr, "OpenBisStorage"},
         {13, nullptr, "InvalidateBisCache"},
-        {17, nullptr, "OpenHostFileSystem"},
+        {17, D<&FSP_SRV::OpenHostFileSystem>, "OpenHostFileSystem"},
         {18, D<&FSP_SRV::OpenSdCardFileSystem>, "OpenSdCardFileSystem"},
         {19, nullptr, "FormatSdCardFileSystem"},
         {21, nullptr, "DeleteSaveDataFileSystem"},
@@ -159,7 +159,7 @@ FSP_SRV::FSP_SRV(Core::System& system_)
         {831, nullptr, "DecryptStreamPlaySaveData"},
         {1000, nullptr, "SetBisRootForHost"},
         {1001, nullptr, "SetSaveDataSize"},
-        {1002, nullptr, "SetSaveDataRootPath"},
+        {1002, D<&FSP_SRV::SetSaveDataRootPath>, "SetSaveDataRootPath"},
         {1003, D<&FSP_SRV::DisableAutoSaveDataCreation>, "DisableAutoSaveDataCreation"},
         {1004, D<&FSP_SRV::SetGlobalAccessLogMode>, "SetGlobalAccessLogMode"},
         {1005, D<&FSP_SRV::GetGlobalAccessLogMode>, "GetGlobalAccessLogMode"},
@@ -217,6 +217,18 @@ Result FSP_SRV::OpenFileSystemWithPatch(OutInterface<IFileSystem> out_interface,
 
     *out_interface = std::make_shared<IFileSystem>(
         system, extracted_romfs, SizeGetter::FromStorageId(fsc, FileSys::StorageId::NandUser));
+
+    R_SUCCEED();
+}
+
+Result FSP_SRV::OpenHostFileSystem(OutInterface<IFileSystem> out_interface) {
+    LOG_DEBUG(Service_FS, "called");
+
+    FileSys::VirtualDir host_dir{};
+    fsc.OpenHost(&host_dir);
+
+    *out_interface = std::make_shared<IFileSystem>(system, host_dir,
+                                                   SizeGetter::FromStorageId(fsc, FileSys::StorageId::Host));
 
     R_SUCCEED();
 }
@@ -571,6 +583,12 @@ Result FSP_SRV::IsSdCardAccessible(Out<bool> out_is_accessible) {
     LOG_DEBUG(Service_FS, "(STUBBED) called");
 
     *out_is_accessible = true;
+
+    R_SUCCEED();
+}
+
+Result FSP_SRV::SetSaveDataRootPath(InBuffer<BufferAttr_HipcMapAlias> path) {
+    LOG_WARNING(Service_FS, "(STUBBED) called, path_size={}", path.size());
 
     R_SUCCEED();
 }

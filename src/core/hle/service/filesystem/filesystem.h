@@ -21,6 +21,7 @@ class System;
 namespace FileSys {
 class BISFactory;
 class ExternalContentProvider;
+class HostFactory;
 class NCA;
 class RegisteredCache;
 class RegisteredCacheUnion;
@@ -80,6 +81,7 @@ public:
 
     std::shared_ptr<SaveDataController> OpenSaveDataController();
 
+    Result OpenHost(FileSys::VirtualDir* out_host) const;
     Result OpenSDMC(FileSys::VirtualDir* out_sdmc) const;
     Result OpenBISPartition(FileSys::VirtualDir* out_bis_partition,
                             FileSys::BisPartitionId id) const;
@@ -143,6 +145,7 @@ private:
     std::mutex registration_lock;
     std::map<ProcessId, Registration> registrations;
 
+    std::unique_ptr<FileSys::HostFactory> host_factory;
     std::unique_ptr<FileSys::SDMCFactory> sdmc_factory;
     std::unique_ptr<FileSys::BISFactory> bis_factory;
 

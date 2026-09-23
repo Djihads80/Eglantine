@@ -16,6 +16,7 @@
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/errors.h"
+#include "core/file_sys/host_factory.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs_factory.h"
@@ -393,6 +394,22 @@ std::shared_ptr<FileSys::SaveDataFactory> FileSystemController::CreateSaveDataFa
                                                       std::move(save_directory));
 }
 
+Result FileSystemController::OpenHost(FileSys::VirtualDir* out_host) const {
+    LOG_TRACE(Service_FS, "Opening host");
+
+    if (host_factory == nullptr) {
+        return FileSys::ResultTargetNotFound;
+    }
+
+    auto host = host_factory->Open();
+    if (host == nullptr) {
+        return FileSys::ResultTargetNotFound;
+    }
+
+    *out_host = host;
+    return ResultSuccess;
+}
+
 Result FileSystemController::OpenSDMC(FileSys::VirtualDir* out_sdmc) const {
     LOG_TRACE(Service_FS, "Opening SDMC");
 
@@ -730,6 +747,8 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
     const auto sdmc_load_dir_path = sdmc_dir_path / "atmosphere/contents";
     const auto rw_mode = FileSys::OpenMode::ReadWrite;
 
+    auto host_directory =
+        vfs.OpenDirectory(Common::FS::GetEdenPathString(EdenPath::HostDir), rw_mode);
     auto nand_directory =
         vfs.OpenDirectory(Common::FS::GetEdenPathString(EdenPath::NANDDir), rw_mode);
     auto sd_directory = vfs.OpenDirectory(Common::FS::PathToUTF8String(sdmc_dir_path), rw_mode);
@@ -747,6 +766,10 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
                                        bis_factory->GetSystemNANDContents());
         system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::UserNAND,
                                        bis_factory->GetUserNANDContents());
+    }
+
+    if (host_factory == nullptr) {
+        host_factory = std::make_unique<FileSys::HostFactory>(host_directory);
     }
 
     if (sdmc_factory == nullptr) {

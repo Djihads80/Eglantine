@@ -44,7 +44,7 @@ IApplicationDisplayService::IApplicationDisplayService(Core::System& system_,
         {2451, nullptr, "GetIndirectLayerImageCropMap"},
         {2460, C<&IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo>, "GetIndirectLayerImageRequiredMemoryInfo"},
         {5202, C<&IApplicationDisplayService::GetDisplayVsyncEvent>, "GetDisplayVsyncEvent"},
-        {5203, nullptr, "GetDisplayVsyncEventForDebug"},
+        {5203, C<&IApplicationDisplayService::GetDisplayVsyncEventForDebug>, "GetDisplayVsyncEventForDebug"},
     };
     // clang-format on
 
@@ -53,6 +53,9 @@ IApplicationDisplayService::IApplicationDisplayService(Core::System& system_,
 
 IApplicationDisplayService::~IApplicationDisplayService() {
     for (auto& [display_id, event] : m_display_vsync_events) {
+        m_container->UnlinkVsyncEvent(display_id, &event);
+    }
+    for (auto& [display_id, event] : m_display_vsync_events_debug) {
         m_container->UnlinkVsyncEvent(display_id, &event);
     }
     for (const auto layer_id : m_open_layer_ids) {
@@ -257,6 +260,21 @@ Result IApplicationDisplayService::GetDisplayVsyncEvent(
     std::scoped_lock lk{m_lock};
 
     auto [it, created] = m_display_vsync_events.emplace(display_id, m_context);
+    R_UNLESS(created, VI::ResultPermissionDenied);
+
+    m_container->LinkVsyncEvent(display_id, &it->second);
+    *out_vsync_event = it->second.GetHandle();
+
+    R_SUCCEED();
+}
+
+Result IApplicationDisplayService::GetDisplayVsyncEventForDebug(
+    OutCopyHandle<Kernel::KReadableEvent> out_vsync_event, u64 display_id) {
+    LOG_DEBUG(Service_VI, "called. display_id={}", display_id);
+
+    std::scoped_lock lk{m_lock};
+
+    auto [it, created] = m_display_vsync_events_debug.emplace(display_id, m_context);
     R_UNLESS(created, VI::ResultPermissionDenied);
 
     m_container->LinkVsyncEvent(display_id, &it->second);

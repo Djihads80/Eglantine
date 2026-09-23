@@ -36,6 +36,7 @@ private:
     Result GetDesiredLanguage(Out<u64> out_language_code);
     Result SetTerminateResult(Result terminate_result);
     Result GetDisplayVersion(Out<DisplayVersion> out_display_version);
+    Result GetLaunchStorageInfoForDebug(Out<u8> out_app_storage, Out<u8> out_app_storage_update);
     Result ExtendSaveData(Out<u64> out_required_size, FileSys::SaveDataType type,
                           Common::UUID user_id, u64 normal_size, u64 journal_size);
     Result GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size,

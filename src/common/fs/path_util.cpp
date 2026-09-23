@@ -155,6 +155,7 @@ public:
         GenerateEdenPath(EdenPath::AmiiboDir, eden_path / AMIIBO_DIR);
         GenerateEdenPath(EdenPath::CrashDumpsDir, eden_path / CRASH_DUMPS_DIR);
         GenerateEdenPath(EdenPath::DumpDir, eden_path / DUMP_DIR);
+        GenerateEdenPath(EdenPath::HostDir, eden_path / HOST_DIR);
         GenerateEdenPath(EdenPath::KeysDir, eden_path / KEYS_DIR);
         GenerateEdenPath(EdenPath::LoadDir, eden_path / LOAD_DIR);
         GenerateEdenPath(EdenPath::LogDir, eden_path / LOG_DIR);

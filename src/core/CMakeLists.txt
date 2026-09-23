@@ -116,6 +116,8 @@ add_library(core STATIC
     file_sys/fssystem/fssystem_switch_storage.h
     file_sys/fssystem/fssystem_utility.cpp
     file_sys/fssystem/fssystem_utility.h
+    file_sys/host_factory.cpp
+    file_sys/host_factory.h
     file_sys/ips_layer.cpp
     file_sys/ips_layer.h
     file_sys/kernel_executable.cpp

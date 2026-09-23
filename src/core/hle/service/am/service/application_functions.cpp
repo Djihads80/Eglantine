@@ -49,6 +49,26 @@ FileSys::PatchManager::Metadata GetApplicationMetadata(Core::System& system, u64
     return FileSys::PatchManager::GetMetadataFromBaseOrUpdate(system, application_id);
 }
 
+FileSys::StorageId GetStorageIdForFrontendSlot(
+    std::optional<FileSys::ContentProviderUnionSlot> slot) {
+    if (!slot.has_value()) {
+        return FileSys::StorageId::None;
+    }
+
+    switch (*slot) {
+    case FileSys::ContentProviderUnionSlot::UserNAND:
+        return FileSys::StorageId::NandUser;
+    case FileSys::ContentProviderUnionSlot::SysNAND:
+        return FileSys::StorageId::NandSystem;
+    case FileSys::ContentProviderUnionSlot::SDMC:
+        return FileSys::StorageId::SdCard;
+    case FileSys::ContentProviderUnionSlot::FrontendManual:
+        return FileSys::StorageId::Host;
+    default:
+        return FileSys::StorageId::None;
+    }
+}
+
 } // Anonymous namespace
 
 IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_ptr<Applet> applet)
@@ -66,7 +86,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {21, D<&IApplicationFunctions::GetDesiredLanguage>, "GetDesiredLanguage"},
         {22, D<&IApplicationFunctions::SetTerminateResult>, "SetTerminateResult"},
         {23, D<&IApplicationFunctions::GetDisplayVersion>, "GetDisplayVersion"},
-        {24, nullptr, "GetLaunchStorageInfoForDebug"},
+        {24, D<&IApplicationFunctions::GetLaunchStorageInfoForDebug>, "GetLaunchStorageInfoForDebug"},
         {25, D<&IApplicationFunctions::ExtendSaveData>, "ExtendSaveData"},
         {26, D<&IApplicationFunctions::GetSaveDataSize>, "GetSaveDataSize"},
         {27, D<&IApplicationFunctions::CreateCacheStorage>, "CreateCacheStorage"},
@@ -228,6 +248,18 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     }
 
     out_display_version->string[out_display_version->string.size() - 1] = '\0';
+    R_SUCCEED();
+}
+
+Result IApplicationFunctions::GetLaunchStorageInfoForDebug(Out<u8> out_app_storage,
+                                                           Out<u8> out_app_storage_update) {
+    LOG_DEBUG(Service_AM, "called");
+
+    auto& storage = system.GetContentProviderUnion();
+    *out_app_storage = static_cast<u8>(GetStorageIdForFrontendSlot(
+        storage.GetSlotForEntry(m_applet->program_id, FileSys::ContentRecordType::Program)));
+    *out_app_storage_update = static_cast<u8>(GetStorageIdForFrontendSlot(storage.GetSlotForEntry(
+        FileSys::GetUpdateTitleID(m_applet->program_id), FileSys::ContentRecordType::Program)));
     R_SUCCEED();
 }
 
