@@ -1046,7 +1046,20 @@ function(AddCIPackage)
                 "Unsupported platform/arch combo for CI packages")
         endif()
 
-        if (DEFINED platname AND DEFINED archname)
+        if("${ARTIFACT_REPO}" STREQUAL "crueter-ci/FFmpeg")
+            string(SUBSTRING "${ARTIFACT_VERSION}" 0 1 CHAR)
+            math(EXPR FFMPEG_VER "${CHAR}")
+
+            if(FFMPEG_VER LESS 9 AND platname STREQUAL "macos")
+                set(pkgname "macos-universal")
+            endif()
+
+            if(FFMPEG_VER LESS 9 AND platname STREQUAL "mingw" AND archname STREQUAL "aarch64")
+                set(archname "arm64")
+            endif()
+        endif()
+
+        if (NOT DEFINED pkgname AND DEFINED platname AND DEFINED archname)
             set(pkgname ${platname}-${archname})
         endif()
     endif()
