@@ -1563,7 +1563,7 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
 template <class P>
 void BufferCache<P>::SynchronizeBufferWrites(Buffer& buffer) {
     if constexpr (!IS_OPENGL) {
-        const u64 buffer_tick = buffer.GetWriteTick();
+        const u64 buffer_tick = buffer.getWriteTick();
         if (!runtime.IsFree(buffer_tick)) {
             runtime.Wait(buffer_tick);
         }
