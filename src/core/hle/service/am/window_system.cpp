@@ -515,13 +515,13 @@ void WindowSystem::UpdateAppletStateLocked(Applet* applet, bool is_foreground, b
     }
 
     // Layer ordering. Composition sorts back-to-front. Now with enums for calrity.
-s32 z_index = Background;
+    s32 z_index = Background;
     if (is_overlay) {
         z_index = this->IsOverlayOpenLocked(*applet) ? Overlay : Background;
     } else if (inherited_foreground) {
         z_index = is_obscured ? Foreground : ForegroundVisible;
     }
-        applet->display_layer_manager.SetOverlayZIndex(z_index);
+    applet->display_layer_manager.SetOverlayZIndex(z_index);
 
     // Recurse into child applets.
     for (const auto& child_applet : applet->child_applets) {
