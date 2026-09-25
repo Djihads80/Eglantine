@@ -81,6 +81,14 @@ bool CommitVectorPage(uintptr_t addr, bool write) noexcept {
     auto res = VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info));
     if (res == 0) {
         LOG_CRITICAL(HW_Memory, "Failed to query large buffer region at {:#x} with error {}, will try committing anyway", addr, GetLastError());
+    } else if (info.State == MEM_COMMIT) {
+        DWORD old_protect {};
+        auto perm = write ? PAGE_READWRITE : PAGE_READONLY;
+        if (!VirtualProtect(reinterpret_cast<void*>(addr), HostPageSize, perm, &old_protect)) {
+            LOG_ERROR(HW_Memory, "Failed to change permissions of large buffer region at {:#x}, error {}", addr, GetLastError());
+            return false;
+        }
+        return true;
     } else if (info.State != MEM_RESERVE) {
         LOG_ERROR(HW_Memory, "Tried to commit an unreserved large buffer region at {:#x} that is not mapped or is already committed (state {:#x})", addr, info.State);
         return false;
@@ -154,6 +162,8 @@ void FreeMemoryPages(void* base, [[maybe_unused]] std::size_t size) noexcept {
     if (!base)
         return;
 #ifdef _WIN32
+    std::lock_guard lock(vector_regions_mutex);
+    std::erase_if(vector_regions, [base](const auto& r) {return r.first == base; });
     ASSERT(VirtualFree(base, 0, MEM_RELEASE));
 #else
     ASSERT(munmap(base, size) == 0);
