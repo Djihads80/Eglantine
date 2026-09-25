@@ -90,7 +90,7 @@ bool CommitVectorPage(uintptr_t addr, bool write) noexcept {
         }
         return true;
     } else if (info.State != MEM_RESERVE) {
-        LOG_ERROR(HW_Memory, "Tried to commit an unreserved large buffer region at {:#x} that is not mapped or is already committed (state {:#x})", addr, info.State);
+        LOG_ERROR(HW_Memory, "Tried to commit an unreserved large buffer region at {:#x} that is not mapped (state {:#x})", addr, info.State);
         return false;
     }
 
