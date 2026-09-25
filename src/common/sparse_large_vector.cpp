@@ -20,32 +20,36 @@ namespace Common {
 
 #ifdef _WIN32
 static std::vector<std::pair<u64, u64>> vector_regions {};
+static std::mutex vector_mutex {};
 
 // Workaround for handling non-commited memory accessed by Dynarmic; usually result of an error
 static LONG WINAPI FakePageFaultHandler(PEXCEPTION_POINTERS info) {
     DWORD code = info->ExceptionRecord->ExceptionCode;
-    u64 exception_addr = reinterpret_cast<u64>(info->ExceptionRecord->ExceptionAddress);
+    u64 exception_addr = reinterpret_cast<u64>(info->ExceptionRecord->ExceptionInformation[1]);
 
-    if (code != EXCEPTION_ACCESS_VIOLATION) {
+    if (code != EXCEPTION_ACCESS_VIOLATION || info->ExceptionRecord->ExceptionInformation[0] == 1) {
         // Not our problem
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
     u64 addr = 0, addr2 = 0;
 
-    for (auto region: vector_regions) {
-        auto addr_shifted = exception_addr >> HostPageBits;
-        if (region.first <= addr_shifted && addr_shifted <= region.second) {
-            addr = addr_shifted;
-        }
+    {
+        std::lock_guard lock(vector_mutex);
+        for (auto region: vector_regions) {
+            auto addr_shifted = exception_addr >> HostPageBits;
+            if (region.first <= addr_shifted && addr_shifted <= region.second) {
+                addr = addr_shifted;
+            }
 
-        // Page-boundary accesses
-        if (auto addr_ = (exception_addr + 0x40) >> HostPageBits; addr_ != addr_shifted && region.first <= addr_ && addr_ <= region.second) {
-            addr2 = addr_;
-        }
+            // Page-boundary accesses
+            if (auto addr_ = (exception_addr + 0x40) >> HostPageBits; addr_ != addr_shifted && region.first <= addr_ && addr_ <= region.second) {
+                addr2 = addr_;
+            }
 
-        if (addr != 0 || addr2 != 0) {
-            break;
+            if (addr != 0 || addr2 != 0) {
+                break;
+            }
         }
     }
 
@@ -123,6 +127,7 @@ void* AllocateMemoryPages(std::size_t size) noexcept {
     void* base = VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE);
 
     if (base != nullptr) {
+        std::lock_guard lock(vector_mutex);
         vector_regions.emplace_back(reinterpret_cast<u64>(base), reinterpret_cast<u64>(base) + size);
 
         static std::once_flag flag;
