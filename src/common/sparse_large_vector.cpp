@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifdef _WIN32
+#include <algorithm>
 #include <windows.h>
 #include <mutex>
 #else
@@ -20,7 +21,7 @@ namespace Common {
 
 #ifdef _WIN32
 static std::vector<std::pair<u64, u64>> vector_regions {};
-static std::mutex vector_mutex {};
+static std::mutex vector_regions_mutex {};
 
 // Workaround for handling non-commited memory accessed by Dynarmic; usually result of an error
 static LONG WINAPI FakePageFaultHandler(PEXCEPTION_POINTERS info) {
@@ -35,7 +36,7 @@ static LONG WINAPI FakePageFaultHandler(PEXCEPTION_POINTERS info) {
     u64 addr = 0, addr2 = 0;
 
     {
-        std::lock_guard lock(vector_mutex);
+        std::lock_guard lock(vector_regions_mutex);
         for (auto region: vector_regions) {
             auto addr_shifted = exception_addr >> HostPageBits;
             if (region.first <= addr_shifted && addr_shifted <= region.second) {
@@ -135,7 +136,7 @@ void* AllocateMemoryPages(std::size_t size) noexcept {
     void* base = VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE);
 
     if (base != nullptr) {
-        std::lock_guard lock(vector_mutex);
+        std::lock_guard lock(vector_regions_mutex);
         vector_regions.emplace_back(reinterpret_cast<u64>(base), reinterpret_cast<u64>(base) + size);
 
         static std::once_flag flag;
@@ -163,7 +164,7 @@ void FreeMemoryPages(void* base, [[maybe_unused]] std::size_t size) noexcept {
         return;
 #ifdef _WIN32
     std::lock_guard lock(vector_regions_mutex);
-    std::erase_if(vector_regions, [base](const auto& r) {return r.first == base; });
+    std::erase_if(vector_regions, [base](const auto& r) {return r.first == reinterpret_cast<u64>(base); });
     ASSERT(VirtualFree(base, 0, MEM_RELEASE));
 #else
     ASSERT(munmap(base, size) == 0);
