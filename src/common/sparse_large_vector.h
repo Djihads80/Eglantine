@@ -28,9 +28,9 @@ constexpr u64 HostPageBits = 12;
 constexpr u64 HostPageMask = ~(HostPageSize - 1);
 bool CommitVectorPage(uintptr_t addr, bool write) noexcept;
 #else
-const u64 HostPageSize = sysconf(_SC_PAGESIZE);
-const u64 HostPageBits = std::countr_zero(HostPageSize);
-const u64 HostPageMask = ~(HostPageSize - 1);
+inline const u64 HostPageSize = sysconf(_SC_PAGESIZE);
+inline const u64 HostPageBits = std::countr_zero(HostPageSize);
+inline const u64 HostPageMask = ~(HostPageSize - 1);
 #endif
 
 void* AllocateMemoryPages(std::size_t size) noexcept;
