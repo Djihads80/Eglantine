@@ -110,7 +110,7 @@ struct PageTable {
             Store(true, PageType::DebugMemory, block, ptr);
         }
 
-        constexpr void Mark() noexcept {
+        inline void Mark() noexcept {
             // Data.marked = true;
             data_raw.fetch_or(0b1);
         }
