@@ -787,6 +787,13 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
     }
 }
 
+void FileSystemController::InitTempStorage() {
+    const auto save_directory = system.GetFilesystem()->OpenDirectory(Common::FS::GetEdenPathString(Common::FS::EdenPath::SaveDir), FileSys::OpenMode::ReadWrite);
+    if (save_directory != nullptr) {
+        save_directory->DeleteSubdirectoryRecursive("temp");
+    }
+}
+
 void FileSystemController::Reset() {
     std::scoped_lock lk{registration_lock};
     registrations.clear();
@@ -797,9 +804,9 @@ void LoopProcess(Core::System& system) {
 
     const auto FileSystemProxyFactory = [&] { return std::make_shared<FSP_SRV>(system); };
 
-    server_manager->RegisterNamedService("fsp-ldr", std::make_shared<FSP_LDR>(system));
-    server_manager->RegisterNamedService("fsp-pr", std::make_shared<FSP_PR>(system));
-    server_manager->RegisterNamedService("fsp-srv", std::move(FileSystemProxyFactory));
+    server_manager->RegisterNamedService("fsp-ldr", std::make_shared<FSP_LDR>(system), 61);
+    server_manager->RegisterNamedService("fsp-pr", std::make_shared<FSP_PR>(system), 61);
+    server_manager->RegisterNamedService("fsp-srv", std::move(FileSystemProxyFactory), 61);
     ServerManager::RunServer(std::move(server_manager));
 }
 

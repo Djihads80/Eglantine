@@ -121,7 +121,7 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
-    if (memory_tracker.IsRegionGpuModified(device_addr, size)) {
+    if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
     }
@@ -249,6 +249,10 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+        const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+        if (should_sync) {
+            runtime.Finish();
+        }
     }
 
     Tegra::Memory::DeviceGuestMemoryScoped<u8, Tegra::Memory::GuestMemoryFlags::UnsafeReadWrite>
@@ -311,11 +315,8 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         MarkWrittenBuffer(buffer_id, device_addr, size);
         break;
     case ObtainBufferOperation::DiscardWrite: {
-        const DAddr device_addr_start = Common::AlignDown(device_addr, 64);
-        const DAddr device_addr_end = Common::AlignUp(device_addr + size, 64);
-        const size_t new_size = device_addr_end - device_addr_start;
-        ClearDownload(device_addr_start, new_size);
-        gpu_modified_ranges.Subtract(device_addr_start, new_size);
+        ClearDownload(device_addr, size);
+        gpu_modified_ranges.Subtract(device_addr, size);
         break;
     }
     default:
@@ -1233,7 +1234,7 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
         buffer.MarkUsage(offset, size);
 
         if (is_written) {
-            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size);
+            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);
         }
 
         if constexpr (NEEDS_BIND_STORAGE_INDEX) {
@@ -1519,10 +1520,12 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 }
 
 template <class P>
-void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size) {
+void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync) {
     if constexpr (!IS_OPENGL) {
-        Buffer& buffer = slot_buffers[buffer_id];
-        buffer.setWriteTick(runtime.CurrentTick());
+        if (needs_sync) {
+            Buffer& buffer = slot_buffers[buffer_id];
+            buffer.setWriteTick(runtime.CurrentTick());
+        }
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
@@ -1538,8 +1541,11 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
     const BufferId buffer_id = page_table[page];
     if (buffer_id) {
         Buffer& buffer = slot_buffers[buffer_id];
-        WaitForGpuFenceIfNeeded(buffer);
         if (buffer.IsInBounds(device_addr, size)) {
+            const bool should_sync = Settings::IsGPUFenceBehaviorAccurate();
+            if (should_sync) {
+                SynchronizeBufferWrites(buffer);
+            }
             bool usable = true;
             if constexpr (requires { buffer.IsSparseCompatible(); }) {
                 if (sparse_compatible && !buffer.IsSparseCompatible()) {
@@ -1555,17 +1561,11 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
 }
 
 template <class P>
-void BufferCache<P>::WaitForGpuFenceIfNeeded(Buffer& buffer) {
+void BufferCache<P>::SynchronizeBufferWrites(Buffer& buffer) {
     if constexpr (!IS_OPENGL) {
-        const bool gpu_fence_accurate = Settings::IsGPUFenceBehaviorAccurate();
-        const bool gpu_fence_strict = Settings::IsGPUFenceBehaviorStrict();
-        if (gpu_fence_accurate || gpu_fence_strict) {
-            const u64 gpu_tick_delay = gpu_fence_strict ? 0 : 3;
-            const u64 buffer_tick = buffer.getWriteTick();
-            const u64 gpu_tick = runtime.KnownGpuTick();
-            if (buffer_tick > gpu_tick + gpu_tick_delay) {
-                runtime.Wait(buffer_tick);
-            }
+        const u64 buffer_tick = buffer.getWriteTick();
+        if (!runtime.IsFree(buffer_tick)) {
+            runtime.Wait(buffer_tick);
         }
     }
 }
@@ -1742,14 +1742,24 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
     const DAddr buffer_start = buffer.cpu_addr_cached;
-    memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
+    const auto add_upload = [&](DAddr start, DAddr end) {
+        if (start == end) return;
+        const u64 range_size = end - start;
         upload_copies.push_back(BufferCopy{
             .src_offset = total_size_bytes,
-            .dst_offset = device_addr_out - buffer_start,
+            .dst_offset = start - buffer_start,
             .size = range_size,
         });
         total_size_bytes += range_size;
         largest_copy = (std::max)(largest_copy, range_size);
+    };
+    memory_tracker.ForEachUploadRange(device_addr, size, [&](u64 device_addr_out, u64 range_size) {
+        DAddr upload_start = device_addr_out;
+        gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, [&](DAddr gpu_start, DAddr gpu_end) {
+            add_upload(upload_start, gpu_start);
+            upload_start = gpu_end;
+        });
+        add_upload(upload_start, device_addr_out + range_size);
     });
     if (total_size_bytes == 0) {
         return true;
@@ -1788,9 +1798,6 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
                 if (immediate_buffer.empty()) {
                     immediate_buffer = ImmediateBuffer(largest_copy);
                 }
-                if (Settings::values.enable_gpu_buffer_readback.GetValue()) {
-                    DownloadBufferMemory(buffer, device_addr, copy.size);
-                }
                 device_memory.ReadBlockUnsafe(device_addr, immediate_buffer.data(), copy.size);
                 upload_span = immediate_buffer.subspan(0, copy.size);
             }
@@ -1809,9 +1816,6 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
         for (BufferCopy& copy : copies) {
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
-            if (Settings::values.enable_gpu_buffer_readback.GetValue()) {
-                DownloadBufferMemory(buffer, device_addr, copy.size);
-            }
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;

@@ -20,10 +20,10 @@
 namespace Common {
 
 #if !defined(ARCHITECTURE_x86_64) && !defined(__WIN32)
-const u64 HostPageSize = sysconf(_SC_PAGESIZE);
-const u64 HostPageBits = std::countr_zero(HostPageSize);
-const u64 HostPageMask = ~(HostPageSize - 1);
-const u64 GuestHostAlignment = HostPageSize / 0x1000;
+inline const u64 HostPageSize = sysconf(_SC_PAGESIZE);
+inline const u64 HostPageBits = std::countr_zero(HostPageSize);
+inline const u64 HostPageMask = ~(HostPageSize - 1);
+inline const u64 GuestHostAlignment = HostPageSize / 0x1000;
 #else
 constexpr u64 HostPageSize = 0x1000;
 constexpr u64 HostPageBits = 12;

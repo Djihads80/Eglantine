@@ -18,6 +18,10 @@
 #include "video_core/renderer_vulkan/present/sgsr.h"
 #include "video_core/renderer_vulkan/present/fxaa.h"
 #include "video_core/renderer_vulkan/present/layer.h"
+#ifdef HAS_RESHADE
+#include "video_core/post_processing/fx_chain.h"
+#include "video_core/renderer_vulkan/present/post_process.h"
+#endif
 #include "video_core/renderer_vulkan/present/present_push_constants.h"
 #include "video_core/renderer_vulkan/present/smaa.h"
 #include "video_core/renderer_vulkan/present/util.h"
@@ -90,9 +94,15 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     const u32 scaled_width = texture_info ? texture_info->scaled_width : texture_width;
     const u32 scaled_height = texture_info ? texture_info->scaled_height : texture_height;
     const bool use_accelerated = texture_info.has_value();
+    const bool is_applet =
+        (framebuffer.layer_stack_mask & Service::Nvnflinger::LayerStackBit(
+                                            Service::Nvnflinger::LayerStackId::Recording)) == 0;
 
     RefreshResources(device, framebuffer);
     SetAntiAliasPass(device);
+#ifdef HAS_RESHADE
+    SetPostProcessPass(device, is_applet);
+#endif
 
     // Finish any pending renderpass
     scheduler.RequestOutsideRenderPassOperationContext();
@@ -115,6 +125,12 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
         smaa->Draw(device, scheduler, image_index, &source_image, &source_image_view);
     }
 
+#ifdef HAS_RESHADE
+    if (post_process.has_value()) {
+        post_process->Draw(device, scheduler, image_index, &source_image, &source_image_view);
+    }
+#endif
+
     auto crop_rect = Tegra::NormalizeCrop(framebuffer, texture_width, texture_height);
     const VkExtent2D render_extent{
         .width = scaled_width,
@@ -125,8 +141,11 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
         source_image_view = fsr->Draw(device, scheduler, image_index, source_image, source_image_view, render_extent, crop_rect);
         crop_rect = {0, 0, 1, 1};
     } else if (auto* sgsr = std::get_if<SGSR>(&sr_filter)) {
-        source_image_view = sgsr->Draw(device, scheduler, image_index, source_image, source_image_view, render_extent, crop_rect);
-        crop_rect = {0, 0, 1, 1};
+        if (!is_applet) {
+            source_image_view = sgsr->Draw(device, scheduler, image_index, source_image,
+                                           source_image_view, render_extent, crop_rect);
+            crop_rect = {0, 0, 1, 1};
+        }
     }
 
     SetMatrixData(device, *out_push_constants, layout);
@@ -213,6 +232,47 @@ void Layer::SetAntiAliasPass(const Device& device) {
         break;
     }
 }
+
+#ifdef HAS_RESHADE
+void Layer::SetPostProcessPass(const Device& device, bool is_applet) {
+    if (is_applet) {
+        post_process.reset();
+        return;
+    }
+    const VkExtent2D render_area{
+        .width = Settings::values.resolution_info.ScaleUp(raw_width),
+        .height = Settings::values.resolution_info.ScaleUp(raw_height),
+    };
+
+    const u64 generation = VideoCore::FxChain::Instance().Snapshot().generation;
+    const bool enabled = Settings::values.post_shader_enabled.GetValue();
+
+    if (post_process_generation == generation && post_process_enabled == enabled &&
+        post_process_extent.width == render_area.width &&
+        post_process_extent.height == render_area.height) {
+        return;
+    }
+
+    for (const u64 tick : resource_ticks) {
+        scheduler.Wait(tick);
+    }
+
+    post_process_generation = generation;
+    post_process_enabled = enabled;
+    post_process_extent = render_area;
+    post_process.reset();
+
+    if (!enabled || VideoCore::FxChain::Instance().Size() == 0) {
+        return;
+    }
+
+    post_process.emplace(device, memory_allocator, scheduler, image_count, render_area);
+
+    if (post_process->Empty()) {
+        post_process.reset();
+    }
+}
+#endif
 
 void Layer::ReleaseRawImages() {
     for (const u64 tick : resource_ticks) {

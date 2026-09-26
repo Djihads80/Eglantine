@@ -123,9 +123,7 @@ abstract class SettingsItem(
             IntSetting.RENDERER_FRAME_GEN_TARGET_RATE.key,
             IntSetting.RENDERER_FRAME_GEN_QUEUE_TARGET.key,
             BooleanSetting.RENDERER_FRAME_GEN_FLOW_SCALE_AUTO.key,
-            IntSetting.RENDERER_FRAME_GEN_FLOW_SCALE.key,
-            BooleanSetting.RENDERER_FRAME_GEN_FP16.key,
-            BooleanSetting.RENDERER_FRAME_GEN_DUMP_FLOW.key
+            IntSetting.RENDERER_FRAME_GEN_FLOW_SCALE.key
         )
 
         const val TYPE_HEADER = 0
@@ -144,6 +142,10 @@ abstract class SettingsItem(
         const val TYPE_LAUNCHABLE = 13
         const val TYPE_PATH = 14
         const val TYPE_GPU_UNSWIZZLE = 15
+        const val TYPE_FX_TOOLBAR = 16
+        const val TYPE_FX_PRESET = 17
+        const val TYPE_FX_SHADER = 18
+        const val TYPE_FX_BUTTON = 19
 
         const val FASTMEM_COMBINED = "fastmem_combined"
         const val GPU_UNSWIZZLE_COMBINED = "gpu_unswizzle_combined"
@@ -706,20 +708,6 @@ abstract class SettingsItem(
                 )
             )
             put(
-                SwitchSetting(
-                    BooleanSetting.RENDERER_FRAME_GEN_FP16,
-                    titleId = R.string.frame_gen_fp16,
-                    descriptionId = R.string.frame_gen_fp16_description
-                )
-            )
-            put(
-                SwitchSetting(
-                    BooleanSetting.RENDERER_FRAME_GEN_DUMP_FLOW,
-                    titleId = R.string.frame_gen_dump_flow,
-                    descriptionId = R.string.frame_gen_dump_flow_description
-                )
-            )
-            put(
                 SingleChoiceSetting(
                     IntSetting.RENDERER_SCREEN_LAYOUT,
                     titleId = R.string.renderer_screen_layout,
@@ -918,13 +906,6 @@ abstract class SettingsItem(
                     BooleanSetting.ENABLE_BUFFER_HISTORY,
                     titleId = R.string.enable_buffer_history,
                     descriptionId = R.string.enable_buffer_history_description
-                )
-            )
-            put(
-                SwitchSetting(
-                    BooleanSetting.ENABLE_GPU_BUFFER_READBACK,
-                    titleId = R.string.enable_gpu_buffer_readback,
-                    descriptionId = R.string.enable_gpu_buffer_readback_description
                 )
             )
             put(

@@ -76,7 +76,6 @@ add_library(
     logging.h
     lz4_compression.cpp
     lz4_compression.h
-    make_unique_for_overwrite.h
     math_util.h
     memory_detect.cpp
     memory_detect.h
@@ -110,7 +109,6 @@ add_library(
     socket_types.h
     sparse_large_vector.cpp
     sparse_large_vector.h
-    spin_lock.h
     stb.cpp
     stb.h
     steady_clock.cpp

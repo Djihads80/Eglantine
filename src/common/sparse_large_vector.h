@@ -24,15 +24,17 @@
 namespace Common {
 
 #ifdef _WIN32
-bool CommitVectorPage(uintptr_t addr, bool write) noexcept;
+bool CommitVectorPage(uintptr_t addr, bool write) noexcept;s
 #endif
 
 void* AllocateMemoryPages(std::size_t size) noexcept;
 void FreeMemoryPages(void* base, std::size_t size) noexcept;
+void DecommitVectorPage(uintptr_t base) noexcept;
 
 /// A large page-aligned buffer that has optimized memory usage for zero-writes.
 template <typename T>
-requires std::is_trivially_copyable_v<T>
+    // MSVC doesn't regard structs with atomics as trivially copyable
+    // requires std::is_trivially_copyable_v<T>
 class SparseLargeVector final {
 public:
     constexpr SparseLargeVector() = default;
@@ -73,8 +75,8 @@ public:
             UNREACHABLE_MSG("Out of bounds RW access on SparseLargeVector @ {}", index);
         }
 
-        if (!IsCommittedPage(index)) {
-            CommitPage(index);
+        if (!IsCommittedPage(index) && !CommitPage(index)) {
+            UNREACHABLE_MSG("Cannot access SparseLargeVector index {} with RW permission", index);
         }
         return base_ptr[index];
     }
@@ -95,9 +97,8 @@ public:
             LOG_CRITICAL(Common_Memory, "Out of bounds write on SparseLargeVector @ {}", index);
             return;
         }
-        if (!IsCommittedPage(index))
-            CommitPage(index);
-        base_ptr[index] = value;
+        if (IsCommittedPage(index) || CommitPage(index))
+            base_ptr[index] = value;
     }
 
     void ZeroRegion(std::size_t start, std::size_t end_) noexcept {
@@ -107,7 +108,7 @@ public:
         const u64 end_page = AlignUp(base, HostPageSize);
         const u64 first_size = (std::min)(end_page, end) - base;
 
-        if (IsCommittedPage(start / sizeof(T))) {
+        if (IsCommittedPage(start)) {
             std::memset(reinterpret_cast<void*>(base), 0, first_size);
         }
 
@@ -117,11 +118,16 @@ public:
         base = end_page;
 
         for (u64 page = base; page < end; page += HostPageSize) {
-            if (!IsCommittedPage((page - reinterpret_cast<u64>(base_ptr)) / sizeof(T))) {
+            auto index = (page - reinterpret_cast<u64>(base_ptr)) / sizeof(T);
+            if (!IsCommittedPage(index)) {
                 continue;
             }
 
-            std::memset(reinterpret_cast<void*>(page), 0, (std::min)(HostPageSize, end - page));
+            if (end - page >= HostPageSize) {
+                DecommitPage(index);
+            } else {
+                std::memset(reinterpret_cast<void*>(page), 0, end - page);
+            }
         }
     }
 
@@ -164,16 +170,30 @@ private:
         return (val >> (page & 63)) & 1;
     }
 
-    constexpr void CommitPage(std::size_t index) noexcept {
+    constexpr bool CommitPage(std::size_t index) noexcept {
         auto page_index = (index * sizeof(T)) >> HostPageBits;
         auto page = reinterpret_cast<uintptr_t>(base_ptr + index) & HostPageMask;
 #if defined(_WIN32)
-        CommitVectorPage(page, true);
+        if (!CommitVectorPage(page, true)) {
+            return false;
+        }
 #else
-        mprotect(reinterpret_cast<void*>(page), HostPageSize, PROT_READ | PROT_WRITE);
+        if (mprotect(reinterpret_cast<void*>(page), HostPageSize, PROT_READ | PROT_WRITE) != 0) {
+            LOG_ERROR(Common_Memory, "Failed to commit large buffer region at index {}, error {}", index, strerror(errno));
+            return false;
+        }
 #endif
 
         committed_pages[page_index >> 6].fetch_or(1ULL << (page_index & 63), std::memory_order_release);
+        return true;
+    }
+
+    constexpr void DecommitPage(std::size_t index) noexcept {
+        auto page_index = (index * sizeof(T)) >> HostPageBits;
+        auto page = reinterpret_cast<uintptr_t>(base_ptr + index) & HostPageMask;
+
+        committed_pages[page_index >> 6].fetch_and(~(1ULL << (page_index & 63)), std::memory_order_release);
+        DecommitVectorPage(page);
     }
 
     std::size_t alloc_size{};

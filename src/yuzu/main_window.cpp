@@ -3,6 +3,7 @@
 
 // Static Qt on macOS doesn't use Vulkan
 // Other platforms do, and thus have conflicting VulkanMemoryAllocator symbols
+#include "core/launch_params.h"
 #if defined(QT_STATICPLUGIN) && !defined(__APPLE__)
 #undef VMA_IMPLEMENTATION
 #endif
@@ -13,6 +14,10 @@
 #include "common/settings_enums.h"
 #include "frontend_common/settings_generator.h"
 #include "render/performance_overlay.h"
+#ifdef HAS_RESHADE
+#include "configuration/configure_post_processing.h"
+#include "video_core/post_processing/fx_preset.h"
+#endif
 #include "updater/update_dialog.h"
 
 #include "common/fs/ryujinx_compat.h"
@@ -511,79 +516,28 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     // to prevent the UI from blowing up.
     UpdateUITheme();
 
-    QStringList args = QApplication::arguments();
+    if (QStringList args = QApplication::arguments(); args.size() >= 2) {
+        QList<QByteArray> qba{};
+        for (auto const& e : args)
+            qba.push_back(e.toUtf8());
+        std::vector<char*> args_cstr{};
+        for (auto& e : qba)
+            args_cstr.push_back(e.data());
 
-    if (args.size() < 2) {
-        return;
-    }
+        auto const lp = Core::ParseLaunchParams(*QtCommon::system, args_cstr.size(), args_cstr.data(), nullptr);
 
-    QString game_path;
-    bool should_launch_qlaunch = false;
-    bool should_launch_hlaunch = false;
-    bool should_launch_setup = false;
-    bool has_gamepath = false;
-    bool is_fullscreen = false;
-
-    // Preserves drag/drop functionality
-    for (int i = 1; i < args.size(); ++i) {
-        if (args[i] == QStringLiteral("-f")) {
-            // Launch game in fullscreen mode
-            is_fullscreen = true;
-        } else if (args[i] == QStringLiteral("-u") && i < args.size() - 1) {
-            // Launch game with a specific user
-            int user_arg_idx = ++i;
-            bool argument_ok;
-            std::size_t selected_user = args[user_arg_idx].toUInt(&argument_ok);
-            if (!argument_ok) {
-                // try to look it up by username, only finds the first username that matches.
-                std::string const user_arg_str = args[user_arg_idx].toStdString();
-                auto const user_idx =
-                    QtCommon::system->GetProfileManager().GetUserIndex(user_arg_str);
-                if (user_idx != std::nullopt) {
-                    selected_user = user_idx.value();
-                } else {
-                    LOG_ERROR(Frontend, "Invalid user argument '{}'", user_arg_str);
-                    continue;
-                }
-            }
-            if (QtCommon::system->GetProfileManager().UserExistsIndex(selected_user)) {
-                Settings::values.current_user = s32(selected_user);
-                user_flag_cmd_line = true;
-            } else {
-                LOG_ERROR(Frontend, "Selected user {} doesn't exist", selected_user);
-            }
-        } else if (args[i] == QStringLiteral("-g") && i < args.size() - 1) {
-            // Launch game at path
-            game_path = args[++i];
-            has_gamepath = true;
-        } else if (args[i] == QStringLiteral("-input-profile") && i < args.size() - 1) {
-            auto& players = Settings::values.players.GetValue();
-            players[0].profile_name = args[++i].toStdString();
-        } else if (args[i] == QStringLiteral("-qlaunch")) {
-            should_launch_qlaunch = true;
-        } else if (args[i] == QStringLiteral("-hlaunch")) {
-            should_launch_hlaunch = true;
-        } else if (args[i] == QStringLiteral("-setup")) {
-            should_launch_setup = true;
-        } else {
-            game_path = args[i];
-            has_gamepath = true;
+        // Override fullscreen setting if gamepath or argument is provided
+        if (!lp.filepath.empty() || lp.fullscreen) {
+            ui->action_Fullscreen->setChecked(lp.fullscreen);
         }
-    }
 
-    // Override fullscreen setting if gamepath or argument is provided
-    if (has_gamepath || is_fullscreen) {
-        ui->action_Fullscreen->setChecked(is_fullscreen);
-    }
-
-    if (should_launch_setup) {
-        LaunchFirmwareApplet(u64(Service::AM::AppletProgramId::Starter), std::nullopt);
-    } else {
-        if (!game_path.isEmpty()) {
-            BootGame(game_path, ApplicationAppletParameters());
-        } else if (should_launch_qlaunch) {
+        if (!lp.filepath.empty()) {
+            BootGame(QString::fromStdString(lp.filepath), ApplicationAppletParameters());
+        } else if (lp.launch_setup) {
+            LaunchFirmwareApplet(u64(Service::AM::AppletProgramId::Starter), std::nullopt);
+        } else if (lp.launch_qlaunch) {
             LaunchFirmwareApplet(u64(Service::AM::AppletProgramId::QLaunch), std::nullopt);
-        } else if (should_launch_hlaunch) {
+        } else if (lp.launch_hlaunch) {
             std::filesystem::path const sd_dir =
                 Common::FS::GetEdenPathString(Common::FS::EdenPath::SDMCDir);
             auto const hbl_path = (sd_dir / "atmosphere" / "hbl.nsp").string();
@@ -1087,6 +1041,41 @@ void MainWindow::InitializeWidgets() {
 
     statusBar()->insertPermanentWidget(0, volume_button);
 
+#ifdef HAS_RESHADE
+    post_shader_status_button = new QPushButton();
+    post_shader_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
+    post_shader_status_button->setFocusPolicy(Qt::NoFocus);
+    post_shader_status_button->setCheckable(true);
+    connect(post_shader_status_button, &QPushButton::clicked, this, [this] {
+        const bool enabled = Settings::values.post_shader_enabled.GetValue();
+        Settings::values.post_shader_enabled.SetValue(!enabled);
+        UpdatePostShaderText();
+    });
+    UpdatePostShaderText();
+    post_shader_status_button->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(post_shader_status_button, &QPushButton::customContextMenuRequested,
+            [this](const QPoint& menu_location) {
+                QMenu context_menu;
+
+                for (auto const& preset : VideoCore::GetFxPresetCatalog()) {
+                    context_menu.addAction(QString::fromStdString(preset.name),
+                                           [this, name = preset.name] {
+                                               VideoCore::ApplyFxPreset(name);
+                                               Settings::values.post_shader_enabled.SetValue(true);
+                                               UpdatePostShaderText();
+                                           });
+                }
+
+                context_menu.addSeparator();
+                context_menu.addAction(tr("Configure Effects..."), this,
+                                       &MainWindow::OnPostProcessingShaders);
+
+                context_menu.exec(post_shader_status_button->mapToGlobal(menu_location));
+                post_shader_status_button->repaint();
+            });
+    statusBar()->insertPermanentWidget(0, post_shader_status_button);
+#endif
+
     // setup AA button
     aa_status_button = new QPushButton();
     aa_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
@@ -1517,6 +1506,11 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Show_Filter_Bar, &MainWindow::OnToggleFilterBar);
     connect_menu(ui->action_Show_Status_Bar, &MainWindow::OnToggleStatusBar);
     connect_menu(ui->action_Show_Performance_Overlay, &MainWindow::OnTogglePerfOverlay);
+#ifdef HAS_RESHADE
+    connect_menu(ui->action_Post_Processing_Shaders, &MainWindow::OnPostProcessingShaders);
+#else
+    ui->action_Post_Processing_Shaders->setVisible(false);
+#endif
 
     connect_menu(ui->action_Reset_Window_Size_720, &MainWindow::ResetWindowSize720);
     connect_menu(ui->action_Reset_Window_Size_900, &MainWindow::ResetWindowSize900);
@@ -3893,6 +3887,23 @@ void MainWindow::OnTogglePerfOverlay() {
         perf_overlay->setVisible(ui->action_Show_Performance_Overlay->isChecked());
 }
 
+#ifdef HAS_RESHADE
+void MainWindow::OnPostProcessingShaders() {
+    if (post_processing_dialog == nullptr) {
+        post_processing_dialog = new ConfigurePostProcessing(this);
+        connect(post_processing_dialog, &QDialog::finished, post_processing_dialog, [this]() {
+            post_processing_dialog->deleteLater();
+            post_processing_dialog = nullptr;
+            UpdatePostShaderText();
+        });
+    }
+
+    post_processing_dialog->show();
+    post_processing_dialog->raise();
+    post_processing_dialog->activateWindow();
+}
+#endif
+
 void MainWindow::OnGameListRefresh() {
     // Resets metadata cache and reloads
     QtCommon::Game::ResetMetadata(false);
@@ -4237,6 +4248,26 @@ void MainWindow::UpdateAAText() {
                                   ? QStringLiteral(QT_TRANSLATE_NOOP("MainWindow", "NO AA"))
                                   : aa_text.toUpper());
 }
+
+#ifdef HAS_RESHADE
+void MainWindow::UpdatePostShaderText() {
+    const bool enabled = Settings::values.post_shader_enabled.GetValue();
+    post_shader_status_button->setChecked(enabled);
+
+    if (!enabled) {
+        post_shader_status_button->setText(tr("NO FX"));
+        return;
+    }
+
+    const std::string preset = VideoCore::GetActiveFxPreset();
+    if (preset.empty()) {
+        post_shader_status_button->setText(tr("FX"));
+        return;
+    }
+
+    post_shader_status_button->setText(QString::fromStdString(preset).toUpper());
+}
+#endif
 
 void MainWindow::UpdateVolumeUI() {
     const auto volume_value = static_cast<int>(Settings::values.volume.GetValue());
