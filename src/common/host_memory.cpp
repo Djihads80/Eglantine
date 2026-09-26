@@ -216,7 +216,7 @@ public:
             Split(virtual_offset, length);
         }
         ASSERT(placeholders.find({virtual_offset, virtual_offset + length}) == placeholders.end());
-        TrackPlaceholder(virtual_offset, host_offset, length, perms);
+        TrackPlaceholder(virtual_offset, host_offset, length, True(perms & MemoryPermission::Execute));
 
         MapView(virtual_offset, host_offset, length, True(perms & MemoryPermission::Execute));
     }
