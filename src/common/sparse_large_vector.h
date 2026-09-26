@@ -81,7 +81,7 @@ public:
             UNREACHABLE_MSG("Out of bounds RW access on SparseLargeVector @ {}", index);
         }
 
-        if (!IsCommittedPage(index) || !CommitPage(index)) {
+        if (!IsCommittedPage(index) && !CommitPage(index)) {
             UNREACHABLE_MSG("Cannot access SparseLargeVector index {} with RW permission", index);
         }
         return base_ptr[index];

@@ -137,7 +137,7 @@ void* AllocateMemoryPages(std::size_t size) noexcept {
 
     if (base != nullptr) {
         std::lock_guard lock(vector_regions_mutex);
-        vector_regions.emplace_back(reinterpret_cast<u64>(base), reinterpret_cast<u64>(base) + size);
+        vector_regions.emplace_back(reinterpret_cast<u64>(base) >> HostPageBits, (reinterpret_cast<u64>(base) + size) >> HostPageBits);
 
         static std::once_flag flag;
         std::call_once(flag, []() { AddVectoredExceptionHandler(1, FakePageFaultHandler); });
