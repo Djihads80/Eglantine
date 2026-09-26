@@ -24,7 +24,7 @@
 namespace Common {
 
 #ifdef _WIN32
-bool CommitVectorPage(uintptr_t addr, bool write) noexcept;s
+bool CommitVectorPage(uintptr_t addr, bool write) noexcept;
 #endif
 
 void* AllocateMemoryPages(std::size_t size) noexcept;

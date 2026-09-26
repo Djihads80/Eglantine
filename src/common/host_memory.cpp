@@ -359,7 +359,7 @@ private:
         if (!split_left) {
             // Try to coalesce pages to the left
             const auto prev = std::prev(it);
-            const auto prev_data = placeholder_data.find(prev);
+            const auto prev_data = placeholder_data.find(prev->lower());
             coalesce_begin = it == begin ? 0 : prev->upper();
             if (coalesce_begin != placeholder_begin && executable == prev_data->second.executable) {
                 Coalesce(coalesce_begin, unmap_end - coalesce_begin);
@@ -368,7 +368,7 @@ private:
         if (!split_right) {
             // Try to coalesce pages to the right
             const auto next = std::next(it);
-            const auto next_data = placeholder_data.find(next);
+            const auto next_data = placeholder_data.find(next->lower());
             const size_t next_begin = next == end ? virtual_size : next->lower();
             if (placeholder_end != next_begin && executable == next_data->second.executable) {
                 // We can coalesce to the right
@@ -397,18 +397,18 @@ private:
 
         auto placeholder_start = it->lower();
         auto placeholder_end = it->upper();
-        auto placeholder_offset = virtual_offset - placerholder_start;
+        auto placeholder_offset = virtual_offset - placeholder_start;
         ASSERT(placeholder_start <= virtual_offset);
         ASSERT(placeholder_end >= virtual_offset + length); // TODO: protect regions that pass through multiple regions? is that needed?
 
         auto data = placeholder_data.find(placeholder_start);
-        if (data.executable == executable) {
+        if (data->second.executable == executable) {
             return;
         }
 
-        UnmapOnePlaceholder(virtual_offset, length));
+        UnmapOnePlaceholder(virtual_offset, length);
 
-        MapView(virtual_offset, data->second().host_ptr + placeholder_offset, length, executable);
+        MapView(virtual_offset, data->second.host_ptr + placeholder_offset, length, executable);
         return;
     }
 #else
