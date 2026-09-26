@@ -12,6 +12,10 @@
 #define ZSTDERRORLIB_HIDDEN static
 #undef ZSTD_MULTITHREAD
 
+#if defined(__ANDROID__)
+#undef _GNU_SOURCE
+#endif
+
 #include "zstd.h"
 #include "zstd.c"
 
