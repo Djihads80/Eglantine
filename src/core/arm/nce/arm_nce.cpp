@@ -175,7 +175,7 @@ HaltReason ArmNce::ReturnToRunCodeByTrampoline(NativeExecutionParameters* nep, u
         "mrs x4, TPIDR_EL0\n"
         "msr TPIDR_EL0, x0\n"
         // Store host sp and tpidr_el0
-        "stp x3, x4, [x2, #0xE0]\n"
+        "stp x3, x4, [x5, #0xE0]\n"
 #else
         // is_actually_running = true
         "mov w4, #1\n"
@@ -282,7 +282,7 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
 #endif
             // Match and execute an instruction.
             auto ctx = KernelContext(raw_context);
-            auto next_pc = MatchAndExecuteOneInstruction(memory, &ctx);
+            auto next_pc = MatchAndExecuteOneInstruction(memory, ctx);
             if (next_pc) {
                 // We handled the access successfully and are returning to guest code.
                 *ctx.pc() = *next_pc;

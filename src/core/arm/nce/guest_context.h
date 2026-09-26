@@ -52,7 +52,7 @@ struct GuestContext {
 class KernelContext {
 public:
 #if defined(__linux__)
-    KernelContext(void* ptr_) : ptr(&static_cast<ucontext_t *>(ptr_)->uc_mcontext), fpsimd{GetFloatingPointState(ptr)} {}
+    explicit KernelContext(void* ptr_) : ptr(&static_cast<ucontext_t *>(ptr_)->uc_mcontext), fpsimd{GetFloatingPointState(ptr)} {}
 
     u64* pc() {
         // u64 (unsigned long) does not equal unsigned long long
@@ -87,7 +87,7 @@ public:
     }
 
 #elif defined(__APPLE__)
-    KernelContext(void* ptr) : ptr(static_cast<ucontext_t*>(ptr)->uc_mcontext) {}
+    explicit KernelContext(void* ptr) : ptr(static_cast<ucontext_t*>(ptr)->uc_mcontext) {}
 
     u64* pc() {
         return &ptr->__ss.__pc;
@@ -118,7 +118,7 @@ public:
         return &ptr->__ss.__cpsr;
     }
 #elif defined(_WIN32)
-    KernelContext(void* ptr) : ptr(static_cast<CONTEXT*>(ptr)) {}
+    explicit KernelContext(void* ptr) : ptr(static_cast<CONTEXT*>(ptr)) {}
 
     u64* pc() {
         return &ptr->Pc;
