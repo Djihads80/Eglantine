@@ -95,14 +95,10 @@ vk::Buffer CreateBuffer(const Device& device, const MemoryAllocator& memory_allo
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices = nullptr,
     };
-    MemoryUsage usage = MemoryUsage::DeviceLocal;
-    if (device.IsIntegrated()) {
-        usage = MemoryUsage::Stream;
-    }
     if (sparse_alignment > 1) {
-        return memory_allocator.CreateBuffer(buffer_ci, usage, sparse_alignment);
+        return memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::DeviceLocal, sparse_alignment);
     }
-    return memory_allocator.CreateBuffer(buffer_ci, usage);
+    return memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::DeviceLocal);
 }
 } // Anonymous namespace
 

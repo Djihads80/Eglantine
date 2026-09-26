@@ -843,27 +843,6 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     pipeline_cache.InvalidateRegion(addr, size);
 }
 
-bool RasterizerVulkan::TryOnCacheInvalidation(DAddr addr, u64 size) {
-    if (addr == 0 || size == 0) {
-        return true;
-    }
-    bool handled = true;
-    if (std::unique_lock lock{texture_cache.mutex, std::try_to_lock}; lock) {
-        texture_cache.WriteMemory(addr, size);
-    } else {
-        texture_cache.mutex.Defer(addr, size);
-        handled = false;
-    }
-    if (std::unique_lock lock{buffer_cache.mutex, std::try_to_lock}; lock) {
-        buffer_cache.WriteMemory(addr, size);
-    } else {
-        buffer_cache.mutex.Defer(addr, size);
-        handled = false;
-    }
-    pipeline_cache.InvalidateRegion(addr, size);
-    return handled;
-}
-
 void RasterizerVulkan::InvalidateGPUCache() {
     gpu.InvalidateGPUCache();
 }
@@ -985,7 +964,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
     {
-        std::scoped_lock lock{buffer_cache.mutex};
+        std::unique_lock<std::recursive_mutex> lock{buffer_cache.mutex};
         if (!buffer_cache.InlineMemory(*cpu_addr, copy_size, memory)) {
             buffer_cache.WriteMemory(*cpu_addr, copy_size);
         }

@@ -98,7 +98,6 @@ add_library(video_core STATIC
     gpu_thread.h
     guest_memory.h
     invalidation_accumulator.h
-    invalidation_mutex.h
     memory_manager.cpp
     memory_manager.h
     present.h

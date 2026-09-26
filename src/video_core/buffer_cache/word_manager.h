@@ -115,17 +115,12 @@ struct WordManager {
     /// @param enable        If enabling or disabling
     /// @param dirty_addr    Base address to mark or unmark as modified
     /// @param size          Size in bytes to mark or unmark as modified
-    void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size,
-                           bool skip_gpu = false) noexcept {
+    void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
         std::span<u64> state_words = Span(type);
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
-        const std::span<const u64> gpu_words = Span(Type::GPU);
         std::vector<std::pair<VAddr, u64>> ranges;
         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
-            if (skip_gpu) {
-                mask &= ~gpu_words[index];
-            }
             if (type == Type::CPU || type == Type::CachedCPU) {
                 CollectChangedRanges(!enable, index, untracked_words[index], mask, ranges);
             }

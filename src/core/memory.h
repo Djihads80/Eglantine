@@ -480,8 +480,6 @@ public:
      */
     void RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, bool cached);
 
-    void RasterizerMarkRegionReadProtected(Common::ProcessAddress vaddr, u64 size, bool protect);
-
     /**
      * Marks each page within the specified address range as debug or non-debug.
      * Debug addresses are not accessible from fastmem pointers.
@@ -495,7 +493,7 @@ public:
 
     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
 
-    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool write);
+    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
 
     bool InvalidateSeparateHeap(void* fault_address);
 

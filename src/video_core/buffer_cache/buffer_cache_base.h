@@ -34,7 +34,6 @@
 #include "video_core/cache_reclaim.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
-#include "video_core/invalidation_mutex.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -351,7 +350,7 @@ public:
         } while (channel_state->has_deleted_buffers);
     }
 
-    InvalidationMutex mutex;
+    std::recursive_mutex mutex;
     Runtime& runtime;
     bool any_buffer_uploaded = false;
 

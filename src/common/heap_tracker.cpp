@@ -156,37 +156,6 @@ void HeapTracker::Protect(size_t virtual_offset, size_t size, MemoryPermission p
         // Advance.
         cur = next;
     }
-
-    std::scoped_lock lk2{m_lock};
-    this->MergeHeapMapsLocked(virtual_offset, end);
-}
-
-void HeapTracker::MergeHeapMapsLocked(VAddr begin, VAddr end) {
-    auto it = m_mappings.find(SeparateHeapMap{.vaddr = begin - 1});
-    if (it == m_mappings.end()) {
-        it = m_mappings.nfind(SeparateHeapMap{.vaddr = begin});
-    }
-    while (it != m_mappings.end() && it->vaddr <= end) {
-        auto next = it;
-        ++next;
-        if (next == m_mappings.end()) {
-            return;
-        }
-        if (it->vaddr + it->size != next->vaddr || it->paddr + it->size != next->paddr ||
-            it->perm != next->perm || it->is_resident != next->is_resident) {
-            it = next;
-            continue;
-        }
-        auto* const item = std::addressof(*next);
-        if (item->is_resident) {
-            m_resident_map_count--;
-            m_resident_mappings.erase(m_resident_mappings.iterator_to(*item));
-        }
-        m_map_count--;
-        m_mappings.erase(next);
-        it->size += item->size;
-        delete item;
-    }
 }
 
 bool HeapTracker::DeferredMapSeparateHeap(u8* fault_address) {

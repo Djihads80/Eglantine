@@ -41,17 +41,6 @@ fpsimd_context* GetFloatingPointState(mcontext_t& host_ctx) {
     return reinterpret_cast<fpsimd_context*>(header);
 }
 
-bool IsWriteFault(mcontext_t& host_ctx) {
-    _aarch64_ctx* header = reinterpret_cast<_aarch64_ctx*>(&host_ctx.__reserved);
-    while (header->magic != 0) {
-        if (header->magic == ESR_MAGIC) {
-            return (reinterpret_cast<esr_context*>(header)->esr & (1ULL << 6)) != 0;
-        }
-        header = reinterpret_cast<_aarch64_ctx*>(reinterpret_cast<char*>(header) + header->size);
-    }
-    return true;
-}
-
 using namespace Common::Literals;
 constexpr u32 StackSize = 128_KiB;
 
@@ -176,8 +165,7 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     const Common::ProcessAddress addr =
         (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
-    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
-    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, IsWriteFault(host_ctx))) {
+    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
         // We handled the access successfully and are returning to guest code.
         return true;
     }

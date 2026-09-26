@@ -126,8 +126,6 @@ public:
     // New batch API to update multiple ranges with a single lock acquisition.
     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
 
-    void ProtectPagesRead(DAddr addr, size_t size, bool protect);
-
 private:
     struct TranslationEntry {
         DAddr guest_page{};
