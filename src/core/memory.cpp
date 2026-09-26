@@ -450,10 +450,7 @@ struct Memory::Impl {
         }
 
         if (current_page_table->fastmem_arena) {
-            Common::MemoryPermission perm{};
-            if (!Settings::values.use_reactive_flushing.GetValue() || !cached) {
-                perm |= Common::MemoryPermission::Read;
-            }
+            Common::MemoryPermission perm{Common::MemoryPermission::Read};
             if (!cached) {
                 perm |= Common::MemoryPermission::Write;
             }
@@ -513,6 +510,30 @@ struct Memory::Impl {
                     UNREACHABLE();
                 }
             }
+        }
+    }
+
+    void RasterizerMarkRegionReadProtected(u64 vaddr, u64 size, bool protect) {
+        if (vaddr == 0 || !current_page_table->fastmem_arena ||
+            !AddressSpaceContains(*current_page_table, vaddr, size)) {
+            return;
+        }
+        Common::MemoryPermission perm{Common::MemoryPermission::Read};
+        if (protect) {
+            perm = {};
+        }
+        host_buffer->Protect(vaddr, size, perm);
+    }
+
+    void HandleNCEFault(u64 vaddr, u8* ptr, size_t size, bool write) {
+        if (!write) {
+            rasterizer_read_areas[system.GetCurrentHostThreadID()] = {};
+            HandleRasterizerDownload(vaddr, size);
+            host_buffer->Protect(vaddr, size, Common::MemoryPermission::Read);
+            return;
+        }
+        if (!InvalidateGPUMemory(ptr, size)) {
+            host_buffer->Protect(vaddr, size, Common::MemoryPermission::ReadWrite);
         }
     }
 
@@ -737,7 +758,7 @@ struct Memory::Impl {
         PAddr last_address;
     };
 
-    void InvalidateGPUMemory(u8* p, size_t size) {
+    bool InvalidateGPUMemory(u8* p, size_t size) {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
                                      sys_core); // any other calls threads go to syscore.
@@ -754,8 +775,13 @@ struct Memory::Impl {
             }
         };
         auto& gpu = system.GPU();
-        gpu_device_memory->ApplyOpOnPointer(
-            p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size); });
+        bool handled = true;
+        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            if (!gpu.TryInvalidateRegion(address, size)) {
+                handled = false;
+            }
+        });
+        return handled;
     }
 
     Core::System& system;
@@ -954,11 +980,16 @@ void Memory::RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, 
     impl->RasterizerMarkRegionCached(GetInteger(vaddr), size, cached);
 }
 
+void Memory::RasterizerMarkRegionReadProtected(Common::ProcessAddress vaddr, u64 size,
+                                               bool protect) {
+    impl->RasterizerMarkRegionReadProtected(GetInteger(vaddr), size, protect);
+}
+
 void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug) {
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool write) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -970,15 +1001,15 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer) {
-        impl->InvalidateGPUMemory(ptr, size);
-    }
-
 #ifdef __ANDROID__
-    if (!rasterizer && mapped) {
-        impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
+    if (mapped && impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr))) {
+        return true;
     }
 #endif
+
+    if (rasterizer) {
+        impl->HandleNCEFault(GetInteger(vaddr), ptr, size, write);
+    }
 
     return mapped && ptr != nullptr;
 }

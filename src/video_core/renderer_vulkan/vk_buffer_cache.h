@@ -55,6 +55,13 @@ public:
         return buffer.Location();
     }
 
+    [[nodiscard]] std::span<u8> Mapped() noexcept {
+        if (!buffer.IsHostCoherent()) {
+            return {};
+        }
+        return buffer.Mapped();
+    }
+
     [[nodiscard]] bool IsRegionUsed(u64 offset, u64 size) const noexcept {
         return tracker.IsUsed(offset, size);
     }

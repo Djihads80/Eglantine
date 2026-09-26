@@ -111,6 +111,11 @@ public:
     /// Notify rasterizer that any caches of the specified region are desync with guest
     virtual void OnCacheInvalidation(PAddr addr, u64 size) = 0;
 
+    virtual bool TryOnCacheInvalidation(PAddr addr, u64 size) {
+        OnCacheInvalidation(addr, size);
+        return true;
+    }
+
     virtual bool OnCPUWrite(PAddr addr, u64 size) = 0;
 
     /// Sync memory between guest and host.

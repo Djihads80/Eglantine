@@ -79,6 +79,7 @@ private:
 private:
     void SplitHeapMap(VAddr offset, size_t size);
     void SplitHeapMapLocked(VAddr offset);
+    void MergeHeapMapsLocked(VAddr begin, VAddr end);
 
     AddrTree::iterator GetNearestHeapMapLocked(VAddr offset);
 

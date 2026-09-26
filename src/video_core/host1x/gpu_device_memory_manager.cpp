@@ -12,6 +12,11 @@ struct MaxwellDeviceMethods {
                                          size_t size, bool caching) {
         interface->RasterizerMarkRegionCached(address, size, caching);
     }
+
+    static inline void MarkRegionReadProtected(Core::Memory::Memory* interface, VAddr address,
+                                               size_t size, bool protect) {
+        interface->RasterizerMarkRegionReadProtected(address, size, protect);
+    }
 };
 
 } // namespace Tegra

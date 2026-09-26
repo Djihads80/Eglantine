@@ -27,6 +27,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
     inline_buffer_id = NULL_BUFFER_ID;
+    mutex.apply = [this](DAddr addr, u64 size) { WriteMemory(addr, size); };
 #ifdef YUZU_LEGACY
     immediately_free = (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive);
 #endif
@@ -145,7 +146,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
     }
-    memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+    memory_tracker.MarkBlockAsCpuModified(device_addr, size);
 }
 
 template <class P>
@@ -1871,19 +1872,31 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
                                         [[maybe_unused]] u64 total_size_bytes,
                                         [[maybe_unused]] std::span<BufferCopy> copies) {
     if constexpr (USE_MEMORY_MAPS) {
-        auto upload_staging = runtime.UploadStagingBuffer(total_size_bytes);
-        const std::span<u8> staging_pointer = upload_staging.mapped_span;
-        for (BufferCopy& copy : copies) {
-            u8* const src_pointer = staging_pointer.data() + copy.src_offset;
+        const auto read = [&](const BufferCopy& copy, u8* dst_pointer) {
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             if (Settings::values.enable_gpu_buffer_readback.GetValue()) {
                 DownloadBufferMemory(buffer, device_addr, copy.size);
             }
-            device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            device_memory.ReadBlockUnsafe(device_addr, dst_pointer, copy.size);
+        };
+        const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        if constexpr (!IS_OPENGL) {
+            const std::span<u8> mapped = buffer.Mapped();
+            if (can_reorder && !mapped.empty()) {
+                for (const BufferCopy& copy : copies) {
+                    read(copy, mapped.data() + copy.dst_offset);
+                }
+                return;
+            }
+        }
+        auto upload_staging = runtime.UploadStagingBuffer(total_size_bytes);
+        const std::span<u8> staging_pointer = upload_staging.mapped_span;
+        for (BufferCopy& copy : copies) {
+            read(copy, staging_pointer.data() + copy.src_offset);
+            buffer.MarkUsage(copy.dst_offset, copy.size);
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
         }
-        const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     }
 }
@@ -1927,6 +1940,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         u8* const src_pointer = upload_staging.mapped_span.data();
         std::memcpy(src_pointer, inlined_buffer.data(), copy_size);
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        buffer.MarkUsage(copies[0].dst_offset, copy_size);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     } else {
         buffer.ImmediateUpload(buffer.Offset(dest_address), inlined_buffer.first(copy_size));

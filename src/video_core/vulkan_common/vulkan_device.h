@@ -328,6 +328,10 @@ public:
         return features.features.sparseBinding && graphics_family_sparse_binding;
     }
 
+    bool IsIntegrated() const {
+        return is_integrated;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {

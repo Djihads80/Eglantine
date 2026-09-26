@@ -34,6 +34,7 @@
 #include "video_core/cache_reclaim.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/engines/fermi_2d.h"
+#include "video_core/invalidation_mutex.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/descriptor_table.h"
 #include "video_core/texture_cache/image_base.h"
@@ -245,7 +246,7 @@ public:
     /// Prepare an image to be used
     void PrepareImage(ImageId image_id, bool is_modification, bool invalidate);
 
-    std::recursive_mutex mutex;
+    InvalidationMutex mutex;
 
 private:
     /// Iterate over all page indices in a range
@@ -367,6 +368,8 @@ private:
 
     /// Stop tracking CPU reads and writes for image
     void UntrackImage(ImageBase& image, ImageId image_id);
+
+    void UnprotectImageRead(ImageBase& image);
 
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);

@@ -28,6 +28,7 @@ class MemoryTrackerBase {
     static constexpr size_t HIGHER_PAGE_MASK = HIGHER_PAGE_SIZE - 1ULL;
     static constexpr size_t NUM_HIGH_PAGES = 1ULL << (MAX_CPU_PAGE_BITS - HIGHER_PAGE_BITS);
     static constexpr size_t MANAGER_POOL_SIZE = 32;
+    static constexpr size_t CPU_WRITE_BLOCK_SIZE = 1ULL << 16;
     static constexpr size_t WORDS_STACK_NEEDED = HIGHER_PAGE_SIZE / BYTES_PER_WORD;
     using Manager = WordManager<DeviceTracker, WORDS_STACK_NEEDED, HIGHER_PAGE_SIZE>;
 
@@ -75,6 +76,15 @@ public:
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
             manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size);
         });
+    }
+
+    void MarkBlockAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
+        const VAddr begin = Common::AlignDown(dirty_cpu_addr, CPU_WRITE_BLOCK_SIZE);
+        const VAddr end = Common::AlignUp(dirty_cpu_addr + query_size, CPU_WRITE_BLOCK_SIZE);
+        IteratePages<true>(begin, end - begin, [](Manager* manager, u64 offset, size_t size) {
+            manager->ChangeRegionState(Type::CPU, true, manager->cpu_addr + offset, size, true);
+        });
+        MarkRegionAsCpuModified(dirty_cpu_addr, query_size);
     }
 
     /// Unmark region as CPU modified, notifying the device_tracker about this change

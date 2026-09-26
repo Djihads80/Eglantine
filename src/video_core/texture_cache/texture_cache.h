@@ -38,6 +38,7 @@ using namespace Common::Literals;
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
+    mutex.apply = [this](DAddr addr, u64 size) { WriteMemory(addr, size); };
     // Configure null sampler
     TSCEntry sampler_descriptor{};
     sampler_descriptor.min_filter.Assign(Tegra::Texture::TextureFilter::Linear);
@@ -510,6 +511,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
         runtime.Finish();
         SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                      swizzle_data_buffer);
+        UnprotectImageRead(image);
     }
 }
 
@@ -2110,6 +2112,7 @@ template <class P>
 void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
     ASSERT(True(image.flags & ImageFlagBits::Tracked));
     image.flags &= ~ImageFlagBits::Tracked;
+    UnprotectImageRead(image);
     if (False(image.flags & ImageFlagBits::Sparse)) {
         if (image.cpu_addr < ~(1ULL << 40)) {
             device_memory.UpdatePagesCachedCount(image.cpu_addr, image.guest_size_bytes, -1);
@@ -2126,6 +2129,15 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
         const std::size_t size = map.size;
         device_memory.UpdatePagesCachedCount(cpu_addr, size, -1);
     }
+}
+
+template <class P>
+void TextureCache<P>::UnprotectImageRead(ImageBase& image) {
+    if (False(image.flags & ImageFlagBits::ReadProtected)) {
+        return;
+    }
+    image.flags &= ~ImageFlagBits::ReadProtected;
+    device_memory.ProtectPagesRead(image.cpu_addr, image.guest_size_bytes, false);
 }
 
 template <class P>
@@ -2257,6 +2269,13 @@ template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
+    if (False(image.flags & (ImageFlagBits::ReadProtected | ImageFlagBits::Sparse)) &&
+        True(image.flags & ImageFlagBits::Tracked) && !image.info.forced_flushed &&
+        image.cpu_addr < ~(1ULL << 40) && Settings::values.use_reactive_flushing.GetValue() &&
+        IsDownloadable(image)) {
+        image.flags |= ImageFlagBits::ReadProtected;
+        device_memory.ProtectPagesRead(image.cpu_addr, image.guest_size_bytes, true);
+    }
 }
 
 template <class P>

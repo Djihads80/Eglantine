@@ -662,4 +662,29 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedBatch(std::span<const std::pa
     }
 }
 
+template <typename Traits>
+void DeviceMemoryManager<Traits>::ProtectPagesRead(DAddr addr, size_t size, bool protect) {
+    const size_t page_end = Common::DivCeil(addr + size, Memory::YUZU_PAGESIZE);
+    Memory::Memory* run_memory = nullptr;
+    VAddr run_begin = 0;
+    size_t run_bytes = 0;
+    const auto release = [&] {
+        if (run_memory != nullptr && run_begin != 0 && run_bytes != 0) {
+            DeviceMethods::MarkRegionReadProtected(run_memory, run_begin, run_bytes, protect);
+        }
+    };
+    for (size_t page = addr >> Memory::YUZU_PAGEBITS; page != page_end; ++page) {
+        const auto [asid, vaddr] = ExtractCPUBacking(page);
+        Memory::Memory* const memory = registered_processes[asid.id];
+        if (memory != run_memory || vaddr != run_begin + run_bytes) {
+            release();
+            run_memory = memory;
+            run_begin = vaddr;
+            run_bytes = 0;
+        }
+        run_bytes += Memory::YUZU_PAGESIZE;
+    }
+    release();
+}
+
 } // namespace Core
