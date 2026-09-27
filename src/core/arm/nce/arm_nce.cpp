@@ -241,11 +241,6 @@ void ArmNce::BreakFromRunCodeSignalHandler(int sig, void *info, void *raw_contex
 
 void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_context) {
     NativeExecutionParameters* nep = GetGuestParameters();
-#ifdef _WIN32
-    u64 fault_addr = reinterpret_cast<u64>(raw_info);
-#else
-    u64 fault_addr = reinterpret_cast<u64>(static_cast<siginfo_t*>(raw_info)->si_addr);
-#endif
 
 #if defined(__APPLE__) || defined(_WIN32)
     if (nep->is_actually_running) {
@@ -259,8 +254,6 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
             :: [host_tpidr] "r"(host_tpidr));
 #endif
 
-        LOG_DEBUG(Core_ARM, "Signal handler called on {:#x}", fault_addr);
-
         auto* guest_ctx = nep->native_context;
         auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
 
@@ -271,8 +264,13 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
 #endif
             // Try to handle an invalid access.
             // TODO: handle accesses which split a page?
+#ifndef _WIN32
             const Common::ProcessAddress addr =
-                reinterpret_cast<u64>(fault_addr) & ~(Common::HostPageSize - 1);
+                reinterpret_cast<u64>(static_cast<siginfo_t*>(raw_info)->si_addr) & ~(Common::HostPageSize - 1);
+#else
+            const Common::ProcessAddress addr =
+                reinterpret_cast<u64>(*static_cast<u64*>(raw_info)) & ~(Common::HostPageSize - 1);
+#endif
             if (memory.InvalidateNCE(addr, Common::HostPageSize)) {
                 // We handled the access successfully and are returning to guest code.
                 goto ret;
@@ -296,11 +294,9 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
 
         // We couldn't handle the access.
         if (HandleFailedGuestFault(guest_ctx, raw_info, raw_context)) {
-            LOG_DEBUG(Core_ARM, "handled access");
             // Return to guest
             goto ret;
         }
-
         // Otherwise HandleFailedGuestFault sets host context and returns to host
         return;
 
@@ -315,7 +311,6 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
     }
 #ifndef _WIN32
     else {
-        LOG_DEBUG(Core_ARM, "host fault");
         // Host fault, call original handler
         if (sig == SIGSEGV) {
             g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
@@ -519,9 +514,6 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     thread_params->native_context = nullptr;
     m_running_thread = nullptr;
 
-    // Clear and copy anonymous memory regions to backing pages if needed
-    m_system.ApplicationMemory().ResetAnonymousRegions();
-
     // Non-critical updates can happen after releasing the thread
     m_guest_ctx.tpidr_el0 = final_tpidr_el0;
 
@@ -570,7 +562,7 @@ LONG WINAPI ArmNce::VectoredExceptionHandler(PEXCEPTION_POINTERS info) {
     DWORD code = info->ExceptionRecord->ExceptionCode;
 
     if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_DATATYPE_MISALIGNMENT) {
-        GuestMemoryFaultSignalHandler(code, reinterpret_cast<void*>(&info->ExceptionRecord->ExceptionInformation[1]), info->ContextRecord);
+        GuestMemoryFaultSignalHandler(code, reinterpret_cast<void*>(&info->ExceptionRecord->ExceptionAddress), info->ContextRecord);
         if (is_host_fault) {
             is_host_fault = false;
             return EXCEPTION_CONTINUE_SEARCH;

@@ -830,27 +830,6 @@ struct Memory::Impl {
             p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size); });
     }
 
-    void MapAnonymousRegion(u64 vaddr) {
-        host_buffer.Map(vaddr, 0, Common::HostPageSize, MemoryPermission::Read | MemoryPermission::Write); // TODO: memory permissions??
-
-        std::lock_guard lock(anon_mappings_mutex);
-        anon_mappings.emplace_back(vaddr);
-    }
-
-    void ResetAnonymousRegions() {
-        std::lock_guard lock(anon_mappings_mutex);
-        for (u64 mapping : anon_mappings) {
-            for (int i = 0; i < Common::HostPageSize; i += YUZU_PAGESIZE) {
-                auto ptr = GetPointerSilent(mapping + i);
-                if (ptr != nullptr) {
-                    memcpy(ptr, mapping + i, YUZU_PAGESIZE);
-                }
-            }
-            host_buffer.Unmap(mapping);
-        }
-        anon_mappings.clear();
-    }
-
     Core::System& system;
     Tegra::MaxwellDeviceMemoryManager* gpu_device_memory{};
     Common::PageTable* current_page_table = nullptr;
@@ -864,20 +843,13 @@ struct Memory::Impl {
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
     std::mutex sys_core_guard;
-    std::atomic<u16> block_count = 0;
 #ifdef __ANDROID__
     std::optional<Common::HeapTracker> heap_tracker;
     Common::HeapTracker* host_buffer{};
 #else
     Common::HostMemory* host_buffer{};
 #endif
-
-#ifdef HAS_NCE
-    // Sometimes due to host page size limitations, we're unable to map a guest page to its backing page,
-    // so we map it as anonymous and copy it as soon as we return to host.
-    std::vector<u64> anon_mappings{};
-    std::mutex anon_mappings_mutex;
-#endif
+    std::atomic<u16> block_count = 0;
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {
@@ -1079,14 +1051,11 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
         impl->InvalidateGPUMemory(ptr, size);
     }
 
-    if (!rasterizer && mapped) {
 #ifdef __ANDROID__
-        // TODO: what is this
+    if (!rasterizer && mapped) {
         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
-#else
-        impl->MapAnonymousRegion(GetInteger(vaddr));
-#endif
     }
+#endif
 
     return mapped && ptr != nullptr;
 }
