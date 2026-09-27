@@ -17,7 +17,9 @@
 #endif
 
 #include "zstd.h"
+#define g_ZSTD_threading_useless_symbol g_ZSTD_zbic_threading_useless_symbol
 #include "zstd.c"
+#undef g_ZSTD_threading_useless_symbol
 
 namespace Common::Compression {
 
