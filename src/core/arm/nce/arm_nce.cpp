@@ -336,11 +336,11 @@ bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int s
         if (ret == 0) {
             // We handled the access successfully and are returning to guest code.
             return true;
-        } else if (ret == 1) {
-            // This access is in an unmapped region, we need to use the interpreter.
         } else if (ret == -1) {
             // We couldn't handle the access.
             return HandleFailedGuestFault(guest_ctx, fault_addr, raw_context);
+        } else [unlikely] {
+            UNREACHABLE();
         }
     }
 
@@ -541,6 +541,9 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
     thread_params->is_running = false;
     thread_params->native_context = nullptr;
     m_running_thread = nullptr;
+
+    // Clear and copy anonymous memory regions to backing pages if needed
+    m_system.ApplicationMemory().ResetAnonymousRegions();
 
     // Non-critical updates can happen after releasing the thread
     m_guest_ctx.tpidr_el0 = final_tpidr_el0;

@@ -805,6 +805,36 @@ struct Memory::Impl {
         });
     }
 
+#ifdef HAS_NCE
+    void MapAnonymousRegion(u64 vaddr) {
+        std::lock_guard lock(anon_mappings_mutex);
+
+        host_buffer.Map(vaddr, 0, Common::HostPageSize, Common::MemoryPermission::Read | Common::MemoryPermission::Write); // TODO: memory permissions??
+        for (u64 i = 0; i < Common::HostPageSize; i += YUZU_PAGESIZE) {
+            auto ptr = GetPointerSilent(mapping + i); // TODO: use Read/WriteBlock functions
+            if (ptr != nullptr) {
+                memcpy(reinterpret_cast<void*>(vaddr + i), ptr, YUZU_PAGESIZE);
+            }
+        }
+
+        anon_mappings.emplace_back(vaddr);
+    }
+
+    void ResetAnonymousRegions() {
+        std::lock_guard lock(anon_mappings_mutex);
+        for (u64 mapping : anon_mappings) {
+            for (u64 i = 0; i < Common::HostPageSize; i += YUZU_PAGESIZE) {
+                auto ptr = GetPointerSilent(mapping + i);
+                if (ptr != nullptr) {
+                    memcpy(ptr, reinterpret_cast<void*>(mapping + i), YUZU_PAGESIZE);
+                }
+            }
+            host_buffer.Unmap(mapping);
+        }
+        anon_mappings.clear();
+    }
+#endif
+
     struct GPUDirtyState {
         PAddr last_address;
     };
@@ -843,13 +873,20 @@ struct Memory::Impl {
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
     std::mutex sys_core_guard;
+    std::atomic<u16> block_count = 0;
 #ifdef __ANDROID__
     std::optional<Common::HeapTracker> heap_tracker;
     Common::HeapTracker* host_buffer{};
 #else
     Common::HostMemory* host_buffer{};
 #endif
-    std::atomic<u16> block_count = 0;
+
+#ifdef HAS_NCE
+    // Sometimes due to host page size limitations, we're unable to map a guest page to its backing page,
+    // so we map it as anonymous and copy it as soon as we return to host.
+    std::vector<u64> anon_mappings{};
+    std::mutex anon_mappings_mutex;
+#endif
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {
@@ -1035,7 +1072,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-int Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -1043,27 +1080,28 @@ int Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
         GetInteger(vaddr),
         [&] {
             LOG_ERROR(HW_Memory, "Unmapped InvalidateNCE for {} bytes @ {:#x}", size,
-                      GetInteger(vaddr));
+                        GetInteger(vaddr));
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer && ptr != nullptr) {
+    if (rasterizer) {
         impl->InvalidateGPUMemory(ptr, size);
-        return 0;
     }
 
-    if (!rasterizer && mapped && ptr != nullptr) {
+    if (!rasterizer && mapped) {
 #ifdef __ANDROID__
-        // TODO: what does this do?
+        // TODO: what is this
         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
-        return 0;
 #else
-        return 1;
+        impl->MapAnonymousRegion(GetInteger(vaddr));
 #endif
     }
 
+    return mapped && ptr != nullptr;
+}
 
-    return -1;
+void Memory::ResetAnonymousRegions() {
+    impl->ResetAnonymousRegions();
 }
 
 bool Memory::InvalidateSeparateHeap(void* fault_address) {
