@@ -289,9 +289,10 @@ void ArmNce::POSIXExceptionHandler(int sig, void* raw_info, void* raw_context) {
 #ifndef __linux__
     if (!nep->is_actually_running) {
 #else
-    if (nep->magic == Common::MakeMagic('Y', 'U', 'Z', 'U')) {
+    if (nep->magic != Common::MakeMagic('Y', 'U', 'Z', 'U')) {
 #endif
         // Host fault, call original handler
+        // TODO: add fallback for null sigactions
         if (sig == SIGSEGV) {
             g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
         } else if (sig == SIGBUS) {
@@ -323,6 +324,8 @@ void ArmNce::POSIXExceptionHandler(int sig, void* raw_info, void* raw_context) {
 bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int sig, u64 fault_addr, void* raw_context) {
     auto* guest_ctx = nep->native_context;
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+
+    LOG_DEBUG(Core_ARM, "Signal handler called on address {:#x}", fault_addr);
 
     if (sig == SIGSEGV) {
         // Try to handle an invalid access.
