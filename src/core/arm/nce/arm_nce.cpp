@@ -218,7 +218,6 @@ static_assert(offsetof(HostContext, host_sp) == 0xE0); // TODO: don't use magic 
 static_assert(offsetof(HostContext, host_tpidr_el0) - 0xE0 == 8);
 
 #ifndef _WIN32
-
 void ArmNce::BreakFromRunCodeSignalHandler(int sig, void *info, void *raw_context) {
     NativeExecutionParameters* tpidr = GetGuestParameters();
 #if defined(__APPLE__) || defined(_WIN32)
@@ -236,81 +235,62 @@ void ArmNce::BreakFromRunCodeSignalHandler(int sig, void *info, void *raw_contex
         // SaveGuestContext loads host context, returning from here will enter host code.
     }
 }
-
 #endif
 
-void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_context) {
+#ifdef _WIN32
+
+#define SIGSEGV EXCEPTION_ACCESS_VIOLATION
+#define SIGBUS EXCEPTION_DATATYPE_MISALIGNMENT
+using PFN_SetProcessValidCallTargets = BOOL(WINAPI*)(
+    _In_ HANDLE hProcess, _In_ PVOID VirtualAddress, _In_ SIZE_T RegionSize,
+    _In_ ULONG NumberOfOffsets, _In_ PCFG_CALL_TARGET_INFO OffsetInformation);
+
+static PFN_SetProcessValidCallTargets pfn_SetProcessValidCallTargets {};
+
+LONG WINAPI ArmNce::VectoredExceptionHandler(PEXCEPTION_POINTERS info) {
+    // TODO: Windows doesn't allocate a separate stack so we're either
+    // on the guest or current host stack, is that okay?
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_DATATYPE_MISALIGNMENT) {
+        NativeExecutionParameters* nep = GetGuestParameters();
+
+        if (nep->is_actually_running) {
+            nep->is_actually_running = GuestMemoryFaultSignalHandler(nep, code, info->ExceptionRecord->ExceptionAddress, info->ContextRecord);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        } else {
+            // host fault, pass it to the original handler
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    } else if (code == ExceptionLevelChangeSignal) {
+        ReturnToRunCodeByExceptionLevelChangeSignalHandler(code, reinterpret_cast<void*>(&info->ExceptionRecord->ExceptionAddress), info->ContextRecord);
+
+        // TODO: is this the right way to do this?
+        CFG_CALL_TARGET_INFO targetInfo = {0};
+        targetInfo.Offset = 0;
+        targetInfo.Flags = CFG_CALL_TARGET_VALID;
+
+        if (!pfn_SetProcessValidCallTargets) {
+            // TODO: move this to Initialize
+            Common::DynamicLibrary kernelbase {"Kernelbase"};
+            ASSERT(kernelbase.GetSymbol("SetProcessValidCallTargets", &pfn_SetProcessValidCallTargets));
+        }
+        pfn_SetProcessValidCallTargets(GetCurrentProcess(), reinterpret_cast<void*>(info->ContextRecord->Pc), 0x1000, 1, &targetInfo);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    } else {
+        // other exception? let it pass
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+}
+#else
+void ArmNce::POSIXExceptionHandler(int sig, void* raw_info, void* raw_context) {
     NativeExecutionParameters* nep = GetGuestParameters();
 
-#if defined(__APPLE__) || defined(_WIN32)
-    if (nep->is_actually_running) {
-        nep->is_actually_running = false;
+#ifndef __linux__
+    if (!nep->is_actually_running) {
 #else
     if (nep->magic == Common::MakeMagic('Y', 'U', 'Z', 'U')) {
-        // Load the host's TPIDR_EL0 value
-        void* host_tpidr = nep->native_context->host_ctx.host_tpidr_el0;
-        asm volatile(
-            "msr TPIDR_EL0, %[host_tpidr]\n"
-            :: [host_tpidr] "r"(host_tpidr));
 #endif
-
-        auto* guest_ctx = nep->native_context;
-        auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
-
-#ifndef _WIN32
-        if (sig == SIGSEGV) {
-#else
-        if (sig == static_cast<int>(EXCEPTION_ACCESS_VIOLATION)) {
-#endif
-            // Try to handle an invalid access.
-            // TODO: handle accesses which split a page?
-#ifndef _WIN32
-            const Common::ProcessAddress addr =
-                reinterpret_cast<u64>(static_cast<siginfo_t*>(raw_info)->si_addr) & ~(Common::HostPageSize - 1);
-#else
-            const Common::ProcessAddress addr =
-                reinterpret_cast<u64>(*static_cast<u64*>(raw_info)) & ~(Common::HostPageSize - 1);
-#endif
-            if (memory.InvalidateNCE(addr, Common::HostPageSize)) {
-                // We handled the access successfully and are returning to guest code.
-                goto ret;
-            }
-#ifndef _WIN32
-        } else if (sig == SIGBUS) {
-#else
-        } else if (sig == static_cast<int>(EXCEPTION_DATATYPE_MISALIGNMENT)) {
-#endif
-            // Match and execute an instruction.
-            auto ctx = KernelContext(raw_context);
-            auto next_pc = MatchAndExecuteOneInstruction(memory, ctx);
-            if (next_pc) {
-                // We handled the access successfully and are returning to guest code.
-                *ctx.pc() = *next_pc;
-                goto ret;
-            }
-        } else [[unlikely]] {
-            UNREACHABLE_MSG("unexpected signal {}", sig);
-        }
-
-        // We couldn't handle the access.
-        if (HandleFailedGuestFault(guest_ctx, raw_info, raw_context)) {
-            // Return to guest
-            goto ret;
-        }
-        // Otherwise HandleFailedGuestFault sets host context and returns to host
-        return;
-
-        ret:
-#if defined(__linux__)
-        asm volatile(
-            "msr TPIDR_EL0, %0\n"
-            :: "r"(nep));
-#else
-        nep->is_actually_running = true;
-#endif
-    }
-#ifndef _WIN32
-    else {
         // Host fault, call original handler
         if (sig == SIGSEGV) {
             g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
@@ -320,9 +300,58 @@ void ArmNce::GuestMemoryFaultSignalHandler(int sig, void* raw_info, void* raw_co
             UNREACHABLE_MSG("unexpected signal {}", sig);
         }
     }
+
+#ifdef __linux__
+    // Load the host's TPIDR_EL0 value
+    void* host_tpidr = nep->native_context->host_ctx.host_tpidr_el0;
+    asm volatile(
+        "msr TPIDR_EL0, %[host_tpidr]\n"
+        :: [host_tpidr] "r"(host_tpidr));
+
+    if (GuestMemoryFaultSignalHandler(nep, sig, reinterpret_cast<u64>(static_cast<siginfo_t*>(raw_info)->si_addr), raw_context)) {
+        // Returning to guest, restore guest's TPIDR_EL0
+        asm volatile(
+            "msr TPIDR_EL0, %0\n"
+            :: "r"(nep));
+    }
 #else
-    is_host_fault = true;
+    nep->is_actually_running = GuestMemoryFaultSignalHandler(nep, sig, static_cast<siginfo_t*>(raw_info)->si_addr, raw_context);
 #endif
+}
+#endif
+
+bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int sig, u64 fault_addr, void* raw_context) {
+    auto* guest_ctx = nep->native_context;
+    auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+
+    if (sig == SIGSEGV) {
+        // Try to handle an invalid access.
+        // TODO: handle accesses which split a page?
+        const Common::ProcessAddress addr = fault_addr & ~(Common::HostPageSize - 1);
+
+        auto ret = memory.InvalidateNCE(addr, Common::HostPageSize);
+        if (ret == 0) {
+            // We handled the access successfully and are returning to guest code.
+            return true;
+        } else if (ret == 1) {
+            // This access is in an unmapped region, we need to use the interpreter.
+        } else if (ret == -1) {
+            // We couldn't handle the access.
+            return HandleFailedGuestFault(guest_ctx, fault_addr, raw_context);
+        }
+    }
+
+    // Match and execute an instruction.
+    auto ctx = KernelContext(raw_context);
+    auto next_pc = MatchAndExecuteOneInstruction(memory, ctx);
+    if (next_pc) {
+        // We handled the access successfully and are returning to guest code.
+        *ctx.pc() = *next_pc;
+        return true;
+    } else {
+        // We couldn't handle the access.
+        return HandleFailedGuestFault(guest_ctx, fault_addr, raw_context);
+    }
 }
 
 NativeExecutionParameters* ArmNce::RestoreGuestContext(void* raw_context) {
@@ -407,15 +436,11 @@ void ArmNce::SaveGuestContext(GuestContext* guest_ctx, void* raw_context) {
     host_ctx.regs()[0] = guest_ctx->esr_el1.exchange(0);
 }
 
-bool ArmNce::HandleFailedGuestFault(GuestContext* guest_ctx, void* raw_info, void* raw_context) {
+bool ArmNce::HandleFailedGuestFault(GuestContext* guest_ctx, u64 raw_info, void* raw_context) {
     auto host_ctx = KernelContext(raw_context);
 
     // We can't handle the access, so determine why we crashed.
-#ifndef _WIN32
-    const bool is_prefetch_abort = *host_ctx.pc() == reinterpret_cast<u64>(static_cast<siginfo_t*>(raw_info)->si_addr);
-#else
-    const bool is_prefetch_abort = *host_ctx.pc() == *static_cast<u64*>(raw_info);
-#endif
+    const bool is_prefetch_abort = *host_ctx.pc() == raw_info;
 
     // For data aborts, skip the instruction and return to guest code.
     // This will allow games to continue in many scenarios where they would otherwise crash.
@@ -548,48 +573,6 @@ ArmNce::ArmNce(System& system, bool uses_wall_clock, std::size_t core_index)
 
 ArmNce::~ArmNce() = default;
 
-#ifdef _WIN32
-
-using PFN_SetProcessValidCallTargets = BOOL(WINAPI*)(
-    _In_ HANDLE hProcess, _In_ PVOID VirtualAddress, _In_ SIZE_T RegionSize,
-    _In_ ULONG NumberOfOffsets, _In_ PCFG_CALL_TARGET_INFO OffsetInformation);
-
-static PFN_SetProcessValidCallTargets pfn_SetProcessValidCallTargets {};
-
-LONG WINAPI ArmNce::VectoredExceptionHandler(PEXCEPTION_POINTERS info) {
-    // TODO: Windows doesn't allocate a separate stack so we're either
-    // on the guest or current host stack, is that okay?
-    DWORD code = info->ExceptionRecord->ExceptionCode;
-
-    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_DATATYPE_MISALIGNMENT) {
-        GuestMemoryFaultSignalHandler(code, reinterpret_cast<void*>(&info->ExceptionRecord->ExceptionAddress), info->ContextRecord);
-        if (is_host_fault) {
-            is_host_fault = false;
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-        return EXCEPTION_CONTINUE_EXECUTION;
-    } else if (code == ExceptionLevelChangeSignal) {
-        ReturnToRunCodeByExceptionLevelChangeSignalHandler(code, reinterpret_cast<void*>(&info->ExceptionRecord->ExceptionAddress), info->ContextRecord);
-
-        // TODO: is this the right way to do this?
-        CFG_CALL_TARGET_INFO targetInfo = {0};
-        targetInfo.Offset = 0;
-        targetInfo.Flags = CFG_CALL_TARGET_VALID;
-
-        if (!pfn_SetProcessValidCallTargets) {
-            // TODO: move this to Initialize
-            Common::DynamicLibrary kernelbase {"Kernelbase"};
-            ASSERT(kernelbase.GetSymbol("SetProcessValidCallTargets", &pfn_SetProcessValidCallTargets));
-        }
-        pfn_SetProcessValidCallTargets(GetCurrentProcess(), reinterpret_cast<void*>(info->ContextRecord->Pc), 0x1000, 1, &targetInfo);
-        return EXCEPTION_CONTINUE_EXECUTION;
-    } else {
-        // other exception? let it pass
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-}
-#endif
-
 #ifdef __APPLE__
 // https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/src/pthread_tsd.c#L418-L435
 // Equivalent to pthread_key_create but allows for setting a specific key value.
@@ -654,14 +637,14 @@ void ArmNce::Initialize() {
         struct sigaction alignment_fault_action {};
         alignment_fault_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
         alignment_fault_action.sa_sigaction =
-            reinterpret_cast<HandlerType>(&ArmNce::GuestMemoryFaultSignalHandler);
+            reinterpret_cast<HandlerType>(&ArmNce::POSIXExceptionHandler);
         alignment_fault_action.sa_mask = signal_mask;
         Common::SigAction(SIGBUS, &alignment_fault_action, nullptr);
 
         struct sigaction access_fault_action {};
         access_fault_action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
         access_fault_action.sa_sigaction =
-            reinterpret_cast<HandlerType>(&ArmNce::GuestMemoryFaultSignalHandler);
+            reinterpret_cast<HandlerType>(&ArmNce::POSIXExceptionHandler);
         access_fault_action.sa_mask = signal_mask;
         Common::SigAction(SIGSEGV, &access_fault_action, &g_orig_segv_action);
     });

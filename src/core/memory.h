@@ -493,7 +493,7 @@ public:
 
     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
 
-    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
+    int InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
 
     bool InvalidateSeparateHeap(void* fault_address);
 

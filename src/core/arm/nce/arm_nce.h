@@ -35,7 +35,6 @@ constexpr pthread_key_t ContextKey = 210;
 #elif _WIN32
 
 #define ExceptionLevelChangeSignal 0xE0000001
-inline thread_local bool is_host_fault = false;
 
 inline u32 ContextKey = TlsAlloc();
 inline u32 NCEStorage = TlsAlloc();
@@ -124,10 +123,12 @@ private:
     static void ReturnToRunCodeByExceptionLevelChangeSignalHandler(int sig, void* info,
                                                                    void* raw_context);
     static void BreakFromRunCodeSignalHandler(int sig, void* info, void* raw_context);
-    static void GuestMemoryFaultSignalHandler(int sig, void* info, void* raw_context);
-    static bool HandleFailedGuestFault(GuestContext* ctx, void* info, void* raw_context);
+    static bool GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int sig, u64 fault_addr, void* raw_context);
+    static bool HandleFailedGuestFault(GuestContext* ctx, u64 fault_addr, void* raw_context);
 #ifdef _WIN32
     static LONG VectoredExceptionHandler(PEXCEPTION_POINTERS info);
+#else
+    static void POSIXExceptionHandler(int sig, void* info, void* raw_context);
 #endif
 
     static void LockThreadParameters(NativeExecutionParameters* tpidr);

@@ -1035,7 +1035,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+int Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -1047,17 +1047,23 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer) {
+    if (rasterizer && ptr != nullptr) {
         impl->InvalidateGPUMemory(ptr, size);
+        return 0;
     }
 
+    if (!rasterizer && mapped && ptr != nullptr) {
 #ifdef __ANDROID__
-    if (!rasterizer && mapped) {
+        // TODO: what does this do?
         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
-    }
+        return 0;
+#else
+        return 1;
 #endif
+    }
 
-    return mapped && ptr != nullptr;
+
+    return -1;
 }
 
 bool Memory::InvalidateSeparateHeap(void* fault_address) {
