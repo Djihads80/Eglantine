@@ -495,6 +495,8 @@ public:
 
     bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
 
+    bool IsIrregularAddr(Common::ProcessAddress vaddr);
+
     bool InvalidateSeparateHeap(void* fault_address);
 
 private:
