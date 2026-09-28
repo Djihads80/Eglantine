@@ -809,9 +809,9 @@ struct Memory::Impl {
     void MapAnonymousRegion(u64 vaddr) {
         std::lock_guard lock(anon_mappings_mutex);
 
-        host_buffer.Map(vaddr, 0, Common::HostPageSize, Common::MemoryPermission::Read | Common::MemoryPermission::Write); // TODO: memory permissions??
+        host_buffer->Map(vaddr, 0, Common::HostPageSize, Common::MemoryPermission::Read | Common::MemoryPermission::Write, false); // TODO: memory permissions??
         for (u64 i = 0; i < Common::HostPageSize; i += YUZU_PAGESIZE) {
-            auto ptr = GetPointerSilent(mapping + i); // TODO: use Read/WriteBlock functions
+            auto ptr = GetPointerSilent(vaddr + i); // TODO: use Read/WriteBlock functions
             if (ptr != nullptr) {
                 memcpy(reinterpret_cast<void*>(vaddr + i), ptr, YUZU_PAGESIZE);
             }
@@ -829,7 +829,7 @@ struct Memory::Impl {
                     memcpy(ptr, reinterpret_cast<void*>(mapping + i), YUZU_PAGESIZE);
                 }
             }
-            host_buffer.Unmap(mapping);
+            host_buffer->Unmap(mapping, Common::HostPageSize, false);
         }
         anon_mappings.clear();
     }

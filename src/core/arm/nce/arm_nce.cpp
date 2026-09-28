@@ -332,15 +332,12 @@ bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int s
         // TODO: handle accesses which split a page?
         const Common::ProcessAddress addr = fault_addr & ~(Common::HostPageSize - 1);
 
-        auto ret = memory.InvalidateNCE(addr, Common::HostPageSize);
-        if (ret == 0) {
+        if (memory.InvalidateNCE(addr, Common::HostPageSize)) {
             // We handled the access successfully and are returning to guest code.
             return true;
-        } else if (ret == -1) {
+        } else {
             // We couldn't handle the access.
             return HandleFailedGuestFault(guest_ctx, fault_addr, raw_context);
-        } else [unlikely] {
-            UNREACHABLE();
         }
     }
 
