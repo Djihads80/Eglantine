@@ -8,7 +8,6 @@
 
 class QCheckBox;
 class QLineEdit;
-class QComboBox;
 class QDateTimeEdit;
 namespace Core {
 class System;
