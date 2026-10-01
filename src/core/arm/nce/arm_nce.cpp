@@ -330,9 +330,9 @@ bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int s
     if (sig == SIGSEGV) {
         // Try to handle an invalid access.
         // TODO: handle accesses which split a page?
-        const Common::ProcessAddress addr = fault_addr & ~(Common::HostPageSize - 1);
+        const Common::ProcessAddress addr = fault_addr & ~Memory::YUZU_PAGEMASK;
 
-        if (memory.InvalidateNCE(addr, Common::HostPageSize)) {
+        if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
             // We handled the access successfully and are returning to guest code.
             return true;
         } else {

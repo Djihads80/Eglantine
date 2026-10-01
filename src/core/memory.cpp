@@ -1093,7 +1093,7 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
         // TODO: what is this
         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
 #else
-        impl->MapAnonymousRegion(GetInteger(vaddr));
+        impl->MapAnonymousRegion(GetInteger(vaddr) & ~(Common::HostPageSize - 1));
 #endif
     }
 
