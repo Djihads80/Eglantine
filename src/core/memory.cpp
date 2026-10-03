@@ -806,10 +806,12 @@ struct Memory::Impl {
     }
 
 #ifdef HAS_NCE
-    void MapAnonymousRegion(u64 vaddr) {
+    void MapAnonymousRegion(u64 vaddr, bool executable) {
         std::lock_guard lock(anon_mappings_mutex);
 
-        host_buffer->Map(vaddr, 0, Common::HostPageSize, Common::MemoryPermission::Read | Common::MemoryPermission::Write, false); // TODO: memory permissions??
+        host_buffer->Map(vaddr, 0, Common::HostPageSize, Common::MemoryPermission::Read
+            | (executable ? Common::MemoryPermission::Execute : Common::MemoryPermission::Write), false); // TODO: memory permissions??
+
         for (u64 i = 0; i < Common::HostPageSize; i += YUZU_PAGESIZE) {
             auto ptr = GetPointerSilent(vaddr + i); // TODO: use Read/WriteBlock functions
             if (ptr != nullptr) {
@@ -1072,7 +1074,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool executable) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -1093,7 +1095,7 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
         // TODO: what is this
         impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
 #else
-        impl->MapAnonymousRegion(GetInteger(vaddr) & ~(Common::HostPageSize - 1));
+        impl->MapAnonymousRegion(GetInteger(vaddr) & ~(Common::HostPageSize - 1), executable);
 #endif
     }
 

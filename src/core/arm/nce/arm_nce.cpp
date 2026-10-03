@@ -324,15 +324,17 @@ void ArmNce::POSIXExceptionHandler(int sig, void* raw_info, void* raw_context) {
 bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int sig, u64 fault_addr, void* raw_context) {
     auto* guest_ctx = nep->native_context;
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+    auto ctx = KernelContext(raw_context);
 
     LOG_DEBUG(Core_ARM, "Signal handler called on address {:#x}", fault_addr);
 
     if (sig == SIGSEGV) {
         // Try to handle an invalid access.
         // TODO: handle accesses which split a page?
+        bool instruction_abort = fault_addr == *ctx.pc();
         const Common::ProcessAddress addr = fault_addr & ~Memory::YUZU_PAGEMASK;
 
-        if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
+        if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, instruction_abort)) {
             // We handled the access successfully and are returning to guest code.
             return true;
         } else {
@@ -342,7 +344,6 @@ bool ArmNce::GuestMemoryFaultSignalHandler(NativeExecutionParameters* nep, int s
     }
 
     // Match and execute an instruction.
-    auto ctx = KernelContext(raw_context);
     auto next_pc = MatchAndExecuteOneInstruction(memory, ctx);
     if (next_pc) {
         // We handled the access successfully and are returning to guest code.
