@@ -654,8 +654,9 @@ class CarouselRecyclerView @JvmOverloads constructor(
         }
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (isCarouselMode && keyInterceptor?.invoke(event) == true) return true
+    // RecyclerView declares this parameter as @Nullable
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        if (event != null && isCarouselMode && keyInterceptor?.invoke(event) == true) return true
         return super.dispatchKeyEvent(event)
     }
 
