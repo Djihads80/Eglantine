@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.net.Uri
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
@@ -37,10 +36,8 @@ import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
 import org.yuzu.yuzu_emu.utils.GameIconUtils
-import org.yuzu.yuzu_emu.utils.MemoryUtil
 import org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
 import java.io.File
-import java.util.Locale
 
 /**
  * Presentation layer of the console-style Home (portrait and landscape).
@@ -48,8 +45,7 @@ import java.util.Locale
  * It only *decorates* the existing games screen: GamesFragment, GameAdapter, GamesViewModel and the
  * launch flow are reused untouched. This class:
  *  - switches the carousel into its flat console style,
- *  - follows the centered game and shows its details (title, version, developer, playtime,
- *    format and file size),
+ *  - follows the centered game and shows its title,
  *  - tints the animated background (and the selected tile outline) with the main colors of the
  *    selected game's icon,
  *  - shows the current user's avatar on the profile button,
@@ -75,12 +71,6 @@ class ConsoleHomeController private constructor(
 
     private val details: View = root.findViewById(R.id.console_details)
     private val gameTitle: TextView = root.findViewById(R.id.console_game_title)
-    private val gameVersion: TextView = root.findViewById(R.id.console_game_version)
-    private val metaDeveloper: TextView = root.findViewById(R.id.console_meta_developer)
-    private val metaPlaytime: TextView = root.findViewById(R.id.console_meta_playtime)
-    private val metaFormat: TextView = root.findViewById(R.id.console_meta_format)
-    private val metaSize: TextView = root.findViewById(R.id.console_meta_size)
-    private val metaContainer: LinearLayout = root.findViewById(R.id.console_meta_container)
     private val liquidBackground: ConsoleLiquidBackgroundView =
         root.findViewById(R.id.console_background)
     private val profileImage: ImageView = root.findViewById(R.id.console_profile_image)
@@ -97,7 +87,6 @@ class ConsoleHomeController private constructor(
     private var released = false
     private var selectedGame: Game? = null
     private var pendingPosition = RecyclerView.NO_POSITION
-    private var sizeJob: Job? = null
     private var menu: PopupWindow? = null
     private var colorJob: Job? = null
     private var avatarJob: Job? = null
@@ -117,9 +106,6 @@ class ConsoleHomeController private constructor(
     private val applySelectionRunnable = Runnable { applySelection() }
 
     companion object {
-        // File sizes by game path, kept for the process lifetime (querying the provider is slow).
-        private val sizeCache = HashMap<String, Long>()
-
         // Main icon colors (accents) by game path, kept for the process lifetime.
         private val colorCache = HashMap<String, IntArray>()
 
@@ -151,17 +137,6 @@ class ConsoleHomeController private constructor(
 
         liquidBackground.setPalette(defaultBackground, defaultAccents, animate = false)
         loadAvatar()
-
-        // Landscape: details in a single row so the carousel keeps the portrait tile size.
-        if (res.getBoolean(R.bool.console_home_meta_horizontal)) {
-            metaContainer.orientation = LinearLayout.HORIZONTAL
-            val gap = res.getDimensionPixelSize(R.dimen.console_home_meta_gap)
-            for (i in 0 until metaContainer.childCount) {
-                val params = metaContainer.getChildAt(i).layoutParams as LinearLayout.LayoutParams
-                params.topMargin = 0
-                params.marginEnd = gap
-            }
-        }
 
         root.findViewById<View?>(R.id.console_profile_button)?.setOnClickListener {
             navigateToSubscreen(SettingsSubscreen.PROFILE_MANAGER)
@@ -209,7 +184,7 @@ class ConsoleHomeController private constructor(
         if (released) return
         // The user may have changed profile or avatar.
         loadAvatar()
-        // Playtime changes after playing: refresh the details of the selected game.
+        // Re-evaluate the selected game (title and background colors).
         if (active) {
             selectedGame = null
             carousel.post { if (!released) carousel.updateChildScalesAndAlpha() }
@@ -218,8 +193,6 @@ class ConsoleHomeController private constructor(
 
     fun release() {
         released = true
-        sizeJob?.cancel()
-        sizeJob = null
         colorJob?.cancel()
         colorJob = null
         avatarJob?.cancel()
@@ -252,20 +225,6 @@ class ConsoleHomeController private constructor(
         selectedGame = game
 
         gameTitle.text = game.title.replace("[\\t\\n\\r]+".toRegex(), " ")
-        val version = game.version.trim()
-        gameVersion.text = if (version.isNotEmpty()) "v$version" else ""
-        gameVersion.visibility = if (version.isNotEmpty()) View.VISIBLE else View.GONE
-
-        val developer = game.developer.trim()
-        metaDeveloper.text = res.getString(R.string.home_console_meta_developer, developer)
-        metaDeveloper.visibility = if (developer.isNotEmpty()) View.VISIBLE else View.GONE
-
-        metaPlaytime.text = res.getString(
-            R.string.home_console_meta_playtime,
-            formatPlayTime(readPlayTime(game))
-        )
-        metaFormat.text = res.getString(R.string.home_console_meta_format, formatOf(game))
-        bindSize(game)
         bindBackground(game)
 
         details.visibility = View.VISIBLE
@@ -282,65 +241,10 @@ class ConsoleHomeController private constructor(
     private fun clearSelection() {
         selectedGame = null
         pendingPosition = RecyclerView.NO_POSITION
-        sizeJob?.cancel()
         colorJob?.cancel()
         details.removeCallbacks(applySelectionRunnable)
         details.animate().cancel()
         details.visibility = View.INVISIBLE
-    }
-
-    private fun readPlayTime(game: Game): Long = try {
-        if (game.programId.isNotEmpty()) NativeLibrary.playTimeManagerGetPlayTime(game.programId) else 0L
-    } catch (e: Exception) {
-        0L
-    }
-
-    private fun formatPlayTime(seconds: Long): String {
-        val hours = seconds / 3600
-        val minutes = (seconds % 3600) / 60
-        val h = res.getString(R.string.hours_abbr)
-        val m = res.getString(R.string.minutes_abbr)
-        return if (hours > 0) "$hours$h $minutes$m" else "$minutes$m"
-    }
-
-    private fun formatOf(game: Game): String {
-        val extension = Uri.decode(game.path).substringAfterLast('.', "").lowercase(Locale.ROOT)
-        val format = if (extension in Game.extensions) extension.uppercase(Locale.ROOT) else "-"
-        return if (game.isHomebrew) "$format · ${res.getString(R.string.home_console_homebrew)}" else format
-    }
-
-    /** File size from the existing NativeLibrary.getSize() (document provider / native path). */
-    private fun bindSize(game: Game) {
-        sizeJob?.cancel()
-        val cached = sizeCache[game.path]
-        if (cached != null) {
-            showSize(cached)
-            return
-        }
-        metaSize.visibility = View.INVISIBLE
-        sizeJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                try {
-                    NativeLibrary.getSize(game.path)
-                } catch (e: Exception) {
-                    0L
-                }
-            }
-            sizeCache[game.path] = bytes
-            if (!released && selectedGame == game) showSize(bytes)
-        }
-    }
-
-    private fun showSize(bytes: Long) {
-        if (bytes <= 0L) {
-            metaSize.visibility = View.GONE
-            return
-        }
-        metaSize.text = res.getString(
-            R.string.home_console_meta_size,
-            MemoryUtil.bytesToSizeUnit(bytes.toFloat())
-        )
-        metaSize.visibility = View.VISIBLE
     }
 
     // ---------------------------------------------------------------------------------------------

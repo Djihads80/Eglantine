@@ -30,9 +30,11 @@
     <dimen name="console_home_header_icon">19dp</dimen>
     <dimen name="console_home_search_height">48dp</dimen>
     <dimen name="console_home_side_margin">48dp</dimen>
+    <!-- Top bar sits close to the screen corners. -->
+    <dimen name="console_home_header_margin">14dp</dimen>
+    <dimen name="console_home_header_margin_top">10dp</dimen>
     <dimen name="console_home_title_size">28sp</dimen>
     <dimen name="console_home_meta_size">14sp</dimen>
-    <dimen name="console_home_meta_gap">24dp</dimen>
     <dimen name="console_home_details_margin_top">8dp</dimen>
     <dimen name="console_home_carousel_margin_bottom">8dp</dimen>
     <dimen name="console_home_card_gap">14dp</dimen>
@@ -42,19 +44,16 @@
     <dimen name="console_home_play_margin_bottom">28dp</dimen>
     <dimen name="console_home_glyph_size">22dp</dimen>
     <dimen name="console_home_details_shift">6dp</dimen>
-    <dimen name="console_game_cover_size">200dp</dimen>
+    <dimen name="console_game_cover_size">170dp</dimen>
     <dimen name="console_game_title_size">30sp</dimen>
 
     <!-- Size of the centered card relative to the carousel height. -->
     <fraction name="console_home_card_size_factor">92%</fraction>
     <!-- Max centered card size relative to the carousel width. -->
-    <fraction name="console_home_card_max_width_factor">50%</fraction>
+    <fraction name="console_home_card_max_width_factor">59%</fraction>
     <!-- Centered card size relative to the shortest screen side. Not overridden per orientation,
          so tiles keep the same size in portrait and landscape (bounded by the carousel height). -->
-    <fraction name="console_home_card_screen_factor">56%</fraction>
-
-    <!-- Selected game details in a single row (landscape) or one per line (portrait). -->
-    <bool name="console_home_meta_horizontal">true</bool>
+    <fraction name="console_home_card_screen_factor">66%</fraction>
     <!-- Scale and alpha applied to the non-selected neighbours. -->
     <fraction name="console_home_side_scale">76%</fraction>
     <fraction name="console_home_side_alpha">100%</fraction>
@@ -150,12 +149,42 @@
         <item name="android:textSize">15sp</item>
     </style>
 
+    <!-- Game screen Play button (next to the tabs in landscape, under the cover in portrait). -->
+    <style name="ConsolePlayButton">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minWidth">150dp</item>
+        <item name="android:paddingHorizontal">22dp</item>
+        <item name="android:text">@string/home_console_play</item>
+        <item name="android:textColor">@color/console_home_text_on_light</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="backgroundTint">@color/console_play_tint</item>
+        <item name="cornerRadius">24dp</item>
+        <item name="icon">@drawable/ic_play</item>
+        <item name="iconTint">@color/console_home_text_on_light</item>
+        <item name="strokeColor">@color/console_secondary_action_stroke</item>
+        <item name="strokeWidth">3dp</item>
+    </style>
+
+    <style name="ConsoleInfoRow">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:paddingVertical">3dp</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/console_home_text_secondary</item>
+    </style>
+
     <style name="ConsoleHintLabel">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
         <item name="android:layout_marginStart">8dp</item>
-        <item name="android:layout_marginEnd">22dp</item>
-        <item name="android:letterSpacing">0.15</item>
+        <item name="android:layout_marginEnd">16dp</item>
+        <item name="android:letterSpacing">0.1</item>
         <item name="android:textAllCaps">true</item>
         <item name="android:textSize">12sp</item>
         <item name="android:textColor">@color/console_home_text_secondary</item>

@@ -2,8 +2,9 @@
 <!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
-    Console-style game screen, two columns (landscape / wide screens): game card on the left,
-    tabbed options on the right. IDs shared with layout/fragment_game_properties.xml.
+    Console-style game screen, two columns (landscape / wide screens): game card and file
+    information on the left (scrollable), tabs + Play and the options on the right, gamepad
+    hints at the bottom right. IDs shared with layout/fragment_game_properties.xml.
 -->
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -75,105 +76,75 @@
 
     </LinearLayout>
 
-    <!-- Left column: the game -->
-    <LinearLayout
-        android:id="@+id/icon_layout"
+    <!-- Left column: the game (scrolls on short screens so nothing overlaps) -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/icon_scroll"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        app:layout_constraintBottom_toTopOf="@+id/console_hints"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:paddingBottom="12dp"
+        android:scrollbars="none"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toStartOf="@+id/guideline"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/header">
 
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="@dimen/console_game_cover_size"
-            android:layout_height="@dimen/console_game_cover_size"
-            android:layout_gravity="center_horizontal"
-            app:cardBackgroundColor="@color/console_home_card_bg"
-            app:cardCornerRadius="18dp"
-            app:cardElevation="0dp"
-            app:strokeColor="@color/console_home_text_primary"
-            app:strokeWidth="3dp">
-
-            <ImageView
-                android:id="@+id/image_game_screen"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:importantForAccessibility="no"
-                android:scaleType="centerCrop" />
-
-        </com.google.android.material.card.MaterialCardView>
-
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:id="@+id/icon_layout"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="18dp"
-            android:orientation="horizontal">
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingHorizontal="20dp"
+            android:paddingTop="8dp">
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="@dimen/console_game_cover_size"
+                android:layout_height="@dimen/console_game_cover_size"
+                android:layout_gravity="center_horizontal"
+                app:cardBackgroundColor="@color/console_home_card_bg"
+                app:cardCornerRadius="18dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/console_home_text_primary"
+                app:strokeWidth="3dp">
+
+                <ImageView
+                    android:id="@+id/image_game_screen"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:importantForAccessibility="no"
+                    android:scaleType="centerCrop" />
+
+            </com.google.android.material.card.MaterialCardView>
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="14dp"
                 android:ellipsize="none"
                 android:marqueeRepeatLimit="marquee_forever"
-                android:maxWidth="320dp"
                 android:requiresFadingEdge="horizontal"
                 android:singleLine="true"
                 android:textColor="@color/console_home_text_primary"
                 android:textSize="@dimen/console_game_title_size" />
 
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_game_version"
-                android:layout_width="wrap_content"
+            <!-- File information rows (developer, version, playtime, format, size, program ID);
+                 filled by GamePropertiesFragment. -->
+            <LinearLayout
+                android:id="@+id/console_game_info"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:layout_marginTop="2dp"
-                android:singleLine="true"
-                android:textColor="@color/console_home_text_secondary"
-                android:textSize="13sp" />
+                android:layout_marginTop="12dp"
+                android:background="@drawable/console_property_card_background"
+                android:orientation="vertical"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="10dp" />
 
         </LinearLayout>
 
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_game_developer"
-            style="@style/ConsoleMetaText"
-            android:layout_gravity="center_horizontal" />
-
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/playtime"
-            style="@style/ConsoleMetaText"
-            android:layout_gravity="center_horizontal"
-            android:background="?attr/selectableItemBackground"
-            android:focusable="true"
-            android:paddingHorizontal="6dp" />
-
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_game_file_info"
-            style="@style/ConsoleMetaText"
-            android:layout_gravity="center_horizontal" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/button_start"
-            android:layout_width="wrap_content"
-            android:layout_height="56dp"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="20dp"
-            android:minWidth="180dp"
-            android:text="@string/home_console_play"
-            android:textColor="@color/console_home_text_on_light"
-            android:textSize="17sp"
-            android:textStyle="bold"
-            app:backgroundTint="@color/console_play_tint"
-            app:cornerRadius="28dp"
-            app:icon="@drawable/ic_play"
-            app:iconTint="@color/console_home_text_on_light"
-            app:strokeColor="@color/console_secondary_action_stroke"
-            app:strokeWidth="3dp" />
-
-    </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
 
     <androidx.constraintlayout.widget.Guideline
         android:id="@+id/guideline"
@@ -182,7 +153,7 @@
         android:orientation="vertical"
         app:layout_constraintGuide_percent="0.34" />
 
-    <!-- Right column: options -->
+    <!-- Right column: tabs + Play, then options -->
     <LinearLayout
         android:id="@+id/console_options"
         android:layout_width="0dp"
@@ -195,25 +166,46 @@
         app:layout_constraintTop_toBottomOf="@id/header">
 
         <LinearLayout
-            android:id="@+id/console_tabs"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/tab_settings"
-                style="@style/ConsoleTab"
-                android:text="@string/game_console_tab_settings" />
+            <HorizontalScrollView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:scrollbars="none">
 
-            <TextView
-                android:id="@+id/tab_content"
-                style="@style/ConsoleTab"
-                android:text="@string/game_console_tab_content" />
+                <LinearLayout
+                    android:id="@+id/console_tabs"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/tab_data"
-                style="@style/ConsoleTab"
-                android:text="@string/game_console_tab_data" />
+                    <TextView
+                        android:id="@+id/tab_settings"
+                        style="@style/ConsoleTab"
+                        android:text="@string/game_console_tab_settings" />
+
+                    <TextView
+                        android:id="@+id/tab_content"
+                        style="@style/ConsoleTab"
+                        android:text="@string/game_console_tab_content" />
+
+                    <TextView
+                        android:id="@+id/tab_data"
+                        style="@style/ConsoleTab"
+                        android:text="@string/game_console_tab_data" />
+
+                </LinearLayout>
+
+            </HorizontalScrollView>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_start"
+                style="@style/ConsolePlayButton"
+                android:layout_marginStart="12dp" />
 
         </LinearLayout>
 
@@ -221,7 +213,7 @@
             android:id="@+id/list_properties"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="8dp"
             android:layout_weight="1"
             android:clipToPadding="false"
             android:paddingBottom="12dp"
@@ -235,13 +227,13 @@
         android:id="@+id/console_hints"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/console_home_side_margin"
-        android:layout_marginBottom="14dp"
+        android:layout_marginEnd="@dimen/console_home_side_margin"
+        android:layout_marginBottom="10dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
+        app:layout_constraintEnd_toEndOf="parent">
 
         <TextView
             android:id="@+id/console_hint_confirm_glyph"

@@ -14,6 +14,7 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
@@ -85,6 +86,9 @@ class GamePropertiesFragment : Fragment() {
     private val addonsDetails = MutableStateFlow("")
     private val saveSizeDetails = MutableStateFlow("")
 
+    // Playtime row of the file information block (tap to edit).
+    private var playtimeRow: TextView? = null
+
     companion object {
         private const val KEY_TAB = "ConsoleGameTab"
         private const val KEY_POST_SHADER_ENABLED = "post_shader_enabled"
@@ -137,8 +141,6 @@ class GamePropertiesFragment : Fragment() {
         binding.title.text = args.game.title
         binding.title.marquee()
         bindGameHeader()
-
-        getPlayTime()
 
         binding.buttonStart.setOnClickListener {
             LaunchGameDialogFragment.newInstance(args.game)
@@ -195,6 +197,11 @@ class GamePropertiesFragment : Fragment() {
         setInsets()
     }
 
+    override fun onDestroyView() {
+        super.onDestroyView()
+        playtimeRow = null
+    }
+
     override fun onDestroy() {
         val isChangingConfigurations = activity?.isChangingConfigurations == true
         super.onDestroy()
@@ -204,7 +211,8 @@ class GamePropertiesFragment : Fragment() {
     }
 
     private fun getPlayTime() {
-        binding.playtime.text = buildString {
+        val row = playtimeRow ?: return
+        row.text = buildString {
             val playTimeSeconds = NativeLibrary.playTimeManagerGetPlayTime(args.game.programId)
 
             val hours = playTimeSeconds / 3600
@@ -217,11 +225,7 @@ class GamePropertiesFragment : Fragment() {
             else -> "$seconds${getString(R.string.seconds_abbr)}"
 }
 
-            append(getString(R.string.playtime) + " " + readablePlayTime)
-        }
-
-        binding.playtime.setOnClickListener {
-            showEditPlaytimeDialog()
+            append(getString(R.string.home_console_meta_playtime, readablePlayTime))
         }
     }
 
@@ -311,26 +315,45 @@ class GamePropertiesFragment : Fragment() {
         outState.putInt(KEY_TAB, currentTab.ordinal)
     }
 
-    /** Breadcrumb, version, developer and file info (format / program ID / size). */
+    /**
+     * Breadcrumb and the file information block under the cover, in a fixed order:
+     * developer, version, playtime (tap to edit), format, size and program ID.
+     */
     private fun bindGameHeader() {
         val game = args.game
         binding.consoleBreadcrumb.text =
             "${getString(R.string.game_console_library)}  /  ${game.title}"
 
-        val version = game.version.trim()
-        binding.consoleGameVersion.text = if (version.isNotEmpty()) "v$version" else ""
-        binding.consoleGameVersion.setVisible(version.isNotEmpty())
+        val info = binding.consoleGameInfo
+        info.removeAllViews()
 
         val developer = game.developer.trim()
-        binding.consoleGameDeveloper.text = getString(R.string.game_console_by, developer)
-        binding.consoleGameDeveloper.setVisible(developer.isNotEmpty())
+        if (developer.isNotEmpty()) {
+            addInfoRow(getString(R.string.home_console_meta_developer, developer))
+        }
+        val version = game.version.trim()
+        if (version.isNotEmpty()) {
+            addInfoRow(getString(R.string.game_console_meta_version, version))
+        }
+        playtimeRow = addInfoRow("").apply {
+            background = requireContext().getDrawable(
+                android.R.drawable.list_selector_background
+            )
+            isFocusable = true
+            setOnClickListener { showEditPlaytimeDialog() }
+        }
+        getPlayTime()
 
         val extension = Uri.decode(game.path).substringAfterLast('.', "").lowercase(Locale.ROOT)
-        val parts = mutableListOf<String>()
-        if (game.programIdHex != "0") parts.add(game.programIdHex)
-        if (extension in Game.extensions) parts.add(extension.uppercase(Locale.ROOT))
-        binding.consoleGameFileInfo.text = parts.joinToString(" · ")
-        binding.consoleGameFileInfo.setVisible(parts.isNotEmpty())
+        if (extension in Game.extensions) {
+            addInfoRow(
+                getString(R.string.home_console_meta_format, extension.uppercase(Locale.ROOT))
+            )
+        }
+        val sizeRow = addInfoRow("").apply { setVisible(false) }
+        if (game.programIdHex != "0") {
+            addInfoRow(getString(R.string.game_console_meta_program_id, game.programIdHex))
+        }
 
         // File size through the existing NativeLibrary.getSize() (document provider / native path).
         viewLifecycleOwner.lifecycleScope.launch {
@@ -342,10 +365,23 @@ class GamePropertiesFragment : Fragment() {
                 }
             }
             if (_binding == null || bytes <= 0L) return@launch
-            parts.add(MemoryUtil.bytesToSizeUnit(bytes.toFloat()))
-            binding.consoleGameFileInfo.text = parts.joinToString(" · ")
-            binding.consoleGameFileInfo.setVisible(true)
+            sizeRow.text = getString(
+                R.string.home_console_meta_size,
+                MemoryUtil.bytesToSizeUnit(bytes.toFloat())
+            )
+            sizeRow.setVisible(true)
         }
+    }
+
+    private fun addInfoRow(text: String): TextView {
+        val row = TextView(requireContext(), null, 0, R.style.ConsoleInfoRow)
+        row.layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        row.text = text
+        binding.consoleGameInfo.addView(row)
+        return row
     }
 
     private fun tabViews() = mapOf(
@@ -485,7 +521,32 @@ class GamePropertiesFragment : Fragment() {
         }
     }
 
-    /** Game settings: per-game configuration, GPU driver, post-processing, frame generation, Freedreno. */
+    /** Opens this game's settings directly at [section] (per-game configuration). */
+    private fun openSettingsSection(section: Settings.MenuTag) {
+        val action = HomeNavigationDirections.actionGlobalSettingsActivity(args.game, section)
+        binding.root.findNavController().navigate(action)
+    }
+
+    private fun sectionProperty(
+        titleId: Int,
+        descriptionId: Int,
+        iconId: Int,
+        section: Settings.MenuTag,
+        details: () -> String = { "" }
+    ) = SubmenuProperty(
+        titleId,
+        descriptionId,
+        iconId,
+        details = details,
+        action = { openSettingsSection(section) }
+    )
+
+    /**
+     * Game settings: every per-game settings section is listed here directly (graphics, audio,
+     * system, post-processing, frame generation, driver, Freedreno, debug, applets), so no
+     * intermediate settings menu is needed. The custom configuration card (import / export /
+     * share) closes the list.
+     */
     private fun settingsTabProperties(): List<GameProperty> {
         val configFile = File(
             DirectoryInitialization.userDirectory +
@@ -496,6 +557,110 @@ class GamePropertiesFragment : Fragment() {
 
         return mutableListOf<GameProperty>().apply {
             add(
+                sectionProperty(
+                    R.string.preferences_graphics,
+                    R.string.preferences_graphics_description,
+                    R.drawable.ic_graphics,
+                    Settings.MenuTag.SECTION_RENDERER
+                )
+            )
+            add(
+                sectionProperty(
+                    R.string.preferences_audio,
+                    R.string.preferences_audio_description,
+                    R.drawable.ic_audio,
+                    Settings.MenuTag.SECTION_AUDIO
+                )
+            )
+            add(
+                sectionProperty(
+                    R.string.preferences_system,
+                    R.string.preferences_system_description,
+                    R.drawable.ic_system_settings,
+                    Settings.MenuTag.SECTION_SYSTEM
+                )
+            )
+            add(
+                sectionProperty(
+                    R.string.post_processing,
+                    R.string.post_processing_per_game_description,
+                    R.drawable.ic_post_processing,
+                    Settings.MenuTag.SECTION_POST_PROCESSING
+                ) {
+                    when {
+                        summary == null -> ""
+                        !summary.postProcessing -> getString(R.string.game_console_off)
+                        summary.postPreset.isNotEmpty() -> summary.postPreset
+                        else -> getString(R.string.game_console_on)
+                    }
+                }
+            )
+            add(
+                sectionProperty(
+                    R.string.frame_gen,
+                    R.string.frame_gen_per_game_description,
+                    R.drawable.ic_duck,
+                    Settings.MenuTag.SECTION_FRAME_GEN
+                ) {
+                    when {
+                        summary == null -> ""
+                        summary.frameGen -> getString(R.string.game_console_on)
+                        else -> getString(R.string.game_console_off)
+                    }
+                }
+            )
+            if (GpuDriverHelper.supportsCustomDriverLoading()) {
+                add(
+                    SubmenuProperty(
+                        R.string.gpu_driver_manager,
+                        R.string.install_gpu_driver_description,
+                        R.drawable.ic_build,
+                        detailsFlow = driverViewModel.selectedDriverTitle,
+                        action = {
+                            val action =
+                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
+                                    SettingsSubscreen.DRIVER_MANAGER,
+                                    args.game
+                                )
+                            binding.root.findNavController().navigate(action)
+                        }
+                    )
+                )
+            }
+            if (GpuDriverHelper.isAdrenoGpu()) {
+                add(
+                    SubmenuProperty(
+                        R.string.freedreno_per_game_title,
+                        R.string.freedreno_per_game_description,
+                        R.drawable.ic_graphics,
+                        action = {
+                            val action =
+                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
+                                    SettingsSubscreen.FREEDRENO_SETTINGS,
+                                    args.game
+                                )
+                            binding.root.findNavController().navigate(action)
+                        }
+                    )
+                )
+            }
+            add(
+                sectionProperty(
+                    R.string.preferences_debug,
+                    R.string.preferences_debug_description,
+                    R.drawable.ic_code,
+                    Settings.MenuTag.SECTION_DEBUG
+                )
+            )
+            add(
+                sectionProperty(
+                    R.string.applets_menu,
+                    R.string.applets_menu_description,
+                    R.drawable.ic_applet,
+                    Settings.MenuTag.SECTION_APPLETS
+                )
+            )
+            add(
                 SubmenuProperty(
                     R.string.game_console_custom_config,
                     R.string.per_game_settings_description,
@@ -503,13 +668,7 @@ class GamePropertiesFragment : Fragment() {
                     details = {
                         if (configExists) getString(R.string.game_console_custom_config_active) else ""
                     },
-                    action = {
-                        val action = HomeNavigationDirections.actionGlobalSettingsActivity(
-                            args.game,
-                            Settings.MenuTag.SECTION_ROOT
-                        )
-                        binding.root.findNavController().navigate(action)
-                    },
+                    action = { openSettingsSection(Settings.MenuTag.SECTION_ROOT) },
                     secondaryActions = listOf(
                         SubMenuPropertySecondaryAction(
                             isShown = true,
@@ -536,84 +695,6 @@ class GamePropertiesFragment : Fragment() {
                     )
                 )
             )
-            if (GpuDriverHelper.supportsCustomDriverLoading()) {
-                add(
-                    SubmenuProperty(
-                        R.string.gpu_driver_manager,
-                        R.string.install_gpu_driver_description,
-                        R.drawable.ic_build,
-                        detailsFlow = driverViewModel.selectedDriverTitle,
-                        action = {
-                            val action =
-                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                                    SettingsSubscreen.DRIVER_MANAGER,
-                                    args.game
-                                )
-                            binding.root.findNavController().navigate(action)
-                        }
-                    )
-                )
-            }
-            add(
-                SubmenuProperty(
-                    R.string.post_processing,
-                    R.string.post_processing_per_game_description,
-                    R.drawable.ic_post_processing,
-                    details = {
-                        when {
-                            summary == null -> ""
-                            !summary.postProcessing -> getString(R.string.game_console_off)
-                            summary.postPreset.isNotEmpty() -> summary.postPreset
-                            else -> getString(R.string.game_console_on)
-                        }
-                    },
-                    action = {
-                        val action = HomeNavigationDirections.actionGlobalSettingsActivity(
-                            args.game,
-                            Settings.MenuTag.SECTION_POST_PROCESSING
-                        )
-                        binding.root.findNavController().navigate(action)
-                    }
-                )
-            )
-            add(
-                SubmenuProperty(
-                    R.string.frame_gen,
-                    R.string.frame_gen_per_game_description,
-                    R.drawable.ic_duck,
-                    details = {
-                        when {
-                            summary == null -> ""
-                            summary.frameGen -> getString(R.string.game_console_on)
-                            else -> getString(R.string.game_console_off)
-                        }
-                    },
-                    action = {
-                        val action = HomeNavigationDirections.actionGlobalSettingsActivity(
-                            args.game,
-                            Settings.MenuTag.SECTION_FRAME_GEN
-                        )
-                        binding.root.findNavController().navigate(action)
-                    }
-                )
-            )
-            if (GpuDriverHelper.isAdrenoGpu()) {
-                add(
-                    SubmenuProperty(
-                        R.string.freedreno_per_game_title,
-                        R.string.freedreno_per_game_description,
-                        R.drawable.ic_graphics,
-                        action = {
-                            val action =
-                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                                    SettingsSubscreen.FREEDRENO_SETTINGS,
-                                    args.game
-                                )
-                            binding.root.findNavController().navigate(action)
-                        }
-                    )
-                )
-            }
         }
     }
 

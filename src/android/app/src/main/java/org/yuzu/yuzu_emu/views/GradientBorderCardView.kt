@@ -178,7 +178,7 @@ class GradientBorderCardView @JvmOverloads constructor(
 
     private companion object {
         const val DEFAULT_STROKE_PX = 6f
-        const val CONSOLE_STROKE_DP = 3f
+        const val CONSOLE_STROKE_DP = 3.72f
         const val CONSOLE_ROTATION_MS = 4000L
         const val CONSOLE_FRAME_DELAY_MS = 33L
     }

@@ -2,7 +2,8 @@
 <!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
-    Console-style game screen, single column (portrait): game card, Play, then tabbed options.
+    Console-style game screen, single column (portrait): game card, Play, file information,
+    then tabbed options.
     IDs shared with layout-w600dp/fragment_game_properties.xml.
 -->
 <androidx.constraintlayout.widget.ConstraintLayout
@@ -122,79 +123,43 @@
 
                 </com.google.android.material.card.MaterialCardView>
 
-                <LinearLayout
+                <com.google.android.material.textview.MaterialTextView
+                    android:id="@+id/title"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_gravity="center_horizontal"
-                    android:layout_marginTop="18dp"
-                    android:orientation="horizontal">
-
-                    <com.google.android.material.textview.MaterialTextView
-                        android:id="@+id/title"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:ellipsize="none"
-                        android:marqueeRepeatLimit="marquee_forever"
-                        android:maxWidth="320dp"
-                        android:requiresFadingEdge="horizontal"
-                        android:singleLine="true"
-                        android:textColor="@color/console_home_text_primary"
-                        android:textSize="@dimen/console_game_title_size" />
-
-                    <com.google.android.material.textview.MaterialTextView
-                        android:id="@+id/console_game_version"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:layout_marginTop="2dp"
-                        android:singleLine="true"
-                        android:textColor="@color/console_home_text_secondary"
-                        android:textSize="13sp" />
-
-                </LinearLayout>
-
-                <com.google.android.material.textview.MaterialTextView
-                    android:id="@+id/console_game_developer"
-                    style="@style/ConsoleMetaText"
-                    android:layout_gravity="center_horizontal" />
-
-                <com.google.android.material.textview.MaterialTextView
-                    android:id="@+id/playtime"
-                    style="@style/ConsoleMetaText"
-                    android:layout_gravity="center_horizontal"
-                    android:background="?attr/selectableItemBackground"
-                    android:focusable="true"
-                    android:paddingHorizontal="6dp" />
-
-                <com.google.android.material.textview.MaterialTextView
-                    android:id="@+id/console_game_file_info"
-                    style="@style/ConsoleMetaText"
-                    android:layout_gravity="center_horizontal" />
+                    android:layout_marginTop="16dp"
+                    android:ellipsize="none"
+                    android:marqueeRepeatLimit="marquee_forever"
+                    android:requiresFadingEdge="horizontal"
+                    android:singleLine="true"
+                    android:textColor="@color/console_home_text_primary"
+                    android:textSize="@dimen/console_game_title_size" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/button_start"
-                    android:layout_width="wrap_content"
-                    android:layout_height="56dp"
+                    style="@style/ConsolePlayButton"
                     android:layout_gravity="center_horizontal"
-                    android:layout_marginTop="20dp"
-                    android:minWidth="180dp"
-                    android:text="@string/home_console_play"
-                    android:textColor="@color/console_home_text_on_light"
-                    android:textSize="17sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/console_play_tint"
-                    app:cornerRadius="28dp"
-                    app:icon="@drawable/ic_play"
-                    app:iconTint="@color/console_home_text_on_light"
-                    app:strokeColor="@color/console_secondary_action_stroke"
-                    app:strokeWidth="3dp" />
+                    android:layout_marginTop="14dp" />
+
+                <!-- File information rows (developer, version, playtime, format, size,
+                     program ID); filled by GamePropertiesFragment. -->
+                <LinearLayout
+                    android:id="@+id/console_game_info"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/console_property_card_background"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="10dp" />
 
             </LinearLayout>
 
             <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="28dp"
+                android:layout_marginTop="20dp"
                 android:scrollbars="none">
 
                 <LinearLayout
