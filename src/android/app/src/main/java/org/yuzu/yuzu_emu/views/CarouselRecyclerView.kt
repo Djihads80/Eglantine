@@ -6,6 +6,7 @@ package org.yuzu.yuzu_emu.ui
 import android.content.Context
 import android.graphics.Rect
 import android.util.AttributeSet
+import android.view.KeyEvent
 import android.view.View
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.PagerSnapHelper
@@ -13,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.pow
+import kotlin.math.sign
 import kotlin.math.sin
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.adapters.GameAdapter
@@ -22,6 +24,7 @@ import org.yuzu.yuzu_emu.YuzuApplication
 import androidx.preference.PreferenceManager
 import androidx.core.view.WindowInsetsCompat
 import org.yuzu.yuzu_emu.utils.FullscreenHelper
+import org.yuzu.yuzu_emu.views.GradientBorderCardView
 /**
  * CarouselRecyclerView encapsulates all carousel content for the games UI.
  * It manages overlapping cards, center snapping, custom drawing order,
@@ -42,6 +45,44 @@ class CarouselRecyclerView @JvmOverloads constructor(
     private var pagerSnapHelper: PagerSnapHelper? = null
     private var scalingScrollListener: OnScrollListener? = null
     private var savedItemAnimator: RecyclerView.ItemAnimator? = null
+    private var lastCenteredPosition: Int = RecyclerView.NO_POSITION
+
+    /**
+     * Console-style (flat) carousel used by the landscape Home: the centered card is full size,
+     * neighbours are scaled down and packed next to it, all cards share the same bottom line.
+     * When false the original arc carousel is used.
+     */
+    var consoleStyle: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            cardGeometryInitialized = false
+            lastCenteredPosition = RecyclerView.NO_POSITION
+            if (!value) clearConsoleChildState()
+            if (isCarouselMode && adapter != null) {
+                updateCardGeometry()
+                applyCarouselPadding()
+                setupCarousel(true)
+            }
+        }
+
+    // Console tuning values, resolved once (they only change with a configuration change,
+    // which recreates this view).
+    private val consoleSideScale: Float by lazy {
+        resources.getFraction(R.fraction.console_home_side_scale, 1, 1).coerceIn(0.2f, 1f)
+    }
+    private val consoleSideAlpha: Float by lazy {
+        resources.getFraction(R.fraction.console_home_side_alpha, 1, 1).coerceIn(0f, 1f)
+    }
+    private val consoleCardGap: Float by lazy {
+        resources.getDimension(R.dimen.console_home_card_gap)
+    }
+
+    /** Invoked with the adapter position closest to the center whenever the carousel moves or relayouts. */
+    var onCenteredPositionChanged: ((position: Int, changed: Boolean) -> Unit)? = null
+
+    /** Optional key handler that runs before the focused card receives the event (gamepad shortcuts). */
+    var keyInterceptor: ((KeyEvent) -> Boolean)? = null
 
     companion object {
         private const val CAROUSEL_CARD_SIZE_FACTOR = "CarouselCardSizeMultiplier"
@@ -205,6 +246,22 @@ class CarouselRecyclerView @JvmOverloads constructor(
             val child = getChildAt(i) ?: continue
             updateChildScaleAndAlphaForPosition(child)
         }
+        if (consoleStyle) dispatchCenteredPosition()
+    }
+
+    private fun dispatchCenteredPosition() {
+        val centered = getClosestChildPosition()
+        if (centered == RecyclerView.NO_POSITION) return
+        val changed = centered != lastCenteredPosition
+        if (changed) {
+            lastCenteredPosition = centered
+            for (i in 0 until childCount) {
+                val child = getChildAt(i) ?: continue
+                val position = getChildViewHolder(child).bindingAdapterPosition
+                child.isSelected = position == centered
+            }
+        }
+        onCenteredPositionChanged?.invoke(centered, changed)
     }
 
     fun updateChildScaleAndAlphaForPosition(child: View) {
@@ -222,6 +279,10 @@ class CarouselRecyclerView @JvmOverloads constructor(
         }
 
         val signedDistance = getChildDistanceToCenter(child)
+        if (consoleStyle) {
+            updateConsoleChild(child, position, signedDistance, cardSize)
+            return
+        }
         val itemStep = (cardSize - overlapPx).toFloat().coerceAtLeast(1f)
         val angleStep = Math.toRadians(CAROUSEL_ARC_ANGLE_STEP_DEGREES).toFloat()
         val maxAngle = Math.toRadians(CAROUSEL_ARC_MAX_ANGLE_DEGREES).toFloat()
@@ -273,6 +334,62 @@ class CarouselRecyclerView @JvmOverloads constructor(
         child.scaleY = scale
     }
 
+    /**
+     * Flat console layout. `k` is the (fractional) distance to the center measured in cards.
+     * The centered card keeps full size; neighbours shrink to [R.fraction.console_home_side_scale]
+     * and are translated so that they sit right next to it with a fixed gap.
+     */
+    private fun updateConsoleChild(child: View, position: Int, signedDistance: Float, cardSize: Int) {
+        val sideScale = consoleSideScale
+        val sideAlpha = consoleSideAlpha
+        val gap = consoleCardGap
+
+        val k = signedDistance / cardSize.toFloat().coerceAtLeast(1f)
+        val absK = abs(k)
+        val near = absK.coerceAtMost(1f)
+        val far = (absK - 1f).coerceAtLeast(0f)
+        val firstStep = cardSize * (1f + sideScale) / 2f + gap
+        val sideStep = cardSize * sideScale + gap
+        val targetOffset = sign(k) * (firstStep * near + sideStep * far)
+
+        child.animate().cancel()
+        child.pivotX = cardSize / 2f
+        child.pivotY = cardSize.toFloat()
+        child.translationX = targetOffset - signedDistance
+        val scale = 1f - (1f - sideScale) * near
+        child.scaleX = scale
+        child.scaleY = scale
+        child.alpha = 1f - (1f - sideAlpha) * near
+        (child as? GradientBorderCardView)?.consoleHighlight = true
+        if (lastCenteredPosition != RecyclerView.NO_POSITION) {
+            child.isSelected = position == lastCenteredPosition
+        }
+    }
+
+    private fun clearConsoleChildState() {
+        for (i in 0 until childCount) {
+            val child = getChildAt(i) ?: continue
+            child.isSelected = false
+            child.pivotX = child.width / 2f
+            child.pivotY = child.height / 2f
+            (child as? GradientBorderCardView)?.consoleHighlight = false
+        }
+    }
+
+    /** True when [position] is the card currently closest to the center. */
+    fun isCenteredPosition(position: Int): Boolean =
+        position != RecyclerView.NO_POSITION && getClosestChildPosition() == position
+
+    /** Smoothly brings [position] to the center slot (snap/focus are handled when scrolling stops). */
+    fun smoothScrollToCenter(position: Int) {
+        val view = findViewHolderForAdapterPosition(position)?.itemView
+        if (view == null) {
+            smoothScrollToPosition(position)
+            return
+        }
+        smoothScrollBy(getChildDistanceToCenter(view).toInt(), 0)
+    }
+
     fun focusCenteredCard() {
         val centeredPos = getClosestChildPosition()
         if (centeredPos != RecyclerView.NO_POSITION) {
@@ -315,6 +432,25 @@ class CarouselRecyclerView @JvmOverloads constructor(
 
         if (cardGeometryInitialized && !hasWindowFocus()) return
 
+        if (consoleStyle) {
+            val sizeFactor = resources.getFraction(R.fraction.console_home_card_size_factor, 1, 1)
+            val maxWidthFactor = resources.getFraction(R.fraction.console_home_card_max_width_factor, 1, 1)
+            val bottomGap = resources.getDimensionPixelSize(R.dimen.console_home_card_bottom_gap)
+            val consoleCardSize = minOf(
+                (height * sizeFactor).toInt(),
+                height - bottomGap,
+                (width * maxWidthFactor).toInt()
+            )
+            if (consoleCardSize <= 0) return
+            val consoleSizeChanged = gameAdapter.cardSize != consoleCardSize
+            val consoleInsetChanged = bottomInset != 0
+            bottomInset = 0
+            cardGeometryInitialized = true
+            if (consoleSizeChanged) gameAdapter.setCardSize(consoleCardSize)
+            if (consoleSizeChanged || consoleInsetChanged) setupCarousel(true)
+            return
+        }
+
         val newBottomInset = resolveBottomInset(windowInsets).coerceIn(0, height)
         val internalFactor = resources.getFraction(R.fraction.carousel_card_size_factor, 1, 1)
         val userFactor = preferences.getFloat(CAROUSEL_CARD_SIZE_FACTOR, internalFactor).coerceIn(
@@ -349,7 +485,13 @@ class CarouselRecyclerView @JvmOverloads constructor(
         val cardSize = gameAdapter.cardSize
         if (cardSize <= 0 || bottomInset < 0) return
 
-        val topPadding = ((height - bottomInset - cardSize) / 2).coerceAtLeast(0)
+        val topPadding = if (consoleStyle) {
+            // Bottom-aligned row: details panel sits right below the cards.
+            val bottomGap = resources.getDimensionPixelSize(R.dimen.console_home_card_bottom_gap)
+            (height - cardSize - bottomGap).coerceAtLeast(0)
+        } else {
+            ((height - bottomInset - cardSize) / 2).coerceAtLeast(0)
+        }
         val sidePadding = (width - cardSize) / 2
         if (paddingLeft != sidePadding || paddingTop != topPadding ||
             paddingRight != sidePadding || paddingBottom != 0
@@ -377,7 +519,7 @@ class CarouselRecyclerView @JvmOverloads constructor(
 
             val internalOverlapFactor = resources.getFraction(R.fraction.carousel_overlap_factor,1,1)
             overlapFactor = preferences.getFloat(CAROUSEL_OVERLAP_FACTOR, internalOverlapFactor).coerceIn(0f,1f)
-            overlapPx = (cardSize * overlapFactor).toInt()
+            overlapPx = if (consoleStyle) 0 else (cardSize * overlapFactor).toInt()
 
             val internalFlingMultiplier = resources.getFraction(R.fraction.carousel_fling_multiplier,1,1)
             flingMultiplier = preferences.getFloat(
@@ -385,6 +527,11 @@ class CarouselRecyclerView @JvmOverloads constructor(
                 internalFlingMultiplier
             ).coerceIn(1f, 5f)
 
+            // Recreate the decoration when the overlap changed (e.g. console <-> arc style)
+            if (overlapDecoration != null && overlapDecoration!!.overlap != overlapPx) {
+                removeItemDecoration(overlapDecoration!!)
+                overlapDecoration = null
+            }
             // Add overlap decoration if not present
             if (overlapDecoration == null) {
                 overlapDecoration = OverlappingDecoration(overlapPx)
@@ -430,6 +577,8 @@ class CarouselRecyclerView @JvmOverloads constructor(
             setPadding(0, 0, 0, 0)
             clipToPadding = true
             flingMultiplier = 1f
+            clearConsoleChildState()
+            lastCenteredPosition = RecyclerView.NO_POSITION
             // Reset scaling
             for (i in 0 until childCount) {
                 val child = getChildAt(i)
@@ -498,10 +647,16 @@ class CarouselRecyclerView @JvmOverloads constructor(
                     focused
                 }
             }
-            // Prevent focus from escaping to external UI elements when forced snapping was removed
-            View.FOCUS_DOWN -> focused
+            // Console Home: DOWN moves to the details/actions row below the carousel.
+            // Otherwise prevent focus from escaping to external UI elements (forced snapping was removed)
+            View.FOCUS_DOWN -> if (consoleStyle) super.focusSearch(focused, direction) else focused
             else -> super.focusSearch(focused, direction)
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (isCarouselMode && keyInterceptor?.invoke(event) == true) return true
+        return super.dispatchKeyEvent(event)
     }
 
     // Custom fling multiplier for carousel
@@ -525,7 +680,7 @@ class CarouselRecyclerView @JvmOverloads constructor(
         return sorted[i].first
     }
 
-    inner class OverlappingDecoration(private val overlap: Int) : ItemDecoration() {
+    inner class OverlappingDecoration(val overlap: Int) : ItemDecoration() {
         override fun getItemOffsets(
             outRect: Rect,
             view: View,

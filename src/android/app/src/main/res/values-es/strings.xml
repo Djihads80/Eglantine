@@ -1175,4 +1175,13 @@
     <string name="add_folders">Añadir carpeta</string>
     <string name="percent">%1$d%%</string>
 
+    <!-- Home estilo consola (horizontal) -->
+    <string name="home_console_play">Iniciar</string>
+    <string name="home_console_options">Opciones</string>
+    <string name="home_console_info">Información</string>
+    <string name="home_console_library">Biblioteca</string>
+    <string name="home_console_applets">Applets</string>
+    <string name="home_console_homebrew">Homebrew</string>
+    <string name="home_console_hints">(A) Iniciar   (X) Opciones   (Y) Buscar</string>
+
 </resources>

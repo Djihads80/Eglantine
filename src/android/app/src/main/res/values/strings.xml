@@ -1870,4 +1870,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     <string name="add_folders">Add Folder</string>
     <string name="percent">%1$d%%</string>
 
+    <!-- Console-style Home (landscape) -->
+    <string name="home_console_play">Play</string>
+    <string name="home_console_options">Options</string>
+    <string name="home_console_info">Information</string>
+    <string name="home_console_library">Library</string>
+    <string name="home_console_applets">Applets</string>
+    <string name="home_console_homebrew">Homebrew</string>
+    <string name="home_console_hints">(A) Play   (X) Options   (Y) Search</string>
+
 </resources>

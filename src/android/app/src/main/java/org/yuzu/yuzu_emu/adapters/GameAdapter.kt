@@ -29,6 +29,7 @@ import org.yuzu.yuzu_emu.databinding.CardGameGridBinding
 import org.yuzu.yuzu_emu.databinding.CardGameCarouselBinding
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.model.GamesViewModel
+import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.utils.GameIconUtils
 import org.yuzu.yuzu_emu.utils.ViewUtils.marquee
 import org.yuzu.yuzu_emu.viewholder.AbstractViewHolder
@@ -216,7 +217,17 @@ class GameAdapter(private val activity: AppCompatActivity) :
 
             carouselBinding.textGameTitle.text = model.title.replace("[\\t\\n\\r]+".toRegex(), " ")
             carouselBinding.textGameTitle.marquee()
-            carouselBinding.cardGameCarousel.setOnClickListener { onClick(model) }
+            carouselBinding.cardGameCarousel.setOnClickListener {
+                // Console Home: tapping a neighbour tile selects it first; tapping the selected
+                // tile (or pressing Play / A on it) launches the game as before.
+                val carousel = carouselBinding.root.parent as? CarouselRecyclerView
+                val position = bindingAdapterPosition
+                if (carousel != null && carousel.consoleStyle && !carousel.isCenteredPosition(position)) {
+                    carousel.smoothScrollToCenter(position)
+                } else {
+                    onClick(model)
+                }
+            }
             carouselBinding.cardGameCarousel.setOnLongClickListener { onLongClick(model) }
 
             carouselBinding.imageGameScreen.contentDescription =
