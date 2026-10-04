@@ -16,6 +16,17 @@
     android:background="@drawable/console_home_base_background"
     android:clipChildren="false">
 
+    <!-- Animated "liquid glass" backdrop tinted with the selected game's colors -->
+    <org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
+        android:id="@+id/console_background"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:importantForAccessibility="no"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <!-- Top bar: gear (menu) | search (on demand) | clock, Wi-Fi/battery, profile -->
     <LinearLayout
         android:id="@+id/header"
@@ -61,7 +72,7 @@
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/search_background"
                 android:layout_width="match_parent"
-                android:layout_height="@dimen/console_home_header_button"
+                android:layout_height="@dimen/console_home_search_height"
                 app:cardBackgroundColor="@color/console_home_surface"
                 app:cardCornerRadius="24dp"
                 app:cardElevation="0dp"
@@ -147,9 +158,12 @@
             style="@style/ConsoleHeaderButton"
             android:contentDescription="@string/profile_manager">
 
-            <ImageView
+            <!-- Replaced by the current user's avatar by ConsoleHomeController. -->
+            <com.google.android.material.imageview.ShapeableImageView
+                android:id="@+id/console_profile_image"
                 style="@style/ConsoleHeaderIcon"
-                android:src="@drawable/ic_account_circle" />
+                android:src="@drawable/ic_account_circle"
+                app:shapeAppearanceOverlay="@style/ShapeAppearance.Console.Circle" />
 
         </com.google.android.material.card.MaterialCardView>
 

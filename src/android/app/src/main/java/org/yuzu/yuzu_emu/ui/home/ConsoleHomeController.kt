@@ -3,12 +3,10 @@
 
 package org.yuzu.yuzu_emu.ui.home
 
-import android.animation.ArgbEvaluator
-import android.animation.ValueAnimator
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.view.Gravity
 import android.view.KeyEvent
@@ -21,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.ImageViewCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
@@ -39,6 +38,8 @@ import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
 import org.yuzu.yuzu_emu.utils.GameIconUtils
 import org.yuzu.yuzu_emu.utils.MemoryUtil
+import org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
+import java.io.File
 import java.util.Locale
 
 /**
@@ -49,7 +50,9 @@ import java.util.Locale
  *  - switches the carousel into its flat console style,
  *  - follows the centered game and shows its details (title, version, developer, playtime,
  *    format and file size),
- *  - tints the background with the dominant color of the selected game's icon,
+ *  - tints the animated background (and the selected tile outline) with the main colors of the
+ *    selected game's icon,
+ *  - shows the current user's avatar on the profile button,
  *  - provides the gear menu (settings, search, view, sort, install, multiplayer, applets, about),
  *  - adds gamepad shortcuts (X = game options, Y = search).
  *
@@ -78,6 +81,9 @@ class ConsoleHomeController private constructor(
     private val metaFormat: TextView = root.findViewById(R.id.console_meta_format)
     private val metaSize: TextView = root.findViewById(R.id.console_meta_size)
     private val metaContainer: LinearLayout = root.findViewById(R.id.console_meta_container)
+    private val liquidBackground: ConsoleLiquidBackgroundView =
+        root.findViewById(R.id.console_background)
+    private val profileImage: ImageView = root.findViewById(R.id.console_profile_image)
     private val menuButton: View = root.findViewById(R.id.settings_button)
     private val headerSpace: View = root.findViewById(R.id.console_header_space)
     private val searchFrame: View = root.findViewById(R.id.frame_search)
@@ -94,19 +100,19 @@ class ConsoleHomeController private constructor(
     private var sizeJob: Job? = null
     private var menu: PopupWindow? = null
     private var colorJob: Job? = null
-    private var colorAnimator: ValueAnimator? = null
+    private var avatarJob: Job? = null
 
-    // Background gradient (top, center, bottom), tinted from the selected game's icon.
+    // Background gradient (top, center, bottom) and accents used when no game is selected.
     private val defaultBackground = intArrayOf(
         res.getColor(R.color.console_home_bg_top, null),
         res.getColor(R.color.console_home_bg_center, null),
         res.getColor(R.color.console_home_bg_bottom, null)
     )
-    private val background = GradientDrawable(
-        GradientDrawable.Orientation.TOP_BOTTOM,
-        defaultBackground.clone()
+    private val defaultAccents = intArrayOf(
+        Color.rgb(0x3A, 0x5B, 0xD9),
+        Color.rgb(0x6A, 0x4C, 0xC9),
+        Color.rgb(0x2E, 0x8C, 0xC7)
     )
-    private var backgroundColors = defaultBackground.clone()
 
     private val applySelectionRunnable = Runnable { applySelection() }
 
@@ -114,10 +120,10 @@ class ConsoleHomeController private constructor(
         // File sizes by game path, kept for the process lifetime (querying the provider is slow).
         private val sizeCache = HashMap<String, Long>()
 
-        // Dominant icon color by game path, kept for the process lifetime.
-        private val colorCache = HashMap<String, Int>()
+        // Main icon colors (accents) by game path, kept for the process lifetime.
+        private val colorCache = HashMap<String, IntArray>()
 
-        private const val BACKGROUND_FADE_MS = 350L
+        private const val ACCENT_COUNT = 3
         private const val HUE_BUCKETS = 12
         private const val SAMPLE_SIZE = 24
 
@@ -143,7 +149,8 @@ class ConsoleHomeController private constructor(
         carousel.onCenteredPositionChanged = { position, _ -> onCenteredPosition(position) }
         carousel.keyInterceptor = ::handleCarouselKey
 
-        root.background = background
+        liquidBackground.setPalette(defaultBackground, defaultAccents, animate = false)
+        loadAvatar()
 
         // Landscape: details in a single row so the carousel keeps the portrait tile size.
         if (res.getBoolean(R.bool.console_home_meta_horizontal)) {
@@ -179,7 +186,7 @@ class ConsoleHomeController private constructor(
         if (!isCarousel) {
             clearSelection()
             details.visibility = View.GONE
-            animateBackground(defaultBackground)
+            liquidBackground.setPalette(defaultBackground, defaultAccents)
         } else if (details.visibility == View.GONE) {
             details.visibility = View.INVISIBLE
         }
@@ -200,6 +207,8 @@ class ConsoleHomeController private constructor(
 
     fun onResume() {
         if (released) return
+        // The user may have changed profile or avatar.
+        loadAvatar()
         // Playtime changes after playing: refresh the details of the selected game.
         if (active) {
             selectedGame = null
@@ -213,8 +222,8 @@ class ConsoleHomeController private constructor(
         sizeJob = null
         colorJob?.cancel()
         colorJob = null
-        colorAnimator?.cancel()
-        colorAnimator = null
+        avatarJob?.cancel()
+        avatarJob = null
         menu?.dismiss()
         menu = null
         details.removeCallbacks(applySelectionRunnable)
@@ -341,26 +350,32 @@ class ConsoleHomeController private constructor(
         colorJob?.cancel()
         val cached = colorCache[game.path]
         if (cached != null) {
-            animateBackground(gradientFor(cached))
+            applyAccents(cached)
             return
         }
         colorJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
-            val color = try {
+            val accents = try {
                 val icon = GameIconUtils.getGameIcon(fragment.viewLifecycleOwner, game)
-                withContext(Dispatchers.Default) { dominantColor(icon) }
+                withContext(Dispatchers.Default) { accentColors(icon) }
             } catch (e: Exception) {
                 null
             } ?: return@launch
-            colorCache[game.path] = color
-            if (!released && active && selectedGame == game) animateBackground(gradientFor(color))
+            colorCache[game.path] = accents
+            if (!released && active && selectedGame == game) applyAccents(accents)
         }
     }
 
+    private fun applyAccents(accents: IntArray) {
+        val liquidAccents = IntArray(accents.size) { liquidAccent(accents[it]) }
+        liquidBackground.setPalette(gradientFor(accents[0]), liquidAccents)
+    }
+
     /**
-     * Dominant color of the icon: pixels are grouped by hue (weighted by saturation and brightness)
-     * and the heaviest group is averaged. Mostly grey icons fall back to the plain average.
+     * Main colors of the icon: pixels are grouped by hue (weighted by saturation and brightness)
+     * and the heaviest groups are averaged, strongest first. Missing slots (few colors, or a mostly
+     * grey icon) are filled with hue shifts of the main color.
      */
-    private fun dominantColor(icon: Bitmap): Int {
+    private fun accentColors(icon: Bitmap): IntArray {
         val sample = Bitmap.createScaledBitmap(icon, SAMPLE_SIZE, SAMPLE_SIZE, true)
         val pixels = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
         sample.getPixels(pixels, 0, SAMPLE_SIZE, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
@@ -389,23 +404,45 @@ class ConsoleHomeController private constructor(
             sums[bucket][1] += g * weight
             sums[bucket][2] += b * weight
         }
-        if (count == 0) return defaultBackground[1]
+        if (count == 0) return defaultAccents.clone()
 
-        val best = weights.indices.maxByOrNull { weights[it] } ?: 0
-        val weight = weights[best]
-        return if (weight >= count * 0.03f) {
-            Color.rgb(
-                (sums[best][0] / weight).toInt(),
-                (sums[best][1] / weight).toInt(),
-                (sums[best][2] / weight).toInt()
-            )
-        } else {
-            Color.rgb(
-                (total[0] / count).toInt(),
-                (total[1] / count).toInt(),
-                (total[2] / count).toInt()
-            )
+        val minWeight = count * 0.03f
+        val found = weights.indices
+            .filter { weights[it] >= minWeight }
+            .sortedByDescending { weights[it] }
+            .take(ACCENT_COUNT)
+            .map { bucket ->
+                val weight = weights[bucket]
+                Color.rgb(
+                    (sums[bucket][0] / weight).toInt(),
+                    (sums[bucket][1] / weight).toInt(),
+                    (sums[bucket][2] / weight).toInt()
+                )
+            }
+        val main = found.firstOrNull() ?: Color.rgb(
+            (total[0] / count).toInt(),
+            (total[1] / count).toInt(),
+            (total[2] / count).toInt()
+        )
+        return IntArray(ACCENT_COUNT) { i ->
+            found.getOrNull(i) ?: shiftHue(main, if (i % 2 == 1) 28f else -28f)
         }
+    }
+
+    private fun shiftHue(color: Int, degrees: Float): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        hsv[0] = (hsv[0] + degrees + 360f) % 360f
+        return Color.HSVToColor(hsv)
+    }
+
+    /** Accent tuned for the liquid blobs: vivid but not glaring under white text. */
+    private fun liquidAccent(color: Int): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        hsv[1] = hsv[1].coerceIn(0.35f, 0.9f)
+        hsv[2] = hsv[2].coerceIn(0.45f, 0.8f)
+        return Color.HSVToColor(hsv)
     }
 
     /** Dark-to-light gradient in the hue of [color], dark enough to keep white text readable. */
@@ -415,28 +452,43 @@ class ConsoleHomeController private constructor(
         val hue = hsv[0]
         val saturation = hsv[1]
         return intArrayOf(
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.9f).coerceAtMost(0.85f), 0.16f)),
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.8f).coerceAtMost(0.75f), 0.30f)),
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.5f).coerceAtMost(0.5f), 0.50f))
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.9f).coerceAtMost(0.85f), 0.14f)),
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.8f).coerceAtMost(0.75f), 0.26f)),
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.5f).coerceAtMost(0.5f), 0.42f))
         )
     }
 
-    private fun animateBackground(target: IntArray) {
-        colorAnimator?.cancel()
-        if (released || target.contentEquals(backgroundColors)) return
-        val start = backgroundColors.clone()
-        val evaluator = ArgbEvaluator()
-        colorAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = BACKGROUND_FADE_MS
-            addUpdateListener { animator ->
-                val fraction = animator.animatedFraction
-                val colors = IntArray(target.size) { i ->
-                    evaluator.evaluate(fraction, start[i], target[i]) as Int
+    // ---------------------------------------------------------------------------------------------
+    // Profile avatar
+
+    /** Shows the current user's avatar (same image as the profile manager) on its button. */
+    private fun loadAvatar() {
+        avatarJob?.cancel()
+        avatarJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
+            val avatar = withContext(Dispatchers.IO) {
+                try {
+                    val uuid = NativeLibrary.getCurrentUser()
+                    val path = uuid?.let { NativeLibrary.getUserImagePath(it) }
+                    if (path != null && File(path).exists()) {
+                        BitmapFactory.decodeFile(path)
+                    } else {
+                        val jpeg = NativeLibrary.getDefaultAccountBackupJpeg()
+                        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                    }
+                } catch (e: Exception) {
+                    null
                 }
-                backgroundColors = colors
-                background.colors = colors
             }
-            start()
+            if (released) return@launch
+            if (avatar != null) {
+                ImageViewCompat.setImageTintList(profileImage, null)
+                profileImage.scaleType = ImageView.ScaleType.CENTER_CROP
+                profileImage.layoutParams = profileImage.layoutParams.apply {
+                    width = ViewGroup.LayoutParams.MATCH_PARENT
+                    height = ViewGroup.LayoutParams.MATCH_PARENT
+                }
+                profileImage.setImageBitmap(avatar)
+            }
         }
     }
 

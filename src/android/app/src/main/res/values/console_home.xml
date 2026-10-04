@@ -25,8 +25,10 @@
     <color name="console_home_card_bg">#FF1A2A5A</color>
     <color name="console_home_battery_low">#FFFF7A7A</color>
 
-    <dimen name="console_home_header_button">48dp</dimen>
-    <dimen name="console_home_header_icon">22dp</dimen>
+    <dimen name="console_home_header_button">41dp</dimen>
+    <dimen name="console_home_header_button_radius">20.5dp</dimen>
+    <dimen name="console_home_header_icon">19dp</dimen>
+    <dimen name="console_home_search_height">48dp</dimen>
     <dimen name="console_home_side_margin">48dp</dimen>
     <dimen name="console_home_title_size">28sp</dimen>
     <dimen name="console_home_meta_size">14sp</dimen>
@@ -66,10 +68,15 @@
         <item name="android:focusable">true</item>
         <item name="android:clickable">true</item>
         <item name="cardBackgroundColor">@color/console_home_text_primary</item>
-        <item name="cardCornerRadius">24dp</item>
+        <item name="cardCornerRadius">@dimen/console_home_header_button_radius</item>
         <item name="cardElevation">0dp</item>
         <item name="strokeWidth">0dp</item>
         <item name="rippleColor">@color/console_home_chip_on_light</item>
+    </style>
+
+    <style name="ShapeAppearance.Console.Circle" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">50%</item>
     </style>
 
     <style name="ConsoleHeaderIcon">

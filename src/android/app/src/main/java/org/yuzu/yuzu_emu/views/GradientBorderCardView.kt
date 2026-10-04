@@ -8,6 +8,7 @@ package org.yuzu.yuzu_emu.views
 
 import android.content.Context
 import android.graphics.*
+import android.os.SystemClock
 import android.util.AttributeSet
 import com.google.android.material.card.MaterialCardView
 import org.yuzu.yuzu_emu.R
@@ -29,9 +30,14 @@ class GradientBorderCardView @JvmOverloads constructor(
     private var showGradientBorder = false
     private var isEdenTheme = false
 
+    // Console outline: sweep gradient in the Home palette colors (ConsolePalette), rotating.
+    private val consoleShaderMatrix = Matrix()
+    private var consolePaletteVersion = -1
+
     /**
-     * Console Home style: plain white outline on the selected/focused tile instead of the
-     * theme gradient. Toggled by CarouselRecyclerView when its consoleStyle is enabled.
+     * Console Home style: animated outline in the background palette colors on the
+     * selected/focused tile instead of the theme gradient. Toggled by CarouselRecyclerView when
+     * its consoleStyle is enabled.
      */
     var consoleHighlight: Boolean = false
         set(value) {
@@ -74,7 +80,7 @@ class GradientBorderCardView @JvmOverloads constructor(
 
         // Update border style based on theme
         if (consoleHighlight) {
-            borderPaint.shader = null
+            consolePaletteVersion = -1
             borderPaint.color = Color.WHITE
         } else if (isEdenTheme) {
             // Gradient for Eden theme
@@ -144,8 +150,25 @@ class GradientBorderCardView @JvmOverloads constructor(
         super.dispatchDraw(canvas)
         // Console tiles are edge-to-edge artwork, so the outline must be drawn above the children.
         if (showGradientBorder && consoleHighlight) {
+            updateConsoleShader()
             canvas.drawPath(borderPath, borderPaint)
+            if (isAttachedToWindow) postInvalidateDelayed(CONSOLE_FRAME_DELAY_MS)
         }
+    }
+
+    private fun updateConsoleShader() {
+        val cx = width / 2f
+        val cy = height / 2f
+        if (consolePaletteVersion != ConsolePalette.version || borderPaint.shader == null) {
+            val palette = ConsolePalette.borderColors
+            // Close the loop so the sweep has no seam.
+            val colors = IntArray(palette.size + 1) { palette[it % palette.size] }
+            borderPaint.shader = SweepGradient(cx, cy, colors, null)
+            consolePaletteVersion = ConsolePalette.version
+        }
+        val angle = (SystemClock.uptimeMillis() % CONSOLE_ROTATION_MS) * 360f / CONSOLE_ROTATION_MS
+        consoleShaderMatrix.setRotate(angle, cx, cy)
+        borderPaint.shader.setLocalMatrix(consoleShaderMatrix)
     }
 
     override fun onAttachedToWindow() {
@@ -156,5 +179,7 @@ class GradientBorderCardView @JvmOverloads constructor(
     private companion object {
         const val DEFAULT_STROKE_PX = 6f
         const val CONSOLE_STROKE_DP = 3f
+        const val CONSOLE_ROTATION_MS = 4000L
+        const val CONSOLE_FRAME_DELAY_MS = 33L
     }
 }
