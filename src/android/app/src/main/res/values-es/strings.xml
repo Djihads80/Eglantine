@@ -1188,6 +1188,8 @@
     <string name="home_console_meta_playtime">Horas de juego: %1$s</string>
     <string name="home_console_meta_format">Formato: %1$s</string>
     <string name="home_console_meta_size">Tamaño: %1$s</string>
+    <string name="game_console_meta_version">Versión: %1$s</string>
+    <string name="game_console_meta_program_id">ID de programa: %1$s</string>
     <string name="console_status_wifi_on">Wi-Fi conectado</string>
     <string name="console_status_wifi_off">Wi-Fi desconectado</string>
     <string name="console_status_battery">Batería %1$d%%</string>

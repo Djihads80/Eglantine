@@ -1883,6 +1883,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     <string name="home_console_meta_playtime">Playtime: %1$s</string>
     <string name="home_console_meta_format">Format: %1$s</string>
     <string name="home_console_meta_size">Size: %1$s</string>
+    <string name="game_console_meta_version">Version: %1$s</string>
+    <string name="game_console_meta_program_id">Program ID: %1$s</string>
     <string name="console_status_wifi_on">Wi-Fi connected</string>
     <string name="console_status_wifi_off">Wi-Fi disconnected</string>
     <string name="console_status_battery">Battery %1$d%%</string>

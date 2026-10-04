@@ -32,7 +32,8 @@
         android:id="@+id/header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginHorizontal="@dimen/console_home_side_margin"
+        android:layout_marginHorizontal="@dimen/console_home_header_margin"
+        android:layout_marginTop="@dimen/console_home_header_margin_top"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         app:layout_constraintTop_toTopOf="parent">
@@ -182,58 +183,15 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/header">
 
-        <LinearLayout
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/console_game_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_game_title"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxWidth="640dp"
-                android:singleLine="true"
-                android:textColor="@color/console_home_text_primary"
-                android:textSize="@dimen/console_home_title_size" />
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_game_version"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_marginTop="4dp"
-                android:singleLine="true"
-                android:textColor="@color/console_home_text_secondary"
-                android:textSize="13sp" />
-
-        </LinearLayout>
-
-        <!-- Vertical in portrait; ConsoleHomeController lays it out in one row in landscape. -->
-        <LinearLayout
-            android:id="@+id/console_meta_container"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="vertical">
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_meta_developer"
-                style="@style/ConsoleMetaText" />
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_meta_playtime"
-                style="@style/ConsoleMetaText" />
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_meta_format"
-                style="@style/ConsoleMetaText" />
-
-            <com.google.android.material.textview.MaterialTextView
-                android:id="@+id/console_meta_size"
-                style="@style/ConsoleMetaText" />
-
-        </LinearLayout>
+            android:ellipsize="end"
+            android:maxWidth="640dp"
+            android:singleLine="true"
+            android:textColor="@color/console_home_text_primary"
+            android:textSize="@dimen/console_home_title_size" />
 
     </LinearLayout>
 
