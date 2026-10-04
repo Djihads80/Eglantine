@@ -14,12 +14,9 @@ import androidx.preference.PreferenceManager
 import org.yuzu.yuzu_emu.features.settings.model.Settings
 
 object FullscreenHelper {
-    fun isFullscreenEnabled(context: Context): Boolean {
-        return PreferenceManager.getDefaultSharedPreferences(context).getBoolean(
-            Settings.PREF_APP_FULLSCREEN,
-            Settings.APP_FULLSCREEN_DEFAULT
-        )
-    }
+    // Fullscreen is always forced (console-style UI); the stored preference is ignored.
+    @Suppress("UNUSED_PARAMETER")
+    fun isFullscreenEnabled(context: Context): Boolean = true
 
     fun setFullscreenEnabled(context: Context, enabled: Boolean) {
         PreferenceManager.getDefaultSharedPreferences(context).edit {

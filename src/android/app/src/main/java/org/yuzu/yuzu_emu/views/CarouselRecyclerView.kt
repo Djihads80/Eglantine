@@ -435,7 +435,13 @@ class CarouselRecyclerView @JvmOverloads constructor(
         if (consoleStyle) {
             val sizeFactor = resources.getFraction(R.fraction.console_home_card_size_factor, 1, 1)
             val maxWidthFactor = resources.getFraction(R.fraction.console_home_card_max_width_factor, 1, 1)
+            val screenFactor = resources.getFraction(R.fraction.console_home_card_screen_factor, 1, 1)
+            // Same tile size in portrait and landscape: based on the shortest screen side, only
+            // reduced when the carousel row is too small to hold it.
+            val metrics = resources.displayMetrics
+            val shortestSide = minOf(metrics.widthPixels, metrics.heightPixels)
             val consoleCardSize = minOf(
+                (shortestSide * screenFactor).toInt(),
                 (height * sizeFactor).toInt(),
                 (width * maxWidthFactor).toInt()
             )

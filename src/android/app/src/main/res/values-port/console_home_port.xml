@@ -5,6 +5,10 @@
 <resources>
     <dimen name="console_home_side_margin">24dp</dimen>
     <dimen name="console_home_title_size">30sp</dimen>
+    <dimen name="console_home_details_margin_top">20dp</dimen>
+    <dimen name="console_home_carousel_margin_bottom">48dp</dimen>
+
+    <bool name="console_home_meta_horizontal">false</bool>
     <dimen name="console_home_play_margin_bottom">40dp</dimen>
     <dimen name="console_game_cover_size">160dp</dimen>
     <dimen name="console_game_title_size">26sp</dimen>

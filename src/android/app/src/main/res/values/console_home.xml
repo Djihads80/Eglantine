@@ -28,8 +28,11 @@
     <dimen name="console_home_header_button">48dp</dimen>
     <dimen name="console_home_header_icon">22dp</dimen>
     <dimen name="console_home_side_margin">48dp</dimen>
-    <dimen name="console_home_title_size">34sp</dimen>
+    <dimen name="console_home_title_size">28sp</dimen>
     <dimen name="console_home_meta_size">14sp</dimen>
+    <dimen name="console_home_meta_gap">24dp</dimen>
+    <dimen name="console_home_details_margin_top">8dp</dimen>
+    <dimen name="console_home_carousel_margin_bottom">8dp</dimen>
     <dimen name="console_home_card_gap">14dp</dimen>
     <dimen name="console_home_card_radius">14dp</dimen>
     <dimen name="console_home_play_min_width">200dp</dimen>
@@ -43,7 +46,13 @@
     <!-- Size of the centered card relative to the carousel height. -->
     <fraction name="console_home_card_size_factor">92%</fraction>
     <!-- Max centered card size relative to the carousel width. -->
-    <fraction name="console_home_card_max_width_factor">30%</fraction>
+    <fraction name="console_home_card_max_width_factor">50%</fraction>
+    <!-- Centered card size relative to the shortest screen side. Not overridden per orientation,
+         so tiles keep the same size in portrait and landscape (bounded by the carousel height). -->
+    <fraction name="console_home_card_screen_factor">56%</fraction>
+
+    <!-- Selected game details in a single row (landscape) or one per line (portrait). -->
+    <bool name="console_home_meta_horizontal">true</bool>
     <!-- Scale and alpha applied to the non-selected neighbours. -->
     <fraction name="console_home_side_scale">76%</fraction>
     <fraction name="console_home_side_alpha">100%</fraction>
