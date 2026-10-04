@@ -1,73 +1,147 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- Console-style Home (landscape): colors, dimensions and tuning values. -->
+<!-- Console-style Home and game screen: colors, dimensions and tuning values.
+     Defaults target landscape; values-port/console_home_port.xml overrides portrait. -->
 <resources>
-    <color name="console_home_bg_top">#FF0B1A2E</color>
-    <color name="console_home_bg_bottom">#FF05080F</color>
-    <color name="console_home_bg_glow">#5A2C6FA8</color>
-    <color name="console_home_scrim_top">#99050A14</color>
-    <color name="console_home_scrim_center">#33050A14</color>
-    <color name="console_home_scrim_bottom">#E6050A14</color>
+    <!-- Background gradient (dark navy to soft blue-grey) -->
+    <color name="console_home_bg_top">#FF0A1238</color>
+    <color name="console_home_bg_center">#FF1B2C66</color>
+    <color name="console_home_bg_bottom">#FF5B6F98</color>
+
     <color name="console_home_text_primary">#FFFFFFFF</color>
-    <color name="console_home_text_secondary">#FFA9BCCF</color>
-    <color name="console_home_text_dim">#FF7F93A8</color>
+    <color name="console_home_text_secondary">#FFC3CEE3</color>
+    <color name="console_home_text_dim">#FF8E9BB8</color>
+    <color name="console_home_text_on_light">#FF0B1A3E</color>
+    <color name="console_home_text_on_light_secondary">#FF4A5878</color>
+    <color name="console_home_text_danger">#FFFF9C9C</color>
     <color name="console_home_outline">#80FFFFFF</color>
     <color name="console_home_outline_dim">#40FFFFFF</color>
     <color name="console_home_focus_fill">#26FFFFFF</color>
-    <color name="console_home_card_bg">#FF1A2233</color>
-    <color name="console_home_card_title_scrim">#CC000000</color>
-    <color name="console_home_play_text">#FF0B1A2E</color>
+    <color name="console_home_surface">#1FFFFFFF</color>
+    <color name="console_home_surface_stroke">#26FFFFFF</color>
+    <color name="console_home_chip">#26FFFFFF</color>
+    <color name="console_home_chip_on_light">#1A0B1A3E</color>
+    <color name="console_home_card_bg">#FF1A2A5A</color>
+    <color name="console_home_battery_low">#FFFF7A7A</color>
 
-    <dimen name="console_home_header_icon">36dp</dimen>
-    <dimen name="console_home_search_width">220dp</dimen>
-    <dimen name="console_home_card_gap">10dp</dimen>
-    <dimen name="console_home_card_bottom_gap">6dp</dimen>
-    <dimen name="console_home_button_height">40dp</dimen>
-    <dimen name="console_home_dock_icon">36dp</dimen>
+    <dimen name="console_home_header_button">48dp</dimen>
+    <dimen name="console_home_header_icon">22dp</dimen>
+    <dimen name="console_home_side_margin">48dp</dimen>
+    <dimen name="console_home_title_size">34sp</dimen>
+    <dimen name="console_home_meta_size">14sp</dimen>
+    <dimen name="console_home_card_gap">14dp</dimen>
+    <dimen name="console_home_card_radius">14dp</dimen>
+    <dimen name="console_home_play_min_width">200dp</dimen>
+    <dimen name="console_home_play_height">52dp</dimen>
+    <dimen name="console_home_play_margin_bottom">28dp</dimen>
+    <dimen name="console_home_glyph_size">22dp</dimen>
     <dimen name="console_home_details_shift">6dp</dimen>
+    <dimen name="console_game_cover_size">200dp</dimen>
+    <dimen name="console_game_title_size">30sp</dimen>
 
     <!-- Size of the centered card relative to the carousel height. -->
-    <fraction name="console_home_card_size_factor">90%</fraction>
+    <fraction name="console_home_card_size_factor">92%</fraction>
     <!-- Max centered card size relative to the carousel width. -->
-    <fraction name="console_home_card_max_width_factor">40%</fraction>
+    <fraction name="console_home_card_max_width_factor">30%</fraction>
     <!-- Scale and alpha applied to the non-selected neighbours. -->
-    <fraction name="console_home_side_scale">62%</fraction>
-    <fraction name="console_home_side_alpha">78%</fraction>
-    <!-- Opacity of the blurred artwork backdrop. -->
-    <fraction name="console_home_backdrop_alpha">85%</fraction>
+    <fraction name="console_home_side_scale">76%</fraction>
+    <fraction name="console_home_side_alpha">100%</fraction>
 
-    <integer name="console_home_backdrop_delay_ms">140</integer>
-    <integer name="console_home_backdrop_fade_ms">380</integer>
     <integer name="console_home_details_fade_ms">200</integer>
-    <style name="ConsoleDockItem">
-        <item name="android:layout_width">76dp</item>
-        <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_marginHorizontal">6dp</item>
-        <item name="android:orientation">vertical</item>
-        <item name="android:gravity">center_horizontal</item>
-        <item name="android:paddingVertical">4dp</item>
-        <item name="android:background">@drawable/console_dock_item_background</item>
+    <integer name="console_game_property_columns">2</integer>
+
+    <style name="ConsoleHeaderButton">
+        <item name="android:layout_width">@dimen/console_home_header_button</item>
+        <item name="android:layout_height">@dimen/console_home_header_button</item>
         <item name="android:focusable">true</item>
         <item name="android:clickable">true</item>
+        <item name="cardBackgroundColor">@color/console_home_text_primary</item>
+        <item name="cardCornerRadius">24dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeWidth">0dp</item>
+        <item name="rippleColor">@color/console_home_chip_on_light</item>
     </style>
 
-    <style name="ConsoleDockIcon">
-        <item name="android:layout_width">22dp</item>
-        <item name="android:layout_height">22dp</item>
+    <style name="ConsoleHeaderIcon">
+        <item name="android:layout_width">@dimen/console_home_header_icon</item>
+        <item name="android:layout_height">@dimen/console_home_header_icon</item>
+        <item name="android:layout_gravity">center</item>
         <item name="android:importantForAccessibility">no</item>
-        <item name="android:duplicateParentState">true</item>
-        <item name="tint">@color/console_dock_label</item>
+        <item name="tint">@color/console_home_text_on_light</item>
     </style>
 
-    <style name="ConsoleDockLabel">
+    <style name="ConsoleMetaText">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_marginTop">3dp</item>
-        <item name="android:duplicateParentState">true</item>
+        <item name="android:layout_marginTop">4dp</item>
         <item name="android:singleLine">true</item>
         <item name="android:ellipsize">end</item>
+        <item name="android:textSize">@dimen/console_home_meta_size</item>
+        <item name="android:textColor">@color/console_home_text_secondary</item>
+    </style>
+
+    <style name="ConsoleGlyph">
+        <item name="android:layout_width">@dimen/console_home_glyph_size</item>
+        <item name="android:layout_height">@dimen/console_home_glyph_size</item>
+        <item name="android:gravity">center</item>
         <item name="android:textSize">11sp</item>
-        <item name="android:textColor">@color/console_dock_label</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:importantForAccessibility">no</item>
+    </style>
+
+    <style name="ConsoleGlyph.Light">
+        <item name="android:background">@drawable/console_glyph_light</item>
+        <item name="android:textColor">@color/console_home_text_on_light</item>
+    </style>
+
+    <style name="ConsoleGlyph.Dark">
+        <item name="android:background">@drawable/console_glyph_dark</item>
+        <item name="android:textColor">@color/console_home_text_primary</item>
+    </style>
+
+    <!-- Small round icon button (import / export / share). Solid so it reads on both the
+         translucent card and the white focused card. -->
+    <style name="ConsoleSecondaryAction" parent="Widget.Material3.Button.IconButton">
+        <item name="android:layout_width">40dp</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:padding">0dp</item>
+        <item name="iconGravity">textStart</item>
+        <item name="iconPadding">0dp</item>
+        <item name="iconSize">18dp</item>
+        <item name="iconTint">@color/console_home_text_primary</item>
+        <item name="backgroundTint">@color/console_home_card_bg</item>
+        <item name="strokeColor">@color/console_secondary_action_stroke</item>
+        <item name="strokeWidth">2dp</item>
+        <item name="cornerRadius">20dp</item>
+    </style>
+
+    <style name="ConsoleTab">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginEnd">20dp</item>
+        <item name="android:background">@drawable/console_tab_background</item>
+        <item name="android:focusable">true</item>
+        <item name="android:clickable">true</item>
+        <item name="android:letterSpacing">0.2</item>
+        <item name="android:paddingHorizontal">4dp</item>
+        <item name="android:paddingVertical">8dp</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/console_tab_text</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="ConsoleHintLabel">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">8dp</item>
+        <item name="android:layout_marginEnd">22dp</item>
+        <item name="android:letterSpacing">0.15</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/console_home_text_secondary</item>
     </style>
 </resources>

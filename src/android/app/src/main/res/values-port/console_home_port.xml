@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Console-style Home and game screen: portrait overrides. -->
+<resources>
+    <dimen name="console_home_side_margin">24dp</dimen>
+    <dimen name="console_home_title_size">30sp</dimen>
+    <dimen name="console_home_play_margin_bottom">40dp</dimen>
+    <dimen name="console_game_cover_size">160dp</dimen>
+    <dimen name="console_game_title_size">26sp</dimen>
+
+    <fraction name="console_home_card_size_factor">88%</fraction>
+    <fraction name="console_home_card_max_width_factor">56%</fraction>
+
+    <integer name="console_game_property_columns">1</integer>
+</resources>

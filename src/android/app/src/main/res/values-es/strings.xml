@@ -1175,13 +1175,39 @@
     <string name="add_folders">Añadir carpeta</string>
     <string name="percent">%1$d%%</string>
 
-    <!-- Home estilo consola (horizontal) -->
-    <string name="home_console_play">Iniciar</string>
+    <!-- Home y pantalla de juego estilo consola -->
+    <string name="home_console_play">Jugar</string>
     <string name="home_console_options">Opciones</string>
-    <string name="home_console_info">Información</string>
-    <string name="home_console_library">Biblioteca</string>
+    <string name="home_console_search">Buscar</string>
+    <string name="home_console_menu">Menú</string>
+    <string name="home_console_view">Vista</string>
+    <string name="home_console_sort">Ordenar</string>
     <string name="home_console_applets">Applets</string>
     <string name="home_console_homebrew">Homebrew</string>
-    <string name="home_console_hints">(A) Iniciar   (X) Opciones   (Y) Buscar</string>
+    <string name="home_console_meta_developer">Desarrollador: %1$s</string>
+    <string name="home_console_meta_playtime">Horas de juego: %1$s</string>
+    <string name="home_console_meta_format">Formato: %1$s</string>
+    <string name="home_console_meta_size">Tamaño: %1$s</string>
+    <string name="console_status_wifi_on">Wi-Fi conectado</string>
+    <string name="console_status_wifi_off">Wi-Fi desconectado</string>
+    <string name="console_status_battery">Batería %1$d%%</string>
+    <string name="game_console_library">Biblioteca</string>
+    <string name="game_console_shortcut">Crear acceso directo</string>
+    <string name="game_console_tab_settings">Ajustes del juego</string>
+    <string name="game_console_tab_content">Contenido</string>
+    <string name="game_console_tab_data">Archivo</string>
+    <string name="game_console_select">Seleccionar</string>
+    <string name="game_console_by">Por %1$s</string>
+    <string name="game_console_played">Jugado %1$s</string>
+    <string name="game_console_custom_config">Configuración personalizada</string>
+    <string name="game_console_custom_config_active">Activa</string>
+    <string name="game_console_on">Activado</string>
+    <string name="game_console_off">Desactivado</string>
+    <string name="game_console_playtime">Tiempo jugado</string>
+    <string name="game_console_playtime_description">Editar o reiniciar</string>
+    <plurals name="game_console_addons_active">
+        <item quantity="one">%d activo</item>
+        <item quantity="other">%d activos</item>
+    </plurals>
 
 </resources>
