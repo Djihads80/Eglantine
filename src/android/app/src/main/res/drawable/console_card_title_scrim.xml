@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="90"
+        android:centerColor="@android:color/transparent"
+        android:centerY="0.5"
+        android:endColor="@android:color/transparent"
+        android:startColor="@color/console_home_card_title_scrim"
+        android:type="linear" />
+</shape>

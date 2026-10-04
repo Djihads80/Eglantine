@@ -29,6 +29,18 @@ class GradientBorderCardView @JvmOverloads constructor(
     private var showGradientBorder = false
     private var isEdenTheme = false
 
+    /**
+     * Console Home style: plain white outline on the selected/focused tile instead of the
+     * theme gradient. Toggled by CarouselRecyclerView when its consoleStyle is enabled.
+     */
+    var consoleHighlight: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (width > 0 && height > 0) applyBorderStyle(width, height)
+            invalidate()
+        }
+
     init {
         setWillNotDraw(false)
         updateThemeState()
@@ -50,9 +62,21 @@ class GradientBorderCardView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        applyBorderStyle(w, h)
+    }
+
+    private fun applyBorderStyle(w: Int, h: Int) {
+        borderPaint.strokeWidth = if (consoleHighlight) {
+            CONSOLE_STROKE_DP * resources.displayMetrics.density
+        } else {
+            DEFAULT_STROKE_PX
+        }
 
         // Update border style based on theme
-        if (isEdenTheme) {
+        if (consoleHighlight) {
+            borderPaint.shader = null
+            borderPaint.color = Color.WHITE
+        } else if (isEdenTheme) {
             // Gradient for Eden theme
             borderPaint.shader = LinearGradient(
                 0f,
@@ -111,7 +135,15 @@ class GradientBorderCardView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (showGradientBorder) {
+        if (showGradientBorder && !consoleHighlight) {
+            canvas.drawPath(borderPath, borderPaint)
+        }
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        // Console tiles are edge-to-edge artwork, so the outline must be drawn above the children.
+        if (showGradientBorder && consoleHighlight) {
             canvas.drawPath(borderPath, borderPaint)
         }
     }
@@ -119,5 +151,10 @@ class GradientBorderCardView @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         updateThemeState()
+    }
+
+    private companion object {
+        const val DEFAULT_STROKE_PX = 6f
+        const val CONSOLE_STROKE_DP = 3f
     }
 }

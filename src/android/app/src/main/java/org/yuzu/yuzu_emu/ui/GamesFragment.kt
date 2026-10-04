@@ -40,6 +40,8 @@ import org.yuzu.yuzu_emu.model.AppletInfo
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.model.GamesViewModel
 import org.yuzu.yuzu_emu.model.HomeViewModel
+import org.yuzu.yuzu_emu.ui.home.ConsoleCarouselLayoutManager
+import org.yuzu.yuzu_emu.ui.home.ConsoleHomeController
 import org.yuzu.yuzu_emu.ui.main.MainActivity
 import org.yuzu.yuzu_emu.utils.ViewUtils.setVisible
 import org.yuzu.yuzu_emu.utils.collect
@@ -71,6 +73,9 @@ class GamesFragment : Fragment() {
     private val gamesViewModel: GamesViewModel by activityViewModels()
     private val homeViewModel: HomeViewModel by activityViewModels()
     private lateinit var gameAdapter: GameAdapter
+
+    // Console-style Home (landscape layout only). Null when the layout has no console views.
+    private var consoleHome: ConsoleHomeController? = null
 
     private val preferences =
         PreferenceManager.getDefaultSharedPreferences(YuzuApplication.appContext)
@@ -116,6 +121,13 @@ class GamesFragment : Fragment() {
 
         gameAdapter = GameAdapter(
             requireActivity() as AppCompatActivity
+        )
+
+        consoleHome = ConsoleHomeController.attachIfSupported(
+            this,
+            binding.root,
+            binding.gridGames as? CarouselRecyclerView,
+            gameAdapter
         )
 
         applyGridGamesBinding()
@@ -221,10 +233,15 @@ class GamesFragment : Fragment() {
                     GridLayoutManager(context, columns)
                 }
                 GameAdapter.VIEW_TYPE_CAROUSEL -> {
-                    LinearLayoutManager(context, RecyclerView.HORIZONTAL, false)
+                    if (consoleHome != null) {
+                        ConsoleCarouselLayoutManager(context)
+                    } else {
+                        LinearLayoutManager(context, RecyclerView.HORIZONTAL, false)
+                    }
                 }
                 else -> throw IllegalArgumentException("Invalid view type: $savedViewType")
             }
+            consoleHome?.setActive(savedViewType == GameAdapter.VIEW_TYPE_CAROUSEL)
             if (savedViewType != GameAdapter.VIEW_TYPE_CAROUSEL) {
                 (this as? CarouselRecyclerView)?.setupCarousel(false)
             }
@@ -249,6 +266,7 @@ class GamesFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
+        consoleHome?.onResume()
         if (getCurrentViewType() == GameAdapter.VIEW_TYPE_CAROUSEL) {
             (binding.gridGames as? CarouselRecyclerView)?.setupCarousel(true)
             (binding.gridGames as? CarouselRecyclerView)?.restoreScrollState(gamesViewModel.lastScrollPosition)
@@ -287,6 +305,7 @@ class GamesFragment : Fragment() {
             if (committedGameListSubmitGeneration < submitGeneration) {
                 committedGameListSubmitGeneration = submitGeneration
             }
+            consoleHome?.onListSubmitted(games.isEmpty())
             schedulePostReloadListSettle()
         }
     }
@@ -473,6 +492,8 @@ class GamesFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        consoleHome?.release()
+        consoleHome = null
         _binding = null
     }
 

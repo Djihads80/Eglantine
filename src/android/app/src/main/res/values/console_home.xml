@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Console-style Home (landscape): colors, dimensions and tuning values. -->
+<resources>
+    <color name="console_home_bg_top">#FF0B1A2E</color>
+    <color name="console_home_bg_bottom">#FF05080F</color>
+    <color name="console_home_bg_glow">#5A2C6FA8</color>
+    <color name="console_home_scrim_top">#99050A14</color>
+    <color name="console_home_scrim_center">#33050A14</color>
+    <color name="console_home_scrim_bottom">#E6050A14</color>
+    <color name="console_home_text_primary">#FFFFFFFF</color>
+    <color name="console_home_text_secondary">#FFA9BCCF</color>
+    <color name="console_home_text_dim">#FF7F93A8</color>
+    <color name="console_home_outline">#80FFFFFF</color>
+    <color name="console_home_outline_dim">#40FFFFFF</color>
+    <color name="console_home_focus_fill">#26FFFFFF</color>
+    <color name="console_home_card_bg">#FF1A2233</color>
+    <color name="console_home_card_title_scrim">#CC000000</color>
+    <color name="console_home_play_text">#FF0B1A2E</color>
+
+    <dimen name="console_home_header_icon">36dp</dimen>
+    <dimen name="console_home_search_width">220dp</dimen>
+    <dimen name="console_home_card_gap">10dp</dimen>
+    <dimen name="console_home_card_bottom_gap">6dp</dimen>
+    <dimen name="console_home_button_height">40dp</dimen>
+    <dimen name="console_home_dock_icon">36dp</dimen>
+    <dimen name="console_home_details_shift">6dp</dimen>
+
+    <!-- Size of the centered card relative to the carousel height. -->
+    <fraction name="console_home_card_size_factor">90%</fraction>
+    <!-- Max centered card size relative to the carousel width. -->
+    <fraction name="console_home_card_max_width_factor">40%</fraction>
+    <!-- Scale and alpha applied to the non-selected neighbours. -->
+    <fraction name="console_home_side_scale">62%</fraction>
+    <fraction name="console_home_side_alpha">78%</fraction>
+    <!-- Opacity of the blurred artwork backdrop. -->
+    <fraction name="console_home_backdrop_alpha">85%</fraction>
+
+    <integer name="console_home_backdrop_delay_ms">140</integer>
+    <integer name="console_home_backdrop_fade_ms">380</integer>
+    <integer name="console_home_details_fade_ms">200</integer>
+    <style name="ConsoleDockItem">
+        <item name="android:layout_width">76dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginHorizontal">6dp</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:gravity">center_horizontal</item>
+        <item name="android:paddingVertical">4dp</item>
+        <item name="android:background">@drawable/console_dock_item_background</item>
+        <item name="android:focusable">true</item>
+        <item name="android:clickable">true</item>
+    </style>
+
+    <style name="ConsoleDockIcon">
+        <item name="android:layout_width">22dp</item>
+        <item name="android:layout_height">22dp</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="android:duplicateParentState">true</item>
+        <item name="tint">@color/console_dock_label</item>
+    </style>
+
+    <style name="ConsoleDockLabel">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">3dp</item>
+        <item name="android:duplicateParentState">true</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/console_dock_label</item>
+    </style>
+</resources>
