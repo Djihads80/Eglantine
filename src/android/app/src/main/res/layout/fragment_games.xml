@@ -161,7 +161,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginHorizontal="@dimen/console_home_side_margin"
-        android:layout_marginTop="20dp"
+        android:layout_marginTop="@dimen/console_home_details_margin_top"
         android:orientation="vertical"
         android:visibility="invisible"
         app:layout_constraintEnd_toEndOf="parent"
@@ -195,22 +195,31 @@
 
         </LinearLayout>
 
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_meta_developer"
-            style="@style/ConsoleMetaText"
-            android:layout_marginTop="8dp" />
+        <!-- Vertical in portrait; ConsoleHomeController lays it out in one row in landscape. -->
+        <LinearLayout
+            android:id="@+id/console_meta_container"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical">
 
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_meta_playtime"
-            style="@style/ConsoleMetaText" />
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/console_meta_developer"
+                style="@style/ConsoleMetaText" />
 
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_meta_format"
-            style="@style/ConsoleMetaText" />
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/console_meta_playtime"
+                style="@style/ConsoleMetaText" />
 
-        <com.google.android.material.textview.MaterialTextView
-            android:id="@+id/console_meta_size"
-            style="@style/ConsoleMetaText" />
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/console_meta_format"
+                style="@style/ConsoleMetaText" />
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/console_meta_size"
+                style="@style/ConsoleMetaText" />
+
+        </LinearLayout>
 
     </LinearLayout>
 
@@ -220,8 +229,8 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="12dp"
-        android:layout_marginBottom="12dp"
-        app:layout_constraintBottom_toTopOf="@+id/console_play_button"
+        android:layout_marginBottom="@dimen/console_home_carousel_margin_bottom"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintTop_toBottomOf="@id/console_details">
 
         <RelativeLayout
@@ -252,90 +261,6 @@
         </RelativeLayout>
 
     </org.yuzu.yuzu_emu.ui.MidScreenSwipeRefreshLayout>
-
-    <!-- Primary action -->
-    <LinearLayout
-        android:id="@+id/console_play_button"
-        android:layout_width="wrap_content"
-        android:layout_height="@dimen/console_home_play_height"
-        android:layout_marginBottom="@dimen/console_home_play_margin_bottom"
-        android:background="@drawable/console_play_button_background"
-        android:clickable="true"
-        android:contentDescription="@string/home_console_play"
-        android:focusable="true"
-        android:gravity="center"
-        android:minWidth="@dimen/console_home_play_min_width"
-        android:orientation="horizontal"
-        android:paddingHorizontal="28dp"
-        android:visibility="invisible"
-        app:layout_constraintBottom_toTopOf="@+id/console_hints"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <TextView
-            android:id="@+id/console_play_glyph"
-            style="@style/ConsoleGlyph.Dark"
-            android:text="A" />
-
-        <ImageView
-            android:id="@+id/console_play_icon"
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/ic_play"
-            app:tint="@color/console_home_text_on_light" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:importantForAccessibility="no"
-            android:text="@string/home_console_play"
-            android:textColor="@color/console_home_text_on_light"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-    </LinearLayout>
-
-    <!-- Gamepad hints (only shown with a controller connected) -->
-    <LinearLayout
-        android:id="@+id/console_hints"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/console_home_side_margin"
-        android:layout_marginBottom="16dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <TextView
-            android:id="@+id/console_hint_confirm_glyph"
-            style="@style/ConsoleGlyph.Light"
-            android:text="A" />
-
-        <TextView
-            style="@style/ConsoleHintLabel"
-            android:text="@string/home_console_play" />
-
-        <TextView
-            style="@style/ConsoleGlyph.Light"
-            android:text="X" />
-
-        <TextView
-            style="@style/ConsoleHintLabel"
-            android:text="@string/home_console_options" />
-
-        <TextView
-            style="@style/ConsoleGlyph.Light"
-            android:text="Y" />
-
-        <TextView
-            style="@style/ConsoleHintLabel"
-            android:text="@string/home_console_search" />
-
-    </LinearLayout>
 
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/add_directory"

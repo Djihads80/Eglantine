@@ -3,11 +3,14 @@
 
 package org.yuzu.yuzu_emu.ui.home
 
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.view.Gravity
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
@@ -30,11 +33,11 @@ import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.adapters.GameAdapter
-import org.yuzu.yuzu_emu.features.settings.model.BooleanSetting
 import org.yuzu.yuzu_emu.features.settings.ui.SettingsSubscreen
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
+import org.yuzu.yuzu_emu.utils.GameIconUtils
 import org.yuzu.yuzu_emu.utils.MemoryUtil
 import java.util.Locale
 
@@ -46,7 +49,7 @@ import java.util.Locale
  *  - switches the carousel into its flat console style,
  *  - follows the centered game and shows its details (title, version, developer, playtime,
  *    format and file size),
- *  - wires the Play button to the existing card click handler (same launch checks),
+ *  - tints the background with the dominant color of the selected game's icon,
  *  - provides the gear menu (settings, search, view, sort, install, multiplayer, applets, about),
  *  - adds gamepad shortcuts (X = game options, Y = search).
  *
@@ -74,11 +77,7 @@ class ConsoleHomeController private constructor(
     private val metaPlaytime: TextView = root.findViewById(R.id.console_meta_playtime)
     private val metaFormat: TextView = root.findViewById(R.id.console_meta_format)
     private val metaSize: TextView = root.findViewById(R.id.console_meta_size)
-    private val playButton: View = root.findViewById(R.id.console_play_button)
-    private val playGlyph: TextView = root.findViewById(R.id.console_play_glyph)
-    private val playIcon: View = root.findViewById(R.id.console_play_icon)
-    private val hints: View = root.findViewById(R.id.console_hints)
-    private val hintConfirmGlyph: TextView = root.findViewById(R.id.console_hint_confirm_glyph)
+    private val metaContainer: LinearLayout = root.findViewById(R.id.console_meta_container)
     private val menuButton: View = root.findViewById(R.id.settings_button)
     private val headerSpace: View = root.findViewById(R.id.console_header_space)
     private val searchFrame: View = root.findViewById(R.id.frame_search)
@@ -94,12 +93,33 @@ class ConsoleHomeController private constructor(
     private var pendingPosition = RecyclerView.NO_POSITION
     private var sizeJob: Job? = null
     private var menu: PopupWindow? = null
+    private var colorJob: Job? = null
+    private var colorAnimator: ValueAnimator? = null
+
+    // Background gradient (top, center, bottom), tinted from the selected game's icon.
+    private val defaultBackground = intArrayOf(
+        res.getColor(R.color.console_home_bg_top, null),
+        res.getColor(R.color.console_home_bg_center, null),
+        res.getColor(R.color.console_home_bg_bottom, null)
+    )
+    private val background = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        defaultBackground.clone()
+    )
+    private var backgroundColors = defaultBackground.clone()
 
     private val applySelectionRunnable = Runnable { applySelection() }
 
     companion object {
         // File sizes by game path, kept for the process lifetime (querying the provider is slow).
         private val sizeCache = HashMap<String, Long>()
+
+        // Dominant icon color by game path, kept for the process lifetime.
+        private val colorCache = HashMap<String, Int>()
+
+        private const val BACKGROUND_FADE_MS = 350L
+        private const val HUE_BUCKETS = 12
+        private const val SAMPLE_SIZE = 24
 
         /**
          * Attaches the console Home if the current layout provides it (res/layout/fragment_games.xml).
@@ -123,14 +143,16 @@ class ConsoleHomeController private constructor(
         carousel.onCenteredPositionChanged = { position, _ -> onCenteredPosition(position) }
         carousel.keyInterceptor = ::handleCarouselKey
 
-        playButton.setOnClickListener { launchSelected() }
-        // UP from Play returns to the selected tile (not whichever card is geometrically above).
-        playButton.setOnKeyListener { _, keyCode, event ->
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP && event.action == KeyEvent.ACTION_DOWN) {
-                carousel.focusCenteredCard()
-                true
-            } else {
-                false
+        root.background = background
+
+        // Landscape: details in a single row so the carousel keeps the portrait tile size.
+        if (res.getBoolean(R.bool.console_home_meta_horizontal)) {
+            metaContainer.orientation = LinearLayout.HORIZONTAL
+            val gap = res.getDimensionPixelSize(R.dimen.console_home_meta_gap)
+            for (i in 0 until metaContainer.childCount) {
+                val params = metaContainer.getChildAt(i).layoutParams as LinearLayout.LayoutParams
+                params.topMargin = 0
+                params.marginEnd = gap
             }
         }
 
@@ -143,14 +165,12 @@ class ConsoleHomeController private constructor(
             if (!hasFocus) hideSearchIfEmpty()
         }
         if (searchText.text.isNotEmpty()) showSearch(focus = false)
-
-        updateInputHints()
     }
 
     /**
      * Enables the console presentation only while the carousel view type is in use. With grid/list
-     * views selected from the "view" menu the details panel and Play button are hidden and the
-     * screen behaves as before.
+     * views selected from the "view" menu the details panel is hidden and the screen behaves as
+     * before.
      */
     fun setActive(isCarousel: Boolean) {
         if (released) return
@@ -159,12 +179,9 @@ class ConsoleHomeController private constructor(
         if (!isCarousel) {
             clearSelection()
             details.visibility = View.GONE
-            playButton.visibility = View.GONE
-            hints.visibility = View.GONE
-        } else {
-            if (details.visibility == View.GONE) details.visibility = View.INVISIBLE
-            if (playButton.visibility == View.GONE) playButton.visibility = View.INVISIBLE
-            updateInputHints()
+            animateBackground(defaultBackground)
+        } else if (details.visibility == View.GONE) {
+            details.visibility = View.INVISIBLE
         }
     }
 
@@ -183,7 +200,6 @@ class ConsoleHomeController private constructor(
 
     fun onResume() {
         if (released) return
-        updateInputHints()
         // Playtime changes after playing: refresh the details of the selected game.
         if (active) {
             selectedGame = null
@@ -195,6 +211,10 @@ class ConsoleHomeController private constructor(
         released = true
         sizeJob?.cancel()
         sizeJob = null
+        colorJob?.cancel()
+        colorJob = null
+        colorAnimator?.cancel()
+        colorAnimator = null
         menu?.dismiss()
         menu = null
         details.removeCallbacks(applySelectionRunnable)
@@ -237,9 +257,9 @@ class ConsoleHomeController private constructor(
         )
         metaFormat.text = res.getString(R.string.home_console_meta_format, formatOf(game))
         bindSize(game)
+        bindBackground(game)
 
         details.visibility = View.VISIBLE
-        playButton.visibility = View.VISIBLE
         details.animate().cancel()
         details.alpha = 0.25f
         details.translationY = detailsShiftPx
@@ -254,10 +274,10 @@ class ConsoleHomeController private constructor(
         selectedGame = null
         pendingPosition = RecyclerView.NO_POSITION
         sizeJob?.cancel()
+        colorJob?.cancel()
         details.removeCallbacks(applySelectionRunnable)
         details.animate().cancel()
         details.visibility = View.INVISIBLE
-        playButton.visibility = View.INVISIBLE
     }
 
     private fun readPlayTime(game: Game): Long = try {
@@ -312,6 +332,112 @@ class ConsoleHomeController private constructor(
             MemoryUtil.bytesToSizeUnit(bytes.toFloat())
         )
         metaSize.visibility = View.VISIBLE
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Dynamic background
+
+    private fun bindBackground(game: Game) {
+        colorJob?.cancel()
+        val cached = colorCache[game.path]
+        if (cached != null) {
+            animateBackground(gradientFor(cached))
+            return
+        }
+        colorJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
+            val color = try {
+                val icon = GameIconUtils.getGameIcon(fragment.viewLifecycleOwner, game)
+                withContext(Dispatchers.Default) { dominantColor(icon) }
+            } catch (e: Exception) {
+                null
+            } ?: return@launch
+            colorCache[game.path] = color
+            if (!released && active && selectedGame == game) animateBackground(gradientFor(color))
+        }
+    }
+
+    /**
+     * Dominant color of the icon: pixels are grouped by hue (weighted by saturation and brightness)
+     * and the heaviest group is averaged. Mostly grey icons fall back to the plain average.
+     */
+    private fun dominantColor(icon: Bitmap): Int {
+        val sample = Bitmap.createScaledBitmap(icon, SAMPLE_SIZE, SAMPLE_SIZE, true)
+        val pixels = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
+        sample.getPixels(pixels, 0, SAMPLE_SIZE, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+        if (sample !== icon) sample.recycle()
+
+        val weights = FloatArray(HUE_BUCKETS)
+        val sums = Array(HUE_BUCKETS) { FloatArray(3) }
+        val total = FloatArray(3)
+        val hsv = FloatArray(3)
+        var count = 0
+        for (pixel in pixels) {
+            if (Color.alpha(pixel) < 128) continue
+            val r = Color.red(pixel).toFloat()
+            val g = Color.green(pixel).toFloat()
+            val b = Color.blue(pixel).toFloat()
+            total[0] += r
+            total[1] += g
+            total[2] += b
+            count++
+            Color.colorToHSV(pixel, hsv)
+            val weight = hsv[1] * hsv[2]
+            if (weight < 0.08f) continue
+            val bucket = ((hsv[0] / 360f) * HUE_BUCKETS).toInt().coerceIn(0, HUE_BUCKETS - 1)
+            weights[bucket] += weight
+            sums[bucket][0] += r * weight
+            sums[bucket][1] += g * weight
+            sums[bucket][2] += b * weight
+        }
+        if (count == 0) return defaultBackground[1]
+
+        val best = weights.indices.maxByOrNull { weights[it] } ?: 0
+        val weight = weights[best]
+        return if (weight >= count * 0.03f) {
+            Color.rgb(
+                (sums[best][0] / weight).toInt(),
+                (sums[best][1] / weight).toInt(),
+                (sums[best][2] / weight).toInt()
+            )
+        } else {
+            Color.rgb(
+                (total[0] / count).toInt(),
+                (total[1] / count).toInt(),
+                (total[2] / count).toInt()
+            )
+        }
+    }
+
+    /** Dark-to-light gradient in the hue of [color], dark enough to keep white text readable. */
+    private fun gradientFor(color: Int): IntArray {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        val hue = hsv[0]
+        val saturation = hsv[1]
+        return intArrayOf(
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.9f).coerceAtMost(0.85f), 0.16f)),
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.8f).coerceAtMost(0.75f), 0.30f)),
+            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.5f).coerceAtMost(0.5f), 0.50f))
+        )
+    }
+
+    private fun animateBackground(target: IntArray) {
+        colorAnimator?.cancel()
+        if (released || target.contentEquals(backgroundColors)) return
+        val start = backgroundColors.clone()
+        val evaluator = ArgbEvaluator()
+        colorAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = BACKGROUND_FADE_MS
+            addUpdateListener { animator ->
+                val fraction = animator.animatedFraction
+                val colors = IntArray(target.size) { i ->
+                    evaluator.evaluate(fraction, start[i], target[i]) as Int
+                }
+                backgroundColors = colors
+                background.colors = colors
+            }
+            start()
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -421,10 +547,6 @@ class ConsoleHomeController private constructor(
         return carousel.findViewHolderForAdapterPosition(position)?.itemView
     }
 
-    private fun launchSelected() {
-        centeredItemView()?.performClick()
-    }
-
     /** Long click on a game card opens its properties screen. */
     private fun openOptionsForSelected() {
         centeredItemView()?.performLongClick()
@@ -446,28 +568,6 @@ class ConsoleHomeController private constructor(
                 true
             }
             else -> false
-        }
-    }
-
-    /**
-     * Shows the button glyphs only with a controller connected. The confirm glyph follows the
-     * existing "invert confirm/back controller buttons" app setting.
-     */
-    private fun updateInputHints() {
-        val gamepad = isGamepadConnected()
-        val confirm = if (BooleanSetting.INVERT_CONFIRM_BACK_CONTROLLER_BUTTONS.getBoolean()) "B" else "A"
-        playGlyph.text = confirm
-        hintConfirmGlyph.text = confirm
-        playGlyph.visibility = if (gamepad) View.VISIBLE else View.GONE
-        playIcon.visibility = if (gamepad) View.GONE else View.VISIBLE
-        hints.visibility = if (gamepad && active) View.VISIBLE else View.GONE
-    }
-
-    private fun isGamepadConnected(): Boolean {
-        return InputDevice.getDeviceIds().any { id ->
-            val sources = InputDevice.getDevice(id)?.sources ?: 0
-            sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
-                sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
         }
     }
 }
