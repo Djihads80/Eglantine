@@ -1,52 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+    Console-style game tile (carousel, portrait and landscape).
+    Only the artwork is shown; the selected game's title and details live in the Home header.
+    IDs match CardGameCarouselBinding usages in GameAdapter.
+-->
 <org.yuzu.yuzu_emu.views.GradientBorderCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/card_game_carousel"
-    app:cardElevation="0dp"
-    app:cardBackgroundColor="@color/eden_card_background"
-    app:strokeWidth="1dp"
-    app:strokeColor="@color/eden_border"
     android:layout_width="wrap_content"
     android:layout_height="match_parent"
-    app:cardCornerRadius="16dp"
-    app:cardPreventCornerOverlap="true"
-    android:clipChildren="true"
+    android:layout_margin="0dp"
+    android:clickable="true"
+    android:focusable="true"
+    app:cardBackgroundColor="@color/console_home_card_bg"
+    app:cardCornerRadius="@dimen/console_home_card_radius"
+    app:cardElevation="0dp"
+    app:cardPreventCornerOverlap="false"
     app:rippleColor="@color/game_card_ripple"
-    android:layout_margin="4dp">
+    app:strokeWidth="0dp">
 
-    <androidx.constraintlayout.widget.ConstraintLayout
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:padding="8dp">
+        android:layout_height="match_parent">
 
         <com.google.android.material.imageview.ShapeableImageView
             android:id="@+id/image_game_screen"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:scaleType="centerCrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
             android:contentDescription="@string/game_image_desc"
-            app:shapeAppearanceOverlay="@style/ShapeAppearance.Eden.CarouselImage"
-            app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintBottom_toTopOf="@+id/text_game_title"
-            />
+            android:scaleType="centerCrop" />
 
         <com.google.android.material.textview.MaterialTextView
             android:id="@+id/text_game_title"
-            style="@style/SynthwaveText.Body"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:requiresFadingEdge="horizontal"
-            android:textAlignment="center"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            app:layout_constraintTop_toBottomOf="@+id/image_game_screen"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintBottom_toBottomOf="parent"
-            android:text="Game Title" />
+            android:visibility="gone" />
 
-    </androidx.constraintlayout.widget.ConstraintLayout>
+    </FrameLayout>
 </org.yuzu.yuzu_emu.views.GradientBorderCardView>

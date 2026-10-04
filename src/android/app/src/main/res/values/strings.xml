@@ -1870,13 +1870,39 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     <string name="add_folders">Add Folder</string>
     <string name="percent">%1$d%%</string>
 
-    <!-- Console-style Home (landscape) -->
+    <!-- Console-style Home and game screen -->
     <string name="home_console_play">Play</string>
     <string name="home_console_options">Options</string>
-    <string name="home_console_info">Information</string>
-    <string name="home_console_library">Library</string>
+    <string name="home_console_search">Search</string>
+    <string name="home_console_menu">Menu</string>
+    <string name="home_console_view">View</string>
+    <string name="home_console_sort">Sort</string>
     <string name="home_console_applets">Applets</string>
     <string name="home_console_homebrew">Homebrew</string>
-    <string name="home_console_hints">(A) Play   (X) Options   (Y) Search</string>
+    <string name="home_console_meta_developer">Developer: %1$s</string>
+    <string name="home_console_meta_playtime">Playtime: %1$s</string>
+    <string name="home_console_meta_format">Format: %1$s</string>
+    <string name="home_console_meta_size">Size: %1$s</string>
+    <string name="console_status_wifi_on">Wi-Fi connected</string>
+    <string name="console_status_wifi_off">Wi-Fi disconnected</string>
+    <string name="console_status_battery">Battery %1$d%%</string>
+    <string name="game_console_library">Library</string>
+    <string name="game_console_shortcut">Create shortcut</string>
+    <string name="game_console_tab_settings">Game settings</string>
+    <string name="game_console_tab_content">Content</string>
+    <string name="game_console_tab_data">Data</string>
+    <string name="game_console_select">Select</string>
+    <string name="game_console_by">By %1$s</string>
+    <string name="game_console_played">Played %1$s</string>
+    <string name="game_console_custom_config">Custom configuration</string>
+    <string name="game_console_custom_config_active">Active</string>
+    <string name="game_console_on">On</string>
+    <string name="game_console_off">Off</string>
+    <string name="game_console_playtime">Playtime</string>
+    <string name="game_console_playtime_description">Edit or reset</string>
+    <plurals name="game_console_addons_active">
+        <item quantity="one">%d active</item>
+        <item quantity="other">%d active</item>
+    </plurals>
 
 </resources>

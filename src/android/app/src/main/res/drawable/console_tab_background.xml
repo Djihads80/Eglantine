@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Tab: underline when selected, translucent fill when focused. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true"><shape android:shape="rectangle"><corners android:radius="8dp" /><solid android:color="@color/console_home_focus_fill" /></shape></item>
+    <item android:state_selected="true">
+        <layer-list>
+            <item android:gravity="bottom" android:height="2dp">
+                <shape android:shape="rectangle"><solid android:color="@color/console_home_text_primary" /></shape>
+            </item>
+        </layer-list>
+    </item>
+    <item android:drawable="@android:color/transparent" />
+</selector>

@@ -74,7 +74,7 @@ class GamesFragment : Fragment() {
     private val homeViewModel: HomeViewModel by activityViewModels()
     private lateinit var gameAdapter: GameAdapter
 
-    // Console-style Home (landscape layout only). Null when the layout has no console views.
+    // Console-style Home. Null when the layout has no console views.
     private var consoleHome: ConsoleHomeController? = null
 
     private val preferences =
@@ -91,7 +91,7 @@ class GamesFragment : Fragment() {
     private fun getCurrentViewType(): Int {
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val key = if (isLandscape) CarouselRecyclerView.CAROUSEL_VIEW_TYPE_LANDSCAPE else CarouselRecyclerView.CAROUSEL_VIEW_TYPE_PORTRAIT
-        val fallback = if (isLandscape) GameAdapter.VIEW_TYPE_CAROUSEL else GameAdapter.VIEW_TYPE_GRID
+        val fallback = if (isLandscape || consoleHome != null) GameAdapter.VIEW_TYPE_CAROUSEL else GameAdapter.VIEW_TYPE_GRID
         return preferences.getInt(key, fallback)
     }
 
@@ -127,7 +127,13 @@ class GamesFragment : Fragment() {
             this,
             binding.root,
             binding.gridGames as? CarouselRecyclerView,
-            gameAdapter
+            gameAdapter,
+            ConsoleHomeController.Actions(
+                openSettings = { navigateToSettings() },
+                focusSearch = { focusSearch() },
+                showViewMenu = { showViewMenu(it) },
+                showSortMenu = { showFilterMenu(it) }
+            )
         )
 
         applyGridGamesBinding()
@@ -209,7 +215,8 @@ class GamesFragment : Fragment() {
         (binding.gridGames as? RecyclerView)?.apply {
             val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
             val currentViewType = getCurrentViewType()
-            val savedViewType = if (isLandscape || currentViewType != GameAdapter.VIEW_TYPE_CAROUSEL) currentViewType else GameAdapter.VIEW_TYPE_GRID
+            val carouselAllowed = isLandscape || consoleHome != null
+            val savedViewType = if (carouselAllowed || currentViewType != GameAdapter.VIEW_TYPE_CAROUSEL) currentViewType else GameAdapter.VIEW_TYPE_GRID
 
             //This prevents Grid/List views from reusing scaled or otherwise modified ViewHolders left over from the carousel.
             adapter = null
@@ -346,8 +353,11 @@ class GamesFragment : Fragment() {
             showFilterMenu(view)
         }
 
-        // Setup settings button
-        binding.settingsButton.setOnClickListener { navigateToSettings() }
+        // Setup settings button (console Home: opens the gear menu)
+        binding.settingsButton.setOnClickListener { view ->
+            val console = consoleHome
+            if (console != null) console.showMenu(view) else navigateToSettings()
+        }
     }
 
     private fun navigateToSettings() {
@@ -359,7 +369,7 @@ class GamesFragment : Fragment() {
         val popup = PopupMenu(requireContext(), anchor)
         popup.menuInflater.inflate(R.menu.menu_game_views, popup.menu)
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        if (!isLandscape) {
+        if (!isLandscape && consoleHome == null) {
             popup.menu.findItem(R.id.view_carousel)?.isVisible = false
         }
 

@@ -12,8 +12,8 @@ import androidx.core.content.res.ResourcesCompat
 import androidx.lifecycle.LifecycleOwner
 import com.google.android.material.button.MaterialButton
 import org.yuzu.yuzu_emu.R
-import org.yuzu.yuzu_emu.databinding.CardInstallableIconBinding
-import org.yuzu.yuzu_emu.databinding.CardSimpleOutlinedBinding
+import org.yuzu.yuzu_emu.databinding.CardConsoleInstallableBinding
+import org.yuzu.yuzu_emu.databinding.CardConsolePropertyBinding
 import org.yuzu.yuzu_emu.model.GameProperty
 import org.yuzu.yuzu_emu.model.InstallableProperty
 import org.yuzu.yuzu_emu.model.SubmenuProperty
@@ -34,7 +34,7 @@ class GamePropertiesAdapter(
         return when (viewType) {
             PropertyType.Submenu.ordinal -> {
                 SubmenuPropertyViewHolder(
-                    CardSimpleOutlinedBinding.inflate(
+                    CardConsolePropertyBinding.inflate(
                         inflater,
                         parent,
                         false
@@ -43,7 +43,7 @@ class GamePropertiesAdapter(
             }
 
             else -> InstallablePropertyViewHolder(
-                CardInstallableIconBinding.inflate(
+                CardConsoleInstallableBinding.inflate(
                     inflater,
                     parent,
                     false
@@ -59,7 +59,7 @@ class GamePropertiesAdapter(
         }
     }
 
-    inner class SubmenuPropertyViewHolder(val binding: CardSimpleOutlinedBinding) :
+    inner class SubmenuPropertyViewHolder(val binding: CardConsolePropertyBinding) :
         AbstractViewHolder<GameProperty>(binding) {
         override fun bind(model: GameProperty) {
             val submenuProperty = model as SubmenuProperty
@@ -69,6 +69,17 @@ class GamePropertiesAdapter(
             }
 
             binding.title.setText(submenuProperty.titleId)
+            binding.title.setTextColor(
+                ResourcesCompat.getColorStateList(
+                    binding.title.resources,
+                    if (submenuProperty.isDestructive) {
+                        R.color.console_on_surface_danger
+                    } else {
+                        R.color.console_on_surface_primary
+                    },
+                    binding.title.context.theme
+                )
+            )
             binding.description.setText(submenuProperty.descriptionId)
             binding.icon.setImageDrawable(
                 ResourcesCompat.getDrawable(
@@ -79,12 +90,17 @@ class GamePropertiesAdapter(
             )
 
             binding.details.marquee()
+            // Empty values hide the chip (e.g. a value that is still being computed).
             if (submenuProperty.details != null) {
-                binding.details.setVisible(true)
-                binding.details.text = submenuProperty.details.invoke()
+                val text = submenuProperty.details.invoke()
+                binding.details.text = text
+                binding.details.setVisible(text.isNotEmpty())
             } else if (submenuProperty.detailsFlow != null) {
                 binding.details.setVisible(true)
-                submenuProperty.detailsFlow.collect(viewLifecycle) { binding.details.text = it }
+                submenuProperty.detailsFlow.collect(viewLifecycle) {
+                    binding.details.text = it
+                    binding.details.setVisible(it.isNotEmpty())
+                }
             } else {
                 binding.details.setVisible(false)
             }
@@ -101,7 +117,7 @@ class GamePropertiesAdapter(
                 val inflater = LayoutInflater.from(binding.root.context)
                 visibleActions.forEachIndexed { index, secondaryAction ->
                     val button = inflater.inflate(
-                        R.layout.item_secondary_action_button,
+                        R.layout.item_console_secondary_action,
                         binding.layoutSecondaryActions,
                         false
                     ) as MaterialButton
@@ -123,7 +139,7 @@ class GamePropertiesAdapter(
         }
     }
 
-    inner class InstallablePropertyViewHolder(val binding: CardInstallableIconBinding) :
+    inner class InstallablePropertyViewHolder(val binding: CardConsoleInstallableBinding) :
         AbstractViewHolder<GameProperty>(binding) {
         override fun bind(model: GameProperty) {
             val installableProperty = model as InstallableProperty
@@ -137,6 +153,16 @@ class GamePropertiesAdapter(
                     binding.icon.context.theme
                 )
             )
+
+            if (installableProperty.detailsFlow != null) {
+                binding.details.setVisible(true)
+                installableProperty.detailsFlow.collect(viewLifecycle) {
+                    binding.details.text = it
+                    binding.details.setVisible(it.isNotEmpty())
+                }
+            } else {
+                binding.details.setVisible(false)
+            }
 
             binding.buttonInstall.setVisible(installableProperty.install != null)
             binding.buttonInstall.setOnClickListener { installableProperty.install?.invoke() }

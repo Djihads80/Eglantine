@@ -1,34 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- Primary "Play" action: solid white, outlined glow when focused by gamepad/keyboard. -->
+<!-- Primary "Play" pill: solid white, outer ring when focused by gamepad/keyboard. -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true">
         <layer-list>
-            <item>
-                <shape android:shape="rectangle">
-                    <corners android:radius="6dp" />
-                    <solid android:color="@color/console_home_outline" />
-                </shape>
-            </item>
-            <item android:bottom="3dp" android:left="3dp" android:right="3dp" android:top="3dp">
-                <shape android:shape="rectangle">
-                    <corners android:radius="4dp" />
-                    <solid android:color="@color/console_home_text_primary" />
-                </shape>
-            </item>
+            <item><shape android:shape="rectangle"><corners android:radius="32dp" /><solid android:color="@color/console_home_outline" /></shape></item>
+            <item android:bottom="4dp" android:left="4dp" android:right="4dp" android:top="4dp"><shape android:shape="rectangle"><corners android:radius="28dp" /><solid android:color="@color/console_home_text_primary" /></shape></item>
         </layer-list>
     </item>
-    <item android:state_pressed="true">
-        <shape android:shape="rectangle">
-            <corners android:radius="4dp" />
-            <solid android:color="@color/console_home_text_secondary" />
-        </shape>
-    </item>
-    <item>
-        <shape android:shape="rectangle">
-            <corners android:radius="4dp" />
-            <solid android:color="@color/console_home_text_primary" />
-        </shape>
-    </item>
+    <item android:state_pressed="true"><shape android:shape="rectangle"><corners android:radius="28dp" /><solid android:color="@color/console_home_text_secondary" /></shape></item>
+    <item><shape android:shape="rectangle"><corners android:radius="28dp" /><solid android:color="@color/console_home_text_primary" /></shape></item>
 </selector>

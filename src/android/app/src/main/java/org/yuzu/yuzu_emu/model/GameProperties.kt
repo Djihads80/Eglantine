@@ -28,7 +28,9 @@ data class SubmenuProperty(
     val details: (() -> String)? = null,
     val detailsFlow: StateFlow<String>? = null,
     val action: () -> Unit,
-    val secondaryActions: List<SubMenuPropertySecondaryAction>? = null
+    val secondaryActions: List<SubMenuPropertySecondaryAction>? = null,
+    /** Destructive actions (delete / clear / reset) are highlighted in the console game screen. */
+    val isDestructive: Boolean = false
 ) : GameProperty
 
 data class SubMenuPropertySecondaryAction(
@@ -43,5 +45,6 @@ data class InstallableProperty(
     override val descriptionId: Int,
     override val iconId: Int,
     val install: (() -> Unit)? = null,
-    val export: (() -> Unit)? = null
+    val export: (() -> Unit)? = null,
+    val detailsFlow: StateFlow<String>? = null
 ) : GameProperty

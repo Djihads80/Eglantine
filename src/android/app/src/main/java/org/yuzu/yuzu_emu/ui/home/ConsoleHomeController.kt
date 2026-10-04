@@ -3,116 +3,129 @@
 
 package org.yuzu.yuzu_emu.ui.home
 
-import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.os.bundleOf
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.adapters.GameAdapter
+import org.yuzu.yuzu_emu.features.settings.model.BooleanSetting
 import org.yuzu.yuzu_emu.features.settings.ui.SettingsSubscreen
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
+import org.yuzu.yuzu_emu.utils.MemoryUtil
 import java.util.Locale
 
 /**
- * Presentation layer of the console-style (PS4-like) landscape Home.
+ * Presentation layer of the console-style Home (portrait and landscape).
  *
  * It only *decorates* the existing games screen: GamesFragment, GameAdapter, GamesViewModel and the
  * launch flow are reused untouched. This class:
  *  - switches the carousel into its flat console style,
- *  - follows the centered game and shows its details (title, developer, playtime, version, format),
- *  - cross-fades a blurred artwork backdrop for the selected game,
- *  - wires the Play / Options / Info actions to the existing card click / long-click handlers,
- *  - wires the bottom dock and the profile button to existing navigation destinations,
- *  - adds gamepad shortcuts (X = options, Y = search).
+ *  - follows the centered game and shows its details (title, version, developer, playtime,
+ *    format and file size),
+ *  - wires the Play button to the existing card click handler (same launch checks),
+ *  - provides the gear menu (settings, search, view, sort, install, multiplayer, applets, about),
+ *  - adds gamepad shortcuts (X = game options, Y = search).
  *
- * Nothing here runs continuously: work happens only on selection changes, and every animation is a
- * short one-shot ViewPropertyAnimator.
+ * Nothing here runs continuously: work happens only on selection changes.
  */
 class ConsoleHomeController private constructor(
     private val fragment: Fragment,
     private val root: View,
     private val carousel: CarouselRecyclerView,
-    private val adapter: GameAdapter
+    private val adapter: GameAdapter,
+    private val actions: Actions
 ) {
-    private val backdropA: ImageView = root.findViewById(R.id.console_backdrop_a)
-    private val backdropB: ImageView = root.findViewById(R.id.console_backdrop_b)
+    /** Existing GamesFragment behaviour reused by the gear menu. */
+    class Actions(
+        val openSettings: () -> Unit,
+        val focusSearch: () -> Unit,
+        val showViewMenu: (anchor: View) -> Unit,
+        val showSortMenu: (anchor: View) -> Unit
+    )
+
     private val details: View = root.findViewById(R.id.console_details)
     private val gameTitle: TextView = root.findViewById(R.id.console_game_title)
-    private val gameMeta: TextView = root.findViewById(R.id.console_game_meta)
+    private val gameVersion: TextView = root.findViewById(R.id.console_game_version)
+    private val metaDeveloper: TextView = root.findViewById(R.id.console_meta_developer)
+    private val metaPlaytime: TextView = root.findViewById(R.id.console_meta_playtime)
+    private val metaFormat: TextView = root.findViewById(R.id.console_meta_format)
+    private val metaSize: TextView = root.findViewById(R.id.console_meta_size)
     private val playButton: View = root.findViewById(R.id.console_play_button)
-    private val optionsButton: View = root.findViewById(R.id.console_options_button)
-    private val infoButton: View = root.findViewById(R.id.console_info_button)
+    private val playGlyph: TextView = root.findViewById(R.id.console_play_glyph)
+    private val playIcon: View = root.findViewById(R.id.console_play_icon)
     private val hints: View = root.findViewById(R.id.console_hints)
+    private val hintConfirmGlyph: TextView = root.findViewById(R.id.console_hint_confirm_glyph)
+    private val menuButton: View = root.findViewById(R.id.settings_button)
+    private val headerSpace: View = root.findViewById(R.id.console_header_space)
+    private val searchFrame: View = root.findViewById(R.id.frame_search)
+    private val searchText: EditText = root.findViewById(R.id.search_text)
 
     private val res = root.resources
-    private val backdropAlpha = res.getFraction(R.fraction.console_home_backdrop_alpha, 1, 1)
-    private val backdropDelayMs = res.getInteger(R.integer.console_home_backdrop_delay_ms).toLong()
-    private val backdropFadeMs = res.getInteger(R.integer.console_home_backdrop_fade_ms).toLong()
     private val detailsFadeMs = res.getInteger(R.integer.console_home_details_fade_ms).toLong()
     private val detailsShiftPx = res.getDimension(R.dimen.console_home_details_shift)
-    private val minDetailsMarginPx = res.getDimension(R.dimen.spacing_large)
 
     private var active = false
     private var released = false
     private var selectedGame: Game? = null
     private var pendingPosition = RecyclerView.NO_POSITION
-    private var backdropJob: Job? = null
-    private var frontIsA = false
-    private var backdropGame: Game? = null
+    private var sizeJob: Job? = null
+    private var menu: PopupWindow? = null
 
     private val applySelectionRunnable = Runnable { applySelection() }
 
-    private val carouselLayoutListener =
-        View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> alignDetailsWithCard() }
-
     companion object {
+        // File sizes by game path, kept for the process lifetime (querying the provider is slow).
+        private val sizeCache = HashMap<String, Long>()
+
         /**
-         * Attaches the console Home if the current layout provides it (res/layout-land/fragment_games.xml).
-         * Returns null for layouts without console views (e.g. portrait), leaving behaviour unchanged.
+         * Attaches the console Home if the current layout provides it (res/layout/fragment_games.xml).
+         * Returns null for layouts without console views, leaving behaviour unchanged.
          */
         fun attachIfSupported(
             fragment: Fragment,
             root: View,
             carousel: CarouselRecyclerView?,
-            adapter: GameAdapter
+            adapter: GameAdapter,
+            actions: Actions
         ): ConsoleHomeController? {
             if (carousel == null || root.findViewById<View?>(R.id.console_details) == null) {
                 return null
             }
-            return ConsoleHomeController(fragment, root, carousel, adapter).also { it.bind() }
+            return ConsoleHomeController(fragment, root, carousel, adapter, actions).also { it.bind() }
         }
     }
 
     private fun bind() {
         carousel.onCenteredPositionChanged = { position, _ -> onCenteredPosition(position) }
         carousel.keyInterceptor = ::handleCarouselKey
-        carousel.addOnLayoutChangeListener(carouselLayoutListener)
-        details.addOnLayoutChangeListener(carouselLayoutListener)
 
         playButton.setOnClickListener { launchSelected() }
-        optionsButton.setOnClickListener { openOptionsForSelected() }
-        infoButton.setOnClickListener { openInfoForSelected() }
-
-        // UP from the action row always returns to the selected tile (not to whichever card
-        // happens to be geometrically above the button).
-        val backToCarousel = View.OnKeyListener { _, keyCode, event ->
+        // UP from Play returns to the selected tile (not whichever card is geometrically above).
+        playButton.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP && event.action == KeyEvent.ACTION_DOWN) {
                 carousel.focusCenteredCard()
                 true
@@ -120,57 +133,24 @@ class ConsoleHomeController private constructor(
                 false
             }
         }
-        playButton.setOnKeyListener(backToCarousel)
-        optionsButton.setOnKeyListener(backToCarousel)
-        infoButton.setOnKeyListener(backToCarousel)
-
-        bindDock()
 
         root.findViewById<View?>(R.id.console_profile_button)?.setOnClickListener {
             navigateToSubscreen(SettingsSubscreen.PROFILE_MANAGER)
         }
 
-        updateHintsVisibility()
-    }
+        // The search field only takes room in the top bar while it is in use.
+        searchText.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) hideSearchIfEmpty()
+        }
+        if (searchText.text.isNotEmpty()) showSearch(focus = false)
 
-    private fun bindDock() {
-        root.findViewById<View>(R.id.console_dock_library).setOnClickListener {
-            carousel.focusCenteredCard()
-        }
-        root.findViewById<View>(R.id.console_dock_install).setOnClickListener {
-            navigateToSubscreen(SettingsSubscreen.INSTALLABLE)
-        }
-        root.findViewById<View>(R.id.console_dock_settings).setOnClickListener {
-            fragment.findNavController().navigate(R.id.action_gamesFragment_to_homeSettingsFragment)
-        }
-        root.findViewById<View>(R.id.console_dock_applets).setOnClickListener {
-            if (NativeLibrary.isFirmwareAvailable()) {
-                navigateToSubscreen(SettingsSubscreen.APPLET_LAUNCHER)
-            } else {
-                Toast.makeText(
-                    fragment.requireContext(),
-                    R.string.applets_error_firmware,
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
-        root.findViewById<View>(R.id.console_dock_multiplayer).setOnClickListener {
-            (fragment.activity as? MainActivity)?.displayMultiplayerDialog()
-        }
-        root.findViewById<View>(R.id.console_dock_about).setOnClickListener {
-            navigateToSubscreen(SettingsSubscreen.ABOUT)
-        }
-    }
-
-    private fun navigateToSubscreen(destination: SettingsSubscreen) {
-        val action = HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(destination, null)
-        fragment.findNavController().navigate(action)
+        updateInputHints()
     }
 
     /**
      * Enables the console presentation only while the carousel view type is in use. With grid/list
-     * views selected from the "view" menu the details panel and backdrop are hidden and the screen
-     * behaves exactly as before (the dock stays available).
+     * views selected from the "view" menu the details panel and Play button are hidden and the
+     * screen behaves as before.
      */
     fun setActive(isCarousel: Boolean) {
         if (released) return
@@ -178,10 +158,13 @@ class ConsoleHomeController private constructor(
         carousel.consoleStyle = isCarousel
         if (!isCarousel) {
             clearSelection()
-            // Let the grid/list use the whole height above the dock.
             details.visibility = View.GONE
-        } else if (details.visibility == View.GONE) {
-            details.visibility = View.INVISIBLE
+            playButton.visibility = View.GONE
+            hints.visibility = View.GONE
+        } else {
+            if (details.visibility == View.GONE) details.visibility = View.INVISIBLE
+            if (playButton.visibility == View.GONE) playButton.visibility = View.INVISIBLE
+            updateInputHints()
         }
     }
 
@@ -200,21 +183,25 @@ class ConsoleHomeController private constructor(
 
     fun onResume() {
         if (released) return
-        updateHintsVisibility()
+        updateInputHints()
+        // Playtime changes after playing: refresh the details of the selected game.
+        if (active) {
+            selectedGame = null
+            carousel.post { if (!released) carousel.updateChildScalesAndAlpha() }
+        }
     }
 
     fun release() {
         released = true
-        backdropJob?.cancel()
-        backdropJob = null
+        sizeJob?.cancel()
+        sizeJob = null
+        menu?.dismiss()
+        menu = null
         details.removeCallbacks(applySelectionRunnable)
         details.animate().cancel()
-        backdropA.animate().cancel()
-        backdropB.animate().cancel()
         carousel.onCenteredPositionChanged = null
         carousel.keyInterceptor = null
-        carousel.removeOnLayoutChangeListener(carouselLayoutListener)
-        details.removeOnLayoutChangeListener(carouselLayoutListener)
+        searchText.onFocusChangeListener = null
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -236,12 +223,23 @@ class ConsoleHomeController private constructor(
         selectedGame = game
 
         gameTitle.text = game.title.replace("[\\t\\n\\r]+".toRegex(), " ")
-        gameMeta.text = buildMeta(game)
+        val version = game.version.trim()
+        gameVersion.text = if (version.isNotEmpty()) "v$version" else ""
+        gameVersion.visibility = if (version.isNotEmpty()) View.VISIBLE else View.GONE
 
-        if (details.visibility != View.VISIBLE) {
-            details.visibility = View.VISIBLE
-        }
-        alignDetailsWithCard()
+        val developer = game.developer.trim()
+        metaDeveloper.text = res.getString(R.string.home_console_meta_developer, developer)
+        metaDeveloper.visibility = if (developer.isNotEmpty()) View.VISIBLE else View.GONE
+
+        metaPlaytime.text = res.getString(
+            R.string.home_console_meta_playtime,
+            formatPlayTime(readPlayTime(game))
+        )
+        metaFormat.text = res.getString(R.string.home_console_meta_format, formatOf(game))
+        bindSize(game)
+
+        details.visibility = View.VISIBLE
+        playButton.visibility = View.VISIBLE
         details.animate().cancel()
         details.alpha = 0.25f
         details.translationY = detailsShiftPx
@@ -250,126 +248,168 @@ class ConsoleHomeController private constructor(
             .translationY(0f)
             .setDuration(detailsFadeMs)
             .start()
-
-        scheduleBackdrop(game)
     }
 
     private fun clearSelection() {
         selectedGame = null
         pendingPosition = RecyclerView.NO_POSITION
+        sizeJob?.cancel()
         details.removeCallbacks(applySelectionRunnable)
         details.animate().cancel()
         details.visibility = View.INVISIBLE
-        backdropJob?.cancel()
-        backdropGame = null
-        fadeOut(backdropA)
-        fadeOut(backdropB)
+        playButton.visibility = View.INVISIBLE
     }
 
-    private fun buildMeta(game: Game): String {
-        val parts = mutableListOf<String>()
-        if (game.developer.isNotBlank()) parts.add(game.developer.trim())
+    private fun readPlayTime(game: Game): Long = try {
+        if (game.programId.isNotEmpty()) NativeLibrary.playTimeManagerGetPlayTime(game.programId) else 0L
+    } catch (e: Exception) {
+        0L
+    }
 
-        val playTimeSeconds = try {
-            if (game.programId.isNotEmpty()) NativeLibrary.playTimeManagerGetPlayTime(game.programId) else 0L
-        } catch (e: Exception) {
-            0L
-        }
-        if (playTimeSeconds > 0) {
-            val hours = playTimeSeconds / 3600
-            val minutes = (playTimeSeconds % 3600) / 60
-            val readable = if (hours > 0) {
-                "$hours${res.getString(R.string.hours_abbr)} $minutes${res.getString(R.string.minutes_abbr)}"
-            } else {
-                "$minutes${res.getString(R.string.minutes_abbr)}"
-            }
-            parts.add("${res.getString(R.string.playtime)} $readable")
-        }
+    private fun formatPlayTime(seconds: Long): String {
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val h = res.getString(R.string.hours_abbr)
+        val m = res.getString(R.string.minutes_abbr)
+        return if (hours > 0) "$hours$h $minutes$m" else "$minutes$m"
+    }
 
-        if (game.version.isNotBlank()) parts.add("v${game.version.trim()}")
-
+    private fun formatOf(game: Game): String {
         val extension = Uri.decode(game.path).substringAfterLast('.', "").lowercase(Locale.ROOT)
-        if (extension in Game.extensions) parts.add(extension.uppercase(Locale.ROOT))
-
-        if (game.isHomebrew) parts.add(res.getString(R.string.home_console_homebrew))
-
-        return parts.joinToString("  ·  ")
+        val format = if (extension in Game.extensions) extension.uppercase(Locale.ROOT) else "-"
+        return if (game.isHomebrew) "$format · ${res.getString(R.string.home_console_homebrew)}" else format
     }
 
-    /** Left-aligns the details panel with the selected (centered) tile, like the console layout. */
-    private fun alignDetailsWithCard() {
-        if (!active || released) return
-        val swipe = carousel.parent?.parent as? View ?: return
-        val minMargin = minDetailsMarginPx.toInt()
-        var target = swipe.left + carousel.left + carousel.paddingLeft
-        // Keep the whole panel on screen on narrow devices.
-        if (details.width > 0 && root.width > 0) {
-            target = minOf(target, root.width - details.width - minMargin)
+    /** File size from the existing NativeLibrary.getSize() (document provider / native path). */
+    private fun bindSize(game: Game) {
+        sizeJob?.cancel()
+        val cached = sizeCache[game.path]
+        if (cached != null) {
+            showSize(cached)
+            return
         }
-        target = target.coerceAtLeast(minMargin)
-        val lp = details.layoutParams as? ViewGroup.MarginLayoutParams ?: return
-        if (lp.marginStart != target) {
-            lp.marginStart = target
-            // Post: this can be triggered from a layout callback.
-            details.post { if (!released) details.layoutParams = lp }
+        metaSize.visibility = View.INVISIBLE
+        sizeJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                try {
+                    NativeLibrary.getSize(game.path)
+                } catch (e: Exception) {
+                    0L
+                }
+            }
+            sizeCache[game.path] = bytes
+            if (!released && selectedGame == game) showSize(bytes)
         }
+    }
+
+    private fun showSize(bytes: Long) {
+        if (bytes <= 0L) {
+            metaSize.visibility = View.GONE
+            return
+        }
+        metaSize.text = res.getString(
+            R.string.home_console_meta_size,
+            MemoryUtil.bytesToSizeUnit(bytes.toFloat())
+        )
+        metaSize.visibility = View.VISIBLE
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Backdrop
+    // Gear menu
 
-    private fun scheduleBackdrop(game: Game) {
-        if (game == backdropGame) return
-        backdropJob?.cancel()
+    private class MenuEntry(val iconId: Int, val labelId: Int, val action: (View) -> Unit)
 
-        // Instant path when already cached (no coroutine, no delay).
-        GameBackdropCache.peek(game)?.let {
-            backdropGame = game
-            crossfadeBackdrop(it)
-            return
-        }
+    fun showMenu(anchor: View) {
+        if (released) return
+        menu?.dismiss()
+        val context = anchor.context
+        val inflater = LayoutInflater.from(context)
+        val density = res.displayMetrics.density
 
-        backdropJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
-            // Small delay so fast scrolling through many games doesn't load every icon.
-            delay(backdropDelayMs)
-            val bitmap = GameBackdropCache.load(fragment.viewLifecycleOwner, game)
-            if (released || !active || selectedGame != game) return@launch
-            backdropGame = game
-            if (bitmap != null) {
-                crossfadeBackdrop(bitmap)
-            } else {
-                // No artwork: fall back to the neutral background.
-                fadeOut(backdropA)
-                fadeOut(backdropB)
+        val entries = listOf(
+            MenuEntry(R.drawable.ic_settings, R.string.preferences_settings) { actions.openSettings() },
+            MenuEntry(R.drawable.ic_search, R.string.home_console_search) { showSearch(focus = true) },
+            MenuEntry(R.drawable.ic_eye, R.string.home_console_view) { actions.showViewMenu(it) },
+            MenuEntry(R.drawable.ic_filter, R.string.home_console_sort) { actions.showSortMenu(it) },
+            MenuEntry(R.drawable.ic_install, R.string.install) {
+                navigateToSubscreen(SettingsSubscreen.INSTALLABLE)
+            },
+            MenuEntry(R.drawable.ic_two_users, R.string.multiplayer) {
+                (fragment.activity as? MainActivity)?.displayMultiplayerDialog()
+            },
+            MenuEntry(R.drawable.ic_applet, R.string.home_console_applets) { openApplets() },
+            MenuEntry(R.drawable.ic_info_outline, R.string.about) {
+                navigateToSubscreen(SettingsSubscreen.ABOUT)
             }
+        )
+
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.console_menu_background)
+            val pad = (8 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+            minimumWidth = (240 * density).toInt()
+        }
+        val popup = PopupWindow(
+            content,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            elevation = 12 * density
+            setOnDismissListener { if (menu === this) menu = null }
+        }
+
+        var first: View? = null
+        for (entry in entries) {
+            val item = inflater.inflate(R.layout.item_console_menu, content, false)
+            item.findViewById<ImageView>(R.id.console_menu_icon).setImageResource(entry.iconId)
+            item.findViewById<TextView>(R.id.console_menu_label).setText(entry.labelId)
+            item.setOnClickListener {
+                popup.dismiss()
+                entry.action(anchor)
+            }
+            content.addView(item)
+            if (first == null) first = item
+        }
+
+        menu = popup
+        popup.showAsDropDown(anchor, 0, (8 * density).toInt(), Gravity.START)
+        // Gamepad / keyboard: start on the first entry. Touch mode is unaffected.
+        first?.requestFocus()
+    }
+
+    private fun openApplets() {
+        if (NativeLibrary.isFirmwareAvailable()) {
+            navigateToSubscreen(SettingsSubscreen.APPLET_LAUNCHER)
+        } else {
+            Toast.makeText(
+                fragment.requireContext(),
+                R.string.applets_error_firmware,
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
-    private fun crossfadeBackdrop(bitmap: Bitmap) {
-        val incoming = if (frontIsA) backdropB else backdropA
-        val outgoing = if (frontIsA) backdropA else backdropB
-        frontIsA = !frontIsA
-
-        incoming.animate().cancel()
-        incoming.setImageBitmap(bitmap)
-        incoming.animate()
-            .alpha(backdropAlpha)
-            .setDuration(backdropFadeMs)
-            .start()
-        fadeOut(outgoing)
+    private fun navigateToSubscreen(destination: SettingsSubscreen) {
+        val action = HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(destination, null)
+        fragment.findNavController().navigate(action)
     }
 
-    private fun fadeOut(view: ImageView) {
-        view.animate().cancel()
-        if (view.alpha == 0f) {
-            view.setImageDrawable(null)
-            return
-        }
-        view.animate()
-            .alpha(0f)
-            .setDuration(backdropFadeMs)
-            .withEndAction { if (view.alpha == 0f) view.setImageDrawable(null) }
-            .start()
+    // ---------------------------------------------------------------------------------------------
+    // Search
+
+    private fun showSearch(focus: Boolean) {
+        headerSpace.visibility = View.GONE
+        searchFrame.visibility = View.VISIBLE
+        if (focus) actions.focusSearch()
+    }
+
+    private fun hideSearchIfEmpty() {
+        if (released || searchText.text.isNotEmpty()) return
+        searchFrame.visibility = View.GONE
+        headerSpace.visibility = View.VISIBLE
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -385,13 +425,9 @@ class ConsoleHomeController private constructor(
         centeredItemView()?.performClick()
     }
 
+    /** Long click on a game card opens its properties screen. */
     private fun openOptionsForSelected() {
         centeredItemView()?.performLongClick()
-    }
-
-    private fun openInfoForSelected() {
-        val game = selectedGame ?: return
-        fragment.findNavController().navigate(R.id.gameInfoFragment, bundleOf("game" to game))
     }
 
     private fun handleCarouselKey(event: KeyEvent): Boolean {
@@ -405,7 +441,7 @@ class ConsoleHomeController private constructor(
             }
             KeyEvent.KEYCODE_BUTTON_Y -> {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    root.findViewById<View?>(R.id.search_background)?.performClick()
+                    showSearch(focus = true)
                 }
                 true
             }
@@ -413,8 +449,18 @@ class ConsoleHomeController private constructor(
         }
     }
 
-    private fun updateHintsVisibility() {
-        hints.visibility = if (isGamepadConnected()) View.VISIBLE else View.GONE
+    /**
+     * Shows the button glyphs only with a controller connected. The confirm glyph follows the
+     * existing "invert confirm/back controller buttons" app setting.
+     */
+    private fun updateInputHints() {
+        val gamepad = isGamepadConnected()
+        val confirm = if (BooleanSetting.INVERT_CONFIRM_BACK_CONTROLLER_BUTTONS.getBoolean()) "B" else "A"
+        playGlyph.text = confirm
+        hintConfirmGlyph.text = confirm
+        playGlyph.visibility = if (gamepad) View.VISIBLE else View.GONE
+        playIcon.visibility = if (gamepad) View.GONE else View.VISIBLE
+        hints.visibility = if (gamepad && active) View.VISIBLE else View.GONE
     }
 
     private fun isGamepadConnected(): Boolean {

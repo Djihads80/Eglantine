@@ -48,8 +48,8 @@ class CarouselRecyclerView @JvmOverloads constructor(
     private var lastCenteredPosition: Int = RecyclerView.NO_POSITION
 
     /**
-     * Console-style (flat) carousel used by the landscape Home: the centered card is full size,
-     * neighbours are scaled down and packed next to it, all cards share the same bottom line.
+     * Console-style (flat) carousel used by the console Home: the centered card is full size,
+     * neighbours are scaled down and packed next to it, all cards share the same center line.
      * When false the original arc carousel is used.
      */
     var consoleStyle: Boolean = false
@@ -354,7 +354,7 @@ class CarouselRecyclerView @JvmOverloads constructor(
 
         child.animate().cancel()
         child.pivotX = cardSize / 2f
-        child.pivotY = cardSize.toFloat()
+        child.pivotY = cardSize / 2f
         child.translationX = targetOffset - signedDistance
         val scale = 1f - (1f - sideScale) * near
         child.scaleX = scale
@@ -435,10 +435,8 @@ class CarouselRecyclerView @JvmOverloads constructor(
         if (consoleStyle) {
             val sizeFactor = resources.getFraction(R.fraction.console_home_card_size_factor, 1, 1)
             val maxWidthFactor = resources.getFraction(R.fraction.console_home_card_max_width_factor, 1, 1)
-            val bottomGap = resources.getDimensionPixelSize(R.dimen.console_home_card_bottom_gap)
             val consoleCardSize = minOf(
                 (height * sizeFactor).toInt(),
-                height - bottomGap,
                 (width * maxWidthFactor).toInt()
             )
             if (consoleCardSize <= 0) return
@@ -486,17 +484,17 @@ class CarouselRecyclerView @JvmOverloads constructor(
         if (cardSize <= 0 || bottomInset < 0) return
 
         val topPadding = if (consoleStyle) {
-            // Bottom-aligned row: details panel sits right below the cards.
-            val bottomGap = resources.getDimensionPixelSize(R.dimen.console_home_card_bottom_gap)
-            (height - cardSize - bottomGap).coerceAtLeast(0)
+            // Square tiles vertically centered in the row.
+            ((height - cardSize) / 2).coerceAtLeast(0)
         } else {
             ((height - bottomInset - cardSize) / 2).coerceAtLeast(0)
         }
+        val bottomPadding = if (consoleStyle) (height - cardSize - topPadding).coerceAtLeast(0) else 0
         val sidePadding = (width - cardSize) / 2
         if (paddingLeft != sidePadding || paddingTop != topPadding ||
-            paddingRight != sidePadding || paddingBottom != 0
+            paddingRight != sidePadding || paddingBottom != bottomPadding
         ) {
-            setPadding(sidePadding, topPadding, sidePadding, 0)
+            setPadding(sidePadding, topPadding, sidePadding, bottomPadding)
         }
         clipToPadding = false
     }
