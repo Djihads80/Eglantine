@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.fragments
 
+import org.yuzu.yuzu_emu.ui.home.ConsoleDialogStyler
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -67,7 +68,7 @@ class ProfileManagerFragment : Fragment() {
                     .setTitle(R.string.profile_max_users_title)
                     .setMessage(R.string.profile_max_users_message)
                     .setPositiveButton(android.R.string.ok, null)
-                    .show()
+                    .show().also { ConsoleDialogStyler.style(it) }
             }
         }
 
@@ -144,7 +145,7 @@ class ProfileManagerFragment : Fragment() {
                 deleteProfile(profile)
             }
             .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            .show().also { ConsoleDialogStyler.style(it) }
     }
 
     private fun deleteProfile(profile: UserProfile) {

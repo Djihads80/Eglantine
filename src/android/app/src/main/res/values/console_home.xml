@@ -156,7 +156,7 @@
         <item name="colorSecondary">@color/console_home_text_secondary</item>
         <item name="colorSurface">@color/console_dialog_glass</item>
         <item name="colorSurfaceContainerHigh">@color/console_dialog_glass</item>
-        <item name="android:backgroundDimAmount">0.55</item>
+        <item name="android:backgroundDimAmount">0.35</item>
         <item name="colorOnSurface">@color/console_home_text_primary</item>
         <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
         <item name="colorOutline">@color/console_home_outline</item>

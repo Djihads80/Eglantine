@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.adapters
 
+import org.yuzu.yuzu_emu.ui.home.ConsoleDialogStyler
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.AnimatorSet
@@ -319,7 +320,7 @@ class GameAdapter(private val activity: AppCompatActivity) :
                         launch()
                     }
                     .setNegativeButton(android.R.string.cancel) { _, _ -> }
-                    .show()
+                    .show().also { ConsoleDialogStyler.style(it) }
             } else {
                 launch()
             }
