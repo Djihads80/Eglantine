@@ -25,13 +25,14 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Top bar: back + breadcrumb | shortcut, clock, Wi-Fi/battery -->
+    <!-- Top bar: back (corner) | shortcut, clock, Wi-Fi/battery. The breadcrumb is kept
+         invisible only as the flexible spacer. -->
     <LinearLayout
         android:id="@+id/header"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginHorizontal="@dimen/console_home_side_margin"
-        android:layout_marginTop="8dp"
+        android:layout_marginHorizontal="@dimen/console_home_header_margin"
+        android:layout_marginTop="@dimen/console_home_header_margin_top"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         app:layout_constraintEnd_toEndOf="parent"
@@ -50,6 +51,7 @@
 
         <TextView
             android:id="@+id/console_breadcrumb"
+            android:visibility="invisible"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
