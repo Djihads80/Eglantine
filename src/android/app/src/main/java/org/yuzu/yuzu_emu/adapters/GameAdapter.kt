@@ -22,7 +22,6 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.findNavController
-import androidx.navigation.fragment.FragmentNavigatorExtras
 import androidx.preference.PreferenceManager
 import androidx.viewbinding.ViewBinding
 import kotlinx.coroutines.Dispatchers
@@ -58,9 +57,6 @@ class GameAdapter(private val activity: AppCompatActivity) :
         const val VIEW_TYPE_CAROUSEL = 3
 
         private const val SHAKE_DURATION_MS = 420L
-
-        /** Shared element name of a game's cover (console Home -> game screen). */
-        fun coverTransitionName(game: Game): String = "game_cover_${game.path.hashCode()}"
     }
 
     private var viewType = 0
@@ -229,16 +225,12 @@ class GameAdapter(private val activity: AppCompatActivity) :
 
             carouselBinding.textGameTitle.text = model.title.replace("[\\t\\n\\r]+".toRegex(), " ")
             carouselBinding.textGameTitle.marquee()
-            // The whole tile (artwork + outline) is the shared element, so the game screen's
-            // cover frame is never seen empty while it flies there.
-            val cover = carouselBinding.cardGameCarousel
-            cover.transitionName = coverTransitionName(model)
             carouselBinding.cardGameCarousel.rotation = 0f
             carouselBinding.cardGameCarousel.setOnClickListener {
-                // Console Home: one tap opens the game screen, the cover flying to its place.
+                // Console Home: one tap opens the game screen (Home fades out).
                 val carousel = carouselBinding.root.parent as? CarouselRecyclerView
                 if (carousel != null && carousel.consoleStyle) {
-                    openGameScreen(model, cover)
+                    openGameScreen(model)
                 } else {
                     onClick(model)
                 }
@@ -326,11 +318,9 @@ class GameAdapter(private val activity: AppCompatActivity) :
             }
         }
 
-        /** Game screen with the cover as shared element (it moves to its place there). */
-        private fun openGameScreen(game: Game, cover: View) {
+        private fun openGameScreen(game: Game) {
             val action = HomeNavigationDirections.actionGlobalPerGamePropertiesFragment(game)
-            val extras = FragmentNavigatorExtras(cover to cover.transitionName)
-            binding.root.findNavController().navigate(action, extras)
+            binding.root.findNavController().navigate(action)
         }
 
         /** Short wobble of the tile (like an app icon about to open), then launch. */
