@@ -952,6 +952,8 @@ private:
         }
         has_flushed_end_pending = false;
 
+  	    // Refresh buffer state before ending transform feedback to ensure counters_count is up-to-date.
+        UpdateBuffers();
         if (buffers_count == 0) {
             LOG_DEBUG(Render_Vulkan, "EndTransformFeedbackEXT called with no counters (buffers_count=0)");
             scheduler.Record([](vk::CommandBuffer cmdbuf) {
@@ -967,8 +969,6 @@ private:
     }
 
     void UpdateBuffers() {
-        last_queries.fill(0);
-        last_queries_stride.fill(1);
         stream_to_slot.fill(INVALID_SLOT);
         streams_mask = 0; // reset previously recorded streams
         runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
