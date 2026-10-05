@@ -25,16 +25,16 @@ static void to_json(jacinth::mutable_value json, const Member& member)
 
 static void from_json(const jacinth::value& json, Member& member)
 {
-    member.nickname = json["nickname"].as<std::string>();
-    member.game.name = json["gameName"].as<std::string>();
-    member.game.id = json["gameId"];
+    member.nickname = json.get("nickname");
+    member.game.name = json.get("gameName");
+    member.game.id = json.get("gameId");
 
     if (json["username"].is_null()) {
         member.username = member.avatar_url = "";
         LOG_DEBUG(Network, "Member '{}' isn't authenticated", member.nickname);
     } else {
-        member.username = json["username"].as<std::string>();
-        member.avatar_url = json["avatarUrl"].as<std::string>();
+        member.username = json.get("username");
+        member.avatar_url = json.get("avatarUrl");
     }
 }
 
@@ -55,29 +55,29 @@ static void to_json(jacinth::mutable_value json, const Room& room)
 
 static void from_json(const jacinth::value& json, Room& room)
 {
-    room.verify_uid = json["externalGuid"].as<std::string>();
-    room.ip = json["address"].as<std::string>();
-    room.information.name = json["name"].as<std::string>();
+    room.verify_uid = json.get("externalGuid");
+    room.ip = json.get("address");
+    room.information.name = json.get("name");
 
     if (json["description"].is_null()) {
         room.information.description = "";
         LOG_DEBUG(Network, "Room '{}' doesn't contain a description", room.information.name);
     } else {
-        room.information.description = json["description"].as<std::string>();
+        room.information.description = json.get("description");
     }
 
-    room.information.host_username = json["owner"].as<std::string>();
-    room.information.port = json["port"];
-    room.information.preferred_game.name = json["preferredGameName"].as<std::string>();
-    room.information.preferred_game.id = json["preferredGameId"];
-    room.information.member_slots = json["maxPlayers"];
-    room.net_version = json["netVersion"];
-    room.has_password = json["hasPassword"];
+    room.information.host_username = json.get("owner");
+    room.information.port = json.get("port");
+    room.information.preferred_game.name = json.get("preferredGameName");
+    room.information.preferred_game.id = json.get("preferredGameId");
+    room.information.member_slots = json.get("maxPlayers");
+    room.net_version = json.get("netVersion");
+    room.has_password = json.get("hasPassword");
 
     if (json["players"].is_null())
         LOG_DEBUG(Network, "No players key");
     else
-        room.members = json["players"].as<std::vector<Member>>();
+        room.members = json.get("players");
 }
 
 } // namespace AnnounceMultiplayerRoom
@@ -120,7 +120,7 @@ WebService::WebResult RoomJson::Register() {
 
     auto reply_json = jacinth::json::read(result.returned_data);
     room = reply_json;
-    room_id = reply_json["id"].as<std::string>();
+    room_id = reply_json.get("id");
 
     return WebService::WebResult{WebService::WebResult::Code::Success, "", room.verify_uid};
 }

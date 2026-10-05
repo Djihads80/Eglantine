@@ -63,20 +63,6 @@ if (WIN32 AND NOT TARGET LLVM::Demangle)
     add_library(LLVM::Demangle ALIAS demangle)
 endif()
 
-# jacinth (json)
-AddJsonPackage(jacinth)
-
-# compile flags that must match the rest of the world
-if(MSVC AND NOT CXX_CLANG)
-    target_compile_options(jacinth INTERFACE /GR-)
-else()
-    target_compile_options(jacinth INTERFACE
-        -fno-rtti -fwrapv $<$<CXX_COMPILER_ID:Clang>:-fsized-deallocation>)
-endif()
-
-# enable POSIX threads
-target_link_libraries(jacinth PRIVATE Threads::Threads)
-
 # curl (http)
 # disable protocols we don't need
 foreach(proto AWS DICT FILE GOPHER IMAP LDAP MQTT IPFS SMTP TELNET TFTP)

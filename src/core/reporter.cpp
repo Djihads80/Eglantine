@@ -162,14 +162,7 @@ void SaveToFile(const T& data, const std::filesystem::path& filename) {
         return;
     }
 
-    // TODO(crueter): error handling
     const auto buffer = jacinth::json::dump(data, {.pretty = true});
-
-    // if (ec) {
-    //     LOG_ERROR(Core, "Failed to serialize report to '{}'!",
-    //               Common::FS::PathToUTF8String(filename));
-    //     return;
-    // }
 
     std::ofstream file;
     Common::FS::OpenFileStream(file, filename, std::ios_base::out | std::ios_base::trunc);

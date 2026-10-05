@@ -145,17 +145,14 @@ std::optional<Release> GetLatestRelease() {
     }
 
     const std::string_view body_str = body.value();
-    Release release = jacinth::doc::read(body_str);
-    // TODO: error handling
+    auto ec = jacinth::doc::try_read<Release>(body_str);
 
+    if (ec) {
+        LOG_CRITICAL(Common, "Failed to parse latest release: {}", ec.error().message());
+        return std::nullopt;
+    }
 
-    // if (ec) {
-    //     LOG_CRITICAL(Common, "Latest Release JSON parse error: {}",
-    //                  glz::format_error(ec, body_str));
-    //     return std::nullopt;
-    // }
-
-    return release;
+    return ec.value();
 }
 
 std::optional<std::string> GetReleasesBody() {
@@ -168,15 +165,14 @@ std::optional<std::string> GetReleasesBody() {
 }
 
 std::vector<Release> GetReleasesFromJson(const std::string& body) {
-    std::vector<Release> releases = jacinth::doc::read(body);
+    auto ec = jacinth::doc::try_read<std::vector<Release>>(body);
 
-    // TODO(crueter): error handling
-    // if (ec) {
-    //     LOG_CRITICAL(Common, "Release JSON parse error: {}", glz::format_error(ec, body));
-    //     return {};
-    // }
+    if (ec) {
+        LOG_CRITICAL(Common, "Release JSON parse error: {}", ec.error().message());
+        return {};
+    }
 
-    return releases;
+    return ec.value();
 }
 
 bool HeadRequest(const std::string& url) {

@@ -253,6 +253,17 @@ else()
     endif()
 endif()
 
+# Jacinth (json)
+# needs its compiler flags to match the rest of the world since it's a module
+AddJsonPackage(jacinth)
+
+# enable POSIX threads
+if (jacinth_ADDED)
+    target_link_libraries(jacinth PRIVATE Threads::Threads)
+else()
+    target_link_libraries(jacinth::jacinth PRIVATE Threads::Threads)
+endif()
+
 add_subdirectory(common)
 add_subdirectory(network)
 
