@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.ui.home
 
+import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -15,6 +16,7 @@ import androidx.fragment.app.FragmentManager
 import androidx.navigation.fragment.NavHostFragment
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.card.MaterialCardView
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.features.settings.ui.SettingsSubscreen
 import org.yuzu.yuzu_emu.fragments.AddonsFragment
@@ -62,6 +64,12 @@ class ConsoleSubscreenHost(
         ) {
             if (f is DialogFragment) return
             v.background = null
+            // User editor: its Cancel / Save bar sits in a card; keep only the buttons.
+            (v.findViewById<View?>(R.id.button_container)?.parent as? MaterialCardView)?.apply {
+                setCardBackgroundColor(Color.TRANSPARENT)
+                strokeWidth = 0
+                cardElevation = 0f
+            }
             // The console header replaces the subscreen toolbars. Start screens keep the console
             // title; nested screens (e.g. the user editor) pass their own title to the header.
             val isStart = f is ProfileManagerFragment || f is GameInfoFragment ||

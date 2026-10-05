@@ -228,7 +228,9 @@ class GameAdapter(private val activity: AppCompatActivity) :
 
             carouselBinding.textGameTitle.text = model.title.replace("[\\t\\n\\r]+".toRegex(), " ")
             carouselBinding.textGameTitle.marquee()
-            val cover = carouselBinding.imageGameScreen
+            // The whole tile (artwork + outline) is the shared element, so the game screen's
+            // cover frame is never seen empty while it flies there.
+            val cover = carouselBinding.cardGameCarousel
             cover.transitionName = coverTransitionName(model)
             carouselBinding.cardGameCarousel.rotation = 0f
             carouselBinding.cardGameCarousel.setOnClickListener {

@@ -183,7 +183,7 @@ class GamePropertiesFragment : Fragment() {
             }
         }
 
-        binding.imageGameScreen.transitionName = GameAdapter.coverTransitionName(args.game)
+        binding.coverCard.transitionName = GameAdapter.coverTransitionName(args.game)
         // Same animated outline as the selected Home tile (palette of this game).
         binding.coverCard.consoleHighlight = true
         binding.coverCard.isSelected = true
