@@ -18,7 +18,6 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
-import java.util.Random
 
 /**
  * Colors shared by the console Home background and the selected tile outline, so both follow the
@@ -47,9 +46,9 @@ object ConsolePalette {
 }
 
 /**
- * Animated "liquid glass" backdrop of the console Home: a base vertical gradient with slowly
- * drifting blobs in the accent colors of the selected game, under a frosted glass sheen, with
- * glassy bubbles rising and wobbling on top.
+ * Animated "liquid glass" backdrop of the console Home: a base vertical gradient with large,
+ * heavily blurred blobs in the accent colors of the selected game flowing across the screen,
+ * under a frosted glass sheen.
  *
  * Only animates while visible on screen; color changes cross-fade.
  */
@@ -78,51 +77,14 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
     private val startTime = SystemClock.uptimeMillis()
     private var running = false
 
-    // Blob motion: relative center (x, y), amplitudes and periods (seconds). One per accent slot.
+    // Blob motion: relative center (x, y), amplitudes and periods (seconds); accents cycle.
     private val blobs = arrayOf(
-        Blob(0.20f, 0.30f, 0.18f, 0.14f, 23f, 31f, 0.0f),
-        Blob(0.80f, 0.25f, 0.16f, 0.18f, 29f, 19f, 1.7f),
-        Blob(0.55f, 0.80f, 0.22f, 0.12f, 37f, 27f, 3.1f),
-        Blob(0.15f, 0.85f, 0.14f, 0.16f, 21f, 33f, 4.6f)
+        Blob(0.20f, 0.30f, 0.30f, 0.22f, 9f, 12f, 0.0f),
+        Blob(0.80f, 0.25f, 0.28f, 0.26f, 11f, 8f, 1.7f),
+        Blob(0.55f, 0.80f, 0.34f, 0.20f, 13f, 10f, 3.1f),
+        Blob(0.15f, 0.85f, 0.26f, 0.24f, 8f, 14f, 4.6f),
+        Blob(0.50f, 0.45f, 0.36f, 0.30f, 12f, 9f, 2.3f)
     )
-
-    // Bubbles: shaders are built at the origin and reused through canvas translation.
-    private val density = resources.displayMetrics.density
-    private val bubbles = Random(BUBBLE_SEED).let { random ->
-        Array(BUBBLE_COUNT) {
-            Bubble(
-                x = random.nextFloat(),
-                radius = (BUBBLE_MIN_RADIUS_DP +
-                    random.nextFloat() * (BUBBLE_MAX_RADIUS_DP - BUBBLE_MIN_RADIUS_DP)) * density,
-                speed = (BUBBLE_MIN_SPEED_DP + random.nextFloat() * BUBBLE_SPEED_RANGE_DP) * density,
-                offset = random.nextFloat(),
-                wobble = (6f + random.nextFloat() * 14f) * density,
-                wobblePeriod = 3f + random.nextFloat() * 4f,
-                phase = random.nextFloat() * 2f * PI.toFloat(),
-                accent = it % ACCENT_COLORS
-            )
-        }
-    }
-    private val bubbleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val bubbleRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1.2f * resources.displayMetrics.density
-    }
-    private val bubbleShinePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var bubbleShadersDirty = true
-
-    private class Bubble(
-        val x: Float,
-        val radius: Float,
-        val speed: Float,
-        val offset: Float,
-        val wobble: Float,
-        val wobblePeriod: Float,
-        val phase: Float,
-        val accent: Int
-    ) {
-        var fill: Shader? = null
-    }
 
     private class Blob(
         val cx: Float,
@@ -160,7 +122,6 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
             newAccents.copyInto(accents)
             transitioning = false
             baseShaderDirty = true
-            bubbleShadersDirty = true
             ConsolePalette.updateBorder(accents)
         }
         toBase = newBase
@@ -214,7 +175,6 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
             accents[i] = evaluator.evaluate(eased, fromAccents[i], toAccents[i]) as Int
         }
         baseShaderDirty = true
-        bubbleShadersDirty = true
         ConsolePalette.updateBorder(accents)
         if (fraction >= 1f) transitioning = false
     }
@@ -238,19 +198,26 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
         }
         canvas.drawRect(0f, 0f, w, h, basePaint)
 
-        // Liquid blobs: radial gradients in the accent colors drifting on slow Lissajous paths.
-        val radius = max(w, h) * 0.55f
+        // Liquid blobs: wide, soft radial gradients in the accent colors flowing on Lissajous
+        // paths. The long multi-stop falloff keeps them blurred into each other.
+        val radius = max(w, h) * 0.75f
         for (i in blobs.indices) {
             val blob = blobs[i]
             val x = w * (blob.cx + blob.ax * sin(2f * PI.toFloat() * t / blob.px + blob.phase))
             val y = h * (blob.cy + blob.ay * cos(2f * PI.toFloat() * t / blob.py + blob.phase))
-            val pulse = 1f + 0.08f * sin(2f * PI.toFloat() * t / (blob.px * 0.7f) + blob.phase)
+            val pulse = 1f + 0.12f * sin(2f * PI.toFloat() * t / (blob.px * 0.6f) + blob.phase)
             val r = radius * pulse
             val color = accents[i % ACCENT_COLORS]
             blobPaint.shader = RadialGradient(
                 x, y, r,
-                intArrayOf(withAlpha(color, BLOB_ALPHA), withAlpha(color, BLOB_ALPHA / 3), 0),
-                floatArrayOf(0f, 0.55f, 1f),
+                intArrayOf(
+                    withAlpha(color, BLOB_ALPHA),
+                    withAlpha(color, BLOB_ALPHA * 3 / 5),
+                    withAlpha(color, BLOB_ALPHA / 4),
+                    withAlpha(color, BLOB_ALPHA / 14),
+                    0
+                ),
+                floatArrayOf(0f, 0.25f, 0.55f, 0.8f, 1f),
                 Shader.TileMode.CLAMP
             )
             canvas.drawCircle(x, y, r, blobPaint)
@@ -268,56 +235,8 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
         )
         canvas.drawRect(0f, 0f, w, h, sheenPaint)
 
-        drawBubbles(canvas, w, h, t)
-
         if (running) postInvalidateDelayed(FRAME_DELAY_MS)
     }
-
-    /** Glassy bubbles rising from the bottom, fading in at the bottom and out near the top. */
-    private fun drawBubbles(canvas: Canvas, w: Float, h: Float, t: Float) {
-        if (bubbleShadersDirty) {
-            for (bubble in bubbles) {
-                val tint = blend(accents[bubble.accent], Color.WHITE, 0.55f)
-                bubble.fill = RadialGradient(
-                    0f, 0f, bubble.radius,
-                    intArrayOf(withAlpha(tint, 8), withAlpha(tint, 26), withAlpha(tint, 80)),
-                    floatArrayOf(0f, 0.7f, 1f),
-                    Shader.TileMode.CLAMP
-                )
-            }
-            bubbleShadersDirty = false
-        }
-        for (bubble in bubbles) {
-            val travel = h + bubble.radius * 2f
-            val progress = ((t * bubble.speed / travel) + bubble.offset) % 1f
-            val y = h + bubble.radius - progress * travel
-            val x = w * bubble.x +
-                bubble.wobble * sin(2f * PI.toFloat() * t / bubble.wobblePeriod + bubble.phase)
-            val fadeIn = (progress / 0.12f).coerceIn(0f, 1f)
-            val fadeOut = ((1f - progress) / 0.3f).coerceIn(0f, 1f)
-            val alpha = (255 * fadeIn * fadeOut).toInt()
-            if (alpha <= 0) continue
-
-            canvas.save()
-            canvas.translate(x, y)
-            bubbleFillPaint.shader = bubble.fill
-            bubbleFillPaint.alpha = alpha
-            canvas.drawCircle(0f, 0f, bubble.radius, bubbleFillPaint)
-            bubbleRimPaint.color = withAlpha(Color.WHITE, (70 * alpha) / 255)
-            canvas.drawCircle(0f, 0f, bubble.radius, bubbleRimPaint)
-            bubbleShinePaint.color = withAlpha(Color.WHITE, (110 * alpha) / 255)
-            canvas.drawCircle(
-                -bubble.radius * 0.38f,
-                -bubble.radius * 0.38f,
-                bubble.radius * 0.2f,
-                bubbleShinePaint
-            )
-            canvas.restore()
-        }
-    }
-
-    private fun blend(from: Int, to: Int, amount: Float): Int =
-        evaluator.evaluate(amount, from, to) as Int
 
     private fun withAlpha(color: Int, alpha: Int): Int =
         Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
@@ -327,15 +246,8 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
         const val ACCENT_COLORS = 3
         const val TRANSITION_MS = 600L
         const val FRAME_DELAY_MS = 33L
-        const val BLOB_ALPHA = 150
-        const val SHEEN_PERIOD_S = 14f
-
-        const val BUBBLE_COUNT = 16
-        const val BUBBLE_SEED = 0x5EEDL
-        const val BUBBLE_MIN_RADIUS_DP = 5f
-        const val BUBBLE_MAX_RADIUS_DP = 26f
-        const val BUBBLE_MIN_SPEED_DP = 16f
-        const val BUBBLE_SPEED_RANGE_DP = 30f
+        const val BLOB_ALPHA = 140
+        const val SHEEN_PERIOD_S = 9f
 
         val DEFAULT_TOP = Color.rgb(0x0A, 0x12, 0x38)
         val DEFAULT_CENTER = Color.rgb(0x1B, 0x2C, 0x66)

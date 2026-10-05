@@ -43,6 +43,8 @@ class GradientBorderCardView @JvmOverloads constructor(
         set(value) {
             if (field == value) return
             field = value
+            // Keep the artwork inside the rounded tile (no corners poking past the outline).
+            clipToOutline = value
             if (width > 0 && height > 0) applyBorderStyle(width, height)
             invalidate()
         }
@@ -114,12 +116,14 @@ class GradientBorderCardView @JvmOverloads constructor(
             h - halfStroke
         )
 
-        // Update path with rounded corners
+        // Update path with rounded corners. The console outline is inset by half its stroke, so
+        // its radius shrinks by the same amount to stay concentric with the tile corners.
+        val pathRadius = if (consoleHighlight) (radius - halfStroke).coerceAtLeast(0f) else radius
         borderPath.reset()
         borderPath.addRoundRect(
             borderRect,
-            radius,
-            radius,
+            pathRadius,
+            pathRadius,
             Path.Direction.CW
         )
     }

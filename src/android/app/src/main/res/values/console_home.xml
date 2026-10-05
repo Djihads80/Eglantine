@@ -19,6 +19,7 @@
     <color name="console_home_outline_dim">#40FFFFFF</color>
     <color name="console_home_focus_fill">#26FFFFFF</color>
     <color name="console_home_surface">#1FFFFFFF</color>
+    <color name="console_home_glass">#33FFFFFF</color>
     <color name="console_home_surface_stroke">#26FFFFFF</color>
     <color name="console_home_chip">#26FFFFFF</color>
     <color name="console_home_chip_on_light">#1A0B1A3E</color>
@@ -28,17 +29,20 @@
     <dimen name="console_home_header_button">41dp</dimen>
     <dimen name="console_home_header_button_radius">20.5dp</dimen>
     <dimen name="console_home_header_icon">19dp</dimen>
+    <!-- Profile (avatar) button: 15% larger than the settings button. -->
+    <dimen name="console_home_avatar_button">47dp</dimen>
+    <dimen name="console_home_avatar_button_radius">23.5dp</dimen>
     <dimen name="console_home_search_height">48dp</dimen>
     <dimen name="console_home_side_margin">48dp</dimen>
     <!-- Top bar sits close to the screen corners. -->
     <dimen name="console_home_header_margin">14dp</dimen>
-    <dimen name="console_home_header_margin_top">10dp</dimen>
+    <dimen name="console_home_header_margin_top">0dp</dimen>
     <dimen name="console_home_title_size">28sp</dimen>
     <dimen name="console_home_meta_size">14sp</dimen>
     <dimen name="console_home_details_margin_top">8dp</dimen>
     <dimen name="console_home_carousel_margin_bottom">8dp</dimen>
     <dimen name="console_home_card_gap">14dp</dimen>
-    <dimen name="console_home_card_radius">14dp</dimen>
+    <dimen name="console_home_card_radius">20dp</dimen>
     <dimen name="console_home_play_min_width">200dp</dimen>
     <dimen name="console_home_play_height">52dp</dimen>
     <dimen name="console_home_play_margin_bottom">28dp</dimen>
@@ -71,6 +75,26 @@
         <item name="cardElevation">0dp</item>
         <item name="strokeWidth">0dp</item>
         <item name="rippleColor">@color/console_home_chip_on_light</item>
+    </style>
+
+    <!-- Semi-transparent "glass" variant (settings button). -->
+    <style name="ConsoleHeaderButton.Glass">
+        <item name="cardBackgroundColor">@color/console_home_glass</item>
+        <item name="strokeColor">@color/console_home_outline</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="rippleColor">@color/console_home_focus_fill</item>
+    </style>
+
+    <style name="ConsoleHeaderButton.Avatar">
+        <item name="android:layout_width">@dimen/console_home_avatar_button</item>
+        <item name="android:layout_height">@dimen/console_home_avatar_button</item>
+        <item name="cardCornerRadius">@dimen/console_home_avatar_button_radius</item>
+    </style>
+
+    <!-- Game artwork clipped to the tile's rounded corners. -->
+    <style name="ShapeAppearance.Console.Card" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">@dimen/console_home_card_radius</item>
     </style>
 
     <style name="ShapeAppearance.Console.Circle" parent="">

@@ -40,12 +40,13 @@
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/settings_button"
-            style="@style/ConsoleHeaderButton"
+            style="@style/ConsoleHeaderButton.Glass"
             android:contentDescription="@string/home_console_menu">
 
             <ImageView
                 style="@style/ConsoleHeaderIcon"
-                android:src="@drawable/ic_settings" />
+                android:src="@drawable/ic_settings"
+                app:tint="@color/console_home_text_primary" />
 
         </com.google.android.material.card.MaterialCardView>
 
@@ -156,7 +157,7 @@
 
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/console_profile_button"
-            style="@style/ConsoleHeaderButton"
+            style="@style/ConsoleHeaderButton.Avatar"
             android:contentDescription="@string/profile_manager">
 
             <!-- Replaced by the current user's avatar by ConsoleHomeController. -->

@@ -3,8 +3,9 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
     Console-style game screen, two columns (landscape / wide screens): game card and file
-    information on the left (scrollable), tabs + Play and the options on the right, gamepad
-    hints at the bottom right. IDs shared with layout/fragment_game_properties.xml.
+    information on the left (scrollable), tabs and the options (or the settings of the opened
+    section) on the right, Play in the bottom right corner with the gamepad hints next to it.
+    IDs shared with layout/fragment_game_properties.xml.
 -->
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -153,14 +154,15 @@
         android:orientation="vertical"
         app:layout_constraintGuide_percent="0.34" />
 
-    <!-- Right column: tabs + Play, then options -->
+    <!-- Right column: tabs, then the options or the settings of the opened section -->
     <LinearLayout
         android:id="@+id/console_options"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginEnd="@dimen/console_home_side_margin"
+        android:layout_marginBottom="10dp"
         android:orientation="vertical"
-        app:layout_constraintBottom_toTopOf="@+id/console_hints"
+        app:layout_constraintBottom_toTopOf="@+id/button_start"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@id/guideline"
         app:layout_constraintTop_toBottomOf="@id/header">
@@ -202,11 +204,6 @@
 
             </HorizontalScrollView>
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/button_start"
-                style="@style/ConsolePlayButton"
-                android:layout_marginStart="12dp" />
-
         </LinearLayout>
 
         <androidx.recyclerview.widget.RecyclerView
@@ -220,20 +217,91 @@
             android:scrollbars="none"
             tools:listitem="@layout/card_console_property" />
 
+        <!-- Settings of the section opened from the settings tab, shown in place of the cards. -->
+        <LinearLayout
+            android:id="@+id/console_inline_settings"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="4dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/button_inline_back"
+                    style="?attr/materialIconButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:contentDescription="@string/back"
+                    app:icon="@drawable/ic_back"
+                    app:iconSize="20dp"
+                    app:iconTint="@color/console_home_text_primary" />
+
+                <TextView
+                    android:id="@+id/inline_settings_title"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:singleLine="true"
+                    android:textColor="@color/console_home_text_primary"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="4dp"
+                android:layout_weight="1"
+                app:cardBackgroundColor="?attr/colorSurface"
+                app:cardCornerRadius="18dp"
+                app:cardElevation="0dp"
+                app:strokeWidth="0dp">
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/list_inline_settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clipToPadding="false"
+                    android:paddingVertical="8dp"
+                    android:scrollbars="vertical" />
+
+            </com.google.android.material.card.MaterialCardView>
+
+        </LinearLayout>
+
     </LinearLayout>
+
+    <!-- Primary action, bottom right corner -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/button_start"
+        style="@style/ConsolePlayButton"
+        android:layout_marginEnd="@dimen/console_home_side_margin"
+        android:layout_marginBottom="14dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- Gamepad hints (only shown with a controller connected) -->
     <LinearLayout
         android:id="@+id/console_hints"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginEnd="@dimen/console_home_side_margin"
-        android:layout_marginBottom="10dp"
+        android:layout_marginEnd="20dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintBottom_toBottomOf="@id/button_start"
+        app:layout_constraintEnd_toStartOf="@id/button_start"
+        app:layout_constraintTop_toTopOf="@id/button_start">
 
         <TextView
             android:id="@+id/console_hint_confirm_glyph"
