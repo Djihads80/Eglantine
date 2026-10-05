@@ -26,6 +26,7 @@ import androidx.transition.ChangeBounds
 import androidx.transition.ChangeClipBounds
 import androidx.transition.ChangeImageTransform
 import androidx.transition.ChangeTransform
+import androidx.transition.Fade
 import androidx.transition.TransitionSet
 import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
@@ -126,11 +127,13 @@ class GamePropertiesFragment : Fragment() {
         private const val KEY_POST_SHADER_ENABLED = "post_shader_enabled"
         private const val KEY_POST_SHADER_PRESET = "post_shader_preset"
         private const val COVER_TRANSITION_MS = 450L
+        private const val SCREEN_FADE_MS = 150L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enterTransition = MaterialSharedAxis(MaterialSharedAxis.Y, true)
+        // Quick fade so the new screen covers Home while the cover is still flying.
+        enterTransition = Fade().setDuration(SCREEN_FADE_MS)
         returnTransition = MaterialSharedAxis(MaterialSharedAxis.Y, false)
         reenterTransition = MaterialSharedAxis(MaterialSharedAxis.X, false)
         // Cover moves from the Home tile to its place on this screen.

@@ -69,7 +69,8 @@ class GamesFragment : Fragment() {
     companion object {
         private const val SEARCH_TEXT = "SearchText"
         private const val PREF_SORT_TYPE = "GamesSortType"
-        private const val HOME_FADE_MS = 180L
+        private const val HOME_EXIT_MS = 60L
+        private const val HOME_REENTER_MS = 200L
     }
 
     private val gamesViewModel: GamesViewModel by activityViewModels()
@@ -104,10 +105,10 @@ class GamesFragment : Fragment() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Home fades out while the selected cover flies to the game screen (shared element), so
-        // the empty slot it leaves in the carousel is never visible.
-        exitTransition = Fade().setDuration(HOME_FADE_MS)
-        reenterTransition = Fade().setDuration(HOME_FADE_MS)
+        // Home disappears almost at once while the selected cover flies to the game screen
+        // (shared element), so the empty slot it leaves in the carousel is never visible.
+        exitTransition = Fade().setDuration(HOME_EXIT_MS)
+        reenterTransition = Fade().setDuration(HOME_REENTER_MS)
     }
 
     override fun onCreateView(

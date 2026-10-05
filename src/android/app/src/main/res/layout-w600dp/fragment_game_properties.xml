@@ -181,18 +181,19 @@
         app:layout_constraintBottom_toTopOf="@+id/button_start"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toEndOf="@id/guideline"
-        app:layout_constraintTop_toBottomOf="@id/header">
+        app:layout_constraintTop_toTopOf="@id/header">
 
+        <!-- Tabs share the top bar line (between back and the status icons). -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
+            android:minHeight="48dp"
             android:orientation="horizontal">
 
             <HorizontalScrollView
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:scrollbars="none">
 
                 <LinearLayout
@@ -226,7 +227,7 @@
             android:id="@+id/list_properties"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="4dp"
             android:layout_weight="1"
             android:clipToPadding="false"
             android:paddingBottom="12dp"
