@@ -110,24 +110,27 @@
             android:paddingHorizontal="20dp"
             android:paddingTop="8dp">
 
-            <com.google.android.material.card.MaterialCardView
+            <!-- Same tile as Home: rounded artwork with the animated palette outline. -->
+            <org.yuzu.yuzu_emu.views.GradientBorderCardView
+                android:id="@+id/cover_card"
                 android:layout_width="@dimen/console_game_cover_size"
                 android:layout_height="@dimen/console_game_cover_size"
                 android:layout_gravity="center_horizontal"
                 app:cardBackgroundColor="@color/console_home_card_bg"
-                app:cardCornerRadius="18dp"
+                app:cardCornerRadius="@dimen/console_home_card_radius"
                 app:cardElevation="0dp"
-                app:strokeColor="@color/console_home_text_primary"
-                app:strokeWidth="3dp">
+                app:cardPreventCornerOverlap="false"
+                app:strokeWidth="0dp">
 
-                <ImageView
+                <com.google.android.material.imageview.ShapeableImageView
                     android:id="@+id/image_game_screen"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:importantForAccessibility="no"
-                    android:scaleType="centerCrop" />
+                    android:scaleType="centerCrop"
+                    app:shapeAppearanceOverlay="@style/ShapeAppearance.Console.Card" />
 
-            </com.google.android.material.card.MaterialCardView>
+            </org.yuzu.yuzu_emu.views.GradientBorderCardView>
 
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/title"

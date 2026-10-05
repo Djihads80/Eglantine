@@ -81,6 +81,8 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
 
         ThemeHelper.ThemeChangeListener(this)
         ThemeHelper.setTheme(this)
+        // Console UI: every screen and dialog of this activity uses the console colors.
+        theme.applyStyle(R.style.ThemeOverlay_Console, true)
         super.onCreate(savedInstanceState)
         NativeLibrary.initMultiplayer()
 

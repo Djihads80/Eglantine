@@ -1,21 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView
+<!-- Firmware avatar tile: centered in its grid cell, artwork clipped to the rounded card. -->
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="wrap_content"
+    android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_margin="4dp"
-    style="@style/Widget.Material3.CardView.Elevated"
-    app:cardCornerRadius="12dp"
-    android:clickable="true"
-    android:focusable="true"
-    android:checkable="true">
+    android:padding="6dp">
 
-    <ImageView
-        android:id="@+id/image_avatar"
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/avatar_card"
         android:layout_width="72dp"
         android:layout_height="72dp"
-        android:scaleType="centerCrop"
-        android:contentDescription="@string/profile_avatar" />
+        android:layout_gravity="center"
+        android:checkable="true"
+        android:clickable="true"
+        android:focusable="true"
+        app:cardBackgroundColor="@color/console_theme_card"
+        app:cardCornerRadius="14dp"
+        app:cardElevation="0dp"
+        app:cardPreventCornerOverlap="false"
+        app:checkedIconTint="@color/console_home_text_on_light"
+        app:strokeColor="@color/console_home_outline_dim"
+        app:strokeWidth="1dp">
 
-</com.google.android.material.card.MaterialCardView>
+        <com.google.android.material.imageview.ShapeableImageView
+            android:id="@+id/image_avatar"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/profile_avatar"
+            android:scaleType="centerCrop"
+            app:shapeAppearanceOverlay="@style/ShapeAppearance.Console.Avatar" />
+
+    </com.google.android.material.card.MaterialCardView>
+
+</FrameLayout>

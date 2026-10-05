@@ -29,6 +29,7 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.transition.Fade
 import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
@@ -68,6 +69,7 @@ class GamesFragment : Fragment() {
     companion object {
         private const val SEARCH_TEXT = "SearchText"
         private const val PREF_SORT_TYPE = "GamesSortType"
+        private const val HOME_FADE_MS = 180L
     }
 
     private val gamesViewModel: GamesViewModel by activityViewModels()
@@ -100,6 +102,14 @@ class GamesFragment : Fragment() {
         val key = if (isLandscape) CarouselRecyclerView.CAROUSEL_VIEW_TYPE_LANDSCAPE else CarouselRecyclerView.CAROUSEL_VIEW_TYPE_PORTRAIT
         preferences.edit { putInt(key, type) }
     }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Home fades out while the selected cover flies to the game screen (shared element), so
+        // the empty slot it leaves in the carousel is never visible.
+        exitTransition = Fade().setDuration(HOME_FADE_MS)
+        reenterTransition = Fade().setDuration(HOME_FADE_MS)
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,

@@ -37,9 +37,9 @@ class FirmwareAvatarAdapter(
 
         fun bind(avatar: Bitmap, isSelected: Boolean) {
             binding.imageAvatar.setImageBitmap(avatar)
-            binding.root.isChecked = isSelected
+            binding.avatarCard.isChecked = isSelected
 
-            binding.root.setOnClickListener {
+            binding.avatarCard.setOnClickListener {
                 val previousSelected = selectedPosition
                 selectedPosition = bindingAdapterPosition
 
