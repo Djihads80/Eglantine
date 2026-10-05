@@ -19,6 +19,7 @@
     app:cardCornerRadius="@dimen/console_home_card_radius"
     app:cardElevation="0dp"
     app:cardPreventCornerOverlap="false"
+    android:clipChildren="true"
     app:rippleColor="@color/game_card_ripple"
     app:strokeWidth="0dp">
 
@@ -31,7 +32,8 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:contentDescription="@string/game_image_desc"
-            android:scaleType="centerCrop" />
+            android:scaleType="centerCrop"
+            app:shapeAppearanceOverlay="@style/ShapeAppearance.Console.Card" />
 
         <com.google.android.material.textview.MaterialTextView
             android:id="@+id/text_game_title"

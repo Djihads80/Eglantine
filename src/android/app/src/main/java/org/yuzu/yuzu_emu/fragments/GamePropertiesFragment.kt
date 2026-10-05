@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.fragments
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
@@ -16,6 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -26,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.findNavController
 import androidx.navigation.fragment.navArgs
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.transition.MaterialSharedAxis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,7 +43,11 @@ import org.yuzu.yuzu_emu.databinding.FragmentGamePropertiesBinding
 import org.yuzu.yuzu_emu.features.DocumentProvider
 import org.yuzu.yuzu_emu.features.settings.model.BooleanSetting
 import org.yuzu.yuzu_emu.features.settings.model.Settings
+import org.yuzu.yuzu_emu.features.settings.model.view.SubmenuSetting
+import org.yuzu.yuzu_emu.features.settings.ui.SettingsAdapter
+import org.yuzu.yuzu_emu.features.settings.ui.SettingsFragmentPresenter
 import org.yuzu.yuzu_emu.features.settings.ui.SettingsSubscreen
+import org.yuzu.yuzu_emu.features.settings.ui.SettingsViewModel
 import org.yuzu.yuzu_emu.features.settings.utils.SettingsFile
 import org.yuzu.yuzu_emu.model.AddonViewModel
 import org.yuzu.yuzu_emu.model.DriverViewModel
@@ -74,6 +81,7 @@ class GamePropertiesFragment : Fragment() {
     private val gamesViewModel: GamesViewModel by activityViewModels()
     private val addonViewModel: AddonViewModel by activityViewModels()
     private val driverViewModel: DriverViewModel by activityViewModels()
+    private val settingsViewModel: SettingsViewModel by activityViewModels()
 
     private val args by navArgs<GamePropertiesFragmentArgs>()
 
@@ -88,6 +96,17 @@ class GamePropertiesFragment : Fragment() {
 
     // Playtime row of the file information block (tap to edit).
     private var playtimeRow: TextView? = null
+
+    // Settings sections opened in place (settings tab). The stack holds nested submenus; the
+    // per-game configuration stays loaded while a section is shown and is saved when leaving.
+    private val inlineStack = ArrayDeque<Settings.MenuTag>()
+    private var inlineAdapter: SettingsAdapter? = null
+    private var inlinePresenter: SettingsFragmentPresenter? = null
+    private var inlineConfigLoaded = false
+
+    private val inlineBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = closeInlineLevel()
+    }
 
     companion object {
         private const val KEY_TAB = "ConsoleGameTab"
@@ -143,6 +162,8 @@ class GamePropertiesFragment : Fragment() {
         bindGameHeader()
 
         binding.buttonStart.setOnClickListener {
+            // Save the open settings section before the game reads its configuration.
+            closeInlineSettings()
             LaunchGameDialogFragment.newInstance(args.game)
                 .show(childFragmentManager, LaunchGameDialogFragment.TAG)
         }
@@ -167,6 +188,7 @@ class GamePropertiesFragment : Fragment() {
         setupTabs()
         reloadList()
         setupGamepad()
+        setupInlineSettings()
 
         // Add-ons count for the "Add-ons" card (reuses AddonViewModel's patch list).
         if (GameHelper.cachedGameList.isNotEmpty()) {
@@ -200,6 +222,8 @@ class GamePropertiesFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         playtimeRow = null
+        inlinePresenter = null
+        inlineAdapter = null
     }
 
     override fun onDestroy() {
@@ -399,6 +423,7 @@ class GamePropertiesFragment : Fragment() {
 
     private fun selectTab(tab: Tab) {
         if (tab == currentTab) return
+        closeInlineSettings()
         currentTab = tab
         updateTabSelection()
         reloadList()
@@ -521,10 +546,181 @@ class GamePropertiesFragment : Fragment() {
         }
     }
 
-    /** Opens this game's settings directly at [section] (per-game configuration). */
+    // ---------------------------------------------------------------------------------------------
+    // Settings sections shown in place of the option cards
+
+    @SuppressLint("NotifyDataSetChanged")
+    private fun setupInlineSettings() {
+        requireActivity().onBackPressedDispatcher.addCallback(
+            viewLifecycleOwner,
+            inlineBackCallback
+        )
+        binding.buttonInlineBack.setOnClickListener { closeInlineLevel() }
+
+        settingsViewModel.shouldReloadSettingsList.collect(
+            viewLifecycleOwner,
+            resetState = { settingsViewModel.setShouldReloadSettingsList(false) }
+        ) { if (it) inlinePresenter?.loadSettingsList() }
+        settingsViewModel.adapterItemChanged.collect(
+            viewLifecycleOwner,
+            resetState = { settingsViewModel.setAdapterItemChanged(-1) }
+        ) { if (it != -1) inlineAdapter?.notifyItemChanged(it) }
+        settingsViewModel.datasetChanged.collect(
+            viewLifecycleOwner,
+            resetState = { settingsViewModel.setDatasetChanged(false) }
+        ) { if (it) inlineAdapter?.notifyDataSetChanged() }
+        settingsViewModel.reloadListAndNotifyDataset.collect(
+            viewLifecycleOwner,
+            resetState = { settingsViewModel.setReloadListAndNotifyDataset(false) }
+        ) { if (it) inlinePresenter?.loadSettingsList(true) }
+        settingsViewModel.shouldShowResetSettingsDialog.collect(
+            viewLifecycleOwner,
+            resetState = { settingsViewModel.setShouldShowResetSettingsDialog(false) }
+        ) { if (it && inlineStack.isNotEmpty()) confirmResetGameConfig() }
+    }
+
+    /** Opens this game's settings [section] in place of the option cards. */
     private fun openSettingsSection(section: Settings.MenuTag) {
-        val action = HomeNavigationDirections.actionGlobalSettingsActivity(args.game, section)
-        binding.root.findNavController().navigate(action)
+        ensureInlineConfig()
+        inlineStack.addLast(section)
+        showInlineSection(section)
+    }
+
+    private fun onInlineSubmenu(item: SubmenuSetting) {
+        if (item.menuKey == Settings.MenuTag.SECTION_FREEDRENO) {
+            // Freedreno has its own screen with a dedicated layout.
+            val action = HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
+                SettingsSubscreen.FREEDRENO_SETTINGS,
+                args.game
+            )
+            binding.root.findNavController().navigate(action)
+        } else {
+            openSettingsSection(item.menuKey)
+        }
+    }
+
+    private fun showInlineSection(section: Settings.MenuTag) {
+        val adapter = inlineAdapter ?: SettingsAdapter(this, requireContext()).also { created ->
+            created.onSubmenuClickOverride = { item ->
+                onInlineSubmenu(item)
+                true
+            }
+            inlineAdapter = created
+            binding.listInlineSettings.layoutManager = LinearLayoutManager(requireContext())
+            binding.listInlineSettings.adapter = created
+        }
+        inlinePresenter = SettingsFragmentPresenter(
+            settingsViewModel,
+            adapter,
+            section,
+            activity
+        ).also { it.onViewCreated() }
+
+        binding.inlineSettingsTitle.text = if (section == Settings.MenuTag.SECTION_ROOT) {
+            getString(R.string.game_console_custom_config)
+        } else if (section.titleId != 0) {
+            getString(section.titleId)
+        } else {
+            ""
+        }
+        binding.listProperties.setVisible(false)
+        binding.consoleInlineSettings.setVisible(true)
+        binding.listInlineSettings.scrollToPosition(0)
+        inlineBackCallback.isEnabled = true
+    }
+
+    /** Back inside an opened section: previous submenu, or the option cards. */
+    private fun closeInlineLevel() {
+        if (inlineStack.isEmpty()) return
+        inlineStack.removeLast()
+        val previous = inlineStack.lastOrNull()
+        if (previous == null) {
+            closeInlineSettings()
+        } else {
+            showInlineSection(previous)
+        }
+    }
+
+    private fun closeInlineSettings() {
+        if (inlineStack.isEmpty() && !inlineConfigLoaded) return
+        inlineStack.clear()
+        inlinePresenter = null
+        inlineAdapter?.submitList(emptyList())
+        _binding?.let {
+            it.consoleInlineSettings.setVisible(false)
+            it.listProperties.setVisible(true)
+        }
+        inlineBackCallback.isEnabled = false
+        commitInlineConfig()
+        reloadList()
+    }
+
+    /** Loads this game's configuration (same as SettingsActivity does for a game). */
+    private fun ensureInlineConfig() {
+        if (inlineConfigLoaded) return
+        if (!NativeConfig.isPerGameConfigLoaded()) {
+            SettingsFile.loadCustomConfig(args.game)
+        }
+        settingsViewModel.game = args.game
+        inlineConfigLoaded = true
+    }
+
+    /** Saves and unloads this game's configuration (same as SettingsActivity on exit). */
+    private fun commitInlineConfig() {
+        if (!inlineConfigLoaded) return
+        inlineConfigLoaded = false
+        if (NativeConfig.isPerGameConfigLoaded()) {
+            NativeConfig.savePerGameConfig()
+            NativeConfig.unloadPerGameConfig()
+            NativeConfig.reloadGlobalConfig()
+        }
+        if (settingsViewModel.game == args.game) settingsViewModel.game = null
+    }
+
+    /** "Reset to default" from the custom configuration section: deletes this game's file. */
+    private fun confirmResetGameConfig() {
+        MessageDialogFragment.newInstance(
+            requireActivity(),
+            titleId = R.string.reset_to_default,
+            descriptionId = R.string.reset_to_default_description,
+            positiveAction = {
+                inlineStack.clear()
+                inlinePresenter = null
+                inlineAdapter?.submitList(emptyList())
+                inlineBackCallback.isEnabled = false
+                if (NativeConfig.isPerGameConfigLoaded()) {
+                    NativeConfig.unloadPerGameConfig()
+                    NativeConfig.reloadGlobalConfig()
+                }
+                inlineConfigLoaded = false
+                SettingsFile.getCustomSettingsFile(args.game).delete()
+                Toast.makeText(
+                    YuzuApplication.appContext,
+                    R.string.settings_reset,
+                    Toast.LENGTH_LONG
+                ).show()
+                _binding?.let {
+                    it.consoleInlineSettings.setVisible(false)
+                    it.listProperties.setVisible(true)
+                }
+                reloadList()
+            }
+        ).show(parentFragmentManager, MessageDialogFragment.TAG)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Coming back (e.g. from the driver manager): reload the configuration of the open section.
+        if (inlineStack.isNotEmpty()) {
+            ensureInlineConfig()
+            inlinePresenter?.loadSettingsList(true)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Leaving the screen (other activity, game launch, back): save the open section.
+        commitInlineConfig()
     }
 
     private fun sectionProperty(
@@ -543,9 +739,9 @@ class GamePropertiesFragment : Fragment() {
 
     /**
      * Game settings: every per-game settings section is listed here directly (graphics, audio,
-     * system, post-processing, frame generation, driver, Freedreno, debug, applets), so no
-     * intermediate settings menu is needed. The custom configuration card (import / export /
-     * share) closes the list.
+     * system, post-processing, frame generation, driver, Freedreno, debug, applets). Opening one
+     * shows its settings in place of these cards. The custom configuration card (all sections,
+     * import / export / share) closes the list.
      */
     private fun settingsTabProperties(): List<GameProperty> {
         val configFile = File(

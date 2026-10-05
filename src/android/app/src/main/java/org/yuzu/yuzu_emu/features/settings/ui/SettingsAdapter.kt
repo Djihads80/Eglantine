@@ -47,6 +47,12 @@ class SettingsAdapter(
     private val settingsViewModel: SettingsViewModel
         get() = ViewModelProvider(fragment.requireActivity())[SettingsViewModel::class.java]
 
+    /**
+     * Optional handler for submenu clicks, for hosts outside SettingsActivity (e.g. the console
+     * game screen, which shows the sections in place). Returns true when the click was handled.
+     */
+    var onSubmenuClickOverride: ((SubmenuSetting) -> Boolean)? = null
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SettingViewHolder {
         val inflater = LayoutInflater.from(parent.context)
         return when (viewType) {
@@ -246,6 +252,7 @@ class SettingsAdapter(
     }
 
     fun onSubmenuClick(item: SubmenuSetting) {
+        if (onSubmenuClickOverride?.invoke(item) == true) return
         // Check if this is the Freedreno Settings submenu
         if (item.menuKey == Settings.MenuTag.SECTION_FREEDRENO) {
             fragment.view?.findNavController()?.navigate(
