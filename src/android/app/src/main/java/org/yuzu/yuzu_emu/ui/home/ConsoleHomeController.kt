@@ -302,6 +302,7 @@ class ConsoleHomeController private constructor(
         colorJob?.cancel()
         val cached = ConsoleGameColors.cached(game)
         if (cached != null) {
+            ConsolePalette.rememberSelection(cached.base, cached.accents)
             liquidBackground.setPalette(cached.base, cached.accents)
             return
         }
@@ -309,6 +310,7 @@ class ConsoleHomeController private constructor(
             val palette = ConsoleGameColors.load(fragment.viewLifecycleOwner, game)
                 ?: return@launch
             if (!released && active && selectedGame == game) {
+                ConsolePalette.rememberSelection(palette.base, palette.accents)
                 liquidBackground.setPalette(palette.base, palette.accents)
             }
         }

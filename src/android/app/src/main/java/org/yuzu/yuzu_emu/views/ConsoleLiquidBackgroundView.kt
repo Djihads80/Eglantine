@@ -29,6 +29,20 @@ object ConsolePalette {
     var borderColors: IntArray = intArrayOf(Color.WHITE, Color.WHITE, Color.WHITE)
         private set
 
+    /**
+     * Palette of the last game selected on Home (null until one is). Other console screens
+     * (settings) start their background with it.
+     */
+    var selectedBase: IntArray? = null
+        private set
+    var selectedAccents: IntArray? = null
+        private set
+
+    fun rememberSelection(base: IntArray, accents: IntArray) {
+        selectedBase = base.clone()
+        selectedAccents = accents.clone()
+    }
+
     /** Translucent glass in the background colors (dialog cards). */
     var glassColor: Int = Color.argb(GLASS_ALPHA, 0x1B, 0x2C, 0x66)
         private set
@@ -112,9 +126,11 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
     )
 
     init {
+        // Start with the last game selected on Home, so every console screen shares its colors.
         setPalette(
-            intArrayOf(DEFAULT_TOP, DEFAULT_CENTER, DEFAULT_BOTTOM),
-            intArrayOf(DEFAULT_ACCENT_1, DEFAULT_ACCENT_2, DEFAULT_ACCENT_3),
+            ConsolePalette.selectedBase ?: intArrayOf(DEFAULT_TOP, DEFAULT_CENTER, DEFAULT_BOTTOM),
+            ConsolePalette.selectedAccents
+                ?: intArrayOf(DEFAULT_ACCENT_1, DEFAULT_ACCENT_2, DEFAULT_ACCENT_3),
             animate = false
         )
     }
