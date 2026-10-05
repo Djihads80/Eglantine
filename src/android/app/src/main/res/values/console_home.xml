@@ -20,6 +20,7 @@
     <color name="console_home_focus_fill">#26FFFFFF</color>
     <color name="console_home_surface">#1FFFFFFF</color>
     <color name="console_home_glass">#33FFFFFF</color>
+    <color name="console_home_overlay_scrim">#E60A1238</color>
     <color name="console_home_surface_stroke">#26FFFFFF</color>
     <color name="console_home_chip">#26FFFFFF</color>
     <color name="console_home_chip_on_light">#1A0B1A3E</color>
@@ -49,6 +50,7 @@
     <dimen name="console_home_glyph_size">22dp</dimen>
     <dimen name="console_home_details_shift">6dp</dimen>
     <dimen name="console_game_cover_size">170dp</dimen>
+    <dimen name="console_subscreen_height">560dp</dimen>
     <dimen name="console_game_title_size">30sp</dimen>
 
     <!-- Size of the centered card relative to the carousel height. -->
@@ -95,6 +97,14 @@
     <style name="ShapeAppearance.Console.Card" parent="">
         <item name="cornerFamily">rounded</item>
         <item name="cornerSize">@dimen/console_home_card_radius</item>
+    </style>
+
+    <!-- Light text on the translucent console panels (settings shown in place). -->
+    <style name="ThemeOverlay.Console.Panel" parent="">
+        <item name="colorOnSurface">@color/console_home_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
+        <item name="android:textColorPrimary">@color/console_home_text_primary</item>
+        <item name="android:textColorSecondary">@color/console_home_text_secondary</item>
     </style>
 
     <style name="ShapeAppearance.Console.Circle" parent="">

@@ -79,11 +79,11 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
 
     // Blob motion: relative center (x, y), amplitudes and periods (seconds); accents cycle.
     private val blobs = arrayOf(
-        Blob(0.20f, 0.30f, 0.30f, 0.22f, 9f, 12f, 0.0f),
-        Blob(0.80f, 0.25f, 0.28f, 0.26f, 11f, 8f, 1.7f),
-        Blob(0.55f, 0.80f, 0.34f, 0.20f, 13f, 10f, 3.1f),
-        Blob(0.15f, 0.85f, 0.26f, 0.24f, 8f, 14f, 4.6f),
-        Blob(0.50f, 0.45f, 0.36f, 0.30f, 12f, 9f, 2.3f)
+        Blob(0.20f, 0.30f, 0.30f, 0.22f, 4.5f, 6f, 0.0f),
+        Blob(0.80f, 0.25f, 0.28f, 0.26f, 5.5f, 4f, 1.7f),
+        Blob(0.55f, 0.80f, 0.34f, 0.20f, 6.5f, 5f, 3.1f),
+        Blob(0.15f, 0.85f, 0.26f, 0.24f, 4f, 7f, 4.6f),
+        Blob(0.50f, 0.45f, 0.36f, 0.30f, 6f, 4.5f, 2.3f)
     )
 
     private class Blob(
@@ -247,7 +247,7 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
         const val TRANSITION_MS = 600L
         const val FRAME_DELAY_MS = 33L
         const val BLOB_ALPHA = 140
-        const val SHEEN_PERIOD_S = 9f
+        const val SHEEN_PERIOD_S = 6f
 
         val DEFAULT_TOP = Color.rgb(0x0A, 0x12, 0x38)
         val DEFAULT_CENTER = Color.rgb(0x1B, 0x2C, 0x66)

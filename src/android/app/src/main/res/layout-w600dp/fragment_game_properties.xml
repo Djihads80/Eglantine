@@ -15,6 +15,17 @@
     android:layout_height="match_parent"
     android:background="@drawable/console_home_base_background">
 
+    <!-- Same animated background as Home, tinted with this game's colors -->
+    <org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
+        android:id="@+id/console_background"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:importantForAccessibility="no"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <!-- Top bar: back + breadcrumb | shortcut, clock, Wi-Fi/battery -->
     <LinearLayout
         android:id="@+id/header"
@@ -225,6 +236,7 @@
             android:layout_marginTop="4dp"
             android:layout_weight="1"
             android:orientation="vertical"
+            android:theme="@style/ThemeOverlay.Console.Panel"
             android:visibility="gone">
 
             <LinearLayout
@@ -258,14 +270,16 @@
             </LinearLayout>
 
             <com.google.android.material.card.MaterialCardView
+                android:id="@+id/inline_settings_card"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_marginTop="4dp"
                 android:layout_weight="1"
-                app:cardBackgroundColor="?attr/colorSurface"
+                app:cardBackgroundColor="@color/console_home_surface"
                 app:cardCornerRadius="18dp"
                 app:cardElevation="0dp"
-                app:strokeWidth="0dp">
+                app:strokeColor="@color/console_home_surface_stroke"
+                app:strokeWidth="1dp">
 
                 <androidx.recyclerview.widget.RecyclerView
                     android:id="@+id/list_inline_settings"
@@ -276,6 +290,15 @@
                     android:scrollbars="vertical" />
 
             </com.google.android.material.card.MaterialCardView>
+
+            <!-- Subscreens (info, add-ons, Freedreno) hosted in place; ConsoleSubscreenHost. -->
+            <androidx.fragment.app.FragmentContainerView
+                android:id="@+id/console_subscreen_container"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="4dp"
+                android:layout_weight="1"
+                android:visibility="gone" />
 
         </LinearLayout>
 

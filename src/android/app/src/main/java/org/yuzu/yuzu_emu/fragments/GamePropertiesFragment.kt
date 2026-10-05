@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.animation.PathInterpolator
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -20,6 +21,12 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
+import androidx.core.view.doOnPreDraw
+import androidx.transition.ChangeBounds
+import androidx.transition.ChangeClipBounds
+import androidx.transition.ChangeImageTransform
+import androidx.transition.ChangeTransform
+import androidx.transition.TransitionSet
 import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.fragment.app.Fragment
@@ -38,6 +45,7 @@ import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.YuzuApplication
+import org.yuzu.yuzu_emu.adapters.GameAdapter
 import org.yuzu.yuzu_emu.adapters.GamePropertiesAdapter
 import org.yuzu.yuzu_emu.databinding.FragmentGamePropertiesBinding
 import org.yuzu.yuzu_emu.features.DocumentProvider
@@ -59,6 +67,8 @@ import org.yuzu.yuzu_emu.model.InstallableProperty
 import org.yuzu.yuzu_emu.model.SubMenuPropertySecondaryAction
 import org.yuzu.yuzu_emu.model.SubmenuProperty
 import org.yuzu.yuzu_emu.model.TaskState
+import org.yuzu.yuzu_emu.ui.home.ConsoleGameColors
+import org.yuzu.yuzu_emu.ui.home.ConsoleSubscreenHost
 import org.yuzu.yuzu_emu.utils.DirectoryInitialization
 import org.yuzu.yuzu_emu.utils.FileUtil
 import org.yuzu.yuzu_emu.utils.GameHelper
@@ -104,14 +114,18 @@ class GamePropertiesFragment : Fragment() {
     private var inlinePresenter: SettingsFragmentPresenter? = null
     private var inlineConfigLoaded = false
 
+    // Subscreens (info, add-ons, Freedreno) shown in the same panel instead of a new activity.
+    private var subscreenHost: ConsoleSubscreenHost? = null
+
     private val inlineBackCallback = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() = closeInlineLevel()
+        override fun handleOnBackPressed() = onPanelBack()
     }
 
     companion object {
         private const val KEY_TAB = "ConsoleGameTab"
         private const val KEY_POST_SHADER_ENABLED = "post_shader_enabled"
         private const val KEY_POST_SHADER_PRESET = "post_shader_preset"
+        private const val COVER_TRANSITION_MS = 450L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,6 +133,16 @@ class GamePropertiesFragment : Fragment() {
         enterTransition = MaterialSharedAxis(MaterialSharedAxis.Y, true)
         returnTransition = MaterialSharedAxis(MaterialSharedAxis.Y, false)
         reenterTransition = MaterialSharedAxis(MaterialSharedAxis.X, false)
+        // Cover moves from the Home tile to its place on this screen.
+        sharedElementEnterTransition = TransitionSet().apply {
+            addTransition(ChangeBounds())
+            addTransition(ChangeTransform())
+            addTransition(ChangeClipBounds())
+            addTransition(ChangeImageTransform())
+            duration = COVER_TRANSITION_MS
+            interpolator = PathInterpolator(0.4f, 0f, 0.2f, 1f)
+        }
+        sharedElementReturnTransition = sharedElementEnterTransition
     }
 
     override fun onCreateView(
@@ -156,14 +180,18 @@ class GamePropertiesFragment : Fragment() {
             }
         }
 
+        binding.imageGameScreen.transitionName = GameAdapter.coverTransitionName(args.game)
+        postponeEnterTransition()
+        view.doOnPreDraw { startPostponedEnterTransition() }
         GameIconUtils.loadGameIcon(args.game, binding.imageGameScreen)
+        bindBackground()
         binding.title.text = args.game.title
         binding.title.marquee()
         bindGameHeader()
 
         binding.buttonStart.setOnClickListener {
             // Save the open settings section before the game reads its configuration.
-            closeInlineSettings()
+            closePanel()
             LaunchGameDialogFragment.newInstance(args.game)
                 .show(childFragmentManager, LaunchGameDialogFragment.TAG)
         }
@@ -224,6 +252,7 @@ class GamePropertiesFragment : Fragment() {
         playtimeRow = null
         inlinePresenter = null
         inlineAdapter = null
+        subscreenHost = null
     }
 
     override fun onDestroy() {
@@ -397,6 +426,21 @@ class GamePropertiesFragment : Fragment() {
         }
     }
 
+    /** Same animated background as Home, with this game's colors (shared palette cache). */
+    private fun bindBackground() {
+        val cached = ConsoleGameColors.cached(args.game)
+        if (cached != null) {
+            binding.consoleBackground.setPalette(cached.base, cached.accents, animate = false)
+            return
+        }
+        val fallback = ConsoleGameColors.defaultPalette(resources)
+        binding.consoleBackground.setPalette(fallback.base, fallback.accents, animate = false)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val palette = ConsoleGameColors.load(viewLifecycleOwner, args.game) ?: return@launch
+            _binding?.consoleBackground?.setPalette(palette.base, palette.accents)
+        }
+    }
+
     private fun addInfoRow(text: String): TextView {
         val row = TextView(requireContext(), null, 0, R.style.ConsoleInfoRow)
         row.layoutParams = ViewGroup.LayoutParams(
@@ -423,7 +467,7 @@ class GamePropertiesFragment : Fragment() {
 
     private fun selectTab(tab: Tab) {
         if (tab == currentTab) return
-        closeInlineSettings()
+        closePanel()
         currentTab = tab
         updateTabSelection()
         reloadList()
@@ -555,7 +599,10 @@ class GamePropertiesFragment : Fragment() {
             viewLifecycleOwner,
             inlineBackCallback
         )
-        binding.buttonInlineBack.setOnClickListener { closeInlineLevel() }
+        binding.buttonInlineBack.setOnClickListener { onPanelBack() }
+        subscreenHost = ConsoleSubscreenHost(this, R.id.console_subscreen_container) {
+            onSubscreenClosed()
+        }
 
         settingsViewModel.shouldReloadSettingsList.collect(
             viewLifecycleOwner,
@@ -588,15 +635,59 @@ class GamePropertiesFragment : Fragment() {
 
     private fun onInlineSubmenu(item: SubmenuSetting) {
         if (item.menuKey == Settings.MenuTag.SECTION_FREEDRENO) {
-            // Freedreno has its own screen with a dedicated layout.
-            val action = HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                SettingsSubscreen.FREEDRENO_SETTINGS,
-                args.game
-            )
-            binding.root.findNavController().navigate(action)
+            // Freedreno has its own screen with a dedicated layout, hosted in the same panel.
+            openSubscreen(SettingsSubscreen.FREEDRENO_SETTINGS)
         } else {
             openSettingsSection(item.menuKey)
         }
+    }
+
+    /** Opens a subscreen (info, add-ons, Freedreno) in the panel, in place of the cards. */
+    private fun openSubscreen(destination: SettingsSubscreen) {
+        val host = subscreenHost ?: return
+        host.open(destination, args.game)
+        binding.inlineSettingsTitle.text = getString(ConsoleSubscreenHost.titleOf(destination))
+        binding.inlineSettingsCard.setVisible(false)
+        binding.consoleSubscreenContainer.setVisible(true)
+        binding.listProperties.setVisible(false)
+        binding.consoleInlineSettings.setVisible(true)
+        inlineBackCallback.isEnabled = true
+    }
+
+    /** The subscreen was closed (back): return to the open section, or to the cards. */
+    private fun onSubscreenClosed() {
+        val binding = _binding ?: return
+        binding.consoleSubscreenContainer.setVisible(false)
+        val section = inlineStack.lastOrNull()
+        if (section != null) {
+            showInlineSection(section)
+        } else {
+            binding.consoleInlineSettings.setVisible(false)
+            binding.listProperties.setVisible(true)
+            inlineBackCallback.isEnabled = false
+            reloadList()
+        }
+    }
+
+    private fun onPanelBack() {
+        val host = subscreenHost
+        if (host != null && host.isOpen) {
+            host.back()
+        } else {
+            closeInlineLevel()
+        }
+    }
+
+    /** Closes whatever the panel shows (subscreen and settings section), saving the section. */
+    private fun closePanel() {
+        subscreenHost?.close(notify = false)
+        _binding?.consoleSubscreenContainer?.setVisible(false)
+        closeInlineSettings()
+        _binding?.let {
+            it.consoleInlineSettings.setVisible(false)
+            it.listProperties.setVisible(true)
+        }
+        inlineBackCallback.isEnabled = false
     }
 
     private fun showInlineSection(section: Settings.MenuTag) {
@@ -623,6 +714,8 @@ class GamePropertiesFragment : Fragment() {
         } else {
             ""
         }
+        binding.inlineSettingsCard.setVisible(true)
+        binding.consoleSubscreenContainer.setVisible(false)
         binding.listProperties.setVisible(false)
         binding.consoleInlineSettings.setVisible(true)
         binding.listInlineSettings.scrollToPosition(0)
@@ -829,14 +922,7 @@ class GamePropertiesFragment : Fragment() {
                         R.string.freedreno_per_game_title,
                         R.string.freedreno_per_game_description,
                         R.drawable.ic_graphics,
-                        action = {
-                            val action =
-                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                                    SettingsSubscreen.FREEDRENO_SETTINGS,
-                                    args.game
-                                )
-                            binding.root.findNavController().navigate(action)
-                        }
+                        action = { openSubscreen(SettingsSubscreen.FREEDRENO_SETTINGS) }
                     )
                 )
             }
@@ -903,13 +989,7 @@ class GamePropertiesFragment : Fragment() {
                     R.string.info_description,
                     R.drawable.ic_info_outline,
                     details = { args.game.version.trim() },
-                    action = {
-                        val action = HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                            SettingsSubscreen.GAME_INFO,
-                            args.game
-                        )
-                        binding.root.findNavController().navigate(action)
-                    }
+                    action = { openSubscreen(SettingsSubscreen.GAME_INFO) }
                 )
             )
             if (!args.game.isHomebrew) {
@@ -919,14 +999,7 @@ class GamePropertiesFragment : Fragment() {
                         R.string.add_ons_description,
                         R.drawable.ic_edit,
                         detailsFlow = addonsDetails,
-                        action = {
-                            val action =
-                                HomeNavigationDirections.actionGlobalSettingsSubscreenActivity(
-                                    SettingsSubscreen.ADDONS,
-                                    args.game
-                                )
-                            binding.root.findNavController().navigate(action)
-                        }
+                        action = { openSubscreen(SettingsSubscreen.ADDONS) }
                     )
                 )
             }
