@@ -9,7 +9,7 @@
 #[[
     search order:
     - gold (GCC only) - the best, generally, but not packaged anymore
-    - mold (GCC only) - generally does well on GCC
+    - mold is no longer supported, that thing is slower than the pre-Ventura linker lmao
     - lld - preferred on clang
     - bfd - the final fallback
     - If none are found just use the default linker
@@ -32,12 +32,6 @@ if (USE_FASTER_LINKER)
     find_linker(lld)
 
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        find_program(LINKER_MOLD mold)
-        if (LINKER_MOLD AND
-            CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12.1")
-            set(LINKER mold)
-        endif()
-
         find_linker(gold)
 
         if (LINKER STREQUAL "lld")
