@@ -4,6 +4,7 @@
 package org.yuzu.yuzu_emu.ui.home
 
 import android.graphics.BitmapFactory
+import android.animation.ValueAnimator
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.view.Gravity
@@ -36,6 +37,7 @@ import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
 import org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
+import org.yuzu.yuzu_emu.views.ConsolePalette
 import java.io.File
 
 /**
@@ -92,6 +94,7 @@ class ConsoleHomeController private constructor(
     private var menu: PopupWindow? = null
     private var colorJob: Job? = null
     private var avatarJob: Job? = null
+    private var titleGlow: ValueAnimator? = null
 
     // Profile manager shown over Home (instead of the settings activity).
     private val subscreenHost = ConsoleSubscreenHost(
@@ -112,6 +115,9 @@ class ConsoleHomeController private constructor(
 
     companion object {
         private const val OVERLAY_FADE_MS = 180L
+        private const val TITLE_GLOW_PERIOD_MS = 2400L
+        private const val TITLE_GLOW_MIN_DP = 8f
+        private const val TITLE_GLOW_MAX_DP = 18f
 
         /**
          * Attaches the console Home if the current layout provides it (res/layout/fragment_games.xml).
@@ -136,6 +142,7 @@ class ConsoleHomeController private constructor(
         carousel.keyInterceptor = ::handleCarouselKey
 
         liquidBackground.setPalette(defaultPalette.base, defaultPalette.accents, animate = false)
+        startTitleGlow()
         loadAvatar()
 
         root.findViewById<View?>(R.id.console_profile_button)?.setOnClickListener {
@@ -205,6 +212,8 @@ class ConsoleHomeController private constructor(
         avatarJob?.cancel()
         avatarJob = null
         overlayBackCallback.remove()
+        titleGlow?.cancel()
+        titleGlow = null
         menu?.dismiss()
         menu = null
         details.removeCallbacks(applySelectionRunnable)
@@ -256,12 +265,44 @@ class ConsoleHomeController private constructor(
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Title glow
+
+    /**
+     * Soft light around the selected game's title in the bright palette color of the animated
+     * background (same colors as the tile outline), pulsing slowly. Follows palette changes.
+     */
+    private fun startTitleGlow() {
+        val density = res.displayMetrics.density
+        titleGlow = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = TITLE_GLOW_PERIOD_MS
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener { animator ->
+                if (released || !gameTitle.isShown) return@addUpdateListener
+                val pulse = animator.animatedValue as Float
+                val radius = (TITLE_GLOW_MIN_DP +
+                    (TITLE_GLOW_MAX_DP - TITLE_GLOW_MIN_DP) * pulse) * density
+                val glow = ConsolePalette.borderColors.first()
+                val alpha = (150 + 90 * pulse).toInt()
+                gameTitle.setShadowLayer(
+                    radius,
+                    0f,
+                    0f,
+                    Color.argb(alpha, Color.red(glow), Color.green(glow), Color.blue(glow))
+                )
+            }
+            start()
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Dynamic background
 
     private fun bindBackground(game: Game) {
         colorJob?.cancel()
         val cached = ConsoleGameColors.cached(game)
         if (cached != null) {
+            ConsolePalette.rememberSelection(cached.base, cached.accents)
             liquidBackground.setPalette(cached.base, cached.accents)
             return
         }
@@ -269,6 +310,7 @@ class ConsoleHomeController private constructor(
             val palette = ConsoleGameColors.load(fragment.viewLifecycleOwner, game)
                 ?: return@launch
             if (!released && active && selectedGame == game) {
+                ConsolePalette.rememberSelection(palette.base, palette.accents)
                 liquidBackground.setPalette(palette.base, palette.accents)
             }
         }

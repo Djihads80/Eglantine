@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.fragments
 
+import org.yuzu.yuzu_emu.ui.home.ConsoleDialogStyler
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ShortcutInfo
@@ -366,7 +367,7 @@ class GamePropertiesFragment : Fragment() {
             }
         }
 
-        dialog.show()
+        ConsoleDialogStyler.style(dialog.apply { show() })
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

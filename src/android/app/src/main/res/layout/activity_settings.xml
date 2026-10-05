@@ -8,6 +8,17 @@
     android:layout_height="match_parent"
     android:background="?attr/colorSurface">
 
+    <!-- Animated console background with the colors of the last game selected on Home -->
+    <org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
+        android:id="@+id/console_background"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:importantForAccessibility="no"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <androidx.fragment.app.FragmentContainerView
         android:id="@+id/fragment_container"
         android:name="androidx.navigation.fragment.NavHostFragment"

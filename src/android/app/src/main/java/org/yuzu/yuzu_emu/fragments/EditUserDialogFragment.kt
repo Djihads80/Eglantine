@@ -3,6 +3,7 @@
 
 package org.yuzu.yuzu_emu.fragments
 
+import org.yuzu.yuzu_emu.ui.home.ConsoleDialogStyler
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
@@ -187,7 +188,7 @@ class EditUserDialogFragment : Fragment() {
             .setNegativeButton(android.R.string.cancel, null)
             .create()
 
-        dialog.show()
+        ConsoleDialogStyler.style(dialog.apply { show() })
 
         viewLifecycleOwner.lifecycleScope.launch {
             val avatars = withContext(Dispatchers.IO) {
@@ -293,7 +294,7 @@ class EditUserDialogFragment : Fragment() {
                 .setTitle(R.string.error)
                 .setMessage(getString(R.string.profile_image_load_error, e.message))
                 .setPositiveButton(android.R.string.ok, null)
-                .show()
+                .show().also { ConsoleDialogStyler.style(it) }
         }
     }
 
@@ -415,7 +416,7 @@ class EditUserDialogFragment : Fragment() {
             .setTitle(R.string.error)
             .setMessage(message)
             .setPositiveButton(android.R.string.ok, null)
-            .show()
+            .show().also { ConsoleDialogStyler.style(it) }
     }
 
     private fun setInsets() =

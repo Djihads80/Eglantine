@@ -12,7 +12,7 @@
     android:clickable="true"
     android:focusable="true"
     app:cardCornerRadius="16dp"
-    app:cardBackgroundColor="@android:color/transparent"
+    app:cardBackgroundColor="@color/console_home_surface"
     app:cardElevation="0dp"
     app:strokeColor="?attr/colorOutline"
     app:strokeWidth="1dp">

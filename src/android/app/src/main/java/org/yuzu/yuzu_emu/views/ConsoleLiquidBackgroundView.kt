@@ -29,9 +29,38 @@ object ConsolePalette {
     var borderColors: IntArray = intArrayOf(Color.WHITE, Color.WHITE, Color.WHITE)
         private set
 
+    /**
+     * Palette of the last game selected on Home (null until one is). Other console screens
+     * (settings) start their background with it.
+     */
+    var selectedBase: IntArray? = null
+        private set
+    var selectedAccents: IntArray? = null
+        private set
+
+    fun rememberSelection(base: IntArray, accents: IntArray) {
+        selectedBase = base.clone()
+        selectedAccents = accents.clone()
+    }
+
+    /** Translucent glass in the background colors (dialog cards). */
+    var glassColor: Int = Color.argb(GLASS_ALPHA, 0x1B, 0x2C, 0x66)
+        private set
+
     /** Incremented whenever [borderColors] changes, so readers can cache their shaders. */
     var version: Int = 0
         private set
+
+    internal fun updateGlass(base: IntArray) {
+        // Center of the background gradient, slightly deepened, at glass opacity.
+        val hsv = FloatArray(3)
+        Color.colorToHSV(base[1], hsv)
+        hsv[2] *= 0.85f
+        val color = Color.HSVToColor(hsv)
+        glassColor = Color.argb(GLASS_ALPHA, Color.red(color), Color.green(color), Color.blue(color))
+    }
+
+    private const val GLASS_ALPHA = 205
 
     internal fun updateBorder(accents: IntArray) {
         val hsv = FloatArray(3)
@@ -97,9 +126,11 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
     )
 
     init {
+        // Start with the last game selected on Home, so every console screen shares its colors.
         setPalette(
-            intArrayOf(DEFAULT_TOP, DEFAULT_CENTER, DEFAULT_BOTTOM),
-            intArrayOf(DEFAULT_ACCENT_1, DEFAULT_ACCENT_2, DEFAULT_ACCENT_3),
+            ConsolePalette.selectedBase ?: intArrayOf(DEFAULT_TOP, DEFAULT_CENTER, DEFAULT_BOTTOM),
+            ConsolePalette.selectedAccents
+                ?: intArrayOf(DEFAULT_ACCENT_1, DEFAULT_ACCENT_2, DEFAULT_ACCENT_3),
             animate = false
         )
     }
@@ -123,6 +154,7 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
             transitioning = false
             baseShaderDirty = true
             ConsolePalette.updateBorder(accents)
+            ConsolePalette.updateGlass(base)
         }
         toBase = newBase
         toAccents = newAccents
@@ -176,6 +208,7 @@ class ConsoleLiquidBackgroundView @JvmOverloads constructor(
         }
         baseShaderDirty = true
         ConsolePalette.updateBorder(accents)
+        ConsolePalette.updateGlass(base)
         if (fraction >= 1f) transitioning = false
     }
 
