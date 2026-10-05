@@ -12,21 +12,21 @@
     android:clickable="true"
     android:focusable="true"
     android:gravity="center_vertical"
-    android:minHeight="84dp"
+    android:minHeight="100dp"
     android:orientation="horizontal"
-    android:paddingHorizontal="18dp"
-    android:paddingVertical="14dp">
+    android:paddingHorizontal="20dp"
+    android:paddingVertical="18dp">
 
     <FrameLayout
-        android:layout_width="44dp"
-        android:layout_height="44dp"
+        android:layout_width="50dp"
+        android:layout_height="50dp"
         android:background="@drawable/console_icon_tile_background"
         android:duplicateParentState="true">
 
         <ImageView
             android:id="@+id/icon"
-            android:layout_width="22dp"
-            android:layout_height="22dp"
+            android:layout_width="25dp"
+            android:layout_height="25dp"
             android:layout_gravity="center"
             android:duplicateParentState="true"
             android:importantForAccessibility="no"
@@ -50,7 +50,7 @@
             android:ellipsize="end"
             android:singleLine="true"
             android:textColor="@color/console_on_surface_primary"
-            android:textSize="17sp" />
+            android:textSize="18sp" />
 
         <TextView
             android:id="@+id/description"
@@ -61,7 +61,7 @@
             android:ellipsize="end"
             android:maxLines="2"
             android:textColor="@color/console_on_surface_secondary"
-            android:textSize="13sp" />
+            android:textSize="14sp" />
 
     </LinearLayout>
 

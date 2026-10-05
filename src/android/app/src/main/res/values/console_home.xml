@@ -142,6 +142,36 @@
         <item name="android:textColorHint">@color/console_home_text_dim</item>
         <item name="colorControlNormal">@color/console_home_text_secondary</item>
         <item name="colorControlActivated">@color/console_home_text_primary</item>
+        <item name="materialAlertDialogTheme">@style/ConsoleMaterialDialog</item>
+        <item name="popupMenuStyle">@style/ConsolePopupMenu</item>
+    </style>
+
+    <!-- Dialogs: opaque navy card, white text and white actions. -->
+    <style name="ConsoleMaterialDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorPrimary">@color/console_home_text_primary</item>
+        <item name="colorOnPrimary">@color/console_home_text_on_light</item>
+        <item name="colorSecondary">@color/console_home_text_secondary</item>
+        <item name="colorSurface">@color/console_theme_dialog</item>
+        <item name="colorSurfaceContainerHigh">@color/console_theme_dialog</item>
+        <item name="colorOnSurface">@color/console_home_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
+        <item name="colorOutline">@color/console_home_outline</item>
+        <item name="android:colorBackground">@color/console_theme_dialog</item>
+        <item name="android:textColorPrimary">@color/console_home_text_primary</item>
+        <item name="android:textColorSecondary">@color/console_home_text_secondary</item>
+        <item name="colorControlActivated">@color/console_home_text_primary</item>
+        <item name="buttonBarPositiveButtonStyle">@style/ConsoleDialogButton</item>
+        <item name="buttonBarNegativeButtonStyle">@style/ConsoleDialogButton</item>
+        <item name="buttonBarNeutralButtonStyle">@style/ConsoleDialogButton</item>
+    </style>
+
+    <style name="ConsoleDialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
+        <item name="android:textColor">@color/console_home_text_primary</item>
+        <item name="rippleColor">@color/console_home_focus_fill</item>
+    </style>
+
+    <style name="ConsolePopupMenu" parent="Widget.Material3.PopupMenu">
+        <item name="android:popupBackground">@drawable/console_menu_background</item>
     </style>
 
     <!-- Light text on the translucent console panels (settings shown in place). -->
@@ -220,17 +250,17 @@
     <style name="ConsoleTab">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_marginEnd">20dp</item>
+        <item name="android:layout_marginEnd">16dp</item>
         <item name="android:background">@drawable/console_tab_background</item>
         <item name="android:focusable">true</item>
         <item name="android:clickable">true</item>
-        <item name="android:letterSpacing">0.2</item>
+        <item name="android:letterSpacing">0.12</item>
         <item name="android:paddingHorizontal">4dp</item>
         <item name="android:paddingVertical">8dp</item>
         <item name="android:singleLine">true</item>
         <item name="android:textAllCaps">true</item>
         <item name="android:textColor">@color/console_tab_text</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">14sp</item>
     </style>
 
     <!-- Game screen Play button (next to the tabs in landscape, under the cover in portrait). -->

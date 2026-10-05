@@ -81,8 +81,6 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
 
         ThemeHelper.ThemeChangeListener(this)
         ThemeHelper.setTheme(this)
-        // Console UI: every screen and dialog of this activity uses the console colors.
-        theme.applyStyle(R.style.ThemeOverlay_Console, true)
         super.onCreate(savedInstanceState)
         NativeLibrary.initMultiplayer()
 
@@ -386,6 +384,9 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
     override fun setTheme(resId: Int) {
         super.setTheme(resId)
         themeId = resId
+        // Console UI: every screen and dialog of this activity uses the console colors. Applied
+        // after each setTheme, since ThemeHelper re-applies the app theme (e.g. on resume).
+        theme.applyStyle(R.style.ThemeOverlay_Console, true)
     }
 
     override fun onDestroy() {
