@@ -3,7 +3,6 @@
 
 package org.yuzu.yuzu_emu.ui.home
 
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -18,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.core.widget.ImageViewCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -35,7 +35,6 @@ import org.yuzu.yuzu_emu.features.settings.ui.SettingsSubscreen
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.ui.CarouselRecyclerView
 import org.yuzu.yuzu_emu.ui.main.MainActivity
-import org.yuzu.yuzu_emu.utils.GameIconUtils
 import org.yuzu.yuzu_emu.views.ConsoleLiquidBackgroundView
 import java.io.File
 
@@ -48,9 +47,10 @@ import java.io.File
  *  - follows the centered game and shows its title,
  *  - tints the animated background (and the selected tile outline) with the main colors of the
  *    selected game's icon,
- *  - shows the current user's avatar on the profile button,
+ *  - shows the current user's avatar on the profile button and opens the profile manager in a
+ *    console panel over Home,
  *  - provides the gear menu (settings, search, view, sort, install, multiplayer, applets, about),
- *  - adds gamepad shortcuts (X = game options, Y = search).
+ *  - adds gamepad shortcuts (X = play, Y = search).
  *
  * Nothing here runs continuously: work happens only on selection changes.
  */
@@ -74,6 +74,8 @@ class ConsoleHomeController private constructor(
     private val liquidBackground: ConsoleLiquidBackgroundView =
         root.findViewById(R.id.console_background)
     private val profileImage: ImageView = root.findViewById(R.id.console_profile_image)
+    private val overlay: View = root.findViewById(R.id.console_overlay)
+    private val overlayTitle: TextView = root.findViewById(R.id.console_overlay_title)
     private val menuButton: View = root.findViewById(R.id.settings_button)
     private val headerSpace: View = root.findViewById(R.id.console_header_space)
     private val searchFrame: View = root.findViewById(R.id.frame_search)
@@ -91,27 +93,24 @@ class ConsoleHomeController private constructor(
     private var colorJob: Job? = null
     private var avatarJob: Job? = null
 
-    // Background gradient (top, center, bottom) and accents used when no game is selected.
-    private val defaultBackground = intArrayOf(
-        res.getColor(R.color.console_home_bg_top, null),
-        res.getColor(R.color.console_home_bg_center, null),
-        res.getColor(R.color.console_home_bg_bottom, null)
-    )
-    private val defaultAccents = intArrayOf(
-        Color.rgb(0x3A, 0x5B, 0xD9),
-        Color.rgb(0x6A, 0x4C, 0xC9),
-        Color.rgb(0x2E, 0x8C, 0xC7)
-    )
+    // Profile manager shown over Home (instead of the settings activity).
+    private val subscreenHost = ConsoleSubscreenHost(
+        fragment,
+        R.id.console_overlay_container
+    ) { onOverlayClosed() }
+    private val overlayBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            subscreenHost.back()
+        }
+    }
+
+    // Background used when no game is selected.
+    private val defaultPalette = ConsoleGameColors.defaultPalette(res)
 
     private val applySelectionRunnable = Runnable { applySelection() }
 
     companion object {
-        // Main icon colors (accents) by game path, kept for the process lifetime.
-        private val colorCache = HashMap<String, IntArray>()
-
-        private const val ACCENT_COUNT = 3
-        private const val HUE_BUCKETS = 12
-        private const val SAMPLE_SIZE = 24
+        private const val OVERLAY_FADE_MS = 180L
 
         /**
          * Attaches the console Home if the current layout provides it (res/layout/fragment_games.xml).
@@ -135,12 +134,19 @@ class ConsoleHomeController private constructor(
         carousel.onCenteredPositionChanged = { position, _ -> onCenteredPosition(position) }
         carousel.keyInterceptor = ::handleCarouselKey
 
-        liquidBackground.setPalette(defaultBackground, defaultAccents, animate = false)
+        liquidBackground.setPalette(defaultPalette.base, defaultPalette.accents, animate = false)
         loadAvatar()
 
         root.findViewById<View?>(R.id.console_profile_button)?.setOnClickListener {
-            navigateToSubscreen(SettingsSubscreen.PROFILE_MANAGER)
+            openOverlay(SettingsSubscreen.PROFILE_MANAGER)
         }
+        root.findViewById<View>(R.id.console_overlay_back).setOnClickListener {
+            subscreenHost.back()
+        }
+        fragment.requireActivity().onBackPressedDispatcher.addCallback(
+            fragment.viewLifecycleOwner,
+            overlayBackCallback
+        )
 
         // The search field only takes room in the top bar while it is in use.
         searchText.setOnFocusChangeListener { _, hasFocus ->
@@ -161,7 +167,7 @@ class ConsoleHomeController private constructor(
         if (!isCarousel) {
             clearSelection()
             details.visibility = View.GONE
-            liquidBackground.setPalette(defaultBackground, defaultAccents)
+            liquidBackground.setPalette(defaultPalette.base, defaultPalette.accents)
         } else if (details.visibility == View.GONE) {
             details.visibility = View.INVISIBLE
         }
@@ -197,6 +203,7 @@ class ConsoleHomeController private constructor(
         colorJob = null
         avatarJob?.cancel()
         avatarJob = null
+        overlayBackCallback.remove()
         menu?.dismiss()
         menu = null
         details.removeCallbacks(applySelectionRunnable)
@@ -252,114 +259,42 @@ class ConsoleHomeController private constructor(
 
     private fun bindBackground(game: Game) {
         colorJob?.cancel()
-        val cached = colorCache[game.path]
+        val cached = ConsoleGameColors.cached(game)
         if (cached != null) {
-            applyAccents(cached)
+            liquidBackground.setPalette(cached.base, cached.accents)
             return
         }
         colorJob = fragment.viewLifecycleOwner.lifecycleScope.launch {
-            val accents = try {
-                val icon = GameIconUtils.getGameIcon(fragment.viewLifecycleOwner, game)
-                withContext(Dispatchers.Default) { accentColors(icon) }
-            } catch (e: Exception) {
-                null
-            } ?: return@launch
-            colorCache[game.path] = accents
-            if (!released && active && selectedGame == game) applyAccents(accents)
-        }
-    }
-
-    private fun applyAccents(accents: IntArray) {
-        val liquidAccents = IntArray(accents.size) { liquidAccent(accents[it]) }
-        liquidBackground.setPalette(gradientFor(accents[0]), liquidAccents)
-    }
-
-    /**
-     * Main colors of the icon: pixels are grouped by hue (weighted by saturation and brightness)
-     * and the heaviest groups are averaged, strongest first. Missing slots (few colors, or a mostly
-     * grey icon) are filled with hue shifts of the main color.
-     */
-    private fun accentColors(icon: Bitmap): IntArray {
-        val sample = Bitmap.createScaledBitmap(icon, SAMPLE_SIZE, SAMPLE_SIZE, true)
-        val pixels = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
-        sample.getPixels(pixels, 0, SAMPLE_SIZE, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
-        if (sample !== icon) sample.recycle()
-
-        val weights = FloatArray(HUE_BUCKETS)
-        val sums = Array(HUE_BUCKETS) { FloatArray(3) }
-        val total = FloatArray(3)
-        val hsv = FloatArray(3)
-        var count = 0
-        for (pixel in pixels) {
-            if (Color.alpha(pixel) < 128) continue
-            val r = Color.red(pixel).toFloat()
-            val g = Color.green(pixel).toFloat()
-            val b = Color.blue(pixel).toFloat()
-            total[0] += r
-            total[1] += g
-            total[2] += b
-            count++
-            Color.colorToHSV(pixel, hsv)
-            val weight = hsv[1] * hsv[2]
-            if (weight < 0.08f) continue
-            val bucket = ((hsv[0] / 360f) * HUE_BUCKETS).toInt().coerceIn(0, HUE_BUCKETS - 1)
-            weights[bucket] += weight
-            sums[bucket][0] += r * weight
-            sums[bucket][1] += g * weight
-            sums[bucket][2] += b * weight
-        }
-        if (count == 0) return defaultAccents.clone()
-
-        val minWeight = count * 0.03f
-        val found = weights.indices
-            .filter { weights[it] >= minWeight }
-            .sortedByDescending { weights[it] }
-            .take(ACCENT_COUNT)
-            .map { bucket ->
-                val weight = weights[bucket]
-                Color.rgb(
-                    (sums[bucket][0] / weight).toInt(),
-                    (sums[bucket][1] / weight).toInt(),
-                    (sums[bucket][2] / weight).toInt()
-                )
+            val palette = ConsoleGameColors.load(fragment.viewLifecycleOwner, game)
+                ?: return@launch
+            if (!released && active && selectedGame == game) {
+                liquidBackground.setPalette(palette.base, palette.accents)
             }
-        val main = found.firstOrNull() ?: Color.rgb(
-            (total[0] / count).toInt(),
-            (total[1] / count).toInt(),
-            (total[2] / count).toInt()
-        )
-        return IntArray(ACCENT_COUNT) { i ->
-            found.getOrNull(i) ?: shiftHue(main, if (i % 2 == 1) 28f else -28f)
         }
     }
 
-    private fun shiftHue(color: Int, degrees: Float): Int {
-        val hsv = FloatArray(3)
-        Color.colorToHSV(color, hsv)
-        hsv[0] = (hsv[0] + degrees + 360f) % 360f
-        return Color.HSVToColor(hsv)
+    // ---------------------------------------------------------------------------------------------
+    // Console panel over Home (profile manager)
+
+    private fun openOverlay(destination: SettingsSubscreen) {
+        if (released) return
+        menu?.dismiss()
+        subscreenHost.open(destination, null)
+        overlayTitle.setText(ConsoleSubscreenHost.titleOf(destination))
+        overlay.alpha = 0f
+        overlay.visibility = View.VISIBLE
+        overlay.animate().alpha(1f).setDuration(OVERLAY_FADE_MS).start()
+        overlayBackCallback.isEnabled = true
     }
 
-    /** Accent tuned for the liquid blobs: vivid but not glaring under white text. */
-    private fun liquidAccent(color: Int): Int {
-        val hsv = FloatArray(3)
-        Color.colorToHSV(color, hsv)
-        hsv[1] = hsv[1].coerceIn(0.35f, 0.9f)
-        hsv[2] = hsv[2].coerceIn(0.45f, 0.8f)
-        return Color.HSVToColor(hsv)
-    }
-
-    /** Dark-to-light gradient in the hue of [color], dark enough to keep white text readable. */
-    private fun gradientFor(color: Int): IntArray {
-        val hsv = FloatArray(3)
-        Color.colorToHSV(color, hsv)
-        val hue = hsv[0]
-        val saturation = hsv[1]
-        return intArrayOf(
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.9f).coerceAtMost(0.85f), 0.14f)),
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.8f).coerceAtMost(0.75f), 0.26f)),
-            Color.HSVToColor(floatArrayOf(hue, (saturation * 0.5f).coerceAtMost(0.5f), 0.42f))
-        )
+    private fun onOverlayClosed() {
+        overlayBackCallback.isEnabled = false
+        overlay.animate().cancel()
+        overlay.visibility = View.GONE
+        if (released) return
+        // The user may have switched profile or changed the avatar.
+        loadAvatar()
+        carousel.focusCenteredCard()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -503,8 +438,8 @@ class ConsoleHomeController private constructor(
         return carousel.findViewHolderForAdapterPosition(position)?.itemView
     }
 
-    /** Long click on a game card opens its properties screen. */
-    private fun openOptionsForSelected() {
+    /** Long click on a console tile shakes it and launches the game. */
+    private fun launchSelected() {
         centeredItemView()?.performLongClick()
     }
 
@@ -513,7 +448,7 @@ class ConsoleHomeController private constructor(
         return when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_X -> {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    openOptionsForSelected()
+                    launchSelected()
                 }
                 true
             }

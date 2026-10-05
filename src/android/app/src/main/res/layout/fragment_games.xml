@@ -235,6 +235,64 @@
 
     </org.yuzu.yuzu_emu.ui.MidScreenSwipeRefreshLayout>
 
+    <!-- Full-screen console panel for subscreens opened from Home (profile manager). -->
+    <LinearLayout
+        android:id="@+id/console_overlay"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/console_home_overlay_scrim"
+        android:elevation="24dp"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/console_home_side_margin"
+        android:paddingBottom="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/console_overlay_back"
+                style="?attr/materialIconButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/back"
+                app:icon="@drawable/ic_back"
+                app:iconSize="22dp"
+                app:iconTint="@color/console_home_text_primary" />
+
+            <TextView
+                android:id="@+id/console_overlay_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:textColor="@color/console_home_text_primary"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+
+        <androidx.fragment.app.FragmentContainerView
+            android:id="@+id/console_overlay_container"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="4dp"
+            android:layout_weight="1" />
+
+    </LinearLayout>
+
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/add_directory"
         android:layout_width="wrap_content"
