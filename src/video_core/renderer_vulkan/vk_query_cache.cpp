@@ -814,7 +814,7 @@ public:
             new_query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
             return index;
         }
-        
+
         scheduler.RequestOutsideRenderPassOperationContext();
         CloseCounter();
         auto [bank_slot, data_slot] = ProduceCounterBuffer(slot);
@@ -951,6 +951,15 @@ private:
             return;
         }
         has_flushed_end_pending = false;
+
+        runtime.View3DRegs([this](Maxwell3D& maxwell3d) {
+            buffers_count = 0;
+            for (size_t i = 0; i < Maxwell3D::Regs::NumTransformFeedbackBuffers; i++) {
+                if (maxwell3d.regs.transform_feedback.buffers[i].enable != 0) {
+                    buffers_count = std::max<size_t>(buffers_count, i + 1);
+                }
+            }
+        });
 
         if (buffers_count == 0) {
             LOG_DEBUG(Render_Vulkan, "EndTransformFeedbackEXT called with no counters (buffers_count=0)");
