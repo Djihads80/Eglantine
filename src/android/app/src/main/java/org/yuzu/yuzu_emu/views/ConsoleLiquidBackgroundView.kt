@@ -25,6 +25,9 @@ import kotlin.math.sin
  * GradientBorderCardView.
  */
 object ConsolePalette {
+    // Declared first: glassColor's initializer below reads it.
+    private const val GLASS_ALPHA = 205
+
     /** Bright accents used for the selected tile outline. */
     var borderColors: IntArray = intArrayOf(Color.WHITE, Color.WHITE, Color.WHITE)
         private set
@@ -59,8 +62,6 @@ object ConsolePalette {
         val color = Color.HSVToColor(hsv)
         glassColor = Color.argb(GLASS_ALPHA, Color.red(color), Color.green(color), Color.blue(color))
     }
-
-    private const val GLASS_ALPHA = 205
 
     internal fun updateBorder(accents: IntArray) {
         val hsv = FloatArray(3)
