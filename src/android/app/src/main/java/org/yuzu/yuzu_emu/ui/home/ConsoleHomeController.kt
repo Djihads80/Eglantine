@@ -285,7 +285,24 @@ class ConsoleHomeController private constructor(
         overlay.alpha = 0f
         overlay.visibility = View.VISIBLE
         overlay.animate().alpha(1f).setDuration(OVERLAY_FADE_MS).start()
+        setHomeContentVisible(false)
         overlayBackCallback.isEnabled = true
+    }
+
+    /** Home's own content (top bar, title, carousel) fades away under the console panel. */
+    private fun setHomeContentVisible(visible: Boolean) {
+        for (id in intArrayOf(R.id.header, R.id.console_details, R.id.swipe_refresh)) {
+            val view = root.findViewById<View>(id) ?: continue
+            view.animate().cancel()
+            if (visible) {
+                view.visibility = View.VISIBLE
+                view.animate().alpha(1f).setDuration(OVERLAY_FADE_MS).start()
+            } else {
+                view.animate().alpha(0f).setDuration(OVERLAY_FADE_MS)
+                    .withEndAction { view.visibility = View.INVISIBLE }
+                    .start()
+            }
+        }
     }
 
     private fun onOverlayClosed() {
@@ -293,6 +310,7 @@ class ConsoleHomeController private constructor(
         overlay.animate().cancel()
         overlay.visibility = View.GONE
         if (released) return
+        setHomeContentVisible(true)
         // The user may have switched profile or changed the avatar.
         loadAvatar()
         carousel.focusCenteredCard()

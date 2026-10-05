@@ -235,12 +235,13 @@
 
     </org.yuzu.yuzu_emu.ui.MidScreenSwipeRefreshLayout>
 
-    <!-- Full-screen console panel for subscreens opened from Home (profile manager). -->
+    <!-- Full-screen console panel for subscreens opened from Home (profile manager). Home's
+         content is hidden while it is open, so it sits on the animated background. -->
     <LinearLayout
         android:id="@+id/console_overlay"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:background="@color/console_home_overlay_scrim"
+        android:background="@android:color/transparent"
         android:elevation="24dp"
         android:clickable="true"
         android:focusable="false"

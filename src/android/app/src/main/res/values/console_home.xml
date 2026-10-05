@@ -105,6 +105,8 @@
          translucent white cards and opaque navy dialogs. -->
     <color name="console_theme_surface">#FF16245A</color>
     <color name="console_theme_dialog">#FF1B2C66</color>
+    <!-- Dialog card: dark translucent glass over the dimmed console screen. -->
+    <color name="console_dialog_glass">#E6121C44</color>
     <color name="console_theme_card">#26FFFFFF</color>
     <color name="console_theme_card_high">#33FFFFFF</color>
 
@@ -146,13 +148,15 @@
         <item name="popupMenuStyle">@style/ConsolePopupMenu</item>
     </style>
 
-    <!-- Dialogs: opaque navy card, white text and white actions. -->
+    <!-- Dialogs: dark glass card, white text, pill buttons like the console Play button
+         (white filled for the confirm action, translucent for the others). -->
     <style name="ConsoleMaterialDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
         <item name="colorPrimary">@color/console_home_text_primary</item>
         <item name="colorOnPrimary">@color/console_home_text_on_light</item>
         <item name="colorSecondary">@color/console_home_text_secondary</item>
-        <item name="colorSurface">@color/console_theme_dialog</item>
-        <item name="colorSurfaceContainerHigh">@color/console_theme_dialog</item>
+        <item name="colorSurface">@color/console_dialog_glass</item>
+        <item name="colorSurfaceContainerHigh">@color/console_dialog_glass</item>
+        <item name="android:backgroundDimAmount">0.55</item>
         <item name="colorOnSurface">@color/console_home_text_primary</item>
         <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
         <item name="colorOutline">@color/console_home_outline</item>
@@ -160,14 +164,29 @@
         <item name="android:textColorPrimary">@color/console_home_text_primary</item>
         <item name="android:textColorSecondary">@color/console_home_text_secondary</item>
         <item name="colorControlActivated">@color/console_home_text_primary</item>
-        <item name="buttonBarPositiveButtonStyle">@style/ConsoleDialogButton</item>
+        <item name="buttonBarPositiveButtonStyle">@style/ConsoleDialogButton.Positive</item>
         <item name="buttonBarNegativeButtonStyle">@style/ConsoleDialogButton</item>
         <item name="buttonBarNeutralButtonStyle">@style/ConsoleDialogButton</item>
     </style>
 
-    <style name="ConsoleDialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
+    <style name="ConsoleDialogButton" parent="Widget.Material3.Button.TonalButton">
+        <item name="android:minWidth">104dp</item>
+        <item name="android:minHeight">44dp</item>
+        <!-- Insets keep a gap between the pills (layout margins do not apply in button bars). -->
+        <item name="android:insetLeft">5dp</item>
+        <item name="android:insetRight">5dp</item>
+        <item name="android:paddingHorizontal">26dp</item>
         <item name="android:textColor">@color/console_home_text_primary</item>
+        <item name="android:textStyle">bold</item>
+        <item name="backgroundTint">@color/console_theme_card_high</item>
+        <item name="cornerRadius">22dp</item>
         <item name="rippleColor">@color/console_home_focus_fill</item>
+    </style>
+
+    <style name="ConsoleDialogButton.Positive">
+        <item name="android:textColor">@color/console_home_text_on_light</item>
+        <item name="backgroundTint">@color/console_home_text_primary</item>
+        <item name="rippleColor">@color/console_home_chip_on_light</item>
     </style>
 
     <style name="ConsolePopupMenu" parent="Widget.Material3.PopupMenu">
