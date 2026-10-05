@@ -35,9 +35,11 @@ import org.yuzu.yuzu_emu.model.Game
 class ConsoleSubscreenHost(
     private val host: Fragment,
     @IdRes private val containerId: Int,
+    private val onTitle: (CharSequence) -> Unit = {},
     private val onClosed: () -> Unit
 ) {
     private var navHost: NavHostFragment? = null
+    private var startTitle: CharSequence? = null
 
     val isOpen: Boolean get() = navHost != null
 
@@ -60,12 +62,15 @@ class ConsoleSubscreenHost(
         ) {
             if (f is DialogFragment) return
             v.background = null
-            // Only the subscreens opened from the console UI lose their toolbar: nested screens
-            // (e.g. the user editor) keep it for their own actions.
-            if (f is ProfileManagerFragment || f is GameInfoFragment || f is AddonsFragment ||
-                f is FreedrenoSettingsFragment
-            ) {
-                hideToolbars(v)
+            // The console header replaces the subscreen toolbars. Start screens keep the console
+            // title; nested screens (e.g. the user editor) pass their own title to the header.
+            val isStart = f is ProfileManagerFragment || f is GameInfoFragment ||
+                f is AddonsFragment || f is FreedrenoSettingsFragment
+            val title = hideToolbars(v)
+            if (isStart) {
+                startTitle?.let(onTitle)
+            } else if (!title.isNullOrEmpty()) {
+                onTitle(title)
             }
         }
     }
@@ -81,6 +86,7 @@ class ConsoleSubscreenHost(
         val controller = fragment.navController
         val graph = controller.navInflater.inflate(R.navigation.settings_subscreen_navigation)
         graph.setStartDestination(startDestination(destination))
+        startTitle = host.getString(titleOf(destination))
         controller.setGraph(graph, startArgs(destination, game))
         navHost = fragment
     }
@@ -105,11 +111,19 @@ class ConsoleSubscreenHost(
         if (notify) onClosed()
     }
 
-    private fun hideToolbars(view: View) {
+    /** Hides app bars / toolbars under [view]; returns the first toolbar title found. */
+    private fun hideToolbars(view: View): CharSequence? {
+        var title: CharSequence? = (view as? MaterialToolbar)?.title
         when (view) {
             is AppBarLayout, is MaterialToolbar -> view.visibility = View.GONE
-            is ViewGroup -> for (i in 0 until view.childCount) hideToolbars(view.getChildAt(i))
         }
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val childTitle = hideToolbars(view.getChildAt(i))
+                if (title.isNullOrEmpty()) title = childTitle
+            }
+        }
+        return title
     }
 
     companion object {

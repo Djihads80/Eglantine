@@ -181,6 +181,9 @@ class GamePropertiesFragment : Fragment() {
         }
 
         binding.imageGameScreen.transitionName = GameAdapter.coverTransitionName(args.game)
+        // Same animated outline as the selected Home tile (palette of this game).
+        binding.coverCard.consoleHighlight = true
+        binding.coverCard.isSelected = true
         postponeEnterTransition()
         view.doOnPreDraw { startPostponedEnterTransition() }
         GameIconUtils.loadGameIcon(args.game, binding.imageGameScreen)
@@ -600,9 +603,11 @@ class GamePropertiesFragment : Fragment() {
             inlineBackCallback
         )
         binding.buttonInlineBack.setOnClickListener { onPanelBack() }
-        subscreenHost = ConsoleSubscreenHost(this, R.id.console_subscreen_container) {
-            onSubscreenClosed()
-        }
+        subscreenHost = ConsoleSubscreenHost(
+            this,
+            R.id.console_subscreen_container,
+            onTitle = { _binding?.inlineSettingsTitle?.text = it }
+        ) { onSubscreenClosed() }
 
         settingsViewModel.shouldReloadSettingsList.collect(
             viewLifecycleOwner,

@@ -99,12 +99,62 @@
         <item name="cornerSize">@dimen/console_home_card_radius</item>
     </style>
 
+    <!-- Console colors for every Material component inside MainActivity (buttons, switches,
+         cards, dialogs, text fields...), applied on top of the selected app theme so all
+         screens and dialogs match the console UI: white primary actions with navy text,
+         translucent white cards and opaque navy dialogs. -->
+    <color name="console_theme_surface">#FF16245A</color>
+    <color name="console_theme_dialog">#FF1B2C66</color>
+    <color name="console_theme_card">#26FFFFFF</color>
+    <color name="console_theme_card_high">#33FFFFFF</color>
+
+    <style name="ThemeOverlay.Console" parent="">
+        <item name="colorPrimary">@color/console_home_text_primary</item>
+        <item name="colorOnPrimary">@color/console_home_text_on_light</item>
+        <item name="colorPrimaryContainer">@color/console_theme_card_high</item>
+        <item name="colorOnPrimaryContainer">@color/console_home_text_primary</item>
+        <item name="colorPrimaryInverse">@color/console_home_text_on_light</item>
+        <item name="colorSecondary">@color/console_home_text_secondary</item>
+        <item name="colorOnSecondary">@color/console_home_text_on_light</item>
+        <item name="colorSecondaryContainer">@color/console_theme_card_high</item>
+        <item name="colorOnSecondaryContainer">@color/console_home_text_primary</item>
+        <item name="colorTertiary">@color/console_home_text_secondary</item>
+        <item name="colorOnTertiary">@color/console_home_text_on_light</item>
+        <item name="colorTertiaryContainer">@color/console_theme_card_high</item>
+        <item name="colorOnTertiaryContainer">@color/console_home_text_primary</item>
+        <item name="android:colorBackground">@color/console_home_bg_top</item>
+        <item name="colorOnBackground">@color/console_home_text_primary</item>
+        <item name="colorSurface">@color/console_theme_surface</item>
+        <item name="colorOnSurface">@color/console_home_text_primary</item>
+        <item name="colorSurfaceVariant">@color/console_theme_card_high</item>
+        <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
+        <item name="colorSurfaceInverse">@color/console_home_text_primary</item>
+        <item name="colorOnSurfaceInverse">@color/console_home_text_on_light</item>
+        <item name="colorSurfaceContainerLowest">@color/console_theme_card</item>
+        <item name="colorSurfaceContainerLow">@color/console_theme_card</item>
+        <item name="colorSurfaceContainer">@color/console_theme_card</item>
+        <item name="colorSurfaceContainerHigh">@color/console_theme_dialog</item>
+        <item name="colorSurfaceContainerHighest">@color/console_theme_card_high</item>
+        <item name="colorOutline">@color/console_home_outline</item>
+        <item name="colorOutlineVariant">@color/console_home_outline_dim</item>
+        <item name="android:textColorPrimary">@color/console_home_text_primary</item>
+        <item name="android:textColorSecondary">@color/console_home_text_secondary</item>
+        <item name="android:textColorHint">@color/console_home_text_dim</item>
+        <item name="colorControlNormal">@color/console_home_text_secondary</item>
+        <item name="colorControlActivated">@color/console_home_text_primary</item>
+    </style>
+
     <!-- Light text on the translucent console panels (settings shown in place). -->
     <style name="ThemeOverlay.Console.Panel" parent="">
         <item name="colorOnSurface">@color/console_home_text_primary</item>
         <item name="colorOnSurfaceVariant">@color/console_home_text_secondary</item>
         <item name="android:textColorPrimary">@color/console_home_text_primary</item>
         <item name="android:textColorSecondary">@color/console_home_text_secondary</item>
+    </style>
+
+    <style name="ShapeAppearance.Console.Avatar" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">14dp</item>
     </style>
 
     <style name="ShapeAppearance.Console.Circle" parent="">

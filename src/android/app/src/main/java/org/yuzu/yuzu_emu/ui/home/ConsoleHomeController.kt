@@ -96,7 +96,8 @@ class ConsoleHomeController private constructor(
     // Profile manager shown over Home (instead of the settings activity).
     private val subscreenHost = ConsoleSubscreenHost(
         fragment,
-        R.id.console_overlay_container
+        R.id.console_overlay_container,
+        onTitle = { overlayTitle.text = it }
     ) { onOverlayClosed() }
     private val overlayBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
