@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.view.InputDevice
 import android.view.KeyEvent
-import android.view.animation.PathInterpolator
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -22,13 +21,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
-import androidx.core.view.doOnPreDraw
-import androidx.transition.ChangeBounds
-import androidx.transition.ChangeClipBounds
-import androidx.transition.ChangeImageTransform
-import androidx.transition.ChangeTransform
 import androidx.transition.Fade
-import androidx.transition.TransitionSet
 import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.fragment.app.Fragment
@@ -47,7 +40,6 @@ import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.YuzuApplication
-import org.yuzu.yuzu_emu.adapters.GameAdapter
 import org.yuzu.yuzu_emu.adapters.GamePropertiesAdapter
 import org.yuzu.yuzu_emu.databinding.FragmentGamePropertiesBinding
 import org.yuzu.yuzu_emu.features.DocumentProvider
@@ -127,26 +119,15 @@ class GamePropertiesFragment : Fragment() {
         private const val KEY_TAB = "ConsoleGameTab"
         private const val KEY_POST_SHADER_ENABLED = "post_shader_enabled"
         private const val KEY_POST_SHADER_PRESET = "post_shader_preset"
-        private const val COVER_TRANSITION_MS = 450L
-        private const val SCREEN_FADE_MS = 150L
+        private const val SCREEN_FADE_MS = 250L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Quick fade so the new screen covers Home while the cover is still flying.
+        // Home fades out and this screen fades in.
         enterTransition = Fade().setDuration(SCREEN_FADE_MS)
-        returnTransition = MaterialSharedAxis(MaterialSharedAxis.Y, false)
+        returnTransition = Fade().setDuration(SCREEN_FADE_MS)
         reenterTransition = MaterialSharedAxis(MaterialSharedAxis.X, false)
-        // Cover moves from the Home tile to its place on this screen.
-        sharedElementEnterTransition = TransitionSet().apply {
-            addTransition(ChangeBounds())
-            addTransition(ChangeTransform())
-            addTransition(ChangeClipBounds())
-            addTransition(ChangeImageTransform())
-            duration = COVER_TRANSITION_MS
-            interpolator = PathInterpolator(0.4f, 0f, 0.2f, 1f)
-        }
-        sharedElementReturnTransition = sharedElementEnterTransition
     }
 
     override fun onCreateView(
@@ -184,12 +165,9 @@ class GamePropertiesFragment : Fragment() {
             }
         }
 
-        binding.coverCard.transitionName = GameAdapter.coverTransitionName(args.game)
         // Same animated outline as the selected Home tile (palette of this game).
         binding.coverCard.consoleHighlight = true
         binding.coverCard.isSelected = true
-        postponeEnterTransition()
-        view.doOnPreDraw { startPostponedEnterTransition() }
         GameIconUtils.loadGameIcon(args.game, binding.imageGameScreen)
         bindBackground()
         binding.title.text = args.game.title

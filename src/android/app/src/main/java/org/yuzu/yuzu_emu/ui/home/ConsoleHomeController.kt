@@ -6,6 +6,12 @@ package org.yuzu.yuzu_emu.ui.home
 import android.graphics.BitmapFactory
 import android.animation.ValueAnimator
 import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Matrix
+import android.graphics.Shader
+import android.view.animation.LinearInterpolator
+import kotlin.math.PI
+import kotlin.math.cos
 import android.graphics.drawable.ColorDrawable
 import android.view.Gravity
 import android.view.KeyEvent
@@ -115,9 +121,10 @@ class ConsoleHomeController private constructor(
 
     companion object {
         private const val OVERLAY_FADE_MS = 180L
-        private const val TITLE_GLOW_PERIOD_MS = 2400L
-        private const val TITLE_GLOW_MIN_DP = 8f
-        private const val TITLE_GLOW_MAX_DP = 18f
+        private const val TITLE_GLOW_PERIOD_MS = 3600L
+        private const val TITLE_SWEEP_FRACTION = 0.55f
+        private const val TITLE_GLOW_MIN_DP = 4f
+        private const val TITLE_GLOW_MAX_DP = 10f
 
         /**
          * Attaches the console Home if the current layout provides it (res/layout/fragment_games.xml).
@@ -267,32 +274,72 @@ class ConsoleHomeController private constructor(
     // ---------------------------------------------------------------------------------------------
     // Title glow
 
+    private var shimmerShader: LinearGradient? = null
+    private var shimmerKey = Long.MIN_VALUE
+    private val shimmerMatrix = Matrix()
+
     /**
-     * Soft light around the selected game's title in the bright palette color of the animated
-     * background (same colors as the tile outline), pulsing slowly. Follows palette changes.
+     * Lighting on the selected game's title, in the bright palette colors of the animated
+     * background (same as the tile outline): a band of colored light sweeps across the letters,
+     * with a soft halo breathing around them. The title has padding (negative margins keep its
+     * position) so the halo is never cut into a box. Follows palette changes.
      */
     private fun startTitleGlow() {
         val density = res.displayMetrics.density
         titleGlow = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = TITLE_GLOW_PERIOD_MS
-            repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
             addUpdateListener { animator ->
                 if (released || !gameTitle.isShown) return@addUpdateListener
-                val pulse = animator.animatedValue as Float
+                val t = animator.animatedValue as Float
+                val colors = ConsolePalette.borderColors
+                updateTitleShimmer(t, colors)
+
+                // Halo: gentle breathing, peaking while the light crosses the title.
+                val breath = (0.5f - 0.5f * cos(2f * PI.toFloat() * t))
                 val radius = (TITLE_GLOW_MIN_DP +
-                    (TITLE_GLOW_MAX_DP - TITLE_GLOW_MIN_DP) * pulse) * density
-                val glow = ConsolePalette.borderColors.first()
-                val alpha = (150 + 90 * pulse).toInt()
+                    (TITLE_GLOW_MAX_DP - TITLE_GLOW_MIN_DP) * breath) * density
+                val glow = colors.first()
                 gameTitle.setShadowLayer(
                     radius,
                     0f,
                     0f,
-                    Color.argb(alpha, Color.red(glow), Color.green(glow), Color.blue(glow))
+                    Color.argb(
+                        (110 + 90 * breath).toInt(),
+                        Color.red(glow),
+                        Color.green(glow),
+                        Color.blue(glow)
+                    )
                 )
             }
             start()
         }
+    }
+
+    /** Moves the light band across the title text ([t] in 0..1; idle part of the cycle). */
+    private fun updateTitleShimmer(t: Float, colors: IntArray) {
+        val width = gameTitle.width.toFloat()
+        if (width <= 0f) return
+        val band = width * 0.45f
+        val key = width.toLong() * 31 + ConsolePalette.version
+        if (key != shimmerKey || shimmerShader == null) {
+            val accent = colors[0]
+            val second = colors.getOrElse(1) { accent }
+            shimmerShader = LinearGradient(
+                0f, 0f, band, 0f,
+                intArrayOf(Color.WHITE, accent, second, Color.WHITE),
+                floatArrayOf(0f, 0.4f, 0.6f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            shimmerKey = key
+        }
+        // The band crosses during the first part of the cycle, then the title rests in white.
+        val sweep = (t / TITLE_SWEEP_FRACTION).coerceAtMost(1f)
+        shimmerMatrix.setTranslate(-band + sweep * (width + band), 0f)
+        shimmerShader?.setLocalMatrix(shimmerMatrix)
+        gameTitle.paint.shader = shimmerShader
+        gameTitle.invalidate()
     }
 
     // ---------------------------------------------------------------------------------------------
