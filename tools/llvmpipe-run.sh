@@ -16,7 +16,7 @@ export MESA_VK_VERSION_OVERRIDE=1.3
 export LIBGL_ALWAYS_SOFTWARE=1
 
 # This was automated via a script so I might have missed some
-ext="GL_AMD_multi_draw_indirect GL_AMD_seamless_cubemap_per_texture GL_AMD_vertex_shader_layer GL_AMD_vertex_shader_viewport_index"
+ext="GL_AMD_multi_draw_indirect GL_AMD_seamless_cubemap_per_texture"
 ext="$ext GL_ARB_arrays_of_arrays"
 ext="$ext GL_ARB_base_instance GL_ARB_bindless_texture GL_ARB_blend_func_extended GL_ARB_buffer_storage GL_ARB_clear_buffer_object GL_ARB_clear_texture"
 ext="$ext GL_ARB_clip_control GL_ARB_color_buffer_float GL_ARB_compressed_texture_pixel_storage GL_ARB_compute_shader GL_ARB_compute_variable_group_size"
@@ -108,7 +108,7 @@ ext="$ext GL_NV_vdpau_interop2 GL_NV_vertex_array_range GL_NV_vertex_array_range
 ext="$ext GL_NV_vertex_buffer_unified_memory GL_NV_vertex_program GL_NV_vertex_program1_1 GL_NV_vertex_program2"
 ext="$ext GL_NV_vertex_program2_option GL_NV_vertex_program3 GL_NV_viewport_array2 GL_NV_viewport_swizzle"
 ext="$ext GL_AMD_multi_draw_indirect"
-ext="$ext GL_AMD_seamless_cubemap_per_texture GL_AMD_vertex_shader_layer GL_AMD_vertex_shader_viewport_index"
+ext="$ext GL_AMD_seamless_cubemap_per_texture"
 ext="$ext GL_ARB_arrays_of_arrays GL_ARB_base_instance GL_ARB_bindless_texture GL_ARB_blend_func_extended"
 ext="$ext GL_ARB_buffer_storage GL_ARB_clear_buffer_object GL_ARB_clear_texture GL_ARB_clip_control"
 ext="$ext GL_ARB_color_buffer_float GL_ARB_compatibility GL_ARB_compressed_texture_pixel_storage"
