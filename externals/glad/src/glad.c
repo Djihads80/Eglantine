@@ -5,11 +5,8 @@
     Language/Generator: C/C++
     Specification: gl
     APIs: gl=4.6
-    Profile: compatibility
+    Profile: core
     Extensions:
-        GL_3DFX_multisample,
-        GL_3DFX_tbuffer,
-        GL_3DFX_texture_compression_FXT1,
         GL_AMD_blend_minmax_factor,
         GL_AMD_conservative_depth,
         GL_AMD_debug_output,
@@ -17,7 +14,6 @@
         GL_AMD_draw_buffers_blend,
         GL_AMD_framebuffer_multisample_advanced,
         GL_AMD_framebuffer_sample_positions,
-        GL_AMD_gcn_shader,
         GL_AMD_gpu_shader_half_float,
         GL_AMD_gpu_shader_int16,
         GL_AMD_gpu_shader_int64,
@@ -46,26 +42,6 @@
         GL_AMD_vertex_shader_layer,
         GL_AMD_vertex_shader_tessellator,
         GL_AMD_vertex_shader_viewport_index,
-        GL_APPLE_aux_depth_stencil,
-        GL_APPLE_client_storage,
-        GL_APPLE_element_array,
-        GL_APPLE_fence,
-        GL_APPLE_float_pixels,
-        GL_APPLE_flush_buffer_range,
-        GL_APPLE_object_purgeable,
-        GL_APPLE_rgb_422,
-        GL_APPLE_row_bytes,
-        GL_APPLE_specular_vector,
-        GL_APPLE_texture_range,
-        GL_APPLE_transform_hint,
-        GL_APPLE_vertex_array_object,
-        GL_APPLE_vertex_array_range,
-        GL_APPLE_vertex_program_evaluators,
-        GL_APPLE_ycbcr_422,
-        GL_ARB_ES2_compatibility,
-        GL_ARB_ES3_1_compatibility,
-        GL_ARB_ES3_2_compatibility,
-        GL_ARB_ES3_compatibility,
         GL_ARB_arrays_of_arrays,
         GL_ARB_base_instance,
         GL_ARB_bindless_texture,
@@ -233,22 +209,6 @@
         GL_ARB_vertex_type_2_10_10_10_rev,
         GL_ARB_viewport_array,
         GL_ARB_window_pos,
-        GL_ATI_draw_buffers,
-        GL_ATI_element_array,
-        GL_ATI_envmap_bumpmap,
-        GL_ATI_fragment_shader,
-        GL_ATI_map_object_buffer,
-        GL_ATI_meminfo,
-        GL_ATI_pixel_format_float,
-        GL_ATI_pn_triangles,
-        GL_ATI_separate_stencil,
-        GL_ATI_text_fragment_shader,
-        GL_ATI_texture_env_combine3,
-        GL_ATI_texture_float,
-        GL_ATI_texture_mirror_once,
-        GL_ATI_vertex_array_object,
-        GL_ATI_vertex_attrib_array_object,
-        GL_ATI_vertex_streams,
         GL_EXT_422_pixels,
         GL_EXT_EGL_image_storage,
         GL_EXT_abgr,
@@ -362,29 +322,6 @@
         GL_EXT_vertex_weighting,
         GL_EXT_win32_keyed_mutex,
         GL_EXT_window_rectangles,
-        GL_EXT_x11_sync_object,
-        GL_GREMEDY_frame_terminator,
-        GL_GREMEDY_string_marker,
-        GL_HP_convolution_border_modes,
-        GL_HP_image_transform,
-        GL_HP_occlusion_test,
-        GL_HP_texture_lighting,
-        GL_IBM_cull_vertex,
-        GL_IBM_multimode_draw_arrays,
-        GL_IBM_rasterpos_clip,
-        GL_IBM_static_data,
-        GL_IBM_texture_mirrored_repeat,
-        GL_IBM_vertex_array_lists,
-        GL_INGR_blend_func_separate,
-        GL_INGR_color_clamp,
-        GL_INGR_interlace_read,
-        GL_INTEL_blackhole_render,
-        GL_INTEL_conservative_rasterization,
-        GL_INTEL_fragment_shader_ordering,
-        GL_INTEL_framebuffer_CMAA,
-        GL_INTEL_map_texture,
-        GL_INTEL_parallel_arrays,
-        GL_INTEL_performance_query,
         GL_KHR_blend_equation_advanced,
         GL_KHR_blend_equation_advanced_coherent,
         GL_KHR_context_flush_control,
@@ -396,18 +333,7 @@
         GL_KHR_texture_compression_astc_hdr,
         GL_KHR_texture_compression_astc_ldr,
         GL_KHR_texture_compression_astc_sliced_3d,
-        GL_MESAX_texture_stack,
-        GL_MESA_pack_invert,
-        GL_MESA_program_binary_formats,
-        GL_MESA_resize_buffers,
-        GL_MESA_shader_integer_functions,
-        GL_MESA_tile_raster_order,
-        GL_MESA_window_pos,
-        GL_MESA_ycbcr_texture,
-        GL_NVX_blend_equation_advanced_multi_draw_buffers,
-        GL_NVX_conditional_render,
         GL_NVX_gpu_memory_info,
-        GL_NVX_linked_gpu_multicast,
         GL_NV_alpha_to_coverage_dither_control,
         GL_NV_bindless_multi_draw_indirect,
         GL_NV_bindless_multi_draw_indirect_count,
@@ -460,7 +386,6 @@
         GL_NV_internalformat_sample_query,
         GL_NV_light_max_exponent,
         GL_NV_memory_attachment,
-        GL_NV_mesh_shader,
         GL_NV_multisample_coverage,
         GL_NV_multisample_filter_hint,
         GL_NV_occlusion_query,
@@ -525,94 +450,14 @@
         GL_NV_vertex_program4,
         GL_NV_video_capture,
         GL_NV_viewport_array2,
-        GL_NV_viewport_swizzle,
-        GL_OES_byte_coordinates,
-        GL_OES_compressed_paletted_texture,
-        GL_OES_fixed_point,
-        GL_OES_query_matrix,
-        GL_OES_read_format,
-        GL_OES_single_precision,
-        GL_OML_interlace,
-        GL_OML_resample,
-        GL_OML_subsample,
-        GL_OVR_multiview,
-        GL_OVR_multiview2,
-        GL_PGI_misc_hints,
-        GL_PGI_vertex_hints,
-        GL_REND_screen_coordinates,
-        GL_S3_s3tc,
-        GL_SGIS_detail_texture,
-        GL_SGIS_fog_function,
-        GL_SGIS_generate_mipmap,
-        GL_SGIS_multisample,
-        GL_SGIS_pixel_texture,
-        GL_SGIS_point_line_texgen,
-        GL_SGIS_point_parameters,
-        GL_SGIS_sharpen_texture,
-        GL_SGIS_texture4D,
-        GL_SGIS_texture_border_clamp,
-        GL_SGIS_texture_color_mask,
-        GL_SGIS_texture_edge_clamp,
-        GL_SGIS_texture_filter4,
-        GL_SGIS_texture_lod,
-        GL_SGIS_texture_select,
-        GL_SGIX_async,
-        GL_SGIX_async_histogram,
-        GL_SGIX_async_pixel,
-        GL_SGIX_blend_alpha_minmax,
-        GL_SGIX_calligraphic_fragment,
-        GL_SGIX_clipmap,
-        GL_SGIX_convolution_accuracy,
-        GL_SGIX_depth_pass_instrument,
-        GL_SGIX_depth_texture,
-        GL_SGIX_flush_raster,
-        GL_SGIX_fog_offset,
-        GL_SGIX_fragment_lighting,
-        GL_SGIX_framezoom,
-        GL_SGIX_igloo_interface,
-        GL_SGIX_instruments,
-        GL_SGIX_interlace,
-        GL_SGIX_ir_instrument1,
-        GL_SGIX_list_priority,
-        GL_SGIX_pixel_texture,
-        GL_SGIX_pixel_tiles,
-        GL_SGIX_polynomial_ffd,
-        GL_SGIX_reference_plane,
-        GL_SGIX_resample,
-        GL_SGIX_scalebias_hint,
-        GL_SGIX_shadow,
-        GL_SGIX_shadow_ambient,
-        GL_SGIX_sprite,
-        GL_SGIX_subsample,
-        GL_SGIX_tag_sample_buffer,
-        GL_SGIX_texture_add_env,
-        GL_SGIX_texture_coordinate_clamp,
-        GL_SGIX_texture_lod_bias,
-        GL_SGIX_texture_multi_buffer,
-        GL_SGIX_texture_scale_bias,
-        GL_SGIX_vertex_preclip,
-        GL_SGIX_ycrcb,
-        GL_SGIX_ycrcb_subsample,
-        GL_SGIX_ycrcba,
-        GL_SGI_color_matrix,
-        GL_SGI_color_table,
-        GL_SGI_texture_color_table,
-        GL_SUNX_constant_data,
-        GL_SUN_convolution_border_modes,
-        GL_SUN_global_alpha,
-        GL_SUN_mesh_array,
-        GL_SUN_slice_accum,
-        GL_SUN_triangle_list,
-        GL_SUN_vertex,
-        GL_WIN_phong_shading,
-        GL_WIN_specular_fog
+        GL_NV_viewport_swizzle
     Loader: True
     Local files: False
     Omit khrplatform: False
     Reproducible: False
 
     Commandline:
-        --profile="compatibility" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_3DFX_multisample,GL_3DFX_tbuffer,GL_3DFX_texture_compression_FXT1,GL_AMD_blend_minmax_factor,GL_AMD_conservative_depth,GL_AMD_debug_output,GL_AMD_depth_clamp_separate,GL_AMD_draw_buffers_blend,GL_AMD_framebuffer_multisample_advanced,GL_AMD_framebuffer_sample_positions,GL_AMD_gcn_shader,GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int16,GL_AMD_gpu_shader_int64,GL_AMD_interleaved_elements,GL_AMD_multi_draw_indirect,GL_AMD_name_gen_delete,GL_AMD_occlusion_query_event,GL_AMD_performance_monitor,GL_AMD_pinned_memory,GL_AMD_query_buffer_object,GL_AMD_sample_positions,GL_AMD_seamless_cubemap_per_texture,GL_AMD_shader_atomic_counter_ops,GL_AMD_shader_ballot,GL_AMD_shader_explicit_vertex_parameter,GL_AMD_shader_gpu_shader_half_float_fetch,GL_AMD_shader_image_load_store_lod,GL_AMD_shader_stencil_export,GL_AMD_shader_trinary_minmax,GL_AMD_sparse_texture,GL_AMD_stencil_operation_extended,GL_AMD_texture_gather_bias_lod,GL_AMD_texture_texture4,GL_AMD_transform_feedback3_lines_triangles,GL_AMD_transform_feedback4,GL_AMD_vertex_shader_layer,GL_AMD_vertex_shader_tessellator,GL_AMD_vertex_shader_viewport_index,GL_APPLE_aux_depth_stencil,GL_APPLE_client_storage,GL_APPLE_element_array,GL_APPLE_fence,GL_APPLE_float_pixels,GL_APPLE_flush_buffer_range,GL_APPLE_object_purgeable,GL_APPLE_rgb_422,GL_APPLE_row_bytes,GL_APPLE_specular_vector,GL_APPLE_texture_range,GL_APPLE_transform_hint,GL_APPLE_vertex_array_object,GL_APPLE_vertex_array_range,GL_APPLE_vertex_program_evaluators,GL_APPLE_ycbcr_422,GL_ARB_ES2_compatibility,GL_ARB_ES3_1_compatibility,GL_ARB_ES3_2_compatibility,GL_ARB_ES3_compatibility,GL_ARB_arrays_of_arrays,GL_ARB_base_instance,GL_ARB_bindless_texture,GL_ARB_blend_func_extended,GL_ARB_buffer_storage,GL_ARB_cl_event,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_clip_control,GL_ARB_color_buffer_float,GL_ARB_compatibility,GL_ARB_compressed_texture_pixel_storage,GL_ARB_compute_shader,GL_ARB_compute_variable_group_size,GL_ARB_conditional_render_inverted,GL_ARB_conservative_depth,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_cull_distance,GL_ARB_debug_output,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_elements_base_vertex,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_enhanced_layouts,GL_ARB_explicit_attrib_location,GL_ARB_explicit_uniform_location,GL_ARB_fragment_coord_conventions,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_no_attachments,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_get_program_binary,GL_ARB_get_texture_sub_image,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_internalformat_query,GL_ARB_internalformat_query2,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_matrix_palette,GL_ARB_multi_bind,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_occlusion_query,GL_ARB_occlusion_query2,GL_ARB_parallel_shader_compile,GL_ARB_pipeline_statistics_query,GL_ARB_pixel_buffer_object,GL_ARB_point_parameters,GL_ARB_point_sprite,GL_ARB_polygon_offset_clamp,GL_ARB_post_depth_coverage,GL_ARB_program_interface_query,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robust_buffer_access_behavior,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_sampler_objects,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_atomic_counter_ops,GL_ARB_shader_atomic_counters,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_100,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_shadow,GL_ARB_shadow_ambient,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_sync,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_env_add,GL_ARB_texture_env_combine,GL_ARB_texture_env_crossbar,GL_ARB_texture_env_dot3,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_float,GL_ARB_texture_gather,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_non_power_of_two,GL_ARB_texture_query_levels,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_transform_feedback_overflow_query,GL_ARB_transpose_matrix,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_attrib_binding,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_vertex_type_10f_11f_11f_rev,GL_ARB_vertex_type_2_10_10_10_rev,GL_ARB_viewport_array,GL_ARB_window_pos,GL_ATI_draw_buffers,GL_ATI_element_array,GL_ATI_envmap_bumpmap,GL_ATI_fragment_shader,GL_ATI_map_object_buffer,GL_ATI_meminfo,GL_ATI_pixel_format_float,GL_ATI_pn_triangles,GL_ATI_separate_stencil,GL_ATI_text_fragment_shader,GL_ATI_texture_env_combine3,GL_ATI_texture_float,GL_ATI_texture_mirror_once,GL_ATI_vertex_array_object,GL_ATI_vertex_attrib_array_object,GL_ATI_vertex_streams,GL_EXT_422_pixels,GL_EXT_EGL_image_storage,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_clip_volume_hint,GL_EXT_cmyka,GL_EXT_color_subtable,GL_EXT_compiled_vertex_array,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_draw_range_elements,GL_EXT_external_buffer,GL_EXT_fog_coord,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_multisample_blit_scaled,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_histogram,GL_EXT_index_array_formats,GL_EXT_index_func,GL_EXT_index_material,GL_EXT_index_texture,GL_EXT_light_texture,GL_EXT_memory_object,GL_EXT_memory_object_fd,GL_EXT_memory_object_win32,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_paletted_texture,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_point_parameters,GL_EXT_polygon_offset,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_semaphore_fd,GL_EXT_semaphore_win32,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_framebuffer_fetch,GL_EXT_shader_framebuffer_fetch_non_coherent,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shadow_funcs,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_subtexture,GL_EXT_texture,GL_EXT_texture3D,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_env_add,GL_EXT_texture_env_combine,GL_EXT_texture_env_dot3,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_perturb_normal,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_shared_exponent,GL_EXT_texture_snorm,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_win32_keyed_mutex,GL_EXT_window_rectangles,GL_EXT_x11_sync_object,GL_GREMEDY_frame_terminator,GL_GREMEDY_string_marker,GL_HP_convolution_border_modes,GL_HP_image_transform,GL_HP_occlusion_test,GL_HP_texture_lighting,GL_IBM_cull_vertex,GL_IBM_multimode_draw_arrays,GL_IBM_rasterpos_clip,GL_IBM_static_data,GL_IBM_texture_mirrored_repeat,GL_IBM_vertex_array_lists,GL_INGR_blend_func_separate,GL_INGR_color_clamp,GL_INGR_interlace_read,GL_INTEL_blackhole_render,GL_INTEL_conservative_rasterization,GL_INTEL_fragment_shader_ordering,GL_INTEL_framebuffer_CMAA,GL_INTEL_map_texture,GL_INTEL_parallel_arrays,GL_INTEL_performance_query,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_KHR_texture_compression_astc_hdr,GL_KHR_texture_compression_astc_ldr,GL_KHR_texture_compression_astc_sliced_3d,GL_MESAX_texture_stack,GL_MESA_pack_invert,GL_MESA_program_binary_formats,GL_MESA_resize_buffers,GL_MESA_shader_integer_functions,GL_MESA_tile_raster_order,GL_MESA_window_pos,GL_MESA_ycbcr_texture,GL_NVX_blend_equation_advanced_multi_draw_buffers,GL_NVX_conditional_render,GL_NVX_gpu_memory_info,GL_NVX_linked_gpu_multicast,GL_NV_alpha_to_coverage_dither_control,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_evaluators,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_mesh_shader,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_occlusion_query,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_parameter_buffer_object2,GL_NV_path_rendering,GL_NV_path_rendering_shared_edge,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_present_video,GL_NV_primitive_restart,GL_NV_query_resource,GL_NV_query_resource_tag,GL_NV_register_combiners,GL_NV_register_combiners2,GL_NV_representative_fragment_test,GL_NV_robustness_video_memory_purge,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_scissor_exclusive,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_stereo_view_rendering,GL_NV_tessellation_program5,GL_NV_texgen_emboss,GL_NV_texgen_reflection,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vdpau_interop,GL_NV_vdpau_interop2,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_video_capture,GL_NV_viewport_array2,GL_NV_viewport_swizzle,GL_OES_byte_coordinates,GL_OES_compressed_paletted_texture,GL_OES_fixed_point,GL_OES_query_matrix,GL_OES_read_format,GL_OES_single_precision,GL_OML_interlace,GL_OML_resample,GL_OML_subsample,GL_OVR_multiview,GL_OVR_multiview2,GL_PGI_misc_hints,GL_PGI_vertex_hints,GL_REND_screen_coordinates,GL_S3_s3tc,GL_SGIS_detail_texture,GL_SGIS_fog_function,GL_SGIS_generate_mipmap,GL_SGIS_multisample,GL_SGIS_pixel_texture,GL_SGIS_point_line_texgen,GL_SGIS_point_parameters,GL_SGIS_sharpen_texture,GL_SGIS_texture4D,GL_SGIS_texture_border_clamp,GL_SGIS_texture_color_mask,GL_SGIS_texture_edge_clamp,GL_SGIS_texture_filter4,GL_SGIS_texture_lod,GL_SGIS_texture_select,GL_SGIX_async,GL_SGIX_async_histogram,GL_SGIX_async_pixel,GL_SGIX_blend_alpha_minmax,GL_SGIX_calligraphic_fragment,GL_SGIX_clipmap,GL_SGIX_convolution_accuracy,GL_SGIX_depth_pass_instrument,GL_SGIX_depth_texture,GL_SGIX_flush_raster,GL_SGIX_fog_offset,GL_SGIX_fragment_lighting,GL_SGIX_framezoom,GL_SGIX_igloo_interface,GL_SGIX_instruments,GL_SGIX_interlace,GL_SGIX_ir_instrument1,GL_SGIX_list_priority,GL_SGIX_pixel_texture,GL_SGIX_pixel_tiles,GL_SGIX_polynomial_ffd,GL_SGIX_reference_plane,GL_SGIX_resample,GL_SGIX_scalebias_hint,GL_SGIX_shadow,GL_SGIX_shadow_ambient,GL_SGIX_sprite,GL_SGIX_subsample,GL_SGIX_tag_sample_buffer,GL_SGIX_texture_add_env,GL_SGIX_texture_coordinate_clamp,GL_SGIX_texture_lod_bias,GL_SGIX_texture_multi_buffer,GL_SGIX_texture_scale_bias,GL_SGIX_vertex_preclip,GL_SGIX_ycrcb,GL_SGIX_ycrcb_subsample,GL_SGIX_ycrcba,GL_SGI_color_matrix,GL_SGI_color_table,GL_SGI_texture_color_table,GL_SUNX_constant_data,GL_SUN_convolution_border_modes,GL_SUN_global_alpha,GL_SUN_mesh_array,GL_SUN_slice_accum,GL_SUN_triangle_list,GL_SUN_vertex,GL_WIN_phong_shading,GL_WIN_specular_fog"
+        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_blend_minmax_factor,GL_AMD_conservative_depth,GL_AMD_debug_output,GL_AMD_depth_clamp_separate,GL_AMD_draw_buffers_blend,GL_AMD_framebuffer_multisample_advanced,GL_AMD_framebuffer_sample_positions,GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int16,GL_AMD_gpu_shader_int64,GL_AMD_interleaved_elements,GL_AMD_multi_draw_indirect,GL_AMD_name_gen_delete,GL_AMD_occlusion_query_event,GL_AMD_performance_monitor,GL_AMD_pinned_memory,GL_AMD_query_buffer_object,GL_AMD_sample_positions,GL_AMD_seamless_cubemap_per_texture,GL_AMD_shader_atomic_counter_ops,GL_AMD_shader_ballot,GL_AMD_shader_explicit_vertex_parameter,GL_AMD_shader_gpu_shader_half_float_fetch,GL_AMD_shader_image_load_store_lod,GL_AMD_shader_stencil_export,GL_AMD_shader_trinary_minmax,GL_AMD_sparse_texture,GL_AMD_stencil_operation_extended,GL_AMD_texture_gather_bias_lod,GL_AMD_texture_texture4,GL_AMD_transform_feedback3_lines_triangles,GL_AMD_transform_feedback4,GL_AMD_vertex_shader_layer,GL_AMD_vertex_shader_tessellator,GL_AMD_vertex_shader_viewport_index,GL_ARB_arrays_of_arrays,GL_ARB_base_instance,GL_ARB_bindless_texture,GL_ARB_blend_func_extended,GL_ARB_buffer_storage,GL_ARB_cl_event,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_clip_control,GL_ARB_color_buffer_float,GL_ARB_compatibility,GL_ARB_compressed_texture_pixel_storage,GL_ARB_compute_shader,GL_ARB_compute_variable_group_size,GL_ARB_conditional_render_inverted,GL_ARB_conservative_depth,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_cull_distance,GL_ARB_debug_output,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_elements_base_vertex,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_enhanced_layouts,GL_ARB_explicit_attrib_location,GL_ARB_explicit_uniform_location,GL_ARB_fragment_coord_conventions,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_no_attachments,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_get_program_binary,GL_ARB_get_texture_sub_image,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_internalformat_query,GL_ARB_internalformat_query2,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_matrix_palette,GL_ARB_multi_bind,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_occlusion_query,GL_ARB_occlusion_query2,GL_ARB_parallel_shader_compile,GL_ARB_pipeline_statistics_query,GL_ARB_pixel_buffer_object,GL_ARB_point_parameters,GL_ARB_point_sprite,GL_ARB_polygon_offset_clamp,GL_ARB_post_depth_coverage,GL_ARB_program_interface_query,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robust_buffer_access_behavior,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_sampler_objects,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_atomic_counter_ops,GL_ARB_shader_atomic_counters,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_100,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_shadow,GL_ARB_shadow_ambient,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_sync,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_env_add,GL_ARB_texture_env_combine,GL_ARB_texture_env_crossbar,GL_ARB_texture_env_dot3,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_float,GL_ARB_texture_gather,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_non_power_of_two,GL_ARB_texture_query_levels,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_transform_feedback_overflow_query,GL_ARB_transpose_matrix,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_attrib_binding,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_vertex_type_10f_11f_11f_rev,GL_ARB_vertex_type_2_10_10_10_rev,GL_ARB_viewport_array,GL_ARB_window_pos,GL_EXT_422_pixels,GL_EXT_EGL_image_storage,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_clip_volume_hint,GL_EXT_cmyka,GL_EXT_color_subtable,GL_EXT_compiled_vertex_array,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_draw_range_elements,GL_EXT_external_buffer,GL_EXT_fog_coord,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_multisample_blit_scaled,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_histogram,GL_EXT_index_array_formats,GL_EXT_index_func,GL_EXT_index_material,GL_EXT_index_texture,GL_EXT_light_texture,GL_EXT_memory_object,GL_EXT_memory_object_fd,GL_EXT_memory_object_win32,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_paletted_texture,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_point_parameters,GL_EXT_polygon_offset,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_semaphore_fd,GL_EXT_semaphore_win32,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_framebuffer_fetch,GL_EXT_shader_framebuffer_fetch_non_coherent,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shadow_funcs,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_subtexture,GL_EXT_texture,GL_EXT_texture3D,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_env_add,GL_EXT_texture_env_combine,GL_EXT_texture_env_dot3,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_perturb_normal,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_shared_exponent,GL_EXT_texture_snorm,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_win32_keyed_mutex,GL_EXT_window_rectangles,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_KHR_texture_compression_astc_hdr,GL_KHR_texture_compression_astc_ldr,GL_KHR_texture_compression_astc_sliced_3d,GL_NVX_gpu_memory_info,GL_NV_alpha_to_coverage_dither_control,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_evaluators,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_occlusion_query,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_parameter_buffer_object2,GL_NV_path_rendering,GL_NV_path_rendering_shared_edge,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_present_video,GL_NV_primitive_restart,GL_NV_query_resource,GL_NV_query_resource_tag,GL_NV_register_combiners,GL_NV_register_combiners2,GL_NV_representative_fragment_test,GL_NV_robustness_video_memory_purge,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_scissor_exclusive,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_stereo_view_rendering,GL_NV_tessellation_program5,GL_NV_texgen_emboss,GL_NV_texgen_reflection,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vdpau_interop,GL_NV_vdpau_interop2,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_video_capture,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
     Online:
         Too many extensions
 */
@@ -1918,9 +1763,6 @@ PFNGLWINDOWPOS3IPROC glad_glWindowPos3i = NULL;
 PFNGLWINDOWPOS3IVPROC glad_glWindowPos3iv = NULL;
 PFNGLWINDOWPOS3SPROC glad_glWindowPos3s = NULL;
 PFNGLWINDOWPOS3SVPROC glad_glWindowPos3sv = NULL;
-int GLAD_GL_3DFX_multisample = 0;
-int GLAD_GL_3DFX_tbuffer = 0;
-int GLAD_GL_3DFX_texture_compression_FXT1 = 0;
 int GLAD_GL_AMD_blend_minmax_factor = 0;
 int GLAD_GL_AMD_conservative_depth = 0;
 int GLAD_GL_AMD_debug_output = 0;
@@ -1928,7 +1770,6 @@ int GLAD_GL_AMD_depth_clamp_separate = 0;
 int GLAD_GL_AMD_draw_buffers_blend = 0;
 int GLAD_GL_AMD_framebuffer_multisample_advanced = 0;
 int GLAD_GL_AMD_framebuffer_sample_positions = 0;
-int GLAD_GL_AMD_gcn_shader = 0;
 int GLAD_GL_AMD_gpu_shader_half_float = 0;
 int GLAD_GL_AMD_gpu_shader_int16 = 0;
 int GLAD_GL_AMD_gpu_shader_int64 = 0;
@@ -1957,26 +1798,6 @@ int GLAD_GL_AMD_transform_feedback4 = 0;
 int GLAD_GL_AMD_vertex_shader_layer = 0;
 int GLAD_GL_AMD_vertex_shader_tessellator = 0;
 int GLAD_GL_AMD_vertex_shader_viewport_index = 0;
-int GLAD_GL_APPLE_aux_depth_stencil = 0;
-int GLAD_GL_APPLE_client_storage = 0;
-int GLAD_GL_APPLE_element_array = 0;
-int GLAD_GL_APPLE_fence = 0;
-int GLAD_GL_APPLE_float_pixels = 0;
-int GLAD_GL_APPLE_flush_buffer_range = 0;
-int GLAD_GL_APPLE_object_purgeable = 0;
-int GLAD_GL_APPLE_rgb_422 = 0;
-int GLAD_GL_APPLE_row_bytes = 0;
-int GLAD_GL_APPLE_specular_vector = 0;
-int GLAD_GL_APPLE_texture_range = 0;
-int GLAD_GL_APPLE_transform_hint = 0;
-int GLAD_GL_APPLE_vertex_array_object = 0;
-int GLAD_GL_APPLE_vertex_array_range = 0;
-int GLAD_GL_APPLE_vertex_program_evaluators = 0;
-int GLAD_GL_APPLE_ycbcr_422 = 0;
-int GLAD_GL_ARB_ES2_compatibility = 0;
-int GLAD_GL_ARB_ES3_1_compatibility = 0;
-int GLAD_GL_ARB_ES3_2_compatibility = 0;
-int GLAD_GL_ARB_ES3_compatibility = 0;
 int GLAD_GL_ARB_arrays_of_arrays = 0;
 int GLAD_GL_ARB_base_instance = 0;
 int GLAD_GL_ARB_bindless_texture = 0;
@@ -2144,22 +1965,6 @@ int GLAD_GL_ARB_vertex_type_10f_11f_11f_rev = 0;
 int GLAD_GL_ARB_vertex_type_2_10_10_10_rev = 0;
 int GLAD_GL_ARB_viewport_array = 0;
 int GLAD_GL_ARB_window_pos = 0;
-int GLAD_GL_ATI_draw_buffers = 0;
-int GLAD_GL_ATI_element_array = 0;
-int GLAD_GL_ATI_envmap_bumpmap = 0;
-int GLAD_GL_ATI_fragment_shader = 0;
-int GLAD_GL_ATI_map_object_buffer = 0;
-int GLAD_GL_ATI_meminfo = 0;
-int GLAD_GL_ATI_pixel_format_float = 0;
-int GLAD_GL_ATI_pn_triangles = 0;
-int GLAD_GL_ATI_separate_stencil = 0;
-int GLAD_GL_ATI_text_fragment_shader = 0;
-int GLAD_GL_ATI_texture_env_combine3 = 0;
-int GLAD_GL_ATI_texture_float = 0;
-int GLAD_GL_ATI_texture_mirror_once = 0;
-int GLAD_GL_ATI_vertex_array_object = 0;
-int GLAD_GL_ATI_vertex_attrib_array_object = 0;
-int GLAD_GL_ATI_vertex_streams = 0;
 int GLAD_GL_EXT_422_pixels = 0;
 int GLAD_GL_EXT_EGL_image_storage = 0;
 int GLAD_GL_EXT_abgr = 0;
@@ -2273,29 +2078,6 @@ int GLAD_GL_EXT_vertex_shader = 0;
 int GLAD_GL_EXT_vertex_weighting = 0;
 int GLAD_GL_EXT_win32_keyed_mutex = 0;
 int GLAD_GL_EXT_window_rectangles = 0;
-int GLAD_GL_EXT_x11_sync_object = 0;
-int GLAD_GL_GREMEDY_frame_terminator = 0;
-int GLAD_GL_GREMEDY_string_marker = 0;
-int GLAD_GL_HP_convolution_border_modes = 0;
-int GLAD_GL_HP_image_transform = 0;
-int GLAD_GL_HP_occlusion_test = 0;
-int GLAD_GL_HP_texture_lighting = 0;
-int GLAD_GL_IBM_cull_vertex = 0;
-int GLAD_GL_IBM_multimode_draw_arrays = 0;
-int GLAD_GL_IBM_rasterpos_clip = 0;
-int GLAD_GL_IBM_static_data = 0;
-int GLAD_GL_IBM_texture_mirrored_repeat = 0;
-int GLAD_GL_IBM_vertex_array_lists = 0;
-int GLAD_GL_INGR_blend_func_separate = 0;
-int GLAD_GL_INGR_color_clamp = 0;
-int GLAD_GL_INGR_interlace_read = 0;
-int GLAD_GL_INTEL_blackhole_render = 0;
-int GLAD_GL_INTEL_conservative_rasterization = 0;
-int GLAD_GL_INTEL_fragment_shader_ordering = 0;
-int GLAD_GL_INTEL_framebuffer_CMAA = 0;
-int GLAD_GL_INTEL_map_texture = 0;
-int GLAD_GL_INTEL_parallel_arrays = 0;
-int GLAD_GL_INTEL_performance_query = 0;
 int GLAD_GL_KHR_blend_equation_advanced = 0;
 int GLAD_GL_KHR_blend_equation_advanced_coherent = 0;
 int GLAD_GL_KHR_context_flush_control = 0;
@@ -2307,18 +2089,7 @@ int GLAD_GL_KHR_robustness = 0;
 int GLAD_GL_KHR_texture_compression_astc_hdr = 0;
 int GLAD_GL_KHR_texture_compression_astc_ldr = 0;
 int GLAD_GL_KHR_texture_compression_astc_sliced_3d = 0;
-int GLAD_GL_MESAX_texture_stack = 0;
-int GLAD_GL_MESA_pack_invert = 0;
-int GLAD_GL_MESA_program_binary_formats = 0;
-int GLAD_GL_MESA_resize_buffers = 0;
-int GLAD_GL_MESA_shader_integer_functions = 0;
-int GLAD_GL_MESA_tile_raster_order = 0;
-int GLAD_GL_MESA_window_pos = 0;
-int GLAD_GL_MESA_ycbcr_texture = 0;
-int GLAD_GL_NVX_blend_equation_advanced_multi_draw_buffers = 0;
-int GLAD_GL_NVX_conditional_render = 0;
 int GLAD_GL_NVX_gpu_memory_info = 0;
-int GLAD_GL_NVX_linked_gpu_multicast = 0;
 int GLAD_GL_NV_alpha_to_coverage_dither_control = 0;
 int GLAD_GL_NV_bindless_multi_draw_indirect = 0;
 int GLAD_GL_NV_bindless_multi_draw_indirect_count = 0;
@@ -2371,7 +2142,6 @@ int GLAD_GL_NV_half_float = 0;
 int GLAD_GL_NV_internalformat_sample_query = 0;
 int GLAD_GL_NV_light_max_exponent = 0;
 int GLAD_GL_NV_memory_attachment = 0;
-int GLAD_GL_NV_mesh_shader = 0;
 int GLAD_GL_NV_multisample_coverage = 0;
 int GLAD_GL_NV_multisample_filter_hint = 0;
 int GLAD_GL_NV_occlusion_query = 0;
@@ -2437,87 +2207,6 @@ int GLAD_GL_NV_vertex_program4 = 0;
 int GLAD_GL_NV_video_capture = 0;
 int GLAD_GL_NV_viewport_array2 = 0;
 int GLAD_GL_NV_viewport_swizzle = 0;
-int GLAD_GL_OES_byte_coordinates = 0;
-int GLAD_GL_OES_compressed_paletted_texture = 0;
-int GLAD_GL_OES_fixed_point = 0;
-int GLAD_GL_OES_query_matrix = 0;
-int GLAD_GL_OES_read_format = 0;
-int GLAD_GL_OES_single_precision = 0;
-int GLAD_GL_OML_interlace = 0;
-int GLAD_GL_OML_resample = 0;
-int GLAD_GL_OML_subsample = 0;
-int GLAD_GL_OVR_multiview = 0;
-int GLAD_GL_OVR_multiview2 = 0;
-int GLAD_GL_PGI_misc_hints = 0;
-int GLAD_GL_PGI_vertex_hints = 0;
-int GLAD_GL_REND_screen_coordinates = 0;
-int GLAD_GL_S3_s3tc = 0;
-int GLAD_GL_SGIS_detail_texture = 0;
-int GLAD_GL_SGIS_fog_function = 0;
-int GLAD_GL_SGIS_generate_mipmap = 0;
-int GLAD_GL_SGIS_multisample = 0;
-int GLAD_GL_SGIS_pixel_texture = 0;
-int GLAD_GL_SGIS_point_line_texgen = 0;
-int GLAD_GL_SGIS_point_parameters = 0;
-int GLAD_GL_SGIS_sharpen_texture = 0;
-int GLAD_GL_SGIS_texture4D = 0;
-int GLAD_GL_SGIS_texture_border_clamp = 0;
-int GLAD_GL_SGIS_texture_color_mask = 0;
-int GLAD_GL_SGIS_texture_edge_clamp = 0;
-int GLAD_GL_SGIS_texture_filter4 = 0;
-int GLAD_GL_SGIS_texture_lod = 0;
-int GLAD_GL_SGIS_texture_select = 0;
-int GLAD_GL_SGIX_async = 0;
-int GLAD_GL_SGIX_async_histogram = 0;
-int GLAD_GL_SGIX_async_pixel = 0;
-int GLAD_GL_SGIX_blend_alpha_minmax = 0;
-int GLAD_GL_SGIX_calligraphic_fragment = 0;
-int GLAD_GL_SGIX_clipmap = 0;
-int GLAD_GL_SGIX_convolution_accuracy = 0;
-int GLAD_GL_SGIX_depth_pass_instrument = 0;
-int GLAD_GL_SGIX_depth_texture = 0;
-int GLAD_GL_SGIX_flush_raster = 0;
-int GLAD_GL_SGIX_fog_offset = 0;
-int GLAD_GL_SGIX_fragment_lighting = 0;
-int GLAD_GL_SGIX_framezoom = 0;
-int GLAD_GL_SGIX_igloo_interface = 0;
-int GLAD_GL_SGIX_instruments = 0;
-int GLAD_GL_SGIX_interlace = 0;
-int GLAD_GL_SGIX_ir_instrument1 = 0;
-int GLAD_GL_SGIX_list_priority = 0;
-int GLAD_GL_SGIX_pixel_texture = 0;
-int GLAD_GL_SGIX_pixel_tiles = 0;
-int GLAD_GL_SGIX_polynomial_ffd = 0;
-int GLAD_GL_SGIX_reference_plane = 0;
-int GLAD_GL_SGIX_resample = 0;
-int GLAD_GL_SGIX_scalebias_hint = 0;
-int GLAD_GL_SGIX_shadow = 0;
-int GLAD_GL_SGIX_shadow_ambient = 0;
-int GLAD_GL_SGIX_sprite = 0;
-int GLAD_GL_SGIX_subsample = 0;
-int GLAD_GL_SGIX_tag_sample_buffer = 0;
-int GLAD_GL_SGIX_texture_add_env = 0;
-int GLAD_GL_SGIX_texture_coordinate_clamp = 0;
-int GLAD_GL_SGIX_texture_lod_bias = 0;
-int GLAD_GL_SGIX_texture_multi_buffer = 0;
-int GLAD_GL_SGIX_texture_scale_bias = 0;
-int GLAD_GL_SGIX_vertex_preclip = 0;
-int GLAD_GL_SGIX_ycrcb = 0;
-int GLAD_GL_SGIX_ycrcb_subsample = 0;
-int GLAD_GL_SGIX_ycrcba = 0;
-int GLAD_GL_SGI_color_matrix = 0;
-int GLAD_GL_SGI_color_table = 0;
-int GLAD_GL_SGI_texture_color_table = 0;
-int GLAD_GL_SUNX_constant_data = 0;
-int GLAD_GL_SUN_convolution_border_modes = 0;
-int GLAD_GL_SUN_global_alpha = 0;
-int GLAD_GL_SUN_mesh_array = 0;
-int GLAD_GL_SUN_slice_accum = 0;
-int GLAD_GL_SUN_triangle_list = 0;
-int GLAD_GL_SUN_vertex = 0;
-int GLAD_GL_WIN_phong_shading = 0;
-int GLAD_GL_WIN_specular_fog = 0;
-PFNGLTBUFFERMASK3DFXPROC glad_glTbufferMask3DFX = NULL;
 PFNGLDEBUGMESSAGEENABLEAMDPROC glad_glDebugMessageEnableAMD = NULL;
 PFNGLDEBUGMESSAGEINSERTAMDPROC glad_glDebugMessageInsertAMD = NULL;
 PFNGLDEBUGMESSAGECALLBACKAMDPROC glad_glDebugMessageCallbackAMD = NULL;
@@ -2590,41 +2279,6 @@ PFNGLTEXTURESTORAGESPARSEAMDPROC glad_glTextureStorageSparseAMD = NULL;
 PFNGLSTENCILOPVALUEAMDPROC glad_glStencilOpValueAMD = NULL;
 PFNGLTESSELLATIONFACTORAMDPROC glad_glTessellationFactorAMD = NULL;
 PFNGLTESSELLATIONMODEAMDPROC glad_glTessellationModeAMD = NULL;
-PFNGLELEMENTPOINTERAPPLEPROC glad_glElementPointerAPPLE = NULL;
-PFNGLDRAWELEMENTARRAYAPPLEPROC glad_glDrawElementArrayAPPLE = NULL;
-PFNGLDRAWRANGEELEMENTARRAYAPPLEPROC glad_glDrawRangeElementArrayAPPLE = NULL;
-PFNGLMULTIDRAWELEMENTARRAYAPPLEPROC glad_glMultiDrawElementArrayAPPLE = NULL;
-PFNGLMULTIDRAWRANGEELEMENTARRAYAPPLEPROC glad_glMultiDrawRangeElementArrayAPPLE = NULL;
-PFNGLGENFENCESAPPLEPROC glad_glGenFencesAPPLE = NULL;
-PFNGLDELETEFENCESAPPLEPROC glad_glDeleteFencesAPPLE = NULL;
-PFNGLSETFENCEAPPLEPROC glad_glSetFenceAPPLE = NULL;
-PFNGLISFENCEAPPLEPROC glad_glIsFenceAPPLE = NULL;
-PFNGLTESTFENCEAPPLEPROC glad_glTestFenceAPPLE = NULL;
-PFNGLFINISHFENCEAPPLEPROC glad_glFinishFenceAPPLE = NULL;
-PFNGLTESTOBJECTAPPLEPROC glad_glTestObjectAPPLE = NULL;
-PFNGLFINISHOBJECTAPPLEPROC glad_glFinishObjectAPPLE = NULL;
-PFNGLBUFFERPARAMETERIAPPLEPROC glad_glBufferParameteriAPPLE = NULL;
-PFNGLFLUSHMAPPEDBUFFERRANGEAPPLEPROC glad_glFlushMappedBufferRangeAPPLE = NULL;
-PFNGLOBJECTPURGEABLEAPPLEPROC glad_glObjectPurgeableAPPLE = NULL;
-PFNGLOBJECTUNPURGEABLEAPPLEPROC glad_glObjectUnpurgeableAPPLE = NULL;
-PFNGLGETOBJECTPARAMETERIVAPPLEPROC glad_glGetObjectParameterivAPPLE = NULL;
-PFNGLTEXTURERANGEAPPLEPROC glad_glTextureRangeAPPLE = NULL;
-PFNGLGETTEXPARAMETERPOINTERVAPPLEPROC glad_glGetTexParameterPointervAPPLE = NULL;
-PFNGLBINDVERTEXARRAYAPPLEPROC glad_glBindVertexArrayAPPLE = NULL;
-PFNGLDELETEVERTEXARRAYSAPPLEPROC glad_glDeleteVertexArraysAPPLE = NULL;
-PFNGLGENVERTEXARRAYSAPPLEPROC glad_glGenVertexArraysAPPLE = NULL;
-PFNGLISVERTEXARRAYAPPLEPROC glad_glIsVertexArrayAPPLE = NULL;
-PFNGLVERTEXARRAYRANGEAPPLEPROC glad_glVertexArrayRangeAPPLE = NULL;
-PFNGLFLUSHVERTEXARRAYRANGEAPPLEPROC glad_glFlushVertexArrayRangeAPPLE = NULL;
-PFNGLVERTEXARRAYPARAMETERIAPPLEPROC glad_glVertexArrayParameteriAPPLE = NULL;
-PFNGLENABLEVERTEXATTRIBAPPLEPROC glad_glEnableVertexAttribAPPLE = NULL;
-PFNGLDISABLEVERTEXATTRIBAPPLEPROC glad_glDisableVertexAttribAPPLE = NULL;
-PFNGLISVERTEXATTRIBENABLEDAPPLEPROC glad_glIsVertexAttribEnabledAPPLE = NULL;
-PFNGLMAPVERTEXATTRIB1DAPPLEPROC glad_glMapVertexAttrib1dAPPLE = NULL;
-PFNGLMAPVERTEXATTRIB1FAPPLEPROC glad_glMapVertexAttrib1fAPPLE = NULL;
-PFNGLMAPVERTEXATTRIB2DAPPLEPROC glad_glMapVertexAttrib2dAPPLE = NULL;
-PFNGLMAPVERTEXATTRIB2FAPPLEPROC glad_glMapVertexAttrib2fAPPLE = NULL;
-PFNGLPRIMITIVEBOUNDINGBOXARBPROC glad_glPrimitiveBoundingBoxARB = NULL;
 PFNGLGETTEXTUREHANDLEARBPROC glad_glGetTextureHandleARB = NULL;
 PFNGLGETTEXTURESAMPLERHANDLEARBPROC glad_glGetTextureSamplerHandleARB = NULL;
 PFNGLMAKETEXTUREHANDLERESIDENTARBPROC glad_glMakeTextureHandleResidentARB = NULL;
@@ -2969,94 +2623,6 @@ PFNGLWINDOWPOS3IARBPROC glad_glWindowPos3iARB = NULL;
 PFNGLWINDOWPOS3IVARBPROC glad_glWindowPos3ivARB = NULL;
 PFNGLWINDOWPOS3SARBPROC glad_glWindowPos3sARB = NULL;
 PFNGLWINDOWPOS3SVARBPROC glad_glWindowPos3svARB = NULL;
-PFNGLDRAWBUFFERSATIPROC glad_glDrawBuffersATI = NULL;
-PFNGLELEMENTPOINTERATIPROC glad_glElementPointerATI = NULL;
-PFNGLDRAWELEMENTARRAYATIPROC glad_glDrawElementArrayATI = NULL;
-PFNGLDRAWRANGEELEMENTARRAYATIPROC glad_glDrawRangeElementArrayATI = NULL;
-PFNGLTEXBUMPPARAMETERIVATIPROC glad_glTexBumpParameterivATI = NULL;
-PFNGLTEXBUMPPARAMETERFVATIPROC glad_glTexBumpParameterfvATI = NULL;
-PFNGLGETTEXBUMPPARAMETERIVATIPROC glad_glGetTexBumpParameterivATI = NULL;
-PFNGLGETTEXBUMPPARAMETERFVATIPROC glad_glGetTexBumpParameterfvATI = NULL;
-PFNGLGENFRAGMENTSHADERSATIPROC glad_glGenFragmentShadersATI = NULL;
-PFNGLBINDFRAGMENTSHADERATIPROC glad_glBindFragmentShaderATI = NULL;
-PFNGLDELETEFRAGMENTSHADERATIPROC glad_glDeleteFragmentShaderATI = NULL;
-PFNGLBEGINFRAGMENTSHADERATIPROC glad_glBeginFragmentShaderATI = NULL;
-PFNGLENDFRAGMENTSHADERATIPROC glad_glEndFragmentShaderATI = NULL;
-PFNGLPASSTEXCOORDATIPROC glad_glPassTexCoordATI = NULL;
-PFNGLSAMPLEMAPATIPROC glad_glSampleMapATI = NULL;
-PFNGLCOLORFRAGMENTOP1ATIPROC glad_glColorFragmentOp1ATI = NULL;
-PFNGLCOLORFRAGMENTOP2ATIPROC glad_glColorFragmentOp2ATI = NULL;
-PFNGLCOLORFRAGMENTOP3ATIPROC glad_glColorFragmentOp3ATI = NULL;
-PFNGLALPHAFRAGMENTOP1ATIPROC glad_glAlphaFragmentOp1ATI = NULL;
-PFNGLALPHAFRAGMENTOP2ATIPROC glad_glAlphaFragmentOp2ATI = NULL;
-PFNGLALPHAFRAGMENTOP3ATIPROC glad_glAlphaFragmentOp3ATI = NULL;
-PFNGLSETFRAGMENTSHADERCONSTANTATIPROC glad_glSetFragmentShaderConstantATI = NULL;
-PFNGLMAPOBJECTBUFFERATIPROC glad_glMapObjectBufferATI = NULL;
-PFNGLUNMAPOBJECTBUFFERATIPROC glad_glUnmapObjectBufferATI = NULL;
-PFNGLPNTRIANGLESIATIPROC glad_glPNTrianglesiATI = NULL;
-PFNGLPNTRIANGLESFATIPROC glad_glPNTrianglesfATI = NULL;
-PFNGLSTENCILOPSEPARATEATIPROC glad_glStencilOpSeparateATI = NULL;
-PFNGLSTENCILFUNCSEPARATEATIPROC glad_glStencilFuncSeparateATI = NULL;
-PFNGLNEWOBJECTBUFFERATIPROC glad_glNewObjectBufferATI = NULL;
-PFNGLISOBJECTBUFFERATIPROC glad_glIsObjectBufferATI = NULL;
-PFNGLUPDATEOBJECTBUFFERATIPROC glad_glUpdateObjectBufferATI = NULL;
-PFNGLGETOBJECTBUFFERFVATIPROC glad_glGetObjectBufferfvATI = NULL;
-PFNGLGETOBJECTBUFFERIVATIPROC glad_glGetObjectBufferivATI = NULL;
-PFNGLFREEOBJECTBUFFERATIPROC glad_glFreeObjectBufferATI = NULL;
-PFNGLARRAYOBJECTATIPROC glad_glArrayObjectATI = NULL;
-PFNGLGETARRAYOBJECTFVATIPROC glad_glGetArrayObjectfvATI = NULL;
-PFNGLGETARRAYOBJECTIVATIPROC glad_glGetArrayObjectivATI = NULL;
-PFNGLVARIANTARRAYOBJECTATIPROC glad_glVariantArrayObjectATI = NULL;
-PFNGLGETVARIANTARRAYOBJECTFVATIPROC glad_glGetVariantArrayObjectfvATI = NULL;
-PFNGLGETVARIANTARRAYOBJECTIVATIPROC glad_glGetVariantArrayObjectivATI = NULL;
-PFNGLVERTEXATTRIBARRAYOBJECTATIPROC glad_glVertexAttribArrayObjectATI = NULL;
-PFNGLGETVERTEXATTRIBARRAYOBJECTFVATIPROC glad_glGetVertexAttribArrayObjectfvATI = NULL;
-PFNGLGETVERTEXATTRIBARRAYOBJECTIVATIPROC glad_glGetVertexAttribArrayObjectivATI = NULL;
-PFNGLVERTEXSTREAM1SATIPROC glad_glVertexStream1sATI = NULL;
-PFNGLVERTEXSTREAM1SVATIPROC glad_glVertexStream1svATI = NULL;
-PFNGLVERTEXSTREAM1IATIPROC glad_glVertexStream1iATI = NULL;
-PFNGLVERTEXSTREAM1IVATIPROC glad_glVertexStream1ivATI = NULL;
-PFNGLVERTEXSTREAM1FATIPROC glad_glVertexStream1fATI = NULL;
-PFNGLVERTEXSTREAM1FVATIPROC glad_glVertexStream1fvATI = NULL;
-PFNGLVERTEXSTREAM1DATIPROC glad_glVertexStream1dATI = NULL;
-PFNGLVERTEXSTREAM1DVATIPROC glad_glVertexStream1dvATI = NULL;
-PFNGLVERTEXSTREAM2SATIPROC glad_glVertexStream2sATI = NULL;
-PFNGLVERTEXSTREAM2SVATIPROC glad_glVertexStream2svATI = NULL;
-PFNGLVERTEXSTREAM2IATIPROC glad_glVertexStream2iATI = NULL;
-PFNGLVERTEXSTREAM2IVATIPROC glad_glVertexStream2ivATI = NULL;
-PFNGLVERTEXSTREAM2FATIPROC glad_glVertexStream2fATI = NULL;
-PFNGLVERTEXSTREAM2FVATIPROC glad_glVertexStream2fvATI = NULL;
-PFNGLVERTEXSTREAM2DATIPROC glad_glVertexStream2dATI = NULL;
-PFNGLVERTEXSTREAM2DVATIPROC glad_glVertexStream2dvATI = NULL;
-PFNGLVERTEXSTREAM3SATIPROC glad_glVertexStream3sATI = NULL;
-PFNGLVERTEXSTREAM3SVATIPROC glad_glVertexStream3svATI = NULL;
-PFNGLVERTEXSTREAM3IATIPROC glad_glVertexStream3iATI = NULL;
-PFNGLVERTEXSTREAM3IVATIPROC glad_glVertexStream3ivATI = NULL;
-PFNGLVERTEXSTREAM3FATIPROC glad_glVertexStream3fATI = NULL;
-PFNGLVERTEXSTREAM3FVATIPROC glad_glVertexStream3fvATI = NULL;
-PFNGLVERTEXSTREAM3DATIPROC glad_glVertexStream3dATI = NULL;
-PFNGLVERTEXSTREAM3DVATIPROC glad_glVertexStream3dvATI = NULL;
-PFNGLVERTEXSTREAM4SATIPROC glad_glVertexStream4sATI = NULL;
-PFNGLVERTEXSTREAM4SVATIPROC glad_glVertexStream4svATI = NULL;
-PFNGLVERTEXSTREAM4IATIPROC glad_glVertexStream4iATI = NULL;
-PFNGLVERTEXSTREAM4IVATIPROC glad_glVertexStream4ivATI = NULL;
-PFNGLVERTEXSTREAM4FATIPROC glad_glVertexStream4fATI = NULL;
-PFNGLVERTEXSTREAM4FVATIPROC glad_glVertexStream4fvATI = NULL;
-PFNGLVERTEXSTREAM4DATIPROC glad_glVertexStream4dATI = NULL;
-PFNGLVERTEXSTREAM4DVATIPROC glad_glVertexStream4dvATI = NULL;
-PFNGLNORMALSTREAM3BATIPROC glad_glNormalStream3bATI = NULL;
-PFNGLNORMALSTREAM3BVATIPROC glad_glNormalStream3bvATI = NULL;
-PFNGLNORMALSTREAM3SATIPROC glad_glNormalStream3sATI = NULL;
-PFNGLNORMALSTREAM3SVATIPROC glad_glNormalStream3svATI = NULL;
-PFNGLNORMALSTREAM3IATIPROC glad_glNormalStream3iATI = NULL;
-PFNGLNORMALSTREAM3IVATIPROC glad_glNormalStream3ivATI = NULL;
-PFNGLNORMALSTREAM3FATIPROC glad_glNormalStream3fATI = NULL;
-PFNGLNORMALSTREAM3FVATIPROC glad_glNormalStream3fvATI = NULL;
-PFNGLNORMALSTREAM3DATIPROC glad_glNormalStream3dATI = NULL;
-PFNGLNORMALSTREAM3DVATIPROC glad_glNormalStream3dvATI = NULL;
-PFNGLCLIENTACTIVEVERTEXSTREAMATIPROC glad_glClientActiveVertexStreamATI = NULL;
-PFNGLVERTEXBLENDENVIATIPROC glad_glVertexBlendEnviATI = NULL;
-PFNGLVERTEXBLENDENVFATIPROC glad_glVertexBlendEnvfATI = NULL;
 PFNGLEGLIMAGETARGETTEXSTORAGEEXTPROC glad_glEGLImageTargetTexStorageEXT = NULL;
 PFNGLEGLIMAGETARGETTEXTURESTORAGEEXTPROC glad_glEGLImageTargetTextureStorageEXT = NULL;
 PFNGLUNIFORMBUFFEREXTPROC glad_glUniformBufferEXT = NULL;
@@ -3614,45 +3180,6 @@ PFNGLVERTEXWEIGHTPOINTEREXTPROC glad_glVertexWeightPointerEXT = NULL;
 PFNGLACQUIREKEYEDMUTEXWIN32EXTPROC glad_glAcquireKeyedMutexWin32EXT = NULL;
 PFNGLRELEASEKEYEDMUTEXWIN32EXTPROC glad_glReleaseKeyedMutexWin32EXT = NULL;
 PFNGLWINDOWRECTANGLESEXTPROC glad_glWindowRectanglesEXT = NULL;
-PFNGLIMPORTSYNCEXTPROC glad_glImportSyncEXT = NULL;
-PFNGLFRAMETERMINATORGREMEDYPROC glad_glFrameTerminatorGREMEDY = NULL;
-PFNGLSTRINGMARKERGREMEDYPROC glad_glStringMarkerGREMEDY = NULL;
-PFNGLIMAGETRANSFORMPARAMETERIHPPROC glad_glImageTransformParameteriHP = NULL;
-PFNGLIMAGETRANSFORMPARAMETERFHPPROC glad_glImageTransformParameterfHP = NULL;
-PFNGLIMAGETRANSFORMPARAMETERIVHPPROC glad_glImageTransformParameterivHP = NULL;
-PFNGLIMAGETRANSFORMPARAMETERFVHPPROC glad_glImageTransformParameterfvHP = NULL;
-PFNGLGETIMAGETRANSFORMPARAMETERIVHPPROC glad_glGetImageTransformParameterivHP = NULL;
-PFNGLGETIMAGETRANSFORMPARAMETERFVHPPROC glad_glGetImageTransformParameterfvHP = NULL;
-PFNGLMULTIMODEDRAWARRAYSIBMPROC glad_glMultiModeDrawArraysIBM = NULL;
-PFNGLMULTIMODEDRAWELEMENTSIBMPROC glad_glMultiModeDrawElementsIBM = NULL;
-PFNGLFLUSHSTATICDATAIBMPROC glad_glFlushStaticDataIBM = NULL;
-PFNGLCOLORPOINTERLISTIBMPROC glad_glColorPointerListIBM = NULL;
-PFNGLSECONDARYCOLORPOINTERLISTIBMPROC glad_glSecondaryColorPointerListIBM = NULL;
-PFNGLEDGEFLAGPOINTERLISTIBMPROC glad_glEdgeFlagPointerListIBM = NULL;
-PFNGLFOGCOORDPOINTERLISTIBMPROC glad_glFogCoordPointerListIBM = NULL;
-PFNGLINDEXPOINTERLISTIBMPROC glad_glIndexPointerListIBM = NULL;
-PFNGLNORMALPOINTERLISTIBMPROC glad_glNormalPointerListIBM = NULL;
-PFNGLTEXCOORDPOINTERLISTIBMPROC glad_glTexCoordPointerListIBM = NULL;
-PFNGLVERTEXPOINTERLISTIBMPROC glad_glVertexPointerListIBM = NULL;
-PFNGLBLENDFUNCSEPARATEINGRPROC glad_glBlendFuncSeparateINGR = NULL;
-PFNGLAPPLYFRAMEBUFFERATTACHMENTCMAAINTELPROC glad_glApplyFramebufferAttachmentCMAAINTEL = NULL;
-PFNGLSYNCTEXTUREINTELPROC glad_glSyncTextureINTEL = NULL;
-PFNGLUNMAPTEXTURE2DINTELPROC glad_glUnmapTexture2DINTEL = NULL;
-PFNGLMAPTEXTURE2DINTELPROC glad_glMapTexture2DINTEL = NULL;
-PFNGLVERTEXPOINTERVINTELPROC glad_glVertexPointervINTEL = NULL;
-PFNGLNORMALPOINTERVINTELPROC glad_glNormalPointervINTEL = NULL;
-PFNGLCOLORPOINTERVINTELPROC glad_glColorPointervINTEL = NULL;
-PFNGLTEXCOORDPOINTERVINTELPROC glad_glTexCoordPointervINTEL = NULL;
-PFNGLBEGINPERFQUERYINTELPROC glad_glBeginPerfQueryINTEL = NULL;
-PFNGLCREATEPERFQUERYINTELPROC glad_glCreatePerfQueryINTEL = NULL;
-PFNGLDELETEPERFQUERYINTELPROC glad_glDeletePerfQueryINTEL = NULL;
-PFNGLENDPERFQUERYINTELPROC glad_glEndPerfQueryINTEL = NULL;
-PFNGLGETFIRSTPERFQUERYIDINTELPROC glad_glGetFirstPerfQueryIdINTEL = NULL;
-PFNGLGETNEXTPERFQUERYIDINTELPROC glad_glGetNextPerfQueryIdINTEL = NULL;
-PFNGLGETPERFCOUNTERINFOINTELPROC glad_glGetPerfCounterInfoINTEL = NULL;
-PFNGLGETPERFQUERYDATAINTELPROC glad_glGetPerfQueryDataINTEL = NULL;
-PFNGLGETPERFQUERYIDBYNAMEINTELPROC glad_glGetPerfQueryIdByNameINTEL = NULL;
-PFNGLGETPERFQUERYINFOINTELPROC glad_glGetPerfQueryInfoINTEL = NULL;
 PFNGLBLENDBARRIERKHRPROC glad_glBlendBarrierKHR = NULL;
 PFNGLDEBUGMESSAGECONTROLKHRPROC glad_glDebugMessageControlKHR = NULL;
 PFNGLDEBUGMESSAGEINSERTKHRPROC glad_glDebugMessageInsertKHR = NULL;
@@ -3671,36 +3198,6 @@ PFNGLREADNPIXELSKHRPROC glad_glReadnPixelsKHR = NULL;
 PFNGLGETNUNIFORMFVKHRPROC glad_glGetnUniformfvKHR = NULL;
 PFNGLGETNUNIFORMIVKHRPROC glad_glGetnUniformivKHR = NULL;
 PFNGLGETNUNIFORMUIVKHRPROC glad_glGetnUniformuivKHR = NULL;
-PFNGLRESIZEBUFFERSMESAPROC glad_glResizeBuffersMESA = NULL;
-PFNGLWINDOWPOS2DMESAPROC glad_glWindowPos2dMESA = NULL;
-PFNGLWINDOWPOS2DVMESAPROC glad_glWindowPos2dvMESA = NULL;
-PFNGLWINDOWPOS2FMESAPROC glad_glWindowPos2fMESA = NULL;
-PFNGLWINDOWPOS2FVMESAPROC glad_glWindowPos2fvMESA = NULL;
-PFNGLWINDOWPOS2IMESAPROC glad_glWindowPos2iMESA = NULL;
-PFNGLWINDOWPOS2IVMESAPROC glad_glWindowPos2ivMESA = NULL;
-PFNGLWINDOWPOS2SMESAPROC glad_glWindowPos2sMESA = NULL;
-PFNGLWINDOWPOS2SVMESAPROC glad_glWindowPos2svMESA = NULL;
-PFNGLWINDOWPOS3DMESAPROC glad_glWindowPos3dMESA = NULL;
-PFNGLWINDOWPOS3DVMESAPROC glad_glWindowPos3dvMESA = NULL;
-PFNGLWINDOWPOS3FMESAPROC glad_glWindowPos3fMESA = NULL;
-PFNGLWINDOWPOS3FVMESAPROC glad_glWindowPos3fvMESA = NULL;
-PFNGLWINDOWPOS3IMESAPROC glad_glWindowPos3iMESA = NULL;
-PFNGLWINDOWPOS3IVMESAPROC glad_glWindowPos3ivMESA = NULL;
-PFNGLWINDOWPOS3SMESAPROC glad_glWindowPos3sMESA = NULL;
-PFNGLWINDOWPOS3SVMESAPROC glad_glWindowPos3svMESA = NULL;
-PFNGLWINDOWPOS4DMESAPROC glad_glWindowPos4dMESA = NULL;
-PFNGLWINDOWPOS4DVMESAPROC glad_glWindowPos4dvMESA = NULL;
-PFNGLWINDOWPOS4FMESAPROC glad_glWindowPos4fMESA = NULL;
-PFNGLWINDOWPOS4FVMESAPROC glad_glWindowPos4fvMESA = NULL;
-PFNGLWINDOWPOS4IMESAPROC glad_glWindowPos4iMESA = NULL;
-PFNGLWINDOWPOS4IVMESAPROC glad_glWindowPos4ivMESA = NULL;
-PFNGLWINDOWPOS4SMESAPROC glad_glWindowPos4sMESA = NULL;
-PFNGLWINDOWPOS4SVMESAPROC glad_glWindowPos4svMESA = NULL;
-PFNGLBEGINCONDITIONALRENDERNVXPROC glad_glBeginConditionalRenderNVX = NULL;
-PFNGLENDCONDITIONALRENDERNVXPROC glad_glEndConditionalRenderNVX = NULL;
-PFNGLLGPUNAMEDBUFFERSUBDATANVXPROC glad_glLGPUNamedBufferSubDataNVX = NULL;
-PFNGLLGPUCOPYIMAGESUBDATANVXPROC glad_glLGPUCopyImageSubDataNVX = NULL;
-PFNGLLGPUINTERLOCKNVXPROC glad_glLGPUInterlockNVX = NULL;
 PFNGLALPHATOCOVERAGEDITHERCONTROLNVPROC glad_glAlphaToCoverageDitherControlNV = NULL;
 PFNGLMULTIDRAWARRAYSINDIRECTBINDLESSNVPROC glad_glMultiDrawArraysIndirectBindlessNV = NULL;
 PFNGLMULTIDRAWELEMENTSINDIRECTBINDLESSNVPROC glad_glMultiDrawElementsIndirectBindlessNV = NULL;
@@ -3870,10 +3367,6 @@ PFNGLTEXATTACHMEMORYNVPROC glad_glTexAttachMemoryNV = NULL;
 PFNGLBUFFERATTACHMEMORYNVPROC glad_glBufferAttachMemoryNV = NULL;
 PFNGLTEXTUREATTACHMEMORYNVPROC glad_glTextureAttachMemoryNV = NULL;
 PFNGLNAMEDBUFFERATTACHMEMORYNVPROC glad_glNamedBufferAttachMemoryNV = NULL;
-PFNGLDRAWMESHTASKSNVPROC glad_glDrawMeshTasksNV = NULL;
-PFNGLDRAWMESHTASKSINDIRECTNVPROC glad_glDrawMeshTasksIndirectNV = NULL;
-PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC glad_glMultiDrawMeshTasksIndirectNV = NULL;
-PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC glad_glMultiDrawMeshTasksIndirectCountNV = NULL;
 PFNGLGENOCCLUSIONQUERIESNVPROC glad_glGenOcclusionQueriesNV = NULL;
 PFNGLDELETEOCCLUSIONQUERIESNVPROC glad_glDeleteOcclusionQueriesNV = NULL;
 PFNGLISOCCLUSIONQUERYNVPROC glad_glIsOcclusionQueryNV = NULL;
@@ -4174,279 +3667,6 @@ PFNGLVIDEOCAPTURESTREAMPARAMETERIVNVPROC glad_glVideoCaptureStreamParameterivNV 
 PFNGLVIDEOCAPTURESTREAMPARAMETERFVNVPROC glad_glVideoCaptureStreamParameterfvNV = NULL;
 PFNGLVIDEOCAPTURESTREAMPARAMETERDVNVPROC glad_glVideoCaptureStreamParameterdvNV = NULL;
 PFNGLVIEWPORTSWIZZLENVPROC glad_glViewportSwizzleNV = NULL;
-PFNGLMULTITEXCOORD1BOESPROC glad_glMultiTexCoord1bOES = NULL;
-PFNGLMULTITEXCOORD1BVOESPROC glad_glMultiTexCoord1bvOES = NULL;
-PFNGLMULTITEXCOORD2BOESPROC glad_glMultiTexCoord2bOES = NULL;
-PFNGLMULTITEXCOORD2BVOESPROC glad_glMultiTexCoord2bvOES = NULL;
-PFNGLMULTITEXCOORD3BOESPROC glad_glMultiTexCoord3bOES = NULL;
-PFNGLMULTITEXCOORD3BVOESPROC glad_glMultiTexCoord3bvOES = NULL;
-PFNGLMULTITEXCOORD4BOESPROC glad_glMultiTexCoord4bOES = NULL;
-PFNGLMULTITEXCOORD4BVOESPROC glad_glMultiTexCoord4bvOES = NULL;
-PFNGLTEXCOORD1BOESPROC glad_glTexCoord1bOES = NULL;
-PFNGLTEXCOORD1BVOESPROC glad_glTexCoord1bvOES = NULL;
-PFNGLTEXCOORD2BOESPROC glad_glTexCoord2bOES = NULL;
-PFNGLTEXCOORD2BVOESPROC glad_glTexCoord2bvOES = NULL;
-PFNGLTEXCOORD3BOESPROC glad_glTexCoord3bOES = NULL;
-PFNGLTEXCOORD3BVOESPROC glad_glTexCoord3bvOES = NULL;
-PFNGLTEXCOORD4BOESPROC glad_glTexCoord4bOES = NULL;
-PFNGLTEXCOORD4BVOESPROC glad_glTexCoord4bvOES = NULL;
-PFNGLVERTEX2BOESPROC glad_glVertex2bOES = NULL;
-PFNGLVERTEX2BVOESPROC glad_glVertex2bvOES = NULL;
-PFNGLVERTEX3BOESPROC glad_glVertex3bOES = NULL;
-PFNGLVERTEX3BVOESPROC glad_glVertex3bvOES = NULL;
-PFNGLVERTEX4BOESPROC glad_glVertex4bOES = NULL;
-PFNGLVERTEX4BVOESPROC glad_glVertex4bvOES = NULL;
-PFNGLALPHAFUNCXOESPROC glad_glAlphaFuncxOES = NULL;
-PFNGLCLEARCOLORXOESPROC glad_glClearColorxOES = NULL;
-PFNGLCLEARDEPTHXOESPROC glad_glClearDepthxOES = NULL;
-PFNGLCLIPPLANEXOESPROC glad_glClipPlanexOES = NULL;
-PFNGLCOLOR4XOESPROC glad_glColor4xOES = NULL;
-PFNGLDEPTHRANGEXOESPROC glad_glDepthRangexOES = NULL;
-PFNGLFOGXOESPROC glad_glFogxOES = NULL;
-PFNGLFOGXVOESPROC glad_glFogxvOES = NULL;
-PFNGLFRUSTUMXOESPROC glad_glFrustumxOES = NULL;
-PFNGLGETCLIPPLANEXOESPROC glad_glGetClipPlanexOES = NULL;
-PFNGLGETFIXEDVOESPROC glad_glGetFixedvOES = NULL;
-PFNGLGETTEXENVXVOESPROC glad_glGetTexEnvxvOES = NULL;
-PFNGLGETTEXPARAMETERXVOESPROC glad_glGetTexParameterxvOES = NULL;
-PFNGLLIGHTMODELXOESPROC glad_glLightModelxOES = NULL;
-PFNGLLIGHTMODELXVOESPROC glad_glLightModelxvOES = NULL;
-PFNGLLIGHTXOESPROC glad_glLightxOES = NULL;
-PFNGLLIGHTXVOESPROC glad_glLightxvOES = NULL;
-PFNGLLINEWIDTHXOESPROC glad_glLineWidthxOES = NULL;
-PFNGLLOADMATRIXXOESPROC glad_glLoadMatrixxOES = NULL;
-PFNGLMATERIALXOESPROC glad_glMaterialxOES = NULL;
-PFNGLMATERIALXVOESPROC glad_glMaterialxvOES = NULL;
-PFNGLMULTMATRIXXOESPROC glad_glMultMatrixxOES = NULL;
-PFNGLMULTITEXCOORD4XOESPROC glad_glMultiTexCoord4xOES = NULL;
-PFNGLNORMAL3XOESPROC glad_glNormal3xOES = NULL;
-PFNGLORTHOXOESPROC glad_glOrthoxOES = NULL;
-PFNGLPOINTPARAMETERXVOESPROC glad_glPointParameterxvOES = NULL;
-PFNGLPOINTSIZEXOESPROC glad_glPointSizexOES = NULL;
-PFNGLPOLYGONOFFSETXOESPROC glad_glPolygonOffsetxOES = NULL;
-PFNGLROTATEXOESPROC glad_glRotatexOES = NULL;
-PFNGLSCALEXOESPROC glad_glScalexOES = NULL;
-PFNGLTEXENVXOESPROC glad_glTexEnvxOES = NULL;
-PFNGLTEXENVXVOESPROC glad_glTexEnvxvOES = NULL;
-PFNGLTEXPARAMETERXOESPROC glad_glTexParameterxOES = NULL;
-PFNGLTEXPARAMETERXVOESPROC glad_glTexParameterxvOES = NULL;
-PFNGLTRANSLATEXOESPROC glad_glTranslatexOES = NULL;
-PFNGLGETLIGHTXVOESPROC glad_glGetLightxvOES = NULL;
-PFNGLGETMATERIALXVOESPROC glad_glGetMaterialxvOES = NULL;
-PFNGLPOINTPARAMETERXOESPROC glad_glPointParameterxOES = NULL;
-PFNGLSAMPLECOVERAGEXOESPROC glad_glSampleCoveragexOES = NULL;
-PFNGLACCUMXOESPROC glad_glAccumxOES = NULL;
-PFNGLBITMAPXOESPROC glad_glBitmapxOES = NULL;
-PFNGLBLENDCOLORXOESPROC glad_glBlendColorxOES = NULL;
-PFNGLCLEARACCUMXOESPROC glad_glClearAccumxOES = NULL;
-PFNGLCOLOR3XOESPROC glad_glColor3xOES = NULL;
-PFNGLCOLOR3XVOESPROC glad_glColor3xvOES = NULL;
-PFNGLCOLOR4XVOESPROC glad_glColor4xvOES = NULL;
-PFNGLCONVOLUTIONPARAMETERXOESPROC glad_glConvolutionParameterxOES = NULL;
-PFNGLCONVOLUTIONPARAMETERXVOESPROC glad_glConvolutionParameterxvOES = NULL;
-PFNGLEVALCOORD1XOESPROC glad_glEvalCoord1xOES = NULL;
-PFNGLEVALCOORD1XVOESPROC glad_glEvalCoord1xvOES = NULL;
-PFNGLEVALCOORD2XOESPROC glad_glEvalCoord2xOES = NULL;
-PFNGLEVALCOORD2XVOESPROC glad_glEvalCoord2xvOES = NULL;
-PFNGLFEEDBACKBUFFERXOESPROC glad_glFeedbackBufferxOES = NULL;
-PFNGLGETCONVOLUTIONPARAMETERXVOESPROC glad_glGetConvolutionParameterxvOES = NULL;
-PFNGLGETHISTOGRAMPARAMETERXVOESPROC glad_glGetHistogramParameterxvOES = NULL;
-PFNGLGETLIGHTXOESPROC glad_glGetLightxOES = NULL;
-PFNGLGETMAPXVOESPROC glad_glGetMapxvOES = NULL;
-PFNGLGETMATERIALXOESPROC glad_glGetMaterialxOES = NULL;
-PFNGLGETPIXELMAPXVPROC glad_glGetPixelMapxv = NULL;
-PFNGLGETTEXGENXVOESPROC glad_glGetTexGenxvOES = NULL;
-PFNGLGETTEXLEVELPARAMETERXVOESPROC glad_glGetTexLevelParameterxvOES = NULL;
-PFNGLINDEXXOESPROC glad_glIndexxOES = NULL;
-PFNGLINDEXXVOESPROC glad_glIndexxvOES = NULL;
-PFNGLLOADTRANSPOSEMATRIXXOESPROC glad_glLoadTransposeMatrixxOES = NULL;
-PFNGLMAP1XOESPROC glad_glMap1xOES = NULL;
-PFNGLMAP2XOESPROC glad_glMap2xOES = NULL;
-PFNGLMAPGRID1XOESPROC glad_glMapGrid1xOES = NULL;
-PFNGLMAPGRID2XOESPROC glad_glMapGrid2xOES = NULL;
-PFNGLMULTTRANSPOSEMATRIXXOESPROC glad_glMultTransposeMatrixxOES = NULL;
-PFNGLMULTITEXCOORD1XOESPROC glad_glMultiTexCoord1xOES = NULL;
-PFNGLMULTITEXCOORD1XVOESPROC glad_glMultiTexCoord1xvOES = NULL;
-PFNGLMULTITEXCOORD2XOESPROC glad_glMultiTexCoord2xOES = NULL;
-PFNGLMULTITEXCOORD2XVOESPROC glad_glMultiTexCoord2xvOES = NULL;
-PFNGLMULTITEXCOORD3XOESPROC glad_glMultiTexCoord3xOES = NULL;
-PFNGLMULTITEXCOORD3XVOESPROC glad_glMultiTexCoord3xvOES = NULL;
-PFNGLMULTITEXCOORD4XVOESPROC glad_glMultiTexCoord4xvOES = NULL;
-PFNGLNORMAL3XVOESPROC glad_glNormal3xvOES = NULL;
-PFNGLPASSTHROUGHXOESPROC glad_glPassThroughxOES = NULL;
-PFNGLPIXELMAPXPROC glad_glPixelMapx = NULL;
-PFNGLPIXELSTOREXPROC glad_glPixelStorex = NULL;
-PFNGLPIXELTRANSFERXOESPROC glad_glPixelTransferxOES = NULL;
-PFNGLPIXELZOOMXOESPROC glad_glPixelZoomxOES = NULL;
-PFNGLPRIORITIZETEXTURESXOESPROC glad_glPrioritizeTexturesxOES = NULL;
-PFNGLRASTERPOS2XOESPROC glad_glRasterPos2xOES = NULL;
-PFNGLRASTERPOS2XVOESPROC glad_glRasterPos2xvOES = NULL;
-PFNGLRASTERPOS3XOESPROC glad_glRasterPos3xOES = NULL;
-PFNGLRASTERPOS3XVOESPROC glad_glRasterPos3xvOES = NULL;
-PFNGLRASTERPOS4XOESPROC glad_glRasterPos4xOES = NULL;
-PFNGLRASTERPOS4XVOESPROC glad_glRasterPos4xvOES = NULL;
-PFNGLRECTXOESPROC glad_glRectxOES = NULL;
-PFNGLRECTXVOESPROC glad_glRectxvOES = NULL;
-PFNGLTEXCOORD1XOESPROC glad_glTexCoord1xOES = NULL;
-PFNGLTEXCOORD1XVOESPROC glad_glTexCoord1xvOES = NULL;
-PFNGLTEXCOORD2XOESPROC glad_glTexCoord2xOES = NULL;
-PFNGLTEXCOORD2XVOESPROC glad_glTexCoord2xvOES = NULL;
-PFNGLTEXCOORD3XOESPROC glad_glTexCoord3xOES = NULL;
-PFNGLTEXCOORD3XVOESPROC glad_glTexCoord3xvOES = NULL;
-PFNGLTEXCOORD4XOESPROC glad_glTexCoord4xOES = NULL;
-PFNGLTEXCOORD4XVOESPROC glad_glTexCoord4xvOES = NULL;
-PFNGLTEXGENXOESPROC glad_glTexGenxOES = NULL;
-PFNGLTEXGENXVOESPROC glad_glTexGenxvOES = NULL;
-PFNGLVERTEX2XOESPROC glad_glVertex2xOES = NULL;
-PFNGLVERTEX2XVOESPROC glad_glVertex2xvOES = NULL;
-PFNGLVERTEX3XOESPROC glad_glVertex3xOES = NULL;
-PFNGLVERTEX3XVOESPROC glad_glVertex3xvOES = NULL;
-PFNGLVERTEX4XOESPROC glad_glVertex4xOES = NULL;
-PFNGLVERTEX4XVOESPROC glad_glVertex4xvOES = NULL;
-PFNGLQUERYMATRIXXOESPROC glad_glQueryMatrixxOES = NULL;
-PFNGLCLEARDEPTHFOESPROC glad_glClearDepthfOES = NULL;
-PFNGLCLIPPLANEFOESPROC glad_glClipPlanefOES = NULL;
-PFNGLDEPTHRANGEFOESPROC glad_glDepthRangefOES = NULL;
-PFNGLFRUSTUMFOESPROC glad_glFrustumfOES = NULL;
-PFNGLGETCLIPPLANEFOESPROC glad_glGetClipPlanefOES = NULL;
-PFNGLORTHOFOESPROC glad_glOrthofOES = NULL;
-PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC glad_glFramebufferTextureMultiviewOVR = NULL;
-PFNGLHINTPGIPROC glad_glHintPGI = NULL;
-PFNGLDETAILTEXFUNCSGISPROC glad_glDetailTexFuncSGIS = NULL;
-PFNGLGETDETAILTEXFUNCSGISPROC glad_glGetDetailTexFuncSGIS = NULL;
-PFNGLFOGFUNCSGISPROC glad_glFogFuncSGIS = NULL;
-PFNGLGETFOGFUNCSGISPROC glad_glGetFogFuncSGIS = NULL;
-PFNGLSAMPLEMASKSGISPROC glad_glSampleMaskSGIS = NULL;
-PFNGLSAMPLEPATTERNSGISPROC glad_glSamplePatternSGIS = NULL;
-PFNGLPIXELTEXGENPARAMETERISGISPROC glad_glPixelTexGenParameteriSGIS = NULL;
-PFNGLPIXELTEXGENPARAMETERIVSGISPROC glad_glPixelTexGenParameterivSGIS = NULL;
-PFNGLPIXELTEXGENPARAMETERFSGISPROC glad_glPixelTexGenParameterfSGIS = NULL;
-PFNGLPIXELTEXGENPARAMETERFVSGISPROC glad_glPixelTexGenParameterfvSGIS = NULL;
-PFNGLGETPIXELTEXGENPARAMETERIVSGISPROC glad_glGetPixelTexGenParameterivSGIS = NULL;
-PFNGLGETPIXELTEXGENPARAMETERFVSGISPROC glad_glGetPixelTexGenParameterfvSGIS = NULL;
-PFNGLPOINTPARAMETERFSGISPROC glad_glPointParameterfSGIS = NULL;
-PFNGLPOINTPARAMETERFVSGISPROC glad_glPointParameterfvSGIS = NULL;
-PFNGLSHARPENTEXFUNCSGISPROC glad_glSharpenTexFuncSGIS = NULL;
-PFNGLGETSHARPENTEXFUNCSGISPROC glad_glGetSharpenTexFuncSGIS = NULL;
-PFNGLTEXIMAGE4DSGISPROC glad_glTexImage4DSGIS = NULL;
-PFNGLTEXSUBIMAGE4DSGISPROC glad_glTexSubImage4DSGIS = NULL;
-PFNGLTEXTURECOLORMASKSGISPROC glad_glTextureColorMaskSGIS = NULL;
-PFNGLGETTEXFILTERFUNCSGISPROC glad_glGetTexFilterFuncSGIS = NULL;
-PFNGLTEXFILTERFUNCSGISPROC glad_glTexFilterFuncSGIS = NULL;
-PFNGLASYNCMARKERSGIXPROC glad_glAsyncMarkerSGIX = NULL;
-PFNGLFINISHASYNCSGIXPROC glad_glFinishAsyncSGIX = NULL;
-PFNGLPOLLASYNCSGIXPROC glad_glPollAsyncSGIX = NULL;
-PFNGLGENASYNCMARKERSSGIXPROC glad_glGenAsyncMarkersSGIX = NULL;
-PFNGLDELETEASYNCMARKERSSGIXPROC glad_glDeleteAsyncMarkersSGIX = NULL;
-PFNGLISASYNCMARKERSGIXPROC glad_glIsAsyncMarkerSGIX = NULL;
-PFNGLFLUSHRASTERSGIXPROC glad_glFlushRasterSGIX = NULL;
-PFNGLFRAGMENTCOLORMATERIALSGIXPROC glad_glFragmentColorMaterialSGIX = NULL;
-PFNGLFRAGMENTLIGHTFSGIXPROC glad_glFragmentLightfSGIX = NULL;
-PFNGLFRAGMENTLIGHTFVSGIXPROC glad_glFragmentLightfvSGIX = NULL;
-PFNGLFRAGMENTLIGHTISGIXPROC glad_glFragmentLightiSGIX = NULL;
-PFNGLFRAGMENTLIGHTIVSGIXPROC glad_glFragmentLightivSGIX = NULL;
-PFNGLFRAGMENTLIGHTMODELFSGIXPROC glad_glFragmentLightModelfSGIX = NULL;
-PFNGLFRAGMENTLIGHTMODELFVSGIXPROC glad_glFragmentLightModelfvSGIX = NULL;
-PFNGLFRAGMENTLIGHTMODELISGIXPROC glad_glFragmentLightModeliSGIX = NULL;
-PFNGLFRAGMENTLIGHTMODELIVSGIXPROC glad_glFragmentLightModelivSGIX = NULL;
-PFNGLFRAGMENTMATERIALFSGIXPROC glad_glFragmentMaterialfSGIX = NULL;
-PFNGLFRAGMENTMATERIALFVSGIXPROC glad_glFragmentMaterialfvSGIX = NULL;
-PFNGLFRAGMENTMATERIALISGIXPROC glad_glFragmentMaterialiSGIX = NULL;
-PFNGLFRAGMENTMATERIALIVSGIXPROC glad_glFragmentMaterialivSGIX = NULL;
-PFNGLGETFRAGMENTLIGHTFVSGIXPROC glad_glGetFragmentLightfvSGIX = NULL;
-PFNGLGETFRAGMENTLIGHTIVSGIXPROC glad_glGetFragmentLightivSGIX = NULL;
-PFNGLGETFRAGMENTMATERIALFVSGIXPROC glad_glGetFragmentMaterialfvSGIX = NULL;
-PFNGLGETFRAGMENTMATERIALIVSGIXPROC glad_glGetFragmentMaterialivSGIX = NULL;
-PFNGLLIGHTENVISGIXPROC glad_glLightEnviSGIX = NULL;
-PFNGLFRAMEZOOMSGIXPROC glad_glFrameZoomSGIX = NULL;
-PFNGLIGLOOINTERFACESGIXPROC glad_glIglooInterfaceSGIX = NULL;
-PFNGLGETINSTRUMENTSSGIXPROC glad_glGetInstrumentsSGIX = NULL;
-PFNGLINSTRUMENTSBUFFERSGIXPROC glad_glInstrumentsBufferSGIX = NULL;
-PFNGLPOLLINSTRUMENTSSGIXPROC glad_glPollInstrumentsSGIX = NULL;
-PFNGLREADINSTRUMENTSSGIXPROC glad_glReadInstrumentsSGIX = NULL;
-PFNGLSTARTINSTRUMENTSSGIXPROC glad_glStartInstrumentsSGIX = NULL;
-PFNGLSTOPINSTRUMENTSSGIXPROC glad_glStopInstrumentsSGIX = NULL;
-PFNGLGETLISTPARAMETERFVSGIXPROC glad_glGetListParameterfvSGIX = NULL;
-PFNGLGETLISTPARAMETERIVSGIXPROC glad_glGetListParameterivSGIX = NULL;
-PFNGLLISTPARAMETERFSGIXPROC glad_glListParameterfSGIX = NULL;
-PFNGLLISTPARAMETERFVSGIXPROC glad_glListParameterfvSGIX = NULL;
-PFNGLLISTPARAMETERISGIXPROC glad_glListParameteriSGIX = NULL;
-PFNGLLISTPARAMETERIVSGIXPROC glad_glListParameterivSGIX = NULL;
-PFNGLPIXELTEXGENSGIXPROC glad_glPixelTexGenSGIX = NULL;
-PFNGLDEFORMATIONMAP3DSGIXPROC glad_glDeformationMap3dSGIX = NULL;
-PFNGLDEFORMATIONMAP3FSGIXPROC glad_glDeformationMap3fSGIX = NULL;
-PFNGLDEFORMSGIXPROC glad_glDeformSGIX = NULL;
-PFNGLLOADIDENTITYDEFORMATIONMAPSGIXPROC glad_glLoadIdentityDeformationMapSGIX = NULL;
-PFNGLREFERENCEPLANESGIXPROC glad_glReferencePlaneSGIX = NULL;
-PFNGLSPRITEPARAMETERFSGIXPROC glad_glSpriteParameterfSGIX = NULL;
-PFNGLSPRITEPARAMETERFVSGIXPROC glad_glSpriteParameterfvSGIX = NULL;
-PFNGLSPRITEPARAMETERISGIXPROC glad_glSpriteParameteriSGIX = NULL;
-PFNGLSPRITEPARAMETERIVSGIXPROC glad_glSpriteParameterivSGIX = NULL;
-PFNGLTAGSAMPLEBUFFERSGIXPROC glad_glTagSampleBufferSGIX = NULL;
-PFNGLCOLORTABLESGIPROC glad_glColorTableSGI = NULL;
-PFNGLCOLORTABLEPARAMETERFVSGIPROC glad_glColorTableParameterfvSGI = NULL;
-PFNGLCOLORTABLEPARAMETERIVSGIPROC glad_glColorTableParameterivSGI = NULL;
-PFNGLCOPYCOLORTABLESGIPROC glad_glCopyColorTableSGI = NULL;
-PFNGLGETCOLORTABLESGIPROC glad_glGetColorTableSGI = NULL;
-PFNGLGETCOLORTABLEPARAMETERFVSGIPROC glad_glGetColorTableParameterfvSGI = NULL;
-PFNGLGETCOLORTABLEPARAMETERIVSGIPROC glad_glGetColorTableParameterivSGI = NULL;
-PFNGLFINISHTEXTURESUNXPROC glad_glFinishTextureSUNX = NULL;
-PFNGLGLOBALALPHAFACTORBSUNPROC glad_glGlobalAlphaFactorbSUN = NULL;
-PFNGLGLOBALALPHAFACTORSSUNPROC glad_glGlobalAlphaFactorsSUN = NULL;
-PFNGLGLOBALALPHAFACTORISUNPROC glad_glGlobalAlphaFactoriSUN = NULL;
-PFNGLGLOBALALPHAFACTORFSUNPROC glad_glGlobalAlphaFactorfSUN = NULL;
-PFNGLGLOBALALPHAFACTORDSUNPROC glad_glGlobalAlphaFactordSUN = NULL;
-PFNGLGLOBALALPHAFACTORUBSUNPROC glad_glGlobalAlphaFactorubSUN = NULL;
-PFNGLGLOBALALPHAFACTORUSSUNPROC glad_glGlobalAlphaFactorusSUN = NULL;
-PFNGLGLOBALALPHAFACTORUISUNPROC glad_glGlobalAlphaFactoruiSUN = NULL;
-PFNGLDRAWMESHARRAYSSUNPROC glad_glDrawMeshArraysSUN = NULL;
-PFNGLREPLACEMENTCODEUISUNPROC glad_glReplacementCodeuiSUN = NULL;
-PFNGLREPLACEMENTCODEUSSUNPROC glad_glReplacementCodeusSUN = NULL;
-PFNGLREPLACEMENTCODEUBSUNPROC glad_glReplacementCodeubSUN = NULL;
-PFNGLREPLACEMENTCODEUIVSUNPROC glad_glReplacementCodeuivSUN = NULL;
-PFNGLREPLACEMENTCODEUSVSUNPROC glad_glReplacementCodeusvSUN = NULL;
-PFNGLREPLACEMENTCODEUBVSUNPROC glad_glReplacementCodeubvSUN = NULL;
-PFNGLREPLACEMENTCODEPOINTERSUNPROC glad_glReplacementCodePointerSUN = NULL;
-PFNGLCOLOR4UBVERTEX2FSUNPROC glad_glColor4ubVertex2fSUN = NULL;
-PFNGLCOLOR4UBVERTEX2FVSUNPROC glad_glColor4ubVertex2fvSUN = NULL;
-PFNGLCOLOR4UBVERTEX3FSUNPROC glad_glColor4ubVertex3fSUN = NULL;
-PFNGLCOLOR4UBVERTEX3FVSUNPROC glad_glColor4ubVertex3fvSUN = NULL;
-PFNGLCOLOR3FVERTEX3FSUNPROC glad_glColor3fVertex3fSUN = NULL;
-PFNGLCOLOR3FVERTEX3FVSUNPROC glad_glColor3fVertex3fvSUN = NULL;
-PFNGLNORMAL3FVERTEX3FSUNPROC glad_glNormal3fVertex3fSUN = NULL;
-PFNGLNORMAL3FVERTEX3FVSUNPROC glad_glNormal3fVertex3fvSUN = NULL;
-PFNGLCOLOR4FNORMAL3FVERTEX3FSUNPROC glad_glColor4fNormal3fVertex3fSUN = NULL;
-PFNGLCOLOR4FNORMAL3FVERTEX3FVSUNPROC glad_glColor4fNormal3fVertex3fvSUN = NULL;
-PFNGLTEXCOORD2FVERTEX3FSUNPROC glad_glTexCoord2fVertex3fSUN = NULL;
-PFNGLTEXCOORD2FVERTEX3FVSUNPROC glad_glTexCoord2fVertex3fvSUN = NULL;
-PFNGLTEXCOORD4FVERTEX4FSUNPROC glad_glTexCoord4fVertex4fSUN = NULL;
-PFNGLTEXCOORD4FVERTEX4FVSUNPROC glad_glTexCoord4fVertex4fvSUN = NULL;
-PFNGLTEXCOORD2FCOLOR4UBVERTEX3FSUNPROC glad_glTexCoord2fColor4ubVertex3fSUN = NULL;
-PFNGLTEXCOORD2FCOLOR4UBVERTEX3FVSUNPROC glad_glTexCoord2fColor4ubVertex3fvSUN = NULL;
-PFNGLTEXCOORD2FCOLOR3FVERTEX3FSUNPROC glad_glTexCoord2fColor3fVertex3fSUN = NULL;
-PFNGLTEXCOORD2FCOLOR3FVERTEX3FVSUNPROC glad_glTexCoord2fColor3fVertex3fvSUN = NULL;
-PFNGLTEXCOORD2FNORMAL3FVERTEX3FSUNPROC glad_glTexCoord2fNormal3fVertex3fSUN = NULL;
-PFNGLTEXCOORD2FNORMAL3FVERTEX3FVSUNPROC glad_glTexCoord2fNormal3fVertex3fvSUN = NULL;
-PFNGLTEXCOORD2FCOLOR4FNORMAL3FVERTEX3FSUNPROC glad_glTexCoord2fColor4fNormal3fVertex3fSUN = NULL;
-PFNGLTEXCOORD2FCOLOR4FNORMAL3FVERTEX3FVSUNPROC glad_glTexCoord2fColor4fNormal3fVertex3fvSUN = NULL;
-PFNGLTEXCOORD4FCOLOR4FNORMAL3FVERTEX4FSUNPROC glad_glTexCoord4fColor4fNormal3fVertex4fSUN = NULL;
-PFNGLTEXCOORD4FCOLOR4FNORMAL3FVERTEX4FVSUNPROC glad_glTexCoord4fColor4fNormal3fVertex4fvSUN = NULL;
-PFNGLREPLACEMENTCODEUIVERTEX3FSUNPROC glad_glReplacementCodeuiVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUIVERTEX3FVSUNPROC glad_glReplacementCodeuiVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR4UBVERTEX3FSUNPROC glad_glReplacementCodeuiColor4ubVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR4UBVERTEX3FVSUNPROC glad_glReplacementCodeuiColor4ubVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR3FVERTEX3FSUNPROC glad_glReplacementCodeuiColor3fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR3FVERTEX3FVSUNPROC glad_glReplacementCodeuiColor3fVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUINORMAL3FVERTEX3FSUNPROC glad_glReplacementCodeuiNormal3fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUINORMAL3FVERTEX3FVSUNPROC glad_glReplacementCodeuiNormal3fVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR4FNORMAL3FVERTEX3FSUNPROC glad_glReplacementCodeuiColor4fNormal3fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUICOLOR4FNORMAL3FVERTEX3FVSUNPROC glad_glReplacementCodeuiColor4fNormal3fVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FVERTEX3FSUNPROC glad_glReplacementCodeuiTexCoord2fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FVERTEX3FVSUNPROC glad_glReplacementCodeuiTexCoord2fVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FNORMAL3FVERTEX3FSUNPROC glad_glReplacementCodeuiTexCoord2fNormal3fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FNORMAL3FVERTEX3FVSUNPROC glad_glReplacementCodeuiTexCoord2fNormal3fVertex3fvSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FCOLOR4FNORMAL3FVERTEX3FSUNPROC glad_glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fSUN = NULL;
-PFNGLREPLACEMENTCODEUITEXCOORD2FCOLOR4FNORMAL3FVERTEX3FVSUNPROC glad_glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fvSUN = NULL;
 static void load_GL_VERSION_1_0(GLADloadproc load) {
 	if(!GLAD_GL_VERSION_1_0) return;
 	glad_glCullFace = (PFNGLCULLFACEPROC)load("glCullFace");
@@ -5557,10 +4777,6 @@ static void load_GL_VERSION_4_6(GLADloadproc load) {
 	glad_glMultiDrawElementsIndirectCount = (PFNGLMULTIDRAWELEMENTSINDIRECTCOUNTPROC)load("glMultiDrawElementsIndirectCount");
 	glad_glPolygonOffsetClamp = (PFNGLPOLYGONOFFSETCLAMPPROC)load("glPolygonOffsetClamp");
 }
-static void load_GL_3DFX_tbuffer(GLADloadproc load) {
-	if(!GLAD_GL_3DFX_tbuffer) return;
-	glad_glTbufferMask3DFX = (PFNGLTBUFFERMASK3DFXPROC)load("glTbufferMask3DFX");
-}
 static void load_GL_AMD_debug_output(GLADloadproc load) {
 	if(!GLAD_GL_AMD_debug_output) return;
 	glad_glDebugMessageEnableAMD = (PFNGLDEBUGMESSAGEENABLEAMDPROC)load("glDebugMessageEnableAMD");
@@ -5674,80 +4890,6 @@ static void load_GL_AMD_vertex_shader_tessellator(GLADloadproc load) {
 	if(!GLAD_GL_AMD_vertex_shader_tessellator) return;
 	glad_glTessellationFactorAMD = (PFNGLTESSELLATIONFACTORAMDPROC)load("glTessellationFactorAMD");
 	glad_glTessellationModeAMD = (PFNGLTESSELLATIONMODEAMDPROC)load("glTessellationModeAMD");
-}
-static void load_GL_APPLE_element_array(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_element_array) return;
-	glad_glElementPointerAPPLE = (PFNGLELEMENTPOINTERAPPLEPROC)load("glElementPointerAPPLE");
-	glad_glDrawElementArrayAPPLE = (PFNGLDRAWELEMENTARRAYAPPLEPROC)load("glDrawElementArrayAPPLE");
-	glad_glDrawRangeElementArrayAPPLE = (PFNGLDRAWRANGEELEMENTARRAYAPPLEPROC)load("glDrawRangeElementArrayAPPLE");
-	glad_glMultiDrawElementArrayAPPLE = (PFNGLMULTIDRAWELEMENTARRAYAPPLEPROC)load("glMultiDrawElementArrayAPPLE");
-	glad_glMultiDrawRangeElementArrayAPPLE = (PFNGLMULTIDRAWRANGEELEMENTARRAYAPPLEPROC)load("glMultiDrawRangeElementArrayAPPLE");
-}
-static void load_GL_APPLE_fence(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_fence) return;
-	glad_glGenFencesAPPLE = (PFNGLGENFENCESAPPLEPROC)load("glGenFencesAPPLE");
-	glad_glDeleteFencesAPPLE = (PFNGLDELETEFENCESAPPLEPROC)load("glDeleteFencesAPPLE");
-	glad_glSetFenceAPPLE = (PFNGLSETFENCEAPPLEPROC)load("glSetFenceAPPLE");
-	glad_glIsFenceAPPLE = (PFNGLISFENCEAPPLEPROC)load("glIsFenceAPPLE");
-	glad_glTestFenceAPPLE = (PFNGLTESTFENCEAPPLEPROC)load("glTestFenceAPPLE");
-	glad_glFinishFenceAPPLE = (PFNGLFINISHFENCEAPPLEPROC)load("glFinishFenceAPPLE");
-	glad_glTestObjectAPPLE = (PFNGLTESTOBJECTAPPLEPROC)load("glTestObjectAPPLE");
-	glad_glFinishObjectAPPLE = (PFNGLFINISHOBJECTAPPLEPROC)load("glFinishObjectAPPLE");
-}
-static void load_GL_APPLE_flush_buffer_range(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_flush_buffer_range) return;
-	glad_glBufferParameteriAPPLE = (PFNGLBUFFERPARAMETERIAPPLEPROC)load("glBufferParameteriAPPLE");
-	glad_glFlushMappedBufferRangeAPPLE = (PFNGLFLUSHMAPPEDBUFFERRANGEAPPLEPROC)load("glFlushMappedBufferRangeAPPLE");
-}
-static void load_GL_APPLE_object_purgeable(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_object_purgeable) return;
-	glad_glObjectPurgeableAPPLE = (PFNGLOBJECTPURGEABLEAPPLEPROC)load("glObjectPurgeableAPPLE");
-	glad_glObjectUnpurgeableAPPLE = (PFNGLOBJECTUNPURGEABLEAPPLEPROC)load("glObjectUnpurgeableAPPLE");
-	glad_glGetObjectParameterivAPPLE = (PFNGLGETOBJECTPARAMETERIVAPPLEPROC)load("glGetObjectParameterivAPPLE");
-}
-static void load_GL_APPLE_texture_range(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_texture_range) return;
-	glad_glTextureRangeAPPLE = (PFNGLTEXTURERANGEAPPLEPROC)load("glTextureRangeAPPLE");
-	glad_glGetTexParameterPointervAPPLE = (PFNGLGETTEXPARAMETERPOINTERVAPPLEPROC)load("glGetTexParameterPointervAPPLE");
-}
-static void load_GL_APPLE_vertex_array_object(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_vertex_array_object) return;
-	glad_glBindVertexArrayAPPLE = (PFNGLBINDVERTEXARRAYAPPLEPROC)load("glBindVertexArrayAPPLE");
-	glad_glDeleteVertexArraysAPPLE = (PFNGLDELETEVERTEXARRAYSAPPLEPROC)load("glDeleteVertexArraysAPPLE");
-	glad_glGenVertexArraysAPPLE = (PFNGLGENVERTEXARRAYSAPPLEPROC)load("glGenVertexArraysAPPLE");
-	glad_glIsVertexArrayAPPLE = (PFNGLISVERTEXARRAYAPPLEPROC)load("glIsVertexArrayAPPLE");
-}
-static void load_GL_APPLE_vertex_array_range(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_vertex_array_range) return;
-	glad_glVertexArrayRangeAPPLE = (PFNGLVERTEXARRAYRANGEAPPLEPROC)load("glVertexArrayRangeAPPLE");
-	glad_glFlushVertexArrayRangeAPPLE = (PFNGLFLUSHVERTEXARRAYRANGEAPPLEPROC)load("glFlushVertexArrayRangeAPPLE");
-	glad_glVertexArrayParameteriAPPLE = (PFNGLVERTEXARRAYPARAMETERIAPPLEPROC)load("glVertexArrayParameteriAPPLE");
-}
-static void load_GL_APPLE_vertex_program_evaluators(GLADloadproc load) {
-	if(!GLAD_GL_APPLE_vertex_program_evaluators) return;
-	glad_glEnableVertexAttribAPPLE = (PFNGLENABLEVERTEXATTRIBAPPLEPROC)load("glEnableVertexAttribAPPLE");
-	glad_glDisableVertexAttribAPPLE = (PFNGLDISABLEVERTEXATTRIBAPPLEPROC)load("glDisableVertexAttribAPPLE");
-	glad_glIsVertexAttribEnabledAPPLE = (PFNGLISVERTEXATTRIBENABLEDAPPLEPROC)load("glIsVertexAttribEnabledAPPLE");
-	glad_glMapVertexAttrib1dAPPLE = (PFNGLMAPVERTEXATTRIB1DAPPLEPROC)load("glMapVertexAttrib1dAPPLE");
-	glad_glMapVertexAttrib1fAPPLE = (PFNGLMAPVERTEXATTRIB1FAPPLEPROC)load("glMapVertexAttrib1fAPPLE");
-	glad_glMapVertexAttrib2dAPPLE = (PFNGLMAPVERTEXATTRIB2DAPPLEPROC)load("glMapVertexAttrib2dAPPLE");
-	glad_glMapVertexAttrib2fAPPLE = (PFNGLMAPVERTEXATTRIB2FAPPLEPROC)load("glMapVertexAttrib2fAPPLE");
-}
-static void load_GL_ARB_ES2_compatibility(GLADloadproc load) {
-	if(!GLAD_GL_ARB_ES2_compatibility) return;
-	glad_glReleaseShaderCompiler = (PFNGLRELEASESHADERCOMPILERPROC)load("glReleaseShaderCompiler");
-	glad_glShaderBinary = (PFNGLSHADERBINARYPROC)load("glShaderBinary");
-	glad_glGetShaderPrecisionFormat = (PFNGLGETSHADERPRECISIONFORMATPROC)load("glGetShaderPrecisionFormat");
-	glad_glDepthRangef = (PFNGLDEPTHRANGEFPROC)load("glDepthRangef");
-	glad_glClearDepthf = (PFNGLCLEARDEPTHFPROC)load("glClearDepthf");
-}
-static void load_GL_ARB_ES3_1_compatibility(GLADloadproc load) {
-	if(!GLAD_GL_ARB_ES3_1_compatibility) return;
-	glad_glMemoryBarrierByRegion = (PFNGLMEMORYBARRIERBYREGIONPROC)load("glMemoryBarrierByRegion");
-}
-static void load_GL_ARB_ES3_2_compatibility(GLADloadproc load) {
-	if(!GLAD_GL_ARB_ES3_2_compatibility) return;
-	glad_glPrimitiveBoundingBoxARB = (PFNGLPRIMITIVEBOUNDINGBOXARBPROC)load("glPrimitiveBoundingBoxARB");
 }
 static void load_GL_ARB_base_instance(GLADloadproc load) {
 	if(!GLAD_GL_ARB_base_instance) return;
@@ -6806,124 +5948,6 @@ static void load_GL_ARB_window_pos(GLADloadproc load) {
 	glad_glWindowPos3sARB = (PFNGLWINDOWPOS3SARBPROC)load("glWindowPos3sARB");
 	glad_glWindowPos3svARB = (PFNGLWINDOWPOS3SVARBPROC)load("glWindowPos3svARB");
 }
-static void load_GL_ATI_draw_buffers(GLADloadproc load) {
-	if(!GLAD_GL_ATI_draw_buffers) return;
-	glad_glDrawBuffersATI = (PFNGLDRAWBUFFERSATIPROC)load("glDrawBuffersATI");
-}
-static void load_GL_ATI_element_array(GLADloadproc load) {
-	if(!GLAD_GL_ATI_element_array) return;
-	glad_glElementPointerATI = (PFNGLELEMENTPOINTERATIPROC)load("glElementPointerATI");
-	glad_glDrawElementArrayATI = (PFNGLDRAWELEMENTARRAYATIPROC)load("glDrawElementArrayATI");
-	glad_glDrawRangeElementArrayATI = (PFNGLDRAWRANGEELEMENTARRAYATIPROC)load("glDrawRangeElementArrayATI");
-}
-static void load_GL_ATI_envmap_bumpmap(GLADloadproc load) {
-	if(!GLAD_GL_ATI_envmap_bumpmap) return;
-	glad_glTexBumpParameterivATI = (PFNGLTEXBUMPPARAMETERIVATIPROC)load("glTexBumpParameterivATI");
-	glad_glTexBumpParameterfvATI = (PFNGLTEXBUMPPARAMETERFVATIPROC)load("glTexBumpParameterfvATI");
-	glad_glGetTexBumpParameterivATI = (PFNGLGETTEXBUMPPARAMETERIVATIPROC)load("glGetTexBumpParameterivATI");
-	glad_glGetTexBumpParameterfvATI = (PFNGLGETTEXBUMPPARAMETERFVATIPROC)load("glGetTexBumpParameterfvATI");
-}
-static void load_GL_ATI_fragment_shader(GLADloadproc load) {
-	if(!GLAD_GL_ATI_fragment_shader) return;
-	glad_glGenFragmentShadersATI = (PFNGLGENFRAGMENTSHADERSATIPROC)load("glGenFragmentShadersATI");
-	glad_glBindFragmentShaderATI = (PFNGLBINDFRAGMENTSHADERATIPROC)load("glBindFragmentShaderATI");
-	glad_glDeleteFragmentShaderATI = (PFNGLDELETEFRAGMENTSHADERATIPROC)load("glDeleteFragmentShaderATI");
-	glad_glBeginFragmentShaderATI = (PFNGLBEGINFRAGMENTSHADERATIPROC)load("glBeginFragmentShaderATI");
-	glad_glEndFragmentShaderATI = (PFNGLENDFRAGMENTSHADERATIPROC)load("glEndFragmentShaderATI");
-	glad_glPassTexCoordATI = (PFNGLPASSTEXCOORDATIPROC)load("glPassTexCoordATI");
-	glad_glSampleMapATI = (PFNGLSAMPLEMAPATIPROC)load("glSampleMapATI");
-	glad_glColorFragmentOp1ATI = (PFNGLCOLORFRAGMENTOP1ATIPROC)load("glColorFragmentOp1ATI");
-	glad_glColorFragmentOp2ATI = (PFNGLCOLORFRAGMENTOP2ATIPROC)load("glColorFragmentOp2ATI");
-	glad_glColorFragmentOp3ATI = (PFNGLCOLORFRAGMENTOP3ATIPROC)load("glColorFragmentOp3ATI");
-	glad_glAlphaFragmentOp1ATI = (PFNGLALPHAFRAGMENTOP1ATIPROC)load("glAlphaFragmentOp1ATI");
-	glad_glAlphaFragmentOp2ATI = (PFNGLALPHAFRAGMENTOP2ATIPROC)load("glAlphaFragmentOp2ATI");
-	glad_glAlphaFragmentOp3ATI = (PFNGLALPHAFRAGMENTOP3ATIPROC)load("glAlphaFragmentOp3ATI");
-	glad_glSetFragmentShaderConstantATI = (PFNGLSETFRAGMENTSHADERCONSTANTATIPROC)load("glSetFragmentShaderConstantATI");
-}
-static void load_GL_ATI_map_object_buffer(GLADloadproc load) {
-	if(!GLAD_GL_ATI_map_object_buffer) return;
-	glad_glMapObjectBufferATI = (PFNGLMAPOBJECTBUFFERATIPROC)load("glMapObjectBufferATI");
-	glad_glUnmapObjectBufferATI = (PFNGLUNMAPOBJECTBUFFERATIPROC)load("glUnmapObjectBufferATI");
-}
-static void load_GL_ATI_pn_triangles(GLADloadproc load) {
-	if(!GLAD_GL_ATI_pn_triangles) return;
-	glad_glPNTrianglesiATI = (PFNGLPNTRIANGLESIATIPROC)load("glPNTrianglesiATI");
-	glad_glPNTrianglesfATI = (PFNGLPNTRIANGLESFATIPROC)load("glPNTrianglesfATI");
-}
-static void load_GL_ATI_separate_stencil(GLADloadproc load) {
-	if(!GLAD_GL_ATI_separate_stencil) return;
-	glad_glStencilOpSeparateATI = (PFNGLSTENCILOPSEPARATEATIPROC)load("glStencilOpSeparateATI");
-	glad_glStencilFuncSeparateATI = (PFNGLSTENCILFUNCSEPARATEATIPROC)load("glStencilFuncSeparateATI");
-}
-static void load_GL_ATI_vertex_array_object(GLADloadproc load) {
-	if(!GLAD_GL_ATI_vertex_array_object) return;
-	glad_glNewObjectBufferATI = (PFNGLNEWOBJECTBUFFERATIPROC)load("glNewObjectBufferATI");
-	glad_glIsObjectBufferATI = (PFNGLISOBJECTBUFFERATIPROC)load("glIsObjectBufferATI");
-	glad_glUpdateObjectBufferATI = (PFNGLUPDATEOBJECTBUFFERATIPROC)load("glUpdateObjectBufferATI");
-	glad_glGetObjectBufferfvATI = (PFNGLGETOBJECTBUFFERFVATIPROC)load("glGetObjectBufferfvATI");
-	glad_glGetObjectBufferivATI = (PFNGLGETOBJECTBUFFERIVATIPROC)load("glGetObjectBufferivATI");
-	glad_glFreeObjectBufferATI = (PFNGLFREEOBJECTBUFFERATIPROC)load("glFreeObjectBufferATI");
-	glad_glArrayObjectATI = (PFNGLARRAYOBJECTATIPROC)load("glArrayObjectATI");
-	glad_glGetArrayObjectfvATI = (PFNGLGETARRAYOBJECTFVATIPROC)load("glGetArrayObjectfvATI");
-	glad_glGetArrayObjectivATI = (PFNGLGETARRAYOBJECTIVATIPROC)load("glGetArrayObjectivATI");
-	glad_glVariantArrayObjectATI = (PFNGLVARIANTARRAYOBJECTATIPROC)load("glVariantArrayObjectATI");
-	glad_glGetVariantArrayObjectfvATI = (PFNGLGETVARIANTARRAYOBJECTFVATIPROC)load("glGetVariantArrayObjectfvATI");
-	glad_glGetVariantArrayObjectivATI = (PFNGLGETVARIANTARRAYOBJECTIVATIPROC)load("glGetVariantArrayObjectivATI");
-}
-static void load_GL_ATI_vertex_attrib_array_object(GLADloadproc load) {
-	if(!GLAD_GL_ATI_vertex_attrib_array_object) return;
-	glad_glVertexAttribArrayObjectATI = (PFNGLVERTEXATTRIBARRAYOBJECTATIPROC)load("glVertexAttribArrayObjectATI");
-	glad_glGetVertexAttribArrayObjectfvATI = (PFNGLGETVERTEXATTRIBARRAYOBJECTFVATIPROC)load("glGetVertexAttribArrayObjectfvATI");
-	glad_glGetVertexAttribArrayObjectivATI = (PFNGLGETVERTEXATTRIBARRAYOBJECTIVATIPROC)load("glGetVertexAttribArrayObjectivATI");
-}
-static void load_GL_ATI_vertex_streams(GLADloadproc load) {
-	if(!GLAD_GL_ATI_vertex_streams) return;
-	glad_glVertexStream1sATI = (PFNGLVERTEXSTREAM1SATIPROC)load("glVertexStream1sATI");
-	glad_glVertexStream1svATI = (PFNGLVERTEXSTREAM1SVATIPROC)load("glVertexStream1svATI");
-	glad_glVertexStream1iATI = (PFNGLVERTEXSTREAM1IATIPROC)load("glVertexStream1iATI");
-	glad_glVertexStream1ivATI = (PFNGLVERTEXSTREAM1IVATIPROC)load("glVertexStream1ivATI");
-	glad_glVertexStream1fATI = (PFNGLVERTEXSTREAM1FATIPROC)load("glVertexStream1fATI");
-	glad_glVertexStream1fvATI = (PFNGLVERTEXSTREAM1FVATIPROC)load("glVertexStream1fvATI");
-	glad_glVertexStream1dATI = (PFNGLVERTEXSTREAM1DATIPROC)load("glVertexStream1dATI");
-	glad_glVertexStream1dvATI = (PFNGLVERTEXSTREAM1DVATIPROC)load("glVertexStream1dvATI");
-	glad_glVertexStream2sATI = (PFNGLVERTEXSTREAM2SATIPROC)load("glVertexStream2sATI");
-	glad_glVertexStream2svATI = (PFNGLVERTEXSTREAM2SVATIPROC)load("glVertexStream2svATI");
-	glad_glVertexStream2iATI = (PFNGLVERTEXSTREAM2IATIPROC)load("glVertexStream2iATI");
-	glad_glVertexStream2ivATI = (PFNGLVERTEXSTREAM2IVATIPROC)load("glVertexStream2ivATI");
-	glad_glVertexStream2fATI = (PFNGLVERTEXSTREAM2FATIPROC)load("glVertexStream2fATI");
-	glad_glVertexStream2fvATI = (PFNGLVERTEXSTREAM2FVATIPROC)load("glVertexStream2fvATI");
-	glad_glVertexStream2dATI = (PFNGLVERTEXSTREAM2DATIPROC)load("glVertexStream2dATI");
-	glad_glVertexStream2dvATI = (PFNGLVERTEXSTREAM2DVATIPROC)load("glVertexStream2dvATI");
-	glad_glVertexStream3sATI = (PFNGLVERTEXSTREAM3SATIPROC)load("glVertexStream3sATI");
-	glad_glVertexStream3svATI = (PFNGLVERTEXSTREAM3SVATIPROC)load("glVertexStream3svATI");
-	glad_glVertexStream3iATI = (PFNGLVERTEXSTREAM3IATIPROC)load("glVertexStream3iATI");
-	glad_glVertexStream3ivATI = (PFNGLVERTEXSTREAM3IVATIPROC)load("glVertexStream3ivATI");
-	glad_glVertexStream3fATI = (PFNGLVERTEXSTREAM3FATIPROC)load("glVertexStream3fATI");
-	glad_glVertexStream3fvATI = (PFNGLVERTEXSTREAM3FVATIPROC)load("glVertexStream3fvATI");
-	glad_glVertexStream3dATI = (PFNGLVERTEXSTREAM3DATIPROC)load("glVertexStream3dATI");
-	glad_glVertexStream3dvATI = (PFNGLVERTEXSTREAM3DVATIPROC)load("glVertexStream3dvATI");
-	glad_glVertexStream4sATI = (PFNGLVERTEXSTREAM4SATIPROC)load("glVertexStream4sATI");
-	glad_glVertexStream4svATI = (PFNGLVERTEXSTREAM4SVATIPROC)load("glVertexStream4svATI");
-	glad_glVertexStream4iATI = (PFNGLVERTEXSTREAM4IATIPROC)load("glVertexStream4iATI");
-	glad_glVertexStream4ivATI = (PFNGLVERTEXSTREAM4IVATIPROC)load("glVertexStream4ivATI");
-	glad_glVertexStream4fATI = (PFNGLVERTEXSTREAM4FATIPROC)load("glVertexStream4fATI");
-	glad_glVertexStream4fvATI = (PFNGLVERTEXSTREAM4FVATIPROC)load("glVertexStream4fvATI");
-	glad_glVertexStream4dATI = (PFNGLVERTEXSTREAM4DATIPROC)load("glVertexStream4dATI");
-	glad_glVertexStream4dvATI = (PFNGLVERTEXSTREAM4DVATIPROC)load("glVertexStream4dvATI");
-	glad_glNormalStream3bATI = (PFNGLNORMALSTREAM3BATIPROC)load("glNormalStream3bATI");
-	glad_glNormalStream3bvATI = (PFNGLNORMALSTREAM3BVATIPROC)load("glNormalStream3bvATI");
-	glad_glNormalStream3sATI = (PFNGLNORMALSTREAM3SATIPROC)load("glNormalStream3sATI");
-	glad_glNormalStream3svATI = (PFNGLNORMALSTREAM3SVATIPROC)load("glNormalStream3svATI");
-	glad_glNormalStream3iATI = (PFNGLNORMALSTREAM3IATIPROC)load("glNormalStream3iATI");
-	glad_glNormalStream3ivATI = (PFNGLNORMALSTREAM3IVATIPROC)load("glNormalStream3ivATI");
-	glad_glNormalStream3fATI = (PFNGLNORMALSTREAM3FATIPROC)load("glNormalStream3fATI");
-	glad_glNormalStream3fvATI = (PFNGLNORMALSTREAM3FVATIPROC)load("glNormalStream3fvATI");
-	glad_glNormalStream3dATI = (PFNGLNORMALSTREAM3DATIPROC)load("glNormalStream3dATI");
-	glad_glNormalStream3dvATI = (PFNGLNORMALSTREAM3DVATIPROC)load("glNormalStream3dvATI");
-	glad_glClientActiveVertexStreamATI = (PFNGLCLIENTACTIVEVERTEXSTREAMATIPROC)load("glClientActiveVertexStreamATI");
-	glad_glVertexBlendEnviATI = (PFNGLVERTEXBLENDENVIATIPROC)load("glVertexBlendEnviATI");
-	glad_glVertexBlendEnvfATI = (PFNGLVERTEXBLENDENVFATIPROC)load("glVertexBlendEnvfATI");
-}
 static void load_GL_EXT_EGL_image_storage(GLADloadproc load) {
 	if(!GLAD_GL_EXT_EGL_image_storage) return;
 	glad_glEGLImageTargetTexStorageEXT = (PFNGLEGLIMAGETARGETTEXSTORAGEEXTPROC)load("glEGLImageTargetTexStorageEXT");
@@ -7724,81 +6748,6 @@ static void load_GL_EXT_window_rectangles(GLADloadproc load) {
 	if(!GLAD_GL_EXT_window_rectangles) return;
 	glad_glWindowRectanglesEXT = (PFNGLWINDOWRECTANGLESEXTPROC)load("glWindowRectanglesEXT");
 }
-static void load_GL_EXT_x11_sync_object(GLADloadproc load) {
-	if(!GLAD_GL_EXT_x11_sync_object) return;
-	glad_glImportSyncEXT = (PFNGLIMPORTSYNCEXTPROC)load("glImportSyncEXT");
-}
-static void load_GL_GREMEDY_frame_terminator(GLADloadproc load) {
-	if(!GLAD_GL_GREMEDY_frame_terminator) return;
-	glad_glFrameTerminatorGREMEDY = (PFNGLFRAMETERMINATORGREMEDYPROC)load("glFrameTerminatorGREMEDY");
-}
-static void load_GL_GREMEDY_string_marker(GLADloadproc load) {
-	if(!GLAD_GL_GREMEDY_string_marker) return;
-	glad_glStringMarkerGREMEDY = (PFNGLSTRINGMARKERGREMEDYPROC)load("glStringMarkerGREMEDY");
-}
-static void load_GL_HP_image_transform(GLADloadproc load) {
-	if(!GLAD_GL_HP_image_transform) return;
-	glad_glImageTransformParameteriHP = (PFNGLIMAGETRANSFORMPARAMETERIHPPROC)load("glImageTransformParameteriHP");
-	glad_glImageTransformParameterfHP = (PFNGLIMAGETRANSFORMPARAMETERFHPPROC)load("glImageTransformParameterfHP");
-	glad_glImageTransformParameterivHP = (PFNGLIMAGETRANSFORMPARAMETERIVHPPROC)load("glImageTransformParameterivHP");
-	glad_glImageTransformParameterfvHP = (PFNGLIMAGETRANSFORMPARAMETERFVHPPROC)load("glImageTransformParameterfvHP");
-	glad_glGetImageTransformParameterivHP = (PFNGLGETIMAGETRANSFORMPARAMETERIVHPPROC)load("glGetImageTransformParameterivHP");
-	glad_glGetImageTransformParameterfvHP = (PFNGLGETIMAGETRANSFORMPARAMETERFVHPPROC)load("glGetImageTransformParameterfvHP");
-}
-static void load_GL_IBM_multimode_draw_arrays(GLADloadproc load) {
-	if(!GLAD_GL_IBM_multimode_draw_arrays) return;
-	glad_glMultiModeDrawArraysIBM = (PFNGLMULTIMODEDRAWARRAYSIBMPROC)load("glMultiModeDrawArraysIBM");
-	glad_glMultiModeDrawElementsIBM = (PFNGLMULTIMODEDRAWELEMENTSIBMPROC)load("glMultiModeDrawElementsIBM");
-}
-static void load_GL_IBM_static_data(GLADloadproc load) {
-	if(!GLAD_GL_IBM_static_data) return;
-	glad_glFlushStaticDataIBM = (PFNGLFLUSHSTATICDATAIBMPROC)load("glFlushStaticDataIBM");
-}
-static void load_GL_IBM_vertex_array_lists(GLADloadproc load) {
-	if(!GLAD_GL_IBM_vertex_array_lists) return;
-	glad_glColorPointerListIBM = (PFNGLCOLORPOINTERLISTIBMPROC)load("glColorPointerListIBM");
-	glad_glSecondaryColorPointerListIBM = (PFNGLSECONDARYCOLORPOINTERLISTIBMPROC)load("glSecondaryColorPointerListIBM");
-	glad_glEdgeFlagPointerListIBM = (PFNGLEDGEFLAGPOINTERLISTIBMPROC)load("glEdgeFlagPointerListIBM");
-	glad_glFogCoordPointerListIBM = (PFNGLFOGCOORDPOINTERLISTIBMPROC)load("glFogCoordPointerListIBM");
-	glad_glIndexPointerListIBM = (PFNGLINDEXPOINTERLISTIBMPROC)load("glIndexPointerListIBM");
-	glad_glNormalPointerListIBM = (PFNGLNORMALPOINTERLISTIBMPROC)load("glNormalPointerListIBM");
-	glad_glTexCoordPointerListIBM = (PFNGLTEXCOORDPOINTERLISTIBMPROC)load("glTexCoordPointerListIBM");
-	glad_glVertexPointerListIBM = (PFNGLVERTEXPOINTERLISTIBMPROC)load("glVertexPointerListIBM");
-}
-static void load_GL_INGR_blend_func_separate(GLADloadproc load) {
-	if(!GLAD_GL_INGR_blend_func_separate) return;
-	glad_glBlendFuncSeparateINGR = (PFNGLBLENDFUNCSEPARATEINGRPROC)load("glBlendFuncSeparateINGR");
-}
-static void load_GL_INTEL_framebuffer_CMAA(GLADloadproc load) {
-	if(!GLAD_GL_INTEL_framebuffer_CMAA) return;
-	glad_glApplyFramebufferAttachmentCMAAINTEL = (PFNGLAPPLYFRAMEBUFFERATTACHMENTCMAAINTELPROC)load("glApplyFramebufferAttachmentCMAAINTEL");
-}
-static void load_GL_INTEL_map_texture(GLADloadproc load) {
-	if(!GLAD_GL_INTEL_map_texture) return;
-	glad_glSyncTextureINTEL = (PFNGLSYNCTEXTUREINTELPROC)load("glSyncTextureINTEL");
-	glad_glUnmapTexture2DINTEL = (PFNGLUNMAPTEXTURE2DINTELPROC)load("glUnmapTexture2DINTEL");
-	glad_glMapTexture2DINTEL = (PFNGLMAPTEXTURE2DINTELPROC)load("glMapTexture2DINTEL");
-}
-static void load_GL_INTEL_parallel_arrays(GLADloadproc load) {
-	if(!GLAD_GL_INTEL_parallel_arrays) return;
-	glad_glVertexPointervINTEL = (PFNGLVERTEXPOINTERVINTELPROC)load("glVertexPointervINTEL");
-	glad_glNormalPointervINTEL = (PFNGLNORMALPOINTERVINTELPROC)load("glNormalPointervINTEL");
-	glad_glColorPointervINTEL = (PFNGLCOLORPOINTERVINTELPROC)load("glColorPointervINTEL");
-	glad_glTexCoordPointervINTEL = (PFNGLTEXCOORDPOINTERVINTELPROC)load("glTexCoordPointervINTEL");
-}
-static void load_GL_INTEL_performance_query(GLADloadproc load) {
-	if(!GLAD_GL_INTEL_performance_query) return;
-	glad_glBeginPerfQueryINTEL = (PFNGLBEGINPERFQUERYINTELPROC)load("glBeginPerfQueryINTEL");
-	glad_glCreatePerfQueryINTEL = (PFNGLCREATEPERFQUERYINTELPROC)load("glCreatePerfQueryINTEL");
-	glad_glDeletePerfQueryINTEL = (PFNGLDELETEPERFQUERYINTELPROC)load("glDeletePerfQueryINTEL");
-	glad_glEndPerfQueryINTEL = (PFNGLENDPERFQUERYINTELPROC)load("glEndPerfQueryINTEL");
-	glad_glGetFirstPerfQueryIdINTEL = (PFNGLGETFIRSTPERFQUERYIDINTELPROC)load("glGetFirstPerfQueryIdINTEL");
-	glad_glGetNextPerfQueryIdINTEL = (PFNGLGETNEXTPERFQUERYIDINTELPROC)load("glGetNextPerfQueryIdINTEL");
-	glad_glGetPerfCounterInfoINTEL = (PFNGLGETPERFCOUNTERINFOINTELPROC)load("glGetPerfCounterInfoINTEL");
-	glad_glGetPerfQueryDataINTEL = (PFNGLGETPERFQUERYDATAINTELPROC)load("glGetPerfQueryDataINTEL");
-	glad_glGetPerfQueryIdByNameINTEL = (PFNGLGETPERFQUERYIDBYNAMEINTELPROC)load("glGetPerfQueryIdByNameINTEL");
-	glad_glGetPerfQueryInfoINTEL = (PFNGLGETPERFQUERYINFOINTELPROC)load("glGetPerfQueryInfoINTEL");
-}
 static void load_GL_KHR_blend_equation_advanced(GLADloadproc load) {
 	if(!GLAD_GL_KHR_blend_equation_advanced) return;
 	glad_glBlendBarrierKHR = (PFNGLBLENDBARRIERKHRPROC)load("glBlendBarrierKHR");
@@ -7844,48 +6793,6 @@ static void load_GL_KHR_robustness(GLADloadproc load) {
 	glad_glGetnUniformfvKHR = (PFNGLGETNUNIFORMFVKHRPROC)load("glGetnUniformfvKHR");
 	glad_glGetnUniformivKHR = (PFNGLGETNUNIFORMIVKHRPROC)load("glGetnUniformivKHR");
 	glad_glGetnUniformuivKHR = (PFNGLGETNUNIFORMUIVKHRPROC)load("glGetnUniformuivKHR");
-}
-static void load_GL_MESA_resize_buffers(GLADloadproc load) {
-	if(!GLAD_GL_MESA_resize_buffers) return;
-	glad_glResizeBuffersMESA = (PFNGLRESIZEBUFFERSMESAPROC)load("glResizeBuffersMESA");
-}
-static void load_GL_MESA_window_pos(GLADloadproc load) {
-	if(!GLAD_GL_MESA_window_pos) return;
-	glad_glWindowPos2dMESA = (PFNGLWINDOWPOS2DMESAPROC)load("glWindowPos2dMESA");
-	glad_glWindowPos2dvMESA = (PFNGLWINDOWPOS2DVMESAPROC)load("glWindowPos2dvMESA");
-	glad_glWindowPos2fMESA = (PFNGLWINDOWPOS2FMESAPROC)load("glWindowPos2fMESA");
-	glad_glWindowPos2fvMESA = (PFNGLWINDOWPOS2FVMESAPROC)load("glWindowPos2fvMESA");
-	glad_glWindowPos2iMESA = (PFNGLWINDOWPOS2IMESAPROC)load("glWindowPos2iMESA");
-	glad_glWindowPos2ivMESA = (PFNGLWINDOWPOS2IVMESAPROC)load("glWindowPos2ivMESA");
-	glad_glWindowPos2sMESA = (PFNGLWINDOWPOS2SMESAPROC)load("glWindowPos2sMESA");
-	glad_glWindowPos2svMESA = (PFNGLWINDOWPOS2SVMESAPROC)load("glWindowPos2svMESA");
-	glad_glWindowPos3dMESA = (PFNGLWINDOWPOS3DMESAPROC)load("glWindowPos3dMESA");
-	glad_glWindowPos3dvMESA = (PFNGLWINDOWPOS3DVMESAPROC)load("glWindowPos3dvMESA");
-	glad_glWindowPos3fMESA = (PFNGLWINDOWPOS3FMESAPROC)load("glWindowPos3fMESA");
-	glad_glWindowPos3fvMESA = (PFNGLWINDOWPOS3FVMESAPROC)load("glWindowPos3fvMESA");
-	glad_glWindowPos3iMESA = (PFNGLWINDOWPOS3IMESAPROC)load("glWindowPos3iMESA");
-	glad_glWindowPos3ivMESA = (PFNGLWINDOWPOS3IVMESAPROC)load("glWindowPos3ivMESA");
-	glad_glWindowPos3sMESA = (PFNGLWINDOWPOS3SMESAPROC)load("glWindowPos3sMESA");
-	glad_glWindowPos3svMESA = (PFNGLWINDOWPOS3SVMESAPROC)load("glWindowPos3svMESA");
-	glad_glWindowPos4dMESA = (PFNGLWINDOWPOS4DMESAPROC)load("glWindowPos4dMESA");
-	glad_glWindowPos4dvMESA = (PFNGLWINDOWPOS4DVMESAPROC)load("glWindowPos4dvMESA");
-	glad_glWindowPos4fMESA = (PFNGLWINDOWPOS4FMESAPROC)load("glWindowPos4fMESA");
-	glad_glWindowPos4fvMESA = (PFNGLWINDOWPOS4FVMESAPROC)load("glWindowPos4fvMESA");
-	glad_glWindowPos4iMESA = (PFNGLWINDOWPOS4IMESAPROC)load("glWindowPos4iMESA");
-	glad_glWindowPos4ivMESA = (PFNGLWINDOWPOS4IVMESAPROC)load("glWindowPos4ivMESA");
-	glad_glWindowPos4sMESA = (PFNGLWINDOWPOS4SMESAPROC)load("glWindowPos4sMESA");
-	glad_glWindowPos4svMESA = (PFNGLWINDOWPOS4SVMESAPROC)load("glWindowPos4svMESA");
-}
-static void load_GL_NVX_conditional_render(GLADloadproc load) {
-	if(!GLAD_GL_NVX_conditional_render) return;
-	glad_glBeginConditionalRenderNVX = (PFNGLBEGINCONDITIONALRENDERNVXPROC)load("glBeginConditionalRenderNVX");
-	glad_glEndConditionalRenderNVX = (PFNGLENDCONDITIONALRENDERNVXPROC)load("glEndConditionalRenderNVX");
-}
-static void load_GL_NVX_linked_gpu_multicast(GLADloadproc load) {
-	if(!GLAD_GL_NVX_linked_gpu_multicast) return;
-	glad_glLGPUNamedBufferSubDataNVX = (PFNGLLGPUNAMEDBUFFERSUBDATANVXPROC)load("glLGPUNamedBufferSubDataNVX");
-	glad_glLGPUCopyImageSubDataNVX = (PFNGLLGPUCOPYIMAGESUBDATANVXPROC)load("glLGPUCopyImageSubDataNVX");
-	glad_glLGPUInterlockNVX = (PFNGLLGPUINTERLOCKNVXPROC)load("glLGPUInterlockNVX");
 }
 static void load_GL_NV_alpha_to_coverage_dither_control(GLADloadproc load) {
 	if(!GLAD_GL_NV_alpha_to_coverage_dither_control) return;
@@ -8181,13 +7088,6 @@ static void load_GL_NV_memory_attachment(GLADloadproc load) {
 	glad_glBufferAttachMemoryNV = (PFNGLBUFFERATTACHMEMORYNVPROC)load("glBufferAttachMemoryNV");
 	glad_glTextureAttachMemoryNV = (PFNGLTEXTUREATTACHMEMORYNVPROC)load("glTextureAttachMemoryNV");
 	glad_glNamedBufferAttachMemoryNV = (PFNGLNAMEDBUFFERATTACHMEMORYNVPROC)load("glNamedBufferAttachMemoryNV");
-}
-static void load_GL_NV_mesh_shader(GLADloadproc load) {
-	if(!GLAD_GL_NV_mesh_shader) return;
-	glad_glDrawMeshTasksNV = (PFNGLDRAWMESHTASKSNVPROC)load("glDrawMeshTasksNV");
-	glad_glDrawMeshTasksIndirectNV = (PFNGLDRAWMESHTASKSINDIRECTNVPROC)load("glDrawMeshTasksIndirectNV");
-	glad_glMultiDrawMeshTasksIndirectNV = (PFNGLMULTIDRAWMESHTASKSINDIRECTNVPROC)load("glMultiDrawMeshTasksIndirectNV");
-	glad_glMultiDrawMeshTasksIndirectCountNV = (PFNGLMULTIDRAWMESHTASKSINDIRECTCOUNTNVPROC)load("glMultiDrawMeshTasksIndirectCountNV");
 }
 static void load_GL_NV_occlusion_query(GLADloadproc load) {
 	if(!GLAD_GL_NV_occlusion_query) return;
@@ -8594,383 +7494,8 @@ static void load_GL_NV_viewport_swizzle(GLADloadproc load) {
 	if(!GLAD_GL_NV_viewport_swizzle) return;
 	glad_glViewportSwizzleNV = (PFNGLVIEWPORTSWIZZLENVPROC)load("glViewportSwizzleNV");
 }
-static void load_GL_OES_byte_coordinates(GLADloadproc load) {
-	if(!GLAD_GL_OES_byte_coordinates) return;
-	glad_glMultiTexCoord1bOES = (PFNGLMULTITEXCOORD1BOESPROC)load("glMultiTexCoord1bOES");
-	glad_glMultiTexCoord1bvOES = (PFNGLMULTITEXCOORD1BVOESPROC)load("glMultiTexCoord1bvOES");
-	glad_glMultiTexCoord2bOES = (PFNGLMULTITEXCOORD2BOESPROC)load("glMultiTexCoord2bOES");
-	glad_glMultiTexCoord2bvOES = (PFNGLMULTITEXCOORD2BVOESPROC)load("glMultiTexCoord2bvOES");
-	glad_glMultiTexCoord3bOES = (PFNGLMULTITEXCOORD3BOESPROC)load("glMultiTexCoord3bOES");
-	glad_glMultiTexCoord3bvOES = (PFNGLMULTITEXCOORD3BVOESPROC)load("glMultiTexCoord3bvOES");
-	glad_glMultiTexCoord4bOES = (PFNGLMULTITEXCOORD4BOESPROC)load("glMultiTexCoord4bOES");
-	glad_glMultiTexCoord4bvOES = (PFNGLMULTITEXCOORD4BVOESPROC)load("glMultiTexCoord4bvOES");
-	glad_glTexCoord1bOES = (PFNGLTEXCOORD1BOESPROC)load("glTexCoord1bOES");
-	glad_glTexCoord1bvOES = (PFNGLTEXCOORD1BVOESPROC)load("glTexCoord1bvOES");
-	glad_glTexCoord2bOES = (PFNGLTEXCOORD2BOESPROC)load("glTexCoord2bOES");
-	glad_glTexCoord2bvOES = (PFNGLTEXCOORD2BVOESPROC)load("glTexCoord2bvOES");
-	glad_glTexCoord3bOES = (PFNGLTEXCOORD3BOESPROC)load("glTexCoord3bOES");
-	glad_glTexCoord3bvOES = (PFNGLTEXCOORD3BVOESPROC)load("glTexCoord3bvOES");
-	glad_glTexCoord4bOES = (PFNGLTEXCOORD4BOESPROC)load("glTexCoord4bOES");
-	glad_glTexCoord4bvOES = (PFNGLTEXCOORD4BVOESPROC)load("glTexCoord4bvOES");
-	glad_glVertex2bOES = (PFNGLVERTEX2BOESPROC)load("glVertex2bOES");
-	glad_glVertex2bvOES = (PFNGLVERTEX2BVOESPROC)load("glVertex2bvOES");
-	glad_glVertex3bOES = (PFNGLVERTEX3BOESPROC)load("glVertex3bOES");
-	glad_glVertex3bvOES = (PFNGLVERTEX3BVOESPROC)load("glVertex3bvOES");
-	glad_glVertex4bOES = (PFNGLVERTEX4BOESPROC)load("glVertex4bOES");
-	glad_glVertex4bvOES = (PFNGLVERTEX4BVOESPROC)load("glVertex4bvOES");
-}
-static void load_GL_OES_fixed_point(GLADloadproc load) {
-	if(!GLAD_GL_OES_fixed_point) return;
-	glad_glAlphaFuncxOES = (PFNGLALPHAFUNCXOESPROC)load("glAlphaFuncxOES");
-	glad_glClearColorxOES = (PFNGLCLEARCOLORXOESPROC)load("glClearColorxOES");
-	glad_glClearDepthxOES = (PFNGLCLEARDEPTHXOESPROC)load("glClearDepthxOES");
-	glad_glClipPlanexOES = (PFNGLCLIPPLANEXOESPROC)load("glClipPlanexOES");
-	glad_glColor4xOES = (PFNGLCOLOR4XOESPROC)load("glColor4xOES");
-	glad_glDepthRangexOES = (PFNGLDEPTHRANGEXOESPROC)load("glDepthRangexOES");
-	glad_glFogxOES = (PFNGLFOGXOESPROC)load("glFogxOES");
-	glad_glFogxvOES = (PFNGLFOGXVOESPROC)load("glFogxvOES");
-	glad_glFrustumxOES = (PFNGLFRUSTUMXOESPROC)load("glFrustumxOES");
-	glad_glGetClipPlanexOES = (PFNGLGETCLIPPLANEXOESPROC)load("glGetClipPlanexOES");
-	glad_glGetFixedvOES = (PFNGLGETFIXEDVOESPROC)load("glGetFixedvOES");
-	glad_glGetTexEnvxvOES = (PFNGLGETTEXENVXVOESPROC)load("glGetTexEnvxvOES");
-	glad_glGetTexParameterxvOES = (PFNGLGETTEXPARAMETERXVOESPROC)load("glGetTexParameterxvOES");
-	glad_glLightModelxOES = (PFNGLLIGHTMODELXOESPROC)load("glLightModelxOES");
-	glad_glLightModelxvOES = (PFNGLLIGHTMODELXVOESPROC)load("glLightModelxvOES");
-	glad_glLightxOES = (PFNGLLIGHTXOESPROC)load("glLightxOES");
-	glad_glLightxvOES = (PFNGLLIGHTXVOESPROC)load("glLightxvOES");
-	glad_glLineWidthxOES = (PFNGLLINEWIDTHXOESPROC)load("glLineWidthxOES");
-	glad_glLoadMatrixxOES = (PFNGLLOADMATRIXXOESPROC)load("glLoadMatrixxOES");
-	glad_glMaterialxOES = (PFNGLMATERIALXOESPROC)load("glMaterialxOES");
-	glad_glMaterialxvOES = (PFNGLMATERIALXVOESPROC)load("glMaterialxvOES");
-	glad_glMultMatrixxOES = (PFNGLMULTMATRIXXOESPROC)load("glMultMatrixxOES");
-	glad_glMultiTexCoord4xOES = (PFNGLMULTITEXCOORD4XOESPROC)load("glMultiTexCoord4xOES");
-	glad_glNormal3xOES = (PFNGLNORMAL3XOESPROC)load("glNormal3xOES");
-	glad_glOrthoxOES = (PFNGLORTHOXOESPROC)load("glOrthoxOES");
-	glad_glPointParameterxvOES = (PFNGLPOINTPARAMETERXVOESPROC)load("glPointParameterxvOES");
-	glad_glPointSizexOES = (PFNGLPOINTSIZEXOESPROC)load("glPointSizexOES");
-	glad_glPolygonOffsetxOES = (PFNGLPOLYGONOFFSETXOESPROC)load("glPolygonOffsetxOES");
-	glad_glRotatexOES = (PFNGLROTATEXOESPROC)load("glRotatexOES");
-	glad_glScalexOES = (PFNGLSCALEXOESPROC)load("glScalexOES");
-	glad_glTexEnvxOES = (PFNGLTEXENVXOESPROC)load("glTexEnvxOES");
-	glad_glTexEnvxvOES = (PFNGLTEXENVXVOESPROC)load("glTexEnvxvOES");
-	glad_glTexParameterxOES = (PFNGLTEXPARAMETERXOESPROC)load("glTexParameterxOES");
-	glad_glTexParameterxvOES = (PFNGLTEXPARAMETERXVOESPROC)load("glTexParameterxvOES");
-	glad_glTranslatexOES = (PFNGLTRANSLATEXOESPROC)load("glTranslatexOES");
-	glad_glGetLightxvOES = (PFNGLGETLIGHTXVOESPROC)load("glGetLightxvOES");
-	glad_glGetMaterialxvOES = (PFNGLGETMATERIALXVOESPROC)load("glGetMaterialxvOES");
-	glad_glPointParameterxOES = (PFNGLPOINTPARAMETERXOESPROC)load("glPointParameterxOES");
-	glad_glSampleCoveragexOES = (PFNGLSAMPLECOVERAGEXOESPROC)load("glSampleCoveragexOES");
-	glad_glAccumxOES = (PFNGLACCUMXOESPROC)load("glAccumxOES");
-	glad_glBitmapxOES = (PFNGLBITMAPXOESPROC)load("glBitmapxOES");
-	glad_glBlendColorxOES = (PFNGLBLENDCOLORXOESPROC)load("glBlendColorxOES");
-	glad_glClearAccumxOES = (PFNGLCLEARACCUMXOESPROC)load("glClearAccumxOES");
-	glad_glColor3xOES = (PFNGLCOLOR3XOESPROC)load("glColor3xOES");
-	glad_glColor3xvOES = (PFNGLCOLOR3XVOESPROC)load("glColor3xvOES");
-	glad_glColor4xvOES = (PFNGLCOLOR4XVOESPROC)load("glColor4xvOES");
-	glad_glConvolutionParameterxOES = (PFNGLCONVOLUTIONPARAMETERXOESPROC)load("glConvolutionParameterxOES");
-	glad_glConvolutionParameterxvOES = (PFNGLCONVOLUTIONPARAMETERXVOESPROC)load("glConvolutionParameterxvOES");
-	glad_glEvalCoord1xOES = (PFNGLEVALCOORD1XOESPROC)load("glEvalCoord1xOES");
-	glad_glEvalCoord1xvOES = (PFNGLEVALCOORD1XVOESPROC)load("glEvalCoord1xvOES");
-	glad_glEvalCoord2xOES = (PFNGLEVALCOORD2XOESPROC)load("glEvalCoord2xOES");
-	glad_glEvalCoord2xvOES = (PFNGLEVALCOORD2XVOESPROC)load("glEvalCoord2xvOES");
-	glad_glFeedbackBufferxOES = (PFNGLFEEDBACKBUFFERXOESPROC)load("glFeedbackBufferxOES");
-	glad_glGetConvolutionParameterxvOES = (PFNGLGETCONVOLUTIONPARAMETERXVOESPROC)load("glGetConvolutionParameterxvOES");
-	glad_glGetHistogramParameterxvOES = (PFNGLGETHISTOGRAMPARAMETERXVOESPROC)load("glGetHistogramParameterxvOES");
-	glad_glGetLightxOES = (PFNGLGETLIGHTXOESPROC)load("glGetLightxOES");
-	glad_glGetMapxvOES = (PFNGLGETMAPXVOESPROC)load("glGetMapxvOES");
-	glad_glGetMaterialxOES = (PFNGLGETMATERIALXOESPROC)load("glGetMaterialxOES");
-	glad_glGetPixelMapxv = (PFNGLGETPIXELMAPXVPROC)load("glGetPixelMapxv");
-	glad_glGetTexGenxvOES = (PFNGLGETTEXGENXVOESPROC)load("glGetTexGenxvOES");
-	glad_glGetTexLevelParameterxvOES = (PFNGLGETTEXLEVELPARAMETERXVOESPROC)load("glGetTexLevelParameterxvOES");
-	glad_glIndexxOES = (PFNGLINDEXXOESPROC)load("glIndexxOES");
-	glad_glIndexxvOES = (PFNGLINDEXXVOESPROC)load("glIndexxvOES");
-	glad_glLoadTransposeMatrixxOES = (PFNGLLOADTRANSPOSEMATRIXXOESPROC)load("glLoadTransposeMatrixxOES");
-	glad_glMap1xOES = (PFNGLMAP1XOESPROC)load("glMap1xOES");
-	glad_glMap2xOES = (PFNGLMAP2XOESPROC)load("glMap2xOES");
-	glad_glMapGrid1xOES = (PFNGLMAPGRID1XOESPROC)load("glMapGrid1xOES");
-	glad_glMapGrid2xOES = (PFNGLMAPGRID2XOESPROC)load("glMapGrid2xOES");
-	glad_glMultTransposeMatrixxOES = (PFNGLMULTTRANSPOSEMATRIXXOESPROC)load("glMultTransposeMatrixxOES");
-	glad_glMultiTexCoord1xOES = (PFNGLMULTITEXCOORD1XOESPROC)load("glMultiTexCoord1xOES");
-	glad_glMultiTexCoord1xvOES = (PFNGLMULTITEXCOORD1XVOESPROC)load("glMultiTexCoord1xvOES");
-	glad_glMultiTexCoord2xOES = (PFNGLMULTITEXCOORD2XOESPROC)load("glMultiTexCoord2xOES");
-	glad_glMultiTexCoord2xvOES = (PFNGLMULTITEXCOORD2XVOESPROC)load("glMultiTexCoord2xvOES");
-	glad_glMultiTexCoord3xOES = (PFNGLMULTITEXCOORD3XOESPROC)load("glMultiTexCoord3xOES");
-	glad_glMultiTexCoord3xvOES = (PFNGLMULTITEXCOORD3XVOESPROC)load("glMultiTexCoord3xvOES");
-	glad_glMultiTexCoord4xvOES = (PFNGLMULTITEXCOORD4XVOESPROC)load("glMultiTexCoord4xvOES");
-	glad_glNormal3xvOES = (PFNGLNORMAL3XVOESPROC)load("glNormal3xvOES");
-	glad_glPassThroughxOES = (PFNGLPASSTHROUGHXOESPROC)load("glPassThroughxOES");
-	glad_glPixelMapx = (PFNGLPIXELMAPXPROC)load("glPixelMapx");
-	glad_glPixelStorex = (PFNGLPIXELSTOREXPROC)load("glPixelStorex");
-	glad_glPixelTransferxOES = (PFNGLPIXELTRANSFERXOESPROC)load("glPixelTransferxOES");
-	glad_glPixelZoomxOES = (PFNGLPIXELZOOMXOESPROC)load("glPixelZoomxOES");
-	glad_glPrioritizeTexturesxOES = (PFNGLPRIORITIZETEXTURESXOESPROC)load("glPrioritizeTexturesxOES");
-	glad_glRasterPos2xOES = (PFNGLRASTERPOS2XOESPROC)load("glRasterPos2xOES");
-	glad_glRasterPos2xvOES = (PFNGLRASTERPOS2XVOESPROC)load("glRasterPos2xvOES");
-	glad_glRasterPos3xOES = (PFNGLRASTERPOS3XOESPROC)load("glRasterPos3xOES");
-	glad_glRasterPos3xvOES = (PFNGLRASTERPOS3XVOESPROC)load("glRasterPos3xvOES");
-	glad_glRasterPos4xOES = (PFNGLRASTERPOS4XOESPROC)load("glRasterPos4xOES");
-	glad_glRasterPos4xvOES = (PFNGLRASTERPOS4XVOESPROC)load("glRasterPos4xvOES");
-	glad_glRectxOES = (PFNGLRECTXOESPROC)load("glRectxOES");
-	glad_glRectxvOES = (PFNGLRECTXVOESPROC)load("glRectxvOES");
-	glad_glTexCoord1xOES = (PFNGLTEXCOORD1XOESPROC)load("glTexCoord1xOES");
-	glad_glTexCoord1xvOES = (PFNGLTEXCOORD1XVOESPROC)load("glTexCoord1xvOES");
-	glad_glTexCoord2xOES = (PFNGLTEXCOORD2XOESPROC)load("glTexCoord2xOES");
-	glad_glTexCoord2xvOES = (PFNGLTEXCOORD2XVOESPROC)load("glTexCoord2xvOES");
-	glad_glTexCoord3xOES = (PFNGLTEXCOORD3XOESPROC)load("glTexCoord3xOES");
-	glad_glTexCoord3xvOES = (PFNGLTEXCOORD3XVOESPROC)load("glTexCoord3xvOES");
-	glad_glTexCoord4xOES = (PFNGLTEXCOORD4XOESPROC)load("glTexCoord4xOES");
-	glad_glTexCoord4xvOES = (PFNGLTEXCOORD4XVOESPROC)load("glTexCoord4xvOES");
-	glad_glTexGenxOES = (PFNGLTEXGENXOESPROC)load("glTexGenxOES");
-	glad_glTexGenxvOES = (PFNGLTEXGENXVOESPROC)load("glTexGenxvOES");
-	glad_glVertex2xOES = (PFNGLVERTEX2XOESPROC)load("glVertex2xOES");
-	glad_glVertex2xvOES = (PFNGLVERTEX2XVOESPROC)load("glVertex2xvOES");
-	glad_glVertex3xOES = (PFNGLVERTEX3XOESPROC)load("glVertex3xOES");
-	glad_glVertex3xvOES = (PFNGLVERTEX3XVOESPROC)load("glVertex3xvOES");
-	glad_glVertex4xOES = (PFNGLVERTEX4XOESPROC)load("glVertex4xOES");
-	glad_glVertex4xvOES = (PFNGLVERTEX4XVOESPROC)load("glVertex4xvOES");
-}
-static void load_GL_OES_query_matrix(GLADloadproc load) {
-	if(!GLAD_GL_OES_query_matrix) return;
-	glad_glQueryMatrixxOES = (PFNGLQUERYMATRIXXOESPROC)load("glQueryMatrixxOES");
-}
-static void load_GL_OES_single_precision(GLADloadproc load) {
-	if(!GLAD_GL_OES_single_precision) return;
-	glad_glClearDepthfOES = (PFNGLCLEARDEPTHFOESPROC)load("glClearDepthfOES");
-	glad_glClipPlanefOES = (PFNGLCLIPPLANEFOESPROC)load("glClipPlanefOES");
-	glad_glDepthRangefOES = (PFNGLDEPTHRANGEFOESPROC)load("glDepthRangefOES");
-	glad_glFrustumfOES = (PFNGLFRUSTUMFOESPROC)load("glFrustumfOES");
-	glad_glGetClipPlanefOES = (PFNGLGETCLIPPLANEFOESPROC)load("glGetClipPlanefOES");
-	glad_glOrthofOES = (PFNGLORTHOFOESPROC)load("glOrthofOES");
-}
-static void load_GL_OVR_multiview(GLADloadproc load) {
-	if(!GLAD_GL_OVR_multiview) return;
-	glad_glFramebufferTextureMultiviewOVR = (PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC)load("glFramebufferTextureMultiviewOVR");
-}
-static void load_GL_PGI_misc_hints(GLADloadproc load) {
-	if(!GLAD_GL_PGI_misc_hints) return;
-	glad_glHintPGI = (PFNGLHINTPGIPROC)load("glHintPGI");
-}
-static void load_GL_SGIS_detail_texture(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_detail_texture) return;
-	glad_glDetailTexFuncSGIS = (PFNGLDETAILTEXFUNCSGISPROC)load("glDetailTexFuncSGIS");
-	glad_glGetDetailTexFuncSGIS = (PFNGLGETDETAILTEXFUNCSGISPROC)load("glGetDetailTexFuncSGIS");
-}
-static void load_GL_SGIS_fog_function(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_fog_function) return;
-	glad_glFogFuncSGIS = (PFNGLFOGFUNCSGISPROC)load("glFogFuncSGIS");
-	glad_glGetFogFuncSGIS = (PFNGLGETFOGFUNCSGISPROC)load("glGetFogFuncSGIS");
-}
-static void load_GL_SGIS_multisample(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_multisample) return;
-	glad_glSampleMaskSGIS = (PFNGLSAMPLEMASKSGISPROC)load("glSampleMaskSGIS");
-	glad_glSamplePatternSGIS = (PFNGLSAMPLEPATTERNSGISPROC)load("glSamplePatternSGIS");
-}
-static void load_GL_SGIS_pixel_texture(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_pixel_texture) return;
-	glad_glPixelTexGenParameteriSGIS = (PFNGLPIXELTEXGENPARAMETERISGISPROC)load("glPixelTexGenParameteriSGIS");
-	glad_glPixelTexGenParameterivSGIS = (PFNGLPIXELTEXGENPARAMETERIVSGISPROC)load("glPixelTexGenParameterivSGIS");
-	glad_glPixelTexGenParameterfSGIS = (PFNGLPIXELTEXGENPARAMETERFSGISPROC)load("glPixelTexGenParameterfSGIS");
-	glad_glPixelTexGenParameterfvSGIS = (PFNGLPIXELTEXGENPARAMETERFVSGISPROC)load("glPixelTexGenParameterfvSGIS");
-	glad_glGetPixelTexGenParameterivSGIS = (PFNGLGETPIXELTEXGENPARAMETERIVSGISPROC)load("glGetPixelTexGenParameterivSGIS");
-	glad_glGetPixelTexGenParameterfvSGIS = (PFNGLGETPIXELTEXGENPARAMETERFVSGISPROC)load("glGetPixelTexGenParameterfvSGIS");
-}
-static void load_GL_SGIS_point_parameters(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_point_parameters) return;
-	glad_glPointParameterfSGIS = (PFNGLPOINTPARAMETERFSGISPROC)load("glPointParameterfSGIS");
-	glad_glPointParameterfvSGIS = (PFNGLPOINTPARAMETERFVSGISPROC)load("glPointParameterfvSGIS");
-}
-static void load_GL_SGIS_sharpen_texture(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_sharpen_texture) return;
-	glad_glSharpenTexFuncSGIS = (PFNGLSHARPENTEXFUNCSGISPROC)load("glSharpenTexFuncSGIS");
-	glad_glGetSharpenTexFuncSGIS = (PFNGLGETSHARPENTEXFUNCSGISPROC)load("glGetSharpenTexFuncSGIS");
-}
-static void load_GL_SGIS_texture4D(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_texture4D) return;
-	glad_glTexImage4DSGIS = (PFNGLTEXIMAGE4DSGISPROC)load("glTexImage4DSGIS");
-	glad_glTexSubImage4DSGIS = (PFNGLTEXSUBIMAGE4DSGISPROC)load("glTexSubImage4DSGIS");
-}
-static void load_GL_SGIS_texture_color_mask(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_texture_color_mask) return;
-	glad_glTextureColorMaskSGIS = (PFNGLTEXTURECOLORMASKSGISPROC)load("glTextureColorMaskSGIS");
-}
-static void load_GL_SGIS_texture_filter4(GLADloadproc load) {
-	if(!GLAD_GL_SGIS_texture_filter4) return;
-	glad_glGetTexFilterFuncSGIS = (PFNGLGETTEXFILTERFUNCSGISPROC)load("glGetTexFilterFuncSGIS");
-	glad_glTexFilterFuncSGIS = (PFNGLTEXFILTERFUNCSGISPROC)load("glTexFilterFuncSGIS");
-}
-static void load_GL_SGIX_async(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_async) return;
-	glad_glAsyncMarkerSGIX = (PFNGLASYNCMARKERSGIXPROC)load("glAsyncMarkerSGIX");
-	glad_glFinishAsyncSGIX = (PFNGLFINISHASYNCSGIXPROC)load("glFinishAsyncSGIX");
-	glad_glPollAsyncSGIX = (PFNGLPOLLASYNCSGIXPROC)load("glPollAsyncSGIX");
-	glad_glGenAsyncMarkersSGIX = (PFNGLGENASYNCMARKERSSGIXPROC)load("glGenAsyncMarkersSGIX");
-	glad_glDeleteAsyncMarkersSGIX = (PFNGLDELETEASYNCMARKERSSGIXPROC)load("glDeleteAsyncMarkersSGIX");
-	glad_glIsAsyncMarkerSGIX = (PFNGLISASYNCMARKERSGIXPROC)load("glIsAsyncMarkerSGIX");
-}
-static void load_GL_SGIX_flush_raster(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_flush_raster) return;
-	glad_glFlushRasterSGIX = (PFNGLFLUSHRASTERSGIXPROC)load("glFlushRasterSGIX");
-}
-static void load_GL_SGIX_fragment_lighting(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_fragment_lighting) return;
-	glad_glFragmentColorMaterialSGIX = (PFNGLFRAGMENTCOLORMATERIALSGIXPROC)load("glFragmentColorMaterialSGIX");
-	glad_glFragmentLightfSGIX = (PFNGLFRAGMENTLIGHTFSGIXPROC)load("glFragmentLightfSGIX");
-	glad_glFragmentLightfvSGIX = (PFNGLFRAGMENTLIGHTFVSGIXPROC)load("glFragmentLightfvSGIX");
-	glad_glFragmentLightiSGIX = (PFNGLFRAGMENTLIGHTISGIXPROC)load("glFragmentLightiSGIX");
-	glad_glFragmentLightivSGIX = (PFNGLFRAGMENTLIGHTIVSGIXPROC)load("glFragmentLightivSGIX");
-	glad_glFragmentLightModelfSGIX = (PFNGLFRAGMENTLIGHTMODELFSGIXPROC)load("glFragmentLightModelfSGIX");
-	glad_glFragmentLightModelfvSGIX = (PFNGLFRAGMENTLIGHTMODELFVSGIXPROC)load("glFragmentLightModelfvSGIX");
-	glad_glFragmentLightModeliSGIX = (PFNGLFRAGMENTLIGHTMODELISGIXPROC)load("glFragmentLightModeliSGIX");
-	glad_glFragmentLightModelivSGIX = (PFNGLFRAGMENTLIGHTMODELIVSGIXPROC)load("glFragmentLightModelivSGIX");
-	glad_glFragmentMaterialfSGIX = (PFNGLFRAGMENTMATERIALFSGIXPROC)load("glFragmentMaterialfSGIX");
-	glad_glFragmentMaterialfvSGIX = (PFNGLFRAGMENTMATERIALFVSGIXPROC)load("glFragmentMaterialfvSGIX");
-	glad_glFragmentMaterialiSGIX = (PFNGLFRAGMENTMATERIALISGIXPROC)load("glFragmentMaterialiSGIX");
-	glad_glFragmentMaterialivSGIX = (PFNGLFRAGMENTMATERIALIVSGIXPROC)load("glFragmentMaterialivSGIX");
-	glad_glGetFragmentLightfvSGIX = (PFNGLGETFRAGMENTLIGHTFVSGIXPROC)load("glGetFragmentLightfvSGIX");
-	glad_glGetFragmentLightivSGIX = (PFNGLGETFRAGMENTLIGHTIVSGIXPROC)load("glGetFragmentLightivSGIX");
-	glad_glGetFragmentMaterialfvSGIX = (PFNGLGETFRAGMENTMATERIALFVSGIXPROC)load("glGetFragmentMaterialfvSGIX");
-	glad_glGetFragmentMaterialivSGIX = (PFNGLGETFRAGMENTMATERIALIVSGIXPROC)load("glGetFragmentMaterialivSGIX");
-	glad_glLightEnviSGIX = (PFNGLLIGHTENVISGIXPROC)load("glLightEnviSGIX");
-}
-static void load_GL_SGIX_framezoom(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_framezoom) return;
-	glad_glFrameZoomSGIX = (PFNGLFRAMEZOOMSGIXPROC)load("glFrameZoomSGIX");
-}
-static void load_GL_SGIX_igloo_interface(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_igloo_interface) return;
-	glad_glIglooInterfaceSGIX = (PFNGLIGLOOINTERFACESGIXPROC)load("glIglooInterfaceSGIX");
-}
-static void load_GL_SGIX_instruments(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_instruments) return;
-	glad_glGetInstrumentsSGIX = (PFNGLGETINSTRUMENTSSGIXPROC)load("glGetInstrumentsSGIX");
-	glad_glInstrumentsBufferSGIX = (PFNGLINSTRUMENTSBUFFERSGIXPROC)load("glInstrumentsBufferSGIX");
-	glad_glPollInstrumentsSGIX = (PFNGLPOLLINSTRUMENTSSGIXPROC)load("glPollInstrumentsSGIX");
-	glad_glReadInstrumentsSGIX = (PFNGLREADINSTRUMENTSSGIXPROC)load("glReadInstrumentsSGIX");
-	glad_glStartInstrumentsSGIX = (PFNGLSTARTINSTRUMENTSSGIXPROC)load("glStartInstrumentsSGIX");
-	glad_glStopInstrumentsSGIX = (PFNGLSTOPINSTRUMENTSSGIXPROC)load("glStopInstrumentsSGIX");
-}
-static void load_GL_SGIX_list_priority(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_list_priority) return;
-	glad_glGetListParameterfvSGIX = (PFNGLGETLISTPARAMETERFVSGIXPROC)load("glGetListParameterfvSGIX");
-	glad_glGetListParameterivSGIX = (PFNGLGETLISTPARAMETERIVSGIXPROC)load("glGetListParameterivSGIX");
-	glad_glListParameterfSGIX = (PFNGLLISTPARAMETERFSGIXPROC)load("glListParameterfSGIX");
-	glad_glListParameterfvSGIX = (PFNGLLISTPARAMETERFVSGIXPROC)load("glListParameterfvSGIX");
-	glad_glListParameteriSGIX = (PFNGLLISTPARAMETERISGIXPROC)load("glListParameteriSGIX");
-	glad_glListParameterivSGIX = (PFNGLLISTPARAMETERIVSGIXPROC)load("glListParameterivSGIX");
-}
-static void load_GL_SGIX_pixel_texture(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_pixel_texture) return;
-	glad_glPixelTexGenSGIX = (PFNGLPIXELTEXGENSGIXPROC)load("glPixelTexGenSGIX");
-}
-static void load_GL_SGIX_polynomial_ffd(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_polynomial_ffd) return;
-	glad_glDeformationMap3dSGIX = (PFNGLDEFORMATIONMAP3DSGIXPROC)load("glDeformationMap3dSGIX");
-	glad_glDeformationMap3fSGIX = (PFNGLDEFORMATIONMAP3FSGIXPROC)load("glDeformationMap3fSGIX");
-	glad_glDeformSGIX = (PFNGLDEFORMSGIXPROC)load("glDeformSGIX");
-	glad_glLoadIdentityDeformationMapSGIX = (PFNGLLOADIDENTITYDEFORMATIONMAPSGIXPROC)load("glLoadIdentityDeformationMapSGIX");
-}
-static void load_GL_SGIX_reference_plane(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_reference_plane) return;
-	glad_glReferencePlaneSGIX = (PFNGLREFERENCEPLANESGIXPROC)load("glReferencePlaneSGIX");
-}
-static void load_GL_SGIX_sprite(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_sprite) return;
-	glad_glSpriteParameterfSGIX = (PFNGLSPRITEPARAMETERFSGIXPROC)load("glSpriteParameterfSGIX");
-	glad_glSpriteParameterfvSGIX = (PFNGLSPRITEPARAMETERFVSGIXPROC)load("glSpriteParameterfvSGIX");
-	glad_glSpriteParameteriSGIX = (PFNGLSPRITEPARAMETERISGIXPROC)load("glSpriteParameteriSGIX");
-	glad_glSpriteParameterivSGIX = (PFNGLSPRITEPARAMETERIVSGIXPROC)load("glSpriteParameterivSGIX");
-}
-static void load_GL_SGIX_tag_sample_buffer(GLADloadproc load) {
-	if(!GLAD_GL_SGIX_tag_sample_buffer) return;
-	glad_glTagSampleBufferSGIX = (PFNGLTAGSAMPLEBUFFERSGIXPROC)load("glTagSampleBufferSGIX");
-}
-static void load_GL_SGI_color_table(GLADloadproc load) {
-	if(!GLAD_GL_SGI_color_table) return;
-	glad_glColorTableSGI = (PFNGLCOLORTABLESGIPROC)load("glColorTableSGI");
-	glad_glColorTableParameterfvSGI = (PFNGLCOLORTABLEPARAMETERFVSGIPROC)load("glColorTableParameterfvSGI");
-	glad_glColorTableParameterivSGI = (PFNGLCOLORTABLEPARAMETERIVSGIPROC)load("glColorTableParameterivSGI");
-	glad_glCopyColorTableSGI = (PFNGLCOPYCOLORTABLESGIPROC)load("glCopyColorTableSGI");
-	glad_glGetColorTableSGI = (PFNGLGETCOLORTABLESGIPROC)load("glGetColorTableSGI");
-	glad_glGetColorTableParameterfvSGI = (PFNGLGETCOLORTABLEPARAMETERFVSGIPROC)load("glGetColorTableParameterfvSGI");
-	glad_glGetColorTableParameterivSGI = (PFNGLGETCOLORTABLEPARAMETERIVSGIPROC)load("glGetColorTableParameterivSGI");
-}
-static void load_GL_SUNX_constant_data(GLADloadproc load) {
-	if(!GLAD_GL_SUNX_constant_data) return;
-	glad_glFinishTextureSUNX = (PFNGLFINISHTEXTURESUNXPROC)load("glFinishTextureSUNX");
-}
-static void load_GL_SUN_global_alpha(GLADloadproc load) {
-	if(!GLAD_GL_SUN_global_alpha) return;
-	glad_glGlobalAlphaFactorbSUN = (PFNGLGLOBALALPHAFACTORBSUNPROC)load("glGlobalAlphaFactorbSUN");
-	glad_glGlobalAlphaFactorsSUN = (PFNGLGLOBALALPHAFACTORSSUNPROC)load("glGlobalAlphaFactorsSUN");
-	glad_glGlobalAlphaFactoriSUN = (PFNGLGLOBALALPHAFACTORISUNPROC)load("glGlobalAlphaFactoriSUN");
-	glad_glGlobalAlphaFactorfSUN = (PFNGLGLOBALALPHAFACTORFSUNPROC)load("glGlobalAlphaFactorfSUN");
-	glad_glGlobalAlphaFactordSUN = (PFNGLGLOBALALPHAFACTORDSUNPROC)load("glGlobalAlphaFactordSUN");
-	glad_glGlobalAlphaFactorubSUN = (PFNGLGLOBALALPHAFACTORUBSUNPROC)load("glGlobalAlphaFactorubSUN");
-	glad_glGlobalAlphaFactorusSUN = (PFNGLGLOBALALPHAFACTORUSSUNPROC)load("glGlobalAlphaFactorusSUN");
-	glad_glGlobalAlphaFactoruiSUN = (PFNGLGLOBALALPHAFACTORUISUNPROC)load("glGlobalAlphaFactoruiSUN");
-}
-static void load_GL_SUN_mesh_array(GLADloadproc load) {
-	if(!GLAD_GL_SUN_mesh_array) return;
-	glad_glDrawMeshArraysSUN = (PFNGLDRAWMESHARRAYSSUNPROC)load("glDrawMeshArraysSUN");
-}
-static void load_GL_SUN_triangle_list(GLADloadproc load) {
-	if(!GLAD_GL_SUN_triangle_list) return;
-	glad_glReplacementCodeuiSUN = (PFNGLREPLACEMENTCODEUISUNPROC)load("glReplacementCodeuiSUN");
-	glad_glReplacementCodeusSUN = (PFNGLREPLACEMENTCODEUSSUNPROC)load("glReplacementCodeusSUN");
-	glad_glReplacementCodeubSUN = (PFNGLREPLACEMENTCODEUBSUNPROC)load("glReplacementCodeubSUN");
-	glad_glReplacementCodeuivSUN = (PFNGLREPLACEMENTCODEUIVSUNPROC)load("glReplacementCodeuivSUN");
-	glad_glReplacementCodeusvSUN = (PFNGLREPLACEMENTCODEUSVSUNPROC)load("glReplacementCodeusvSUN");
-	glad_glReplacementCodeubvSUN = (PFNGLREPLACEMENTCODEUBVSUNPROC)load("glReplacementCodeubvSUN");
-	glad_glReplacementCodePointerSUN = (PFNGLREPLACEMENTCODEPOINTERSUNPROC)load("glReplacementCodePointerSUN");
-}
-static void load_GL_SUN_vertex(GLADloadproc load) {
-	if(!GLAD_GL_SUN_vertex) return;
-	glad_glColor4ubVertex2fSUN = (PFNGLCOLOR4UBVERTEX2FSUNPROC)load("glColor4ubVertex2fSUN");
-	glad_glColor4ubVertex2fvSUN = (PFNGLCOLOR4UBVERTEX2FVSUNPROC)load("glColor4ubVertex2fvSUN");
-	glad_glColor4ubVertex3fSUN = (PFNGLCOLOR4UBVERTEX3FSUNPROC)load("glColor4ubVertex3fSUN");
-	glad_glColor4ubVertex3fvSUN = (PFNGLCOLOR4UBVERTEX3FVSUNPROC)load("glColor4ubVertex3fvSUN");
-	glad_glColor3fVertex3fSUN = (PFNGLCOLOR3FVERTEX3FSUNPROC)load("glColor3fVertex3fSUN");
-	glad_glColor3fVertex3fvSUN = (PFNGLCOLOR3FVERTEX3FVSUNPROC)load("glColor3fVertex3fvSUN");
-	glad_glNormal3fVertex3fSUN = (PFNGLNORMAL3FVERTEX3FSUNPROC)load("glNormal3fVertex3fSUN");
-	glad_glNormal3fVertex3fvSUN = (PFNGLNORMAL3FVERTEX3FVSUNPROC)load("glNormal3fVertex3fvSUN");
-	glad_glColor4fNormal3fVertex3fSUN = (PFNGLCOLOR4FNORMAL3FVERTEX3FSUNPROC)load("glColor4fNormal3fVertex3fSUN");
-	glad_glColor4fNormal3fVertex3fvSUN = (PFNGLCOLOR4FNORMAL3FVERTEX3FVSUNPROC)load("glColor4fNormal3fVertex3fvSUN");
-	glad_glTexCoord2fVertex3fSUN = (PFNGLTEXCOORD2FVERTEX3FSUNPROC)load("glTexCoord2fVertex3fSUN");
-	glad_glTexCoord2fVertex3fvSUN = (PFNGLTEXCOORD2FVERTEX3FVSUNPROC)load("glTexCoord2fVertex3fvSUN");
-	glad_glTexCoord4fVertex4fSUN = (PFNGLTEXCOORD4FVERTEX4FSUNPROC)load("glTexCoord4fVertex4fSUN");
-	glad_glTexCoord4fVertex4fvSUN = (PFNGLTEXCOORD4FVERTEX4FVSUNPROC)load("glTexCoord4fVertex4fvSUN");
-	glad_glTexCoord2fColor4ubVertex3fSUN = (PFNGLTEXCOORD2FCOLOR4UBVERTEX3FSUNPROC)load("glTexCoord2fColor4ubVertex3fSUN");
-	glad_glTexCoord2fColor4ubVertex3fvSUN = (PFNGLTEXCOORD2FCOLOR4UBVERTEX3FVSUNPROC)load("glTexCoord2fColor4ubVertex3fvSUN");
-	glad_glTexCoord2fColor3fVertex3fSUN = (PFNGLTEXCOORD2FCOLOR3FVERTEX3FSUNPROC)load("glTexCoord2fColor3fVertex3fSUN");
-	glad_glTexCoord2fColor3fVertex3fvSUN = (PFNGLTEXCOORD2FCOLOR3FVERTEX3FVSUNPROC)load("glTexCoord2fColor3fVertex3fvSUN");
-	glad_glTexCoord2fNormal3fVertex3fSUN = (PFNGLTEXCOORD2FNORMAL3FVERTEX3FSUNPROC)load("glTexCoord2fNormal3fVertex3fSUN");
-	glad_glTexCoord2fNormal3fVertex3fvSUN = (PFNGLTEXCOORD2FNORMAL3FVERTEX3FVSUNPROC)load("glTexCoord2fNormal3fVertex3fvSUN");
-	glad_glTexCoord2fColor4fNormal3fVertex3fSUN = (PFNGLTEXCOORD2FCOLOR4FNORMAL3FVERTEX3FSUNPROC)load("glTexCoord2fColor4fNormal3fVertex3fSUN");
-	glad_glTexCoord2fColor4fNormal3fVertex3fvSUN = (PFNGLTEXCOORD2FCOLOR4FNORMAL3FVERTEX3FVSUNPROC)load("glTexCoord2fColor4fNormal3fVertex3fvSUN");
-	glad_glTexCoord4fColor4fNormal3fVertex4fSUN = (PFNGLTEXCOORD4FCOLOR4FNORMAL3FVERTEX4FSUNPROC)load("glTexCoord4fColor4fNormal3fVertex4fSUN");
-	glad_glTexCoord4fColor4fNormal3fVertex4fvSUN = (PFNGLTEXCOORD4FCOLOR4FNORMAL3FVERTEX4FVSUNPROC)load("glTexCoord4fColor4fNormal3fVertex4fvSUN");
-	glad_glReplacementCodeuiVertex3fSUN = (PFNGLREPLACEMENTCODEUIVERTEX3FSUNPROC)load("glReplacementCodeuiVertex3fSUN");
-	glad_glReplacementCodeuiVertex3fvSUN = (PFNGLREPLACEMENTCODEUIVERTEX3FVSUNPROC)load("glReplacementCodeuiVertex3fvSUN");
-	glad_glReplacementCodeuiColor4ubVertex3fSUN = (PFNGLREPLACEMENTCODEUICOLOR4UBVERTEX3FSUNPROC)load("glReplacementCodeuiColor4ubVertex3fSUN");
-	glad_glReplacementCodeuiColor4ubVertex3fvSUN = (PFNGLREPLACEMENTCODEUICOLOR4UBVERTEX3FVSUNPROC)load("glReplacementCodeuiColor4ubVertex3fvSUN");
-	glad_glReplacementCodeuiColor3fVertex3fSUN = (PFNGLREPLACEMENTCODEUICOLOR3FVERTEX3FSUNPROC)load("glReplacementCodeuiColor3fVertex3fSUN");
-	glad_glReplacementCodeuiColor3fVertex3fvSUN = (PFNGLREPLACEMENTCODEUICOLOR3FVERTEX3FVSUNPROC)load("glReplacementCodeuiColor3fVertex3fvSUN");
-	glad_glReplacementCodeuiNormal3fVertex3fSUN = (PFNGLREPLACEMENTCODEUINORMAL3FVERTEX3FSUNPROC)load("glReplacementCodeuiNormal3fVertex3fSUN");
-	glad_glReplacementCodeuiNormal3fVertex3fvSUN = (PFNGLREPLACEMENTCODEUINORMAL3FVERTEX3FVSUNPROC)load("glReplacementCodeuiNormal3fVertex3fvSUN");
-	glad_glReplacementCodeuiColor4fNormal3fVertex3fSUN = (PFNGLREPLACEMENTCODEUICOLOR4FNORMAL3FVERTEX3FSUNPROC)load("glReplacementCodeuiColor4fNormal3fVertex3fSUN");
-	glad_glReplacementCodeuiColor4fNormal3fVertex3fvSUN = (PFNGLREPLACEMENTCODEUICOLOR4FNORMAL3FVERTEX3FVSUNPROC)load("glReplacementCodeuiColor4fNormal3fVertex3fvSUN");
-	glad_glReplacementCodeuiTexCoord2fVertex3fSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FVERTEX3FSUNPROC)load("glReplacementCodeuiTexCoord2fVertex3fSUN");
-	glad_glReplacementCodeuiTexCoord2fVertex3fvSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FVERTEX3FVSUNPROC)load("glReplacementCodeuiTexCoord2fVertex3fvSUN");
-	glad_glReplacementCodeuiTexCoord2fNormal3fVertex3fSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FNORMAL3FVERTEX3FSUNPROC)load("glReplacementCodeuiTexCoord2fNormal3fVertex3fSUN");
-	glad_glReplacementCodeuiTexCoord2fNormal3fVertex3fvSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FNORMAL3FVERTEX3FVSUNPROC)load("glReplacementCodeuiTexCoord2fNormal3fVertex3fvSUN");
-	glad_glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FCOLOR4FNORMAL3FVERTEX3FSUNPROC)load("glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fSUN");
-	glad_glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fvSUN = (PFNGLREPLACEMENTCODEUITEXCOORD2FCOLOR4FNORMAL3FVERTEX3FVSUNPROC)load("glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fvSUN");
-}
 static int find_extensionsGL(void) {
 	if (!get_exts()) return 0;
-	GLAD_GL_3DFX_multisample = has_ext("GL_3DFX_multisample");
-	GLAD_GL_3DFX_tbuffer = has_ext("GL_3DFX_tbuffer");
-	GLAD_GL_3DFX_texture_compression_FXT1 = has_ext("GL_3DFX_texture_compression_FXT1");
 	GLAD_GL_AMD_blend_minmax_factor = has_ext("GL_AMD_blend_minmax_factor");
 	GLAD_GL_AMD_conservative_depth = has_ext("GL_AMD_conservative_depth");
 	GLAD_GL_AMD_debug_output = has_ext("GL_AMD_debug_output");
@@ -8978,7 +7503,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_AMD_draw_buffers_blend = has_ext("GL_AMD_draw_buffers_blend");
 	GLAD_GL_AMD_framebuffer_multisample_advanced = has_ext("GL_AMD_framebuffer_multisample_advanced");
 	GLAD_GL_AMD_framebuffer_sample_positions = has_ext("GL_AMD_framebuffer_sample_positions");
-	GLAD_GL_AMD_gcn_shader = has_ext("GL_AMD_gcn_shader");
 	GLAD_GL_AMD_gpu_shader_half_float = has_ext("GL_AMD_gpu_shader_half_float");
 	GLAD_GL_AMD_gpu_shader_int16 = has_ext("GL_AMD_gpu_shader_int16");
 	GLAD_GL_AMD_gpu_shader_int64 = has_ext("GL_AMD_gpu_shader_int64");
@@ -9007,26 +7531,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_AMD_vertex_shader_layer = has_ext("GL_AMD_vertex_shader_layer");
 	GLAD_GL_AMD_vertex_shader_tessellator = has_ext("GL_AMD_vertex_shader_tessellator");
 	GLAD_GL_AMD_vertex_shader_viewport_index = has_ext("GL_AMD_vertex_shader_viewport_index");
-	GLAD_GL_APPLE_aux_depth_stencil = has_ext("GL_APPLE_aux_depth_stencil");
-	GLAD_GL_APPLE_client_storage = has_ext("GL_APPLE_client_storage");
-	GLAD_GL_APPLE_element_array = has_ext("GL_APPLE_element_array");
-	GLAD_GL_APPLE_fence = has_ext("GL_APPLE_fence");
-	GLAD_GL_APPLE_float_pixels = has_ext("GL_APPLE_float_pixels");
-	GLAD_GL_APPLE_flush_buffer_range = has_ext("GL_APPLE_flush_buffer_range");
-	GLAD_GL_APPLE_object_purgeable = has_ext("GL_APPLE_object_purgeable");
-	GLAD_GL_APPLE_rgb_422 = has_ext("GL_APPLE_rgb_422");
-	GLAD_GL_APPLE_row_bytes = has_ext("GL_APPLE_row_bytes");
-	GLAD_GL_APPLE_specular_vector = has_ext("GL_APPLE_specular_vector");
-	GLAD_GL_APPLE_texture_range = has_ext("GL_APPLE_texture_range");
-	GLAD_GL_APPLE_transform_hint = has_ext("GL_APPLE_transform_hint");
-	GLAD_GL_APPLE_vertex_array_object = has_ext("GL_APPLE_vertex_array_object");
-	GLAD_GL_APPLE_vertex_array_range = has_ext("GL_APPLE_vertex_array_range");
-	GLAD_GL_APPLE_vertex_program_evaluators = has_ext("GL_APPLE_vertex_program_evaluators");
-	GLAD_GL_APPLE_ycbcr_422 = has_ext("GL_APPLE_ycbcr_422");
-	GLAD_GL_ARB_ES2_compatibility = has_ext("GL_ARB_ES2_compatibility");
-	GLAD_GL_ARB_ES3_1_compatibility = has_ext("GL_ARB_ES3_1_compatibility");
-	GLAD_GL_ARB_ES3_2_compatibility = has_ext("GL_ARB_ES3_2_compatibility");
-	GLAD_GL_ARB_ES3_compatibility = has_ext("GL_ARB_ES3_compatibility");
 	GLAD_GL_ARB_arrays_of_arrays = has_ext("GL_ARB_arrays_of_arrays");
 	GLAD_GL_ARB_base_instance = has_ext("GL_ARB_base_instance");
 	GLAD_GL_ARB_bindless_texture = has_ext("GL_ARB_bindless_texture");
@@ -9194,22 +7698,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_vertex_type_2_10_10_10_rev = has_ext("GL_ARB_vertex_type_2_10_10_10_rev");
 	GLAD_GL_ARB_viewport_array = has_ext("GL_ARB_viewport_array");
 	GLAD_GL_ARB_window_pos = has_ext("GL_ARB_window_pos");
-	GLAD_GL_ATI_draw_buffers = has_ext("GL_ATI_draw_buffers");
-	GLAD_GL_ATI_element_array = has_ext("GL_ATI_element_array");
-	GLAD_GL_ATI_envmap_bumpmap = has_ext("GL_ATI_envmap_bumpmap");
-	GLAD_GL_ATI_fragment_shader = has_ext("GL_ATI_fragment_shader");
-	GLAD_GL_ATI_map_object_buffer = has_ext("GL_ATI_map_object_buffer");
-	GLAD_GL_ATI_meminfo = has_ext("GL_ATI_meminfo");
-	GLAD_GL_ATI_pixel_format_float = has_ext("GL_ATI_pixel_format_float");
-	GLAD_GL_ATI_pn_triangles = has_ext("GL_ATI_pn_triangles");
-	GLAD_GL_ATI_separate_stencil = has_ext("GL_ATI_separate_stencil");
-	GLAD_GL_ATI_text_fragment_shader = has_ext("GL_ATI_text_fragment_shader");
-	GLAD_GL_ATI_texture_env_combine3 = has_ext("GL_ATI_texture_env_combine3");
-	GLAD_GL_ATI_texture_float = has_ext("GL_ATI_texture_float");
-	GLAD_GL_ATI_texture_mirror_once = has_ext("GL_ATI_texture_mirror_once");
-	GLAD_GL_ATI_vertex_array_object = has_ext("GL_ATI_vertex_array_object");
-	GLAD_GL_ATI_vertex_attrib_array_object = has_ext("GL_ATI_vertex_attrib_array_object");
-	GLAD_GL_ATI_vertex_streams = has_ext("GL_ATI_vertex_streams");
 	GLAD_GL_EXT_422_pixels = has_ext("GL_EXT_422_pixels");
 	GLAD_GL_EXT_EGL_image_storage = has_ext("GL_EXT_EGL_image_storage");
 	GLAD_GL_EXT_abgr = has_ext("GL_EXT_abgr");
@@ -9323,29 +7811,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_EXT_vertex_weighting = has_ext("GL_EXT_vertex_weighting");
 	GLAD_GL_EXT_win32_keyed_mutex = has_ext("GL_EXT_win32_keyed_mutex");
 	GLAD_GL_EXT_window_rectangles = has_ext("GL_EXT_window_rectangles");
-	GLAD_GL_EXT_x11_sync_object = has_ext("GL_EXT_x11_sync_object");
-	GLAD_GL_GREMEDY_frame_terminator = has_ext("GL_GREMEDY_frame_terminator");
-	GLAD_GL_GREMEDY_string_marker = has_ext("GL_GREMEDY_string_marker");
-	GLAD_GL_HP_convolution_border_modes = has_ext("GL_HP_convolution_border_modes");
-	GLAD_GL_HP_image_transform = has_ext("GL_HP_image_transform");
-	GLAD_GL_HP_occlusion_test = has_ext("GL_HP_occlusion_test");
-	GLAD_GL_HP_texture_lighting = has_ext("GL_HP_texture_lighting");
-	GLAD_GL_IBM_cull_vertex = has_ext("GL_IBM_cull_vertex");
-	GLAD_GL_IBM_multimode_draw_arrays = has_ext("GL_IBM_multimode_draw_arrays");
-	GLAD_GL_IBM_rasterpos_clip = has_ext("GL_IBM_rasterpos_clip");
-	GLAD_GL_IBM_static_data = has_ext("GL_IBM_static_data");
-	GLAD_GL_IBM_texture_mirrored_repeat = has_ext("GL_IBM_texture_mirrored_repeat");
-	GLAD_GL_IBM_vertex_array_lists = has_ext("GL_IBM_vertex_array_lists");
-	GLAD_GL_INGR_blend_func_separate = has_ext("GL_INGR_blend_func_separate");
-	GLAD_GL_INGR_color_clamp = has_ext("GL_INGR_color_clamp");
-	GLAD_GL_INGR_interlace_read = has_ext("GL_INGR_interlace_read");
-	GLAD_GL_INTEL_blackhole_render = has_ext("GL_INTEL_blackhole_render");
-	GLAD_GL_INTEL_conservative_rasterization = has_ext("GL_INTEL_conservative_rasterization");
-	GLAD_GL_INTEL_fragment_shader_ordering = has_ext("GL_INTEL_fragment_shader_ordering");
-	GLAD_GL_INTEL_framebuffer_CMAA = has_ext("GL_INTEL_framebuffer_CMAA");
-	GLAD_GL_INTEL_map_texture = has_ext("GL_INTEL_map_texture");
-	GLAD_GL_INTEL_parallel_arrays = has_ext("GL_INTEL_parallel_arrays");
-	GLAD_GL_INTEL_performance_query = has_ext("GL_INTEL_performance_query");
 	GLAD_GL_KHR_blend_equation_advanced = has_ext("GL_KHR_blend_equation_advanced");
 	GLAD_GL_KHR_blend_equation_advanced_coherent = has_ext("GL_KHR_blend_equation_advanced_coherent");
 	GLAD_GL_KHR_context_flush_control = has_ext("GL_KHR_context_flush_control");
@@ -9357,18 +7822,7 @@ static int find_extensionsGL(void) {
 	GLAD_GL_KHR_texture_compression_astc_hdr = has_ext("GL_KHR_texture_compression_astc_hdr");
 	GLAD_GL_KHR_texture_compression_astc_ldr = has_ext("GL_KHR_texture_compression_astc_ldr");
 	GLAD_GL_KHR_texture_compression_astc_sliced_3d = has_ext("GL_KHR_texture_compression_astc_sliced_3d");
-	GLAD_GL_MESAX_texture_stack = has_ext("GL_MESAX_texture_stack");
-	GLAD_GL_MESA_pack_invert = has_ext("GL_MESA_pack_invert");
-	GLAD_GL_MESA_program_binary_formats = has_ext("GL_MESA_program_binary_formats");
-	GLAD_GL_MESA_resize_buffers = has_ext("GL_MESA_resize_buffers");
-	GLAD_GL_MESA_shader_integer_functions = has_ext("GL_MESA_shader_integer_functions");
-	GLAD_GL_MESA_tile_raster_order = has_ext("GL_MESA_tile_raster_order");
-	GLAD_GL_MESA_window_pos = has_ext("GL_MESA_window_pos");
-	GLAD_GL_MESA_ycbcr_texture = has_ext("GL_MESA_ycbcr_texture");
-	GLAD_GL_NVX_blend_equation_advanced_multi_draw_buffers = has_ext("GL_NVX_blend_equation_advanced_multi_draw_buffers");
-	GLAD_GL_NVX_conditional_render = has_ext("GL_NVX_conditional_render");
 	GLAD_GL_NVX_gpu_memory_info = has_ext("GL_NVX_gpu_memory_info");
-	GLAD_GL_NVX_linked_gpu_multicast = has_ext("GL_NVX_linked_gpu_multicast");
 	GLAD_GL_NV_alpha_to_coverage_dither_control = has_ext("GL_NV_alpha_to_coverage_dither_control");
 	GLAD_GL_NV_bindless_multi_draw_indirect = has_ext("GL_NV_bindless_multi_draw_indirect");
 	GLAD_GL_NV_bindless_multi_draw_indirect_count = has_ext("GL_NV_bindless_multi_draw_indirect_count");
@@ -9421,7 +7875,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_NV_internalformat_sample_query = has_ext("GL_NV_internalformat_sample_query");
 	GLAD_GL_NV_light_max_exponent = has_ext("GL_NV_light_max_exponent");
 	GLAD_GL_NV_memory_attachment = has_ext("GL_NV_memory_attachment");
-	GLAD_GL_NV_mesh_shader = has_ext("GL_NV_mesh_shader");
 	GLAD_GL_NV_multisample_coverage = has_ext("GL_NV_multisample_coverage");
 	GLAD_GL_NV_multisample_filter_hint = has_ext("GL_NV_multisample_filter_hint");
 	GLAD_GL_NV_occlusion_query = has_ext("GL_NV_occlusion_query");
@@ -9487,86 +7940,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_NV_video_capture = has_ext("GL_NV_video_capture");
 	GLAD_GL_NV_viewport_array2 = has_ext("GL_NV_viewport_array2");
 	GLAD_GL_NV_viewport_swizzle = has_ext("GL_NV_viewport_swizzle");
-	GLAD_GL_OES_byte_coordinates = has_ext("GL_OES_byte_coordinates");
-	GLAD_GL_OES_compressed_paletted_texture = has_ext("GL_OES_compressed_paletted_texture");
-	GLAD_GL_OES_fixed_point = has_ext("GL_OES_fixed_point");
-	GLAD_GL_OES_query_matrix = has_ext("GL_OES_query_matrix");
-	GLAD_GL_OES_read_format = has_ext("GL_OES_read_format");
-	GLAD_GL_OES_single_precision = has_ext("GL_OES_single_precision");
-	GLAD_GL_OML_interlace = has_ext("GL_OML_interlace");
-	GLAD_GL_OML_resample = has_ext("GL_OML_resample");
-	GLAD_GL_OML_subsample = has_ext("GL_OML_subsample");
-	GLAD_GL_OVR_multiview = has_ext("GL_OVR_multiview");
-	GLAD_GL_OVR_multiview2 = has_ext("GL_OVR_multiview2");
-	GLAD_GL_PGI_misc_hints = has_ext("GL_PGI_misc_hints");
-	GLAD_GL_PGI_vertex_hints = has_ext("GL_PGI_vertex_hints");
-	GLAD_GL_REND_screen_coordinates = has_ext("GL_REND_screen_coordinates");
-	GLAD_GL_S3_s3tc = has_ext("GL_S3_s3tc");
-	GLAD_GL_SGIS_detail_texture = has_ext("GL_SGIS_detail_texture");
-	GLAD_GL_SGIS_fog_function = has_ext("GL_SGIS_fog_function");
-	GLAD_GL_SGIS_generate_mipmap = has_ext("GL_SGIS_generate_mipmap");
-	GLAD_GL_SGIS_multisample = has_ext("GL_SGIS_multisample");
-	GLAD_GL_SGIS_pixel_texture = has_ext("GL_SGIS_pixel_texture");
-	GLAD_GL_SGIS_point_line_texgen = has_ext("GL_SGIS_point_line_texgen");
-	GLAD_GL_SGIS_point_parameters = has_ext("GL_SGIS_point_parameters");
-	GLAD_GL_SGIS_sharpen_texture = has_ext("GL_SGIS_sharpen_texture");
-	GLAD_GL_SGIS_texture4D = has_ext("GL_SGIS_texture4D");
-	GLAD_GL_SGIS_texture_border_clamp = has_ext("GL_SGIS_texture_border_clamp");
-	GLAD_GL_SGIS_texture_color_mask = has_ext("GL_SGIS_texture_color_mask");
-	GLAD_GL_SGIS_texture_edge_clamp = has_ext("GL_SGIS_texture_edge_clamp");
-	GLAD_GL_SGIS_texture_filter4 = has_ext("GL_SGIS_texture_filter4");
-	GLAD_GL_SGIS_texture_lod = has_ext("GL_SGIS_texture_lod");
-	GLAD_GL_SGIS_texture_select = has_ext("GL_SGIS_texture_select");
-	GLAD_GL_SGIX_async = has_ext("GL_SGIX_async");
-	GLAD_GL_SGIX_async_histogram = has_ext("GL_SGIX_async_histogram");
-	GLAD_GL_SGIX_async_pixel = has_ext("GL_SGIX_async_pixel");
-	GLAD_GL_SGIX_blend_alpha_minmax = has_ext("GL_SGIX_blend_alpha_minmax");
-	GLAD_GL_SGIX_calligraphic_fragment = has_ext("GL_SGIX_calligraphic_fragment");
-	GLAD_GL_SGIX_clipmap = has_ext("GL_SGIX_clipmap");
-	GLAD_GL_SGIX_convolution_accuracy = has_ext("GL_SGIX_convolution_accuracy");
-	GLAD_GL_SGIX_depth_pass_instrument = has_ext("GL_SGIX_depth_pass_instrument");
-	GLAD_GL_SGIX_depth_texture = has_ext("GL_SGIX_depth_texture");
-	GLAD_GL_SGIX_flush_raster = has_ext("GL_SGIX_flush_raster");
-	GLAD_GL_SGIX_fog_offset = has_ext("GL_SGIX_fog_offset");
-	GLAD_GL_SGIX_fragment_lighting = has_ext("GL_SGIX_fragment_lighting");
-	GLAD_GL_SGIX_framezoom = has_ext("GL_SGIX_framezoom");
-	GLAD_GL_SGIX_igloo_interface = has_ext("GL_SGIX_igloo_interface");
-	GLAD_GL_SGIX_instruments = has_ext("GL_SGIX_instruments");
-	GLAD_GL_SGIX_interlace = has_ext("GL_SGIX_interlace");
-	GLAD_GL_SGIX_ir_instrument1 = has_ext("GL_SGIX_ir_instrument1");
-	GLAD_GL_SGIX_list_priority = has_ext("GL_SGIX_list_priority");
-	GLAD_GL_SGIX_pixel_texture = has_ext("GL_SGIX_pixel_texture");
-	GLAD_GL_SGIX_pixel_tiles = has_ext("GL_SGIX_pixel_tiles");
-	GLAD_GL_SGIX_polynomial_ffd = has_ext("GL_SGIX_polynomial_ffd");
-	GLAD_GL_SGIX_reference_plane = has_ext("GL_SGIX_reference_plane");
-	GLAD_GL_SGIX_resample = has_ext("GL_SGIX_resample");
-	GLAD_GL_SGIX_scalebias_hint = has_ext("GL_SGIX_scalebias_hint");
-	GLAD_GL_SGIX_shadow = has_ext("GL_SGIX_shadow");
-	GLAD_GL_SGIX_shadow_ambient = has_ext("GL_SGIX_shadow_ambient");
-	GLAD_GL_SGIX_sprite = has_ext("GL_SGIX_sprite");
-	GLAD_GL_SGIX_subsample = has_ext("GL_SGIX_subsample");
-	GLAD_GL_SGIX_tag_sample_buffer = has_ext("GL_SGIX_tag_sample_buffer");
-	GLAD_GL_SGIX_texture_add_env = has_ext("GL_SGIX_texture_add_env");
-	GLAD_GL_SGIX_texture_coordinate_clamp = has_ext("GL_SGIX_texture_coordinate_clamp");
-	GLAD_GL_SGIX_texture_lod_bias = has_ext("GL_SGIX_texture_lod_bias");
-	GLAD_GL_SGIX_texture_multi_buffer = has_ext("GL_SGIX_texture_multi_buffer");
-	GLAD_GL_SGIX_texture_scale_bias = has_ext("GL_SGIX_texture_scale_bias");
-	GLAD_GL_SGIX_vertex_preclip = has_ext("GL_SGIX_vertex_preclip");
-	GLAD_GL_SGIX_ycrcb = has_ext("GL_SGIX_ycrcb");
-	GLAD_GL_SGIX_ycrcb_subsample = has_ext("GL_SGIX_ycrcb_subsample");
-	GLAD_GL_SGIX_ycrcba = has_ext("GL_SGIX_ycrcba");
-	GLAD_GL_SGI_color_matrix = has_ext("GL_SGI_color_matrix");
-	GLAD_GL_SGI_color_table = has_ext("GL_SGI_color_table");
-	GLAD_GL_SGI_texture_color_table = has_ext("GL_SGI_texture_color_table");
-	GLAD_GL_SUNX_constant_data = has_ext("GL_SUNX_constant_data");
-	GLAD_GL_SUN_convolution_border_modes = has_ext("GL_SUN_convolution_border_modes");
-	GLAD_GL_SUN_global_alpha = has_ext("GL_SUN_global_alpha");
-	GLAD_GL_SUN_mesh_array = has_ext("GL_SUN_mesh_array");
-	GLAD_GL_SUN_slice_accum = has_ext("GL_SUN_slice_accum");
-	GLAD_GL_SUN_triangle_list = has_ext("GL_SUN_triangle_list");
-	GLAD_GL_SUN_vertex = has_ext("GL_SUN_vertex");
-	GLAD_GL_WIN_phong_shading = has_ext("GL_WIN_phong_shading");
-	GLAD_GL_WIN_specular_fog = has_ext("GL_WIN_specular_fog");
 	free_exts();
 	return 1;
 }
@@ -9659,7 +8032,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_VERSION_4_6(load);
 
 	if (!find_extensionsGL()) return 0;
-	load_GL_3DFX_tbuffer(load);
 	load_GL_AMD_debug_output(load);
 	load_GL_AMD_draw_buffers_blend(load);
 	load_GL_AMD_framebuffer_multisample_advanced(load);
@@ -9674,17 +8046,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_AMD_sparse_texture(load);
 	load_GL_AMD_stencil_operation_extended(load);
 	load_GL_AMD_vertex_shader_tessellator(load);
-	load_GL_APPLE_element_array(load);
-	load_GL_APPLE_fence(load);
-	load_GL_APPLE_flush_buffer_range(load);
-	load_GL_APPLE_object_purgeable(load);
-	load_GL_APPLE_texture_range(load);
-	load_GL_APPLE_vertex_array_object(load);
-	load_GL_APPLE_vertex_array_range(load);
-	load_GL_APPLE_vertex_program_evaluators(load);
-	load_GL_ARB_ES2_compatibility(load);
-	load_GL_ARB_ES3_1_compatibility(load);
-	load_GL_ARB_ES3_2_compatibility(load);
 	load_GL_ARB_base_instance(load);
 	load_GL_ARB_bindless_texture(load);
 	load_GL_ARB_blend_func_extended(load);
@@ -9771,16 +8132,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_ARB_vertex_type_2_10_10_10_rev(load);
 	load_GL_ARB_viewport_array(load);
 	load_GL_ARB_window_pos(load);
-	load_GL_ATI_draw_buffers(load);
-	load_GL_ATI_element_array(load);
-	load_GL_ATI_envmap_bumpmap(load);
-	load_GL_ATI_fragment_shader(load);
-	load_GL_ATI_map_object_buffer(load);
-	load_GL_ATI_pn_triangles(load);
-	load_GL_ATI_separate_stencil(load);
-	load_GL_ATI_vertex_array_object(load);
-	load_GL_ATI_vertex_attrib_array_object(load);
-	load_GL_ATI_vertex_streams(load);
 	load_GL_EXT_EGL_image_storage(load);
 	load_GL_EXT_bindable_uniform(load);
 	load_GL_EXT_blend_color(load);
@@ -9848,26 +8199,10 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_EXT_vertex_weighting(load);
 	load_GL_EXT_win32_keyed_mutex(load);
 	load_GL_EXT_window_rectangles(load);
-	load_GL_EXT_x11_sync_object(load);
-	load_GL_GREMEDY_frame_terminator(load);
-	load_GL_GREMEDY_string_marker(load);
-	load_GL_HP_image_transform(load);
-	load_GL_IBM_multimode_draw_arrays(load);
-	load_GL_IBM_static_data(load);
-	load_GL_IBM_vertex_array_lists(load);
-	load_GL_INGR_blend_func_separate(load);
-	load_GL_INTEL_framebuffer_CMAA(load);
-	load_GL_INTEL_map_texture(load);
-	load_GL_INTEL_parallel_arrays(load);
-	load_GL_INTEL_performance_query(load);
 	load_GL_KHR_blend_equation_advanced(load);
 	load_GL_KHR_debug(load);
 	load_GL_KHR_parallel_shader_compile(load);
 	load_GL_KHR_robustness(load);
-	load_GL_MESA_resize_buffers(load);
-	load_GL_MESA_window_pos(load);
-	load_GL_NVX_conditional_render(load);
-	load_GL_NVX_linked_gpu_multicast(load);
 	load_GL_NV_alpha_to_coverage_dither_control(load);
 	load_GL_NV_bindless_multi_draw_indirect(load);
 	load_GL_NV_bindless_multi_draw_indirect_count(load);
@@ -9898,7 +8233,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_NV_half_float(load);
 	load_GL_NV_internalformat_sample_query(load);
 	load_GL_NV_memory_attachment(load);
-	load_GL_NV_mesh_shader(load);
 	load_GL_NV_occlusion_query(load);
 	load_GL_NV_parameter_buffer_object(load);
 	load_GL_NV_path_rendering(load);
@@ -9927,39 +8261,5 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_NV_vertex_program4(load);
 	load_GL_NV_video_capture(load);
 	load_GL_NV_viewport_swizzle(load);
-	load_GL_OES_byte_coordinates(load);
-	load_GL_OES_fixed_point(load);
-	load_GL_OES_query_matrix(load);
-	load_GL_OES_single_precision(load);
-	load_GL_OVR_multiview(load);
-	load_GL_PGI_misc_hints(load);
-	load_GL_SGIS_detail_texture(load);
-	load_GL_SGIS_fog_function(load);
-	load_GL_SGIS_multisample(load);
-	load_GL_SGIS_pixel_texture(load);
-	load_GL_SGIS_point_parameters(load);
-	load_GL_SGIS_sharpen_texture(load);
-	load_GL_SGIS_texture4D(load);
-	load_GL_SGIS_texture_color_mask(load);
-	load_GL_SGIS_texture_filter4(load);
-	load_GL_SGIX_async(load);
-	load_GL_SGIX_flush_raster(load);
-	load_GL_SGIX_fragment_lighting(load);
-	load_GL_SGIX_framezoom(load);
-	load_GL_SGIX_igloo_interface(load);
-	load_GL_SGIX_instruments(load);
-	load_GL_SGIX_list_priority(load);
-	load_GL_SGIX_pixel_texture(load);
-	load_GL_SGIX_polynomial_ffd(load);
-	load_GL_SGIX_reference_plane(load);
-	load_GL_SGIX_sprite(load);
-	load_GL_SGIX_tag_sample_buffer(load);
-	load_GL_SGI_color_table(load);
-	load_GL_SUNX_constant_data(load);
-	load_GL_SUN_global_alpha(load);
-	load_GL_SUN_mesh_array(load);
-	load_GL_SUN_triangle_list(load);
-	load_GL_SUN_vertex(load);
 	return GLVersion.major != 0 || GLVersion.minor != 0;
 }
-
