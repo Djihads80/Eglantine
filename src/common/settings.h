@@ -532,7 +532,7 @@ struct Values {
                                                            "vram_usage_mode",
                                                            Category::RendererAdvanced};
 
-    SwitchableSetting<NvdecEmulation> nvdec_emulation{linkage, NvdecEmulation::Gpu,
+    SwitchableSetting<NvdecEmulation> nvdec_emulation{linkage, NvdecEmulation::Cpu,
                                                       "nvdec_emulation", Category::RendererAdvanced};
 
     SwitchableSetting<AnisotropyMode, true> max_anisotropy{linkage,
@@ -931,7 +931,7 @@ struct Values {
     // Network
     Setting<std::string> network_interface{linkage, std::string(), "network_interface",
                                            Category::Network};
-    SwitchableSetting<bool> airplane_mode{linkage, false, "airplane_mode", Category::Network};
+    SwitchableSetting<bool> airplane_mode{linkage, true, "airplane_mode", Category::Network};
 
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",
