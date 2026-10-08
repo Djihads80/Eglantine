@@ -171,8 +171,13 @@ struct Values {
     SwitchableSetting<bool> enable_overlay{linkage, false, "enable_overlay", Category::LibraryApplet};
 
     // Audio
-    SwitchableSetting<AudioEngine> sink_id{linkage, AudioEngine::Auto, "output_engine",
-                                           Category::Audio, Specialization::RuntimeList};
+    SwitchableSetting<AudioEngine> sink_id{linkage,
+#ifdef __ANDROID__
+                                           AudioEngine::Sdl3,
+#else
+                                           AudioEngine::Auto,
+#endif
+                                           "output_engine", Category::Audio, Specialization::RuntimeList};
     SwitchableSetting<std::string> audio_output_device_id{
                                                           linkage, "auto", "output_device", Category::Audio, Specialization::RuntimeList};
     SwitchableSetting<std::string> audio_input_device_id{
