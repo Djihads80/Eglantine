@@ -9,7 +9,7 @@
         "artifact": "boost-%VERSION%.tar.zst",
         "find_args": "CONFIG OPTIONAL_COMPONENTS headers context system fiber filesystem",
         "hash": "681d97be4386767662e230b2e7c9754d45e709cc5db4e747c23c27d1f5b0e87770bdf19b0bc44dcb0e8349324887bbb8fffb432098f4d0ce74a5043021a90afc",
-        "min_version": "1.57",
+        "min_version": "1.87",
         "package": "Boost",
         "repo": "eden-emulator/ext-boost",
         "version": "1.92.0"
@@ -131,9 +131,9 @@
         "version": "ce6fe122f3"
     },
     "jacinth": {
-        "hash": "132cead2e30bca3bcc0d16d38d5e09d17e02371ac21cd1f96d90f7b80add1ccf3223947d090586838f08844eca69428e2401938674cf681f474de4cee18d3258",
+        "hash": "f1387bd3366c11d4c5f36dcc311f14ef9568c85a6c296fa243c9ce0c1708cc1e2fb2ad65844affa532528b7f00a6ed44a08b03fde3d66ad78238b9e8e57538b4",
         "repo": "crueter/jacinth",
-        "version": "e235d9e6c7"
+        "version": "701a4e14f9"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",
