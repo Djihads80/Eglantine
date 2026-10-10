@@ -131,9 +131,9 @@
         "version": "ce6fe122f3"
     },
     "jacinth": {
-        "hash": "ba5a142c4096554a7e84f5d80bc12aed724aa29f3dae411e4c1c2bd143c2da9f95177a4c916ee6f8edee5aa38e183e7be0824cccedbaba2e825c83f07534c697",
+        "hash": "ccb4bad5db14b10c2efa7718db981201417212f05ada54e01aa3dffb2786e0ce8c058f986df1cdba6bfcecbdbbc37159ebff809e95fb6e28d8dec1389a6619dc",
         "repo": "crueter/jacinth",
-        "version": "57dc458c20"
+        "version": "b58b49652a"
     },
     "lagoon": {
         "hash": "b9380f99c6effaeccc6d8f81d4942e852c11ad28613df637e155451556ae5826f93765bee57a5c87a9740d2bd1db463ad0f55a947772fe9d57eeabae3efa373e",
@@ -141,13 +141,12 @@
         "version": "1.0.0"
     },
     "libadrenotools": {
-        "hash": "f6526620cb752876edc5ed4c0925d57b873a8218ee09ad10859ee476e9333259784f61c1dcc55a2bcba597352d18aff22cd2e4c1925ec2ae94074e09d7da2265",
+        "hash": "191b8dad7ec39c4431ee155ca74ffb51d9c9b085e6f44d631bc03a34b09894dff6b7e1dd153b6eaac95647662b851ccc5ebb7ef54e6f57a6ee114a9516cf7282",
         "patches": [
-            "0001-use-cpmfile-def-for-linkernsbypass.patch",
-            "0002-fix-clang-21-compilation.patch"
+            "0001-use-cpmfile-def-for-linkernsbypass.patch"
         ],
         "repo": "eden-emulator/libadrenotools",
-        "version": "8ba23b42d7"
+        "version": "6727fe4218"
     },
     "libusb": {
         "find_args": "MODULE",

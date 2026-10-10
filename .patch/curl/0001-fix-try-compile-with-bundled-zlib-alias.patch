@@ -1,60 +1,62 @@
-try_compile is stupid and can't handle alias targets lmao
----
- CMakeLists.txt | 45 +++++++++++++++++++++++++++++++++++++++------
- 1 file changed, 39 insertions(+), 6 deletions(-)
+From 53da3bbdb21b540cf1034f5257fd38a901406eba Mon Sep 17 00:00:00 2001
+From: crueter <crueter@eden-emu.dev>
+Date: Sat, 10 Oct 2026 15:40:12 -0400
+Subject: [PATCH] CMake: link to zlib alias if applicable
 
+If ZLIB::ZLIB is an alias then try_compile would fail because it runs in
+a different scope that doesn't have access to the same aliases.
+
+Signed-off-by: crueter <crueter@eden-emu.dev>
+---
+ CMakeLists.txt | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c0d5724ec4..9683fbb55f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1015,7 +1015,24 @@
+@@ -989,13 +989,30 @@ if(ZSTD_FOUND)
+   endif()
+ endif()
+ 
++# add zlib to CMAKE_REQUIRED_LIBRARIES
++function(add_libz)
++  if (ZLIB_LIBRARIES)
++    set(zlib_target ${ZLIB_LIBRARIES})
++  elseif(TARGET ZLIB::ZLIB)
++    # try_compile doesn't support aliased targets
++    # since it runs in a different scope
++    get_target_property(zlib_target ZLIB::ZLIB ALIASED_TARGET)
++    if (NOT zlib_target)
++      set(zlib_target ZLIB::ZLIB)
++    endif()
++  endif()
++
++  set(CMAKE_REQUIRED_LIBRARIES
++    ${CMAKE_REQUIRED_LIBRARIES} ${zlib_target} PARENT_SCOPE)
++endfunction()
++
+ # Check function in an OpenSSL-like TLS backend.
+ macro(curl_openssl_check_exists)
+   cmake_push_check_state()
    if(USE_OPENSSL)
      list(APPEND CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
      if(HAVE_LIBZ)
 -      list(APPEND CMAKE_REQUIRED_LIBRARIES ZLIB::ZLIB)
-+      if(TARGET ZLIB::ZLIB)
-+        get_target_property(_zlib_aliased ZLIB::ZLIB ALIASED_TARGET)
-+        if(_zlib_aliased)
-+          if(ZLIB_LIBRARIES)
-+            list(APPEND CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
-+          endif()
-+          if(ZLIB_INCLUDE_DIRS)
-+            list(APPEND CMAKE_REQUIRED_INCLUDES ${ZLIB_INCLUDE_DIRS})
-+          elseif(ZLIB_INCLUDE_DIR)
-+            list(APPEND CMAKE_REQUIRED_INCLUDES ${ZLIB_INCLUDE_DIR})
-+          endif()
-+        else()
-+          list(APPEND CMAKE_REQUIRED_LIBRARIES ZLIB::ZLIB)
-+        endif()
-+        unset(_zlib_aliased)
-+      elseif(ZLIB_LIBRARIES)
-+        list(APPEND CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
-+      endif()
++      add_libz()
      endif()
      if(WIN32)
        list(APPEND CMAKE_REQUIRED_LIBRARIES "bcrypt")  # for OpenSSL/LibreSSL BCryptGenRandom()
-@@ -1025,7 +1043,25 @@
+@@ -1009,7 +1026,8 @@ macro(curl_openssl_check_exists)
      list(APPEND CMAKE_REQUIRED_LIBRARIES CURL::wolfssl)
      list(APPEND CMAKE_REQUIRED_DEFINITIONS "-DWOLFSSL_OPTIONS_IGNORE_SYS")
      if(HAVE_LIBZ)
 -      list(APPEND CMAKE_REQUIRED_LIBRARIES ZLIB::ZLIB)  # Public wolfSSL headers also require zlib headers
 +      # Public wolfSSL headers also require zlib headers
-+      if(TARGET ZLIB::ZLIB)
-+        get_target_property(_zlib_aliased ZLIB::ZLIB ALIASED_TARGET)
-+        if(_zlib_aliased)
-+          if(ZLIB_LIBRARIES)
-+            list(APPEND CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
-+          endif()
-+          if(ZLIB_INCLUDE_DIRS)
-+            list(APPEND CMAKE_REQUIRED_INCLUDES ${ZLIB_INCLUDE_DIRS})
-+          elseif(ZLIB_INCLUDE_DIR)
-+            list(APPEND CMAKE_REQUIRED_INCLUDES ${ZLIB_INCLUDE_DIR})
-+          endif()
-+        else()
-+          list(APPEND CMAKE_REQUIRED_LIBRARIES ZLIB::ZLIB)
-+        endif()
-+        unset(_zlib_aliased)
-+      elseif(ZLIB_LIBRARIES)
-+        list(APPEND CMAKE_REQUIRED_LIBRARIES ${ZLIB_LIBRARIES})
-+      endif()
++      add_libz()
      endif()
      list(APPEND CMAKE_REQUIRED_DEFINITIONS "-DHAVE_UINTPTR_T")  # to pull in stdint.h (as of wolfSSL 5.5.4)
    endif()
+-- 
+2.54.0
+
