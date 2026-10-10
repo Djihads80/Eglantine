@@ -4,7 +4,6 @@
 #pragma once
 
 #include <array>
-#include <mutex>
 #include <span>
 
 #include "common/common_types.h"

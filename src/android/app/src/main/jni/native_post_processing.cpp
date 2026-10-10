@@ -36,28 +36,6 @@ void BeginFxEdit() {
     VideoCore::UsePerGameFxSettings();
 }
 
-void to_json(jacinth::mutable_value json, const VideoCore::FxUniformDesc& uniform) {
-    json["name"] = uniform.name;
-    json["label"] = uniform.label;
-    json["tooltip"] = uniform.tooltip;
-    json["category"] = uniform.category;
-    json["kind"] = static_cast<int>(uniform.kind);
-    json["uiType"] = static_cast<int>(uniform.ui_type);
-    json["components"] = uniform.components;
-    json["min"] = uniform.ui_min;
-    json["max"] = uniform.ui_max;
-    json["step"] = uniform.ui_step;
-    json["items"] = uniform.items;
-
-    std::vector<u32> defaults;
-    for (u32 i = 0; i < uniform.components; ++i) {
-        defaults.emplace_back(uniform.default_value[i]);
-    }
-    json["defaults"] = defaults;
-
-    return out;
-}
-
 std::array<f32, 4> DefaultValueOf(size_t index, const std::string& uniform) {
     const auto entries = VideoCore::FxChain::Instance().Entries();
     if (index >= entries.size()) {
