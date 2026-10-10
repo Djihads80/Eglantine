@@ -1,44 +1,39 @@
 # Dependencies
 
-To build Eden, you MUST have a C++ compiler.
+To build Eden, you MUST have a C++ compiler. Clang 17+ and GCC 15+ are supported.
 
-* On Linux, this is usually [GCC](https://gcc.gnu.org/) 11+ or [Clang](https://clang.llvm.org/) v14+
-  * GCC 12 also requires Clang 14+
-* On Windows, we support:
-  * **[MSVC](https://visualstudio.microsoft.com/downloads/)** (default)
-    * It's STRONGLY RECOMMENDED to use the **Community** option and **Visual Studio 2022**
-    * You need to install: **[Desktop development with C++](https://learn.microsoft.com/en-us/cpp/build/vscpp-step-0-installation?view=msvc-170)**
-  * **[clang-cl](https://learn.microsoft.com/en-us/cpp/build/clang-support-msbuild?view=msvc-180)**
-    * You need to install: **C++ Clang tools for Windows**
-  * **[MSYS2](https://www.msys2.org)**
-* On macOS, this is Apple Clang
-  * This can be installed with `xcode-select --install`
+- On Linux, this is usually GCC or Clang. Install it through your distribution's package manager.
+- On Windows, you have two options:
+  - Install [Visual Studio](https://visualstudio.microsoft.com/downloads) and select `Desktop development with C++` and `C++ Clang tools for Windows`. You will need to set your C/C++ compiler to `clang-cl`.
+    - You may also use the default MSVC frontend if you install Visual Studio 2022 (not 2026).
+  - Install [MSYS2](https://msys2.org) and use Clang or GCC. UCRT64 and CLANGARM64 are the only two supported environments for now.
+- On macOS, the officially supported method is to use [Homebrew](https://brew.sh)'s Clang (`brew install llvm`), but the default AppleClang (`xcode-select --install`) will work as well.
 
 The following additional tools are also required:
 
-* **[CMake](https://www.cmake.org/)** 3.31+ - already included with the Android SDK
-* **[Git](https://git-scm.com/)** for version control
-  * **[Windows installer](https://gitforwindows.org)**
-* **[Python3](https://www.python.org/downloads/)** 3.10+ - necessary to download external repositories
-* On Windows, you must install the **[Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows)** as well
-  * *A convenience script to install the latest SDK is provided in:*
-    * `tools/windows/install-vulkan-sdk.ps1` (for PowerShell 5+)
-    * `tools/windows/install-vulkan-sdk.sh` (for Git Bash, etc)
+- **[CMake](https://www.cmake.org/)** 3.31+
+- **[Git](https://git-scm.com/)** for version control
+  - **[Windows installer](https://gitforwindows.org)**
+- **[Python3](https://www.python.org/downloads/)** 3.10+
+- On Windows, you must install the **[Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows)** as well
+  - *A convenience script to install the latest SDK is provided in:*
+    - `tools/windows/install-vulkan-sdk.ps1` (for PowerShell 5+)
+    - `tools/windows/install-vulkan-sdk.sh` (for Git Bash, etc)
 
-If you are on desktop and plan to use the Qt frontend, you *must* install Qt 6, and optionally Qt Creator (the **RECOMMENDED** IDE for building)
+If you are on desktop and plan to use the Qt frontend, you *must* install Qt 6, and optionally Qt Creator (the recommended IDE for building)
 
-* On Linux, *BSD and macOS, this can be done by the package manager
-  * If you wish to use Qt Creator, append `qtcreator` or `qt-creator` to the commands seen below.
-* MSVC/clang-cl users on Windows must install through the official [Qt](https://www.qt.io/download-qt-installer-oss) installer
-* Linux and macOS users may choose to use the installer as well.
-* MSYS2 can also install Qt 6 via the package manager
+- On Linux, *BSD and macOS, this can be done by the package manager
+  - If you wish to use Qt Creator, append `qtcreator` or `qt-creator` to the commands seen below.
+- MSVC/clang-cl users on Windows must install through the official [Qt](https://www.qt.io/download-qt-installer-oss) installer
+- Linux and macOS users may choose to use the installer as well.
+- MSYS2 can also install Qt 6 via the package manager
 
-* For help setting up Qt Creator, run `./install.sh -h qtcreator`
+- For help setting up Qt Creator, run `./install.sh -h qtcreator`
 
-* If you're using clang-cl and want to still use MSVC
-  * Check the option to add "C++ clang compiler for Windows" on Visual Studio installer and uncheck "x64/x86 build tool for MSVC" while selecting "C++ desktop developement tools" and change Visual Studio to 2026, from 2022.
-  * At qt creator section generator tab change Visual Studio 17 2022 to 2026.
-  * Finally, to use clang-cl: `cmake -S . -B build -G "Visual Studio 17 2026" -T ClangCL`
+- If you're using clang-cl and want to still use MSVC
+  - Check the option to add "C++ clang compiler for Windows" on Visual Studio installer and uncheck "x64/x86 build tool for MSVC" while selecting "C++ desktop developement tools" and change Visual Studio to 2026, from 2022.
+  - At qt creator section generator tab change Visual Studio 17 2022 to 2026.
+  - Finally, to use clang-cl: `cmake -S . -B build -G "Visual Studio 17 2026" -T ClangCL`
 
 If you are on **Windows** and building with **MSVC** or **clang-cl**, you may go [back home](Build.md) and continue.
 
@@ -46,49 +41,50 @@ If you are on **Windows** and building with **MSVC** or **clang-cl**, you may go
 
 The following are handled by Eden's externals:
 
-* [FFmpeg](https://ffmpeg.org/)
-* [SDL3](https://www.libsdl.org/download-2.0.php) 3.2.10+
+- [FFmpeg](https://ffmpeg.org/)
+- [SDL3](https://www.libsdl.org/download-2.0.php) 3.2.10+
 
 All other dependencies will be downloaded and built by CPM, but will always use system dependencies if available (UNIX-like only):
 
-* [Boost](https://www.boost.org/users/download/) 1.57.0+
-* [Catch2](https://github.com/catchorg/Catch2) 3.0.1 if `YUZU_TESTS` or `DYNARMIC_TESTS` are on
-* [fmt](https://fmt.dev/) 8.0.1+
-* [lz4](http://www.lz4.org)
-* [OpenSSL](https://www.openssl.org/source/) 3+
-* [ZLIB](https://www.zlib.net/) 1.2+
-* [zstd](https://facebook.github.io/zstd/) 1.5+
-* [enet](http://enet.bespin.org/) 1.3+
-* [Opus](https://opus-codec.org/) 1.3+
+- [Boost](https://www.boost.org/users/download/) 1.87.0+
+- [Catch2](https://github.com/catchorg/Catch2) 3.0.1 if `YUZU_TESTS` or `DYNARMIC_TESTS` are on
+- [fmt](https://fmt.dev/) 8.0.1+
+- [lz4](http://www.lz4.org)
+- [OpenSSL](https://www.openssl.org/source/) 3+
+- [ZLIB](https://www.zlib.net/) 1.2+
+- [zstd](https://facebook.github.io/zstd/) 1.5+
+- [enet](http://enet.bespin.org/) 1.3+
+- [Opus](https://opus-codec.org/) 1.3+
 
-Vulkan 1.3.274+ is also needed:
+Vulkan 1.4.317+ is also needed:
 
-* [VulkanUtilityLibraries](https://github.com/KhronosGroup/Vulkan-Utility-Libraries)
-* [VulkanHeaders](https://github.com/KhronosGroup/Vulkan-Headers)
-* [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
-* [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
+- [VulkanUtilityLibraries](https://github.com/KhronosGroup/Vulkan-Utility-Libraries)
+- [VulkanHeaders](https://github.com/KhronosGroup/Vulkan-Headers)
+- [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
+- [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
 
 System packages *can* be used for these libraries, but many are either not packaged by most distributions OR have issues when used by the system:
 
-* [SimpleIni](https://github.com/brofield/simpleini)
-* [DiscordRPC](https://github.com/eden-emulator/discord-rpc)
-* [cubeb](https://github.com/mozilla/cubeb)
-* [libusb](https://github.com/libusb/libusb)
-* [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
-* [sirit](https://github.com/eden-emulator/sirit)
-* [cpp-jwt](https://github.com/arun11299/cpp-jwt) 1.4+ - if `ENABLE_WEB_SERVICE` is on
+- [SimpleIni](https://github.com/brofield/simpleini)
+- [DiscordRPC](https://github.com/eden-emulator/discord-rpc)
+- [cubeb](https://github.com/mozilla/cubeb)
+- [libusb](https://github.com/libusb/libusb)
+- [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+- [sirit](https://github.com/eden-emulator/sirit)
+- [cpp-jwt](https://github.com/arun11299/cpp-jwt) 1.4+ - if `ENABLE_WEB_SERVICE` is on
+- [Jacinth](https://github.com/crueter/jacinth)
 
 On amd64:
 
-* [xbyak](https://github.com/herumi/xbyak) - 7.22 or earlier is recommended
+- [xbyak](https://github.com/herumi/xbyak) - 7.22 or earlier is recommended
 
 On aarch64 OR if `DYNARMIC_TESTS` is on:
 
-* [oaknut](https://github.com/merryhime/oaknut) 2.0.1+
+- [oaknut](https://github.com/merryhime/oaknut) 2.0.1+
 
 On riscv64:
 
-* [biscuit](https://github.com/lioncash/biscuit) 0.9.1+
+- [biscuit](https://github.com/lioncash/biscuit) 0.9.1+
 
 ## Commands
 
@@ -129,17 +125,17 @@ sudo emerge -a \
     virtual/pkgconfig
 ```
 
-* On `amd64`, also add `dev-libs/xbyak`
-* On `riscv64`, also add `dev-libs/biscuit` (currently unavailable)
-* On `aarch64`, also add `dev-libs/oaknut`
-* If tests are enabled, also add `dev-libs/oaknut` and `dev-cpp/catch`
+- On `amd64`, also add `dev-libs/xbyak`
+- On `riscv64`, also add `dev-libs/biscuit` (currently unavailable)
+- On `aarch64`, also add `dev-libs/oaknut`
+- If tests are enabled, also add `dev-libs/oaknut` and `dev-cpp/catch`
 
 Required USE flags:
 
-* `dev-qt/qtbase network concurrent dbus gui widgets`
-* `dev-libs/quazip qt6`
-* `media-libs/libsdl3 haptic joystick sound video`
-  * Adding `X vulkan udev opengl` is recommended but not required
+- `dev-qt/qtbase network concurrent dbus gui widgets`
+- `dev-libs/quazip qt6`
+- `media-libs/libsdl3 haptic joystick sound video`
+  - Adding `X vulkan udev opengl` is recommended but not required
 
 [Caveats](./Caveats.md#gentoo-linux)
 
@@ -152,9 +148,9 @@ Required USE flags:
 sudo pacman -Syu --needed base-devel boost catch2 cmake enet ffmpeg fmt git glslang libzip lz4 ninja openssl opus qt6-base qt6-multimedia qt6-charts sdl3 zlib zstd zip unzip vulkan-headers vulkan-utility-libraries libusb spirv-tools spirv-headers
 ```
 
-* Building with QT Web Engine requires `qt6-webengine` as well.
-* Proper Wayland support requires `qt6-wayland`
-* GCC 11 or later is required.
+- Building with QT Web Engine requires `qt6-webengine` as well.
+- Proper Wayland support requires `qt6-wayland`
+- GCC 11 or later is required.
 
 </details>
 
@@ -165,8 +161,8 @@ sudo pacman -Syu --needed base-devel boost catch2 cmake enet ffmpeg fmt git glsl
 sudo apt-get install autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev libhidapi-dev libpulse-dev libtool libudev-dev libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libxext-dev libxkbcommon-x11-0 mesa-common-dev nasm ninja-build qt6-base-private-dev catch2 libfmt-dev liblz4-dev libzstd-dev libssl-dev libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev qt6-tools-dev qt6-charts-dev libvulkan-dev spirv-tools spirv-headers libusb-1.0-0-dev libxbyak-dev libboost-dev libboost-fiber-dev libboost-context-dev libsdl3-dev libopus-dev libasound2t64 vulkan-utility-libraries-dev
 ```
 
-* Ubuntu 26.04, Linux Mint 22.3, or Debian 13 or later is required.
-* To enable QT Web Engine, add `-DYUZU_USE_QT_WEB_ENGINE=ON` when running CMake.
+- Ubuntu 26.04, Linux Mint 22.3, or Debian 13 or later is required.
+- To enable QT Web Engine, add `-DYUZU_USE_QT_WEB_ENGINE=ON` when running CMake.
 
 </details>
 
@@ -194,9 +190,9 @@ sudo dnf install qt6-qtbase-private-devel
 
 For systems like OpenEuler or derivates, don't forget to also install: `SDL3-devel pkg-config fmt-dev`.
 
-* [RPM Fusion](https://rpmfusion.org/Configuration) is required for `ffmpeg-devel`
-* Fedora 32 or later is required.
-* Fedora 36+ users with GCC 12 need Clang and should configure CMake with: `cmake -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -B build`
+- [RPM Fusion](https://rpmfusion.org/Configuration) is required for `ffmpeg-devel`
+- Fedora 32 or later is required.
+- Fedora 36+ users with GCC 12 need Clang and should configure CMake with: `cmake -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -B build`
 
 </details>
 
@@ -217,7 +213,7 @@ apk add g++ git cmake make mesa-dev qt6-qtbase-dev qt6-qtbase-private-dev libqua
 <summary>Void Linux</summary>
 
 ```sh
-xbps-install -Su git make cmake clang pkg-config patch SPIRV-Tools-devel SPIRV-Headers lz4 liblz4-devel boost-devel ffmpeg6-devel catch2 Vulkan-Utility-Libraries Vulkan-Headers glslang openssl-devel SDL3-devel quazip-qt6-devel qt6-base-devel qt6-qt5compat-devel qt6-charts-devel fmt-devel libenet-devel libusb-devel
+xbps-install -Su git make cmake clang pkg-config patch SPIRV-Tools-devel SPIRV-Headers lz4 liblz4-devel boost-devel ffmpeg6-devel catch2 Vulkan-Utility-Libraries Vulkan-Headers glslang openssl-devel SDL3-devel quazip-qt6-devel qt6-base-devel qt6-charts-devel fmt-devel libenet-devel libusb-devel
 ```
 
 </details>
@@ -254,6 +250,7 @@ brew install molten-vk
 <summary>FreeBSD</summary>
 
 As root run:
+
 ```sh
 pkg install devel/cmake devel/sdl3 devel/boost-libs devel/catch2 devel/libfmt devel/ninja devel/nasm devel/autoconf devel/pkgconf devel/qt6-base x11-toolkits/qt6-charts devel/simpleini net/enet multimedia/ffnvcodec-headers multimedia/ffmpeg audio/opus archivers/liblz4 lang/gcc12 graphics/glslang graphics/vulkan-utility-libraries graphics/spirv-tools graphics/vulkan-utility-libraries graphics/vulkan-headers graphics/spirv-headers quazip-qt6
 ```
@@ -319,29 +316,21 @@ sudo pkgin install git cmake autoconf build-essential libusb-1 nasm gcc13
 <details>
 <summary>MSYS2</summary>
 
-* Open the `MSYS2 MinGW 64-bit` shell (`mingw64.exe`)
-* Download and install all dependencies:
+- Open the `MSYS2 UCRT64` shell on AMD/Intel, or `MSYS2 CLANGARM64` on ARM
+- Download and install all dependencies:
 
 ```sh
-BASE="git make autoconf libtool automake-wrapper jq patch"
-MINGW="qt6-base qt6-charts qt6-tools qt6-translations qt6-svg cmake toolchain clang python-pip openssl vulkan-memory-allocator vulkan-devel glslang boost fmt lz4 zlib zstd enet opus libusb openssl SDL3"
-# Either x86_64 or clang-aarch64 (Windows on ARM)
-packages="$BASE"
-for pkg in $MINGW; do
-    packages="$packages mingw-w64-x86_64-$pkg"
-    #packages="$packages mingw-w64-clang-aarch64-$pkg"
-done
-pacman -Syuu --needed --noconfirm $packages
+pacman -Syu
+pacman -S --needed git make autoconf libtool automake-wrapper jq patch pactoys
+pacboy -S --needed qt6-base qt6-charts qt6-tools qt6-translations qt6-svg cmake toolchain clang python-pip openssl vulkan-memory-allocator vulkan-devel glslang boost fmt lz4 zlib zstd enet opus libusb openssl SDL3
 ```
 
-* Notes:
-  * Using `qt6-static` is possible as well, provided you build with `-DYUZU_STATIC_BUILD=ON`.
-  * Other environments are entirely untested, but should theoretically work provided you install all the necessary packages.
-  * GCC is proven to work better with the MinGW environment. On ARM, only Clang is available through the CLANGARM64 environment, so use that until a GNU ARM environment is available.
-  * Add `qt-creator` to the `MINGW` variable to install Qt Creator. You can then create a Start Menu shortcut to the MinGW Qt Creator by running `powershell "\$s=(New-Object -COM WScript.Shell).CreateShortcut('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Qt Creator.lnk');\$s.TargetPath='C:\\msys64\\mingw64\\bin\\qtcreator.exe';\$s.Save()"` in Git Bash or MSYS2.
-* Add MinGW binaries to the PATH if they aren't already:
-  * `echo 'PATH=/mingw64/bin:$PATH' >> ~/.bashrc`
-  * or `echo 'PATH=/mingw64/bin:$PATH' >> ~/.zshrc`
+- Notes:
+  - You can omit `qt6` entirely and choose to enable `-DYUZU_USE_BUNDLED_QT=ON`.
+  - Add `qt-creator` to the `MINGW` variable to install Qt Creator. You can then create a Start Menu shortcut to the MinGW Qt Creator by running `powershell "\$s=(New-Object -COM WScript.Shell).CreateShortcut('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Qt Creator.lnk');\$s.TargetPath='C:\\msys64\\mingw64\\bin\\qtcreator.exe';\$s.Save()"` in Git Bash or MSYS2.
+- Add MinGW binaries to the PATH if they aren't already:
+  - `echo 'PATH=/$MSYSTEM/bin:$PATH' >> ~/.bashrc`
+  - or `echo 'PATH=/$MSYSTEM/bin:$PATH' >> ~/.zshrc`
 
 [Caveats](./Caveats.md#msys2).
 
