@@ -15,6 +15,10 @@ option(DYNARMIC_TESTS "Build tests" ${BUILD_TESTING})
 # some of its variables, which is only possible in 3.13+
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
+# None of our externals have modules (yet)
+# Jacinth does, but that is defined in src so it inherits compiler flags
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+
 # Disable tests/tools in all externals supporting the standard option name
 set(BUILD_TESTING OFF)
 
