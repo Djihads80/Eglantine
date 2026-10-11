@@ -159,16 +159,33 @@ bool ArmNce::HandleGuestAlignmentFault(GuestContext* guest_ctx, void* raw_info, 
 
 bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, void* raw_context) {
     auto* info = static_cast<siginfo_t*>(raw_info);
+    u64 raw_addr = reinterpret_cast<u64>(info->si_addr);
+
+    // Max architectural access size
+    constexpr u64 MAX_SIZE = 16;
+
+    const u64 pageoff = raw_addr & Memory::YUZU_PAGEMASK;
+    const u64 page_start = raw_addr - pageoff;
+    auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
 
     // Try to handle an invalid access.
-    // TODO: handle accesses which split a page?
-    const Common::ProcessAddress addr =
-        (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
-    auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
-    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
-        // We handled the access successfully and are returning to guest code.
-        return true;
+    if (pageoff > YUZU_PAGESIZE - MAX_SIZE) {
+        // The access may or may not have spanned two pages, let's invalidate two
+
+        // Either way, we won't check if the 2nd page succeeded as there is a (very small) chance
+        // that this page is correctly invalid and this access only spanned one page.
+        memory.InvalidateNCE(page_start + Memory::YUZU_PAGESIZE);
+        if (memory.InvalidateNCE(page_start, Memory::YUZU_PAGESIZE)) {
+            // We handled the access successfully and are returning to guest code.
+            return true;
+        }
+    } else {
+        if (memory.InvalidateNCE(page_start, Memory::YUZU_PAGESIZE)) {
+            // We handled the access successfully and are returning to guest code.
+            return true;
+        }
     }
+
 
     // We couldn't handle the access.
     return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
