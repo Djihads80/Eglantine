@@ -1661,6 +1661,7 @@ int GLAD_GL_NV_gpu_program5 = 0;
 int GLAD_GL_NV_gpu_program5_mem_extended = 0;
 int GLAD_GL_NV_gpu_shader5 = 0;
 int GLAD_GL_NV_half_float = 0;
+int GLAD_GL_NV_parameter_buffer_object = 0;
 int GLAD_GL_NV_shader_atomic_float = 0;
 int GLAD_GL_NV_shader_atomic_float64 = 0;
 int GLAD_GL_NV_shader_atomic_fp16_vector = 0;
