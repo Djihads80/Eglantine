@@ -246,7 +246,6 @@ if (ENABLE_OPENGL)
 endif()
 
 target_link_libraries(shader_recompiler PUBLIC common fmt::fmt sirit::sirit)
-target_link_libraries(shader_recompiler PRIVATE Boost::container Boost::intrusive)
 
 if (MSVC)
     target_compile_options(shader_recompiler PRIVATE

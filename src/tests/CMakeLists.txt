@@ -25,7 +25,6 @@ add_executable(tests
 create_target_directory_groups(tests)
 
 target_link_libraries(tests PRIVATE common core input_common video_core)
-target_link_libraries(tests PRIVATE Boost::asio Boost::crc)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 add_test(NAME tests COMMAND tests)

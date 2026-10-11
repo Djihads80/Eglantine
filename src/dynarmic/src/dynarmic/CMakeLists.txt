@@ -390,7 +390,7 @@ target_compile_options(dynarmic PRIVATE ${DYNARMIC_CXX_FLAGS})
 target_link_libraries(dynarmic PUBLIC fmt::fmt common)
 
 if (BOOST_NO_HEADERS)
-    target_link_libraries(dynarmic PRIVATE Boost::variant Boost::icl Boost::pool Boost::container Boost::unordered)
+    target_link_libraries(dynarmic PRIVATE Boost::variant Boost::icl Boost::pool)
 else()
     target_link_libraries(dynarmic PRIVATE Boost::headers)
 endif()
