@@ -13,17 +13,12 @@
         GL_ARB_arrays_of_arrays,
         GL_ARB_base_instance,
         GL_ARB_bindless_texture,
-        GL_ARB_blend_func_extended,
         GL_ARB_buffer_storage,
         GL_ARB_cl_event,
         GL_ARB_clear_buffer_object,
         GL_ARB_clear_texture,
-        GL_ARB_clip_control,
         GL_ARB_color_buffer_float,
         GL_ARB_compute_shader,
-        GL_ARB_compute_variable_group_size,
-        GL_ARB_conditional_render_inverted,
-        GL_ARB_conservative_depth,
         GL_ARB_copy_buffer,
         GL_ARB_copy_image,
         GL_ARB_cull_distance,
@@ -37,13 +32,11 @@
         GL_ARB_draw_buffers_blend,
         GL_ARB_draw_indirect,
         GL_ARB_draw_instanced,
-        GL_ARB_enhanced_layouts,
         GL_ARB_fragment_layer_viewport,
         GL_ARB_fragment_program,
         GL_ARB_fragment_program_shadow,
         GL_ARB_fragment_shader,
         GL_ARB_fragment_shader_interlock,
-        GL_ARB_framebuffer_no_attachments,
         GL_ARB_framebuffer_object,
         GL_ARB_framebuffer_sRGB,
         GL_ARB_geometry_shader4,
@@ -60,18 +53,14 @@
         GL_ARB_map_buffer_alignment,
         GL_ARB_map_buffer_range,
         GL_ARB_matrix_palette,
-        GL_ARB_multi_bind,
         GL_ARB_multi_draw_indirect,
         GL_ARB_multisample,
         GL_ARB_multitexture,
         GL_ARB_parallel_shader_compile,
-        GL_ARB_pipeline_statistics_query,
         GL_ARB_pixel_buffer_object,
         GL_ARB_point_parameters,
         GL_ARB_point_sprite,
-        GL_ARB_polygon_offset_clamp,
         GL_ARB_post_depth_coverage,
-        GL_ARB_program_interface_query,
         GL_ARB_provoking_vertex,
         GL_ARB_query_buffer_object,
         GL_ARB_robustness,
@@ -125,7 +114,6 @@
         GL_ARB_texture_filter_anisotropic,
         GL_ARB_texture_filter_minmax,
         GL_ARB_texture_float,
-        GL_ARB_texture_gather,
         GL_ARB_texture_mirror_clamp_to_edge,
         GL_ARB_texture_mirrored_repeat,
         GL_ARB_texture_multisample,
@@ -144,7 +132,6 @@
         GL_ARB_transform_feedback2,
         GL_ARB_transform_feedback3,
         GL_ARB_transform_feedback_instanced,
-        GL_ARB_transform_feedback_overflow_query,
         GL_ARB_transpose_matrix,
         GL_ARB_uniform_buffer_object,
         GL_ARB_vertex_array_bgra,
@@ -168,7 +155,6 @@
         GL_EXT_blend_logic_op,
         GL_EXT_blend_minmax,
         GL_EXT_blend_subtract,
-        GL_EXT_clip_volume_hint,
         GL_EXT_color_subtable,
         GL_EXT_convolution,
         GL_EXT_coordinate_frame,
@@ -183,7 +169,6 @@
         GL_EXT_external_buffer,
         GL_EXT_framebuffer_blit,
         GL_EXT_framebuffer_multisample,
-        GL_EXT_framebuffer_multisample_blit_scaled,
         GL_EXT_framebuffer_object,
         GL_EXT_framebuffer_sRGB,
         GL_EXT_geometry_shader4,
@@ -214,7 +199,6 @@
         GL_EXT_shader_image_load_formatted,
         GL_EXT_shader_image_load_store,
         GL_EXT_shader_integer_mix,
-        GL_EXT_shadow_funcs,
         GL_EXT_shared_texture_palette,
         GL_EXT_sparse_texture2,
         GL_EXT_stencil_clear_tag,
@@ -237,11 +221,9 @@
         GL_EXT_texture_lod_bias,
         GL_EXT_texture_mirror_clamp,
         GL_EXT_texture_object,
-        GL_EXT_texture_perturb_normal,
         GL_EXT_texture_sRGB,
         GL_EXT_texture_sRGB_R8,
         GL_EXT_texture_sRGB_decode,
-        GL_EXT_texture_shared_exponent,
         GL_EXT_texture_swizzle,
         GL_EXT_timer_query,
         GL_EXT_transform_feedback,
@@ -284,7 +266,6 @@
         GL_NV_depth_clamp,
         GL_NV_draw_texture,
         GL_NV_draw_vulkan_image,
-        GL_NV_evaluators,
         GL_NV_explicit_multisample,
         GL_NV_fence,
         GL_NV_fill_rectangle,
@@ -364,7 +345,7 @@
     Reproducible: False
 
     Commandline:
-        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_multi_draw_indirect,GL_AMD_seamless_cubemap_per_texture,GL_ARB_arrays_of_arrays,GL_ARB_base_instance,GL_ARB_bindless_texture,GL_ARB_blend_func_extended,GL_ARB_buffer_storage,GL_ARB_cl_event,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_clip_control,GL_ARB_color_buffer_float,GL_ARB_compute_shader,GL_ARB_compute_variable_group_size,GL_ARB_conditional_render_inverted,GL_ARB_conservative_depth,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_cull_distance,GL_ARB_debug_output,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_enhanced_layouts,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_no_attachments,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_matrix_palette,GL_ARB_multi_bind,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_parallel_shader_compile,GL_ARB_pipeline_statistics_query,GL_ARB_pixel_buffer_object,GL_ARB_point_parameters,GL_ARB_point_sprite,GL_ARB_polygon_offset_clamp,GL_ARB_post_depth_coverage,GL_ARB_program_interface_query,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_atomic_counter_ops,GL_ARB_shader_atomic_counters,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_env_add,GL_ARB_texture_env_combine,GL_ARB_texture_env_crossbar,GL_ARB_texture_env_dot3,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_float,GL_ARB_texture_gather,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_non_power_of_two,GL_ARB_texture_query_levels,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_transform_feedback_overflow_query,GL_ARB_transpose_matrix,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_vertex_type_10f_11f_11f_rev,GL_ARB_vertex_type_2_10_10_10_rev,GL_ARB_viewport_array,GL_ARB_window_pos,GL_EXT_EGL_image_storage,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_clip_volume_hint,GL_EXT_color_subtable,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_external_buffer,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_multisample_blit_scaled,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_memory_object,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_paletted_texture,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_point_parameters,GL_EXT_polygon_offset,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shadow_funcs,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_texture,GL_EXT_texture3D,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_env_add,GL_EXT_texture_env_combine,GL_EXT_texture_env_dot3,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_perturb_normal,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_shared_exponent,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_window_rectangles,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_evaluators,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_stereo_view_rendering,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
+        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_multi_draw_indirect,GL_AMD_seamless_cubemap_per_texture,GL_ARB_arrays_of_arrays,GL_ARB_base_instance,GL_ARB_bindless_texture,GL_ARB_buffer_storage,GL_ARB_cl_event,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_color_buffer_float,GL_ARB_compute_shader,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_cull_distance,GL_ARB_debug_output,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_matrix_palette,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_parallel_shader_compile,GL_ARB_pixel_buffer_object,GL_ARB_point_parameters,GL_ARB_point_sprite,GL_ARB_post_depth_coverage,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_atomic_counter_ops,GL_ARB_shader_atomic_counters,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_env_add,GL_ARB_texture_env_combine,GL_ARB_texture_env_crossbar,GL_ARB_texture_env_dot3,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_float,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_non_power_of_two,GL_ARB_texture_query_levels,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_transpose_matrix,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_vertex_type_10f_11f_11f_rev,GL_ARB_vertex_type_2_10_10_10_rev,GL_ARB_viewport_array,GL_ARB_window_pos,GL_EXT_EGL_image_storage,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_color_subtable,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_external_buffer,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_memory_object,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_paletted_texture,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_point_parameters,GL_EXT_polygon_offset,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_texture,GL_EXT_texture3D,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_env_add,GL_EXT_texture_env_combine,GL_EXT_texture_env_dot3,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_window_rectangles,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_stereo_view_rendering,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
     Online:
         Too many extensions
 */
@@ -8157,10 +8138,6 @@ typedef void (APIENTRYP PFNGLGETVERTEXATTRIBLUI64VARBPROC)(GLuint index, GLenum 
 GLAPI PFNGLGETVERTEXATTRIBLUI64VARBPROC glad_glGetVertexAttribLui64vARB;
 #define glGetVertexAttribLui64vARB glad_glGetVertexAttribLui64vARB
 #endif
-#ifndef GL_ARB_blend_func_extended
-#define GL_ARB_blend_func_extended 1
-GLAPI int GLAD_GL_ARB_blend_func_extended;
-#endif
 #ifndef GL_ARB_buffer_storage
 #define GL_ARB_buffer_storage 1
 GLAPI int GLAD_GL_ARB_buffer_storage;
@@ -8180,10 +8157,6 @@ GLAPI int GLAD_GL_ARB_clear_buffer_object;
 #define GL_ARB_clear_texture 1
 GLAPI int GLAD_GL_ARB_clear_texture;
 #endif
-#ifndef GL_ARB_clip_control
-#define GL_ARB_clip_control 1
-GLAPI int GLAD_GL_ARB_clip_control;
-#endif
 #ifndef GL_ARB_color_buffer_float
 #define GL_ARB_color_buffer_float 1
 GLAPI int GLAD_GL_ARB_color_buffer_float;
@@ -8194,21 +8167,6 @@ GLAPI PFNGLCLAMPCOLORARBPROC glad_glClampColorARB;
 #ifndef GL_ARB_compute_shader
 #define GL_ARB_compute_shader 1
 GLAPI int GLAD_GL_ARB_compute_shader;
-#endif
-#ifndef GL_ARB_compute_variable_group_size
-#define GL_ARB_compute_variable_group_size 1
-GLAPI int GLAD_GL_ARB_compute_variable_group_size;
-typedef void (APIENTRYP PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC)(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z, GLuint group_size_x, GLuint group_size_y, GLuint group_size_z);
-GLAPI PFNGLDISPATCHCOMPUTEGROUPSIZEARBPROC glad_glDispatchComputeGroupSizeARB;
-#define glDispatchComputeGroupSizeARB glad_glDispatchComputeGroupSizeARB
-#endif
-#ifndef GL_ARB_conditional_render_inverted
-#define GL_ARB_conditional_render_inverted 1
-GLAPI int GLAD_GL_ARB_conditional_render_inverted;
-#endif
-#ifndef GL_ARB_conservative_depth
-#define GL_ARB_conservative_depth 1
-GLAPI int GLAD_GL_ARB_conservative_depth;
 #endif
 #ifndef GL_ARB_copy_buffer
 #define GL_ARB_copy_buffer 1
@@ -8295,10 +8253,6 @@ typedef void (APIENTRYP PFNGLDRAWELEMENTSINSTANCEDARBPROC)(GLenum mode, GLsizei 
 GLAPI PFNGLDRAWELEMENTSINSTANCEDARBPROC glad_glDrawElementsInstancedARB;
 #define glDrawElementsInstancedARB glad_glDrawElementsInstancedARB
 #endif
-#ifndef GL_ARB_enhanced_layouts
-#define GL_ARB_enhanced_layouts 1
-GLAPI int GLAD_GL_ARB_enhanced_layouts;
-#endif
 #ifndef GL_ARB_fragment_layer_viewport
 #define GL_ARB_fragment_layer_viewport 1
 GLAPI int GLAD_GL_ARB_fragment_layer_viewport;
@@ -8375,10 +8329,6 @@ GLAPI int GLAD_GL_ARB_fragment_shader;
 #ifndef GL_ARB_fragment_shader_interlock
 #define GL_ARB_fragment_shader_interlock 1
 GLAPI int GLAD_GL_ARB_fragment_shader_interlock;
-#endif
-#ifndef GL_ARB_framebuffer_no_attachments
-#define GL_ARB_framebuffer_no_attachments 1
-GLAPI int GLAD_GL_ARB_framebuffer_no_attachments;
 #endif
 #ifndef GL_ARB_framebuffer_object
 #define GL_ARB_framebuffer_object 1
@@ -8687,10 +8637,6 @@ typedef void (APIENTRYP PFNGLMATRIXINDEXPOINTERARBPROC)(GLint size, GLenum type,
 GLAPI PFNGLMATRIXINDEXPOINTERARBPROC glad_glMatrixIndexPointerARB;
 #define glMatrixIndexPointerARB glad_glMatrixIndexPointerARB
 #endif
-#ifndef GL_ARB_multi_bind
-#define GL_ARB_multi_bind 1
-GLAPI int GLAD_GL_ARB_multi_bind;
-#endif
 #ifndef GL_ARB_multi_draw_indirect
 #define GL_ARB_multi_draw_indirect 1
 GLAPI int GLAD_GL_ARB_multi_draw_indirect;
@@ -8815,10 +8761,6 @@ typedef void (APIENTRYP PFNGLMAXSHADERCOMPILERTHREADSARBPROC)(GLuint count);
 GLAPI PFNGLMAXSHADERCOMPILERTHREADSARBPROC glad_glMaxShaderCompilerThreadsARB;
 #define glMaxShaderCompilerThreadsARB glad_glMaxShaderCompilerThreadsARB
 #endif
-#ifndef GL_ARB_pipeline_statistics_query
-#define GL_ARB_pipeline_statistics_query 1
-GLAPI int GLAD_GL_ARB_pipeline_statistics_query;
-#endif
 #ifndef GL_ARB_pixel_buffer_object
 #define GL_ARB_pixel_buffer_object 1
 GLAPI int GLAD_GL_ARB_pixel_buffer_object;
@@ -8837,17 +8779,9 @@ GLAPI PFNGLPOINTPARAMETERFVARBPROC glad_glPointParameterfvARB;
 #define GL_ARB_point_sprite 1
 GLAPI int GLAD_GL_ARB_point_sprite;
 #endif
-#ifndef GL_ARB_polygon_offset_clamp
-#define GL_ARB_polygon_offset_clamp 1
-GLAPI int GLAD_GL_ARB_polygon_offset_clamp;
-#endif
 #ifndef GL_ARB_post_depth_coverage
 #define GL_ARB_post_depth_coverage 1
 GLAPI int GLAD_GL_ARB_post_depth_coverage;
-#endif
-#ifndef GL_ARB_program_interface_query
-#define GL_ARB_program_interface_query 1
-GLAPI int GLAD_GL_ARB_program_interface_query;
 #endif
 #ifndef GL_ARB_provoking_vertex
 #define GL_ARB_provoking_vertex 1
@@ -9304,10 +9238,6 @@ GLAPI int GLAD_GL_ARB_texture_filter_minmax;
 #define GL_ARB_texture_float 1
 GLAPI int GLAD_GL_ARB_texture_float;
 #endif
-#ifndef GL_ARB_texture_gather
-#define GL_ARB_texture_gather 1
-GLAPI int GLAD_GL_ARB_texture_gather;
-#endif
 #ifndef GL_ARB_texture_mirror_clamp_to_edge
 #define GL_ARB_texture_mirror_clamp_to_edge 1
 GLAPI int GLAD_GL_ARB_texture_mirror_clamp_to_edge;
@@ -9379,10 +9309,6 @@ GLAPI int GLAD_GL_ARB_transform_feedback3;
 #ifndef GL_ARB_transform_feedback_instanced
 #define GL_ARB_transform_feedback_instanced 1
 GLAPI int GLAD_GL_ARB_transform_feedback_instanced;
-#endif
-#ifndef GL_ARB_transform_feedback_overflow_query
-#define GL_ARB_transform_feedback_overflow_query 1
-GLAPI int GLAD_GL_ARB_transform_feedback_overflow_query;
 #endif
 #ifndef GL_ARB_transpose_matrix
 #define GL_ARB_transpose_matrix 1
@@ -9763,10 +9689,6 @@ GLAPI PFNGLBLENDEQUATIONEXTPROC glad_glBlendEquationEXT;
 #ifndef GL_EXT_blend_subtract
 #define GL_EXT_blend_subtract 1
 GLAPI int GLAD_GL_EXT_blend_subtract;
-#endif
-#ifndef GL_EXT_clip_volume_hint
-#define GL_EXT_clip_volume_hint 1
-GLAPI int GLAD_GL_EXT_clip_volume_hint;
 #endif
 #ifndef GL_EXT_color_subtable
 #define GL_EXT_color_subtable 1
@@ -10760,10 +10682,6 @@ typedef void (APIENTRYP PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)(GLenum targe
 GLAPI PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC glad_glRenderbufferStorageMultisampleEXT;
 #define glRenderbufferStorageMultisampleEXT glad_glRenderbufferStorageMultisampleEXT
 #endif
-#ifndef GL_EXT_framebuffer_multisample_blit_scaled
-#define GL_EXT_framebuffer_multisample_blit_scaled 1
-GLAPI int GLAD_GL_EXT_framebuffer_multisample_blit_scaled;
-#endif
 #ifndef GL_EXT_framebuffer_object
 #define GL_EXT_framebuffer_object 1
 GLAPI int GLAD_GL_EXT_framebuffer_object;
@@ -11211,10 +11129,6 @@ GLAPI PFNGLMEMORYBARRIEREXTPROC glad_glMemoryBarrierEXT;
 #define GL_EXT_shader_integer_mix 1
 GLAPI int GLAD_GL_EXT_shader_integer_mix;
 #endif
-#ifndef GL_EXT_shadow_funcs
-#define GL_EXT_shadow_funcs 1
-GLAPI int GLAD_GL_EXT_shadow_funcs;
-#endif
 #ifndef GL_EXT_shared_texture_palette
 #define GL_EXT_shared_texture_palette 1
 GLAPI int GLAD_GL_EXT_shared_texture_palette;
@@ -11357,13 +11271,6 @@ typedef void (APIENTRYP PFNGLPRIORITIZETEXTURESEXTPROC)(GLsizei n, const GLuint 
 GLAPI PFNGLPRIORITIZETEXTURESEXTPROC glad_glPrioritizeTexturesEXT;
 #define glPrioritizeTexturesEXT glad_glPrioritizeTexturesEXT
 #endif
-#ifndef GL_EXT_texture_perturb_normal
-#define GL_EXT_texture_perturb_normal 1
-GLAPI int GLAD_GL_EXT_texture_perturb_normal;
-typedef void (APIENTRYP PFNGLTEXTURENORMALEXTPROC)(GLenum mode);
-GLAPI PFNGLTEXTURENORMALEXTPROC glad_glTextureNormalEXT;
-#define glTextureNormalEXT glad_glTextureNormalEXT
-#endif
 #ifndef GL_EXT_texture_sRGB
 #define GL_EXT_texture_sRGB 1
 GLAPI int GLAD_GL_EXT_texture_sRGB;
@@ -11375,10 +11282,6 @@ GLAPI int GLAD_GL_EXT_texture_sRGB_R8;
 #ifndef GL_EXT_texture_sRGB_decode
 #define GL_EXT_texture_sRGB_decode 1
 GLAPI int GLAD_GL_EXT_texture_sRGB_decode;
-#endif
-#ifndef GL_EXT_texture_shared_exponent
-#define GL_EXT_texture_shared_exponent 1
-GLAPI int GLAD_GL_EXT_texture_shared_exponent;
 #endif
 #ifndef GL_EXT_texture_swizzle
 #define GL_EXT_texture_swizzle 1
@@ -11979,37 +11882,6 @@ GLAPI PFNGLSIGNALVKSEMAPHORENVPROC glad_glSignalVkSemaphoreNV;
 typedef void (APIENTRYP PFNGLSIGNALVKFENCENVPROC)(GLuint64 vkFence);
 GLAPI PFNGLSIGNALVKFENCENVPROC glad_glSignalVkFenceNV;
 #define glSignalVkFenceNV glad_glSignalVkFenceNV
-#endif
-#ifndef GL_NV_evaluators
-#define GL_NV_evaluators 1
-GLAPI int GLAD_GL_NV_evaluators;
-typedef void (APIENTRYP PFNGLMAPCONTROLPOINTSNVPROC)(GLenum target, GLuint index, GLenum type, GLsizei ustride, GLsizei vstride, GLint uorder, GLint vorder, GLboolean packed, const void *points);
-GLAPI PFNGLMAPCONTROLPOINTSNVPROC glad_glMapControlPointsNV;
-#define glMapControlPointsNV glad_glMapControlPointsNV
-typedef void (APIENTRYP PFNGLMAPPARAMETERIVNVPROC)(GLenum target, GLenum pname, const GLint *params);
-GLAPI PFNGLMAPPARAMETERIVNVPROC glad_glMapParameterivNV;
-#define glMapParameterivNV glad_glMapParameterivNV
-typedef void (APIENTRYP PFNGLMAPPARAMETERFVNVPROC)(GLenum target, GLenum pname, const GLfloat *params);
-GLAPI PFNGLMAPPARAMETERFVNVPROC glad_glMapParameterfvNV;
-#define glMapParameterfvNV glad_glMapParameterfvNV
-typedef void (APIENTRYP PFNGLGETMAPCONTROLPOINTSNVPROC)(GLenum target, GLuint index, GLenum type, GLsizei ustride, GLsizei vstride, GLboolean packed, void *points);
-GLAPI PFNGLGETMAPCONTROLPOINTSNVPROC glad_glGetMapControlPointsNV;
-#define glGetMapControlPointsNV glad_glGetMapControlPointsNV
-typedef void (APIENTRYP PFNGLGETMAPPARAMETERIVNVPROC)(GLenum target, GLenum pname, GLint *params);
-GLAPI PFNGLGETMAPPARAMETERIVNVPROC glad_glGetMapParameterivNV;
-#define glGetMapParameterivNV glad_glGetMapParameterivNV
-typedef void (APIENTRYP PFNGLGETMAPPARAMETERFVNVPROC)(GLenum target, GLenum pname, GLfloat *params);
-GLAPI PFNGLGETMAPPARAMETERFVNVPROC glad_glGetMapParameterfvNV;
-#define glGetMapParameterfvNV glad_glGetMapParameterfvNV
-typedef void (APIENTRYP PFNGLGETMAPATTRIBPARAMETERIVNVPROC)(GLenum target, GLuint index, GLenum pname, GLint *params);
-GLAPI PFNGLGETMAPATTRIBPARAMETERIVNVPROC glad_glGetMapAttribParameterivNV;
-#define glGetMapAttribParameterivNV glad_glGetMapAttribParameterivNV
-typedef void (APIENTRYP PFNGLGETMAPATTRIBPARAMETERFVNVPROC)(GLenum target, GLuint index, GLenum pname, GLfloat *params);
-GLAPI PFNGLGETMAPATTRIBPARAMETERFVNVPROC glad_glGetMapAttribParameterfvNV;
-#define glGetMapAttribParameterfvNV glad_glGetMapAttribParameterfvNV
-typedef void (APIENTRYP PFNGLEVALMAPSNVPROC)(GLenum target, GLenum mode);
-GLAPI PFNGLEVALMAPSNVPROC glad_glEvalMapsNV;
-#define glEvalMapsNV glad_glEvalMapsNV
 #endif
 #ifndef GL_NV_explicit_multisample
 #define GL_NV_explicit_multisample 1
