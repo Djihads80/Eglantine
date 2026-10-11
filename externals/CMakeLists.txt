@@ -17,7 +17,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
 # None of our externals have modules (yet)
 # Jacinth does, but that is defined in src so it inherits compiler flags
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Disable tests/tools in all externals supporting the standard option name
 set(BUILD_TESTING OFF)
