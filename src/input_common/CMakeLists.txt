@@ -93,4 +93,4 @@ if (ENABLE_LIBUSB)
 endif()
 
 create_target_directory_groups(input_common)
-target_link_libraries(input_common PUBLIC hid_core PRIVATE common Boost::headers)
+target_link_libraries(input_common PUBLIC hid_core Boost::crc PRIVATE common Boost::asio)

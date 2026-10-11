@@ -63,7 +63,7 @@ if (USE_DISCORD_PRESENCE)
 endif()
 
 # TODO(crueter)
-target_link_libraries(qt_common PRIVATE Qt6::Widgets)
+target_link_libraries(qt_common PRIVATE Qt6::Widgets Boost::algorithm)
 
 target_compile_definitions(qt_common PUBLIC
     # Use QStringBuilder for string concatenation to reduce

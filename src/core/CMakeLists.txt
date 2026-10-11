@@ -1210,7 +1210,9 @@ if (MSVC)
 endif()
 
 if (BOOST_NO_HEADERS)
-    target_link_libraries(core PUBLIC Boost::container Boost::heap Boost::asio Boost::process Boost::crc)
+    target_link_libraries(core PUBLIC Boost::container Boost::heap Boost::intrusive)
+    target_link_libraries(core PRIVATE Boost::asio Boost::process Boost::crc Boost::range Boost::regex
+        Boost::algorithm Boost::container_hash Boost::icl)
 else()
     target_link_libraries(core PUBLIC Boost::headers)
 endif()
