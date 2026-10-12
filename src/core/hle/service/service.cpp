@@ -95,7 +95,7 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     if (is_i_storage && is_cmd_read) {
         const auto* const process = ctx.GetThread().GetOwnerProcess();
         if (process != nullptr && system.IsNVDECActiveForProcess(process->GetId())) {
-            std::this_thread::sleep_for(std::chrono::microseconds{600});
+            std::this_thread::sleep_for(std::chrono::microseconds{2200});
         }
     }
 }
