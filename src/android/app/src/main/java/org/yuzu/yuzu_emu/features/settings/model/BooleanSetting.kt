@@ -94,7 +94,7 @@ enum class BooleanSetting(override val key: String) : AbstractBooleanSetting {
 
     ENABLE_QUICK_SETTINGS("enable_quick_settings");
 
-//  external fun isFrameSkippingEnabled(): Boolean
+    //external fun isFrameSkippingEnabled(): Boolean
     external fun isFrameInterpolationEnabled(): Boolean
 
     override fun getBoolean(needsGlobal: Boolean): Boolean =
