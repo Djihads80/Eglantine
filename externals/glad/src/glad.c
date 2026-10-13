@@ -10,19 +10,12 @@
         GL_AMD_gpu_shader_half_float,
         GL_AMD_gpu_shader_int64,
         GL_AMD_seamless_cubemap_per_texture,
-        GL_ARB_arrays_of_arrays,
-        GL_ARB_base_instance,
         GL_ARB_bindless_texture,
         GL_ARB_buffer_storage,
-        GL_ARB_cl_event,
         GL_ARB_clear_buffer_object,
         GL_ARB_clear_texture,
-        GL_ARB_color_buffer_float,
-        GL_ARB_compute_shader,
         GL_ARB_copy_buffer,
         GL_ARB_copy_image,
-        GL_ARB_cull_distance,
-        GL_ARB_debug_output,
         GL_ARB_depth_buffer_float,
         GL_ARB_depth_clamp,
         GL_ARB_depth_texture,
@@ -52,13 +45,11 @@
         GL_ARB_invalidate_subdata,
         GL_ARB_map_buffer_alignment,
         GL_ARB_map_buffer_range,
-        GL_ARB_matrix_palette,
         GL_ARB_multi_draw_indirect,
         GL_ARB_multisample,
         GL_ARB_multitexture,
         GL_ARB_parallel_shader_compile,
         GL_ARB_pixel_buffer_object,
-        GL_ARB_point_parameters,
         GL_ARB_point_sprite,
         GL_ARB_post_depth_coverage,
         GL_ARB_provoking_vertex,
@@ -70,8 +61,6 @@
         GL_ARB_seamless_cube_map,
         GL_ARB_seamless_cubemap_per_texture,
         GL_ARB_separate_shader_objects,
-        GL_ARB_shader_atomic_counter_ops,
-        GL_ARB_shader_atomic_counters,
         GL_ARB_shader_ballot,
         GL_ARB_shader_bit_encoding,
         GL_ARB_shader_clock,
@@ -107,18 +96,11 @@
         GL_ARB_texture_compression_rgtc,
         GL_ARB_texture_cube_map,
         GL_ARB_texture_cube_map_array,
-        GL_ARB_texture_env_add,
-        GL_ARB_texture_env_combine,
-        GL_ARB_texture_env_crossbar,
-        GL_ARB_texture_env_dot3,
         GL_ARB_texture_filter_anisotropic,
         GL_ARB_texture_filter_minmax,
-        GL_ARB_texture_float,
         GL_ARB_texture_mirror_clamp_to_edge,
         GL_ARB_texture_mirrored_repeat,
         GL_ARB_texture_multisample,
-        GL_ARB_texture_non_power_of_two,
-        GL_ARB_texture_query_levels,
         GL_ARB_texture_query_lod,
         GL_ARB_texture_rectangle,
         GL_ARB_texture_rg,
@@ -132,7 +114,6 @@
         GL_ARB_transform_feedback2,
         GL_ARB_transform_feedback3,
         GL_ARB_transform_feedback_instanced,
-        GL_ARB_transpose_matrix,
         GL_ARB_uniform_buffer_object,
         GL_ARB_vertex_array_bgra,
         GL_ARB_vertex_array_object,
@@ -141,11 +122,8 @@
         GL_ARB_vertex_buffer_object,
         GL_ARB_vertex_program,
         GL_ARB_vertex_shader,
-        GL_ARB_vertex_type_10f_11f_11f_rev,
-        GL_ARB_vertex_type_2_10_10_10_rev,
         GL_ARB_viewport_array,
         GL_ARB_window_pos,
-        GL_EXT_EGL_image_storage,
         GL_EXT_abgr,
         GL_EXT_bgra,
         GL_EXT_bindable_uniform,
@@ -181,12 +159,9 @@
         GL_EXT_packed_depth_stencil,
         GL_EXT_packed_float,
         GL_EXT_packed_pixels,
-        GL_EXT_paletted_texture,
         GL_EXT_pixel_buffer_object,
         GL_EXT_pixel_transform,
         GL_EXT_pixel_transform_color_table,
-        GL_EXT_point_parameters,
-        GL_EXT_polygon_offset,
         GL_EXT_polygon_offset_clamp,
         GL_EXT_post_depth_coverage,
         GL_EXT_provoking_vertex,
@@ -204,17 +179,12 @@
         GL_EXT_stencil_clear_tag,
         GL_EXT_stencil_two_side,
         GL_EXT_stencil_wrap,
-        GL_EXT_texture,
-        GL_EXT_texture3D,
         GL_EXT_texture_array,
         GL_EXT_texture_buffer_object,
         GL_EXT_texture_compression_latc,
         GL_EXT_texture_compression_rgtc,
         GL_EXT_texture_compression_s3tc,
         GL_EXT_texture_cube_map,
-        GL_EXT_texture_env_add,
-        GL_EXT_texture_env_combine,
-        GL_EXT_texture_env_dot3,
         GL_EXT_texture_filter_anisotropic,
         GL_EXT_texture_filter_minmax,
         GL_EXT_texture_integer,
@@ -312,7 +282,6 @@
         GL_NV_shader_thread_group,
         GL_NV_shader_thread_shuffle,
         GL_NV_shading_rate_image,
-        GL_NV_stereo_view_rendering,
         GL_NV_tessellation_program5,
         GL_NV_texture_barrier,
         GL_NV_texture_compression_vtc,
@@ -345,7 +314,7 @@
     Reproducible: False
 
     Commandline:
-        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_seamless_cubemap_per_texture,GL_ARB_arrays_of_arrays,GL_ARB_base_instance,GL_ARB_bindless_texture,GL_ARB_buffer_storage,GL_ARB_cl_event,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_color_buffer_float,GL_ARB_compute_shader,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_cull_distance,GL_ARB_debug_output,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_matrix_palette,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_parallel_shader_compile,GL_ARB_pixel_buffer_object,GL_ARB_point_parameters,GL_ARB_point_sprite,GL_ARB_post_depth_coverage,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_atomic_counter_ops,GL_ARB_shader_atomic_counters,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_env_add,GL_ARB_texture_env_combine,GL_ARB_texture_env_crossbar,GL_ARB_texture_env_dot3,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_float,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_non_power_of_two,GL_ARB_texture_query_levels,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_transpose_matrix,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_vertex_type_10f_11f_11f_rev,GL_ARB_vertex_type_2_10_10_10_rev,GL_ARB_viewport_array,GL_ARB_window_pos,GL_EXT_EGL_image_storage,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_color_subtable,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_external_buffer,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_memory_object,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_paletted_texture,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_point_parameters,GL_EXT_polygon_offset,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_texture,GL_EXT_texture3D,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_env_add,GL_EXT_texture_env_combine,GL_EXT_texture_env_dot3,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_window_rectangles,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_packed_depth_stencil,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_stereo_view_rendering,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
+        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_seamless_cubemap_per_texture,GL_ARB_bindless_texture,GL_ARB_buffer_storage,GL_ARB_clear_buffer_object,GL_ARB_clear_texture,GL_ARB_copy_buffer,GL_ARB_copy_image,GL_ARB_depth_buffer_float,GL_ARB_depth_clamp,GL_ARB_depth_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_indirect,GL_ARB_draw_instanced,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_framebuffer_object,GL_ARB_framebuffer_sRGB,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_half_float_pixel,GL_ARB_half_float_vertex,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_invalidate_subdata,GL_ARB_map_buffer_alignment,GL_ARB_map_buffer_range,GL_ARB_multi_draw_indirect,GL_ARB_multisample,GL_ARB_multitexture,GL_ARB_parallel_shader_compile,GL_ARB_pixel_buffer_object,GL_ARB_point_sprite,GL_ARB_post_depth_coverage,GL_ARB_provoking_vertex,GL_ARB_query_buffer_object,GL_ARB_robustness,GL_ARB_robustness_isolation,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_image_load_store,GL_ARB_shader_image_size,GL_ARB_shader_objects,GL_ARB_shader_precision,GL_ARB_shader_stencil_export,GL_ARB_shader_storage_buffer_object,GL_ARB_shader_subroutine,GL_ARB_shader_texture_image_samples,GL_ARB_shader_texture_lod,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_stencil_texturing,GL_ARB_tessellation_shader,GL_ARB_texture_barrier,GL_ARB_texture_border_clamp,GL_ARB_texture_buffer_object,GL_ARB_texture_buffer_object_rgb32,GL_ARB_texture_buffer_range,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_cube_map,GL_ARB_texture_cube_map_array,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_mirror_clamp_to_edge,GL_ARB_texture_mirrored_repeat,GL_ARB_texture_multisample,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_rg,GL_ARB_texture_rgb10_a2ui,GL_ARB_texture_stencil8,GL_ARB_texture_storage,GL_ARB_texture_storage_multisample,GL_ARB_texture_swizzle,GL_ARB_texture_view,GL_ARB_timer_query,GL_ARB_transform_feedback2,GL_ARB_transform_feedback3,GL_ARB_transform_feedback_instanced,GL_ARB_uniform_buffer_object,GL_ARB_vertex_array_bgra,GL_ARB_vertex_array_object,GL_ARB_vertex_attrib_64bit,GL_ARB_vertex_blend,GL_ARB_vertex_buffer_object,GL_ARB_vertex_program,GL_ARB_vertex_shader,GL_ARB_viewport_array,GL_ARB_window_pos,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_bindable_uniform,GL_EXT_blend_color,GL_EXT_blend_equation_separate,GL_EXT_blend_func_separate,GL_EXT_blend_logic_op,GL_EXT_blend_minmax,GL_EXT_blend_subtract,GL_EXT_color_subtable,GL_EXT_convolution,GL_EXT_coordinate_frame,GL_EXT_copy_texture,GL_EXT_cull_vertex,GL_EXT_debug_label,GL_EXT_debug_marker,GL_EXT_depth_bounds_test,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_external_buffer,GL_EXT_framebuffer_blit,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_memory_object,GL_EXT_misc_attribute,GL_EXT_multi_draw_arrays,GL_EXT_multisample,GL_EXT_packed_depth_stencil,GL_EXT_packed_float,GL_EXT_packed_pixels,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_pixel_transform_color_table,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_provoking_vertex,GL_EXT_raster_multisample,GL_EXT_rescale_normal,GL_EXT_secondary_color,GL_EXT_semaphore,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_stencil_clear_tag,GL_EXT_stencil_two_side,GL_EXT_stencil_wrap,GL_EXT_texture_array,GL_EXT_texture_buffer_object,GL_EXT_texture_compression_latc,GL_EXT_texture_compression_rgtc,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_integer,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_object,GL_EXT_texture_sRGB,GL_EXT_texture_sRGB_R8,GL_EXT_texture_sRGB_decode,GL_EXT_texture_swizzle,GL_EXT_timer_query,GL_EXT_transform_feedback,GL_EXT_vertex_array,GL_EXT_vertex_array_bgra,GL_EXT_vertex_attrib_64bit,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_EXT_window_rectangles,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conditional_render,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_packed_depth_stencil,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
     Online:
         Too many extensions
 */
@@ -1654,19 +1623,12 @@ PFNGLWINDOWPOS3SVPROC glad_glWindowPos3sv = NULL;
 int GLAD_GL_AMD_gpu_shader_half_float = 0;
 int GLAD_GL_AMD_gpu_shader_int64 = 0;
 int GLAD_GL_AMD_seamless_cubemap_per_texture = 0;
-int GLAD_GL_ARB_arrays_of_arrays = 0;
-int GLAD_GL_ARB_base_instance = 0;
 int GLAD_GL_ARB_bindless_texture = 0;
 int GLAD_GL_ARB_buffer_storage = 0;
-int GLAD_GL_ARB_cl_event = 0;
 int GLAD_GL_ARB_clear_buffer_object = 0;
 int GLAD_GL_ARB_clear_texture = 0;
-int GLAD_GL_ARB_color_buffer_float = 0;
-int GLAD_GL_ARB_compute_shader = 0;
 int GLAD_GL_ARB_copy_buffer = 0;
 int GLAD_GL_ARB_copy_image = 0;
-int GLAD_GL_ARB_cull_distance = 0;
-int GLAD_GL_ARB_debug_output = 0;
 int GLAD_GL_ARB_depth_buffer_float = 0;
 int GLAD_GL_ARB_depth_clamp = 0;
 int GLAD_GL_ARB_depth_texture = 0;
@@ -1696,13 +1658,11 @@ int GLAD_GL_ARB_instanced_arrays = 0;
 int GLAD_GL_ARB_invalidate_subdata = 0;
 int GLAD_GL_ARB_map_buffer_alignment = 0;
 int GLAD_GL_ARB_map_buffer_range = 0;
-int GLAD_GL_ARB_matrix_palette = 0;
 int GLAD_GL_ARB_multi_draw_indirect = 0;
 int GLAD_GL_ARB_multisample = 0;
 int GLAD_GL_ARB_multitexture = 0;
 int GLAD_GL_ARB_parallel_shader_compile = 0;
 int GLAD_GL_ARB_pixel_buffer_object = 0;
-int GLAD_GL_ARB_point_parameters = 0;
 int GLAD_GL_ARB_point_sprite = 0;
 int GLAD_GL_ARB_post_depth_coverage = 0;
 int GLAD_GL_ARB_provoking_vertex = 0;
@@ -1714,8 +1674,6 @@ int GLAD_GL_ARB_sample_shading = 0;
 int GLAD_GL_ARB_seamless_cube_map = 0;
 int GLAD_GL_ARB_seamless_cubemap_per_texture = 0;
 int GLAD_GL_ARB_separate_shader_objects = 0;
-int GLAD_GL_ARB_shader_atomic_counter_ops = 0;
-int GLAD_GL_ARB_shader_atomic_counters = 0;
 int GLAD_GL_ARB_shader_ballot = 0;
 int GLAD_GL_ARB_shader_bit_encoding = 0;
 int GLAD_GL_ARB_shader_clock = 0;
@@ -1751,18 +1709,11 @@ int GLAD_GL_ARB_texture_compression_bptc = 0;
 int GLAD_GL_ARB_texture_compression_rgtc = 0;
 int GLAD_GL_ARB_texture_cube_map = 0;
 int GLAD_GL_ARB_texture_cube_map_array = 0;
-int GLAD_GL_ARB_texture_env_add = 0;
-int GLAD_GL_ARB_texture_env_combine = 0;
-int GLAD_GL_ARB_texture_env_crossbar = 0;
-int GLAD_GL_ARB_texture_env_dot3 = 0;
 int GLAD_GL_ARB_texture_filter_anisotropic = 0;
 int GLAD_GL_ARB_texture_filter_minmax = 0;
-int GLAD_GL_ARB_texture_float = 0;
 int GLAD_GL_ARB_texture_mirror_clamp_to_edge = 0;
 int GLAD_GL_ARB_texture_mirrored_repeat = 0;
 int GLAD_GL_ARB_texture_multisample = 0;
-int GLAD_GL_ARB_texture_non_power_of_two = 0;
-int GLAD_GL_ARB_texture_query_levels = 0;
 int GLAD_GL_ARB_texture_query_lod = 0;
 int GLAD_GL_ARB_texture_rectangle = 0;
 int GLAD_GL_ARB_texture_rg = 0;
@@ -1776,7 +1727,6 @@ int GLAD_GL_ARB_timer_query = 0;
 int GLAD_GL_ARB_transform_feedback2 = 0;
 int GLAD_GL_ARB_transform_feedback3 = 0;
 int GLAD_GL_ARB_transform_feedback_instanced = 0;
-int GLAD_GL_ARB_transpose_matrix = 0;
 int GLAD_GL_ARB_uniform_buffer_object = 0;
 int GLAD_GL_ARB_vertex_array_bgra = 0;
 int GLAD_GL_ARB_vertex_array_object = 0;
@@ -1785,11 +1735,8 @@ int GLAD_GL_ARB_vertex_blend = 0;
 int GLAD_GL_ARB_vertex_buffer_object = 0;
 int GLAD_GL_ARB_vertex_program = 0;
 int GLAD_GL_ARB_vertex_shader = 0;
-int GLAD_GL_ARB_vertex_type_10f_11f_11f_rev = 0;
-int GLAD_GL_ARB_vertex_type_2_10_10_10_rev = 0;
 int GLAD_GL_ARB_viewport_array = 0;
 int GLAD_GL_ARB_window_pos = 0;
-int GLAD_GL_EXT_EGL_image_storage = 0;
 int GLAD_GL_EXT_abgr = 0;
 int GLAD_GL_EXT_bgra = 0;
 int GLAD_GL_EXT_bindable_uniform = 0;
@@ -1825,12 +1772,9 @@ int GLAD_GL_EXT_multisample = 0;
 int GLAD_GL_EXT_packed_depth_stencil = 0;
 int GLAD_GL_EXT_packed_float = 0;
 int GLAD_GL_EXT_packed_pixels = 0;
-int GLAD_GL_EXT_paletted_texture = 0;
 int GLAD_GL_EXT_pixel_buffer_object = 0;
 int GLAD_GL_EXT_pixel_transform = 0;
 int GLAD_GL_EXT_pixel_transform_color_table = 0;
-int GLAD_GL_EXT_point_parameters = 0;
-int GLAD_GL_EXT_polygon_offset = 0;
 int GLAD_GL_EXT_polygon_offset_clamp = 0;
 int GLAD_GL_EXT_post_depth_coverage = 0;
 int GLAD_GL_EXT_provoking_vertex = 0;
@@ -1848,17 +1792,12 @@ int GLAD_GL_EXT_sparse_texture2 = 0;
 int GLAD_GL_EXT_stencil_clear_tag = 0;
 int GLAD_GL_EXT_stencil_two_side = 0;
 int GLAD_GL_EXT_stencil_wrap = 0;
-int GLAD_GL_EXT_texture = 0;
-int GLAD_GL_EXT_texture3D = 0;
 int GLAD_GL_EXT_texture_array = 0;
 int GLAD_GL_EXT_texture_buffer_object = 0;
 int GLAD_GL_EXT_texture_compression_latc = 0;
 int GLAD_GL_EXT_texture_compression_rgtc = 0;
 int GLAD_GL_EXT_texture_compression_s3tc = 0;
 int GLAD_GL_EXT_texture_cube_map = 0;
-int GLAD_GL_EXT_texture_env_add = 0;
-int GLAD_GL_EXT_texture_env_combine = 0;
-int GLAD_GL_EXT_texture_env_dot3 = 0;
 int GLAD_GL_EXT_texture_filter_anisotropic = 0;
 int GLAD_GL_EXT_texture_filter_minmax = 0;
 int GLAD_GL_EXT_texture_integer = 0;
@@ -1956,7 +1895,6 @@ int GLAD_GL_NV_shader_texture_footprint = 0;
 int GLAD_GL_NV_shader_thread_group = 0;
 int GLAD_GL_NV_shader_thread_shuffle = 0;
 int GLAD_GL_NV_shading_rate_image = 0;
-int GLAD_GL_NV_stereo_view_rendering = 0;
 int GLAD_GL_NV_tessellation_program5 = 0;
 int GLAD_GL_NV_texture_barrier = 0;
 int GLAD_GL_NV_texture_compression_vtc = 0;
@@ -2033,12 +1971,6 @@ PFNGLISIMAGEHANDLERESIDENTARBPROC glad_glIsImageHandleResidentARB = NULL;
 PFNGLVERTEXATTRIBL1UI64ARBPROC glad_glVertexAttribL1ui64ARB = NULL;
 PFNGLVERTEXATTRIBL1UI64VARBPROC glad_glVertexAttribL1ui64vARB = NULL;
 PFNGLGETVERTEXATTRIBLUI64VARBPROC glad_glGetVertexAttribLui64vARB = NULL;
-PFNGLCREATESYNCFROMCLEVENTARBPROC glad_glCreateSyncFromCLeventARB = NULL;
-PFNGLCLAMPCOLORARBPROC glad_glClampColorARB = NULL;
-PFNGLDEBUGMESSAGECONTROLARBPROC glad_glDebugMessageControlARB = NULL;
-PFNGLDEBUGMESSAGEINSERTARBPROC glad_glDebugMessageInsertARB = NULL;
-PFNGLDEBUGMESSAGECALLBACKARBPROC glad_glDebugMessageCallbackARB = NULL;
-PFNGLGETDEBUGMESSAGELOGARBPROC glad_glGetDebugMessageLogARB = NULL;
 PFNGLDRAWBUFFERSARBPROC glad_glDrawBuffersARB = NULL;
 PFNGLBLENDEQUATIONIARBPROC glad_glBlendEquationiARB = NULL;
 PFNGLBLENDEQUATIONSEPARATEIARBPROC glad_glBlendEquationSeparateiARB = NULL;
@@ -2141,11 +2073,6 @@ PFNGLRESETMINMAXPROC glad_glResetMinmax = NULL;
 PFNGLMULTIDRAWARRAYSINDIRECTCOUNTARBPROC glad_glMultiDrawArraysIndirectCountARB = NULL;
 PFNGLMULTIDRAWELEMENTSINDIRECTCOUNTARBPROC glad_glMultiDrawElementsIndirectCountARB = NULL;
 PFNGLVERTEXATTRIBDIVISORARBPROC glad_glVertexAttribDivisorARB = NULL;
-PFNGLCURRENTPALETTEMATRIXARBPROC glad_glCurrentPaletteMatrixARB = NULL;
-PFNGLMATRIXINDEXUBVARBPROC glad_glMatrixIndexubvARB = NULL;
-PFNGLMATRIXINDEXUSVARBPROC glad_glMatrixIndexusvARB = NULL;
-PFNGLMATRIXINDEXUIVARBPROC glad_glMatrixIndexuivARB = NULL;
-PFNGLMATRIXINDEXPOINTERARBPROC glad_glMatrixIndexPointerARB = NULL;
 PFNGLSAMPLECOVERAGEARBPROC glad_glSampleCoverageARB = NULL;
 PFNGLACTIVETEXTUREARBPROC glad_glActiveTextureARB = NULL;
 PFNGLCLIENTACTIVETEXTUREARBPROC glad_glClientActiveTextureARB = NULL;
@@ -2182,8 +2109,6 @@ PFNGLMULTITEXCOORD4IVARBPROC glad_glMultiTexCoord4ivARB = NULL;
 PFNGLMULTITEXCOORD4SARBPROC glad_glMultiTexCoord4sARB = NULL;
 PFNGLMULTITEXCOORD4SVARBPROC glad_glMultiTexCoord4svARB = NULL;
 PFNGLMAXSHADERCOMPILERTHREADSARBPROC glad_glMaxShaderCompilerThreadsARB = NULL;
-PFNGLPOINTPARAMETERFARBPROC glad_glPointParameterfARB = NULL;
-PFNGLPOINTPARAMETERFVARBPROC glad_glPointParameterfvARB = NULL;
 PFNGLGETGRAPHICSRESETSTATUSARBPROC glad_glGetGraphicsResetStatusARB = NULL;
 PFNGLGETNTEXIMAGEARBPROC glad_glGetnTexImageARB = NULL;
 PFNGLREADNPIXELSARBPROC glad_glReadnPixelsARB = NULL;
@@ -2265,10 +2190,6 @@ PFNGLCOMPRESSEDTEXSUBIMAGE3DARBPROC glad_glCompressedTexSubImage3DARB = NULL;
 PFNGLCOMPRESSEDTEXSUBIMAGE2DARBPROC glad_glCompressedTexSubImage2DARB = NULL;
 PFNGLCOMPRESSEDTEXSUBIMAGE1DARBPROC glad_glCompressedTexSubImage1DARB = NULL;
 PFNGLGETCOMPRESSEDTEXIMAGEARBPROC glad_glGetCompressedTexImageARB = NULL;
-PFNGLLOADTRANSPOSEMATRIXFARBPROC glad_glLoadTransposeMatrixfARB = NULL;
-PFNGLLOADTRANSPOSEMATRIXDARBPROC glad_glLoadTransposeMatrixdARB = NULL;
-PFNGLMULTTRANSPOSEMATRIXFARBPROC glad_glMultTransposeMatrixfARB = NULL;
-PFNGLMULTTRANSPOSEMATRIXDARBPROC glad_glMultTransposeMatrixdARB = NULL;
 PFNGLWEIGHTBVARBPROC glad_glWeightbvARB = NULL;
 PFNGLWEIGHTSVARBPROC glad_glWeightsvARB = NULL;
 PFNGLWEIGHTIVARBPROC glad_glWeightivARB = NULL;
@@ -2352,8 +2273,6 @@ PFNGLWINDOWPOS3IARBPROC glad_glWindowPos3iARB = NULL;
 PFNGLWINDOWPOS3IVARBPROC glad_glWindowPos3ivARB = NULL;
 PFNGLWINDOWPOS3SARBPROC glad_glWindowPos3sARB = NULL;
 PFNGLWINDOWPOS3SVARBPROC glad_glWindowPos3svARB = NULL;
-PFNGLEGLIMAGETARGETTEXSTORAGEEXTPROC glad_glEGLImageTargetTexStorageEXT = NULL;
-PFNGLEGLIMAGETARGETTEXTURESTORAGEEXTPROC glad_glEGLImageTargetTextureStorageEXT = NULL;
 PFNGLUNIFORMBUFFEREXTPROC glad_glUniformBufferEXT = NULL;
 PFNGLGETUNIFORMBUFFERSIZEEXTPROC glad_glGetUniformBufferSizeEXT = NULL;
 PFNGLGETUNIFORMOFFSETEXTPROC glad_glGetUniformOffsetEXT = NULL;
@@ -2727,19 +2646,12 @@ PFNGLMULTIDRAWARRAYSEXTPROC glad_glMultiDrawArraysEXT = NULL;
 PFNGLMULTIDRAWELEMENTSEXTPROC glad_glMultiDrawElementsEXT = NULL;
 PFNGLSAMPLEMASKEXTPROC glad_glSampleMaskEXT = NULL;
 PFNGLSAMPLEPATTERNEXTPROC glad_glSamplePatternEXT = NULL;
-PFNGLCOLORTABLEEXTPROC glad_glColorTableEXT = NULL;
-PFNGLGETCOLORTABLEEXTPROC glad_glGetColorTableEXT = NULL;
-PFNGLGETCOLORTABLEPARAMETERIVEXTPROC glad_glGetColorTableParameterivEXT = NULL;
-PFNGLGETCOLORTABLEPARAMETERFVEXTPROC glad_glGetColorTableParameterfvEXT = NULL;
 PFNGLPIXELTRANSFORMPARAMETERIEXTPROC glad_glPixelTransformParameteriEXT = NULL;
 PFNGLPIXELTRANSFORMPARAMETERFEXTPROC glad_glPixelTransformParameterfEXT = NULL;
 PFNGLPIXELTRANSFORMPARAMETERIVEXTPROC glad_glPixelTransformParameterivEXT = NULL;
 PFNGLPIXELTRANSFORMPARAMETERFVEXTPROC glad_glPixelTransformParameterfvEXT = NULL;
 PFNGLGETPIXELTRANSFORMPARAMETERIVEXTPROC glad_glGetPixelTransformParameterivEXT = NULL;
 PFNGLGETPIXELTRANSFORMPARAMETERFVEXTPROC glad_glGetPixelTransformParameterfvEXT = NULL;
-PFNGLPOINTPARAMETERFEXTPROC glad_glPointParameterfEXT = NULL;
-PFNGLPOINTPARAMETERFVEXTPROC glad_glPointParameterfvEXT = NULL;
-PFNGLPOLYGONOFFSETEXTPROC glad_glPolygonOffsetEXT = NULL;
 PFNGLPOLYGONOFFSETCLAMPEXTPROC glad_glPolygonOffsetClampEXT = NULL;
 PFNGLPROVOKINGVERTEXEXTPROC glad_glProvokingVertexEXT = NULL;
 PFNGLRASTERSAMPLESEXTPROC glad_glRasterSamplesEXT = NULL;
@@ -2784,8 +2696,6 @@ PFNGLBINDIMAGETEXTUREEXTPROC glad_glBindImageTextureEXT = NULL;
 PFNGLMEMORYBARRIEREXTPROC glad_glMemoryBarrierEXT = NULL;
 PFNGLSTENCILCLEARTAGEXTPROC glad_glStencilClearTagEXT = NULL;
 PFNGLACTIVESTENCILFACEEXTPROC glad_glActiveStencilFaceEXT = NULL;
-PFNGLTEXIMAGE3DEXTPROC glad_glTexImage3DEXT = NULL;
-PFNGLTEXSUBIMAGE3DEXTPROC glad_glTexSubImage3DEXT = NULL;
 PFNGLFRAMEBUFFERTEXTURELAYEREXTPROC glad_glFramebufferTextureLayerEXT = NULL;
 PFNGLTEXBUFFEREXTPROC glad_glTexBufferEXT = NULL;
 PFNGLTEXPARAMETERIIVEXTPROC glad_glTexParameterIivEXT = NULL;
@@ -4375,12 +4285,6 @@ static void load_GL_AMD_gpu_shader_int64(GLADloadproc load) {
 	glad_glProgramUniform3ui64vNV = (PFNGLPROGRAMUNIFORM3UI64VNVPROC)load("glProgramUniform3ui64vNV");
 	glad_glProgramUniform4ui64vNV = (PFNGLPROGRAMUNIFORM4UI64VNVPROC)load("glProgramUniform4ui64vNV");
 }
-static void load_GL_ARB_base_instance(GLADloadproc load) {
-	if(!GLAD_GL_ARB_base_instance) return;
-	glad_glDrawArraysInstancedBaseInstance = (PFNGLDRAWARRAYSINSTANCEDBASEINSTANCEPROC)load("glDrawArraysInstancedBaseInstance");
-	glad_glDrawElementsInstancedBaseInstance = (PFNGLDRAWELEMENTSINSTANCEDBASEINSTANCEPROC)load("glDrawElementsInstancedBaseInstance");
-	glad_glDrawElementsInstancedBaseVertexBaseInstance = (PFNGLDRAWELEMENTSINSTANCEDBASEVERTEXBASEINSTANCEPROC)load("glDrawElementsInstancedBaseVertexBaseInstance");
-}
 static void load_GL_ARB_bindless_texture(GLADloadproc load) {
 	if(!GLAD_GL_ARB_bindless_texture) return;
 	glad_glGetTextureHandleARB = (PFNGLGETTEXTUREHANDLEARBPROC)load("glGetTextureHandleARB");
@@ -4404,10 +4308,6 @@ static void load_GL_ARB_buffer_storage(GLADloadproc load) {
 	if(!GLAD_GL_ARB_buffer_storage) return;
 	glad_glBufferStorage = (PFNGLBUFFERSTORAGEPROC)load("glBufferStorage");
 }
-static void load_GL_ARB_cl_event(GLADloadproc load) {
-	if(!GLAD_GL_ARB_cl_event) return;
-	glad_glCreateSyncFromCLeventARB = (PFNGLCREATESYNCFROMCLEVENTARBPROC)load("glCreateSyncFromCLeventARB");
-}
 static void load_GL_ARB_clear_buffer_object(GLADloadproc load) {
 	if(!GLAD_GL_ARB_clear_buffer_object) return;
 	glad_glClearBufferData = (PFNGLCLEARBUFFERDATAPROC)load("glClearBufferData");
@@ -4418,15 +4318,6 @@ static void load_GL_ARB_clear_texture(GLADloadproc load) {
 	glad_glClearTexImage = (PFNGLCLEARTEXIMAGEPROC)load("glClearTexImage");
 	glad_glClearTexSubImage = (PFNGLCLEARTEXSUBIMAGEPROC)load("glClearTexSubImage");
 }
-static void load_GL_ARB_color_buffer_float(GLADloadproc load) {
-	if(!GLAD_GL_ARB_color_buffer_float) return;
-	glad_glClampColorARB = (PFNGLCLAMPCOLORARBPROC)load("glClampColorARB");
-}
-static void load_GL_ARB_compute_shader(GLADloadproc load) {
-	if(!GLAD_GL_ARB_compute_shader) return;
-	glad_glDispatchCompute = (PFNGLDISPATCHCOMPUTEPROC)load("glDispatchCompute");
-	glad_glDispatchComputeIndirect = (PFNGLDISPATCHCOMPUTEINDIRECTPROC)load("glDispatchComputeIndirect");
-}
 static void load_GL_ARB_copy_buffer(GLADloadproc load) {
 	if(!GLAD_GL_ARB_copy_buffer) return;
 	glad_glCopyBufferSubData = (PFNGLCOPYBUFFERSUBDATAPROC)load("glCopyBufferSubData");
@@ -4434,13 +4325,6 @@ static void load_GL_ARB_copy_buffer(GLADloadproc load) {
 static void load_GL_ARB_copy_image(GLADloadproc load) {
 	if(!GLAD_GL_ARB_copy_image) return;
 	glad_glCopyImageSubData = (PFNGLCOPYIMAGESUBDATAPROC)load("glCopyImageSubData");
-}
-static void load_GL_ARB_debug_output(GLADloadproc load) {
-	if(!GLAD_GL_ARB_debug_output) return;
-	glad_glDebugMessageControlARB = (PFNGLDEBUGMESSAGECONTROLARBPROC)load("glDebugMessageControlARB");
-	glad_glDebugMessageInsertARB = (PFNGLDEBUGMESSAGEINSERTARBPROC)load("glDebugMessageInsertARB");
-	glad_glDebugMessageCallbackARB = (PFNGLDEBUGMESSAGECALLBACKARBPROC)load("glDebugMessageCallbackARB");
-	glad_glGetDebugMessageLogARB = (PFNGLGETDEBUGMESSAGELOGARBPROC)load("glGetDebugMessageLogARB");
 }
 static void load_GL_ARB_direct_state_access(GLADloadproc load) {
 	if(!GLAD_GL_ARB_direct_state_access) return;
@@ -4739,14 +4623,6 @@ static void load_GL_ARB_map_buffer_range(GLADloadproc load) {
 	glad_glMapBufferRange = (PFNGLMAPBUFFERRANGEPROC)load("glMapBufferRange");
 	glad_glFlushMappedBufferRange = (PFNGLFLUSHMAPPEDBUFFERRANGEPROC)load("glFlushMappedBufferRange");
 }
-static void load_GL_ARB_matrix_palette(GLADloadproc load) {
-	if(!GLAD_GL_ARB_matrix_palette) return;
-	glad_glCurrentPaletteMatrixARB = (PFNGLCURRENTPALETTEMATRIXARBPROC)load("glCurrentPaletteMatrixARB");
-	glad_glMatrixIndexubvARB = (PFNGLMATRIXINDEXUBVARBPROC)load("glMatrixIndexubvARB");
-	glad_glMatrixIndexusvARB = (PFNGLMATRIXINDEXUSVARBPROC)load("glMatrixIndexusvARB");
-	glad_glMatrixIndexuivARB = (PFNGLMATRIXINDEXUIVARBPROC)load("glMatrixIndexuivARB");
-	glad_glMatrixIndexPointerARB = (PFNGLMATRIXINDEXPOINTERARBPROC)load("glMatrixIndexPointerARB");
-}
 static void load_GL_ARB_multi_draw_indirect(GLADloadproc load) {
 	if(!GLAD_GL_ARB_multi_draw_indirect) return;
 	glad_glMultiDrawArraysIndirect = (PFNGLMULTIDRAWARRAYSINDIRECTPROC)load("glMultiDrawArraysIndirect");
@@ -4796,11 +4672,6 @@ static void load_GL_ARB_multitexture(GLADloadproc load) {
 static void load_GL_ARB_parallel_shader_compile(GLADloadproc load) {
 	if(!GLAD_GL_ARB_parallel_shader_compile) return;
 	glad_glMaxShaderCompilerThreadsARB = (PFNGLMAXSHADERCOMPILERTHREADSARBPROC)load("glMaxShaderCompilerThreadsARB");
-}
-static void load_GL_ARB_point_parameters(GLADloadproc load) {
-	if(!GLAD_GL_ARB_point_parameters) return;
-	glad_glPointParameterfARB = (PFNGLPOINTPARAMETERFARBPROC)load("glPointParameterfARB");
-	glad_glPointParameterfvARB = (PFNGLPOINTPARAMETERFVARBPROC)load("glPointParameterfvARB");
 }
 static void load_GL_ARB_provoking_vertex(GLADloadproc load) {
 	if(!GLAD_GL_ARB_provoking_vertex) return;
@@ -4902,10 +4773,6 @@ static void load_GL_ARB_separate_shader_objects(GLADloadproc load) {
 	glad_glProgramUniformMatrix4x3dv = (PFNGLPROGRAMUNIFORMMATRIX4X3DVPROC)load("glProgramUniformMatrix4x3dv");
 	glad_glValidateProgramPipeline = (PFNGLVALIDATEPROGRAMPIPELINEPROC)load("glValidateProgramPipeline");
 	glad_glGetProgramPipelineInfoLog = (PFNGLGETPROGRAMPIPELINEINFOLOGPROC)load("glGetProgramPipelineInfoLog");
-}
-static void load_GL_ARB_shader_atomic_counters(GLADloadproc load) {
-	if(!GLAD_GL_ARB_shader_atomic_counters) return;
-	glad_glGetActiveAtomicCounterBufferiv = (PFNGLGETACTIVEATOMICCOUNTERBUFFERIVPROC)load("glGetActiveAtomicCounterBufferiv");
 }
 static void load_GL_ARB_shader_image_load_store(GLADloadproc load) {
 	if(!GLAD_GL_ARB_shader_image_load_store) return;
@@ -5064,13 +4931,6 @@ static void load_GL_ARB_transform_feedback_instanced(GLADloadproc load) {
 	if(!GLAD_GL_ARB_transform_feedback_instanced) return;
 	glad_glDrawTransformFeedbackInstanced = (PFNGLDRAWTRANSFORMFEEDBACKINSTANCEDPROC)load("glDrawTransformFeedbackInstanced");
 	glad_glDrawTransformFeedbackStreamInstanced = (PFNGLDRAWTRANSFORMFEEDBACKSTREAMINSTANCEDPROC)load("glDrawTransformFeedbackStreamInstanced");
-}
-static void load_GL_ARB_transpose_matrix(GLADloadproc load) {
-	if(!GLAD_GL_ARB_transpose_matrix) return;
-	glad_glLoadTransposeMatrixfARB = (PFNGLLOADTRANSPOSEMATRIXFARBPROC)load("glLoadTransposeMatrixfARB");
-	glad_glLoadTransposeMatrixdARB = (PFNGLLOADTRANSPOSEMATRIXDARBPROC)load("glLoadTransposeMatrixdARB");
-	glad_glMultTransposeMatrixfARB = (PFNGLMULTTRANSPOSEMATRIXFARBPROC)load("glMultTransposeMatrixfARB");
-	glad_glMultTransposeMatrixdARB = (PFNGLMULTTRANSPOSEMATRIXDARBPROC)load("glMultTransposeMatrixdARB");
 }
 static void load_GL_ARB_uniform_buffer_object(GLADloadproc load) {
 	if(!GLAD_GL_ARB_uniform_buffer_object) return;
@@ -5246,47 +5106,6 @@ static void load_GL_ARB_vertex_shader(GLADloadproc load) {
 	glad_glGetVertexAttribivARB = (PFNGLGETVERTEXATTRIBIVARBPROC)load("glGetVertexAttribivARB");
 	glad_glGetVertexAttribPointervARB = (PFNGLGETVERTEXATTRIBPOINTERVARBPROC)load("glGetVertexAttribPointervARB");
 }
-static void load_GL_ARB_vertex_type_2_10_10_10_rev(GLADloadproc load) {
-	if(!GLAD_GL_ARB_vertex_type_2_10_10_10_rev) return;
-	glad_glVertexAttribP1ui = (PFNGLVERTEXATTRIBP1UIPROC)load("glVertexAttribP1ui");
-	glad_glVertexAttribP1uiv = (PFNGLVERTEXATTRIBP1UIVPROC)load("glVertexAttribP1uiv");
-	glad_glVertexAttribP2ui = (PFNGLVERTEXATTRIBP2UIPROC)load("glVertexAttribP2ui");
-	glad_glVertexAttribP2uiv = (PFNGLVERTEXATTRIBP2UIVPROC)load("glVertexAttribP2uiv");
-	glad_glVertexAttribP3ui = (PFNGLVERTEXATTRIBP3UIPROC)load("glVertexAttribP3ui");
-	glad_glVertexAttribP3uiv = (PFNGLVERTEXATTRIBP3UIVPROC)load("glVertexAttribP3uiv");
-	glad_glVertexAttribP4ui = (PFNGLVERTEXATTRIBP4UIPROC)load("glVertexAttribP4ui");
-	glad_glVertexAttribP4uiv = (PFNGLVERTEXATTRIBP4UIVPROC)load("glVertexAttribP4uiv");
-	glad_glVertexP2ui = (PFNGLVERTEXP2UIPROC)load("glVertexP2ui");
-	glad_glVertexP2uiv = (PFNGLVERTEXP2UIVPROC)load("glVertexP2uiv");
-	glad_glVertexP3ui = (PFNGLVERTEXP3UIPROC)load("glVertexP3ui");
-	glad_glVertexP3uiv = (PFNGLVERTEXP3UIVPROC)load("glVertexP3uiv");
-	glad_glVertexP4ui = (PFNGLVERTEXP4UIPROC)load("glVertexP4ui");
-	glad_glVertexP4uiv = (PFNGLVERTEXP4UIVPROC)load("glVertexP4uiv");
-	glad_glTexCoordP1ui = (PFNGLTEXCOORDP1UIPROC)load("glTexCoordP1ui");
-	glad_glTexCoordP1uiv = (PFNGLTEXCOORDP1UIVPROC)load("glTexCoordP1uiv");
-	glad_glTexCoordP2ui = (PFNGLTEXCOORDP2UIPROC)load("glTexCoordP2ui");
-	glad_glTexCoordP2uiv = (PFNGLTEXCOORDP2UIVPROC)load("glTexCoordP2uiv");
-	glad_glTexCoordP3ui = (PFNGLTEXCOORDP3UIPROC)load("glTexCoordP3ui");
-	glad_glTexCoordP3uiv = (PFNGLTEXCOORDP3UIVPROC)load("glTexCoordP3uiv");
-	glad_glTexCoordP4ui = (PFNGLTEXCOORDP4UIPROC)load("glTexCoordP4ui");
-	glad_glTexCoordP4uiv = (PFNGLTEXCOORDP4UIVPROC)load("glTexCoordP4uiv");
-	glad_glMultiTexCoordP1ui = (PFNGLMULTITEXCOORDP1UIPROC)load("glMultiTexCoordP1ui");
-	glad_glMultiTexCoordP1uiv = (PFNGLMULTITEXCOORDP1UIVPROC)load("glMultiTexCoordP1uiv");
-	glad_glMultiTexCoordP2ui = (PFNGLMULTITEXCOORDP2UIPROC)load("glMultiTexCoordP2ui");
-	glad_glMultiTexCoordP2uiv = (PFNGLMULTITEXCOORDP2UIVPROC)load("glMultiTexCoordP2uiv");
-	glad_glMultiTexCoordP3ui = (PFNGLMULTITEXCOORDP3UIPROC)load("glMultiTexCoordP3ui");
-	glad_glMultiTexCoordP3uiv = (PFNGLMULTITEXCOORDP3UIVPROC)load("glMultiTexCoordP3uiv");
-	glad_glMultiTexCoordP4ui = (PFNGLMULTITEXCOORDP4UIPROC)load("glMultiTexCoordP4ui");
-	glad_glMultiTexCoordP4uiv = (PFNGLMULTITEXCOORDP4UIVPROC)load("glMultiTexCoordP4uiv");
-	glad_glNormalP3ui = (PFNGLNORMALP3UIPROC)load("glNormalP3ui");
-	glad_glNormalP3uiv = (PFNGLNORMALP3UIVPROC)load("glNormalP3uiv");
-	glad_glColorP3ui = (PFNGLCOLORP3UIPROC)load("glColorP3ui");
-	glad_glColorP3uiv = (PFNGLCOLORP3UIVPROC)load("glColorP3uiv");
-	glad_glColorP4ui = (PFNGLCOLORP4UIPROC)load("glColorP4ui");
-	glad_glColorP4uiv = (PFNGLCOLORP4UIVPROC)load("glColorP4uiv");
-	glad_glSecondaryColorP3ui = (PFNGLSECONDARYCOLORP3UIPROC)load("glSecondaryColorP3ui");
-	glad_glSecondaryColorP3uiv = (PFNGLSECONDARYCOLORP3UIVPROC)load("glSecondaryColorP3uiv");
-}
 static void load_GL_ARB_viewport_array(GLADloadproc load) {
 	if(!GLAD_GL_ARB_viewport_array) return;
 	glad_glViewportArrayv = (PFNGLVIEWPORTARRAYVPROC)load("glViewportArrayv");
@@ -5318,11 +5137,6 @@ static void load_GL_ARB_window_pos(GLADloadproc load) {
 	glad_glWindowPos3ivARB = (PFNGLWINDOWPOS3IVARBPROC)load("glWindowPos3ivARB");
 	glad_glWindowPos3sARB = (PFNGLWINDOWPOS3SARBPROC)load("glWindowPos3sARB");
 	glad_glWindowPos3svARB = (PFNGLWINDOWPOS3SVARBPROC)load("glWindowPos3svARB");
-}
-static void load_GL_EXT_EGL_image_storage(GLADloadproc load) {
-	if(!GLAD_GL_EXT_EGL_image_storage) return;
-	glad_glEGLImageTargetTexStorageEXT = (PFNGLEGLIMAGETARGETTEXSTORAGEEXTPROC)load("glEGLImageTargetTexStorageEXT");
-	glad_glEGLImageTargetTextureStorageEXT = (PFNGLEGLIMAGETARGETTEXTURESTORAGEEXTPROC)load("glEGLImageTargetTextureStorageEXT");
 }
 static void load_GL_EXT_bindable_uniform(GLADloadproc load) {
 	if(!GLAD_GL_EXT_bindable_uniform) return;
@@ -5780,13 +5594,6 @@ static void load_GL_EXT_multisample(GLADloadproc load) {
 	glad_glSampleMaskEXT = (PFNGLSAMPLEMASKEXTPROC)load("glSampleMaskEXT");
 	glad_glSamplePatternEXT = (PFNGLSAMPLEPATTERNEXTPROC)load("glSamplePatternEXT");
 }
-static void load_GL_EXT_paletted_texture(GLADloadproc load) {
-	if(!GLAD_GL_EXT_paletted_texture) return;
-	glad_glColorTableEXT = (PFNGLCOLORTABLEEXTPROC)load("glColorTableEXT");
-	glad_glGetColorTableEXT = (PFNGLGETCOLORTABLEEXTPROC)load("glGetColorTableEXT");
-	glad_glGetColorTableParameterivEXT = (PFNGLGETCOLORTABLEPARAMETERIVEXTPROC)load("glGetColorTableParameterivEXT");
-	glad_glGetColorTableParameterfvEXT = (PFNGLGETCOLORTABLEPARAMETERFVEXTPROC)load("glGetColorTableParameterfvEXT");
-}
 static void load_GL_EXT_pixel_transform(GLADloadproc load) {
 	if(!GLAD_GL_EXT_pixel_transform) return;
 	glad_glPixelTransformParameteriEXT = (PFNGLPIXELTRANSFORMPARAMETERIEXTPROC)load("glPixelTransformParameteriEXT");
@@ -5795,15 +5602,6 @@ static void load_GL_EXT_pixel_transform(GLADloadproc load) {
 	glad_glPixelTransformParameterfvEXT = (PFNGLPIXELTRANSFORMPARAMETERFVEXTPROC)load("glPixelTransformParameterfvEXT");
 	glad_glGetPixelTransformParameterivEXT = (PFNGLGETPIXELTRANSFORMPARAMETERIVEXTPROC)load("glGetPixelTransformParameterivEXT");
 	glad_glGetPixelTransformParameterfvEXT = (PFNGLGETPIXELTRANSFORMPARAMETERFVEXTPROC)load("glGetPixelTransformParameterfvEXT");
-}
-static void load_GL_EXT_point_parameters(GLADloadproc load) {
-	if(!GLAD_GL_EXT_point_parameters) return;
-	glad_glPointParameterfEXT = (PFNGLPOINTPARAMETERFEXTPROC)load("glPointParameterfEXT");
-	glad_glPointParameterfvEXT = (PFNGLPOINTPARAMETERFVEXTPROC)load("glPointParameterfvEXT");
-}
-static void load_GL_EXT_polygon_offset(GLADloadproc load) {
-	if(!GLAD_GL_EXT_polygon_offset) return;
-	glad_glPolygonOffsetEXT = (PFNGLPOLYGONOFFSETEXTPROC)load("glPolygonOffsetEXT");
 }
 static void load_GL_EXT_polygon_offset_clamp(GLADloadproc load) {
 	if(!GLAD_GL_EXT_polygon_offset_clamp) return;
@@ -5912,11 +5710,6 @@ static void load_GL_EXT_stencil_clear_tag(GLADloadproc load) {
 static void load_GL_EXT_stencil_two_side(GLADloadproc load) {
 	if(!GLAD_GL_EXT_stencil_two_side) return;
 	glad_glActiveStencilFaceEXT = (PFNGLACTIVESTENCILFACEEXTPROC)load("glActiveStencilFaceEXT");
-}
-static void load_GL_EXT_texture3D(GLADloadproc load) {
-	if(!GLAD_GL_EXT_texture3D) return;
-	glad_glTexImage3DEXT = (PFNGLTEXIMAGE3DEXTPROC)load("glTexImage3DEXT");
-	glad_glTexSubImage3DEXT = (PFNGLTEXSUBIMAGE3DEXTPROC)load("glTexSubImage3DEXT");
 }
 static void load_GL_EXT_texture_array(GLADloadproc load) {
 	if(!GLAD_GL_EXT_texture_array) return;
@@ -6596,19 +6389,12 @@ static int find_extensionsGL(void) {
 	GLAD_GL_AMD_gpu_shader_half_float = has_ext("GL_AMD_gpu_shader_half_float");
 	GLAD_GL_AMD_gpu_shader_int64 = has_ext("GL_AMD_gpu_shader_int64");
 	GLAD_GL_AMD_seamless_cubemap_per_texture = has_ext("GL_AMD_seamless_cubemap_per_texture");
-	GLAD_GL_ARB_arrays_of_arrays = has_ext("GL_ARB_arrays_of_arrays");
-	GLAD_GL_ARB_base_instance = has_ext("GL_ARB_base_instance");
 	GLAD_GL_ARB_bindless_texture = has_ext("GL_ARB_bindless_texture");
 	GLAD_GL_ARB_buffer_storage = has_ext("GL_ARB_buffer_storage");
-	GLAD_GL_ARB_cl_event = has_ext("GL_ARB_cl_event");
 	GLAD_GL_ARB_clear_buffer_object = has_ext("GL_ARB_clear_buffer_object");
 	GLAD_GL_ARB_clear_texture = has_ext("GL_ARB_clear_texture");
-	GLAD_GL_ARB_color_buffer_float = has_ext("GL_ARB_color_buffer_float");
-	GLAD_GL_ARB_compute_shader = has_ext("GL_ARB_compute_shader");
 	GLAD_GL_ARB_copy_buffer = has_ext("GL_ARB_copy_buffer");
 	GLAD_GL_ARB_copy_image = has_ext("GL_ARB_copy_image");
-	GLAD_GL_ARB_cull_distance = has_ext("GL_ARB_cull_distance");
-	GLAD_GL_ARB_debug_output = has_ext("GL_ARB_debug_output");
 	GLAD_GL_ARB_depth_buffer_float = has_ext("GL_ARB_depth_buffer_float");
 	GLAD_GL_ARB_depth_clamp = has_ext("GL_ARB_depth_clamp");
 	GLAD_GL_ARB_depth_texture = has_ext("GL_ARB_depth_texture");
@@ -6638,13 +6424,11 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_invalidate_subdata = has_ext("GL_ARB_invalidate_subdata");
 	GLAD_GL_ARB_map_buffer_alignment = has_ext("GL_ARB_map_buffer_alignment");
 	GLAD_GL_ARB_map_buffer_range = has_ext("GL_ARB_map_buffer_range");
-	GLAD_GL_ARB_matrix_palette = has_ext("GL_ARB_matrix_palette");
 	GLAD_GL_ARB_multi_draw_indirect = has_ext("GL_ARB_multi_draw_indirect");
 	GLAD_GL_ARB_multisample = has_ext("GL_ARB_multisample");
 	GLAD_GL_ARB_multitexture = has_ext("GL_ARB_multitexture");
 	GLAD_GL_ARB_parallel_shader_compile = has_ext("GL_ARB_parallel_shader_compile");
 	GLAD_GL_ARB_pixel_buffer_object = has_ext("GL_ARB_pixel_buffer_object");
-	GLAD_GL_ARB_point_parameters = has_ext("GL_ARB_point_parameters");
 	GLAD_GL_ARB_point_sprite = has_ext("GL_ARB_point_sprite");
 	GLAD_GL_ARB_post_depth_coverage = has_ext("GL_ARB_post_depth_coverage");
 	GLAD_GL_ARB_provoking_vertex = has_ext("GL_ARB_provoking_vertex");
@@ -6656,8 +6440,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_seamless_cube_map = has_ext("GL_ARB_seamless_cube_map");
 	GLAD_GL_ARB_seamless_cubemap_per_texture = has_ext("GL_ARB_seamless_cubemap_per_texture");
 	GLAD_GL_ARB_separate_shader_objects = has_ext("GL_ARB_separate_shader_objects");
-	GLAD_GL_ARB_shader_atomic_counter_ops = has_ext("GL_ARB_shader_atomic_counter_ops");
-	GLAD_GL_ARB_shader_atomic_counters = has_ext("GL_ARB_shader_atomic_counters");
 	GLAD_GL_ARB_shader_ballot = has_ext("GL_ARB_shader_ballot");
 	GLAD_GL_ARB_shader_bit_encoding = has_ext("GL_ARB_shader_bit_encoding");
 	GLAD_GL_ARB_shader_clock = has_ext("GL_ARB_shader_clock");
@@ -6693,18 +6475,11 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_texture_compression_rgtc = has_ext("GL_ARB_texture_compression_rgtc");
 	GLAD_GL_ARB_texture_cube_map = has_ext("GL_ARB_texture_cube_map");
 	GLAD_GL_ARB_texture_cube_map_array = has_ext("GL_ARB_texture_cube_map_array");
-	GLAD_GL_ARB_texture_env_add = has_ext("GL_ARB_texture_env_add");
-	GLAD_GL_ARB_texture_env_combine = has_ext("GL_ARB_texture_env_combine");
-	GLAD_GL_ARB_texture_env_crossbar = has_ext("GL_ARB_texture_env_crossbar");
-	GLAD_GL_ARB_texture_env_dot3 = has_ext("GL_ARB_texture_env_dot3");
 	GLAD_GL_ARB_texture_filter_anisotropic = has_ext("GL_ARB_texture_filter_anisotropic");
 	GLAD_GL_ARB_texture_filter_minmax = has_ext("GL_ARB_texture_filter_minmax");
-	GLAD_GL_ARB_texture_float = has_ext("GL_ARB_texture_float");
 	GLAD_GL_ARB_texture_mirror_clamp_to_edge = has_ext("GL_ARB_texture_mirror_clamp_to_edge");
 	GLAD_GL_ARB_texture_mirrored_repeat = has_ext("GL_ARB_texture_mirrored_repeat");
 	GLAD_GL_ARB_texture_multisample = has_ext("GL_ARB_texture_multisample");
-	GLAD_GL_ARB_texture_non_power_of_two = has_ext("GL_ARB_texture_non_power_of_two");
-	GLAD_GL_ARB_texture_query_levels = has_ext("GL_ARB_texture_query_levels");
 	GLAD_GL_ARB_texture_query_lod = has_ext("GL_ARB_texture_query_lod");
 	GLAD_GL_ARB_texture_rectangle = has_ext("GL_ARB_texture_rectangle");
 	GLAD_GL_ARB_texture_rg = has_ext("GL_ARB_texture_rg");
@@ -6718,7 +6493,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_transform_feedback2 = has_ext("GL_ARB_transform_feedback2");
 	GLAD_GL_ARB_transform_feedback3 = has_ext("GL_ARB_transform_feedback3");
 	GLAD_GL_ARB_transform_feedback_instanced = has_ext("GL_ARB_transform_feedback_instanced");
-	GLAD_GL_ARB_transpose_matrix = has_ext("GL_ARB_transpose_matrix");
 	GLAD_GL_ARB_uniform_buffer_object = has_ext("GL_ARB_uniform_buffer_object");
 	GLAD_GL_ARB_vertex_array_bgra = has_ext("GL_ARB_vertex_array_bgra");
 	GLAD_GL_ARB_vertex_array_object = has_ext("GL_ARB_vertex_array_object");
@@ -6727,11 +6501,8 @@ static int find_extensionsGL(void) {
 	GLAD_GL_ARB_vertex_buffer_object = has_ext("GL_ARB_vertex_buffer_object");
 	GLAD_GL_ARB_vertex_program = has_ext("GL_ARB_vertex_program");
 	GLAD_GL_ARB_vertex_shader = has_ext("GL_ARB_vertex_shader");
-	GLAD_GL_ARB_vertex_type_10f_11f_11f_rev = has_ext("GL_ARB_vertex_type_10f_11f_11f_rev");
-	GLAD_GL_ARB_vertex_type_2_10_10_10_rev = has_ext("GL_ARB_vertex_type_2_10_10_10_rev");
 	GLAD_GL_ARB_viewport_array = has_ext("GL_ARB_viewport_array");
 	GLAD_GL_ARB_window_pos = has_ext("GL_ARB_window_pos");
-	GLAD_GL_EXT_EGL_image_storage = has_ext("GL_EXT_EGL_image_storage");
 	GLAD_GL_EXT_abgr = has_ext("GL_EXT_abgr");
 	GLAD_GL_EXT_bgra = has_ext("GL_EXT_bgra");
 	GLAD_GL_EXT_bindable_uniform = has_ext("GL_EXT_bindable_uniform");
@@ -6767,12 +6538,9 @@ static int find_extensionsGL(void) {
 	GLAD_GL_EXT_packed_depth_stencil = has_ext("GL_EXT_packed_depth_stencil");
 	GLAD_GL_EXT_packed_float = has_ext("GL_EXT_packed_float");
 	GLAD_GL_EXT_packed_pixels = has_ext("GL_EXT_packed_pixels");
-	GLAD_GL_EXT_paletted_texture = has_ext("GL_EXT_paletted_texture");
 	GLAD_GL_EXT_pixel_buffer_object = has_ext("GL_EXT_pixel_buffer_object");
 	GLAD_GL_EXT_pixel_transform = has_ext("GL_EXT_pixel_transform");
 	GLAD_GL_EXT_pixel_transform_color_table = has_ext("GL_EXT_pixel_transform_color_table");
-	GLAD_GL_EXT_point_parameters = has_ext("GL_EXT_point_parameters");
-	GLAD_GL_EXT_polygon_offset = has_ext("GL_EXT_polygon_offset");
 	GLAD_GL_EXT_polygon_offset_clamp = has_ext("GL_EXT_polygon_offset_clamp");
 	GLAD_GL_EXT_post_depth_coverage = has_ext("GL_EXT_post_depth_coverage");
 	GLAD_GL_EXT_provoking_vertex = has_ext("GL_EXT_provoking_vertex");
@@ -6790,17 +6558,12 @@ static int find_extensionsGL(void) {
 	GLAD_GL_EXT_stencil_clear_tag = has_ext("GL_EXT_stencil_clear_tag");
 	GLAD_GL_EXT_stencil_two_side = has_ext("GL_EXT_stencil_two_side");
 	GLAD_GL_EXT_stencil_wrap = has_ext("GL_EXT_stencil_wrap");
-	GLAD_GL_EXT_texture = has_ext("GL_EXT_texture");
-	GLAD_GL_EXT_texture3D = has_ext("GL_EXT_texture3D");
 	GLAD_GL_EXT_texture_array = has_ext("GL_EXT_texture_array");
 	GLAD_GL_EXT_texture_buffer_object = has_ext("GL_EXT_texture_buffer_object");
 	GLAD_GL_EXT_texture_compression_latc = has_ext("GL_EXT_texture_compression_latc");
 	GLAD_GL_EXT_texture_compression_rgtc = has_ext("GL_EXT_texture_compression_rgtc");
 	GLAD_GL_EXT_texture_compression_s3tc = has_ext("GL_EXT_texture_compression_s3tc");
 	GLAD_GL_EXT_texture_cube_map = has_ext("GL_EXT_texture_cube_map");
-	GLAD_GL_EXT_texture_env_add = has_ext("GL_EXT_texture_env_add");
-	GLAD_GL_EXT_texture_env_combine = has_ext("GL_EXT_texture_env_combine");
-	GLAD_GL_EXT_texture_env_dot3 = has_ext("GL_EXT_texture_env_dot3");
 	GLAD_GL_EXT_texture_filter_anisotropic = has_ext("GL_EXT_texture_filter_anisotropic");
 	GLAD_GL_EXT_texture_filter_minmax = has_ext("GL_EXT_texture_filter_minmax");
 	GLAD_GL_EXT_texture_integer = has_ext("GL_EXT_texture_integer");
@@ -6898,7 +6661,6 @@ static int find_extensionsGL(void) {
 	GLAD_GL_NV_shader_thread_group = has_ext("GL_NV_shader_thread_group");
 	GLAD_GL_NV_shader_thread_shuffle = has_ext("GL_NV_shader_thread_shuffle");
 	GLAD_GL_NV_shading_rate_image = has_ext("GL_NV_shading_rate_image");
-	GLAD_GL_NV_stereo_view_rendering = has_ext("GL_NV_stereo_view_rendering");
 	GLAD_GL_NV_tessellation_program5 = has_ext("GL_NV_tessellation_program5");
 	GLAD_GL_NV_texture_barrier = has_ext("GL_NV_texture_barrier");
 	GLAD_GL_NV_texture_compression_vtc = has_ext("GL_NV_texture_compression_vtc");
@@ -7018,17 +6780,12 @@ int gladLoadGLLoader(GLADloadproc load) {
 
 	if (!find_extensionsGL()) return 0;
 	load_GL_AMD_gpu_shader_int64(load);
-	load_GL_ARB_base_instance(load);
 	load_GL_ARB_bindless_texture(load);
 	load_GL_ARB_buffer_storage(load);
-	load_GL_ARB_cl_event(load);
 	load_GL_ARB_clear_buffer_object(load);
 	load_GL_ARB_clear_texture(load);
-	load_GL_ARB_color_buffer_float(load);
-	load_GL_ARB_compute_shader(load);
 	load_GL_ARB_copy_buffer(load);
 	load_GL_ARB_copy_image(load);
-	load_GL_ARB_debug_output(load);
 	load_GL_ARB_direct_state_access(load);
 	load_GL_ARB_draw_buffers(load);
 	load_GL_ARB_draw_buffers_blend(load);
@@ -7045,18 +6802,15 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_ARB_instanced_arrays(load);
 	load_GL_ARB_invalidate_subdata(load);
 	load_GL_ARB_map_buffer_range(load);
-	load_GL_ARB_matrix_palette(load);
 	load_GL_ARB_multi_draw_indirect(load);
 	load_GL_ARB_multisample(load);
 	load_GL_ARB_multitexture(load);
 	load_GL_ARB_parallel_shader_compile(load);
-	load_GL_ARB_point_parameters(load);
 	load_GL_ARB_provoking_vertex(load);
 	load_GL_ARB_robustness(load);
 	load_GL_ARB_sample_locations(load);
 	load_GL_ARB_sample_shading(load);
 	load_GL_ARB_separate_shader_objects(load);
-	load_GL_ARB_shader_atomic_counters(load);
 	load_GL_ARB_shader_image_load_store(load);
 	load_GL_ARB_shader_objects(load);
 	load_GL_ARB_shader_storage_buffer_object(load);
@@ -7077,7 +6831,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_ARB_transform_feedback2(load);
 	load_GL_ARB_transform_feedback3(load);
 	load_GL_ARB_transform_feedback_instanced(load);
-	load_GL_ARB_transpose_matrix(load);
 	load_GL_ARB_uniform_buffer_object(load);
 	load_GL_ARB_vertex_array_object(load);
 	load_GL_ARB_vertex_attrib_64bit(load);
@@ -7085,10 +6838,8 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_ARB_vertex_buffer_object(load);
 	load_GL_ARB_vertex_program(load);
 	load_GL_ARB_vertex_shader(load);
-	load_GL_ARB_vertex_type_2_10_10_10_rev(load);
 	load_GL_ARB_viewport_array(load);
 	load_GL_ARB_window_pos(load);
-	load_GL_EXT_EGL_image_storage(load);
 	load_GL_EXT_bindable_uniform(load);
 	load_GL_EXT_blend_color(load);
 	load_GL_EXT_blend_equation_separate(load);
@@ -7115,10 +6866,7 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_EXT_memory_object(load);
 	load_GL_EXT_multi_draw_arrays(load);
 	load_GL_EXT_multisample(load);
-	load_GL_EXT_paletted_texture(load);
 	load_GL_EXT_pixel_transform(load);
-	load_GL_EXT_point_parameters(load);
-	load_GL_EXT_polygon_offset(load);
 	load_GL_EXT_polygon_offset_clamp(load);
 	load_GL_EXT_provoking_vertex(load);
 	load_GL_EXT_raster_multisample(load);
@@ -7128,7 +6876,6 @@ int gladLoadGLLoader(GLADloadproc load) {
 	load_GL_EXT_shader_image_load_store(load);
 	load_GL_EXT_stencil_clear_tag(load);
 	load_GL_EXT_stencil_two_side(load);
-	load_GL_EXT_texture3D(load);
 	load_GL_EXT_texture_array(load);
 	load_GL_EXT_texture_buffer_object(load);
 	load_GL_EXT_texture_integer(load);
