@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -33,7 +30,7 @@ private:
     Result GetSystemUpdateNotificationEventForContentDelivery(
         OutCopyHandle<Kernel::KReadableEvent> out_event);
 
-    std::optional<FunctionInfoBase> FindRequest(u32 key) override;
+private:
     KernelHelpers::ServiceContext service_context;
     Event update_notification_event;
 };

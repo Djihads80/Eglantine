@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,16 +6,17 @@
 
 namespace Service::News {
 
-std::optional<ServiceFrameworkBase::FunctionInfoBase> INewlyArrivedEventHolder::FindRequest(u32 key) {
-    static constexpr auto functions = CreateStaticMap(
-        FunctionInfo{0, D<&INewlyArrivedEventHolder::Get>, "Get"}
-    );
-    return HandlerTableGenerateWithFind(key, functions);
-}
-
 INewlyArrivedEventHolder::INewlyArrivedEventHolder(Core::System& system_)
-    : ServiceFramework{system_, "INewlyArrivedEventHolder"}
-    , service_context{system_, "INewlyArrivedEventHolder"} {
+    : ServiceFramework{system_, "INewlyArrivedEventHolder"}, service_context{
+                                                                 system_,
+                                                                 "INewlyArrivedEventHolder"} {
+    // clang-format off
+    static const FunctionInfo functions[] = {
+        {0, D<&INewlyArrivedEventHolder::Get>, "Get"},
+    };
+    // clang-format on
+
+    RegisterHandlers(functions);
     arrived_event = service_context.CreateEvent("INewlyArrivedEventHolder::ArrivedEvent");
 }
 

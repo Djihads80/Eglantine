@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -26,7 +23,6 @@ private:
     Result InitializeMonitor();
     Result FinalizeMonitor();
 
-    std::optional<FunctionInfoBase> FindRequest(u32 key) override;
     State state{State::None};
 };
 

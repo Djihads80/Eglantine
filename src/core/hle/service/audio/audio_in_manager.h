@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -54,7 +51,6 @@ private:
         AudioCore::AudioIn::AudioInParameter parameter,
         InCopyHandle<Kernel::KProcess> process_handle, ClientAppletResourceUserId aruid);
 
-    std::optional<FunctionInfoBase> FindRequest(u32 key) override;
     std::unique_ptr<AudioCore::AudioIn::Manager> impl;
 };
 

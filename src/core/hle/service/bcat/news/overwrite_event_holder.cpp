@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,16 +6,16 @@
 
 namespace Service::News {
 
-std::optional<ServiceFrameworkBase::FunctionInfoBase> IOverwriteEventHolder::FindRequest(u32 key) {
-    static constexpr auto functions = CreateStaticMap(
-        FunctionInfo{0, D<&IOverwriteEventHolder::Get>, "Get"}
-    );
-    return HandlerTableGenerateWithFind(key, functions);
-}
-
 IOverwriteEventHolder::IOverwriteEventHolder(Core::System& system_)
-    : ServiceFramework{system_, "IOverwriteEventHolder"}
-    , service_context{system_, "IOverwriteEventHolder"} {
+    : ServiceFramework{system_, "IOverwriteEventHolder"}, service_context{system_,
+                                                                          "IOverwriteEventHolder"} {
+    // clang-format off
+    static const FunctionInfo functions[] = {
+        {0, D<&IOverwriteEventHolder::Get>, "Get"},
+    };
+    // clang-format on
+
+    RegisterHandlers(functions);
     overwrite_event = service_context.CreateEvent("IOverwriteEventHolder::OverwriteEvent");
 }
 

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -68,12 +65,11 @@ private:
     Result GetSharedMemoryNativeHandle(
         OutCopyHandle<Kernel::KSharedMemory> out_shared_memory_native_handle);
     Result GetSharedFontInOrderOfPriority(OutArray<u32, BufferAttr_HipcMapAlias> out_font_codes,
-        OutArray<u32, BufferAttr_HipcMapAlias> out_font_offsets,
-        OutArray<u32, BufferAttr_HipcMapAlias> out_font_sizes,
-        Out<bool> out_fonts_are_loaded, Out<u32> out_font_count,
-        Set::LanguageCode language_code);
+                                          OutArray<u32, BufferAttr_HipcMapAlias> out_font_offsets,
+                                          OutArray<u32, BufferAttr_HipcMapAlias> out_font_sizes,
+                                          Out<bool> out_fonts_are_loaded, Out<u32> out_font_count,
+                                          Set::LanguageCode language_code);
 
-    std::optional<FunctionInfoBase> FindRequest(u32 key) override;
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
