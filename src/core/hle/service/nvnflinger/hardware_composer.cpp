@@ -57,8 +57,18 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     // Set default speed limit to 100%.
     *out_speed_scale = 1.0f;
 
-    nvdisp.WaitForComposite();
-    this->ReleaseFramebuffersLocked(display);
+    // If no layers are available, skip the logic.
+    bool any_visible = false;
+    for (auto& layer : display.stack.layers) {
+        if (layer->visible) {
+            any_visible = true;
+            break;
+        }
+    }
+    if (!any_visible) {
+        *out_speed_scale = 1.0f;
+        return 1;
+    }
 
     // Determine the number of vsync periods to wait before composing again.
     std::optional<s32> swap_interval{};
@@ -149,30 +159,55 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
         nvdisp.Composite(composition_stack);
     }
 
+    // Batch framebuffer releases, instead of one-into-one.
+    std::vector<std::pair<Layer*, Framebuffer*>> to_release;
+    for (auto& [layer_id, framebuffer] : m_framebuffers) {
+        if (!framebuffer.is_acquired)
+            continue;
+
+        auto layer = display.stack.FindLayer(layer_id);
+        if (!layer)
+            continue;
+
+        // Overlay layers always release after every compose
+        // Non-overlay layers release based on their swap interval
+        if (layer->is_overlay || framebuffer.release_frame_number <= m_frame_number) {
+            to_release.emplace_back(layer.get(), &framebuffer);
+        }
+    }
+    for (auto& [layer, framebuffer] : to_release) {
+        layer->buffer_item_consumer->ReleaseBuffer(framebuffer->item, android::Fence::NoFence());
+        framebuffer->is_acquired = false;
+    }
+
     // Advance by 1 frame (60 FPS compositing)
     m_frame_number += 1;
 
-    return 1;
-}
-
-void HardwareComposer::ReleaseFramebuffersLocked(Display& display) {
+    // Release any necessary framebuffers (non-overlay layers only, as overlays are already released above).
     for (auto& [layer_id, framebuffer] : m_framebuffers) {
         if (!framebuffer.is_acquired) {
+            // Already released.
             continue;
         }
 
-        const auto layer = display.stack.FindLayer(layer_id);
-        if (!layer) {
+        if (framebuffer.release_frame_number > m_frame_number) {
             continue;
         }
 
-        if (!layer->is_overlay && framebuffer.release_frame_number > m_frame_number) {
-            continue;
-        }
+        if (const auto layer = display.stack.FindLayer(layer_id); layer != nullptr) {
+            // Skip overlay layers as they were already released above
+            if (layer->is_overlay) {
+                continue;
+            }
 
-        layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, android::Fence::NoFence());
-        framebuffer.is_acquired = false;
+            // TODO: support release fence
+            // This is needed to prevent screen tearing
+            layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, android::Fence::NoFence());
+            framebuffer.is_acquired = false;
+        }
     }
+
+    return 1;
 }
 
 void HardwareComposer::RemoveLayerLocked(Display& display, ConsumerId consumer_id) {
