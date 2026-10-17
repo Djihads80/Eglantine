@@ -225,6 +225,12 @@ const CPUCaps g_cpu_caps = [] {
         }
     }
 
+    // AMD CPUs don't implement leaf 0x15, measure the invariant TSC frequency instead of falling
+    // back to the much slower OS clock for every guest counter read.
+    if (caps.invariant_tsc && caps.tsc_frequency == 0) {
+        caps.tsc_frequency = X64::EstimateRDTSCFrequency();
+    }
+
     if (max_std_fn >= 0x16) {
         __cpuid(cpu_id, 0x16);
         caps.base_frequency = cpu_id[0];
