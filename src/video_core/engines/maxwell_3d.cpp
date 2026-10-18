@@ -205,6 +205,8 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         // A macro call must begin by writing the macro method's register, not its argument.
         ASSERT((method % 2) == 0 && "Can't start macro execution by writing to the ARGS register");
         executing_macro = method;
+        const u32 entry = ((method - MacroRegistersStart) >> 1) % macro_positions.size();
+        macro_parameter_goal = macro_engine.CountPrologueParameters(macro_positions[entry]);
     }
 
     macro_params.insert(macro_params.end(), base_start, base_start + amount);
@@ -212,8 +214,12 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
     current_macro_dirty |= current_dirty;
     current_dirty = false;
 
-    // Call the macro when there are no more parameters in the command buffer
-    if (is_last_call) {
+    // A call's arguments can keep coming on the following registers within the same run, and
+    // the run can carry the trigger of the next call, so complete the call as soon as the macro
+    // has all of the parameters its code fetches. When that count is unknown, fall back to
+    // completing at the end of the run.
+    if (is_last_call ||
+        (macro_parameter_goal != 0 && macro_params.size() >= macro_parameter_goal)) {
         FinishPendingMacro(system);
     }
 }
@@ -225,6 +231,7 @@ void Maxwell3D::FinishPendingMacro(Core::System& system) {
     macro_params.clear();
     macro_segments.clear();
     current_macro_dirty = false;
+    macro_parameter_goal = 0;
 }
 
 void Maxwell3D::RefreshParametersImpl() {
@@ -391,12 +398,9 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    // A macro receives its arguments through its ARG register (method + 1). Any other write
-    // while a macro call is pending means that call is complete: the write belongs to a new
-    // method, either a regular register or the trigger of the next macro in the same run.
-    if (executing_macro != 0 && method != executing_macro + 1) {
-        FinishPendingMacro(system);
-    }
+    // While a macro call is pending, writes to macro registers feed its parameter list and
+    // regular registers are dispatched normally. The call completes when the macro has all of
+    // the parameters its code fetches (see ProcessMacro).
 
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
@@ -412,10 +416,6 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
-    // Finish a pending macro call when this run writes something other than its ARG register.
-    if (executing_macro != 0 && method != executing_macro + 1) {
-        FinishPendingMacro(system);
-    }
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {

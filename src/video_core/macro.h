@@ -232,6 +232,9 @@ struct MacroEngine {
     }
     // Compiles the macro if its not in the cache, and executes the compiled macro
     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
+    /// Number of parameters the macro at the given position fetches in its prologue, zero when
+    /// it cannot be determined statically.
+    u32 CountPrologueParameters(u32 method) const;
     AnyCachedMacro Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code);
     struct CacheInfo {
         AnyCachedMacro program;

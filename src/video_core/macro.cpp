@@ -1337,6 +1337,56 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
     macro_file.write(reinterpret_cast<const char*>(code.data()), code.size_bytes());
 }
 
+u32 MacroEngine::CountPrologueParameters(u32 method) const {
+    std::span<const u32> code;
+    if (const auto macro_code = uploaded_macro_code.find(method);
+        macro_code != uploaded_macro_code.end()) {
+        code = macro_code->second;
+    } else {
+        for (const auto& [method_base, uploaded_code] : uploaded_macro_code) {
+            if (method >= method_base && (method - method_base) < uploaded_code.size()) {
+                code = std::span<const u32>{uploaded_code}.subspan(method - method_base);
+                break;
+            }
+        }
+    }
+    const auto is_fetch = [](Macro::ResultOperation operation) {
+        return operation == Macro::ResultOperation::IgnoreAndFetch ||
+               operation == Macro::ResultOperation::FetchAndSend ||
+               operation == Macro::ResultOperation::FetchAndSetMethod ||
+               operation == Macro::ResultOperation::MoveAndSetMethodFetchAndSend;
+    };
+    const auto fetches = [&](size_t index) -> u32 {
+        return index < code.size() &&
+                       is_fetch(Macro::Opcode{code[index]}.result_operation.Value())
+                   ? 1
+                   : 0;
+    };
+    // Count the parameters fetched before the first branch or exit: macros fetch their
+    // arguments in a straight-line prologue. Loops or conditionals over fetches are left
+    // unknown (zero), and such calls are completed at the end of their method run instead.
+    constexpr size_t MAX_PROLOGUE_SCAN = 512;
+    u32 count{};
+    const size_t scan_size{std::min(code.size(), MAX_PROLOGUE_SCAN)};
+    for (size_t i = 0; i < scan_size; ++i) {
+        const Macro::Opcode opcode{code[i]};
+        if (opcode.operation.Value() == Macro::Operation::Branch) {
+            // The delay slot after a branch always executes and may fetch.
+            count += fetches(i + 1);
+            break;
+        }
+        if (is_fetch(opcode.result_operation.Value())) {
+            ++count;
+        }
+        if (opcode.is_exit != 0) {
+            // The delay slot after an exit always executes and may fetch.
+            count += fetches(i + 1);
+            break;
+        }
+    }
+    return count;
+}
+
 void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
                           std::span<const u32> parameters) {
     const auto execute_variant = [&system, &maxwell3d, &parameters,

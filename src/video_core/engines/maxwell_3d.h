@@ -3261,6 +3261,7 @@ private:
 
     /// Macro method that is currently being executed / being fed parameters.
     u32 executing_macro = 0;
+    u32 macro_parameter_goal = 0;
     /// Parameters that have been submitted to the macro call so far.
     std::vector<u32> macro_params;
 
