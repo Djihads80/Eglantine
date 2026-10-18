@@ -94,7 +94,6 @@ void Joycons::ScanThread(std::stop_token stop_token) {
                     LOG_DEBUG(Input, "Device Found,type : {:04X} {:04X}", cur_dev->vendor_id, cur_dev->product_id);
                     RegisterNewDevice(cur_dev);
                 }
-                cur_dev = cur_dev->next;
             }
             SDL_hid_free_enumeration(devs);
         }
