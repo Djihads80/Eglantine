@@ -1545,13 +1545,6 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
     // As per the size-compatible formats section of vulkan, copy manually via ReinterpretImage
     // these images that aren't size-compatible
     if (BytesPerBlock(src.info.format) != BytesPerBlock(dst.info.format)) {
-#ifdef _WIN32
-        // On Windows, linear images cause device loss when used in image copies.
-        // Tested with TitleID: 0x010067300059A00 (Mario + Rabbids Kingdom Battle)
-        if (src.info.type == ImageType::Linear || dst.info.type == ImageType::Linear) {
-            return;
-        }
-#endif
         // Copy the whole image, clamped to the texels the source can provide. ReinterpretImage
         // rescales the source width by the format ratio, so an unclamped destination-sized copy
         // would read past the source image and fill destination rows out of order.
