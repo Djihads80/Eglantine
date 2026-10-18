@@ -10,6 +10,7 @@
 #include "common/container/unordered_map.h"
 #include <tuple>
 #include <limits>
+#include <utility>
 #include <boost/container/small_vector.hpp>
 
 #include "common/settings.h"
@@ -34,6 +35,8 @@ using TextureInstVector = boost::container::small_vector<TextureInst, 24>;
 constexpr u32 DESCRIPTOR_SIZE = 8;
 constexpr u32 DESCRIPTOR_SIZE_SHIFT = u32(std::countr_zero(DESCRIPTOR_SIZE));
 constexpr u32 DESCRIPTOR_MAX_COUNT = 1024;
+/// Largest constant buffer span assumed when sizing dynamic descriptor arrays
+constexpr u32 MAX_CBUF_SIZE = 16 * DESCRIPTOR_MAX_COUNT;
 
 u32 DynamicDescriptorSizeShift(const IR::U32& dynamic_offset) {
     const IR::Inst* const inst = dynamic_offset.InstRecursive();
@@ -46,12 +49,75 @@ u32 DynamicDescriptorSizeShift(const IR::U32& dynamic_offset) {
     return size_shift >= DESCRIPTOR_SIZE_SHIFT && size_shift < 31 ? size_shift : DESCRIPTOR_SIZE_SHIFT;
 }
 
-u32 DynamicDescriptorCount(u32 base_offset, u32 size_shift, u32 max_descriptors) {
+/// Splits the dynamic offset of a handle array into an element index and the stride between
+/// handles, when it is an index times a constant (e.g. FindUMsb(light_mask) * 304). Returns an
+/// empty index otherwise.
+std::pair<IR::U32, u32> DynamicDescriptorIndex(const IR::U32& dynamic_offset) {
+    const IR::Inst* const inst{dynamic_offset.TryInstRecursive()};
+    if (inst != nullptr) {
+        switch (inst->GetOpcode()) {
+        case IR::Opcode::ShiftLeftLogical32:
+            if (inst->Arg(1).IsImmediate() && inst->Arg(1).U32() >= 2 &&
+                inst->Arg(1).U32() <= 15) {
+                return {IR::U32{inst->Arg(0)}, 1U << inst->Arg(1).U32()};
+            }
+            break;
+        case IR::Opcode::IMul32:
+            for (size_t arg = 0; arg < 2; ++arg) {
+                const IR::Value factor{inst->Arg(arg)};
+                // Handles are 32-bit words
+                if (factor.IsImmediate() && factor.U32() != 0 && factor.U32() % 4 == 0 &&
+                    factor.U32() < MAX_CBUF_SIZE) {
+                    return {IR::U32{inst->Arg(1 - arg)}, factor.U32()};
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return {IR::U32{}, 1U << DynamicDescriptorSizeShift(dynamic_offset)};
+}
+
+/// Upper bound (exclusive) of an element index, zero when unknown
+u32 DynamicIndexBound(const IR::U32& index) {
+    const IR::Value value{index.Resolve()};
+    if (value.IsImmediate()) {
+        return value.U32() + 1;
+    }
+    const IR::Inst* const inst{value.TryInstRecursive()};
+    if (inst == nullptr) {
+        return 0;
+    }
+    const auto immediate_arg{[&]() -> std::optional<u32> {
+        for (size_t arg = 0; arg < 2; ++arg) {
+            if (inst->Arg(arg).IsImmediate()) {
+                return inst->Arg(arg).U32();
+            }
+        }
+        return std::nullopt;
+    }};
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::FindUMsb32:
+    case IR::Opcode::FindSMsb32:
+        // Bit positions, or -1 that the array clamp turns into the last element
+        return 32;
+    case IR::Opcode::BitwiseAnd32:
+    case IR::Opcode::UMin32:
+        if (const auto limit{immediate_arg()}; limit && *limit < MAX_CBUF_SIZE) {
+            return *limit + 1;
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+u32 DynamicDescriptorCount(u32 base_offset, u32 stride, u32 max_descriptors) {
     auto const descriptor_limit = (std::max)(1U, max_descriptors);
     auto const max_cbuf_bytes = 16 * descriptor_limit;
-    if (size_shift >= 31 || base_offset >= max_cbuf_bytes)
+    if (stride == 0 || stride >= max_cbuf_bytes || base_offset >= max_cbuf_bytes)
         return 1;
-    auto const stride = 1U << size_shift;
     auto const available = max_cbuf_bytes - base_offset;
     if (available < DESCRIPTOR_SIZE)
         return 1;
@@ -449,7 +515,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
     } else {
         return std::nullopt;
     }
-    auto const size_shift = DynamicDescriptorSizeShift(dynamic_offset);
+    auto const stride = DynamicDescriptorIndex(dynamic_offset).second;
     auto const sampled_limit = (std::max)(1U, (std::min)(host_info.max_per_stage_descriptor_sampled_images,
                                                          host_info.max_descriptor_set_sampled_images));
     auto const resource_limit = (std::max)(1U, host_info.max_per_stage_resources);
@@ -461,7 +527,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
         .secondary_offset = 0,
         .secondary_shift_left = 0,
         .dynamic_offset = dynamic_offset,
-        .count = DynamicDescriptorCount(base_offset, size_shift, (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit})),
+        .count = DynamicDescriptorCount(base_offset, stride, (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit})),
         .has_secondary = false,
     };
 }
@@ -535,7 +601,7 @@ public:
                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
-                   desc.count == existing.count && desc.size_shift == existing.size_shift &&
+                   desc.count == existing.count && desc.stride == existing.stride &&
                    desc.has_secondary == existing.has_secondary;
         });
     }
@@ -544,7 +610,7 @@ public:
         const u32 index{Add(image_buffer_descriptors, desc, [&desc](const auto& existing) {
             return desc.format == existing.format && desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.stride == existing.stride;
         })};
         image_buffer_descriptors[index].is_written |= desc.is_written;
         image_buffer_descriptors[index].is_read |= desc.is_read;
@@ -562,7 +628,7 @@ public:
                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
-                   desc.count == existing.count && desc.size_shift == existing.size_shift;
+                   desc.count == existing.count && desc.stride == existing.stride;
         })};
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
@@ -575,7 +641,7 @@ public:
             return desc.type == existing.type && desc.format == existing.format &&
                    desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.stride == existing.stride;
         })};
         image_descriptors[index].is_written |= desc.is_written;
         image_descriptors[index].is_read |= desc.is_read;
@@ -748,8 +814,17 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             break;
         }
         u32 index;
-        u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
+        u32 stride = DESCRIPTOR_SIZE;
+        IR::U32 array_index;
         u32 count = cbuf.count;
+        if (count > 1) {
+            std::tie(array_index, stride) = DynamicDescriptorIndex(cbuf.dynamic_offset);
+            if (!array_index.IsEmpty()) {
+                if (const u32 bound{DynamicIndexBound(array_index)}; bound != 0) {
+                    count = std::min(count, bound);
+                }
+            }
+        }
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageRead:
         case IR::Opcode::ImageAtomicIAdd32:
@@ -779,7 +854,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_index = cbuf.index,
                     .cbuf_offset = cbuf.offset,
                     .count = count,
-                    .size_shift = size_shift,
+                    .stride = stride,
                 });
             } else {
                 index = descriptors.Add(ImageDescriptor{
@@ -791,7 +866,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_index = cbuf.index,
                     .cbuf_offset = cbuf.offset,
                     .count = count,
-                    .size_shift = size_shift,
+                    .stride = stride,
                 });
             }
             break;
@@ -807,7 +882,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .secondary_cbuf_offset = cbuf.secondary_offset,
                     .secondary_shift_left = cbuf.secondary_shift_left,
                     .count = count,
-                    .size_shift = size_shift,
+                    .stride = stride,
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
@@ -825,7 +900,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .secondary_cbuf_offset = cbuf.secondary_offset,
                     .secondary_shift_left = cbuf.secondary_shift_left,
                     .count = count,
-                    .size_shift = size_shift,
+                    .stride = stride,
                 });
                 flags.is_integer.Assign(is_integer ? 1 : 0);
             }
@@ -837,8 +912,13 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         if (count > 1) {
             const auto insert_point{IR::Block::InstructionList::s_iterator_to(*inst)};
             IR::IREmitter ir{*texture_inst.block, insert_point};
-            const IR::U32 shift{ir.Imm32(size_shift)};
-            inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
+            IR::U32 element{array_index};
+            if (element.IsEmpty()) {
+                element = IR::U32{ir.ShiftRightLogical(
+                    cbuf.dynamic_offset,
+                    ir.Imm32(static_cast<u32>(std::countr_zero(stride))))};
+            }
+            inst->SetArg(0, ir.UMin(element, ir.Imm32(count - 1)));
         } else {
             inst->SetArg(0, IR::Value{});
         }

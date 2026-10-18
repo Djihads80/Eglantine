@@ -185,7 +185,7 @@ struct TextureBufferDescriptor {
     u32 secondary_cbuf_offset;
     u32 secondary_shift_left;
     u32 count;
-    u32 size_shift;
+    u32 stride; ///< Bytes between the handles of an array
 
     auto operator<=>(const TextureBufferDescriptor&) const = default;
 };
@@ -199,7 +199,7 @@ struct ImageBufferDescriptor {
     u32 cbuf_index;
     u32 cbuf_offset;
     u32 count;
-    u32 size_shift;
+    u32 stride; ///< Bytes between the handles of an array
 
     auto operator<=>(const ImageBufferDescriptor&) const = default;
 };
@@ -218,7 +218,7 @@ struct TextureDescriptor {
     u32 secondary_cbuf_offset;
     u32 secondary_shift_left;
     u32 count;
-    u32 size_shift;
+    u32 stride; ///< Bytes between the handles of an array
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
@@ -233,7 +233,7 @@ struct ImageDescriptor {
     u32 cbuf_index;
     u32 cbuf_offset;
     u32 count;
-    u32 size_shift;
+    u32 stride; ///< Bytes between the handles of an array
 
     auto operator<=>(const ImageDescriptor&) const = default;
 };
