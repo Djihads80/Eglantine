@@ -821,7 +821,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             std::tie(array_index, stride) = DynamicDescriptorIndex(cbuf.dynamic_offset);
             if (!array_index.IsEmpty()) {
                 if (const u32 bound{DynamicIndexBound(array_index)}; bound != 0) {
-                    count = std::min(count, bound);
+                    count = (std::min)(count, bound);
                 }
             }
         }
