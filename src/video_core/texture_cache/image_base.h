@@ -116,6 +116,8 @@ struct ImageBase {
     boost::container::small_vector<SubresourceBase, 16> slice_subresources;
 
     std::vector<AliasedImage> aliased_images;
+    /// Image sharing the same memory and layout but with a different sample count
+    ImageId msaa_twin{};
     std::vector<ImageId> overlapping_images;
     ImageMapId map_view_id{};
 };

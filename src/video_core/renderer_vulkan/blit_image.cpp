@@ -9,6 +9,7 @@
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 
 #include "common/div_ceil.h"
+#include "common/msaa_cap.h"
 #include "common/settings.h"
 #include "video_core/host_shaders/blit_color_float_frag_spv.h"
 #include "video_core/host_shaders/blit_color_msaa_frag_spv.h"
@@ -95,7 +96,24 @@ struct MSAACopyPushConstants {
     std::array<s32, 2> dst_offset;
     std::array<s32, 2> src_offset;
     std::array<s32, 2> scale;
+    std::array<s32, 2> host_scale;
 };
+
+/// Sample grid of the host multisampled image, which may hold fewer samples than the guest
+std::array<s32, 2> HostSampleScale(s32 scale_x, s32 scale_y) {
+    switch (Common::HostMsaaSamples(static_cast<u32>(scale_x * scale_y))) {
+    case 2:
+        return {2, 1};
+    case 4:
+        return {2, 2};
+    case 8:
+        return {4, 2};
+    case 16:
+        return {4, 4};
+    default:
+        return {1, 1};
+    }
+}
 
 template <u32 binding>
 inline constexpr VkDescriptorSetLayoutBinding TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING{
@@ -973,6 +991,7 @@ void BlitImageHelper::CopyMSAAImpl(VkRenderPass renderpass, VkPipeline pipeline,
                 .dst_offset = {dst_offset.x, dst_offset.y},
                 .src_offset = {copy.src_offset.x, copy.src_offset.y},
                 .scale = {scale_x, scale_y},
+                .host_scale = HostSampleScale(scale_x, scale_y),
             };
             VkImageView src_stencil_handle = VK_NULL_HANDLE;
             if (copy_stencil) {

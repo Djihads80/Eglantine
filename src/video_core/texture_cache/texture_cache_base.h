@@ -394,6 +394,16 @@ private:
     /// Synchronize image aliases, copying data if needed
     void SynchronizeAliases(ImageId image_id);
 
+    /// Returns true when the overlap and the new image can live side by side as MSAA twins
+    [[nodiscard]] bool CanBeMsaaTwins(const ImageBase& overlap, const ImageInfo& info,
+                                      GPUVAddr gpu_addr, size_t size_bytes) const;
+
+    /// Returns true when the pending join copy overwrites all contents of the new image
+    [[nodiscard]] bool IsFullyOverwrittenByJoinCopy(const ImageBase& new_image) const;
+
+    /// Copies the contents of the MSAA twin into this image when the twin is newer
+    void SynchronizeMsaaTwin(ImageId image_id);
+
     /// Prepare an image view to be used
     void PrepareImageView(ImageViewId image_view_id, bool is_modification, bool invalidate);
 

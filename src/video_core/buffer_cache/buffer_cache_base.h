@@ -382,6 +382,18 @@ private:
 
     void BindHostVertexBuffers();
 
+    /// Largest index and vertex ranges bound straight from the upload stream
+    static constexpr u32 MAX_STREAMED_INDEX_BYTES = static_cast<u32>(64_KiB);
+    static constexpr u32 MAX_STREAMED_VERTEX_BYTES = static_cast<u32>(256_KiB);
+
+    /// Returns true when the range can be bound from the upload stream instead of being
+    /// synchronized into its cached buffer
+    [[nodiscard]] bool CanBindFromUploadStream(DAddr device_addr, u32 size, u32 max_size);
+
+    void BindIndexBufferFromUploadStream();
+
+    void BindVertexBuffersFromUploadStream(u32 vertex_buffers_mask);
+
     void BindHostDrawIndirectBuffers();
 
     void BindHostGraphicsUniformBuffers(size_t stage);

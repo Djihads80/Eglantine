@@ -9,6 +9,7 @@
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "common/msaa_cap.h"
 #include "common/settings.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
@@ -862,7 +863,14 @@ VkSamplerReductionMode SamplerReduction(Tegra::Texture::SamplerReduction reducti
     return VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE_EXT;
 }
 
+static VkSampleCountFlagBits GuestMsaaMode(Tegra::Texture::MsaaMode msaa_mode);
+
 VkSampleCountFlagBits MsaaMode(Tegra::Texture::MsaaMode msaa_mode) {
+    return static_cast<VkSampleCountFlagBits>(
+        Common::HostMsaaSamples(static_cast<u32>(GuestMsaaMode(msaa_mode))));
+}
+
+static VkSampleCountFlagBits GuestMsaaMode(Tegra::Texture::MsaaMode msaa_mode) {
     switch (msaa_mode) {
     case Tegra::Texture::MsaaMode::Msaa1x1:
         return VK_SAMPLE_COUNT_1_BIT;

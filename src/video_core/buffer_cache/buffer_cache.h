@@ -749,6 +749,12 @@ void BufferCache<P>::BindHostIndexBuffer() {
     const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
     const u32 size = channel_state->index_buffer.size;
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    if (draw_state.inline_index_draw_indexes.empty() &&
+        CanBindFromUploadStream(channel_state->index_buffer.device_addr, size,
+                                MAX_STREAMED_INDEX_BYTES)) {
+        BindIndexBufferFromUploadStream();
+        return;
+    }
     if (draw_state.inline_index_draw_indexes.empty()) {
         SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
     } else {
@@ -767,6 +773,53 @@ void BufferCache<P>::BindHostIndexBuffer() {
     } else {
         buffer.MarkUsage(offset, size);
         runtime.BindIndexBuffer(draw_state.topology, draw_state.index_buffer.format, draw_state.index_buffer.first, draw_state.index_buffer.count, buffer, offset, size);
+    }
+}
+
+template <class P>
+bool BufferCache<P>::CanBindFromUploadStream(DAddr device_addr, u32 size, u32 max_size) {
+    if constexpr (!USE_MEMORY_MAPS_FOR_UPLOADS) {
+        return false;
+    } else {
+        // CPU-modified data would need a transfer copy into its cached buffer, which ends the
+        // current render pass. Small ranges are cheaper to copy into the upload stream on every
+        // draw instead. Data written by the GPU only lives in the cached buffer.
+        return size != 0 && size <= max_size &&
+               memory_tracker.IsRegionCpuModified(device_addr, size) &&
+               !memory_tracker.IsRegionGpuModified(device_addr, size);
+    }
+}
+
+template <class P>
+void BufferCache<P>::BindIndexBufferFromUploadStream() {
+    if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
+        const DAddr device_addr = channel_state->index_buffer.device_addr;
+        const u32 size = channel_state->index_buffer.size;
+        const auto& index_buffer = maxwell3d->draw_manager.draw_state.index_buffer;
+        auto upload_staging = runtime.UploadStagingBuffer(size);
+        device_memory.ReadBlockUnsafe(device_addr, upload_staging.mapped_span.data(), size);
+        runtime.BindIndexBuffer(maxwell3d->draw_manager.draw_state.topology, index_buffer.format,
+                                index_buffer.first, index_buffer.count, upload_staging.buffer,
+                                static_cast<u32>(upload_staging.offset), size);
+    }
+}
+
+template <class P>
+void BufferCache<P>::BindVertexBuffersFromUploadStream(u32 vertex_buffers_mask) {
+    if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
+        while (vertex_buffers_mask != 0) {
+            const u32 index = std::countr_zero(vertex_buffers_mask);
+            vertex_buffers_mask &= vertex_buffers_mask - 1;
+            const Binding& binding = channel_state->vertex_buffers[index];
+            auto upload_staging = runtime.UploadStagingBuffer(binding.size);
+            device_memory.ReadBlockUnsafe(binding.device_addr, upload_staging.mapped_span.data(),
+                                          binding.size);
+            runtime.BindVertexBuffer(index, upload_staging.buffer,
+                                     static_cast<u32>(upload_staging.offset), binding.size,
+                                     maxwell3d->regs.vertex_streams[index].stride);
+            // The streamed copy is only valid for this draw
+            maxwell3d->dirty.flags[Dirty::VertexBuffer0 + index] = true;
+        }
     }
 }
 
@@ -808,6 +861,12 @@ void BufferCache<P>::UpdateVertexBufferSlot(u32 index, const Binding& binding) {
 
 template <class P>
 void BufferCache<P>::BindHostVertexBuffers() {
+    const auto can_stream = [this](const Binding& binding) {
+        return binding.buffer_id != NULL_BUFFER_ID &&
+               CanBindFromUploadStream(binding.device_addr, binding.size,
+                                       MAX_STREAMED_VERTEX_BYTES);
+    };
+    u32 streamed_vertex_buffers = 0;
 
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
@@ -835,6 +894,12 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const Binding& binding = VertexBufferSlot(index);
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
+            if (can_stream(binding)) {
+                streamed_vertex_buffers |= 1u << index;
+                flags[Dirty::VertexBuffer0 + index] = false;
+                flush_bindings();
+                continue;
+            }
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 flush_bindings();
@@ -865,7 +930,11 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const Binding& binding = channel_state->vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
-            SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            if (can_stream(binding)) {
+                streamed_vertex_buffers |= 1u << index;
+            } else {
+                SynchronizeBuffer(buffer, binding.device_addr, binding.size);
+            }
             if (!flags[Dirty::VertexBuffer0 + index]) {
                 continue;
             }
@@ -896,6 +965,8 @@ void BufferCache<P>::BindHostVertexBuffers() {
             runtime.BindVertexBuffers(host_bindings);
         }
     }
+    // Bound last so that the range bindings above do not overwrite them
+    BindVertexBuffersFromUploadStream(streamed_vertex_buffers);
 }
 
 template <class P>

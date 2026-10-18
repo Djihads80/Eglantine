@@ -22,6 +22,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/literals.h"
+#include "common/msaa_cap.h"
 #include <ranges>
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -401,6 +402,20 @@ std::vector<const char*> ExtensionListForVulkan(
 constexpr std::array<char, 8> STATIC_CACHE_MAGIC_NUMBER{'e', 'd', 'e', 'n', 's', 't', 'p', 'c'};
 constexpr u32 STATIC_CACHE_VERSION = 1;
 
+/// Highest sample count usable for every kind of attachment and sampled image
+u32 MaxSupportedSampleCount(const VkPhysicalDeviceLimits& limits) {
+    const VkSampleCountFlags supported =
+        limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts &
+        limits.framebufferStencilSampleCounts & limits.sampledImageColorSampleCounts &
+        limits.sampledImageDepthSampleCounts & limits.sampledImageIntegerSampleCounts;
+    for (u32 samples = 16; samples > 1; samples >>= 1) {
+        if ((supported & samples) != 0) {
+            return samples;
+        }
+    }
+    return 1;
+}
+
 std::filesystem::path StaticPipelineCacheFilename() {
     const auto shader_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir);
     if (!Common::FS::CreateDir(shader_dir)) {
@@ -660,6 +675,11 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         LOG_WARNING(Render_Vulkan, "Driver requires higher-than-reported binding limits");
         properties.properties.limits.maxVertexInputBindings = 32;
     }
+
+    // Guest MSAA modes above what the device supports are rendered with fewer host samples
+    const u32 max_samples = MaxSupportedSampleCount(properties.properties.limits);
+    Common::SetHostMsaaSampleCap(max_samples);
+    LOG_INFO(Render_Vulkan, "Max supported MSAA sample count: {}", max_samples);
 
     const auto dyna_state = Settings::values.dyna_state.GetValue();
     switch (dyna_state) {

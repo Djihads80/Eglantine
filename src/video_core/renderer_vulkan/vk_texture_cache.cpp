@@ -16,6 +16,7 @@
 #include <bit>
 #include <numeric>
 #include "common/bit_util.h"
+#include "common/msaa_cap.h"
 #include "common/settings.h"
 
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -106,7 +107,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 }
 
 [[nodiscard]] VkSampleCountFlagBits ConvertSampleCount(u32 num_samples) {
-    switch (num_samples) {
+    switch (Common::HostMsaaSamples(num_samples)) {
     case 1:
         return VK_SAMPLE_COUNT_1_BIT;
     case 2:

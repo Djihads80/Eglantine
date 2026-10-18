@@ -1552,6 +1552,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     join_copies_to_do.clear();
     join_alias_indices.clear();
     const bool this_is_linear = info.type == ImageType::Linear;
+    ImageId join_msaa_twin{};
     const auto region_check = [&](ImageId overlap_id, ImageBase& overlap) {
         if (True(overlap.flags & ImageFlagBits::Remapped)) {
             join_ignore_textures.insert(overlap_id);
@@ -1569,6 +1570,12 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             return;
         }
         join_overlaps_found.insert(overlap_id);
+        if (!join_msaa_twin && CanBeMsaaTwins(overlap, new_info, gpu_addr, size_bytes)) {
+            // Keep both images alive and synchronize them on use instead of recreating one
+            // from the other every time the game switches between them
+            join_msaa_twin = overlap_id;
+            return;
+        }
         constexpr bool strict_size = true;
         const std::optional<OverlapResult> solution = ResolveOverlap(
             new_info, gpu_addr, cpu_addr, overlap, strict_size, broken_views, native_bgr);
@@ -1656,8 +1663,22 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         DeleteImage(overlap_id);
     }
 
-    // TODO: Only upload what we need
-    RefreshContents(new_image, new_image_id);
+    // Guest memory is stale when the GPU-written contents come from another image anyway
+    bool skip_upload = IsFullyOverwrittenByJoinCopy(new_image);
+    if (join_msaa_twin) {
+        Image& twin = slot_images[join_msaa_twin];
+        twin.msaa_twin = new_image_id;
+        new_image.msaa_twin = join_msaa_twin;
+        // SynchronizeMsaaTwin copies the twin contents on first use
+        skip_upload |= True(twin.flags & ImageFlagBits::GpuModified);
+    }
+    if (skip_upload) {
+        new_image.flags &= ~ImageFlagBits::CpuModified;
+        TrackImage(new_image, new_image_id);
+    } else {
+        // TODO: Only upload what we need
+        RefreshContents(new_image, new_image_id);
+    }
 
     if (can_rescale) {
         ScaleUp(new_image);
@@ -2316,6 +2337,10 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
+    if (image.msaa_twin) {
+        slot_images[image.msaa_twin].msaa_twin = ImageId{};
+        image.msaa_twin = ImageId{};
+    }
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
@@ -2501,6 +2526,52 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 }
 
 template <class P>
+bool TextureCache<P>::CanBeMsaaTwins(const ImageBase& overlap, const ImageInfo& info,
+                                     GPUVAddr gpu_addr, size_t size_bytes) const {
+    // Same memory and layout, only the sample count differs. ImageInfo::size is in samples,
+    // so e.g. an 8x 1920x1080 render target and a 1x 7680x2160 texture match.
+    // The twin copy does not handle rescaled images.
+    if (Settings::values.resolution_info.active || overlap.msaa_twin) {
+        return false;
+    }
+    const ImageInfo& other = overlap.info;
+    return overlap.gpu_addr == gpu_addr && overlap.guest_size_bytes == size_bytes &&
+           other.num_samples != info.num_samples && other.type == info.type &&
+           other.format == info.format && other.size == info.size &&
+           other.resources == info.resources;
+}
+
+template <class P>
+bool TextureCache<P>::IsFullyOverwrittenByJoinCopy(const ImageBase& new_image) const {
+    // A single GPU-modified overlap with the same address and size is copied over the whole
+    // new image right after it is created
+    if (join_copies_to_do.size() != 1 || join_copies_to_do.front().is_alias) {
+        return false;
+    }
+    const ImageBase& overlap = slot_images[join_copies_to_do.front().id];
+    return True(overlap.flags & ImageFlagBits::GpuModified) &&
+           overlap.gpu_addr == new_image.gpu_addr &&
+           overlap.guest_size_bytes == new_image.guest_size_bytes &&
+           overlap.info.size == new_image.info.size &&
+           overlap.info.resources.levels == new_image.info.resources.levels &&
+           overlap.info.resources.layers == new_image.info.resources.layers;
+}
+
+template <class P>
+void TextureCache<P>::SynchronizeMsaaTwin(ImageId image_id) {
+    Image& image = slot_images[image_id];
+    Image& twin = slot_images[image.msaa_twin];
+    if (False(twin.flags & ImageFlagBits::GpuModified) ||
+        twin.modification_tick <= image.modification_tick) {
+        return;
+    }
+    const auto copies = MakeShrinkImageCopies(image.info, twin.info, SubresourceBase{});
+    runtime.CopyImageMSAA(image, twin, copies);
+    image.flags |= ImageFlagBits::GpuModified;
+    image.modification_tick = twin.modification_tick;
+}
+
+template <class P>
 void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
     Image& image = slot_images[image_id];
     if (invalidate) {
@@ -2512,6 +2583,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         RefreshContents(image, image_id);
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
+        }
+        if (image.msaa_twin) {
+            SynchronizeMsaaTwin(image_id);
         }
     }
     if (is_modification) {

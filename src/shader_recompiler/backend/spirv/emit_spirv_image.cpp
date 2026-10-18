@@ -6,6 +6,7 @@
 
 #include <boost/container/static_vector.hpp>
 
+#include "common/msaa_cap.h"
 #include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
@@ -671,6 +672,11 @@ Id EmitImageFetch(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id c
     if (Sirit::ValidId(ms)) {
         // This image is multisampled, lod must be implicit
         lod = Id{};
+        if (Common::HostMsaaSampleCap() < 16) {
+            // The host image may hold fewer samples than the guest one
+            const Id samples{ctx.OpImageQuerySamples(ctx.U32[1], TextureImage(ctx, info, index))};
+            ms = ctx.OpUMod(ctx.U32[1], ctx.OpBitcast(ctx.U32[1], ms), samples);
+        }
     }
     const ImageOperands operands(lod, ms);
     const Id color{Emit(&EmitContext::OpImageSparseFetch, &EmitContext::OpImageFetch, ctx, inst,

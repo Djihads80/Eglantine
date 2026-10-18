@@ -16,6 +16,7 @@ layout(push_constant) uniform PushConstants {
     ivec2 dst_offset;
     ivec2 src_offset;
     ivec2 scale;
+    ivec2 host_scale;
 };
 
 layout(location = 0) out TEXEL_TYPE frag_color;
@@ -24,6 +25,7 @@ void main() {
     const ivec2 coord = ivec2(gl_FragCoord.xy) - dst_offset + src_offset;
     const ivec2 msaa_coord = coord / scale;
     const ivec2 sample_offset = coord % scale;
-    const int sample_id = sample_offset.x + scale.x * sample_offset.y;
+    const ivec2 host_offset = sample_offset * host_scale / scale;
+    const int sample_id = host_offset.x + host_scale.x * host_offset.y;
     frag_color = texelFetch(msaa_in, msaa_coord, sample_id);
 }
