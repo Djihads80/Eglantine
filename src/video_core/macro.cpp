@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <optional>
@@ -1367,7 +1368,7 @@ u32 MacroEngine::CountPrologueParameters(u32 method) const {
     // unknown (zero), and such calls are completed at the end of their method run instead.
     constexpr size_t MAX_PROLOGUE_SCAN = 512;
     u32 count{};
-    const size_t scan_size{std::min(code.size(), MAX_PROLOGUE_SCAN)};
+    const size_t scan_size{(std::min)(code.size(), MAX_PROLOGUE_SCAN)};
     for (size_t i = 0; i < scan_size; ++i) {
         const Macro::Opcode opcode{code[i]};
         if (opcode.operation.Value() == Macro::Operation::Branch) {
