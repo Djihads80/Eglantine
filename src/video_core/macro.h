@@ -197,6 +197,8 @@ struct DynamicCachedMacro {
     /// @param parameters The parameters of the macro
     /// @param method     The method to execute
     virtual void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters, u32 method) = 0;
+    /// Number of parameters the last Execute call fetched.
+    [[nodiscard]] virtual size_t ConsumedParameters() const = 0;
 };
 
 using AnyCachedMacro = std::variant<
@@ -230,11 +232,9 @@ struct MacroEngine {
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
     }
-    // Compiles the macro if its not in the cache, and executes the compiled macro
-    void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
-    /// Number of parameters the macro at the given position fetches in its prologue, zero when
-    /// it cannot be determined statically.
-    u32 CountPrologueParameters(u32 method) const;
+    /// Compiles the macro if its not in the cache, and executes the compiled macro.
+    /// Returns the number of parameters the macro consumed.
+    size_t Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
     AnyCachedMacro Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code);
     struct CacheInfo {
         AnyCachedMacro program;

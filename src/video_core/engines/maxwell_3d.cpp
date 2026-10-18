@@ -205,33 +205,45 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         // A macro call must begin by writing the macro method's register, not its argument.
         ASSERT((method % 2) == 0 && "Can't start macro execution by writing to the ARGS register");
         executing_macro = method;
-        const u32 entry = ((method - MacroRegistersStart) >> 1) % macro_positions.size();
-        macro_parameter_goal = macro_engine.CountPrologueParameters(macro_positions[entry]);
     }
 
     macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    macro_param_methods.insert(macro_param_methods.end(), amount, method);
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
 
-    // A call's arguments can keep coming on the following registers within the same run, and
-    // the run can carry the trigger of the next call, so complete the call as soon as the macro
-    // has all of the parameters its code fetches. When that count is unknown, fall back to
-    // completing at the end of the run.
-    if (is_last_call ||
-        (macro_parameter_goal != 0 && macro_params.size() >= macro_parameter_goal)) {
+    // Call the macro when there are no more parameters in the command buffer
+    if (is_last_call) {
         FinishPendingMacro(system);
     }
 }
 
 void Maxwell3D::FinishPendingMacro(Core::System& system) {
-    // Execute the pending macro with the arguments collected so far.
+    // Execute the pending macro calls with the arguments collected for them. A macro consumes
+    // as many parameters as its code fetches; the writes it leaves behind belong to the methods
+    // that follow the call in the stream, e.g. the trigger of the next macro call.
     ConsumeSink(system);
-    CallMacroMethod(system, executing_macro, macro_params);
-    macro_params.clear();
-    macro_segments.clear();
+    executing_macro = 0;
+    while (!macro_params.empty()) {
+        const u32 method{macro_param_methods.front()};
+        if (method < MacroRegistersStart) {
+            // Defensive: a regular register write, dispatch it normally.
+            const u32 argument{ProcessShadowRam(method, macro_params.front())};
+            ProcessDirtyRegisters(method, argument);
+            ProcessMethodCall(method, argument, macro_params.front(), true);
+            macro_params.erase(macro_params.begin());
+            macro_param_methods.erase(macro_param_methods.begin());
+            continue;
+        }
+        const size_t consumed{(std::max)(CallMacroMethod(system, method, macro_params), size_t{1})};
+        const size_t used{(std::min)(consumed, macro_params.size())};
+        macro_params.erase(macro_params.begin(), macro_params.begin() + used);
+        macro_param_methods.erase(macro_param_methods.begin(), macro_param_methods.begin() + used);
+        // The DMA refresh information only describes the writes of the first call.
+        macro_segments.clear();
+    }
     current_macro_dirty = false;
-    macro_parameter_goal = 0;
 }
 
 void Maxwell3D::RefreshParametersImpl() {
@@ -384,7 +396,7 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     }
 }
 
-void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters) {
+size_t Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters) {
     // Reset the current macro.
     executing_macro = 0;
 
@@ -392,9 +404,10 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
     const u32 entry =
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(macro_positions.size());
 
-    // Execute the current macro.
-    macro_engine.Execute(system, *this, macro_positions[entry], parameters);
+    // Execute the current macro and report how many parameters it consumed.
+    const size_t consumed{macro_engine.Execute(system, *this, macro_positions[entry], parameters)};
     draw_manager.DrawDeferred(*this);
+    return consumed;
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {

@@ -3222,7 +3222,7 @@ private:
      * @param method Method to call
      * @param parameters Arguments to the method call
      */
-    void CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
+    size_t CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
 
     /// Handles writes to the macro uploading register.
     void ProcessMacroUpload(u32 data);
@@ -3261,9 +3261,9 @@ private:
 
     /// Macro method that is currently being executed / being fed parameters.
     u32 executing_macro = 0;
-    u32 macro_parameter_goal = 0;
     /// Parameters that have been submitted to the macro call so far.
     std::vector<u32> macro_params;
+    std::vector<u32> macro_param_methods;
 
     /// Interpreter for the macro codes uploaded to the GPU.
     MacroEngine macro_engine;
