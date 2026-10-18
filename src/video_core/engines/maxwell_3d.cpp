@@ -214,12 +214,17 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
 
     // Call the macro when there are no more parameters in the command buffer
     if (is_last_call) {
-        ConsumeSink(system);
-        CallMacroMethod(system, executing_macro, macro_params);
-        macro_params.clear();
-        macro_segments.clear();
-        current_macro_dirty = false;
+        FinishPendingMacro(system);
     }
+}
+
+void Maxwell3D::FinishPendingMacro(Core::System& system) {
+    // Execute the pending macro with the arguments collected so far.
+    ConsumeSink(system);
+    CallMacroMethod(system, executing_macro, macro_params);
+    macro_params.clear();
+    macro_segments.clear();
+    current_macro_dirty = false;
 }
 
 void Maxwell3D::RefreshParametersImpl() {
@@ -386,10 +391,11 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    // It is an error to write to a register other than the current macro's ARG register before
-    // it has finished execution.
-    if (executing_macro != 0) {
-        ASSERT(method == executing_macro + 1);
+    // A macro receives its arguments through its ARG register (method + 1). Any other write
+    // while a macro call is pending means that call is complete: the write belongs to a new
+    // method, either a regular register or the trigger of the next macro in the same run.
+    if (executing_macro != 0 && method != executing_macro + 1) {
+        FinishPendingMacro(system);
     }
 
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
@@ -406,6 +412,10 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    // Finish a pending macro call when this run writes something other than its ARG register.
+    if (executing_macro != 0 && method != executing_macro + 1) {
+        FinishPendingMacro(system);
+    }
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
     if (method >= MacroRegistersStart) {
