@@ -220,29 +220,15 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
 }
 
 void Maxwell3D::FinishPendingMacro(Core::System& system) {
-    // Execute the pending macro calls with the arguments collected for them. A macro consumes
-    // as many parameters as its code fetches; the writes it leaves behind belong to the methods
-    // that follow the call in the stream, e.g. the trigger of the next macro call.
+    // Execute the pending macro call with the arguments collected for it. Writes the macro's
+    // code does not fetch are dropped: they cannot be told apart from the parameters of a call
+    // that fetches conditionally, and dispatching them as methods would corrupt GPU state.
     ConsumeSink(system);
     executing_macro = 0;
-    while (!macro_params.empty()) {
-        const u32 method{macro_param_methods.front()};
-        if (method < MacroRegistersStart) {
-            // Defensive: a regular register write, dispatch it normally.
-            const u32 argument{ProcessShadowRam(method, macro_params.front())};
-            ProcessDirtyRegisters(method, argument);
-            ProcessMethodCall(method, argument, macro_params.front(), true);
-            macro_params.erase(macro_params.begin());
-            macro_param_methods.erase(macro_param_methods.begin());
-            continue;
-        }
-        const size_t consumed{(std::max)(CallMacroMethod(system, method, macro_params), size_t{1})};
-        const size_t used{(std::min)(consumed, macro_params.size())};
-        macro_params.erase(macro_params.begin(), macro_params.begin() + used);
-        macro_param_methods.erase(macro_param_methods.begin(), macro_param_methods.begin() + used);
-        // The DMA refresh information only describes the writes of the first call.
-        macro_segments.clear();
-    }
+    CallMacroMethod(system, macro_param_methods.front(), macro_params);
+    macro_params.clear();
+    macro_param_methods.clear();
+    macro_segments.clear();
     current_macro_dirty = false;
 }
 
