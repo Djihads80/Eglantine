@@ -32,8 +32,6 @@
         GL_ARB_multisample,
         GL_ARB_parallel_shader_compile,
         GL_ARB_pixel_buffer_object,
-        GL_ARB_post_depth_coverage,
-        GL_ARB_query_buffer_object,
         GL_ARB_robustness,
         GL_ARB_sample_locations,
         GL_ARB_sample_shading,
@@ -67,42 +65,13 @@
         GL_ARB_texture_rectangle,
         GL_ARB_texture_swizzle,
         GL_ARB_transform_feedback3,
-        GL_ARB_vertex_buffer_object,
-        GL_EXT_abgr,
-        GL_EXT_bgra,
         GL_EXT_direct_state_access,
-        GL_EXT_draw_buffers2,
-        GL_EXT_draw_instanced,
-        GL_EXT_framebuffer_multisample,
-        GL_EXT_framebuffer_object,
-        GL_EXT_framebuffer_sRGB,
-        GL_EXT_geometry_shader4,
-        GL_EXT_gpu_program_parameters,
-        GL_EXT_gpu_shader4,
-        GL_EXT_memory_object,
-        GL_EXT_multi_draw_arrays,
-        GL_EXT_pixel_buffer_object,
-        GL_EXT_pixel_transform,
-        GL_EXT_polygon_offset_clamp,
-        GL_EXT_post_depth_coverage,
-        GL_EXT_raster_multisample,
-        GL_EXT_separate_shader_objects,
-        GL_EXT_separate_specular_color,
         GL_EXT_shader_image_load_formatted,
-        GL_EXT_shader_image_load_store,
-        GL_EXT_shader_integer_mix,
-        GL_EXT_shared_texture_palette,
         GL_EXT_sparse_texture2,
-        GL_EXT_texture_array,
         GL_EXT_texture_compression_s3tc,
-        GL_EXT_texture_cube_map,
         GL_EXT_texture_filter_anisotropic,
         GL_EXT_texture_filter_minmax,
-        GL_EXT_texture_lod_bias,
         GL_EXT_texture_mirror_clamp,
-        GL_EXT_texture_swizzle,
-        GL_EXT_vertex_shader,
-        GL_EXT_vertex_weighting,
         GL_KHR_blend_equation_advanced,
         GL_KHR_blend_equation_advanced_coherent,
         GL_KHR_context_flush_control,
@@ -147,12 +116,9 @@
         GL_NV_fragment_program_option,
         GL_NV_fragment_shader_barycentric,
         GL_NV_fragment_shader_interlock,
-        GL_NV_framebuffer_mixed_samples,
         GL_NV_framebuffer_multisample_coverage,
-        GL_NV_geometry_program4,
         GL_NV_geometry_shader4,
         GL_NV_geometry_shader_passthrough,
-        GL_NV_gpu_multicast,
         GL_NV_gpu_program4,
         GL_NV_gpu_program5,
         GL_NV_gpu_program5_mem_extended,
@@ -213,7 +179,7 @@
     Reproducible: False
 
     Commandline:
-        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_multi_draw_indirect,GL_AMD_seamless_cubemap_per_texture,GL_ARB_bindless_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_instanced,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_multisample,GL_ARB_parallel_shader_compile,GL_ARB_pixel_buffer_object,GL_ARB_post_depth_coverage,GL_ARB_query_buffer_object,GL_ARB_robustness,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_objects,GL_ARB_shader_stencil_export,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_tessellation_shader,GL_ARB_texture_border_clamp,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_swizzle,GL_ARB_transform_feedback3,GL_ARB_vertex_buffer_object,GL_EXT_abgr,GL_EXT_bgra,GL_EXT_direct_state_access,GL_EXT_draw_buffers2,GL_EXT_draw_instanced,GL_EXT_framebuffer_multisample,GL_EXT_framebuffer_object,GL_EXT_framebuffer_sRGB,GL_EXT_geometry_shader4,GL_EXT_gpu_program_parameters,GL_EXT_gpu_shader4,GL_EXT_memory_object,GL_EXT_multi_draw_arrays,GL_EXT_pixel_buffer_object,GL_EXT_pixel_transform,GL_EXT_polygon_offset_clamp,GL_EXT_post_depth_coverage,GL_EXT_raster_multisample,GL_EXT_separate_shader_objects,GL_EXT_separate_specular_color,GL_EXT_shader_image_load_formatted,GL_EXT_shader_image_load_store,GL_EXT_shader_integer_mix,GL_EXT_shared_texture_palette,GL_EXT_sparse_texture2,GL_EXT_texture_array,GL_EXT_texture_compression_s3tc,GL_EXT_texture_cube_map,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_lod_bias,GL_EXT_texture_mirror_clamp,GL_EXT_texture_swizzle,GL_EXT_vertex_shader,GL_EXT_vertex_weighting,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_mixed_samples,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_program4,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_multicast,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
+        --profile="core" --api="gl=4.6" --generator="c" --spec="gl" --extensions="GL_AMD_gpu_shader_half_float,GL_AMD_gpu_shader_int64,GL_AMD_multi_draw_indirect,GL_AMD_seamless_cubemap_per_texture,GL_ARB_bindless_texture,GL_ARB_derivative_control,GL_ARB_direct_state_access,GL_ARB_draw_buffers,GL_ARB_draw_buffers_blend,GL_ARB_draw_instanced,GL_ARB_fragment_layer_viewport,GL_ARB_fragment_program,GL_ARB_fragment_program_shadow,GL_ARB_fragment_shader,GL_ARB_fragment_shader_interlock,GL_ARB_geometry_shader4,GL_ARB_gl_spirv,GL_ARB_gpu_shader5,GL_ARB_gpu_shader_fp64,GL_ARB_gpu_shader_int64,GL_ARB_imaging,GL_ARB_indirect_parameters,GL_ARB_instanced_arrays,GL_ARB_multisample,GL_ARB_parallel_shader_compile,GL_ARB_pixel_buffer_object,GL_ARB_robustness,GL_ARB_sample_locations,GL_ARB_sample_shading,GL_ARB_seamless_cube_map,GL_ARB_seamless_cubemap_per_texture,GL_ARB_separate_shader_objects,GL_ARB_shader_ballot,GL_ARB_shader_bit_encoding,GL_ARB_shader_clock,GL_ARB_shader_draw_parameters,GL_ARB_shader_group_vote,GL_ARB_shader_objects,GL_ARB_shader_stencil_export,GL_ARB_shader_viewport_layer_array,GL_ARB_shading_language_420pack,GL_ARB_shading_language_include,GL_ARB_shading_language_packing,GL_ARB_sparse_buffer,GL_ARB_sparse_texture,GL_ARB_sparse_texture2,GL_ARB_sparse_texture_clamp,GL_ARB_spirv_extensions,GL_ARB_tessellation_shader,GL_ARB_texture_border_clamp,GL_ARB_texture_compression,GL_ARB_texture_compression_bptc,GL_ARB_texture_compression_rgtc,GL_ARB_texture_filter_anisotropic,GL_ARB_texture_filter_minmax,GL_ARB_texture_query_lod,GL_ARB_texture_rectangle,GL_ARB_texture_swizzle,GL_ARB_transform_feedback3,GL_EXT_direct_state_access,GL_EXT_shader_image_load_formatted,GL_EXT_sparse_texture2,GL_EXT_texture_compression_s3tc,GL_EXT_texture_filter_anisotropic,GL_EXT_texture_filter_minmax,GL_EXT_texture_mirror_clamp,GL_KHR_blend_equation_advanced,GL_KHR_blend_equation_advanced_coherent,GL_KHR_context_flush_control,GL_KHR_debug,GL_KHR_no_error,GL_KHR_parallel_shader_compile,GL_KHR_robust_buffer_access_behavior,GL_KHR_robustness,GL_NVX_gpu_memory_info,GL_NV_bindless_multi_draw_indirect,GL_NV_bindless_multi_draw_indirect_count,GL_NV_bindless_texture,GL_NV_blend_equation_advanced,GL_NV_blend_equation_advanced_coherent,GL_NV_blend_minmax_factor,GL_NV_blend_square,GL_NV_clip_space_w_scaling,GL_NV_command_list,GL_NV_compute_program5,GL_NV_compute_shader_derivatives,GL_NV_conservative_raster,GL_NV_conservative_raster_dilate,GL_NV_conservative_raster_pre_snap,GL_NV_conservative_raster_pre_snap_triangles,GL_NV_conservative_raster_underestimation,GL_NV_copy_depth_to_color,GL_NV_copy_image,GL_NV_deep_texture3D,GL_NV_depth_buffer_float,GL_NV_depth_clamp,GL_NV_draw_texture,GL_NV_draw_vulkan_image,GL_NV_explicit_multisample,GL_NV_fence,GL_NV_fill_rectangle,GL_NV_float_buffer,GL_NV_fog_distance,GL_NV_fragment_coverage_to_color,GL_NV_fragment_program,GL_NV_fragment_program2,GL_NV_fragment_program4,GL_NV_fragment_program_option,GL_NV_fragment_shader_barycentric,GL_NV_fragment_shader_interlock,GL_NV_framebuffer_multisample_coverage,GL_NV_geometry_shader4,GL_NV_geometry_shader_passthrough,GL_NV_gpu_program4,GL_NV_gpu_program5,GL_NV_gpu_program5_mem_extended,GL_NV_gpu_shader5,GL_NV_half_float,GL_NV_internalformat_sample_query,GL_NV_light_max_exponent,GL_NV_memory_attachment,GL_NV_multisample_coverage,GL_NV_multisample_filter_hint,GL_NV_packed_depth_stencil,GL_NV_parameter_buffer_object,GL_NV_pixel_data_range,GL_NV_point_sprite,GL_NV_sample_locations,GL_NV_sample_mask_override_coverage,GL_NV_shader_atomic_counters,GL_NV_shader_atomic_float,GL_NV_shader_atomic_float64,GL_NV_shader_atomic_fp16_vector,GL_NV_shader_atomic_int64,GL_NV_shader_buffer_load,GL_NV_shader_buffer_store,GL_NV_shader_storage_buffer_object,GL_NV_shader_texture_footprint,GL_NV_shader_thread_group,GL_NV_shader_thread_shuffle,GL_NV_shading_rate_image,GL_NV_tessellation_program5,GL_NV_texture_barrier,GL_NV_texture_compression_vtc,GL_NV_texture_env_combine4,GL_NV_texture_expand_normal,GL_NV_texture_multisample,GL_NV_texture_rectangle,GL_NV_texture_rectangle_compressed,GL_NV_texture_shader,GL_NV_texture_shader2,GL_NV_texture_shader3,GL_NV_transform_feedback,GL_NV_transform_feedback2,GL_NV_uniform_buffer_unified_memory,GL_NV_vertex_array_range,GL_NV_vertex_array_range2,GL_NV_vertex_attrib_integer_64bit,GL_NV_vertex_buffer_unified_memory,GL_NV_vertex_program,GL_NV_vertex_program1_1,GL_NV_vertex_program2,GL_NV_vertex_program2_option,GL_NV_vertex_program3,GL_NV_vertex_program4,GL_NV_viewport_array2,GL_NV_viewport_swizzle"
     Online:
         Too many extensions
 */
@@ -1404,7 +1370,6 @@ typedef void (APIENTRY *GLVULKANPROCNV)(void);
 #define GL_INDEX 0x8222
 #define GL_TEXTURE_LUMINANCE_TYPE 0x8C14
 #define GL_TEXTURE_INTENSITY_TYPE 0x8C15
-#define GL_FRAMEBUFFER_SRGB 0x8DB9
 #define GL_HALF_FLOAT 0x140B
 #define GL_MAP_READ_BIT 0x0001
 #define GL_MAP_WRITE_BIT 0x0002
@@ -5849,22 +5814,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB 0x84F8
 #define GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB 0x82EC
 #define GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB 0x82ED
-#define GL_BUFFER_SIZE_ARB 0x8764
-#define GL_BUFFER_USAGE_ARB 0x8765
-#define GL_ARRAY_BUFFER_ARB 0x8892
-#define GL_ELEMENT_ARRAY_BUFFER_ARB 0x8893
-#define GL_ARRAY_BUFFER_BINDING_ARB 0x8894
-#define GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB 0x8895
-#define GL_VERTEX_ARRAY_BUFFER_BINDING_ARB 0x8896
-#define GL_NORMAL_ARRAY_BUFFER_BINDING_ARB 0x8897
-#define GL_COLOR_ARRAY_BUFFER_BINDING_ARB 0x8898
-#define GL_INDEX_ARRAY_BUFFER_BINDING_ARB 0x8899
-#define GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING_ARB 0x889A
-#define GL_EDGE_FLAG_ARRAY_BUFFER_BINDING_ARB 0x889B
-#define GL_SECONDARY_COLOR_ARRAY_BUFFER_BINDING_ARB 0x889C
-#define GL_FOG_COORDINATE_ARRAY_BUFFER_BINDING_ARB 0x889D
-#define GL_WEIGHT_ARRAY_BUFFER_BINDING_ARB 0x889E
-#define GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING_ARB 0x889F
 #define GL_READ_ONLY_ARB 0x88B8
 #define GL_WRITE_ONLY_ARB 0x88B9
 #define GL_READ_WRITE_ARB 0x88BA
@@ -5881,18 +5830,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_DYNAMIC_READ_ARB 0x88E9
 #define GL_DYNAMIC_COPY_ARB 0x88EA
 #define GL_COLOR_SUM_ARB 0x8458
-#define GL_ABGR_EXT 0x8000
-#define GL_BGR_EXT 0x80E0
-#define GL_BGRA_EXT 0x80E1
-#define GL_CLIP_VOLUME_CLIPPING_HINT_EXT 0x80F0
-#define GL_ARRAY_ELEMENT_LOCK_FIRST_EXT 0x81A8
-#define GL_ARRAY_ELEMENT_LOCK_COUNT_EXT 0x81A9
-#define GL_TANGENT_ARRAY_POINTER_EXT 0x8442
-#define GL_BINORMAL_ARRAY_POINTER_EXT 0x8443
-#define GL_MAP1_TANGENT_EXT 0x8444
-#define GL_MAP2_TANGENT_EXT 0x8445
-#define GL_MAP1_BINORMAL_EXT 0x8446
-#define GL_MAP2_BINORMAL_EXT 0x8447
 #define GL_PROGRAM_PIPELINE_OBJECT_EXT 0x8A4F
 #define GL_PROGRAM_OBJECT_EXT 0x8B40
 #define GL_SHADER_OBJECT_EXT 0x8B48
@@ -5912,196 +5849,13 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_FOG_COORDINATE_ARRAY_STRIDE_EXT 0x8455
 #define GL_FOG_COORDINATE_ARRAY_POINTER_EXT 0x8456
 #define GL_FOG_COORDINATE_ARRAY_EXT 0x8457
-#define GL_RENDERBUFFER_SAMPLES_EXT 0x8CAB
-#define GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE_EXT 0x8D56
-#define GL_MAX_SAMPLES_EXT 0x8D57
 #define GL_SCALED_RESOLVE_FASTEST_EXT 0x90BA
 #define GL_SCALED_RESOLVE_NICEST_EXT 0x90BB
-#define GL_INVALID_FRAMEBUFFER_OPERATION_EXT 0x0506
-#define GL_MAX_RENDERBUFFER_SIZE_EXT 0x84E8
-#define GL_FRAMEBUFFER_BINDING_EXT 0x8CA6
-#define GL_RENDERBUFFER_BINDING_EXT 0x8CA7
-#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT 0x8CD0
-#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT 0x8CD1
-#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL_EXT 0x8CD2
-#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE_EXT 0x8CD3
-#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_3D_ZOFFSET_EXT 0x8CD4
-#define GL_FRAMEBUFFER_COMPLETE_EXT 0x8CD5
-#define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_EXT 0x8CD6
-#define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT_EXT 0x8CD7
-#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS_EXT 0x8CD9
-#define GL_FRAMEBUFFER_INCOMPLETE_FORMATS_EXT 0x8CDA
-#define GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER_EXT 0x8CDB
-#define GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER_EXT 0x8CDC
-#define GL_FRAMEBUFFER_UNSUPPORTED_EXT 0x8CDD
-#define GL_MAX_COLOR_ATTACHMENTS_EXT 0x8CDF
-#define GL_COLOR_ATTACHMENT0_EXT 0x8CE0
-#define GL_COLOR_ATTACHMENT1_EXT 0x8CE1
-#define GL_COLOR_ATTACHMENT2_EXT 0x8CE2
-#define GL_COLOR_ATTACHMENT3_EXT 0x8CE3
-#define GL_COLOR_ATTACHMENT4_EXT 0x8CE4
-#define GL_COLOR_ATTACHMENT5_EXT 0x8CE5
-#define GL_COLOR_ATTACHMENT6_EXT 0x8CE6
-#define GL_COLOR_ATTACHMENT7_EXT 0x8CE7
-#define GL_COLOR_ATTACHMENT8_EXT 0x8CE8
-#define GL_COLOR_ATTACHMENT9_EXT 0x8CE9
-#define GL_COLOR_ATTACHMENT10_EXT 0x8CEA
-#define GL_COLOR_ATTACHMENT11_EXT 0x8CEB
-#define GL_COLOR_ATTACHMENT12_EXT 0x8CEC
-#define GL_COLOR_ATTACHMENT13_EXT 0x8CED
-#define GL_COLOR_ATTACHMENT14_EXT 0x8CEE
-#define GL_COLOR_ATTACHMENT15_EXT 0x8CEF
-#define GL_DEPTH_ATTACHMENT_EXT 0x8D00
-#define GL_STENCIL_ATTACHMENT_EXT 0x8D20
-#define GL_FRAMEBUFFER_EXT 0x8D40
-#define GL_RENDERBUFFER_EXT 0x8D41
-#define GL_RENDERBUFFER_WIDTH_EXT 0x8D42
-#define GL_RENDERBUFFER_HEIGHT_EXT 0x8D43
-#define GL_RENDERBUFFER_INTERNAL_FORMAT_EXT 0x8D44
-#define GL_STENCIL_INDEX1_EXT 0x8D46
-#define GL_STENCIL_INDEX4_EXT 0x8D47
-#define GL_STENCIL_INDEX8_EXT 0x8D48
-#define GL_STENCIL_INDEX16_EXT 0x8D49
-#define GL_RENDERBUFFER_RED_SIZE_EXT 0x8D50
-#define GL_RENDERBUFFER_GREEN_SIZE_EXT 0x8D51
-#define GL_RENDERBUFFER_BLUE_SIZE_EXT 0x8D52
-#define GL_RENDERBUFFER_ALPHA_SIZE_EXT 0x8D53
-#define GL_RENDERBUFFER_DEPTH_SIZE_EXT 0x8D54
-#define GL_RENDERBUFFER_STENCIL_SIZE_EXT 0x8D55
 #define GL_FRAMEBUFFER_SRGB_EXT 0x8DB9
 #define GL_FRAMEBUFFER_SRGB_CAPABLE_EXT 0x8DBA
-#define GL_GEOMETRY_SHADER_EXT 0x8DD9
-#define GL_GEOMETRY_VERTICES_OUT_EXT 0x8DDA
-#define GL_GEOMETRY_INPUT_TYPE_EXT 0x8DDB
-#define GL_GEOMETRY_OUTPUT_TYPE_EXT 0x8DDC
-#define GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS_EXT 0x8C29
-#define GL_MAX_GEOMETRY_VARYING_COMPONENTS_EXT 0x8DDD
-#define GL_MAX_VERTEX_VARYING_COMPONENTS_EXT 0x8DDE
-#define GL_MAX_VARYING_COMPONENTS_EXT 0x8B4B
-#define GL_MAX_GEOMETRY_UNIFORM_COMPONENTS_EXT 0x8DDF
-#define GL_MAX_GEOMETRY_OUTPUT_VERTICES_EXT 0x8DE0
-#define GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS_EXT 0x8DE1
-#define GL_LINES_ADJACENCY_EXT 0x000A
-#define GL_LINE_STRIP_ADJACENCY_EXT 0x000B
-#define GL_TRIANGLES_ADJACENCY_EXT 0x000C
-#define GL_TRIANGLE_STRIP_ADJACENCY_EXT 0x000D
-#define GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS_EXT 0x8DA8
-#define GL_FRAMEBUFFER_INCOMPLETE_LAYER_COUNT_EXT 0x8DA9
-#define GL_FRAMEBUFFER_ATTACHMENT_LAYERED_EXT 0x8DA7
-#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER_EXT 0x8CD4
-#define GL_PROGRAM_POINT_SIZE_EXT 0x8642
-#define GL_VERTEX_ATTRIB_ARRAY_INTEGER_EXT 0x88FD
-#define GL_SAMPLER_1D_ARRAY_EXT 0x8DC0
-#define GL_SAMPLER_2D_ARRAY_EXT 0x8DC1
-#define GL_SAMPLER_BUFFER_EXT 0x8DC2
-#define GL_SAMPLER_1D_ARRAY_SHADOW_EXT 0x8DC3
-#define GL_SAMPLER_2D_ARRAY_SHADOW_EXT 0x8DC4
-#define GL_SAMPLER_CUBE_SHADOW_EXT 0x8DC5
-#define GL_UNSIGNED_INT_VEC2_EXT 0x8DC6
-#define GL_UNSIGNED_INT_VEC3_EXT 0x8DC7
-#define GL_UNSIGNED_INT_VEC4_EXT 0x8DC8
-#define GL_INT_SAMPLER_1D_EXT 0x8DC9
-#define GL_INT_SAMPLER_2D_EXT 0x8DCA
-#define GL_INT_SAMPLER_3D_EXT 0x8DCB
-#define GL_INT_SAMPLER_CUBE_EXT 0x8DCC
-#define GL_INT_SAMPLER_2D_RECT_EXT 0x8DCD
-#define GL_INT_SAMPLER_1D_ARRAY_EXT 0x8DCE
-#define GL_INT_SAMPLER_2D_ARRAY_EXT 0x8DCF
-#define GL_INT_SAMPLER_BUFFER_EXT 0x8DD0
-#define GL_UNSIGNED_INT_SAMPLER_1D_EXT 0x8DD1
-#define GL_UNSIGNED_INT_SAMPLER_2D_EXT 0x8DD2
-#define GL_UNSIGNED_INT_SAMPLER_3D_EXT 0x8DD3
-#define GL_UNSIGNED_INT_SAMPLER_CUBE_EXT 0x8DD4
-#define GL_UNSIGNED_INT_SAMPLER_2D_RECT_EXT 0x8DD5
-#define GL_UNSIGNED_INT_SAMPLER_1D_ARRAY_EXT 0x8DD6
-#define GL_UNSIGNED_INT_SAMPLER_2D_ARRAY_EXT 0x8DD7
-#define GL_UNSIGNED_INT_SAMPLER_BUFFER_EXT 0x8DD8
-#define GL_MIN_PROGRAM_TEXEL_OFFSET_EXT 0x8904
-#define GL_MAX_PROGRAM_TEXEL_OFFSET_EXT 0x8905
-#define GL_HISTOGRAM_EXT 0x8024
-#define GL_PROXY_HISTOGRAM_EXT 0x8025
-#define GL_HISTOGRAM_WIDTH_EXT 0x8026
-#define GL_HISTOGRAM_FORMAT_EXT 0x8027
-#define GL_HISTOGRAM_RED_SIZE_EXT 0x8028
-#define GL_HISTOGRAM_GREEN_SIZE_EXT 0x8029
-#define GL_HISTOGRAM_BLUE_SIZE_EXT 0x802A
-#define GL_HISTOGRAM_ALPHA_SIZE_EXT 0x802B
-#define GL_HISTOGRAM_LUMINANCE_SIZE_EXT 0x802C
-#define GL_HISTOGRAM_SINK_EXT 0x802D
 #define GL_MINMAX_EXT 0x802E
 #define GL_MINMAX_FORMAT_EXT 0x802F
 #define GL_MINMAX_SINK_EXT 0x8030
-#define GL_TABLE_TOO_LARGE_EXT 0x8031
-#define GL_IUI_V2F_EXT 0x81AD
-#define GL_IUI_V3F_EXT 0x81AE
-#define GL_IUI_N3F_V2F_EXT 0x81AF
-#define GL_IUI_N3F_V3F_EXT 0x81B0
-#define GL_T2F_IUI_V2F_EXT 0x81B1
-#define GL_T2F_IUI_V3F_EXT 0x81B2
-#define GL_T2F_IUI_N3F_V2F_EXT 0x81B3
-#define GL_T2F_IUI_N3F_V3F_EXT 0x81B4
-#define GL_INDEX_TEST_EXT 0x81B5
-#define GL_INDEX_TEST_FUNC_EXT 0x81B6
-#define GL_INDEX_TEST_REF_EXT 0x81B7
-#define GL_INDEX_MATERIAL_EXT 0x81B8
-#define GL_INDEX_MATERIAL_PARAMETER_EXT 0x81B9
-#define GL_INDEX_MATERIAL_FACE_EXT 0x81BA
-#define GL_FRAGMENT_MATERIAL_EXT 0x8349
-#define GL_FRAGMENT_NORMAL_EXT 0x834A
-#define GL_FRAGMENT_COLOR_EXT 0x834C
-#define GL_ATTENUATION_EXT 0x834D
-#define GL_SHADOW_ATTENUATION_EXT 0x834E
-#define GL_TEXTURE_APPLICATION_MODE_EXT 0x834F
-#define GL_TEXTURE_LIGHT_EXT 0x8350
-#define GL_TEXTURE_MATERIAL_FACE_EXT 0x8351
-#define GL_TEXTURE_MATERIAL_PARAMETER_EXT 0x8352
-#define GL_TEXTURE_TILING_EXT 0x9580
-#define GL_DEDICATED_MEMORY_OBJECT_EXT 0x9581
-#define GL_PROTECTED_MEMORY_OBJECT_EXT 0x959B
-#define GL_NUM_TILING_TYPES_EXT 0x9582
-#define GL_TILING_TYPES_EXT 0x9583
-#define GL_OPTIMAL_TILING_EXT 0x9584
-#define GL_LINEAR_TILING_EXT 0x9585
-#define GL_NUM_DEVICE_UUIDS_EXT 0x9596
-#define GL_DEVICE_UUID_EXT 0x9597
-#define GL_DRIVER_UUID_EXT 0x9598
-#define GL_UUID_SIZE_EXT 16
-#define GL_HANDLE_TYPE_OPAQUE_FD_EXT 0x9586
-#define GL_DEVICE_LUID_EXT 0x9599
-#define GL_DEVICE_NODE_MASK_EXT 0x959A
-#define GL_LUID_SIZE_EXT 8
-#define GL_HANDLE_TYPE_D3D12_TILEPOOL_EXT 0x9589
-#define GL_HANDLE_TYPE_D3D12_RESOURCE_EXT 0x958A
-#define GL_HANDLE_TYPE_D3D11_IMAGE_EXT 0x958B
-#define GL_HANDLE_TYPE_D3D11_IMAGE_KMT_EXT 0x958C
-#define GL_COLOR_INDEX1_EXT 0x80E2
-#define GL_COLOR_INDEX2_EXT 0x80E3
-#define GL_COLOR_INDEX4_EXT 0x80E4
-#define GL_COLOR_INDEX8_EXT 0x80E5
-#define GL_COLOR_INDEX12_EXT 0x80E6
-#define GL_COLOR_INDEX16_EXT 0x80E7
-#define GL_TEXTURE_INDEX_SIZE_EXT 0x80ED
-#define GL_PIXEL_PACK_BUFFER_EXT 0x88EB
-#define GL_PIXEL_UNPACK_BUFFER_EXT 0x88EC
-#define GL_PIXEL_PACK_BUFFER_BINDING_EXT 0x88ED
-#define GL_PIXEL_UNPACK_BUFFER_BINDING_EXT 0x88EF
-#define GL_PIXEL_TRANSFORM_2D_EXT 0x8330
-#define GL_PIXEL_MAG_FILTER_EXT 0x8331
-#define GL_PIXEL_MIN_FILTER_EXT 0x8332
-#define GL_PIXEL_CUBIC_WEIGHT_EXT 0x8333
-#define GL_CUBIC_EXT 0x8334
-#define GL_AVERAGE_EXT 0x8335
-#define GL_PIXEL_TRANSFORM_2D_STACK_DEPTH_EXT 0x8336
-#define GL_MAX_PIXEL_TRANSFORM_2D_STACK_DEPTH_EXT 0x8337
-#define GL_PIXEL_TRANSFORM_2D_MATRIX_EXT 0x8338
-#define GL_POINT_SIZE_MIN_EXT 0x8126
-#define GL_POINT_SIZE_MAX_EXT 0x8127
-#define GL_POINT_FADE_THRESHOLD_SIZE_EXT 0x8128
-#define GL_DISTANCE_ATTENUATION_EXT 0x8129
-#define GL_POLYGON_OFFSET_EXT 0x8037
-#define GL_POLYGON_OFFSET_FACTOR_EXT 0x8038
-#define GL_POLYGON_OFFSET_BIAS_EXT 0x8039
-#define GL_POLYGON_OFFSET_CLAMP_EXT 0x8E1B
 #define GL_RASTER_MULTISAMPLE_EXT 0x9327
 #define GL_RASTER_SAMPLES_EXT 0x9328
 #define GL_MAX_RASTER_SAMPLES_EXT 0x9329
@@ -6114,16 +5868,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_LAYOUT_DEPTH_STENCIL_ATTACHMENT_EXT 0x958F
 #define GL_LAYOUT_DEPTH_STENCIL_READ_ONLY_EXT 0x9590
 #define GL_LAYOUT_SHADER_READ_ONLY_EXT 0x9591
-#define GL_ACTIVE_PROGRAM_EXT 0x8B8D
-#define GL_VERTEX_SHADER_BIT_EXT 0x00000001
-#define GL_FRAGMENT_SHADER_BIT_EXT 0x00000002
-#define GL_ALL_SHADER_BITS_EXT 0xFFFFFFFF
-#define GL_PROGRAM_SEPARABLE_EXT 0x8258
-#define GL_PROGRAM_PIPELINE_BINDING_EXT 0x825A
-#define GL_LIGHT_MODEL_COLOR_CONTROL_EXT 0x81F8
-#define GL_SINGLE_COLOR_EXT 0x81F9
-#define GL_SEPARATE_SPECULAR_COLOR_EXT 0x81FA
-#define GL_FRAGMENT_SHADER_DISCARDS_SAMPLES_EXT 0x8A52
 #define GL_MAX_IMAGE_UNITS_EXT 0x8F38
 #define GL_MAX_COMBINED_IMAGE_UNITS_AND_FRAGMENT_OUTPUTS_EXT 0x8F39
 #define GL_IMAGE_BINDING_NAME_EXT 0x8F3A
@@ -6259,41 +6003,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
 #define GL_COMPRESSED_RGBA_S3TC_DXT3_EXT 0x83F2
 #define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
-#define GL_NORMAL_MAP_EXT 0x8511
-#define GL_REFLECTION_MAP_EXT 0x8512
-#define GL_TEXTURE_CUBE_MAP_EXT 0x8513
-#define GL_TEXTURE_BINDING_CUBE_MAP_EXT 0x8514
-#define GL_TEXTURE_CUBE_MAP_POSITIVE_X_EXT 0x8515
-#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X_EXT 0x8516
-#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y_EXT 0x8517
-#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_EXT 0x8518
-#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z_EXT 0x8519
-#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_EXT 0x851A
-#define GL_PROXY_TEXTURE_CUBE_MAP_EXT 0x851B
-#define GL_MAX_CUBE_MAP_TEXTURE_SIZE_EXT 0x851C
-#define GL_COMBINE_EXT 0x8570
-#define GL_COMBINE_RGB_EXT 0x8571
-#define GL_COMBINE_ALPHA_EXT 0x8572
-#define GL_RGB_SCALE_EXT 0x8573
-#define GL_ADD_SIGNED_EXT 0x8574
-#define GL_INTERPOLATE_EXT 0x8575
-#define GL_CONSTANT_EXT 0x8576
-#define GL_PRIMARY_COLOR_EXT 0x8577
-#define GL_PREVIOUS_EXT 0x8578
-#define GL_SOURCE0_RGB_EXT 0x8580
-#define GL_SOURCE1_RGB_EXT 0x8581
-#define GL_SOURCE2_RGB_EXT 0x8582
-#define GL_SOURCE0_ALPHA_EXT 0x8588
-#define GL_SOURCE1_ALPHA_EXT 0x8589
-#define GL_SOURCE2_ALPHA_EXT 0x858A
-#define GL_OPERAND0_RGB_EXT 0x8590
-#define GL_OPERAND1_RGB_EXT 0x8591
-#define GL_OPERAND2_RGB_EXT 0x8592
-#define GL_OPERAND0_ALPHA_EXT 0x8598
-#define GL_OPERAND1_ALPHA_EXT 0x8599
-#define GL_OPERAND2_ALPHA_EXT 0x859A
-#define GL_DOT3_RGB_EXT 0x8740
-#define GL_DOT3_RGBA_EXT 0x8741
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #define GL_TEXTURE_REDUCTION_MODE_EXT 0x9366
@@ -6320,160 +6029,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT 0x8C4D
 #define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT 0x8C4E
 #define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT 0x8C4F
-#define GL_TEXTURE_SWIZZLE_R_EXT 0x8E42
-#define GL_TEXTURE_SWIZZLE_G_EXT 0x8E43
-#define GL_TEXTURE_SWIZZLE_B_EXT 0x8E44
-#define GL_TEXTURE_SWIZZLE_A_EXT 0x8E45
-#define GL_TEXTURE_SWIZZLE_RGBA_EXT 0x8E46
-#define GL_VERTEX_ARRAY_SIZE_EXT 0x807A
-#define GL_VERTEX_ARRAY_TYPE_EXT 0x807B
-#define GL_VERTEX_ARRAY_STRIDE_EXT 0x807C
-#define GL_VERTEX_ARRAY_COUNT_EXT 0x807D
-#define GL_NORMAL_ARRAY_TYPE_EXT 0x807E
-#define GL_NORMAL_ARRAY_STRIDE_EXT 0x807F
-#define GL_NORMAL_ARRAY_COUNT_EXT 0x8080
-#define GL_COLOR_ARRAY_SIZE_EXT 0x8081
-#define GL_COLOR_ARRAY_TYPE_EXT 0x8082
-#define GL_COLOR_ARRAY_STRIDE_EXT 0x8083
-#define GL_COLOR_ARRAY_COUNT_EXT 0x8084
-#define GL_INDEX_ARRAY_TYPE_EXT 0x8085
-#define GL_INDEX_ARRAY_STRIDE_EXT 0x8086
-#define GL_INDEX_ARRAY_COUNT_EXT 0x8087
-#define GL_TEXTURE_COORD_ARRAY_SIZE_EXT 0x8088
-#define GL_TEXTURE_COORD_ARRAY_TYPE_EXT 0x8089
-#define GL_TEXTURE_COORD_ARRAY_STRIDE_EXT 0x808A
-#define GL_TEXTURE_COORD_ARRAY_COUNT_EXT 0x808B
-#define GL_EDGE_FLAG_ARRAY_STRIDE_EXT 0x808C
-#define GL_EDGE_FLAG_ARRAY_COUNT_EXT 0x808D
-#define GL_VERTEX_ARRAY_POINTER_EXT 0x808E
-#define GL_NORMAL_ARRAY_POINTER_EXT 0x808F
-#define GL_COLOR_ARRAY_POINTER_EXT 0x8090
-#define GL_INDEX_ARRAY_POINTER_EXT 0x8091
-#define GL_TEXTURE_COORD_ARRAY_POINTER_EXT 0x8092
-#define GL_EDGE_FLAG_ARRAY_POINTER_EXT 0x8093
-#define GL_VERTEX_SHADER_EXT 0x8780
-#define GL_VERTEX_SHADER_BINDING_EXT 0x8781
-#define GL_OP_INDEX_EXT 0x8782
-#define GL_OP_NEGATE_EXT 0x8783
-#define GL_OP_DOT3_EXT 0x8784
-#define GL_OP_DOT4_EXT 0x8785
-#define GL_OP_MUL_EXT 0x8786
-#define GL_OP_ADD_EXT 0x8787
-#define GL_OP_MADD_EXT 0x8788
-#define GL_OP_FRAC_EXT 0x8789
-#define GL_OP_MAX_EXT 0x878A
-#define GL_OP_MIN_EXT 0x878B
-#define GL_OP_SET_GE_EXT 0x878C
-#define GL_OP_SET_LT_EXT 0x878D
-#define GL_OP_CLAMP_EXT 0x878E
-#define GL_OP_FLOOR_EXT 0x878F
-#define GL_OP_ROUND_EXT 0x8790
-#define GL_OP_EXP_BASE_2_EXT 0x8791
-#define GL_OP_LOG_BASE_2_EXT 0x8792
-#define GL_OP_POWER_EXT 0x8793
-#define GL_OP_RECIP_EXT 0x8794
-#define GL_OP_RECIP_SQRT_EXT 0x8795
-#define GL_OP_SUB_EXT 0x8796
-#define GL_OP_CROSS_PRODUCT_EXT 0x8797
-#define GL_OP_MULTIPLY_MATRIX_EXT 0x8798
-#define GL_OP_MOV_EXT 0x8799
-#define GL_OUTPUT_VERTEX_EXT 0x879A
-#define GL_OUTPUT_COLOR0_EXT 0x879B
-#define GL_OUTPUT_COLOR1_EXT 0x879C
-#define GL_OUTPUT_TEXTURE_COORD0_EXT 0x879D
-#define GL_OUTPUT_TEXTURE_COORD1_EXT 0x879E
-#define GL_OUTPUT_TEXTURE_COORD2_EXT 0x879F
-#define GL_OUTPUT_TEXTURE_COORD3_EXT 0x87A0
-#define GL_OUTPUT_TEXTURE_COORD4_EXT 0x87A1
-#define GL_OUTPUT_TEXTURE_COORD5_EXT 0x87A2
-#define GL_OUTPUT_TEXTURE_COORD6_EXT 0x87A3
-#define GL_OUTPUT_TEXTURE_COORD7_EXT 0x87A4
-#define GL_OUTPUT_TEXTURE_COORD8_EXT 0x87A5
-#define GL_OUTPUT_TEXTURE_COORD9_EXT 0x87A6
-#define GL_OUTPUT_TEXTURE_COORD10_EXT 0x87A7
-#define GL_OUTPUT_TEXTURE_COORD11_EXT 0x87A8
-#define GL_OUTPUT_TEXTURE_COORD12_EXT 0x87A9
-#define GL_OUTPUT_TEXTURE_COORD13_EXT 0x87AA
-#define GL_OUTPUT_TEXTURE_COORD14_EXT 0x87AB
-#define GL_OUTPUT_TEXTURE_COORD15_EXT 0x87AC
-#define GL_OUTPUT_TEXTURE_COORD16_EXT 0x87AD
-#define GL_OUTPUT_TEXTURE_COORD17_EXT 0x87AE
-#define GL_OUTPUT_TEXTURE_COORD18_EXT 0x87AF
-#define GL_OUTPUT_TEXTURE_COORD19_EXT 0x87B0
-#define GL_OUTPUT_TEXTURE_COORD20_EXT 0x87B1
-#define GL_OUTPUT_TEXTURE_COORD21_EXT 0x87B2
-#define GL_OUTPUT_TEXTURE_COORD22_EXT 0x87B3
-#define GL_OUTPUT_TEXTURE_COORD23_EXT 0x87B4
-#define GL_OUTPUT_TEXTURE_COORD24_EXT 0x87B5
-#define GL_OUTPUT_TEXTURE_COORD25_EXT 0x87B6
-#define GL_OUTPUT_TEXTURE_COORD26_EXT 0x87B7
-#define GL_OUTPUT_TEXTURE_COORD27_EXT 0x87B8
-#define GL_OUTPUT_TEXTURE_COORD28_EXT 0x87B9
-#define GL_OUTPUT_TEXTURE_COORD29_EXT 0x87BA
-#define GL_OUTPUT_TEXTURE_COORD30_EXT 0x87BB
-#define GL_OUTPUT_TEXTURE_COORD31_EXT 0x87BC
-#define GL_OUTPUT_FOG_EXT 0x87BD
-#define GL_SCALAR_EXT 0x87BE
-#define GL_VECTOR_EXT 0x87BF
-#define GL_MATRIX_EXT 0x87C0
-#define GL_VARIANT_EXT 0x87C1
-#define GL_INVARIANT_EXT 0x87C2
-#define GL_LOCAL_CONSTANT_EXT 0x87C3
-#define GL_LOCAL_EXT 0x87C4
-#define GL_MAX_VERTEX_SHADER_INSTRUCTIONS_EXT 0x87C5
-#define GL_MAX_VERTEX_SHADER_VARIANTS_EXT 0x87C6
-#define GL_MAX_VERTEX_SHADER_INVARIANTS_EXT 0x87C7
-#define GL_MAX_VERTEX_SHADER_LOCAL_CONSTANTS_EXT 0x87C8
-#define GL_MAX_VERTEX_SHADER_LOCALS_EXT 0x87C9
-#define GL_MAX_OPTIMIZED_VERTEX_SHADER_INSTRUCTIONS_EXT 0x87CA
-#define GL_MAX_OPTIMIZED_VERTEX_SHADER_VARIANTS_EXT 0x87CB
-#define GL_MAX_OPTIMIZED_VERTEX_SHADER_LOCAL_CONSTANTS_EXT 0x87CC
-#define GL_MAX_OPTIMIZED_VERTEX_SHADER_INVARIANTS_EXT 0x87CD
-#define GL_MAX_OPTIMIZED_VERTEX_SHADER_LOCALS_EXT 0x87CE
-#define GL_VERTEX_SHADER_INSTRUCTIONS_EXT 0x87CF
-#define GL_VERTEX_SHADER_VARIANTS_EXT 0x87D0
-#define GL_VERTEX_SHADER_INVARIANTS_EXT 0x87D1
-#define GL_VERTEX_SHADER_LOCAL_CONSTANTS_EXT 0x87D2
-#define GL_VERTEX_SHADER_LOCALS_EXT 0x87D3
-#define GL_VERTEX_SHADER_OPTIMIZED_EXT 0x87D4
-#define GL_X_EXT 0x87D5
-#define GL_Y_EXT 0x87D6
-#define GL_Z_EXT 0x87D7
-#define GL_W_EXT 0x87D8
-#define GL_NEGATIVE_X_EXT 0x87D9
-#define GL_NEGATIVE_Y_EXT 0x87DA
-#define GL_NEGATIVE_Z_EXT 0x87DB
-#define GL_NEGATIVE_W_EXT 0x87DC
-#define GL_ZERO_EXT 0x87DD
-#define GL_ONE_EXT 0x87DE
-#define GL_NEGATIVE_ONE_EXT 0x87DF
-#define GL_NORMALIZED_RANGE_EXT 0x87E0
-#define GL_FULL_RANGE_EXT 0x87E1
-#define GL_CURRENT_VERTEX_EXT 0x87E2
-#define GL_MVP_MATRIX_EXT 0x87E3
-#define GL_VARIANT_VALUE_EXT 0x87E4
-#define GL_VARIANT_DATATYPE_EXT 0x87E5
-#define GL_VARIANT_ARRAY_STRIDE_EXT 0x87E6
-#define GL_VARIANT_ARRAY_TYPE_EXT 0x87E7
-#define GL_VARIANT_ARRAY_EXT 0x87E8
-#define GL_VARIANT_ARRAY_POINTER_EXT 0x87E9
-#define GL_INVARIANT_VALUE_EXT 0x87EA
-#define GL_INVARIANT_DATATYPE_EXT 0x87EB
-#define GL_LOCAL_CONSTANT_VALUE_EXT 0x87EC
-#define GL_LOCAL_CONSTANT_DATATYPE_EXT 0x87ED
-#define GL_MODELVIEW0_STACK_DEPTH_EXT 0x0BA3
-#define GL_MODELVIEW1_STACK_DEPTH_EXT 0x8502
-#define GL_MODELVIEW0_MATRIX_EXT 0x0BA6
-#define GL_MODELVIEW1_MATRIX_EXT 0x8506
-#define GL_VERTEX_WEIGHTING_EXT 0x8509
-#define GL_MODELVIEW0_EXT 0x1700
-#define GL_MODELVIEW1_EXT 0x850A
-#define GL_CURRENT_VERTEX_WEIGHT_EXT 0x850B
-#define GL_VERTEX_WEIGHT_ARRAY_EXT 0x850C
-#define GL_VERTEX_WEIGHT_ARRAY_SIZE_EXT 0x850D
-#define GL_VERTEX_WEIGHT_ARRAY_TYPE_EXT 0x850E
-#define GL_VERTEX_WEIGHT_ARRAY_STRIDE_EXT 0x850F
-#define GL_VERTEX_WEIGHT_ARRAY_POINTER_EXT 0x8510
 #define GL_MULTIPLY_KHR 0x9294
 #define GL_SCREEN_KHR 0x9295
 #define GL_OVERLAY_KHR 0x9296
@@ -6756,14 +6311,6 @@ GLAPI PFNGLPOLYGONOFFSETCLAMPPROC glad_glPolygonOffsetClamp;
 #define GL_RENDERBUFFER_COLOR_SAMPLES_NV 0x8E10
 #define GL_MAX_MULTISAMPLE_COVERAGE_MODES_NV 0x8E11
 #define GL_MULTISAMPLE_COVERAGE_MODES_NV 0x8E12
-#define GL_GEOMETRY_PROGRAM_NV 0x8C26
-#define GL_MAX_PROGRAM_OUTPUT_VERTICES_NV 0x8C27
-#define GL_MAX_PROGRAM_TOTAL_OUTPUT_COMPONENTS_NV 0x8C28
-#define GL_PER_GPU_STORAGE_BIT_NV 0x0800
-#define GL_MULTICAST_GPUS_NV 0x92BA
-#define GL_RENDER_GPU_MASK_NV 0x9558
-#define GL_PER_GPU_STORAGE_NV 0x9548
-#define GL_MULTICAST_PROGRAMMABLE_SAMPLE_LOCATION_NV 0x9549
 #define GL_MIN_PROGRAM_TEXEL_OFFSET_NV 0x8904
 #define GL_MAX_PROGRAM_TEXEL_OFFSET_NV 0x8905
 #define GL_PROGRAM_ATTRIB_COMPONENTS_NV 0x8906
@@ -7936,14 +7483,6 @@ GLAPI PFNGLMAXSHADERCOMPILERTHREADSARBPROC glad_glMaxShaderCompilerThreadsARB;
 #define GL_ARB_pixel_buffer_object 1
 GLAPI int GLAD_GL_ARB_pixel_buffer_object;
 #endif
-#ifndef GL_ARB_post_depth_coverage
-#define GL_ARB_post_depth_coverage 1
-GLAPI int GLAD_GL_ARB_post_depth_coverage;
-#endif
-#ifndef GL_ARB_query_buffer_object
-#define GL_ARB_query_buffer_object 1
-GLAPI int GLAD_GL_ARB_query_buffer_object;
-#endif
 #ifndef GL_ARB_robustness
 #define GL_ARB_robustness 1
 GLAPI int GLAD_GL_ARB_robustness;
@@ -8315,51 +7854,6 @@ GLAPI int GLAD_GL_ARB_texture_swizzle;
 #ifndef GL_ARB_transform_feedback3
 #define GL_ARB_transform_feedback3 1
 GLAPI int GLAD_GL_ARB_transform_feedback3;
-#endif
-#ifndef GL_ARB_vertex_buffer_object
-#define GL_ARB_vertex_buffer_object 1
-GLAPI int GLAD_GL_ARB_vertex_buffer_object;
-typedef void (APIENTRYP PFNGLBINDBUFFERARBPROC)(GLenum target, GLuint buffer);
-GLAPI PFNGLBINDBUFFERARBPROC glad_glBindBufferARB;
-#define glBindBufferARB glad_glBindBufferARB
-typedef void (APIENTRYP PFNGLDELETEBUFFERSARBPROC)(GLsizei n, const GLuint *buffers);
-GLAPI PFNGLDELETEBUFFERSARBPROC glad_glDeleteBuffersARB;
-#define glDeleteBuffersARB glad_glDeleteBuffersARB
-typedef void (APIENTRYP PFNGLGENBUFFERSARBPROC)(GLsizei n, GLuint *buffers);
-GLAPI PFNGLGENBUFFERSARBPROC glad_glGenBuffersARB;
-#define glGenBuffersARB glad_glGenBuffersARB
-typedef GLboolean (APIENTRYP PFNGLISBUFFERARBPROC)(GLuint buffer);
-GLAPI PFNGLISBUFFERARBPROC glad_glIsBufferARB;
-#define glIsBufferARB glad_glIsBufferARB
-typedef void (APIENTRYP PFNGLBUFFERDATAARBPROC)(GLenum target, GLsizeiptrARB size, const void *data, GLenum usage);
-GLAPI PFNGLBUFFERDATAARBPROC glad_glBufferDataARB;
-#define glBufferDataARB glad_glBufferDataARB
-typedef void (APIENTRYP PFNGLBUFFERSUBDATAARBPROC)(GLenum target, GLintptrARB offset, GLsizeiptrARB size, const void *data);
-GLAPI PFNGLBUFFERSUBDATAARBPROC glad_glBufferSubDataARB;
-#define glBufferSubDataARB glad_glBufferSubDataARB
-typedef void (APIENTRYP PFNGLGETBUFFERSUBDATAARBPROC)(GLenum target, GLintptrARB offset, GLsizeiptrARB size, void *data);
-GLAPI PFNGLGETBUFFERSUBDATAARBPROC glad_glGetBufferSubDataARB;
-#define glGetBufferSubDataARB glad_glGetBufferSubDataARB
-typedef void * (APIENTRYP PFNGLMAPBUFFERARBPROC)(GLenum target, GLenum access);
-GLAPI PFNGLMAPBUFFERARBPROC glad_glMapBufferARB;
-#define glMapBufferARB glad_glMapBufferARB
-typedef GLboolean (APIENTRYP PFNGLUNMAPBUFFERARBPROC)(GLenum target);
-GLAPI PFNGLUNMAPBUFFERARBPROC glad_glUnmapBufferARB;
-#define glUnmapBufferARB glad_glUnmapBufferARB
-typedef void (APIENTRYP PFNGLGETBUFFERPARAMETERIVARBPROC)(GLenum target, GLenum pname, GLint *params);
-GLAPI PFNGLGETBUFFERPARAMETERIVARBPROC glad_glGetBufferParameterivARB;
-#define glGetBufferParameterivARB glad_glGetBufferParameterivARB
-typedef void (APIENTRYP PFNGLGETBUFFERPOINTERVARBPROC)(GLenum target, GLenum pname, void **params);
-GLAPI PFNGLGETBUFFERPOINTERVARBPROC glad_glGetBufferPointervARB;
-#define glGetBufferPointervARB glad_glGetBufferPointervARB
-#endif
-#ifndef GL_EXT_abgr
-#define GL_EXT_abgr 1
-GLAPI int GLAD_GL_EXT_abgr;
-#endif
-#ifndef GL_EXT_bgra
-#define GL_EXT_bgra 1
-GLAPI int GLAD_GL_EXT_bgra;
 #endif
 #ifndef GL_EXT_direct_state_access
 #define GL_EXT_direct_state_access 1
@@ -9130,345 +8624,17 @@ typedef void (APIENTRYP PFNGLVERTEXARRAYVERTEXATTRIBDIVISOREXTPROC)(GLuint vaobj
 GLAPI PFNGLVERTEXARRAYVERTEXATTRIBDIVISOREXTPROC glad_glVertexArrayVertexAttribDivisorEXT;
 #define glVertexArrayVertexAttribDivisorEXT glad_glVertexArrayVertexAttribDivisorEXT
 #endif
-#ifndef GL_EXT_draw_buffers2
-#define GL_EXT_draw_buffers2 1
-GLAPI int GLAD_GL_EXT_draw_buffers2;
-typedef void (APIENTRYP PFNGLCOLORMASKINDEXEDEXTPROC)(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a);
-GLAPI PFNGLCOLORMASKINDEXEDEXTPROC glad_glColorMaskIndexedEXT;
-#define glColorMaskIndexedEXT glad_glColorMaskIndexedEXT
-#endif
-#ifndef GL_EXT_draw_instanced
-#define GL_EXT_draw_instanced 1
-GLAPI int GLAD_GL_EXT_draw_instanced;
-typedef void (APIENTRYP PFNGLDRAWARRAYSINSTANCEDEXTPROC)(GLenum mode, GLint start, GLsizei count, GLsizei primcount);
-GLAPI PFNGLDRAWARRAYSINSTANCEDEXTPROC glad_glDrawArraysInstancedEXT;
-#define glDrawArraysInstancedEXT glad_glDrawArraysInstancedEXT
-typedef void (APIENTRYP PFNGLDRAWELEMENTSINSTANCEDEXTPROC)(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei primcount);
-GLAPI PFNGLDRAWELEMENTSINSTANCEDEXTPROC glad_glDrawElementsInstancedEXT;
-#define glDrawElementsInstancedEXT glad_glDrawElementsInstancedEXT
-#endif
-#ifndef GL_EXT_framebuffer_multisample
-#define GL_EXT_framebuffer_multisample 1
-GLAPI int GLAD_GL_EXT_framebuffer_multisample;
-typedef void (APIENTRYP PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
-GLAPI PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC glad_glRenderbufferStorageMultisampleEXT;
-#define glRenderbufferStorageMultisampleEXT glad_glRenderbufferStorageMultisampleEXT
-#endif
-#ifndef GL_EXT_framebuffer_object
-#define GL_EXT_framebuffer_object 1
-GLAPI int GLAD_GL_EXT_framebuffer_object;
-typedef GLboolean (APIENTRYP PFNGLISRENDERBUFFEREXTPROC)(GLuint renderbuffer);
-GLAPI PFNGLISRENDERBUFFEREXTPROC glad_glIsRenderbufferEXT;
-#define glIsRenderbufferEXT glad_glIsRenderbufferEXT
-typedef void (APIENTRYP PFNGLBINDRENDERBUFFEREXTPROC)(GLenum target, GLuint renderbuffer);
-GLAPI PFNGLBINDRENDERBUFFEREXTPROC glad_glBindRenderbufferEXT;
-#define glBindRenderbufferEXT glad_glBindRenderbufferEXT
-typedef void (APIENTRYP PFNGLDELETERENDERBUFFERSEXTPROC)(GLsizei n, const GLuint *renderbuffers);
-GLAPI PFNGLDELETERENDERBUFFERSEXTPROC glad_glDeleteRenderbuffersEXT;
-#define glDeleteRenderbuffersEXT glad_glDeleteRenderbuffersEXT
-typedef void (APIENTRYP PFNGLGENRENDERBUFFERSEXTPROC)(GLsizei n, GLuint *renderbuffers);
-GLAPI PFNGLGENRENDERBUFFERSEXTPROC glad_glGenRenderbuffersEXT;
-#define glGenRenderbuffersEXT glad_glGenRenderbuffersEXT
-typedef void (APIENTRYP PFNGLRENDERBUFFERSTORAGEEXTPROC)(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
-GLAPI PFNGLRENDERBUFFERSTORAGEEXTPROC glad_glRenderbufferStorageEXT;
-#define glRenderbufferStorageEXT glad_glRenderbufferStorageEXT
-typedef void (APIENTRYP PFNGLGETRENDERBUFFERPARAMETERIVEXTPROC)(GLenum target, GLenum pname, GLint *params);
-GLAPI PFNGLGETRENDERBUFFERPARAMETERIVEXTPROC glad_glGetRenderbufferParameterivEXT;
-#define glGetRenderbufferParameterivEXT glad_glGetRenderbufferParameterivEXT
-typedef GLboolean (APIENTRYP PFNGLISFRAMEBUFFEREXTPROC)(GLuint framebuffer);
-GLAPI PFNGLISFRAMEBUFFEREXTPROC glad_glIsFramebufferEXT;
-#define glIsFramebufferEXT glad_glIsFramebufferEXT
-typedef void (APIENTRYP PFNGLBINDFRAMEBUFFEREXTPROC)(GLenum target, GLuint framebuffer);
-GLAPI PFNGLBINDFRAMEBUFFEREXTPROC glad_glBindFramebufferEXT;
-#define glBindFramebufferEXT glad_glBindFramebufferEXT
-typedef void (APIENTRYP PFNGLDELETEFRAMEBUFFERSEXTPROC)(GLsizei n, const GLuint *framebuffers);
-GLAPI PFNGLDELETEFRAMEBUFFERSEXTPROC glad_glDeleteFramebuffersEXT;
-#define glDeleteFramebuffersEXT glad_glDeleteFramebuffersEXT
-typedef void (APIENTRYP PFNGLGENFRAMEBUFFERSEXTPROC)(GLsizei n, GLuint *framebuffers);
-GLAPI PFNGLGENFRAMEBUFFERSEXTPROC glad_glGenFramebuffersEXT;
-#define glGenFramebuffersEXT glad_glGenFramebuffersEXT
-typedef GLenum (APIENTRYP PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC)(GLenum target);
-GLAPI PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC glad_glCheckFramebufferStatusEXT;
-#define glCheckFramebufferStatusEXT glad_glCheckFramebufferStatusEXT
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE1DEXTPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
-GLAPI PFNGLFRAMEBUFFERTEXTURE1DEXTPROC glad_glFramebufferTexture1DEXT;
-#define glFramebufferTexture1DEXT glad_glFramebufferTexture1DEXT
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DEXTPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
-GLAPI PFNGLFRAMEBUFFERTEXTURE2DEXTPROC glad_glFramebufferTexture2DEXT;
-#define glFramebufferTexture2DEXT glad_glFramebufferTexture2DEXT
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURE3DEXTPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint zoffset);
-GLAPI PFNGLFRAMEBUFFERTEXTURE3DEXTPROC glad_glFramebufferTexture3DEXT;
-#define glFramebufferTexture3DEXT glad_glFramebufferTexture3DEXT
-typedef void (APIENTRYP PFNGLFRAMEBUFFERRENDERBUFFEREXTPROC)(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
-GLAPI PFNGLFRAMEBUFFERRENDERBUFFEREXTPROC glad_glFramebufferRenderbufferEXT;
-#define glFramebufferRenderbufferEXT glad_glFramebufferRenderbufferEXT
-typedef void (APIENTRYP PFNGLGETFRAMEBUFFERATTACHMENTPARAMETERIVEXTPROC)(GLenum target, GLenum attachment, GLenum pname, GLint *params);
-GLAPI PFNGLGETFRAMEBUFFERATTACHMENTPARAMETERIVEXTPROC glad_glGetFramebufferAttachmentParameterivEXT;
-#define glGetFramebufferAttachmentParameterivEXT glad_glGetFramebufferAttachmentParameterivEXT
-typedef void (APIENTRYP PFNGLGENERATEMIPMAPEXTPROC)(GLenum target);
-GLAPI PFNGLGENERATEMIPMAPEXTPROC glad_glGenerateMipmapEXT;
-#define glGenerateMipmapEXT glad_glGenerateMipmapEXT
-#endif
-#ifndef GL_EXT_framebuffer_sRGB
-#define GL_EXT_framebuffer_sRGB 1
-GLAPI int GLAD_GL_EXT_framebuffer_sRGB;
-#endif
-#ifndef GL_EXT_geometry_shader4
-#define GL_EXT_geometry_shader4 1
-GLAPI int GLAD_GL_EXT_geometry_shader4;
-typedef void (APIENTRYP PFNGLPROGRAMPARAMETERIEXTPROC)(GLuint program, GLenum pname, GLint value);
-GLAPI PFNGLPROGRAMPARAMETERIEXTPROC glad_glProgramParameteriEXT;
-#define glProgramParameteriEXT glad_glProgramParameteriEXT
-#endif
-#ifndef GL_EXT_gpu_program_parameters
-#define GL_EXT_gpu_program_parameters 1
-GLAPI int GLAD_GL_EXT_gpu_program_parameters;
-typedef void (APIENTRYP PFNGLPROGRAMENVPARAMETERS4FVEXTPROC)(GLenum target, GLuint index, GLsizei count, const GLfloat *params);
-GLAPI PFNGLPROGRAMENVPARAMETERS4FVEXTPROC glad_glProgramEnvParameters4fvEXT;
-#define glProgramEnvParameters4fvEXT glad_glProgramEnvParameters4fvEXT
-typedef void (APIENTRYP PFNGLPROGRAMLOCALPARAMETERS4FVEXTPROC)(GLenum target, GLuint index, GLsizei count, const GLfloat *params);
-GLAPI PFNGLPROGRAMLOCALPARAMETERS4FVEXTPROC glad_glProgramLocalParameters4fvEXT;
-#define glProgramLocalParameters4fvEXT glad_glProgramLocalParameters4fvEXT
-#endif
-#ifndef GL_EXT_gpu_shader4
-#define GL_EXT_gpu_shader4 1
-GLAPI int GLAD_GL_EXT_gpu_shader4;
-typedef void (APIENTRYP PFNGLGETUNIFORMUIVEXTPROC)(GLuint program, GLint location, GLuint *params);
-GLAPI PFNGLGETUNIFORMUIVEXTPROC glad_glGetUniformuivEXT;
-#define glGetUniformuivEXT glad_glGetUniformuivEXT
-typedef void (APIENTRYP PFNGLBINDFRAGDATALOCATIONEXTPROC)(GLuint program, GLuint color, const GLchar *name);
-GLAPI PFNGLBINDFRAGDATALOCATIONEXTPROC glad_glBindFragDataLocationEXT;
-#define glBindFragDataLocationEXT glad_glBindFragDataLocationEXT
-typedef GLint (APIENTRYP PFNGLGETFRAGDATALOCATIONEXTPROC)(GLuint program, const GLchar *name);
-GLAPI PFNGLGETFRAGDATALOCATIONEXTPROC glad_glGetFragDataLocationEXT;
-#define glGetFragDataLocationEXT glad_glGetFragDataLocationEXT
-typedef void (APIENTRYP PFNGLUNIFORM1UIEXTPROC)(GLint location, GLuint v0);
-GLAPI PFNGLUNIFORM1UIEXTPROC glad_glUniform1uiEXT;
-#define glUniform1uiEXT glad_glUniform1uiEXT
-typedef void (APIENTRYP PFNGLUNIFORM2UIEXTPROC)(GLint location, GLuint v0, GLuint v1);
-GLAPI PFNGLUNIFORM2UIEXTPROC glad_glUniform2uiEXT;
-#define glUniform2uiEXT glad_glUniform2uiEXT
-typedef void (APIENTRYP PFNGLUNIFORM3UIEXTPROC)(GLint location, GLuint v0, GLuint v1, GLuint v2);
-GLAPI PFNGLUNIFORM3UIEXTPROC glad_glUniform3uiEXT;
-#define glUniform3uiEXT glad_glUniform3uiEXT
-typedef void (APIENTRYP PFNGLUNIFORM4UIEXTPROC)(GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3);
-GLAPI PFNGLUNIFORM4UIEXTPROC glad_glUniform4uiEXT;
-#define glUniform4uiEXT glad_glUniform4uiEXT
-typedef void (APIENTRYP PFNGLUNIFORM1UIVEXTPROC)(GLint location, GLsizei count, const GLuint *value);
-GLAPI PFNGLUNIFORM1UIVEXTPROC glad_glUniform1uivEXT;
-#define glUniform1uivEXT glad_glUniform1uivEXT
-typedef void (APIENTRYP PFNGLUNIFORM2UIVEXTPROC)(GLint location, GLsizei count, const GLuint *value);
-GLAPI PFNGLUNIFORM2UIVEXTPROC glad_glUniform2uivEXT;
-#define glUniform2uivEXT glad_glUniform2uivEXT
-typedef void (APIENTRYP PFNGLUNIFORM3UIVEXTPROC)(GLint location, GLsizei count, const GLuint *value);
-GLAPI PFNGLUNIFORM3UIVEXTPROC glad_glUniform3uivEXT;
-#define glUniform3uivEXT glad_glUniform3uivEXT
-typedef void (APIENTRYP PFNGLUNIFORM4UIVEXTPROC)(GLint location, GLsizei count, const GLuint *value);
-GLAPI PFNGLUNIFORM4UIVEXTPROC glad_glUniform4uivEXT;
-#define glUniform4uivEXT glad_glUniform4uivEXT
-#endif
-#ifndef GL_EXT_memory_object
-#define GL_EXT_memory_object 1
-GLAPI int GLAD_GL_EXT_memory_object;
-typedef void (APIENTRYP PFNGLGETUNSIGNEDBYTEVEXTPROC)(GLenum pname, GLubyte *data);
-GLAPI PFNGLGETUNSIGNEDBYTEVEXTPROC glad_glGetUnsignedBytevEXT;
-#define glGetUnsignedBytevEXT glad_glGetUnsignedBytevEXT
-typedef void (APIENTRYP PFNGLGETUNSIGNEDBYTEI_VEXTPROC)(GLenum target, GLuint index, GLubyte *data);
-GLAPI PFNGLGETUNSIGNEDBYTEI_VEXTPROC glad_glGetUnsignedBytei_vEXT;
-#define glGetUnsignedBytei_vEXT glad_glGetUnsignedBytei_vEXT
-typedef void (APIENTRYP PFNGLDELETEMEMORYOBJECTSEXTPROC)(GLsizei n, const GLuint *memoryObjects);
-GLAPI PFNGLDELETEMEMORYOBJECTSEXTPROC glad_glDeleteMemoryObjectsEXT;
-#define glDeleteMemoryObjectsEXT glad_glDeleteMemoryObjectsEXT
-typedef GLboolean (APIENTRYP PFNGLISMEMORYOBJECTEXTPROC)(GLuint memoryObject);
-GLAPI PFNGLISMEMORYOBJECTEXTPROC glad_glIsMemoryObjectEXT;
-#define glIsMemoryObjectEXT glad_glIsMemoryObjectEXT
-typedef void (APIENTRYP PFNGLCREATEMEMORYOBJECTSEXTPROC)(GLsizei n, GLuint *memoryObjects);
-GLAPI PFNGLCREATEMEMORYOBJECTSEXTPROC glad_glCreateMemoryObjectsEXT;
-#define glCreateMemoryObjectsEXT glad_glCreateMemoryObjectsEXT
-typedef void (APIENTRYP PFNGLMEMORYOBJECTPARAMETERIVEXTPROC)(GLuint memoryObject, GLenum pname, const GLint *params);
-GLAPI PFNGLMEMORYOBJECTPARAMETERIVEXTPROC glad_glMemoryObjectParameterivEXT;
-#define glMemoryObjectParameterivEXT glad_glMemoryObjectParameterivEXT
-typedef void (APIENTRYP PFNGLGETMEMORYOBJECTPARAMETERIVEXTPROC)(GLuint memoryObject, GLenum pname, GLint *params);
-GLAPI PFNGLGETMEMORYOBJECTPARAMETERIVEXTPROC glad_glGetMemoryObjectParameterivEXT;
-#define glGetMemoryObjectParameterivEXT glad_glGetMemoryObjectParameterivEXT
-typedef void (APIENTRYP PFNGLTEXSTORAGEMEM2DEXTPROC)(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXSTORAGEMEM2DEXTPROC glad_glTexStorageMem2DEXT;
-#define glTexStorageMem2DEXT glad_glTexStorageMem2DEXT
-typedef void (APIENTRYP PFNGLTEXSTORAGEMEM2DMULTISAMPLEEXTPROC)(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXSTORAGEMEM2DMULTISAMPLEEXTPROC glad_glTexStorageMem2DMultisampleEXT;
-#define glTexStorageMem2DMultisampleEXT glad_glTexStorageMem2DMultisampleEXT
-typedef void (APIENTRYP PFNGLTEXSTORAGEMEM3DEXTPROC)(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXSTORAGEMEM3DEXTPROC glad_glTexStorageMem3DEXT;
-#define glTexStorageMem3DEXT glad_glTexStorageMem3DEXT
-typedef void (APIENTRYP PFNGLTEXSTORAGEMEM3DMULTISAMPLEEXTPROC)(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXSTORAGEMEM3DMULTISAMPLEEXTPROC glad_glTexStorageMem3DMultisampleEXT;
-#define glTexStorageMem3DMultisampleEXT glad_glTexStorageMem3DMultisampleEXT
-typedef void (APIENTRYP PFNGLBUFFERSTORAGEMEMEXTPROC)(GLenum target, GLsizeiptr size, GLuint memory, GLuint64 offset);
-GLAPI PFNGLBUFFERSTORAGEMEMEXTPROC glad_glBufferStorageMemEXT;
-#define glBufferStorageMemEXT glad_glBufferStorageMemEXT
-typedef void (APIENTRYP PFNGLTEXTURESTORAGEMEM2DEXTPROC)(GLuint texture, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXTURESTORAGEMEM2DEXTPROC glad_glTextureStorageMem2DEXT;
-#define glTextureStorageMem2DEXT glad_glTextureStorageMem2DEXT
-typedef void (APIENTRYP PFNGLTEXTURESTORAGEMEM2DMULTISAMPLEEXTPROC)(GLuint texture, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXTURESTORAGEMEM2DMULTISAMPLEEXTPROC glad_glTextureStorageMem2DMultisampleEXT;
-#define glTextureStorageMem2DMultisampleEXT glad_glTextureStorageMem2DMultisampleEXT
-typedef void (APIENTRYP PFNGLTEXTURESTORAGEMEM3DEXTPROC)(GLuint texture, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXTURESTORAGEMEM3DEXTPROC glad_glTextureStorageMem3DEXT;
-#define glTextureStorageMem3DEXT glad_glTextureStorageMem3DEXT
-typedef void (APIENTRYP PFNGLTEXTURESTORAGEMEM3DMULTISAMPLEEXTPROC)(GLuint texture, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXTURESTORAGEMEM3DMULTISAMPLEEXTPROC glad_glTextureStorageMem3DMultisampleEXT;
-#define glTextureStorageMem3DMultisampleEXT glad_glTextureStorageMem3DMultisampleEXT
-typedef void (APIENTRYP PFNGLNAMEDBUFFERSTORAGEMEMEXTPROC)(GLuint buffer, GLsizeiptr size, GLuint memory, GLuint64 offset);
-GLAPI PFNGLNAMEDBUFFERSTORAGEMEMEXTPROC glad_glNamedBufferStorageMemEXT;
-#define glNamedBufferStorageMemEXT glad_glNamedBufferStorageMemEXT
-typedef void (APIENTRYP PFNGLTEXSTORAGEMEM1DEXTPROC)(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXSTORAGEMEM1DEXTPROC glad_glTexStorageMem1DEXT;
-#define glTexStorageMem1DEXT glad_glTexStorageMem1DEXT
-typedef void (APIENTRYP PFNGLTEXTURESTORAGEMEM1DEXTPROC)(GLuint texture, GLsizei levels, GLenum internalFormat, GLsizei width, GLuint memory, GLuint64 offset);
-GLAPI PFNGLTEXTURESTORAGEMEM1DEXTPROC glad_glTextureStorageMem1DEXT;
-#define glTextureStorageMem1DEXT glad_glTextureStorageMem1DEXT
-#endif
-#ifndef GL_EXT_multi_draw_arrays
-#define GL_EXT_multi_draw_arrays 1
-GLAPI int GLAD_GL_EXT_multi_draw_arrays;
-typedef void (APIENTRYP PFNGLMULTIDRAWARRAYSEXTPROC)(GLenum mode, const GLint *first, const GLsizei *count, GLsizei primcount);
-GLAPI PFNGLMULTIDRAWARRAYSEXTPROC glad_glMultiDrawArraysEXT;
-#define glMultiDrawArraysEXT glad_glMultiDrawArraysEXT
-typedef void (APIENTRYP PFNGLMULTIDRAWELEMENTSEXTPROC)(GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei primcount);
-GLAPI PFNGLMULTIDRAWELEMENTSEXTPROC glad_glMultiDrawElementsEXT;
-#define glMultiDrawElementsEXT glad_glMultiDrawElementsEXT
-#endif
-#ifndef GL_EXT_pixel_buffer_object
-#define GL_EXT_pixel_buffer_object 1
-GLAPI int GLAD_GL_EXT_pixel_buffer_object;
-#endif
-#ifndef GL_EXT_pixel_transform
-#define GL_EXT_pixel_transform 1
-GLAPI int GLAD_GL_EXT_pixel_transform;
-typedef void (APIENTRYP PFNGLPIXELTRANSFORMPARAMETERIEXTPROC)(GLenum target, GLenum pname, GLint param);
-GLAPI PFNGLPIXELTRANSFORMPARAMETERIEXTPROC glad_glPixelTransformParameteriEXT;
-#define glPixelTransformParameteriEXT glad_glPixelTransformParameteriEXT
-typedef void (APIENTRYP PFNGLPIXELTRANSFORMPARAMETERFEXTPROC)(GLenum target, GLenum pname, GLfloat param);
-GLAPI PFNGLPIXELTRANSFORMPARAMETERFEXTPROC glad_glPixelTransformParameterfEXT;
-#define glPixelTransformParameterfEXT glad_glPixelTransformParameterfEXT
-typedef void (APIENTRYP PFNGLPIXELTRANSFORMPARAMETERIVEXTPROC)(GLenum target, GLenum pname, const GLint *params);
-GLAPI PFNGLPIXELTRANSFORMPARAMETERIVEXTPROC glad_glPixelTransformParameterivEXT;
-#define glPixelTransformParameterivEXT glad_glPixelTransformParameterivEXT
-typedef void (APIENTRYP PFNGLPIXELTRANSFORMPARAMETERFVEXTPROC)(GLenum target, GLenum pname, const GLfloat *params);
-GLAPI PFNGLPIXELTRANSFORMPARAMETERFVEXTPROC glad_glPixelTransformParameterfvEXT;
-#define glPixelTransformParameterfvEXT glad_glPixelTransformParameterfvEXT
-typedef void (APIENTRYP PFNGLGETPIXELTRANSFORMPARAMETERIVEXTPROC)(GLenum target, GLenum pname, GLint *params);
-GLAPI PFNGLGETPIXELTRANSFORMPARAMETERIVEXTPROC glad_glGetPixelTransformParameterivEXT;
-#define glGetPixelTransformParameterivEXT glad_glGetPixelTransformParameterivEXT
-typedef void (APIENTRYP PFNGLGETPIXELTRANSFORMPARAMETERFVEXTPROC)(GLenum target, GLenum pname, GLfloat *params);
-GLAPI PFNGLGETPIXELTRANSFORMPARAMETERFVEXTPROC glad_glGetPixelTransformParameterfvEXT;
-#define glGetPixelTransformParameterfvEXT glad_glGetPixelTransformParameterfvEXT
-#endif
-#ifndef GL_EXT_polygon_offset_clamp
-#define GL_EXT_polygon_offset_clamp 1
-GLAPI int GLAD_GL_EXT_polygon_offset_clamp;
-typedef void (APIENTRYP PFNGLPOLYGONOFFSETCLAMPEXTPROC)(GLfloat factor, GLfloat units, GLfloat clamp);
-GLAPI PFNGLPOLYGONOFFSETCLAMPEXTPROC glad_glPolygonOffsetClampEXT;
-#define glPolygonOffsetClampEXT glad_glPolygonOffsetClampEXT
-#endif
-#ifndef GL_EXT_post_depth_coverage
-#define GL_EXT_post_depth_coverage 1
-GLAPI int GLAD_GL_EXT_post_depth_coverage;
-#endif
-#ifndef GL_EXT_raster_multisample
-#define GL_EXT_raster_multisample 1
-GLAPI int GLAD_GL_EXT_raster_multisample;
-typedef void (APIENTRYP PFNGLRASTERSAMPLESEXTPROC)(GLuint samples, GLboolean fixedsamplelocations);
-GLAPI PFNGLRASTERSAMPLESEXTPROC glad_glRasterSamplesEXT;
-#define glRasterSamplesEXT glad_glRasterSamplesEXT
-#endif
-#ifndef GL_EXT_separate_shader_objects
-#define GL_EXT_separate_shader_objects 1
-GLAPI int GLAD_GL_EXT_separate_shader_objects;
-typedef void (APIENTRYP PFNGLUSESHADERPROGRAMEXTPROC)(GLenum type, GLuint program);
-GLAPI PFNGLUSESHADERPROGRAMEXTPROC glad_glUseShaderProgramEXT;
-#define glUseShaderProgramEXT glad_glUseShaderProgramEXT
-typedef void (APIENTRYP PFNGLACTIVEPROGRAMEXTPROC)(GLuint program);
-GLAPI PFNGLACTIVEPROGRAMEXTPROC glad_glActiveProgramEXT;
-#define glActiveProgramEXT glad_glActiveProgramEXT
-typedef GLuint (APIENTRYP PFNGLCREATESHADERPROGRAMEXTPROC)(GLenum type, const GLchar *string);
-GLAPI PFNGLCREATESHADERPROGRAMEXTPROC glad_glCreateShaderProgramEXT;
-#define glCreateShaderProgramEXT glad_glCreateShaderProgramEXT
-typedef void (APIENTRYP PFNGLACTIVESHADERPROGRAMEXTPROC)(GLuint pipeline, GLuint program);
-GLAPI PFNGLACTIVESHADERPROGRAMEXTPROC glad_glActiveShaderProgramEXT;
-#define glActiveShaderProgramEXT glad_glActiveShaderProgramEXT
-typedef void (APIENTRYP PFNGLBINDPROGRAMPIPELINEEXTPROC)(GLuint pipeline);
-GLAPI PFNGLBINDPROGRAMPIPELINEEXTPROC glad_glBindProgramPipelineEXT;
-#define glBindProgramPipelineEXT glad_glBindProgramPipelineEXT
-typedef GLuint (APIENTRYP PFNGLCREATESHADERPROGRAMVEXTPROC)(GLenum type, GLsizei count, const GLchar **strings);
-GLAPI PFNGLCREATESHADERPROGRAMVEXTPROC glad_glCreateShaderProgramvEXT;
-#define glCreateShaderProgramvEXT glad_glCreateShaderProgramvEXT
-typedef void (APIENTRYP PFNGLDELETEPROGRAMPIPELINESEXTPROC)(GLsizei n, const GLuint *pipelines);
-GLAPI PFNGLDELETEPROGRAMPIPELINESEXTPROC glad_glDeleteProgramPipelinesEXT;
-#define glDeleteProgramPipelinesEXT glad_glDeleteProgramPipelinesEXT
-typedef void (APIENTRYP PFNGLGENPROGRAMPIPELINESEXTPROC)(GLsizei n, GLuint *pipelines);
-GLAPI PFNGLGENPROGRAMPIPELINESEXTPROC glad_glGenProgramPipelinesEXT;
-#define glGenProgramPipelinesEXT glad_glGenProgramPipelinesEXT
-typedef void (APIENTRYP PFNGLGETPROGRAMPIPELINEINFOLOGEXTPROC)(GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
-GLAPI PFNGLGETPROGRAMPIPELINEINFOLOGEXTPROC glad_glGetProgramPipelineInfoLogEXT;
-#define glGetProgramPipelineInfoLogEXT glad_glGetProgramPipelineInfoLogEXT
-typedef void (APIENTRYP PFNGLGETPROGRAMPIPELINEIVEXTPROC)(GLuint pipeline, GLenum pname, GLint *params);
-GLAPI PFNGLGETPROGRAMPIPELINEIVEXTPROC glad_glGetProgramPipelineivEXT;
-#define glGetProgramPipelineivEXT glad_glGetProgramPipelineivEXT
-typedef GLboolean (APIENTRYP PFNGLISPROGRAMPIPELINEEXTPROC)(GLuint pipeline);
-GLAPI PFNGLISPROGRAMPIPELINEEXTPROC glad_glIsProgramPipelineEXT;
-#define glIsProgramPipelineEXT glad_glIsProgramPipelineEXT
-typedef void (APIENTRYP PFNGLUSEPROGRAMSTAGESEXTPROC)(GLuint pipeline, GLbitfield stages, GLuint program);
-GLAPI PFNGLUSEPROGRAMSTAGESEXTPROC glad_glUseProgramStagesEXT;
-#define glUseProgramStagesEXT glad_glUseProgramStagesEXT
-typedef void (APIENTRYP PFNGLVALIDATEPROGRAMPIPELINEEXTPROC)(GLuint pipeline);
-GLAPI PFNGLVALIDATEPROGRAMPIPELINEEXTPROC glad_glValidateProgramPipelineEXT;
-#define glValidateProgramPipelineEXT glad_glValidateProgramPipelineEXT
-#endif
-#ifndef GL_EXT_separate_specular_color
-#define GL_EXT_separate_specular_color 1
-GLAPI int GLAD_GL_EXT_separate_specular_color;
-#endif
 #ifndef GL_EXT_shader_image_load_formatted
 #define GL_EXT_shader_image_load_formatted 1
 GLAPI int GLAD_GL_EXT_shader_image_load_formatted;
-#endif
-#ifndef GL_EXT_shader_image_load_store
-#define GL_EXT_shader_image_load_store 1
-GLAPI int GLAD_GL_EXT_shader_image_load_store;
-typedef void (APIENTRYP PFNGLBINDIMAGETEXTUREEXTPROC)(GLuint index, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLint format);
-GLAPI PFNGLBINDIMAGETEXTUREEXTPROC glad_glBindImageTextureEXT;
-#define glBindImageTextureEXT glad_glBindImageTextureEXT
-typedef void (APIENTRYP PFNGLMEMORYBARRIEREXTPROC)(GLbitfield barriers);
-GLAPI PFNGLMEMORYBARRIEREXTPROC glad_glMemoryBarrierEXT;
-#define glMemoryBarrierEXT glad_glMemoryBarrierEXT
-#endif
-#ifndef GL_EXT_shader_integer_mix
-#define GL_EXT_shader_integer_mix 1
-GLAPI int GLAD_GL_EXT_shader_integer_mix;
-#endif
-#ifndef GL_EXT_shared_texture_palette
-#define GL_EXT_shared_texture_palette 1
-GLAPI int GLAD_GL_EXT_shared_texture_palette;
 #endif
 #ifndef GL_EXT_sparse_texture2
 #define GL_EXT_sparse_texture2 1
 GLAPI int GLAD_GL_EXT_sparse_texture2;
 #endif
-#ifndef GL_EXT_texture_array
-#define GL_EXT_texture_array 1
-GLAPI int GLAD_GL_EXT_texture_array;
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTURELAYEREXTPROC)(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer);
-GLAPI PFNGLFRAMEBUFFERTEXTURELAYEREXTPROC glad_glFramebufferTextureLayerEXT;
-#define glFramebufferTextureLayerEXT glad_glFramebufferTextureLayerEXT
-#endif
 #ifndef GL_EXT_texture_compression_s3tc
 #define GL_EXT_texture_compression_s3tc 1
 GLAPI int GLAD_GL_EXT_texture_compression_s3tc;
-#endif
-#ifndef GL_EXT_texture_cube_map
-#define GL_EXT_texture_cube_map 1
-GLAPI int GLAD_GL_EXT_texture_cube_map;
 #endif
 #ifndef GL_EXT_texture_filter_anisotropic
 #define GL_EXT_texture_filter_anisotropic 1
@@ -9478,160 +8644,9 @@ GLAPI int GLAD_GL_EXT_texture_filter_anisotropic;
 #define GL_EXT_texture_filter_minmax 1
 GLAPI int GLAD_GL_EXT_texture_filter_minmax;
 #endif
-#ifndef GL_EXT_texture_lod_bias
-#define GL_EXT_texture_lod_bias 1
-GLAPI int GLAD_GL_EXT_texture_lod_bias;
-#endif
 #ifndef GL_EXT_texture_mirror_clamp
 #define GL_EXT_texture_mirror_clamp 1
 GLAPI int GLAD_GL_EXT_texture_mirror_clamp;
-#endif
-#ifndef GL_EXT_texture_swizzle
-#define GL_EXT_texture_swizzle 1
-GLAPI int GLAD_GL_EXT_texture_swizzle;
-#endif
-#ifndef GL_EXT_vertex_shader
-#define GL_EXT_vertex_shader 1
-GLAPI int GLAD_GL_EXT_vertex_shader;
-typedef void (APIENTRYP PFNGLBEGINVERTEXSHADEREXTPROC)(void);
-GLAPI PFNGLBEGINVERTEXSHADEREXTPROC glad_glBeginVertexShaderEXT;
-#define glBeginVertexShaderEXT glad_glBeginVertexShaderEXT
-typedef void (APIENTRYP PFNGLENDVERTEXSHADEREXTPROC)(void);
-GLAPI PFNGLENDVERTEXSHADEREXTPROC glad_glEndVertexShaderEXT;
-#define glEndVertexShaderEXT glad_glEndVertexShaderEXT
-typedef void (APIENTRYP PFNGLBINDVERTEXSHADEREXTPROC)(GLuint id);
-GLAPI PFNGLBINDVERTEXSHADEREXTPROC glad_glBindVertexShaderEXT;
-#define glBindVertexShaderEXT glad_glBindVertexShaderEXT
-typedef GLuint (APIENTRYP PFNGLGENVERTEXSHADERSEXTPROC)(GLuint range);
-GLAPI PFNGLGENVERTEXSHADERSEXTPROC glad_glGenVertexShadersEXT;
-#define glGenVertexShadersEXT glad_glGenVertexShadersEXT
-typedef void (APIENTRYP PFNGLDELETEVERTEXSHADEREXTPROC)(GLuint id);
-GLAPI PFNGLDELETEVERTEXSHADEREXTPROC glad_glDeleteVertexShaderEXT;
-#define glDeleteVertexShaderEXT glad_glDeleteVertexShaderEXT
-typedef void (APIENTRYP PFNGLSHADEROP1EXTPROC)(GLenum op, GLuint res, GLuint arg1);
-GLAPI PFNGLSHADEROP1EXTPROC glad_glShaderOp1EXT;
-#define glShaderOp1EXT glad_glShaderOp1EXT
-typedef void (APIENTRYP PFNGLSHADEROP2EXTPROC)(GLenum op, GLuint res, GLuint arg1, GLuint arg2);
-GLAPI PFNGLSHADEROP2EXTPROC glad_glShaderOp2EXT;
-#define glShaderOp2EXT glad_glShaderOp2EXT
-typedef void (APIENTRYP PFNGLSHADEROP3EXTPROC)(GLenum op, GLuint res, GLuint arg1, GLuint arg2, GLuint arg3);
-GLAPI PFNGLSHADEROP3EXTPROC glad_glShaderOp3EXT;
-#define glShaderOp3EXT glad_glShaderOp3EXT
-typedef void (APIENTRYP PFNGLSWIZZLEEXTPROC)(GLuint res, GLuint in, GLenum outX, GLenum outY, GLenum outZ, GLenum outW);
-GLAPI PFNGLSWIZZLEEXTPROC glad_glSwizzleEXT;
-#define glSwizzleEXT glad_glSwizzleEXT
-typedef void (APIENTRYP PFNGLWRITEMASKEXTPROC)(GLuint res, GLuint in, GLenum outX, GLenum outY, GLenum outZ, GLenum outW);
-GLAPI PFNGLWRITEMASKEXTPROC glad_glWriteMaskEXT;
-#define glWriteMaskEXT glad_glWriteMaskEXT
-typedef void (APIENTRYP PFNGLINSERTCOMPONENTEXTPROC)(GLuint res, GLuint src, GLuint num);
-GLAPI PFNGLINSERTCOMPONENTEXTPROC glad_glInsertComponentEXT;
-#define glInsertComponentEXT glad_glInsertComponentEXT
-typedef void (APIENTRYP PFNGLEXTRACTCOMPONENTEXTPROC)(GLuint res, GLuint src, GLuint num);
-GLAPI PFNGLEXTRACTCOMPONENTEXTPROC glad_glExtractComponentEXT;
-#define glExtractComponentEXT glad_glExtractComponentEXT
-typedef GLuint (APIENTRYP PFNGLGENSYMBOLSEXTPROC)(GLenum datatype, GLenum storagetype, GLenum range, GLuint components);
-GLAPI PFNGLGENSYMBOLSEXTPROC glad_glGenSymbolsEXT;
-#define glGenSymbolsEXT glad_glGenSymbolsEXT
-typedef void (APIENTRYP PFNGLSETINVARIANTEXTPROC)(GLuint id, GLenum type, const void *addr);
-GLAPI PFNGLSETINVARIANTEXTPROC glad_glSetInvariantEXT;
-#define glSetInvariantEXT glad_glSetInvariantEXT
-typedef void (APIENTRYP PFNGLSETLOCALCONSTANTEXTPROC)(GLuint id, GLenum type, const void *addr);
-GLAPI PFNGLSETLOCALCONSTANTEXTPROC glad_glSetLocalConstantEXT;
-#define glSetLocalConstantEXT glad_glSetLocalConstantEXT
-typedef void (APIENTRYP PFNGLVARIANTBVEXTPROC)(GLuint id, const GLbyte *addr);
-GLAPI PFNGLVARIANTBVEXTPROC glad_glVariantbvEXT;
-#define glVariantbvEXT glad_glVariantbvEXT
-typedef void (APIENTRYP PFNGLVARIANTSVEXTPROC)(GLuint id, const GLshort *addr);
-GLAPI PFNGLVARIANTSVEXTPROC glad_glVariantsvEXT;
-#define glVariantsvEXT glad_glVariantsvEXT
-typedef void (APIENTRYP PFNGLVARIANTIVEXTPROC)(GLuint id, const GLint *addr);
-GLAPI PFNGLVARIANTIVEXTPROC glad_glVariantivEXT;
-#define glVariantivEXT glad_glVariantivEXT
-typedef void (APIENTRYP PFNGLVARIANTFVEXTPROC)(GLuint id, const GLfloat *addr);
-GLAPI PFNGLVARIANTFVEXTPROC glad_glVariantfvEXT;
-#define glVariantfvEXT glad_glVariantfvEXT
-typedef void (APIENTRYP PFNGLVARIANTDVEXTPROC)(GLuint id, const GLdouble *addr);
-GLAPI PFNGLVARIANTDVEXTPROC glad_glVariantdvEXT;
-#define glVariantdvEXT glad_glVariantdvEXT
-typedef void (APIENTRYP PFNGLVARIANTUBVEXTPROC)(GLuint id, const GLubyte *addr);
-GLAPI PFNGLVARIANTUBVEXTPROC glad_glVariantubvEXT;
-#define glVariantubvEXT glad_glVariantubvEXT
-typedef void (APIENTRYP PFNGLVARIANTUSVEXTPROC)(GLuint id, const GLushort *addr);
-GLAPI PFNGLVARIANTUSVEXTPROC glad_glVariantusvEXT;
-#define glVariantusvEXT glad_glVariantusvEXT
-typedef void (APIENTRYP PFNGLVARIANTUIVEXTPROC)(GLuint id, const GLuint *addr);
-GLAPI PFNGLVARIANTUIVEXTPROC glad_glVariantuivEXT;
-#define glVariantuivEXT glad_glVariantuivEXT
-typedef void (APIENTRYP PFNGLVARIANTPOINTEREXTPROC)(GLuint id, GLenum type, GLuint stride, const void *addr);
-GLAPI PFNGLVARIANTPOINTEREXTPROC glad_glVariantPointerEXT;
-#define glVariantPointerEXT glad_glVariantPointerEXT
-typedef void (APIENTRYP PFNGLENABLEVARIANTCLIENTSTATEEXTPROC)(GLuint id);
-GLAPI PFNGLENABLEVARIANTCLIENTSTATEEXTPROC glad_glEnableVariantClientStateEXT;
-#define glEnableVariantClientStateEXT glad_glEnableVariantClientStateEXT
-typedef void (APIENTRYP PFNGLDISABLEVARIANTCLIENTSTATEEXTPROC)(GLuint id);
-GLAPI PFNGLDISABLEVARIANTCLIENTSTATEEXTPROC glad_glDisableVariantClientStateEXT;
-#define glDisableVariantClientStateEXT glad_glDisableVariantClientStateEXT
-typedef GLuint (APIENTRYP PFNGLBINDLIGHTPARAMETEREXTPROC)(GLenum light, GLenum value);
-GLAPI PFNGLBINDLIGHTPARAMETEREXTPROC glad_glBindLightParameterEXT;
-#define glBindLightParameterEXT glad_glBindLightParameterEXT
-typedef GLuint (APIENTRYP PFNGLBINDMATERIALPARAMETEREXTPROC)(GLenum face, GLenum value);
-GLAPI PFNGLBINDMATERIALPARAMETEREXTPROC glad_glBindMaterialParameterEXT;
-#define glBindMaterialParameterEXT glad_glBindMaterialParameterEXT
-typedef GLuint (APIENTRYP PFNGLBINDTEXGENPARAMETEREXTPROC)(GLenum unit, GLenum coord, GLenum value);
-GLAPI PFNGLBINDTEXGENPARAMETEREXTPROC glad_glBindTexGenParameterEXT;
-#define glBindTexGenParameterEXT glad_glBindTexGenParameterEXT
-typedef GLuint (APIENTRYP PFNGLBINDTEXTUREUNITPARAMETEREXTPROC)(GLenum unit, GLenum value);
-GLAPI PFNGLBINDTEXTUREUNITPARAMETEREXTPROC glad_glBindTextureUnitParameterEXT;
-#define glBindTextureUnitParameterEXT glad_glBindTextureUnitParameterEXT
-typedef GLuint (APIENTRYP PFNGLBINDPARAMETEREXTPROC)(GLenum value);
-GLAPI PFNGLBINDPARAMETEREXTPROC glad_glBindParameterEXT;
-#define glBindParameterEXT glad_glBindParameterEXT
-typedef GLboolean (APIENTRYP PFNGLISVARIANTENABLEDEXTPROC)(GLuint id, GLenum cap);
-GLAPI PFNGLISVARIANTENABLEDEXTPROC glad_glIsVariantEnabledEXT;
-#define glIsVariantEnabledEXT glad_glIsVariantEnabledEXT
-typedef void (APIENTRYP PFNGLGETVARIANTBOOLEANVEXTPROC)(GLuint id, GLenum value, GLboolean *data);
-GLAPI PFNGLGETVARIANTBOOLEANVEXTPROC glad_glGetVariantBooleanvEXT;
-#define glGetVariantBooleanvEXT glad_glGetVariantBooleanvEXT
-typedef void (APIENTRYP PFNGLGETVARIANTINTEGERVEXTPROC)(GLuint id, GLenum value, GLint *data);
-GLAPI PFNGLGETVARIANTINTEGERVEXTPROC glad_glGetVariantIntegervEXT;
-#define glGetVariantIntegervEXT glad_glGetVariantIntegervEXT
-typedef void (APIENTRYP PFNGLGETVARIANTFLOATVEXTPROC)(GLuint id, GLenum value, GLfloat *data);
-GLAPI PFNGLGETVARIANTFLOATVEXTPROC glad_glGetVariantFloatvEXT;
-#define glGetVariantFloatvEXT glad_glGetVariantFloatvEXT
-typedef void (APIENTRYP PFNGLGETVARIANTPOINTERVEXTPROC)(GLuint id, GLenum value, void **data);
-GLAPI PFNGLGETVARIANTPOINTERVEXTPROC glad_glGetVariantPointervEXT;
-#define glGetVariantPointervEXT glad_glGetVariantPointervEXT
-typedef void (APIENTRYP PFNGLGETINVARIANTBOOLEANVEXTPROC)(GLuint id, GLenum value, GLboolean *data);
-GLAPI PFNGLGETINVARIANTBOOLEANVEXTPROC glad_glGetInvariantBooleanvEXT;
-#define glGetInvariantBooleanvEXT glad_glGetInvariantBooleanvEXT
-typedef void (APIENTRYP PFNGLGETINVARIANTINTEGERVEXTPROC)(GLuint id, GLenum value, GLint *data);
-GLAPI PFNGLGETINVARIANTINTEGERVEXTPROC glad_glGetInvariantIntegervEXT;
-#define glGetInvariantIntegervEXT glad_glGetInvariantIntegervEXT
-typedef void (APIENTRYP PFNGLGETINVARIANTFLOATVEXTPROC)(GLuint id, GLenum value, GLfloat *data);
-GLAPI PFNGLGETINVARIANTFLOATVEXTPROC glad_glGetInvariantFloatvEXT;
-#define glGetInvariantFloatvEXT glad_glGetInvariantFloatvEXT
-typedef void (APIENTRYP PFNGLGETLOCALCONSTANTBOOLEANVEXTPROC)(GLuint id, GLenum value, GLboolean *data);
-GLAPI PFNGLGETLOCALCONSTANTBOOLEANVEXTPROC glad_glGetLocalConstantBooleanvEXT;
-#define glGetLocalConstantBooleanvEXT glad_glGetLocalConstantBooleanvEXT
-typedef void (APIENTRYP PFNGLGETLOCALCONSTANTINTEGERVEXTPROC)(GLuint id, GLenum value, GLint *data);
-GLAPI PFNGLGETLOCALCONSTANTINTEGERVEXTPROC glad_glGetLocalConstantIntegervEXT;
-#define glGetLocalConstantIntegervEXT glad_glGetLocalConstantIntegervEXT
-typedef void (APIENTRYP PFNGLGETLOCALCONSTANTFLOATVEXTPROC)(GLuint id, GLenum value, GLfloat *data);
-GLAPI PFNGLGETLOCALCONSTANTFLOATVEXTPROC glad_glGetLocalConstantFloatvEXT;
-#define glGetLocalConstantFloatvEXT glad_glGetLocalConstantFloatvEXT
-#endif
-#ifndef GL_EXT_vertex_weighting
-#define GL_EXT_vertex_weighting 1
-GLAPI int GLAD_GL_EXT_vertex_weighting;
-typedef void (APIENTRYP PFNGLVERTEXWEIGHTFEXTPROC)(GLfloat weight);
-GLAPI PFNGLVERTEXWEIGHTFEXTPROC glad_glVertexWeightfEXT;
-#define glVertexWeightfEXT glad_glVertexWeightfEXT
-typedef void (APIENTRYP PFNGLVERTEXWEIGHTFVEXTPROC)(const GLfloat *weight);
-GLAPI PFNGLVERTEXWEIGHTFVEXTPROC glad_glVertexWeightfvEXT;
-#define glVertexWeightfvEXT glad_glVertexWeightfvEXT
-typedef void (APIENTRYP PFNGLVERTEXWEIGHTPOINTEREXTPROC)(GLint size, GLenum type, GLsizei stride, const void *pointer);
-GLAPI PFNGLVERTEXWEIGHTPOINTEREXTPROC glad_glVertexWeightPointerEXT;
-#define glVertexWeightPointerEXT glad_glVertexWeightPointerEXT
 #endif
 #ifndef GL_KHR_blend_equation_advanced
 #define GL_KHR_blend_equation_advanced 1
@@ -10064,38 +9079,12 @@ GLAPI int GLAD_GL_NV_fragment_shader_barycentric;
 #define GL_NV_fragment_shader_interlock 1
 GLAPI int GLAD_GL_NV_fragment_shader_interlock;
 #endif
-#ifndef GL_NV_framebuffer_mixed_samples
-#define GL_NV_framebuffer_mixed_samples 1
-GLAPI int GLAD_GL_NV_framebuffer_mixed_samples;
-typedef void (APIENTRYP PFNGLCOVERAGEMODULATIONTABLENVPROC)(GLsizei n, const GLfloat *v);
-GLAPI PFNGLCOVERAGEMODULATIONTABLENVPROC glad_glCoverageModulationTableNV;
-#define glCoverageModulationTableNV glad_glCoverageModulationTableNV
-typedef void (APIENTRYP PFNGLGETCOVERAGEMODULATIONTABLENVPROC)(GLsizei bufsize, GLfloat *v);
-GLAPI PFNGLGETCOVERAGEMODULATIONTABLENVPROC glad_glGetCoverageModulationTableNV;
-#define glGetCoverageModulationTableNV glad_glGetCoverageModulationTableNV
-typedef void (APIENTRYP PFNGLCOVERAGEMODULATIONNVPROC)(GLenum components);
-GLAPI PFNGLCOVERAGEMODULATIONNVPROC glad_glCoverageModulationNV;
-#define glCoverageModulationNV glad_glCoverageModulationNV
-#endif
 #ifndef GL_NV_framebuffer_multisample_coverage
 #define GL_NV_framebuffer_multisample_coverage 1
 GLAPI int GLAD_GL_NV_framebuffer_multisample_coverage;
 typedef void (APIENTRYP PFNGLRENDERBUFFERSTORAGEMULTISAMPLECOVERAGENVPROC)(GLenum target, GLsizei coverageSamples, GLsizei colorSamples, GLenum internalformat, GLsizei width, GLsizei height);
 GLAPI PFNGLRENDERBUFFERSTORAGEMULTISAMPLECOVERAGENVPROC glad_glRenderbufferStorageMultisampleCoverageNV;
 #define glRenderbufferStorageMultisampleCoverageNV glad_glRenderbufferStorageMultisampleCoverageNV
-#endif
-#ifndef GL_NV_geometry_program4
-#define GL_NV_geometry_program4 1
-GLAPI int GLAD_GL_NV_geometry_program4;
-typedef void (APIENTRYP PFNGLPROGRAMVERTEXLIMITNVPROC)(GLenum target, GLint limit);
-GLAPI PFNGLPROGRAMVERTEXLIMITNVPROC glad_glProgramVertexLimitNV;
-#define glProgramVertexLimitNV glad_glProgramVertexLimitNV
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTUREEXTPROC)(GLenum target, GLenum attachment, GLuint texture, GLint level);
-GLAPI PFNGLFRAMEBUFFERTEXTUREEXTPROC glad_glFramebufferTextureEXT;
-#define glFramebufferTextureEXT glad_glFramebufferTextureEXT
-typedef void (APIENTRYP PFNGLFRAMEBUFFERTEXTUREFACEEXTPROC)(GLenum target, GLenum attachment, GLuint texture, GLint level, GLenum face);
-GLAPI PFNGLFRAMEBUFFERTEXTUREFACEEXTPROC glad_glFramebufferTextureFaceEXT;
-#define glFramebufferTextureFaceEXT glad_glFramebufferTextureFaceEXT
 #endif
 #ifndef GL_NV_geometry_shader4
 #define GL_NV_geometry_shader4 1
@@ -10104,46 +9093,6 @@ GLAPI int GLAD_GL_NV_geometry_shader4;
 #ifndef GL_NV_geometry_shader_passthrough
 #define GL_NV_geometry_shader_passthrough 1
 GLAPI int GLAD_GL_NV_geometry_shader_passthrough;
-#endif
-#ifndef GL_NV_gpu_multicast
-#define GL_NV_gpu_multicast 1
-GLAPI int GLAD_GL_NV_gpu_multicast;
-typedef void (APIENTRYP PFNGLRENDERGPUMASKNVPROC)(GLbitfield mask);
-GLAPI PFNGLRENDERGPUMASKNVPROC glad_glRenderGpuMaskNV;
-#define glRenderGpuMaskNV glad_glRenderGpuMaskNV
-typedef void (APIENTRYP PFNGLMULTICASTBUFFERSUBDATANVPROC)(GLbitfield gpuMask, GLuint buffer, GLintptr offset, GLsizeiptr size, const void *data);
-GLAPI PFNGLMULTICASTBUFFERSUBDATANVPROC glad_glMulticastBufferSubDataNV;
-#define glMulticastBufferSubDataNV glad_glMulticastBufferSubDataNV
-typedef void (APIENTRYP PFNGLMULTICASTCOPYBUFFERSUBDATANVPROC)(GLuint readGpu, GLbitfield writeGpuMask, GLuint readBuffer, GLuint writeBuffer, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size);
-GLAPI PFNGLMULTICASTCOPYBUFFERSUBDATANVPROC glad_glMulticastCopyBufferSubDataNV;
-#define glMulticastCopyBufferSubDataNV glad_glMulticastCopyBufferSubDataNV
-typedef void (APIENTRYP PFNGLMULTICASTCOPYIMAGESUBDATANVPROC)(GLuint srcGpu, GLbitfield dstGpuMask, GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth);
-GLAPI PFNGLMULTICASTCOPYIMAGESUBDATANVPROC glad_glMulticastCopyImageSubDataNV;
-#define glMulticastCopyImageSubDataNV glad_glMulticastCopyImageSubDataNV
-typedef void (APIENTRYP PFNGLMULTICASTBLITFRAMEBUFFERNVPROC)(GLuint srcGpu, GLuint dstGpu, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
-GLAPI PFNGLMULTICASTBLITFRAMEBUFFERNVPROC glad_glMulticastBlitFramebufferNV;
-#define glMulticastBlitFramebufferNV glad_glMulticastBlitFramebufferNV
-typedef void (APIENTRYP PFNGLMULTICASTFRAMEBUFFERSAMPLELOCATIONSFVNVPROC)(GLuint gpu, GLuint framebuffer, GLuint start, GLsizei count, const GLfloat *v);
-GLAPI PFNGLMULTICASTFRAMEBUFFERSAMPLELOCATIONSFVNVPROC glad_glMulticastFramebufferSampleLocationsfvNV;
-#define glMulticastFramebufferSampleLocationsfvNV glad_glMulticastFramebufferSampleLocationsfvNV
-typedef void (APIENTRYP PFNGLMULTICASTBARRIERNVPROC)(void);
-GLAPI PFNGLMULTICASTBARRIERNVPROC glad_glMulticastBarrierNV;
-#define glMulticastBarrierNV glad_glMulticastBarrierNV
-typedef void (APIENTRYP PFNGLMULTICASTWAITSYNCNVPROC)(GLuint signalGpu, GLbitfield waitGpuMask);
-GLAPI PFNGLMULTICASTWAITSYNCNVPROC glad_glMulticastWaitSyncNV;
-#define glMulticastWaitSyncNV glad_glMulticastWaitSyncNV
-typedef void (APIENTRYP PFNGLMULTICASTGETQUERYOBJECTIVNVPROC)(GLuint gpu, GLuint id, GLenum pname, GLint *params);
-GLAPI PFNGLMULTICASTGETQUERYOBJECTIVNVPROC glad_glMulticastGetQueryObjectivNV;
-#define glMulticastGetQueryObjectivNV glad_glMulticastGetQueryObjectivNV
-typedef void (APIENTRYP PFNGLMULTICASTGETQUERYOBJECTUIVNVPROC)(GLuint gpu, GLuint id, GLenum pname, GLuint *params);
-GLAPI PFNGLMULTICASTGETQUERYOBJECTUIVNVPROC glad_glMulticastGetQueryObjectuivNV;
-#define glMulticastGetQueryObjectuivNV glad_glMulticastGetQueryObjectuivNV
-typedef void (APIENTRYP PFNGLMULTICASTGETQUERYOBJECTI64VNVPROC)(GLuint gpu, GLuint id, GLenum pname, GLint64 *params);
-GLAPI PFNGLMULTICASTGETQUERYOBJECTI64VNVPROC glad_glMulticastGetQueryObjecti64vNV;
-#define glMulticastGetQueryObjecti64vNV glad_glMulticastGetQueryObjecti64vNV
-typedef void (APIENTRYP PFNGLMULTICASTGETQUERYOBJECTUI64VNVPROC)(GLuint gpu, GLuint id, GLenum pname, GLuint64 *params);
-GLAPI PFNGLMULTICASTGETQUERYOBJECTUI64VNVPROC glad_glMulticastGetQueryObjectui64vNV;
-#define glMulticastGetQueryObjectui64vNV glad_glMulticastGetQueryObjectui64vNV
 #endif
 #ifndef GL_NV_gpu_program4
 #define GL_NV_gpu_program4 1
