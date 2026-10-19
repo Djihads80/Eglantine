@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <chrono>
+
 #include "core/file_sys/vfs/vfs.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
@@ -18,23 +20,16 @@ public:
     explicit IStorage(Core::System& system_, FileSys::VirtualFile backend_);
 
 private:
+    FileSys::VirtualFile backend;
+
+    static constexpr s64 ReadBytesPerSecond = 40'000'000;
+    static constexpr s64 MaxChargedReadSize = 64 * 1024;
+    std::chrono::steady_clock::time_point next_read_tick{};
+
     Result Read(
         OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> out_bytes,
         s64 offset, s64 length);
     Result GetSize(Out<u64> out_size);
-
-    std::optional<FunctionInfoBase> FindRequest(u32 key) override {
-        return HandlerTableGenerateWithFind(key, functions);
-    }
-    static constexpr auto functions = CreateStaticMap(
-        FunctionInfo{0, D<&IStorage::Read>, "Read"},
-        FunctionInfo{1, nullptr, "Write"},
-        FunctionInfo{2, nullptr, "Flush"},
-        FunctionInfo{3, nullptr, "SetSize"},
-        FunctionInfo{4, D<&IStorage::GetSize>, "GetSize"},
-        FunctionInfo{5, nullptr, "OperateRange"}
-    );
-    FileSys::VirtualFile backend;
 };
 
 } // namespace Service::FileSystem
