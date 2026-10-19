@@ -82,6 +82,14 @@ void Nvdec::Execute() {
     } else {
         LOG_ERROR(HW_GPU, "Unrecognized codec executed?");
     }
+
+    // Hardware takes up to a frame to decode and games synchronize their threads on that
+    // latency. With sub-millisecond completion a video worker wakes up in the middle of the
+    // render thread's frame and presents over an active render target (TMNT: Shredder's
+    // Revenge aborts with "Cannot call Present when a render target is active.", multi-core
+    // only). Pace the completion like the path above, after the frame is written but before
+    // the syncpoint that releases the caller increments.
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
 }
 
 } // namespace Tegra::Host1x
