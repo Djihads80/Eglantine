@@ -24,6 +24,32 @@
 
 namespace Service::android {
 
+namespace {
+std::mutex compose_tick_mutex;
+std::condition_variable compose_tick_cv;
+u64 compose_tick{};
+} // Anonymous namespace
+
+void NotifyComposeTick() {
+    {
+        std::scoped_lock lock{compose_tick_mutex};
+        ++compose_tick;
+    }
+    compose_tick_cv.notify_all();
+}
+
+void BufferQueueProducer::WaitForComposeTick() {
+    // On hardware the present call blocks until the next vsync slot, which keeps concurrent
+    // presenters (a cutscene video thread and the render thread, for example) frame-locked.
+    // Free-running they present over each other's active render target, and the game aborts
+    // with "Cannot call Present when a render target is active". The timeout keeps shutdown
+    // responsive if the compositor stops ticking.
+    std::unique_lock lock{compose_tick_mutex};
+    compose_tick_cv.wait_for(lock, std::chrono::milliseconds{100},
+                             [this] { return compose_tick != last_compose_tick; });
+    last_compose_tick = compose_tick;
+}
+
 BufferQueueProducer::BufferQueueProducer(Service::KernelHelpers::ServiceContext& service_context_,
                                          std::shared_ptr<BufferQueueCore> buffer_queue_core_,
                                          Service::Nvidia::NvCore::NvMap& nvmap_)
@@ -433,6 +459,8 @@ Status BufferQueueProducer::AttachBuffer(s32* out_slot,
 }
 
 Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input, QueueBufferOutput* output) {
+    WaitForComposeTick();
+
     s64 timestamp{};
     bool is_auto_timestamp{};
     Common::Rectangle<s32> crop;

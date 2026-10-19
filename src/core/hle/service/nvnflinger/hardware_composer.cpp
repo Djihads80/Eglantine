@@ -11,6 +11,8 @@
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nvnflinger/buffer_item.h"
 #include "core/hle/service/nvnflinger/buffer_item_consumer.h"
+#include "core/hle/service/nvnflinger/buffer_queue_producer.h"
+#include "core/hle/service/nvnflinger/buffer_queue_producer.h"
 #include "core/hle/service/nvnflinger/hardware_composer.h"
 #include "core/hle/service/nvnflinger/hwc_layer.h"
 #include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
@@ -56,6 +58,8 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
 
     // Set default speed limit to 100%.
     *out_speed_scale = 1.0f;
+
+    Service::android::NotifyComposeTick();
 
     // If no layers are visible, skip the logic. Acquiring and holding buffers here would
     // consume the producer's queue without ever presenting.

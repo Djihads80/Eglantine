@@ -44,6 +44,9 @@ class BufferQueueCore;
 class IProducerListener;
 struct NvGraphicBuffer;
 
+/// Advances the compositor vsync tick used to pace producers to the display cadence.
+void NotifyComposeTick();
+
 class BufferQueueProducer final : public IBinder {
 public:
     explicit BufferQueueProducer(Service::KernelHelpers::ServiceContext& service_context_,
@@ -75,6 +78,11 @@ public:
 
 private:
     BufferQueueProducer(const BufferQueueProducer&) = delete;
+
+    /// Waits until the compositor advanced its vsync tick since the last call.
+    void WaitForComposeTick();
+
+    u64 last_compose_tick{};
 
     Status WaitForFreeSlotThenRelock(bool async, s32* found, Status* return_flags,
                                      std::unique_lock<std::mutex>& lk) const;
