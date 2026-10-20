@@ -1025,13 +1025,13 @@ void EmitContext::DefineRescalingInput(const Info& info) {
         return;
     }
     if (profile.unified_descriptor_binding) {
-        DefineRescalingInputPushConstant();
+        DefineRescalingInputPushConstant(info);
     } else {
         DefineRescalingInputUniformConstant();
     }
 }
 
-void EmitContext::DefineRescalingInputPushConstant() {
+void EmitContext::DefineRescalingInputPushConstant(const Info& info) {
     boost::container::static_vector<Id, 4> members{};
     u32 member_index{0};
 

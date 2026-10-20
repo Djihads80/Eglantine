@@ -398,7 +398,7 @@ private:
     void DefineWriteStorageCasLoopFunction(const Info& info);
     void DefineGlobalMemoryFunctions(const Info& info);
     void DefineRescalingInput(const Info& info);
-    void DefineRescalingInputPushConstant();
+    void DefineRescalingInputPushConstant(const Info& info);
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
 
