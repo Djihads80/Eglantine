@@ -401,6 +401,12 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_fp32_denorm_flush = float_control.shaderDenormFlushToZeroFloat32 != VK_FALSE,
         .support_fp16_signed_zero_nan_preserve =
             float_control.shaderSignedZeroInfNanPreserveFloat16 != VK_FALSE,
+    // Hosts other than NVIDIA interpolate the varyings of huge clipped primitives less precisely
+    // than the guest, see PositionVaryingPass
+    graphics_host_info.support_position_varyings = driver_id != VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    graphics_host_info.support_barycentric_varyings =
+        graphics_host_info.support_position_varyings &&
+        device.IsKhrFragmentShaderBarycentricSupported();
         .support_fp32_signed_zero_nan_preserve =
             float_control.shaderSignedZeroInfNanPreserveFloat32 != VK_FALSE,
         .support_fp64_signed_zero_nan_preserve =
@@ -849,6 +855,34 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         if (programs[index].info.requires_layer_emulation) {
             layer_source_program = &programs[index];
+        }
+    }
+    // Rebuild clip space position varyings in the fragment shader when the vertex shader feeds it
+    // directly
+    const bool has_tessellation_or_geometry{key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0 ||
+                                            key.unique_hashes[4] != 0 || layer_source_program};
+    if (graphics_host_info.support_position_varyings && !has_tessellation_or_geometry &&
+        key.unique_hashes[1] != 0 && key.unique_hashes[5] != 0) {
+        const bool is_triangle_list_or_strip{[&] {
+            switch (key.state.topology) {
+            case Maxwell::PrimitiveTopology::Triangles:
+            case Maxwell::PrimitiveTopology::TriangleStrip:
+            case Maxwell::PrimitiveTopology::TriangleFan:
+            case Maxwell::PrimitiveTopology::Quads:
+            case Maxwell::PrimitiveTopology::QuadStrip:
+            case Maxwell::PrimitiveTopology::Polygon:
+                return true;
+            default:
+                return false;
+            }
+        }()};
+        const bool is_fill{FixedPipelineState::UnpackPolygonMode(key.state.polygon_mode) ==
+                           Maxwell::PolygonMode::Fill};
+        if (graphics_host_info.support_barycentric_varyings && is_triangle_list_or_strip &&
+            is_fill) {
+            Shader::Optimization::BarycentricVaryingPass(programs[1], programs[5]);
+        } else {
+            Shader::Optimization::PositionVaryingPass(programs[1], programs[5]);
         }
     }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};

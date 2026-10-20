@@ -18,6 +18,8 @@ std::string_view InterpDecorator(Interpolation interp) {
         return "FLAT ";
     case Interpolation::NoPerspective:
         return "NOPERSPECTIVE ";
+    case Interpolation::PerVertex:
+        break;
     }
     throw InvalidArgument("Invalid interpolation {}", interp);
 }

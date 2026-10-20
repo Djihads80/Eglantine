@@ -1492,6 +1492,13 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,
                                        VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME);
 
+    // VK_KHR_fragment_shader_barycentric
+    extensions.fragment_shader_barycentric =
+        features.fragment_shader_barycentric.fragmentShaderBarycentric;
+    RemoveExtensionFeatureIfUnsuitable(extensions.fragment_shader_barycentric,
+                                       features.fragment_shader_barycentric,
+                                       VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+
     // VK_KHR_workgroup_memory_explicit_layout
     extensions.workgroup_memory_explicit_layout =
         features.workgroup_memory_explicit_layout.workgroupMemoryExplicitLayout &&

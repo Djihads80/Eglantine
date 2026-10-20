@@ -409,6 +409,10 @@ F32 IREmitter::RenderAreaHeight() {
     return F32(CompositeExtract(Inst<Value>(Opcode::RenderArea), 1));
 }
 
+F32 IREmitter::HostViewport(size_t component) {
+    return F32(CompositeExtract(Inst<Value>(Opcode::HostViewport), component));
+}
+
 U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }

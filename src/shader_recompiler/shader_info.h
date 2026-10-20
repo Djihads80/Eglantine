@@ -158,6 +158,7 @@ enum class Interpolation {
     Smooth,
     Flat,
     NoPerspective,
+    PerVertex, ///< Values of the three vertices of the triangle (SPV_KHR_fragment_shader_barycentric)
 };
 
 struct ConstantBufferDescriptor {
@@ -316,6 +317,7 @@ struct Info {
     bool uses_rescaling_uniform{};
     bool uses_cbuf_indirect{};
     bool uses_render_area{};
+    bool uses_host_viewport{};
 
     IR::Type used_constant_buffer_types{};
     IR::Type used_storage_buffer_types{};

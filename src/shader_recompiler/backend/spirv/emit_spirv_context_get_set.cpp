@@ -312,8 +312,11 @@ Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
             // Attribute is disabled or varying component is not written
             return ctx.Const(element == 3 ? 1.0f : 0.0f);
         }
-        const Id pointer{
-            AttrPointer(ctx, generic.pointer_type, vertex, generic.id, ctx.Const(element))};
+        const Id pointer{generic.per_vertex
+                             ? ctx.OpAccessChain(generic.pointer_type, generic.id, vertex,
+                                                 ctx.Const(element))
+                             : AttrPointer(ctx, generic.pointer_type, vertex, generic.id,
+                                           ctx.Const(element))};
         const Id value{ctx.OpLoad(generic.component_type, pointer)};
         return [&ctx, generic, value]() {
             switch (generic.load_op) {
@@ -621,6 +624,16 @@ Id EmitRenderArea(EmitContext& ctx) {
     } else {
         throw NotImplementedException("SPIR-V Instruction");
     }
+}
+
+Id EmitHostViewport(EmitContext& ctx) {
+    if (!ctx.profile.unified_descriptor_binding) {
+        throw NotImplementedException("SPIR-V Instruction");
+    }
+    const Id pointer_type{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[4])};
+    const Id index{ctx.Const(ctx.host_viewport_member_index)};
+    const Id pointer{ctx.OpAccessChain(pointer_type, ctx.rescaling_push_constants, index)};
+    return ctx.OpLoad(ctx.F32[4], pointer);
 }
 
 Id EmitLoadLocal(EmitContext& ctx, Id word_offset) {

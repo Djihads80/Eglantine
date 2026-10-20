@@ -70,6 +70,7 @@ OPCODE(SR_WScaleFactorZ,                                    U32,                
 OPCODE(YDirection,                                          F32,                                                                                            )
 OPCODE(ResolutionDownFactor,                                F32,                                                                                            )
 OPCODE(RenderArea,                                          F32x4,                                                                                          )
+OPCODE(HostViewport,                                          F32x4,                                                                                          )
 
 // Undefined
 OPCODE(UndefU1,                                             U1,                                                                                             )

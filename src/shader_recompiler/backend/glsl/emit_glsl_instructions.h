@@ -94,6 +94,7 @@ void EmitSR_WScaleFactorZ(EmitContext& ctx, IR::Inst& inst);
 void EmitYDirection(EmitContext& ctx, IR::Inst& inst);
 void EmitResolutionDownFactor(EmitContext& ctx, IR::Inst& inst);
 void EmitRenderArea(EmitContext& ctx, IR::Inst& inst);
+void EmitHostViewport(EmitContext& ctx, IR::Inst& inst);
 void EmitLoadLocal(EmitContext& ctx, IR::Inst& inst, std::string_view word_offset);
 void EmitWriteLocal(EmitContext& ctx, std::string_view word_offset, std::string_view value);
 void EmitUndefU1(EmitContext& ctx, IR::Inst& inst);

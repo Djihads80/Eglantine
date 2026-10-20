@@ -1021,7 +1021,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
-    if (!info.uses_rescaling_uniform) {
+    if (!info.uses_rescaling_uniform && !info.uses_host_viewport) {
         return;
     }
     if (profile.unified_descriptor_binding) {
@@ -1032,7 +1032,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 3> members{};
+    boost::container::static_vector<Id, 4> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1048,6 +1048,10 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (stage != Stage::Compute) {
         members.push_back(F32[1]);
         rescaling_downfactor_member_index = member_index++;
+    }
+    if (info.uses_host_viewport) {
+        members.push_back(F32[4]);
+        host_viewport_member_index = member_index++;
     }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
@@ -1066,6 +1070,11 @@ void EmitContext::DefineRescalingInputPushConstant() {
                        spv::Decoration::Offset,
                        static_cast<u32>(offsetof(RescalingLayout, down_factor)));
         MemberName(push_constant_struct, rescaling_downfactor_member_index, "down_factor");
+    }
+    if (info.uses_host_viewport) {
+        MemberDecorate(push_constant_struct, host_viewport_member_index, spv::Decoration::Offset,
+                       HOST_VIEWPORT_LAYOUT_OFFSET);
+        MemberName(push_constant_struct, host_viewport_member_index, "host_viewport");
     }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
@@ -1573,10 +1582,15 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             continue;
         }
         const Id type{GetAttributeType(*this, input_type)};
-        const Id id{DefineInput(*this, type, true)};
+        const bool per_vertex{stage == Stage::Fragment &&
+                              info.interpolation[index] == Interpolation::PerVertex};
+        const Id id{per_vertex ? DefineVariable(*this, TypeArray(type, Const(3U)), std::nullopt,
+                                                spv::StorageClass::Input)
+                               : DefineInput(*this, type, true)};
         Decorate(id, spv::Decoration::Location, static_cast<u32>(index));
         Name(id, fmt::format("in_attr{}", index));
         input_generics[index] = GetAttributeInfo(*this, input_type, id);
+        input_generics[index].per_vertex = per_vertex;
 
         if (info.passthrough.Generic(index) && profile.support_geometry_shader_passthrough) {
             Decorate(id, spv::Decoration::PassthroughNV);
@@ -1595,6 +1609,11 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             case Interpolation::NoPerspective:
                 Decorate(id, spv::Decoration::NoPerspective);
                 break;
+        case Interpolation::PerVertex:
+            AddExtension("SPV_KHR_fragment_shader_barycentric");
+            AddCapability(spv::Capability::FragmentBarycentricKHR);
+            Decorate(id, spv::Decoration::PerVertexKHR);
+            break;
             case Interpolation::Flat:
                 Decorate(id, spv::Decoration::Flat);
                 break;

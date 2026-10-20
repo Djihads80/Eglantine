@@ -83,6 +83,7 @@ Id EmitSR_WScaleFactorZ(EmitContext& ctx);
 Id EmitYDirection(EmitContext& ctx);
 Id EmitResolutionDownFactor(EmitContext& ctx);
 Id EmitRenderArea(EmitContext& ctx);
+Id EmitHostViewport(EmitContext& ctx);
 Id EmitLoadLocal(EmitContext& ctx, Id word_offset);
 void EmitWriteLocal(EmitContext& ctx, Id word_offset, Id value);
 Id EmitUndefU1(EmitContext& ctx);

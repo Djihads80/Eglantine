@@ -465,6 +465,10 @@ void EmitRenderArea(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddF32x4("{}=render_area;", inst);
 }
 
+void EmitHostViewport(EmitContext&, IR::Inst&) {
+    throw NotImplementedException("GLSL instruction");
+}
+
 void EmitLoadLocal(EmitContext& ctx, IR::Inst& inst, std::string_view word_offset) {
     ctx.AddU32("{}=lmem[{}];", inst, word_offset);
 }

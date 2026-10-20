@@ -196,6 +196,19 @@ bool IsPrimitiveRestartSupported(const Device& device, VkPrimitiveTopology topol
 }
 } // Anonymous namespace
 
+std::array<f32, 4> GetHostViewport0(const Device& device, const Maxwell& regs, bool is_rescaling) {
+    // Must match the viewport UpdateViewportsState records for index 0
+    if (!regs.viewport_scale_offset_enabled) {
+        const auto width = static_cast<f32>(regs.surface_clip.width);
+        const auto height = static_cast<f32>(regs.surface_clip.height);
+        return {static_cast<f32>(regs.surface_clip.x), static_cast<f32>(regs.surface_clip.y),
+                width != 0.0f ? width : 1.0f, height != 0.0f ? height : 1.0f};
+    }
+    const float scale = is_rescaling ? Settings::values.resolution_info.up_factor : 1.0f;
+    const VkViewport viewport{GetViewportState(device, regs, 0, scale)};
+    return {viewport.x, viewport.y, viewport.width, viewport.height};
+}
+
 RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra::GPU& gpu_,
                                    Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                    const Device& device_, MemoryAllocator& memory_allocator_,

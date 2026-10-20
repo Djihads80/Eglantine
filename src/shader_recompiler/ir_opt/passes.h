@@ -22,6 +22,8 @@ void DeadCodeEliminationPass(IR::Program& program);
 void GeometryCompactionPass(IR::Program& program, const HostTranslateInfo& host_info);
 void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateInfo& host_info);
 void IdentityRemovalPass(IR::Program& program);
+void PositionVaryingPass(IR::Program& vertex, IR::Program& fragment);
+void BarycentricVaryingPass(IR::Program& vertex, IR::Program& fragment);
 void LowerFp64ToFp32(IR::Program& program);
 void LowerFp16ToFp32(IR::Program& program);
 void LowerInt64ToInt32(IR::Program& program);

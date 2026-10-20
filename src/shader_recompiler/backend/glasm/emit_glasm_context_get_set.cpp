@@ -446,6 +446,10 @@ void EmitRenderArea(EmitContext& ctx, IR::Inst& inst) {
     ctx.Add("MOV.F {},render_area[0];", inst);
 }
 
+void EmitHostViewport(EmitContext&, IR::Inst&) {
+    throw NotImplementedException("GLASM instruction");
+}
+
 void EmitLoadLocal(EmitContext& ctx, IR::Inst& inst, ScalarU32 word_offset) {
     ctx.Add("MOV.U {},lmem[{}].x;", inst, word_offset);
 }

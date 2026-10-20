@@ -32,6 +32,11 @@ class ShaderNotify;
 
 namespace Vulkan {
 
+/// Host viewport 0 (x, y, width, height) as recorded for the current Maxwell state
+std::array<f32, 4> GetHostViewport0(const Device& device,
+                                    const Tegra::Engines::Maxwell3D::Regs& regs,
+                                    bool is_rescaling);
+
 struct GraphicsPipelineCacheKey {
     std::array<u64, 6> unique_hashes;
     FixedPipelineState state;
@@ -178,6 +183,8 @@ private:
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
+    bool uses_host_viewport{false};
+    std::array<f32, 4> host_viewport_words{};
     VkDeviceSize last_descriptor_buffer_offset{};
     u32 last_descriptor_buffer_chunk{};
     u64 last_descriptor_buffer_generation{};

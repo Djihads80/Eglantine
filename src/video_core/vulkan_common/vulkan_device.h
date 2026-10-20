@@ -56,6 +56,8 @@ VK_DEFINE_HANDLE(VmaAllocator)
     FEATURE(EXT, BorderColorSwizzle, BORDER_COLOR_SWIZZLE, border_color_swizzle)                   \
     FEATURE(EXT, ColorWriteEnable, COLOR_WRITE_ENABLE, color_write_enable)                         \
     FEATURE(EXT, CustomBorderColor, CUSTOM_BORDER_COLOR, custom_border_color)                      \
+    FEATURE(KHR, FragmentShaderBarycentric, FRAGMENT_SHADER_BARYCENTRIC,                           \
+            fragment_shader_barycentric)                                                           \
     FEATURE(EXT, DepthBiasControl, DEPTH_BIAS_CONTROL, depth_bias_control)                         \
     FEATURE(EXT, DepthClipControl, DEPTH_CLIP_CONTROL, depth_clip_control)                         \
     FEATURE(EXT, DescriptorBuffer, DESCRIPTOR_BUFFER, descriptor_buffer)                           \
@@ -584,6 +586,11 @@ FN_MAX_LIMIT_LIST
     }
 
     /// Returns true if the device supports VK_KHR_workgroup_memory_explicit_layout.
+    /// Returns true if the device supports VK_KHR_fragment_shader_barycentric.
+    bool IsKhrFragmentShaderBarycentricSupported() const {
+        return extensions.fragment_shader_barycentric;
+    }
+
     bool IsKhrWorkgroupMemoryExplicitLayoutSupported() const {
         return extensions.workgroup_memory_explicit_layout;
     }

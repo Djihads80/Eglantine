@@ -154,6 +154,7 @@ struct InputGenericInfo {
     Id pointer_type;
     Id component_type;
     InputGenericLoadOp load_op;
+    bool per_vertex{}; ///< Indexed by the vertex of the triangle (PerVertexKHR)
 };
 
 struct GenericElementInfo {
@@ -305,6 +306,7 @@ public:
     u32 rescaling_downfactor_member_index{};
     u32 texture_rescaling_index{};
     u32 image_rescaling_index{};
+    u32 host_viewport_member_index{};
 
     Id render_area_push_constant{};
     u32 render_are_member_index{};

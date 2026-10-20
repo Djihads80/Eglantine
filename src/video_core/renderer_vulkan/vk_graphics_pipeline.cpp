@@ -37,6 +37,7 @@
 #endif
 
 namespace Vulkan {
+using Shader::Backend::SPIRV::HOST_VIEWPORT_LAYOUT_OFFSET;
 namespace {
 using boost::container::small_vector;
 using boost::container::static_vector;
@@ -268,6 +269,7 @@ GraphicsPipeline::GraphicsPipeline(
         if (!info) {
             continue;
         }
+        uses_host_viewport |= info->uses_host_viewport;
         stage_infos[stage] = *info;
         enabled_uniform_buffer_masks[stage] = info->constant_buffer_mask;
         std::ranges::copy(info->constant_buffer_used_sizes, uniform_buffer_sizes[stage].begin());
@@ -499,6 +501,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     if constexpr (Spec::enabled_stages[1]) {
         bind_stage_info(1);
     }
+    if (uses_host_viewport) {
+        host_viewport_words = GetHostViewport0(device, regs, texture_cache.IsRescaling());
+    }
     if constexpr (Spec::enabled_stages[2]) {
         bind_stage_info(2);
     }
@@ -632,7 +637,9 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
                       rescaling_data = rescaling.Data(), is_rescaling, update_rescaling,
                       uses_render_area = render_area.uses_render_area,
-                      render_area_data = render_area.words](vk::CommandBuffer cmdbuf) {
+                      render_area_data = render_area.words,
+                      uses_viewport = uses_host_viewport,
+                      viewport_words = host_viewport_words](vk::CommandBuffer cmdbuf) {
         if (bind_descriptor_buffer) {
             const VkDescriptorBufferBindingInfoEXT binding_info{
                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
@@ -643,6 +650,11 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                 return;
             }
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
+        }
+        if (uses_viewport) {
+            cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
+                                 HOST_VIEWPORT_LAYOUT_OFFSET, sizeof(viewport_words),
+                                 viewport_words.data());
         }
         cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
                              RESCALING_LAYOUT_WORDS_OFFSET, sizeof(rescaling_data),
