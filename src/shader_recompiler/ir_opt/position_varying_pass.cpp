@@ -441,15 +441,18 @@ void BarycentricVaryingPass(IR::Program& vertex, IR::Program& fragment) {
     const IR::F32 e2{edge(v[0], v[1])};
     const IR::F32 inv_sum{ir.FPRecip(ir.FPAdd(e0, ir.FPAdd(e1, e2)))};
     const std::array<IR::F32, 3> bary{mul(e0, inv_sum), mul(e1, inv_sum), mul(e2, inv_sum)};
-    // Interpolate the reads
+    // Interpolate the reads as v0 + b1 * (v1 - v0) + b2 * (v2 - v0), like the hardware: a varying
+    // with the same value on the three vertices gets exactly that value (b0 * v + b1 * v + b2 * v
+    // does not, and Breath of the Wild truncates such a varying to build a material mask)
     for (const auto& [block, inst] : reads) {
         const IR::Attribute attribute{inst->Arg(0).Attribute()};
         IR::IREmitter read_ir{*block, IR::Block::InstructionList::s_iterator_to(*inst)};
-        IR::F32 value{read_ir.FPMul(bary[0], read_ir.GetAttribute(attribute, read_ir.Imm32(0)))};
+        const IR::F32 v0{read_ir.GetAttribute(attribute, read_ir.Imm32(0))};
+        IR::F32 value{v0};
         for (u32 vertex_index = 1; vertex_index < 3; ++vertex_index) {
-            value = IR::F32{read_ir.FPFma(
-                bary[vertex_index], read_ir.GetAttribute(attribute, read_ir.Imm32(vertex_index)),
-                value)};
+            const IR::F32 vi{read_ir.GetAttribute(attribute, read_ir.Imm32(vertex_index))};
+            value = IR::F32{read_ir.FPFma(bary[vertex_index],
+                                          IR::F32{read_ir.FPAdd(vi, read_ir.FPNeg(v0))}, value)};
         }
         inst->ReplaceUsesWith(value);
     }
