@@ -355,7 +355,7 @@ public:
         }
         if (!current_query) {
             new_query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
-            if (!counted_since_reset) {
+            if (!counted_since_reset && Settings::values.cloud_sea_fixes.GetValue()) {
                 // Nothing was counted since the last reset, the value is zero
                 new_query->flags |= VideoCommon::QueryFlagBits::IsValueKnown;
             }
@@ -1662,10 +1662,13 @@ void QueryCacheRuntime::SyncValues(std::span<SyncValuesType> values, VkBuffer ba
         }
         // Shaders can read the values from the buffer before they reach guest memory; mark
         // them as GPU written so uniform buffers are not copied from stale guest memory.
-        for (auto& sync_val : values) {
-            impl->buffer_cache.ObtainCPUBuffer(sync_val.address, static_cast<u32>(sync_val.size),
-                                               VideoCommon::ObtainBufferSynchronize::NoSynchronize,
-                                               VideoCommon::ObtainBufferOperation::MarkAsWritten);
+        if (Settings::values.cloud_sea_fixes.GetValue()) {
+            for (auto& sync_val : values) {
+                impl->buffer_cache.ObtainCPUBuffer(
+                    sync_val.address, static_cast<u32>(sync_val.size),
+                    VideoCommon::ObtainBufferSynchronize::NoSynchronize,
+                    VideoCommon::ObtainBufferOperation::MarkAsWritten);
+            }
         }
     });
 

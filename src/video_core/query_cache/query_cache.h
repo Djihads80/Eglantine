@@ -260,7 +260,8 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    if (True(query->flags & QueryFlagBits::IsValueKnown) && pointer != nullptr) {
+    if (Settings::values.cloud_sea_fixes.GetValue() &&
+        True(query->flags & QueryFlagBits::IsValueKnown) && pointer != nullptr) {
         // Shaders can read the report right after this; don't wait for the deferred write
         std::array<u64, 2> known{query->value, impl->gpu.GetTicks()};
         const size_t known_size = has_timestamp ? sizeof(known) : sizeof(u32);
