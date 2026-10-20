@@ -238,9 +238,10 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
 }
 
 template <class P>
-void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
-    if (!Settings::values.barrier_feedback_loops.GetValue()) {
-        return;
+bool TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
+    if (!Settings::values.barrier_feedback_loops.GetValue() ||
+        !Settings::values.color_target_snapshots.GetValue()) {
+        return false;
     }
 
     if (render_targets_serial == last_feedback_loop_serial &&
@@ -248,14 +249,14 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
         if (last_feedback_loop_result) {
             runtime.BarrierFeedbackLoop();
         }
-        return;
+        return last_feedback_loop_result;
     }
 
     if (rt_active_mask == 0) {
         last_feedback_loop_serial = render_targets_serial;
         last_feedback_texture_serial = texture_bindings_serial;
         last_feedback_loop_result = false;
-        return;
+        return false;
     }
     const u32 depth_bit = 1u << NUM_RT;
     const bool depth_active = (rt_active_mask & depth_bit) != 0;
@@ -299,6 +300,116 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
     if (requires_barrier) {
         runtime.BarrierFeedbackLoop();
     }
+    return requires_barrier;
+}
+
+template <class P>
+ImageViewId TextureCache<P>::ResolveFeedbackLoop(ImageViewId view_id) {
+    if (!view_id) {
+        return view_id;
+    }
+    if (!Settings::values.color_target_snapshots.GetValue()) {
+        return view_id;
+    }
+    const ImageViewBase& view = slot_image_views[view_id];
+    if (!view.image_id) {
+        return view_id;
+    }
+    const auto overlaps = [](const SubresourceRange& a, const SubresourceRange& b) {
+        return a.base.level < b.base.level + b.extent.levels &&
+               b.base.level < a.base.level + a.extent.levels &&
+               a.base.layer < b.base.layer + b.extent.layers &&
+               b.base.layer < a.base.layer + a.extent.layers;
+    };
+    // Only color targets the draw writes: a draw only reading its target sees what it expects
+    const auto& regs = maxwell3d->regs;
+    bool is_written = false;
+    for (size_t index = 0; index < NUM_RT; ++index) {
+        const ImageViewId target_id = render_targets.color_buffer_ids[index];
+        if (!target_id) {
+            continue;
+        }
+        const ImageViewBase& target = slot_image_views[target_id];
+        if (target.image_id != view.image_id || !overlaps(target.range, view.range)) {
+            continue;
+        }
+        const auto& mask = regs.color_mask[regs.color_mask_common ? 0 : index];
+        is_written |= mask.R || mask.G || mask.B || mask.A;
+    }
+    if (!is_written) {
+        return view_id;
+    }
+    return SnapshotImageView(view_id);
+}
+
+template <class P>
+ImageViewId TextureCache<P>::SnapshotImageView(ImageViewId view_id) {
+    const ImageId image_id = slot_image_views[view_id].image_id;
+    {
+        const ImageBase& image = slot_images[image_id];
+        if (image.info.num_samples > 1 || True(image.flags & ImageFlagBits::Rescaled)) {
+            return view_id;
+        }
+    }
+    auto [it, is_new] = feedback_snapshots.try_emplace(image_id);
+    if (is_new) {
+        const ImageBase& image = slot_images[image_id];
+        const ImageInfo info = image.info;
+        const GPUVAddr gpu_addr = image.gpu_addr;
+        const VAddr cpu_addr = image.cpu_addr;
+        it->second.image_id = slot_images.insert(runtime, info, gpu_addr, cpu_addr);
+        it->second.epoch = 0;
+        runtime.TransitionImageLayout(slot_images[it->second.image_id]);
+    }
+    const ImageId snapshot_id = it->second.image_id;
+    Image& image = slot_images[image_id];
+    Image& snapshot = slot_images[snapshot_id];
+    const auto view_it = std::ranges::find(image.image_view_ids, view_id);
+    if (view_it == image.image_view_ids.end()) {
+        return view_id;
+    }
+    const ImageViewInfo view_info{
+        image.image_view_infos[std::distance(image.image_view_ids.begin(), view_it)]};
+    // Without a barrier the guest may read older contents: keep the copy until the next one
+    if (it->second.epoch == feedback_epoch) {
+        return FindOrEmplaceImageView(snapshot_id, view_info);
+    }
+    it->second.epoch = feedback_epoch;
+    const SubresourceRange& range = view_info.range;
+    boost::container::small_vector<ImageCopy, 16> copies;
+    for (s32 level = range.base.level; level < range.base.level + range.extent.levels; ++level) {
+        const SubresourceLayers layers{
+            .base_level = level,
+            .base_layer = range.base.layer,
+            .num_layers = range.extent.layers,
+        };
+        copies.push_back(ImageCopy{
+            .src_subresource = layers,
+            .dst_subresource = layers,
+            .src_offset = {},
+            .dst_offset = {},
+            .extent = MipSize(image.info.size, static_cast<u32>(level)),
+        });
+    }
+    runtime.CopyImage(snapshot, image, copies);
+    return FindOrEmplaceImageView(snapshot_id, view_info);
+}
+
+template <class P>
+void TextureCache<P>::DeleteFeedbackSnapshot(ImageId image_id) {
+    const auto it = feedback_snapshots.find(image_id);
+    if (it == feedback_snapshots.end()) {
+        return;
+    }
+    const ImageId snapshot_id = it->second.image_id;
+    feedback_snapshots.erase(it);
+    Image& snapshot = slot_images[snapshot_id];
+    for (const ImageViewId view_id : snapshot.image_view_ids) {
+        sentenced_image_view.Push(std::move(slot_image_views[view_id]));
+        slot_image_views.erase(view_id);
+    }
+    sentenced_images.Push(std::move(slot_images[snapshot_id]));
+    slot_images.erase(snapshot_id);
 }
 
 template <class P>
@@ -2315,6 +2426,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    DeleteFeedbackSnapshot(image_id);
     ImageBase& image = slot_images[image_id];
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);

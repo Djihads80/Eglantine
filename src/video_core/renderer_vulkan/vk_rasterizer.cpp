@@ -864,6 +864,7 @@ void RasterizerVulkan::FlushAndInvalidateRegion(DAddr addr, u64 size,
 }
 
 void RasterizerVulkan::WaitForIdle() {
+    texture_cache.BarrierFeedbackSnapshots();
     // Everything but wait pixel operations. This intentionally includes FRAGMENT_SHADER_BIT because
     // fragment shaders can still write storage buffers.
     VkPipelineStageFlags flags =
@@ -889,9 +890,11 @@ void RasterizerVulkan::WaitForIdle() {
 void RasterizerVulkan::FragmentBarrier() {
     // We already put barriers when a render pass finishes
     scheduler.RequestOutsideRenderPassOperationContext();
+    texture_cache.BarrierFeedbackSnapshots();
 }
 
 void RasterizerVulkan::TiledCacheBarrier() {
+    texture_cache.BarrierFeedbackSnapshots();
     // TODO: Implementing tiled barriers requires rewriting a good chunk of the Vulkan backend
 }
 

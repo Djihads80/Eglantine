@@ -527,10 +527,11 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     RenderAreaPushConstant render_area;
     const VideoCommon::SamplerId* samplers_it{samplers.data()};
     const VideoCommon::ImageViewInOut* views_it{views.data()};
+    SampledImageEntries sampled_entries;
     const auto prepare_stage{[&](size_t stage) LAMBDA_FORCEINLINE {
         buffer_cache.BindHostStageBuffers(stage);
         PushImageDescriptors(texture_cache, guest_descriptor_queue, stage_infos[stage], rescaling,
-                             samplers_it, views_it);
+                             samplers_it, views_it, &sampled_entries);
         const auto& info{stage_infos[stage]};
         if (info.uses_render_area) {
             render_area.uses_render_area = true;
@@ -558,8 +559,19 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         buffer_cache.any_buffer_uploaded = false;
     }
     texture_cache.UpdateRenderTargets(false);
-    texture_cache.CheckFeedbackLoop(std::span<const VideoCommon::ImageViewInOut>{views.data(),
-                                                                                 views.size()});
+    if (texture_cache.CheckFeedbackLoop(std::span<const VideoCommon::ImageViewInOut>{views.data(),
+                                                                                 views.size()})) {
+        // Textures that the draw also writes as color targets sample a copy taken before it
+        // (Xenoblade Chronicles 2 composites its cloud sea reading and writing the same depth)
+        for (const SampledImageEntry& sampled : sampled_entries) {
+            const VideoCommon::ImageViewId snapshot_id{
+                texture_cache.ResolveFeedbackLoop(sampled.view->id)};
+            if (snapshot_id != sampled.view->id) {
+                sampled.entry->image.imageView =
+                    texture_cache.GetImageView(snapshot_id).Handle(sampled.type);
+            }
+        }
+    }
     if (IsBuilt() && !pipeline) {
         return false;
     }

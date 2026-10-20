@@ -274,6 +274,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Enables access to previous buffer states.\nThis option may improve rendering "
               "quality and performance consistency in some games."));
     INSERT(Settings, fix_bloom_effects, tr("Fix bloom effects"), tr("Removes bloom in Burnout."));
+    INSERT(Settings, color_target_snapshots, tr("Snapshot color targets for sampling"),
+           tr("Draws sample a copy of the target taken before they wrote it, for games that read "
+              "and write the same target in one draw.\nFixes horizontal lines over the cloud sea "
+              "in Xenoblade Chronicles 2 on AMD.\nCosts performance in some games (Breath of the "
+              "Wild)."));
 
     // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
