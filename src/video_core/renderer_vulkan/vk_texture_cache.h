@@ -334,6 +334,13 @@ public:
     void DownloadMemory(const StagingBufferRef& map,
                         std::span<const VideoCommon::BufferImageCopy> copies);
 
+    /// true if this image is single-sample D24S8 stored as host D24_UNORM_S8_UINT,
+    /// so depth and stencil can be downloaded to separate buffer regions and merged on the CPU.
+    [[nodiscard]] bool CanSplitDepthStencil() const;
+    /// when non-zero, depth+stencil downloads write stencil (1 byte/texel) at
+    /// buffer offset + stencil_split + copy.buffer_offset / 4 instead of overlapping depth.
+    size_t stencil_split = 0;
+
     void AllocateComputeUnswizzleImage();
 
     [[nodiscard]] VkImage Handle() const noexcept {

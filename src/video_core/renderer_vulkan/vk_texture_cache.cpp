@@ -2243,10 +2243,30 @@ void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<size_t> o
         boost::container::small_vector<VkBuffer, 8> buffers_vector{};
         boost::container::small_vector<boost::container::small_vector<VkBufferImageCopy, 16>, 8>
             vk_copies;
+        const bool split_offset =
+            stencil_split != 0 &&
+            aspect_mask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         for (size_t index = 0; index < buffers_span.size(); index++) {
             buffers_vector.emplace_back(buffers_span[index]);
-            vk_copies.emplace_back(
-                TransformBufferImageCopies(copies, offsets_span[index], aspect_mask));
+            if (split_offset) {
+                // copying both aspects to the same buffer offset makes the regions
+                // overlap (undefined in Vulkan). Put stencil in its own region instead.
+                auto depth_copies = TransformBufferImageCopies(copies, offsets_span[index],
+                                                               VK_IMAGE_ASPECT_DEPTH_BIT);
+                auto stencil_copies = TransformBufferImageCopies(copies, offsets_span[index],
+                                                                 VK_IMAGE_ASPECT_STENCIL_BIT);
+                for (size_t i = 0; i < copies.size(); ++i) {
+                    stencil_copies[i].bufferOffset =
+                        offsets_span[index] + stencil_split + copies[i].buffer_offset / 4;
+                }
+                for (const auto& copy : stencil_copies) {
+                    depth_copies.push_back(copy);
+                }
+                vk_copies.emplace_back(std::move(depth_copies));
+            } else {
+                vk_copies.emplace_back(
+                    TransformBufferImageCopies(copies, offsets_span[index], aspect_mask));
+            }
         }
         scheduler->RequestOutsideRenderPassOperationContext();
         scheduler->Record([buffers = std::move(buffers_vector), image = *original_image,
@@ -2309,6 +2329,22 @@ void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<size_t> o
     if (is_rescaled) {
         ScaleUp(true);
     }
+}
+
+bool Image::CanSplitDepthStencil() const {
+    if (info.num_samples != 1) {
+        return false;
+    }
+    if (info.format != PixelFormat::S8_UINT_D24_UNORM &&
+        info.format != PixelFormat::D24_UNORM_S8_UINT) {
+        return false;
+    }
+    if (aspect_mask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        return false;
+    }
+    const auto host = MaxwellToVK::SurfaceFormat(runtime->device, FormatType::Optimal, false,
+                                                 info.format);
+    return host.format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
 void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
