@@ -237,29 +237,6 @@ public:
 
     [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload);
 
-    /// diagnostics from the last DmaImageId call
-    struct DmaDiag {
-        int reason = 0;
-        u32 image_index = 0;
-        u32 flags = 0;
-        u32 width = 0;
-        u32 height = 0;
-        u32 format = 0;
-        u64 tick = 0;
-        u32 candidates = 0;
-    };
-    DmaDiag last_dma{};
-
-    /// queue an async readback of a D24S8 region into guest memory with depth and
-    /// stencil downloaded separately and re-packed when the download completes.
-    bool DownloadDepthStencilToGuest(Image* image, const BufferImageCopy& copy,
-                                          GPUVAddr address, size_t size);
-
-private:
-    void DownloadDepthStencil(Image& image);
-
-public:
-
     [[nodiscard]] std::pair<Image*, BufferImageCopy> DmaBufferImageCopy(
         const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
         const Tegra::DMA::ImageOperand& image_operand, ImageId image_id, bool modifies_image);
@@ -484,13 +461,6 @@ private:
     struct BufferDownload {
         GPUVAddr address;
         size_t size;
-        // split depth/stencil readback that must be re-packed before writing
-        bool is_depth_stencil = false;
-        bool stencil_low = false;
-        size_t split_offset = 0;
-        u32 region_width = 0;
-        u32 region_height = 0;
-        u32 row_pitch = 0;
     };
 
     struct PendingDownload {
