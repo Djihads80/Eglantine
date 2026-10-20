@@ -697,6 +697,16 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
     SDL_AddEventWatch(&SDLEventWatcher, this);
 
     initialized = true;
+    if (start_thread) {
+        vibration_thread = std::thread([this] {
+            Common::SetCurrentThreadName("SDL_Vibration");
+            using namespace std::chrono_literals;
+            while (initialized) {
+                SendVibrations();
+                std::this_thread::sleep_for(250ms); // 4 TPS
+            }
+        });
+    }
     // Because the events for joystick connection happens before we have our event watcher added, we
     // can just open all the joysticks right here
     int joystick_count = 0;
@@ -715,6 +725,7 @@ SDLDriver::~SDLDriver() {
 
     initialized = false;
     if (start_thread) {
+        vibration_thread.join();
         SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
     }
 }
@@ -794,7 +805,10 @@ Common::Input::DriverResult SDLDriver::SetVibration(
         .type = Common::Input::VibrationAmplificationType::Exponential,
     };
 
-    joystick->RumblePlay(new_vibration);
+    vibration_queue.Push(VibrationRequest{
+        .identifier = identifier,
+        .vibration = new_vibration,
+    });
 
     return Common::Input::DriverResult::Success;
 }
@@ -836,6 +850,31 @@ bool SDLDriver::IsVibrationEnabled(const PadIdentifier& identifier) {
 
     joystick->EnableVibration(true);
     return true;
+}
+
+void SDLDriver::SendVibrations() {
+    std::vector<VibrationRequest> filtered_vibrations{};
+    while (!vibration_queue.Empty()) {
+        VibrationRequest request;
+        vibration_queue.Pop(request);
+        const auto joystick = GetSDLJoystickByGUID(request.identifier.guid.RawString(),
+                                                   static_cast<int>(request.identifier.port));
+        const auto it = std::find_if(filtered_vibrations.begin(), filtered_vibrations.end(),
+                                     [request](VibrationRequest vibration) {
+                                         return vibration.identifier == request.identifier;
+                                     });
+        if (it == filtered_vibrations.end()) {
+            filtered_vibrations.push_back(std::move(request));
+            continue;
+        }
+        *it = request;
+    }
+
+    for (const auto& vibration : filtered_vibrations) {
+        const auto joystick = GetSDLJoystickByGUID(vibration.identifier.guid.RawString(),
+                                                   static_cast<int>(vibration.identifier.port));
+        joystick->RumblePlay(vibration.vibration);
+    }
 }
 
 Common::ParamPackage SDLDriver::BuildAnalogParamPackageForButton(int port, const Common::UUID& guid,
