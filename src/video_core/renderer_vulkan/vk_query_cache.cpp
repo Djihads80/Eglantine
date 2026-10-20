@@ -179,6 +179,7 @@ public:
                               use_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
         });
 
+        counted_since_reset = false;
         has_started = true;
     }
 
@@ -354,6 +355,10 @@ public:
         }
         if (!current_query) {
             new_query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            if (!counted_since_reset) {
+                // Nothing was counted since the last reset, the value is zero
+                new_query->flags |= VideoCommon::QueryFlagBits::IsValueKnown;
+            }
             return index;
         }
         new_query->start_bank_id = current_query->start_bank_id;
@@ -471,6 +476,7 @@ private:
     void ReserveHostQuery() {
         size_t new_slot = ReserveBankSlot();
         current_bank->AddReference(1);
+        counted_since_reset = true;
         num_slots_used++;
         if (current_query) {
             size_t bank_id = current_query->start_bank_id;
@@ -605,6 +611,7 @@ private:
     size_t first_accumulation_checkpoint{};
     size_t last_accumulation_checkpoint{};
     bool accumulation_since_last_sync{};
+    bool counted_since_reset{};
     VideoCommon::HostQueryBase* current_query;
     bool has_started{};
     std::mutex flush_guard;
@@ -1362,6 +1369,11 @@ QueryCacheRuntime::QueryCacheRuntime(VideoCore::RasterizerInterface* rasterizer,
         staging_pool_, compute_pass_descriptor_queue, descriptor_pool, texture_cache_);
 }
 
+void QueryCacheRuntime::WriteKnownValue(DAddr address, std::span<const u8> data) {
+    std::scoped_lock lk(impl->buffer_cache.mutex);
+    impl->buffer_cache.InlineMemory(address, data.size(), data);
+}
+
 void QueryCacheRuntime::Bind3DEngine(Maxwell3D* maxwell3d) {
     impl->maxwell3d = maxwell3d;
 }
@@ -1647,6 +1659,13 @@ void QueryCacheRuntime::SyncValues(std::span<SyncValuesType> values, VkBuffer ba
             const auto [buffer, offset] = impl->buffer_cache.ObtainCPUBuffer(
                 pair.first, static_cast<u32>(pair.second - pair.first), sync_info, post_op);
             impl->buffers_to_upload_to.emplace_back(buffer->Handle(), offset);
+        }
+        // Shaders can read the values from the buffer before they reach guest memory; mark
+        // them as GPU written so uniform buffers are not copied from stale guest memory.
+        for (auto& sync_val : values) {
+            impl->buffer_cache.ObtainCPUBuffer(sync_val.address, static_cast<u32>(sync_val.size),
+                                               VideoCommon::ObtainBufferSynchronize::NoSynchronize,
+                                               VideoCommon::ObtainBufferOperation::MarkAsWritten);
         }
     });
 

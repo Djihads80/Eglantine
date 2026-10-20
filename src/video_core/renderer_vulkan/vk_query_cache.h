@@ -56,6 +56,9 @@ public:
 
     VideoCommon::StreamerInterface* GetStreamerInterface(VideoCommon::QueryType query_type);
 
+    /// Writes a query value known when the query is written, in command order
+    void WriteKnownValue(DAddr address, std::span<const u8> data);
+
     void Bind3DEngine(Tegra::Engines::Maxwell3D* maxwell3d);
 
     template <typename Func>
