@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <optional>
@@ -430,9 +431,8 @@ void MacroInterpreterImpl::Execute(Core::System& system, Engines::Maxwell3D& max
     while (keep_executing) {
         keep_executing = Step(system, maxwell3d, false);
     }
-
-    // Assert the the macro used all the input parameters
-    ASSERT(next_parameter_index == parameters.size());
+    // The parameter list may also hold the parameters of the methods that follow this call;
+    // next_parameter_index tells the caller how many this macro consumed.
 }
 
 /// Resets the execution engine state, zeroing registers, etc.
@@ -722,6 +722,12 @@ struct MacroJITx64Impl final : public Xbyak::CodeGenerator, public DynamicCached
 
     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters, u32 method) override;
 
+    [[nodiscard]] size_t ConsumedParameters() const override {
+        return consumed_parameters;
+    }
+
+    size_t consumed_parameters{};
+
     void Compile_ALU(Core::System& system, Macro::Opcode opcode);
     void Compile_AddImmediate(Core::System& system, Macro::Opcode opcode);
     void Compile_ExtractInsert(Core::System& system, Macro::Opcode opcode);
@@ -744,6 +750,7 @@ struct MacroJITx64Impl final : public Xbyak::CodeGenerator, public DynamicCached
         Core::System* system = nullptr;
         std::array<u32, Macro::NUM_MACRO_REGISTERS> registers{};
         u32 carry_flag{};
+        const u32* parameter_cursor{};
     };
     static_assert(offsetof(JITState, maxwell3d) == 0, "Maxwell3D is not at 0x0");
     using ProgramType = void (*)(JITState*, const u32*, const u32*);
@@ -768,12 +775,16 @@ struct MacroJITx64Impl final : public Xbyak::CodeGenerator, public DynamicCached
 };
 
 void MacroJITx64Impl::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters, u32 method) {
-    ASSERT_OR_EXECUTE(program != nullptr, { return; });
+    ASSERT_OR_EXECUTE(program != nullptr, { consumed_parameters = parameters.size(); return; });
     JITState state{};
     state.maxwell3d = &maxwell3d;
     state.system = &system;
     state.registers = {};
     program(&state, parameters.data(), parameters.data() + parameters.size());
+    const size_t fetched{state.parameter_cursor == nullptr
+                             ? parameters.size()
+                             : static_cast<size_t>(state.parameter_cursor - parameters.data())};
+    consumed_parameters = std::min<size_t>(fetched, parameters.size());
 }
 
 void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
@@ -1151,6 +1162,8 @@ void MacroJITx64Impl::Compile(Core::System& system) {
 
     L(end_of_code);
 
+    // Report how many parameters the code consumed.
+    mov(qword[STATE + offsetof(JITState, parameter_cursor)], PARAMETERS);
     Common::X64::ABI_PopRegistersAndAdjustStack(*this, Common::X64::ABI_ALL_CALLEE_SAVED, 8);
     ret();
     ready();
@@ -1337,8 +1350,19 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
     macro_file.write(reinterpret_cast<const char*>(code.data()), code.size_bytes());
 }
 
-void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
-                          std::span<const u32> parameters) {
+size_t MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
+                            std::span<const u32> parameters) {
+    const auto count_consumed = [](const AnyCachedMacro& cached,
+                                   std::span<const u32> params) -> size_t {
+        if (const auto* program = std::get_if<MacroInterpreterImpl>(&cached)) {
+            return (std::min)(static_cast<size_t>(program->next_parameter_index), params.size());
+        }
+        if (const auto* program = std::get_if<std::unique_ptr<DynamicCachedMacro>>(&cached)) {
+            return (std::min)(program->get()->ConsumedParameters(), params.size());
+        }
+        // HLE replacements consume the whole parameter list.
+        return params.size();
+    };
     const auto execute_variant = [&system, &maxwell3d, &parameters,
                                   method](AnyCachedMacro& cached) {
         if (std::holds_alternative<MacroInterpreterImpl>(cached) ||
@@ -1380,7 +1404,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     };
     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
         execute_variant(it->second.program);
-        return;
+        return count_consumed(it->second.program, parameters);
     }
 
     // Macro not compiled, check if it's uploaded and if so, compile it
@@ -1396,7 +1420,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         }
         if (!mid_method) {
             ASSERT_MSG(false, "Macro 0x{0:x} was not uploaded", method);
-            return;
+            return parameters.size();
         }
 
         const auto source = uploaded_macro_code.find(*mid_method);
@@ -1424,6 +1448,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     if (Settings::values.dump_macros) {
         Dump(ci.hash, code, !std::holds_alternative<std::monostate>(ci.program));
     }
+    return count_consumed(ci.program, parameters);
 }
 
 AnyCachedMacro MacroEngine::Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code) {

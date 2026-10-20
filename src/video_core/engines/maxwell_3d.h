@@ -3200,6 +3200,7 @@ private:
     void InitializeRegisterDefaults();
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
+    void FinishPendingMacro(Core::System& system);
 
     u32 ProcessShadowRam(u32 method, u32 argument);
 
@@ -3221,7 +3222,7 @@ private:
      * @param method Method to call
      * @param parameters Arguments to the method call
      */
-    void CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
+    size_t CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
 
     /// Handles writes to the macro uploading register.
     void ProcessMacroUpload(u32 data);
@@ -3262,6 +3263,7 @@ private:
     u32 executing_macro = 0;
     /// Parameters that have been submitted to the macro call so far.
     std::vector<u32> macro_params;
+    std::vector<u32> macro_param_methods;
 
     /// Interpreter for the macro codes uploaded to the GPU.
     MacroEngine macro_engine;
