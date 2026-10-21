@@ -487,6 +487,7 @@ private:
         // split depth/stencil readback that must be re-packed before writing
         bool is_depth_stencil = false;
         bool stencil_low = false;
+        bool depth_float = false;
         size_t split_offset = 0;
         u32 region_width = 0;
         u32 region_height = 0;

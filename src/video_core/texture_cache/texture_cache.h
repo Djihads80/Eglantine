@@ -642,6 +642,25 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
     }
 }
 
+namespace Detail {
+/// Depth part of a downloaded texel as 24-bit unorm. Host D32_SFLOAT depth (GPUs without D24S8)
+/// arrives as a 32-bit float and is converted; host D24 depth is already in the low 24 bits.
+inline u32 DepthTo24(u32 word, bool depth_float) {
+    if (!depth_float) {
+        return word & 0x00FFFFFFu;
+    }
+    float depth;
+    std::memcpy(&depth, &word, sizeof(depth));
+    if (!(depth > 0.0f)) {
+        return 0; // also catches NaN
+    }
+    if (depth >= 1.0f) {
+        return 0x00FFFFFFu;
+    }
+    return static_cast<u32>(static_cast<double>(depth) * 16777215.0 + 0.5);
+}
+} // namespace Detail
+
 template <class P>
 void TextureCache<P>::DownloadDepthStencil(Image& image) {
     // Download depth (4 bytes/texel, D24 in the low bits) and stencil (1 byte/texel) to separate
@@ -657,6 +676,7 @@ void TextureCache<P>::DownloadDepthStencil(Image& image) {
 
     u8* const base = map.mapped_span.data();
     const bool stencil_low = image.info.format == PixelFormat::S8_UINT_D24_UNORM;
+    const bool depth_float = image.DepthIsFloat();
     for (const auto& copy : copies) {
         const u32 width = copy.image_extent.width;
         const u32 height = copy.image_extent.height;
@@ -671,7 +691,7 @@ void TextureCache<P>::DownloadDepthStencil(Image& image) {
                     u8* const word_ptr = base + copy.buffer_offset + texel * 4;
                     u32 word;
                     std::memcpy(&word, word_ptr, sizeof(word));
-                    const u32 d24 = word & 0x00FFFFFFu;
+                    const u32 d24 = Detail::DepthTo24(word, depth_float);
                     const u32 s8 = base[split + copy.buffer_offset / 4 + texel];
                     word = stencil_low ? ((d24 << 8) | s8) : (d24 | (s8 << 24));
                     std::memcpy(word_ptr, &word, sizeof(word));
@@ -994,7 +1014,7 @@ void TextureCache<P>::PopAsyncFlushes() {
                             u8* const word_ptr = base + texel * 4;
                             u32 word;
                             std::memcpy(&word, word_ptr, sizeof(word));
-                            const u32 d24 = word & 0x00FFFFFFu;
+                            const u32 d24 = Detail::DepthTo24(word, buffer_info.depth_float);
                             const u32 s8 = base[buffer_info.split_offset + texel];
                             word = buffer_info.stencil_low ? ((d24 << 8) | s8)
                                                                  : (d24 | (s8 << 24));
@@ -1193,6 +1213,7 @@ bool TextureCache<P>::DownloadDepthStencilToGuest(Image* image, const BufferImag
         BufferDownload download{address, size};
         download.is_depth_stencil = true;
         download.stencil_low = image->info.format == PixelFormat::S8_UINT_D24_UNORM;
+        download.depth_float = image->DepthIsFloat();
         download.split_offset = split;
         download.region_width = copy.image_extent.width;
         download.region_height = copy.image_extent.height;
@@ -1202,8 +1223,9 @@ bool TextureCache<P>::DownloadDepthStencilToGuest(Image* image, const BufferImag
         uncommitted_downloads.emplace_back(pending);
         uncommitted_async_buffers.emplace_back(staging);
         if (Settings::values.dma_readback_log.GetValue()) {
-            LOG_INFO(HW_GPU, "ds-dma {}x{} row={} dst={:#x} size={}",
-                     copy.image_extent.width, copy.image_extent.height, row, address, size);
+            LOG_INFO(HW_GPU, "ds-dma {}x{} row={} dst={:#x} size={} depth={}",
+                     copy.image_extent.width, copy.image_extent.height, row, address, size,
+                     download.depth_float ? "f32" : "d24");
         }
         return true;
     } else {

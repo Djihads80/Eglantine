@@ -337,6 +337,8 @@ public:
     /// true if this image is single-sample D24S8 stored as host D24_UNORM_S8_UINT,
     /// so depth and stencil can be downloaded to separate buffer regions and merged on the CPU.
     [[nodiscard]] bool CanSplitDepthStencil() const;
+    /// true if the host stores this D24S8 image as D32_SFLOAT_S8_UINT (no D24S8 support, e.g. AMD)
+    [[nodiscard]] bool DepthIsFloat() const;
     /// when non-zero, depth+stencil downloads write stencil (1 byte/texel) at
     /// buffer offset + stencil_split + copy.buffer_offset / 4 instead of overlapping depth.
     size_t stencil_split = 0;

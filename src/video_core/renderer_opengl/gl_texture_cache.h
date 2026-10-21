@@ -213,6 +213,9 @@ public:
     [[nodiscard]] bool CanSplitDepthStencil() const {
         return false;
     }
+    [[nodiscard]] bool DepthIsFloat() const {
+        return false;
+    }
     size_t stencil_split = 0;
 
     GLuint StorageHandle() noexcept;
