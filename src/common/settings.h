@@ -652,9 +652,6 @@ struct Values {
     SwitchableSetting<bool> fix_bloom_effects{linkage, false, "fix_bloom_effects",
                                                      Category::RendererHacks};
 
-    // log small DMA image-to-buffer readbacks (scan visor investigation)
-    SwitchableSetting<bool> dma_readback_log{linkage, false, "dma_readback_log",
-                                                   Category::RendererHacks};
 
     SwitchableSetting<bool> emulate_bgr565{linkage, false, "emulate_bgr565",
                                             Category::RendererHacks};

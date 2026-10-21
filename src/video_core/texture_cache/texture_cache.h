@@ -701,10 +701,6 @@ void TextureCache<P>::DownloadDepthStencil(Image& image) {
     }
     SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies,
                  map.mapped_span.subspan(0, depth_bytes), swizzle_data_buffer);
-    if (Settings::values.dma_readback_log.GetValue()) {
-        LOG_INFO(HW_GPU, "ds-download {}x{} fmt={} bytes={}", image.info.size.width,
-                 image.info.size.height, static_cast<u32>(image.info.format), depth_bytes);
-    }
 }
 
 template <class P>
@@ -1079,45 +1075,32 @@ void TextureCache<P>::PopAsyncFlushes() {
 template <class P>
 ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload) {
     const ImageInfo dst_info(operand);
-    last_dma = {};
     const ImageId dst_id = FindDMAImage(dst_info, operand.address);
     if (!dst_id) {
-        last_dma.reason = 1;
         return NULL_IMAGE_ID;
     }
     auto& image = slot_images[dst_id];
-    last_dma.image_index = dst_id.index;
-    last_dma.flags = static_cast<u32>(image.flags);
-    last_dma.width = image.info.size.width;
-    last_dma.height = image.info.size.height;
-    last_dma.format = static_cast<u32>(image.info.format);
-    last_dma.tick = image.modification_tick;
     // readbacks always take the fixed path (uploads keep the original checks).
     const bool dma_fix = !is_upload;
     if (dma_fix && True(image.flags & ImageFlagBits::CpuModified)) {
         // Guest memory is newer than the host image: let the CPU path copy it.
-        last_dma.reason = 6;
         return NULL_IMAGE_ID;
     }
     if (!dma_fix && False(image.flags & ImageFlagBits::GpuModified)) {
         // No need to waste time on an image that's synced with guest
-        last_dma.reason = 2;
         return NULL_IMAGE_ID;
     }
     if (image.info.type == ImageType::e3D) {
         // Don't accelerate 3D images.
-        last_dma.reason = 3;
         return NULL_IMAGE_ID;
     }
     if (!dma_fix && !is_upload && !image.info.dma_downloaded) {
         // Force a full sync.
         image.info.dma_downloaded = true;
-        last_dma.reason = 4;
         return NULL_IMAGE_ID;
     }
     const auto base = image.TryFindBase(operand.address);
     if (!base) {
-        last_dma.reason = 5;
         return NULL_IMAGE_ID;
     }
     return dst_id;
@@ -1222,11 +1205,6 @@ bool TextureCache<P>::DownloadDepthStencilToGuest(Image* image, const BufferImag
         const PendingDownload pending{false, uncommitted_async_buffers.size(), slot};
         uncommitted_downloads.emplace_back(pending);
         uncommitted_async_buffers.emplace_back(staging);
-        if (Settings::values.dma_readback_log.GetValue()) {
-            LOG_INFO(HW_GPU, "ds-dma {}x{} row={} dst={:#x} size={} depth={}",
-                     copy.image_extent.width, copy.image_extent.height, row, address, size,
-                     download.depth_float ? "f32" : "d24");
-        }
         return true;
     } else {
         return false;
@@ -1401,7 +1379,6 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
         return false;
     };
     ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
-    last_dma.candidates = static_cast<u32>(image_ids.size());
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }

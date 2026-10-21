@@ -238,17 +238,6 @@ public:
     [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload);
 
     /// diagnostics from the last DmaImageId call
-    struct DmaDiag {
-        int reason = 0;
-        u32 image_index = 0;
-        u32 flags = 0;
-        u32 width = 0;
-        u32 height = 0;
-        u32 format = 0;
-        u64 tick = 0;
-        u32 candidates = 0;
-    };
-    DmaDiag last_dma{};
 
     /// queue an async readback of a D24S8 region into guest memory with depth and
     /// stencil downloaded separately and re-packed when the download completes.

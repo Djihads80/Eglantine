@@ -1021,18 +1021,6 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
                                        const Tegra::DMA::ImageOperand& image_operand) {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     const auto image_id = texture_cache.DmaImageId(image_operand, IS_IMAGE_UPLOAD);
-    const bool dma_log = !IS_IMAGE_UPLOAD && Settings::values.dma_readback_log.GetValue() &&
-                           copy_info.length_y >= 32 && copy_info.length_y <= 512;
-    if (dma_log) {
-        const auto& d = texture_cache.last_dma;
-        LOG_INFO(HW_GPU,
-                 "dma {} reason={} img={} cand={} flags={:#x} {}x{} fmt={} tick={} "
-                 "src={:#x} dst={:#x} len={} lines={} pitch={} fix={}",
-                 image_id == VideoCommon::NULL_IMAGE_ID ? "CPU" : "GPU", d.reason, d.image_index,
-                 d.candidates, d.flags, d.width, d.height, d.format, d.tick,
-                 image_operand.address, buffer_operand.address, copy_info.length_x,
-                 copy_info.length_y, buffer_operand.pitch, 1);
-    }
     if (image_id == VideoCommon::NULL_IMAGE_ID) {
         return false;
     }
@@ -1062,9 +1050,6 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
         image->UploadMemory(buffer->Handle(), offset, copy_span);
     } else {
         if (offset % BytesPerBlock(image->info.format)) {
-            if (dma_log) {
-                LOG_INFO(HW_GPU, "dma fallback: unaligned buffer offset {}", offset);
-            }
             return false;
         }
         texture_cache.DownloadImageIntoBuffer(image, buffer->Handle(), offset, copy_span,

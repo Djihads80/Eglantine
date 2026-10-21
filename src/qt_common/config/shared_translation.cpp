@@ -274,10 +274,6 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Enables access to previous buffer states.\nThis option may improve rendering "
               "quality and performance consistency in some games."));
     INSERT(Settings, fix_bloom_effects, tr("Fix bloom effects"), tr("Removes bloom in Burnout."));
-    INSERT(Settings, dma_readback_log, tr("DMA readback log"),
-           tr("Writes a log line for every small GPU->CPU image readback.\nFor debugging only."));
-
-    // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
            tr("Controls the number of features that can be used in Extended Dynamic State.\n"
               "Higher states allow for more features and can increase performance, but may cause "
