@@ -170,18 +170,8 @@ public:
     /// Fill image_view_ids with the graphics/compute images in indices
     void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
 
-    /// Handle feedback loops during draws. Returns true when a view is also a render target.
-    bool CheckFeedbackLoop(std::span<const ImageViewInOut> views);
-
-    /// Returns a view of a copy of the image when the draw also writes the sampled subresources
-    /// as a color target, so that its fragments read the contents from before the draw.
-    [[nodiscard]] ImageViewId ResolveFeedbackLoop(ImageViewId view_id);
-
-    /// The guest ordered render target writes before later texture reads: copies taken for
-    /// feedback loops are outdated
-    void BarrierFeedbackSnapshots() noexcept {
-        ++feedback_epoch;
-    }
+    /// Handle feedback loops during draws.
+    void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 
     /// Get the sampler from the graphics/compute descriptor table in the specified index
     Sampler* GetSampler(u32 index, bool compute);
@@ -392,12 +382,6 @@ private:
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 
-    /// Copies the subresources of a view to the snapshot image of its image, returns its view
-    [[nodiscard]] ImageViewId SnapshotImageView(ImageViewId view_id);
-
-    /// Destroys the snapshot image of an image, if any
-    void DeleteFeedbackSnapshot(ImageId image_id);
-
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
 
@@ -455,14 +439,6 @@ private:
     u64 last_feedback_loop_serial = 0;
     u64 last_feedback_texture_serial = 0;
     bool last_feedback_loop_result = false;
-    /// Unregistered copies of images that draws sample while writing them, see ResolveFeedbackLoop
-    struct FeedbackSnapshot {
-        ImageId image_id;
-        u64 epoch;
-    };
-    std::unordered_map<ImageId, FeedbackSnapshot> feedback_snapshots;
-    /// Incremented by guest barriers, see BarrierFeedbackSnapshots
-    u64 feedback_epoch = 1;
     FramebufferId last_framebuffer_id{};
     u64 last_framebuffer_serial = 0;
 

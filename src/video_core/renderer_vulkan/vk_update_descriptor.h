@@ -59,11 +59,6 @@ public:
         return upload_start;
     }
 
-    /// Entry that the next Add call fills
-    DescriptorUpdateEntry* Cursor() noexcept {
-        return payload_cursor;
-    }
-
     void AddSampledImage(VkImageView image_view, VkSampler sampler) {
         *(payload_cursor++) = VkDescriptorImageInfo{
             .sampler = sampler,

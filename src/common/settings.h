@@ -655,10 +655,6 @@ struct Values {
     SwitchableSetting<bool> emulate_bgr565{linkage, false, "emulate_bgr565",
                                             Category::RendererHacks};
 
-    // sample snapshots of color targets a draw also writes
-    SwitchableSetting<bool> color_target_snapshots{linkage, false, "color_target_snapshots",
-                                                   Category::RendererHacks};
-
     // exact varying interpolation and same frame occlusion reads
     SwitchableSetting<bool> cloud_sea_fixes{linkage, false, "cloud_sea_fixes",
                                             Category::RendererHacks};

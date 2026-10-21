@@ -350,20 +350,11 @@ public:
     std::array<f32, 4> words{};
 };
 
-/// Queued descriptor of a sampled texture, to replace its view after the descriptors are pushed
-struct SampledImageEntry {
-    DescriptorUpdateEntry* entry;
-    const VideoCommon::ImageViewInOut* view;
-    Shader::TextureType type;
-};
-using SampledImageEntries = boost::container::small_vector<SampledImageEntry, 32>;
-
 inline void PushImageDescriptors(TextureCache& texture_cache,
                                  GuestDescriptorQueue& guest_descriptor_queue,
                                  const Shader::Info& info, RescalingPushConstant& rescaling,
                                  const VideoCommon::SamplerId*& samplers,
-                                 const VideoCommon::ImageViewInOut*& views,
-                                 SampledImageEntries* sampled_entries = nullptr) {
+                                 const VideoCommon::ImageViewInOut*& views) {
     const u32 num_texture_buffers = Shader::NumDescriptors(info.texture_buffer_descriptors);
     const u32 num_image_buffers = Shader::NumDescriptors(info.image_buffer_descriptors);
     views += num_texture_buffers;
@@ -371,13 +362,6 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
     for (const auto& desc : info.texture_descriptors) {
         bool is_rescaled{};
         for (u32 index = 0; index < desc.count; ++index) {
-            if (sampled_entries) {
-                sampled_entries->push_back({
-                    .entry = guest_descriptor_queue.Cursor(),
-                    .view = views,
-                    .type = desc.type,
-                });
-            }
             const VideoCommon::ImageViewId image_view_id{(views++)->id};
             const VideoCommon::SamplerId sampler_id{*(samplers++)};
             ImageView& image_view{texture_cache.GetImageView(image_view_id)};

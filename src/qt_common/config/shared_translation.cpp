@@ -278,10 +278,6 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Exact varying interpolation and same-frame occlusion reads.\nFixes the cloud sea "
               "in Xenoblade Chronicles 2 (wobble, one-frame pops).\nKnown to hang loading in some "
               "games, see the toggle description."));
-    INSERT(Settings, color_target_snapshots, tr("Snapshot color targets for sampling"),
-           tr("Draws sample a copy of the target taken before they wrote it, for games that read "
-              "and write the same target in one draw.\nFixes horizontal lines over the cloud sea "
-              "in Xenoblade Chronicles 2 on AMD.\nCosts performance in some games (Breath of the "
               "Wild)."));
 
     // Renderer (Extensions)
