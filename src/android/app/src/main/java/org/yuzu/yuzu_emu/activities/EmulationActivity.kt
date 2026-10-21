@@ -158,7 +158,8 @@ class EmulationActivity : AppCompatActivity(), SensorEventListener, InputManager
         setContentView(binding.root)
 
         val launchIntent = Intent(intent)
-        val shouldDeferLaunchForSwap = hasEmulationSession && isSwapIntent(launchIntent)
+        val shouldDeferLaunchForSwap =
+            savedInstanceState == null && hasEmulationSession && isSwapIntent(launchIntent)
         if (shouldDeferLaunchForSwap) {
             Log.info("[EmulationActivity] onCreate detected existing session; deferring new game setup for swap")
             emulationViewModel.setIsEmulationStopping(true)
