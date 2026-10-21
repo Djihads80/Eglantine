@@ -18,7 +18,7 @@ export LIBGL_ALWAYS_SOFTWARE=1
 # This was automated via a script so I might have missed some
 ext="GL_AMD_seamless_cubemap_per_texture"
 ext="$ext GL_ARB_bindless_texture GL_ARB_derivative_control GL_ARB_direct_state_access GL_ARB_draw_buffers"
-ext="$ext GL_ARB_draw_buffers_blend GL_ARB_draw_instanced GL_ARB_fragment_layer_viewport"
+ext="$ext GL_ARB_draw_buffers_blend GL_ARB_draw_instanced GL_ARB_fragment_layer_viewport GL_ARB_fragment_program"
 ext="$ext GL_ARB_geometry_shader4 GL_ARB_gl_spirv"
 ext="$ext GL_ARB_gpu_shader_fp64 GL_ARB_gpu_shader_int64 GL_ARB_imaging"
 ext="$ext GL_ARB_indirect_parameters GL_ARB_instanced_arrays GL_ARB_multisample"
