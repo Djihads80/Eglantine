@@ -83,7 +83,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
             android:theme="@style/Theme.Yuzu.Main"
             android:launchMode="singleTop"
             android:supportsPictureInPicture="true"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|density|touchscreen|colorMode|keyboard|keyboardHidden|navigation"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.nfc.action.TECH_DISCOVERED" />
