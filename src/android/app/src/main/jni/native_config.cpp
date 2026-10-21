@@ -83,6 +83,9 @@ jboolean Java_org_yuzu_yuzu_1emu_utils_NativeConfig_isPerGameConfigLoaded(JNIEnv
 }
 
 void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_savePerGameConfig(JNIEnv* env, jobject obj) {
+    if (per_game_config == nullptr) {
+        return;
+    }
     per_game_config->AndroidConfig::SaveAllValues();
 }
 
