@@ -106,6 +106,8 @@ void EmitInst(EmitContext& ctx, IR::Inst* inst) {
         return Invoke<&Emit##name>(ctx, inst);
 #include "shader_recompiler/frontend/ir/opcodes.inc"
 #undef OPCODE
+    case IR::Opcode::Num:
+        break;
     }
     throw LogicError("Invalid opcode {}", inst->GetOpcode());
 }

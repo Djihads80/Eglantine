@@ -1660,15 +1660,14 @@ void QueryCacheRuntime::SyncValues(std::span<SyncValuesType> values, VkBuffer ba
                 pair.first, static_cast<u32>(pair.second - pair.first), sync_info, post_op);
             impl->buffers_to_upload_to.emplace_back(buffer->Handle(), offset);
         }
-        // Shaders can read the values from the buffer before they reach guest memory; mark
-        // them as GPU written so uniform buffers are not copied from stale guest memory.
-        if (Settings::values.cloud_sea_fixes.GetValue()) {
-            for (auto& sync_val : values) {
-                impl->buffer_cache.ObtainCPUBuffer(
-                    sync_val.address, static_cast<u32>(sync_val.size),
-                    VideoCommon::ObtainBufferSynchronize::NoSynchronize,
-                    VideoCommon::ObtainBufferOperation::MarkAsWritten);
-            }
+        // Suppress stale guest copies over the query values: without it, uniform buffers bound
+        // over these ranges copy from guest memory and shaders read stale occlusion results,
+        // which culled the Xenoblade Chronicles 2 cloud sea when pitching the camera.
+        // MarkAsWritten froze games at boot because it also flags pages GPU modified and queues
+        // deferred commits; the range set and the page flags are the protection without the
+        // commit obligations.
+        for (auto& sync_val : values) {
+            impl->buffer_cache.MarkQueryRange(sync_val.address, static_cast<u32>(sync_val.size));
         }
     });
 

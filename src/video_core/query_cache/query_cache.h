@@ -15,6 +15,11 @@
 
 #include "common/assert.h"
 #include "common/common_types.h"
+// The query cache calls Common::RangeSet::Add directly on the buffer cache's range
+// set; include the definitions so every translation unit instantiating these templates
+// emits them (range_sets.h carries declarations only, like buffer_cache.h does).
+#include "common/range_sets.h"
+#include "common/range_sets.inc"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"

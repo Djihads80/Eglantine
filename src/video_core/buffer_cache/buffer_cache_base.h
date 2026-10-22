@@ -313,6 +313,16 @@ public:
 
     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
 
+    /// Suppress guest-to-GPU copies over a range the GPU buffer already holds.
+    /// The stale-copy path reads the tracker's GPU-modified page flags (IsRegionGpuModified
+    /// is what the copy decisions read), so both the flags and the range set are set here.
+    /// The deferred commit is left out: that was the part of MarkAsWritten that froze
+    /// games at boot.
+    void MarkQueryRange(DAddr device_addr, u32 size) {
+        memory_tracker.MarkRegionAsGpuModified(device_addr, size);
+        gpu_modified_ranges.Add(device_addr, size);
+    }
+
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
