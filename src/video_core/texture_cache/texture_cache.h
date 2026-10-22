@@ -9,6 +9,7 @@
 #include <limits>
 #include <optional>
 #include <bit>
+#include <cstring>
 #include "common/container/unordered_map.h"
 #include <boost/container/small_vector.hpp>
 
@@ -628,6 +629,10 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
     });
     for (const ImageId image_id : images) {
         Image& image = slot_images[image_id];
+        if (image.CanSplitDepthStencil()) {
+            DownloadDepthStencil(image);
+            continue;
+        }
         auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
         const auto copies = FullDownloadCopies(image.info);
         image.DownloadMemory(map, copies);
@@ -635,6 +640,71 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
         SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                      swizzle_data_buffer);
     }
+}
+
+namespace Detail {
+/// Returns the depth of a downloaded texel as 24-bit unorm. D32_SFLOAT depth (hosts without
+/// D24S8) is converted from float; D24 depth already sits in the low 24 bits.
+inline u32 DownloadedDepthToD24(u32 word, bool depth_float) {
+    if (!depth_float) {
+        return word & 0x00FFFFFFu;
+    }
+    float depth;
+    std::memcpy(&depth, &word, sizeof(depth));
+    if (!(depth > 0.0f)) {
+        return 0; // also catches NaN
+    }
+    if (depth >= 1.0f) {
+        return 0x00FFFFFFu;
+    }
+    return static_cast<u32>(static_cast<double>(depth) * 16777215.0 + 0.5);
+}
+/// Packs 24-bit depth and 8-bit stencil into the guest's 32-bit D24S8 layout
+inline u32 PackD24S8(u32 d24, u32 s8, bool stencil_low) {
+    return stencil_low ? ((d24 << 8) | s8) : (d24 | (s8 << 24));
+}
+} // namespace Detail
+
+template <class P>
+void TextureCache<P>::DownloadDepthStencil(Image& image) {
+    // Depth (4 bytes per texel) and stencil (1 byte per texel) go to separate regions of the
+    // staging buffer, then the guest's packed 32-bit layout is rebuilt on the CPU.
+    const size_t depth_bytes = image.unswizzled_size_bytes;
+    const size_t split = Common::AlignUp(depth_bytes, 256);
+    auto map = runtime.DownloadStagingBuffer(split + depth_bytes / 4 + 256);
+    const auto copies = FullDownloadCopies(image.info);
+    image.stencil_split_offset = split;
+    image.DownloadMemory(map, copies);
+    image.stencil_split_offset = 0;
+    runtime.Finish();
+
+    u8* const base = map.mapped_span.data();
+    const bool stencil_low = image.info.format == PixelFormat::S8_UINT_D24_UNORM;
+    const bool depth_float = image.IsDepthFloat();
+    for (const auto& copy : copies) {
+        const u32 width = copy.image_extent.width;
+        const u32 height = copy.image_extent.height;
+        const u32 depth = copy.image_extent.depth;
+        const u32 row = copy.buffer_row_length != 0 ? copy.buffer_row_length : width;
+        const u32 rows = copy.buffer_image_height != 0 ? copy.buffer_image_height : height;
+        const u32 layers = static_cast<u32>(copy.image_subresource.num_layers);
+        for (u32 layer = 0; layer < layers * depth; ++layer) {
+            for (u32 y = 0; y < height; ++y) {
+                for (u32 x = 0; x < width; ++x) {
+                    const size_t texel = (static_cast<size_t>(layer) * rows + y) * row + x;
+                    u8* const word_ptr = base + copy.buffer_offset + texel * 4;
+                    u32 word;
+                    std::memcpy(&word, word_ptr, sizeof(word));
+                    const u32 d24 = Detail::DownloadedDepthToD24(word, depth_float);
+                    const u32 s8 = base[split + copy.buffer_offset / 4 + texel];
+                    word = Detail::PackD24S8(d24, s8, stencil_low);
+                    std::memcpy(word_ptr, &word, sizeof(word));
+                }
+            }
+        }
+    }
+    SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies,
+                 map.mapped_span.subspan(0, depth_bytes), swizzle_data_buffer);
 }
 
 template <class P>
@@ -935,8 +1005,28 @@ void TextureCache<P>::PopAsyncFlushes() {
                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
-                gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
-                                             buffer_info.size);
+                if (buffer_info.split_depth_stencil) {
+                    u8* const base = download_span.data();
+                    for (u32 y = 0; y < buffer_info.height; ++y) {
+                        for (u32 x = 0; x < buffer_info.width; ++x) {
+                            const size_t texel =
+                                static_cast<size_t>(y) * buffer_info.row_length + x;
+                            u8* const word_ptr = base + texel * 4;
+                            u32 word;
+                            std::memcpy(&word, word_ptr, sizeof(word));
+                            const u32 d24 =
+                                Detail::DownloadedDepthToD24(word, buffer_info.depth_float);
+                            const u32 s8 = base[buffer_info.stencil_offset + texel];
+                            word = Detail::PackD24S8(d24, s8, buffer_info.stencil_low);
+                            std::memcpy(word_ptr, &word, sizeof(word));
+                        }
+                    }
+                    gpu_memory->WriteBlock(buffer_info.address, download_span.data(),
+                                           buffer_info.size);
+                } else {
+                    gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
+                                                 buffer_info.size);
+                }
                 slot_buffer_downloads.erase(download_info.object_id);
             }
         }
@@ -994,7 +1084,14 @@ ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, boo
         return NULL_IMAGE_ID;
     }
     auto& image = slot_images[dst_id];
-    if (False(image.flags & ImageFlagBits::GpuModified)) {
+    // Depth/stencil readbacks always go through the split download, which keeps depth and
+    // stencil from overlapping. Other images keep the regular checks.
+    const bool split_depth_stencil = !is_upload && image.CanSplitDepthStencil();
+    if (split_depth_stencil && True(image.flags & ImageFlagBits::CpuModified)) {
+        // Guest memory is newer than the host image, let the CPU path copy it
+        return NULL_IMAGE_ID;
+    }
+    if (!split_depth_stencil && False(image.flags & ImageFlagBits::GpuModified)) {
         // No need to waste time on an image that's synced with guest
         return NULL_IMAGE_ID;
     }
@@ -1002,7 +1099,7 @@ ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, boo
         // Don't accelerate 3D images.
         return NULL_IMAGE_ID;
     }
-    if (!is_upload && !image.info.dma_downloaded) {
+    if (!split_depth_stencil && !is_upload && !image.info.dma_downloaded) {
         // Force a full sync.
         image.info.dma_downloaded = true;
         return NULL_IMAGE_ID;
@@ -1082,6 +1179,41 @@ std::pair<typename TextureCache<P>::Image*, BufferImageCopy> TextureCache<P>::Dm
             },
     };
     return {image, copy};
+}
+
+template <class P>
+bool TextureCache<P>::DownloadDepthStencilToGuest(Image* image, const BufferImageCopy& copy,
+                                                  GPUVAddr address, size_t size) {
+    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+        if (!image->CanSplitDepthStencil()) {
+            return false;
+        }
+        const u32 row =
+            copy.buffer_row_length != 0 ? copy.buffer_row_length : copy.image_extent.width;
+        const size_t split = Common::AlignUp(size, 256);
+        auto staging = runtime.DownloadStagingBuffer(split + size / 4 + 256, true);
+        std::array buffers{staging.buffer};
+        std::array<size_t, 1> offsets{static_cast<size_t>(staging.offset)};
+        image->stencil_split_offset = split;
+        image->DownloadMemory(buffers, offsets, std::span<const BufferImageCopy>(&copy, 1));
+        image->stencil_split_offset = 0;
+
+        BufferDownload download{address, size};
+        download.split_depth_stencil = true;
+        download.stencil_low = image->info.format == PixelFormat::S8_UINT_D24_UNORM;
+        download.depth_float = image->IsDepthFloat();
+        download.stencil_offset = split;
+        download.width = copy.image_extent.width;
+        download.height = copy.image_extent.height;
+        download.row_length = row;
+        auto slot = slot_buffer_downloads.insert(download);
+        const PendingDownload pending{false, uncommitted_async_buffers.size(), slot};
+        uncommitted_downloads.emplace_back(pending);
+        uncommitted_async_buffers.emplace_back(staging);
+        return true;
+    } else {
+        return false;
+    }
 }
 
 template <class P>

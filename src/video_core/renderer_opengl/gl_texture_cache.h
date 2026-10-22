@@ -209,6 +209,15 @@ public:
     void DownloadMemory(StagingBufferMap& map,
                         std::span<const VideoCommon::BufferImageCopy> copies);
 
+    /// Split depth/stencil downloads are only implemented on Vulkan
+    [[nodiscard]] bool CanSplitDepthStencil() const {
+        return false;
+    }
+    [[nodiscard]] bool IsDepthFloat() const {
+        return false;
+    }
+    size_t stencil_split_offset = 0;
+
     GLuint StorageHandle() noexcept;
 
     GLuint Handle() const noexcept {

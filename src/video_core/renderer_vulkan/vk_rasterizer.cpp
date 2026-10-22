@@ -1037,6 +1037,16 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
         return false;
     }
     const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
+    if constexpr (!IS_IMAGE_UPLOAD) {
+        // D24S8 readbacks go straight to guest memory with depth and stencil downloaded
+        // separately, since the regular path makes them overlap
+        const auto [ds_image, ds_copy] = texture_cache.DmaBufferImageCopy(
+            copy_info, buffer_operand, image_operand, image_id, false);
+        if (ds_image->CanSplitDepthStencil()) {
+            return texture_cache.DownloadDepthStencilToGuest(ds_image, ds_copy,
+                                                             buffer_operand.address, buffer_size);
+        }
+    }
     static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
     const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing
                                          : VideoCommon::ObtainBufferOperation::MarkAsWritten;
