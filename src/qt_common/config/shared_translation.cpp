@@ -278,7 +278,6 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Exact varying interpolation and same-frame occlusion reads.\nFixes the cloud sea "
               "in Xenoblade Chronicles 2 (wobble, one-frame pops).\nKnown to hang loading in some "
               "games, see the toggle description."));
-              "Wild)."));
 
     // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
