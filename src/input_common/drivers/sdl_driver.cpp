@@ -206,6 +206,7 @@ public:
         }
         f32 high_amplitude = vibration.high_amplitude * high_frequency_scale;
 
+        std::scoped_lock lock{mutex};
         if (sdl_controller) {
             return SDL_RumbleGamepad(sdl_controller.get(), static_cast<u16>(low_amplitude),
                                      static_cast<u16>(high_amplitude), rumble_max_duration_ms);
@@ -641,6 +642,26 @@ void SDLDriver::CloseJoysticks() {
 }
 
 SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_engine_)) {
+    // Rumble runs on its own worker: the SDL calls can block in the controller driver and must
+    // not run on the guest's input service thread.
+    rumble_thread = std::jthread([this](std::stop_token stop_token) {
+        Common::SetCurrentThreadName("RumbleThread");
+        std::unique_lock lock{rumble_mutex};
+        while (!stop_token.stop_requested()) {
+            rumble_cv.wait(lock,
+                           [&] { return stop_token.stop_requested() || !pending_rumble.empty(); });
+            if (stop_token.stop_requested()) {
+                break;
+            }
+            lock.unlock();
+            SendVibrations();
+            lock.lock();
+            // The old vibration thread batched at four ticks per second.
+            rumble_cv.wait_for(lock, std::chrono::milliseconds{250},
+                               [&] { return stop_token.stop_requested(); });
+        }
+    });
+
     // Set our application name. Currently passed to DBus by SDL and visible to the user through
     // their desktop environment.
     SDL_SetHint(SDL_HINT_APP_NAME, "Eden");
@@ -710,6 +731,11 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
 }
 
 SDLDriver::~SDLDriver() {
+    rumble_thread.request_stop();
+    rumble_cv.notify_all();
+    if (rumble_thread.joinable()) {
+        rumble_thread.join();
+    }
     CloseJoysticks();
     SDL_RemoveEventWatch(&SDLEventWatcher, this);
 
@@ -794,9 +820,39 @@ Common::Input::DriverResult SDLDriver::SetVibration(
         .type = Common::Input::VibrationAmplificationType::Exponential,
     };
 
-    joystick->RumblePlay(new_vibration);
+    // Queue the request: SDL rumble can block inside the controller driver and this runs on
+    // the guest's input service thread. The worker sends it, coalesced per device and batched
+    // like the old four-ticks-per-second vibration thread.
+    {
+        std::scoped_lock lock{rumble_mutex};
+        const auto it = std::ranges::find_if(pending_rumble, [&](const auto& entry) {
+            return entry.first.guid == identifier.guid && entry.first.port == identifier.port;
+        });
+        if (it != pending_rumble.end()) {
+            it->second = new_vibration;
+        } else {
+            pending_rumble.emplace_back(identifier, new_vibration);
+        }
+    }
+    rumble_cv.notify_one();
 
     return Common::Input::DriverResult::Success;
+}
+
+void SDLDriver::SendVibrations() {
+    std::vector<std::pair<PadIdentifier, Common::Input::VibrationStatus>> batch;
+    {
+        std::scoped_lock lock{rumble_mutex};
+        batch.swap(pending_rumble);
+    }
+    for (const auto& [identifier, vibration] : batch) {
+        const auto joystick =
+            GetSDLJoystickByGUID(identifier.guid.RawString(), static_cast<int>(identifier.port));
+        if (!joystick) {
+            continue;
+        }
+        joystick->RumblePlay(vibration);
+    }
 }
 
 bool SDLDriver::IsVibrationEnabled(const PadIdentifier& identifier) {

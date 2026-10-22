@@ -79,6 +79,11 @@ private:
     /// Takes all vibrations from the queue and sends the command to the controller
     void SendVibrations();
 
+    std::mutex rumble_mutex;
+    std::condition_variable rumble_cv;
+    std::jthread rumble_thread;
+    std::vector<std::pair<PadIdentifier, Common::Input::VibrationStatus>> pending_rumble;
+
     Common::ParamPackage BuildAnalogParamPackageForButton(int port, const Common::UUID& guid,
                                                           s32 axis, float value = 0.1f) const;
     Common::ParamPackage BuildButtonParamPackageForButton(int port, const Common::UUID& guid,
