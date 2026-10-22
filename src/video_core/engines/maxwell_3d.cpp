@@ -208,18 +208,28 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
     }
 
     macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    macro_param_methods.insert(macro_param_methods.end(), amount, method);
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
 
     // Call the macro when there are no more parameters in the command buffer
     if (is_last_call) {
-        ConsumeSink(system);
-        CallMacroMethod(system, executing_macro, macro_params);
-        macro_params.clear();
-        macro_segments.clear();
-        current_macro_dirty = false;
+        FinishPendingMacro(system);
     }
+}
+
+void Maxwell3D::FinishPendingMacro(Core::System& system) {
+    // Execute the pending macro call with the arguments collected for it. Writes the macro's
+    // code does not fetch are dropped: they cannot be told apart from the parameters of a call
+    // that fetches conditionally, and dispatching them as methods would corrupt GPU state.
+    ConsumeSink(system);
+    executing_macro = 0;
+    CallMacroMethod(system, macro_param_methods.front(), macro_params);
+    macro_params.clear();
+    macro_param_methods.clear();
+    macro_segments.clear();
+    current_macro_dirty = false;
 }
 
 void Maxwell3D::RefreshParametersImpl() {
@@ -372,7 +382,7 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     }
 }
 
-void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters) {
+size_t Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters) {
     // Reset the current macro.
     executing_macro = 0;
 
@@ -380,17 +390,16 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
     const u32 entry =
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(macro_positions.size());
 
-    // Execute the current macro.
-    macro_engine.Execute(system, *this, macro_positions[entry], parameters);
+    // Execute the current macro and report how many parameters it consumed.
+    const size_t consumed{macro_engine.Execute(system, *this, macro_positions[entry], parameters)};
     draw_manager.DrawDeferred(*this);
+    return consumed;
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    // It is an error to write to a register other than the current macro's ARG register before
-    // it has finished execution.
-    if (executing_macro != 0) {
-        ASSERT(method == executing_macro + 1);
-    }
+    // While a macro call is pending, writes to macro registers feed its parameter list and
+    // regular registers are dispatched normally. The call completes when the macro has all of
+    // the parameters its code fetches (see ProcessMacro).
 
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
