@@ -58,6 +58,18 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx, c
         fmt::format_to(std::back_inserter(buf), ", [{}]={:#x}", i, cmd_buf[i]);
     buf.push_back('}');
 
+    // Report once per (service, command): the versions of 4480 that left handlers
+    // unimplemented spin on them, and per-call reporting (file writes and log lines)
+    // dominates the runtime cost of that.
+    {
+        static std::atomic<u64> reported[64]{};
+        const u64 key = (std::hash<std::string>{}(service_name) ^ (static_cast<u64>(ctx.GetCommand()) << 1)) & 63;
+        const u64 mask = static_cast<u64>(1) << (ctx.GetCommand() & 63);
+        std::atomic<u64>& slot = reported[key];
+        if (slot.fetch_or(mask, std::memory_order_relaxed) & mask) {
+            return;
+        }
+    }
     system.GetReporter().SaveUnimplementedFunctionReport(ctx, ctx.GetCommand(), function_name, service_name);
     if (gated) {
         LOG_ERROR(Service, "Version gated {}", fmt::to_string(buf));
@@ -89,12 +101,20 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx, c
 void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     const bool is_cmd_read = ctx.GetCommand() == 0;
     auto const info = FindRequest(ctx.GetCommand());
-    if (!info.has_value() || info->handler_callback == nullptr)
-        return ReportUnimplementedFunction(ctx, &*info, false);
+    if (!info.has_value())
+        return ReportUnimplementedFunction(ctx, nullptr, false);
 
     if (!VersionGateCheck(system, info->version_gating))
     {
         return ReportUnimplementedFunction(ctx, &*info, true);
+    }
+
+    if (info->handler_callback == nullptr) {
+        // Valid command without a handler: answer like the old stub tables did (success)
+        // so games do not retry around an error all session.
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+        return;
     }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
@@ -109,13 +129,20 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
 
 void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
     auto const info = FindRequestTipc(ctx.GetCommand());
-    if (!info.has_value() || info->handler_callback == nullptr)
-        return ReportUnimplementedFunction(ctx, &*info, false);
+    if (!info.has_value())
+        return ReportUnimplementedFunction(ctx, nullptr, false);
 
     LOG_ERROR(Service, "check for {} version_gating: {}", info->name, info->version_gating);
     if (!VersionGateCheck(system, info->version_gating))
     {
         return ReportUnimplementedFunction(ctx, &*info, true);
+    }
+
+    if (info->handler_callback == nullptr) {
+        // Valid command without a handler: answer like the old stub tables did (success).
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+        return;
     }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
