@@ -206,10 +206,15 @@ public:
         }
         f32 high_amplitude = vibration.high_amplitude * high_frequency_scale;
 
+        LOG_INFO(Input, "rumble: taking joystick lock");
         std::scoped_lock lock{mutex};
+        LOG_INFO(Input, "rumble: joystick lock held, calling SDL");
         if (sdl_controller) {
-            return SDL_RumbleGamepad(sdl_controller.get(), static_cast<u16>(low_amplitude),
-                                     static_cast<u16>(high_amplitude), rumble_max_duration_ms);
+            const bool ok =
+                SDL_RumbleGamepad(sdl_controller.get(), static_cast<u16>(low_amplitude),
+                                  static_cast<u16>(high_amplitude), rumble_max_duration_ms);
+            LOG_INFO(Input, "rumble: SDL call returned, ok={}", ok);
+            return ok;
         } else if (sdl_joystick) {
             return SDL_RumbleJoystick(sdl_joystick.get(), static_cast<u16>(low_amplitude),
                                       static_cast<u16>(high_amplitude),
@@ -403,6 +408,7 @@ private:
 };
 
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID& guid, int port) {
+    LOG_INFO(Input, "rumble: GetSDLJoystickByGUID enter");
     std::scoped_lock lock{joystick_map_mutex};
     const auto it = joystick_map.find(guid);
 
@@ -797,8 +803,10 @@ std::vector<Common::ParamPackage> SDLDriver::GetInputDevices() const {
 
 Common::Input::DriverResult SDLDriver::SetVibration(
     const PadIdentifier& identifier, const Common::Input::VibrationStatus& vibration) {
+    LOG_INFO(Input, "rumble: SetVibration enter, port={}", identifier.port);
     const auto joystick =
         GetSDLJoystickByGUID(identifier.guid.RawString(), static_cast<int>(identifier.port));
+    LOG_INFO(Input, "rumble: SetVibration got joystick");
     const auto process_amplitude_exp = [](f32 amplitude, f32 factor) {
         return (amplitude + std::pow(amplitude, factor)) * 0.5f * 0xFFFF;
     };
@@ -824,6 +832,7 @@ Common::Input::DriverResult SDLDriver::SetVibration(
         .type = Common::Input::VibrationAmplificationType::Exponential,
     };
 
+    LOG_INFO(Input, "rumble: SetVibration amplitude processed, queueing");
     // Queue the request: SDL rumble can block inside the controller driver and this runs on
     // the guest's input service thread. The worker sends it, coalesced per device and batched
     // like the old four-ticks-per-second vibration thread.
@@ -844,6 +853,7 @@ Common::Input::DriverResult SDLDriver::SetVibration(
 }
 
 void SDLDriver::SendVibrations() {
+    LOG_INFO(Input, "rumble: worker batch begin");
     std::vector<std::pair<PadIdentifier, Common::Input::VibrationStatus>> batch;
     {
         std::scoped_lock lock{rumble_mutex};
@@ -857,6 +867,7 @@ void SDLDriver::SendVibrations() {
         }
         joystick->RumblePlay(vibration);
     }
+    LOG_INFO(Input, "rumble: worker batch end");
 }
 
 bool SDLDriver::IsVibrationEnabled(const PadIdentifier& identifier) {
