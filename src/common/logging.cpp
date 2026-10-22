@@ -406,6 +406,16 @@ void Initialize() {
 }
 
 void Start() {
+    // Probe: heartbeat that keeps logging while the guest stops. If it continues after the
+    // game's logs fall silent the host is alive (guest stall); if it stops too, a host deadlock.
+    static std::thread([] {
+        Common::SetCurrentThreadName("LogWatchdog");
+        u64 beat{};
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds{5});
+            LOG_INFO(Common, "watchdog: alive, beat {}", ++beat);
+        }
+    }).detach();
 }
 
 void Stop() {

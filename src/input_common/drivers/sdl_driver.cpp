@@ -731,13 +731,17 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
 }
 
 SDLDriver::~SDLDriver() {
+    LOG_INFO(Input, "teardown: SDLDriver destructor begin");
     rumble_thread.request_stop();
     rumble_cv.notify_all();
     if (rumble_thread.joinable()) {
         rumble_thread.join();
     }
+    LOG_INFO(Input, "teardown: rumble worker joined");
     CloseJoysticks();
+    LOG_INFO(Input, "teardown: joysticks closed");
     SDL_RemoveEventWatch(&SDLEventWatcher, this);
+    LOG_INFO(Input, "teardown: SDLDriver destructor end");
 
     initialized = false;
     if (start_thread) {
