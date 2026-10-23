@@ -862,8 +862,15 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     // directly
     const bool has_tessellation_or_geometry{key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0 ||
                                             key.unique_hashes[4] != 0 || layer_source_program};
+    // The reconstruction passes fight the rescaling machinery: with them on under a
+    // resolution factor, fullscreen passes land unscaled in the top left corner of the
+    // surface. They exist for interpolation accuracy of huge clipped primitives, which is a
+    // native-resolution concern; skip them when rescaling (they get rebuilt with the
+    // pipelines when the resolution factor changes).
+    const bool rescaling_active{Settings::values.resolution_info.up_factor != 1.0f ||
+                                Settings::values.resolution_info.down_factor != 1.0f};
     if (host_info.support_position_varyings && !has_tessellation_or_geometry &&
-        key.unique_hashes[1] != 0 && key.unique_hashes[5] != 0) {
+        !rescaling_active && key.unique_hashes[1] != 0 && key.unique_hashes[5] != 0) {
         const bool is_triangle_list_or_strip{[&] {
             switch (key.state.topology) {
             case Maxwell::PrimitiveTopology::Triangles:
