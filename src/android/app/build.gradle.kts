@@ -419,4 +419,4 @@ afterEvaluate {
             dependsOn("bundle${variantTask}")
         }
     }
-}//
+}
