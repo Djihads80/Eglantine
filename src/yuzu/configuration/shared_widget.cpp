@@ -140,8 +140,12 @@ QWidget* Widget::CreateCombobox(std::function<std::string()>& serializer,
     if (combobox_enumerations.contains(type)) {
         enumeration = &combobox_enumerations.at(type);
         for (const auto& [id, name] : *enumeration) {
+            const bool controller_only_mode =
+                id == static_cast<u32>(Settings::AppletMode::Disabled) ||
+                id == static_cast<u32>(Settings::AppletMode::ConsoleMode) ||
+                id == static_cast<u32>(Settings::AppletMode::HandheldConsoleMode);
             if (type == Settings::EnumMetadata<Settings::AppletMode>::Index() &&
-                id == static_cast<u32>(Settings::AppletMode::Disabled) &&
+                controller_only_mode &&
                 setting.Id() != Settings::values.controller_applet_mode.Id()) {
                 continue;
             }

@@ -23,6 +23,18 @@
 #include "yuzu/configuration/configure_debug_controller.h"
 #include "yuzu/configuration/configure_input.h"
 #include "yuzu/configuration/configure_input_advanced.h"
+#include "yuzu/configuration/configure_player_assignment.h"
+#include "common/controller_console_state.h"
+#include <mutex>
+#include <QTimer>
+#include <vector>
+#include <algorithm>
+#include <QTabWidget>
+#include <QRadioButton>
+#include <QHBoxLayout>
+#include <QGroupBox>
+#include <QTabBar>
+#include <QDateTime>
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/configuration/configure_motion_touch.h"
 #include "yuzu/configuration/configure_ringcon.h"
@@ -142,6 +154,127 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
     connect(player_controllers[0], &ConfigureInputPlayer::HandheldStateChanged,
             [this](bool is_handheld) { UpdateDockedState(is_handheld); });
 
+    // The Players tab comes first: how players are assigned, and who is which player now
+    assignment = new ConfigurePlayerAssignment(this);
+    assignment->setAccessibleName(tr("Controllers"));
+    assignment->SetOpenPlayerTab([this](int player) {
+        for (QWidget* parent = player_tabs[player]->parentWidget(); parent;
+             parent = parent->parentWidget()) {
+            if (auto* tabs = qobject_cast<QTabWidget*>(parent)) {
+                tabs->setCurrentWidget(player_tabs[player]);
+                return;
+            }
+        }
+    });
+
+    // Console Mode first in the Controllers tab: a mirror of the player tabs' Docked/Handheld
+    // choice, which stays the one applied (and the one player 1's Handheld type locks)
+    {
+        auto* console_box = new QGroupBox(tr("Console Mode"), assignment);
+        auto* console_layout = new QHBoxLayout(console_box);
+        auto* docked = new QRadioButton(tr("Docked"), console_box);
+        auto* handheld = new QRadioButton(tr("Handheld"), console_box);
+        console_layout->addWidget(docked);
+        console_layout->addWidget(handheld);
+        console_layout->addStretch(1);
+        assignment->AddTopWidget(console_box);
+        const auto mirror = [this, docked, handheld] {
+            docked->setChecked(ui->radioDocked->isChecked());
+            handheld->setChecked(ui->radioUndocked->isChecked());
+            docked->setEnabled(ui->radioDocked->isEnabled());
+            handheld->setEnabled(ui->radioUndocked->isEnabled());
+        };
+        connect(ui->radioDocked, &QRadioButton::toggled, this, mirror);
+        connect(ui->radioUndocked, &QRadioButton::toggled, this, mirror);
+        connect(docked, &QRadioButton::clicked, this, [this] { ui->radioDocked->setChecked(true); });
+        connect(handheld, &QRadioButton::clicked, this,
+                [this] { ui->radioUndocked->setChecked(true); });
+        mirror_console_mode = mirror;
+        mirror();
+    }
+
+    {
+        auto& state = Common::GetControllerConsoleState();
+        std::scoped_lock lock{state.mutex};
+        followed_generation = state.generation;
+    }
+    follow_timer = new QTimer(this);
+    connect(follow_timer, &QTimer::timeout, this, [this] {
+        unsigned long long generation = 0;
+        std::vector<Common::ControllerConsoleState::PlayerRow> rows;
+        bool engine_active = false;
+        {
+            auto& state = Common::GetControllerConsoleState();
+            std::scoped_lock lock{state.mutex};
+            generation = state.generation;
+            engine_active = state.engine_active;
+            rows = state.players;
+        }
+        // Automatic assignment owns the players: only their tabs show, and their connection
+        // cannot be toggled by hand
+        const auto mode = Settings::values.controller_applet_mode.GetValue();
+        const bool automatic = mode == Settings::AppletMode::ConsoleMode ||
+                               mode == Settings::AppletMode::HandheldConsoleMode;
+        QTabWidget* tabs = nullptr;
+        for (QWidget* parent = player_tabs[0]->parentWidget(); parent && !tabs;
+             parent = parent->parentWidget()) {
+            tabs = qobject_cast<QTabWidget*>(parent);
+        }
+        // The tabs follow the engine's rows and flashes, like the overlay: a green label when a
+        // controller takes the player, red when one leaves (the tab hides once its row is gone)
+        constexpr long long flash_ms = 1500;
+        const long long now = QDateTime::currentMSecsSinceEpoch();
+        // The player tabs' choice can be locked (player 1 set to Handheld) without toggling
+        if (mirror_console_mode) {
+            mirror_console_mode();
+        }
+        for (std::size_t i = 0; i < player_tabs.size(); ++i) {
+            const auto row = std::find_if(rows.begin(), rows.end(), [i](const auto& r) {
+                return r.player == static_cast<int>(i);
+            });
+            bool shown = true;
+            QColor label;
+            if (automatic) {
+                shown = engine_active && row != rows.end();
+                if (shown && row->flash != 0) {
+                    const long long elapsed = now - row->flash_since;
+                    if (elapsed < flash_ms && (elapsed / 125) % 2 == 0) {
+                        label = row->flash == 2 ? QColor(200, 50, 50) : QColor(40, 160, 70);
+                    }
+                }
+            }
+            if (tabs) {
+                if (const int index = tabs->indexOf(player_tabs[i]); index >= 0) {
+                    tabs->setTabVisible(index, shown);
+                    tabs->tabBar()->setTabTextColor(index, label);
+                }
+            }
+            player_controllers[i]->SetConnectionLocked(automatic);
+        }
+        // The Controllers tab carries Console Mode in the automatic modes
+        ui->handheldGroup->setVisible(!automatic);
+        ui->connectedControllers->setVisible(!automatic);
+
+        if (generation == followed_generation) {
+            return;
+        }
+        followed_generation = generation;
+        for (auto* controller : player_controllers) {
+            controller->RefreshFromController();
+        }
+        // The boxes mirror the emulated controllers without acting on them
+        for (auto* checkbox : connected_controller_checkboxes) {
+            checkbox->blockSignals(true);
+        }
+        LoadPlayerControllerIndices();
+        for (auto* checkbox : connected_controller_checkboxes) {
+            checkbox->blockSignals(false);
+        }
+    });
+    follow_timer->start(50);
+    ui->tabWidget->insertTab(0, assignment, tr("Controllers"));
+    ui->tabWidget->setCurrentIndex(0);
+
     advanced = new ConfigureInputAdvanced(hid_core, this);
 
     QHBoxLayout* advancedLayout = new QHBoxLayout(ui->tabAdvanced);
@@ -202,9 +335,10 @@ void ConfigureInput::PropagatePlayerNumberChanged(size_t player_index, bool chec
 }
 
 QList<QWidget*> ConfigureInput::GetSubTabs() const {
+    // The settings dialog shows these, not this widget's own tab bar
     return {
-        ui->tabPlayer1, ui->tabPlayer2, ui->tabPlayer3, ui->tabPlayer4,  ui->tabPlayer5,
-        ui->tabPlayer6, ui->tabPlayer7, ui->tabPlayer8, ui->tabAdvanced,
+        assignment,     ui->tabAdvanced,  ui->tabPlayer1, ui->tabPlayer2, ui->tabPlayer3,
+        ui->tabPlayer4, ui->tabPlayer5, ui->tabPlayer6, ui->tabPlayer7, ui->tabPlayer8,
     };
 }
 
@@ -216,6 +350,7 @@ void ConfigureInput::ApplyConfiguration() {
     }
 
     advanced->ApplyConfiguration();
+    assignment->ApplyConfiguration();
 
     const bool pre_docked_mode = Settings::IsDockedMode();
     const bool docked_mode_selected = ui->radioDocked->isChecked();

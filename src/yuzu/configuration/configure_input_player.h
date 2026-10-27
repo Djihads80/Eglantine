@@ -65,6 +65,14 @@ public:
     /// Update the input devices combobox.
     void UpdateInputDeviceCombobox();
 
+    /// Redraws the tab from its emulated controller, after something else reloaded it (the
+    /// automatic player assignment re-pointing the player at another pad)
+    void RefreshFromController();
+
+    /// While the players are assigned automatically, the player's connection and device are not
+    /// the user's to change: the tab hides its "connected" switch and its device choice
+    void SetConnectionLocked(bool locked);
+
     /// Updates the list of controller profiles.
     void UpdateInputProfiles();
 

@@ -12,6 +12,7 @@
 #undef BadValue
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+#include "common/controller_overlay_frame.h"
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/renderer_vulkan/present/fsr.h"
@@ -351,6 +352,57 @@ void Layer::UpdateRawImage(const Tegra::FramebufferConfig& framebuffer, size_t i
             mapped_span.subspan(image_offset, linear_size), std::span(host_ptr, tiled_size),
             bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0);
         buffer.Flush();  // Ensure host writes are visible before the GPU copy.
+    }
+
+    // Renderer-level controller overlay: alpha-blend the frontend's overlay image into
+    // the presented frame itself, so it is visible inside gamescope - a Qt window can
+    // never composite over the game surface.
+    if (bytes_per_pixel == 4) {
+        auto& overlay = Common::GetControllerOverlayFrame();
+        std::scoped_lock lock{overlay.mutex};
+        static u32 logged_blends = 0;
+        if (overlay.enabled && !overlay.pixels.empty() && logged_blends < 3) {
+            ++logged_blends;
+            LOG_INFO(Render_Vulkan, "overlay: blending {}x{} into frame {}x{} bpp={}",
+                     overlay.width, overlay.height, framebuffer.width, framebuffer.height,
+                     bytes_per_pixel);
+        }
+        if (overlay.enabled && !overlay.pixels.empty()) {
+            const u32 ow = std::min<u32>(overlay.width, framebuffer.width);
+            const u32 oh = std::min<u32>(overlay.height, framebuffer.height);
+            if (ow > 0 && oh > 0 && overlay.pixels.size() >=
+                                        static_cast<size_t>(overlay.width) * overlay.height * 4) {
+                u8* const dst = mapped_span.data() + image_offset;
+                const bool bgra =
+                    framebuffer.pixel_format == Service::android::PixelFormat::Bgra8888;
+                const size_t row_pitch = static_cast<size_t>(framebuffer.stride) * 4;
+                for (u32 y = 0; y < oh; ++y) {
+                    const u8* src_row =
+                        overlay.pixels.data() + static_cast<size_t>(y) * overlay.width * 4;
+                    u8* dst_row = dst + static_cast<size_t>(y) * row_pitch;
+                    for (u32 x = 0; x < ow; ++x) {
+                        const u8* s = src_row + static_cast<size_t>(x) * 4;
+                        u8* d = dst_row + static_cast<size_t>(x) * 4;
+                        const u32 a = s[3];
+                        if (a == 0) {
+                            continue;
+                        }
+                        const u32 inv = 255 - a;
+                        if (bgra) {
+                            d[0] = static_cast<u8>((s[2] * a + d[0] * inv) / 255);
+                            d[1] = static_cast<u8>((s[1] * a + d[1] * inv) / 255);
+                            d[2] = static_cast<u8>((s[0] * a + d[2] * inv) / 255);
+                        } else {
+                            d[0] = static_cast<u8>((s[0] * a + d[0] * inv) / 255);
+                            d[1] = static_cast<u8>((s[1] * a + d[1] * inv) / 255);
+                            d[2] = static_cast<u8>((s[2] * a + d[2] * inv) / 255);
+                        }
+                        d[3] = 255;
+                    }
+                }
+                buffer.Flush();
+            }
+        }
     }
 
     const VkBufferImageCopy copy{

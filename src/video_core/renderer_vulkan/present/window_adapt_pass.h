@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <list>
 
 #include "common/math_util.h"
@@ -22,6 +23,7 @@ struct FramebufferConfig;
 namespace Vulkan {
 
 class Device;
+class MemoryAllocator;
 struct Frame;
 class Layer;
 class Scheduler;
@@ -29,7 +31,8 @@ class RasterizerVulkan;
 
 class WindowAdaptPass final {
 public:
-    explicit WindowAdaptPass(const Device& device, VkFormat frame_format, vk::Sampler&& sampler,
+    explicit WindowAdaptPass(const Device& device, MemoryAllocator& memory_allocator,
+                             VkFormat frame_format, vk::Sampler&& sampler,
                              vk::ShaderModule&& fragment_shader);
     ~WindowAdaptPass();
 
@@ -47,6 +50,8 @@ private:
     void CreateRenderPass(const Device& device, VkFormat frame_format);
     void CreatePipelines(const Device& device);
 
+    MemoryAllocator& memory_allocator;
+
     vk::DescriptorSetLayout descriptor_set_layout;
     vk::PipelineLayout pipeline_layout;
     vk::Sampler sampler;
@@ -56,6 +61,17 @@ private:
     vk::Pipeline opaque_pipeline;
     vk::Pipeline premultiplied_pipeline;
     vk::Pipeline coverage_pipeline;
+
+    // Controller debug overlay: a straight-alpha quad composited on top of the layers.
+    // The CPU blend in Layer::UpdateRawImage only covers the unaccelerated present path;
+    // the accelerated path presents a GPU texture directly, so the panel lives here.
+    vk::Image overlay_image;
+    vk::ImageView overlay_view;
+    vk::DescriptorPool overlay_pool;
+    vk::DescriptorSets overlay_sets;
+    VkExtent2D overlay_extent{};
+    std::uint64_t overlay_version = 0;
+    bool overlay_ready = false;
 };
 
 } // namespace Vulkan

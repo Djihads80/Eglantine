@@ -6,10 +6,14 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include "common/container/unordered_map.h"
 #include <vector>
+#include "common/common_types.h"
 
 namespace Common {
 class ParamPackage;
@@ -151,6 +155,14 @@ public:
 
     /// Returns true if axis of a stick aren't mapped in the correct direction
     [[nodiscard]] bool IsStickInverted(const Common::ParamPackage& device) const;
+
+    /// The SDL guid and port that bindings use for an SDL joystick instance, if SDL has it open.
+    [[nodiscard]] std::optional<std::pair<std::string, int>> GetSDLBinding(u32 sdl_instance) const;
+
+    /// When an SDL joystick instance last had a deliberate input (button, d-pad, a stick or
+    /// trigger past half travel), if ever.
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> GetSDLLastActivity(
+        u32 sdl_instance) const;
 
     /// Reloads the input devices.
     void ReloadInputDevices();

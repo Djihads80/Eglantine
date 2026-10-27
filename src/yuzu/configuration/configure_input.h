@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 
 #include <QKeyEvent>
@@ -23,6 +24,7 @@ class QTimer;
 
 class ConfigureInputAdvanced;
 class ConfigureInputPlayer;
+class ConfigurePlayerAssignment;
 
 class InputProfiles;
 
@@ -75,6 +77,12 @@ private:
     std::unique_ptr<InputProfiles> profiles;
 
     std::array<ConfigureInputPlayer*, 8> player_controllers{};
+    ConfigurePlayerAssignment* assignment = nullptr;
+    /// Follows the automatic player assignment: the player tabs and the connected boxes are
+    /// redrawn when it reloads the controllers while the dialog is open
+    QTimer* follow_timer = nullptr;
+    unsigned long long followed_generation = 0;
+    std::function<void()> mirror_console_mode;
     std::array<QWidget*, 8> player_tabs{};
     // Checkboxes representing the "Connected Controllers".
     std::array<QCheckBox*, 8> connected_controller_checkboxes{};

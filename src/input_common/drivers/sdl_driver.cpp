@@ -450,6 +450,29 @@ std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickBySDLID(SDL_JoystickID sdl
     return *vec_it;
 }
 
+std::optional<std::pair<std::string, int>> SDLDriver::GetBindingForSDLID(SDL_JoystickID sdl_id) {
+    const auto joystick = GetSDLJoystickBySDLID(sdl_id);
+    if (!joystick) {
+        return std::nullopt;
+    }
+    return std::pair{joystick->GetGUID().RawString(), joystick->GetPort()};
+}
+
+void SDLDriver::MarkActivity(SDL_JoystickID sdl_id) {
+    std::scoped_lock lock{activity_mutex};
+    last_activity[sdl_id] = std::chrono::steady_clock::now();
+}
+
+std::optional<std::chrono::steady_clock::time_point> SDLDriver::GetLastActivity(
+    SDL_JoystickID sdl_id) const {
+    std::scoped_lock lock{activity_mutex};
+    const auto it = last_activity.find(sdl_id);
+    if (it == last_activity.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGamepadID(SDL_JoystickID sdl_id) {
     auto* const sdl_gamepad = SDL_GetGamepadFromID(sdl_id);
     if (sdl_gamepad == nullptr) {
@@ -535,6 +558,9 @@ void SDLDriver::InitJoystick(SDL_JoystickID joystick_id) {
                      [](const auto& joystick) { return !joystick->GetSDLJoystick(); });
 
     if (joystick_it != joystick_guid_list.end()) {
+        const int port = static_cast<int>(joystick_it - joystick_guid_list.begin());
+        LOG_INFO(Input, "input: attach guid={} port={} name={} (reusing a freed slot)",
+                 guid.RawString(), port, SDL_GetJoystickName(sdl_joystick));
         (*joystick_it)->SetSDLJoystick(sdl_joystick, sdl_gamecontroller);
         (*joystick_it)->EnableMotion();
         SetBattery((*joystick_it)->GetPadIdentifier(),
@@ -563,6 +589,8 @@ void SDLDriver::CloseJoystick(SDL_Joystick* sdl_joystick) {
                                           });
 
     if (joystick_it != joystick_guid_list.end()) {
+        LOG_INFO(Input, "input: detach guid={} port={}", guid.RawString(),
+                 static_cast<int>(joystick_it - joystick_guid_list.begin()));
         (*joystick_it)->SetSDLJoystick(nullptr, nullptr);
     }
 }
@@ -583,6 +611,7 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         break;
     }
     case SDL_EVENT_JOYSTICK_BUTTON_DOWN: {
+        MarkActivity(event.jbutton.which);
         if (const auto joystick = GetSDLJoystickBySDLID(event.jbutton.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
             SetButton(identifier, event.jbutton.button, true);
@@ -590,6 +619,9 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         break;
     }
     case SDL_EVENT_JOYSTICK_HAT_MOTION: {
+        if (event.jhat.value != SDL_HAT_CENTERED) {
+            MarkActivity(event.jhat.which);
+        }
         if (const auto joystick = GetSDLJoystickBySDLID(event.jhat.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
             SetHatButton(identifier, event.jhat.hat, event.jhat.value);
@@ -597,6 +629,10 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         break;
     }
     case SDL_EVENT_JOYSTICK_AXIS_MOTION: {
+        // Half travel: a deliberate push, never resting drift
+        if (event.jaxis.value > 16384 || event.jaxis.value < -16384) {
+            MarkActivity(event.jaxis.which);
+        }
         if (const auto joystick = GetSDLJoystickBySDLID(event.jaxis.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
             SetAxis(identifier, event.jaxis.axis, event.jaxis.value / 32767.0f);
@@ -727,8 +763,16 @@ std::vector<Common::ParamPackage> SDLDriver::GetInputDevices() const {
             if (!joystick->GetSDLJoystick()) {
                 continue;
             }
+            // Steam Input hands games virtual pads carrying the real controller's name: say
+            // so, or a pad driven through Steam looks like the raw hardware. The GUID keeps
+            // Steam's ids (Valve 0x28DE, virtual gamepad 0x11FF, little-endian at bytes 4
+            // and 8); SDL's vendor and product report the real controller's instead
+            const SDL_GUID sdl_guid = SDL_GetJoystickGUID(joystick->GetSDLJoystick());
+            const bool steam_virtual = sdl_guid.data[4] == 0xDE && sdl_guid.data[5] == 0x28 &&
+                                       sdl_guid.data[8] == 0xFF && sdl_guid.data[9] == 0x11;
             const std::string name =
-                fmt::format("{} {}", joystick->GetControllerName(), joystick->GetPort());
+                fmt::format("{} {}{}", joystick->GetControllerName(), joystick->GetPort(),
+                            steam_virtual ? " (Steam)" : "");
             devices.emplace_back(Common::ParamPackage{
                 {"engine", GetEngineName()},
                 {"display", std::move(name)},

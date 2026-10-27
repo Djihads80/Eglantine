@@ -6,12 +6,17 @@
 
 #pragma once
 
+#include <QString>
 #include <QWidget>
 #include "yuzu/configuration/configuration_shared.h"
 
 class QCheckBox;
-class QLineEdit;
+class QComboBox;
 class QDateTimeEdit;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QTimer;
 namespace Core {
 class System;
 }
@@ -40,6 +45,7 @@ private:
     void RetranslateUI();
 
     void Setup(const ConfigurationShared::Builder& builder);
+
 
     std::vector<std::function<void(bool)>> apply_funcs{};
 

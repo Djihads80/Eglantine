@@ -14,11 +14,20 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
+#include <array>
+#include <chrono>
+#include <deque>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 #include <QTranslator>
 #include <qaction.h>
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
+#include "common/settings_input.h"
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
 #include "qt_common/config/qt_config.h"
@@ -49,6 +58,7 @@ class LoadingScreen;
 class OverlayDialog;
 class ControllerDialog;
 class QLabel;
+class QShortcut;
 class MultiplayerState;
 class QPushButton;
 class QProgressDialog;
@@ -552,6 +562,65 @@ private:
     QString startup_icon_theme;
 
     QActionGroup* game_size_actions;
+
+    /// Console modes: reapplies the emulated player count from the physically connected
+    /// gamepads on a timer
+    QTimer console_mode_timer;
+    void ApplyConsoleControllerMode();
+    /// connection instance -> player slot; entries survive a disconnect so the pad
+    /// reclaims its own player when it returns
+    std::map<u32, int> pad_slots;
+    /// connection instance -> stable identity (serial, else model GUID), for matching a
+    /// returning pad that comes back under a new instance
+    std::map<u32, std::string> pad_identity;
+    /// The handheld's own pad (connection instance): never a player while other pads are
+    /// connected
+    u32 builtin_pad_id = 0;
+    /// The built-in's stable identity: the exclusion must survive its instance changing
+    std::string builtin_identity;
+    /// Latched once the built-in has been identified
+    bool builtin_seen_first = false;
+    /// Warn once per engagement when the built-in cannot be identified
+    bool builtin_warned = false;
+    /// Overlay rows per player: when the row appeared (green for a moment), when its pad
+    /// left (red for a moment, then gone), and the name it shows
+    std::array<qint64, 10> overlay_row_since{};
+    std::array<qint64, 10> overlay_row_gone{};
+    std::array<QString, 10> overlay_row_name{};
+    /// Per player: the controller behind the row (its identity, which survives Steam moving it
+    /// to another virtual pad), and its flash (1 green, 2 red) with when it began; a
+    /// red one followed by a green one (the controller left and another took its place) holds
+    /// the green's start in overlay_green_at
+    std::array<std::string, 10> overlay_row_ident{};
+    std::array<int, 10> overlay_flash{};
+    std::array<qint64, 10> overlay_flash_since{};
+    std::array<qint64, 10> overlay_green_at{};
+    /// The overlay's rows as the last assignment tick left them: flash 1 green, 2 red
+    struct OverlayRow {
+        int player;
+        QString text;
+        u32 pad;
+        int flash;
+        qint64 flash_since;
+    };
+    std::vector<OverlayRow> overlay_rows;
+    std::vector<bool> overlay_blink;
+    std::set<u32> overlay_active_pads;
+    /// Polls controller input faster than the assignment tick, for the blue highlight
+    QTimer console_activity_timer;
+    void RenderControllerOverlay();
+    void PollControllerActivity();
+    /// The user's own players (bindings, types, connected flags) while a console mode drives
+    /// them: the binding sets each pad carries come from here, the config file only ever
+    /// sees this, and leaving the mode puts it back
+    std::optional<std::array<Settings::PlayerInput, 10>> console_profile;
+    /// Saves the configuration, writing the user's own players while a console mode runs
+    void SaveAllConfigValues();
+    /// Puts the user's own players back (leaving a console mode, or before the config is
+    /// destroyed, which saves on destruction)
+    void RestoreConsoleProfile();
+    /// Folds edits made in the Controls tab during a console mode into the user's profile
+    void MergeConsoleProfileEdits(const std::array<Settings::PlayerInput, 10>& before);
 
     // Debugger panes
     ControllerDialog* controller_dialog = nullptr;

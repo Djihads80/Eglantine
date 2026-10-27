@@ -1,6 +1,18 @@
 // SPDX-FileCopyrightText: 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <mutex>
+
+#include <QComboBox>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QTimer>
+#include <QVBoxLayout>
+
+#include "common/controller_console_state.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "ui_configure_applets.h"
