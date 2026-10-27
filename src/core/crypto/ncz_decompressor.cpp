@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -120,9 +121,13 @@ std::optional<std::pair<std::vector<Section>, std::optional<BlockHeader>>> Parse
     return std::make_pair(std::move(sections), std::move(bh));
 }
 
-// Sequential reader over independently-compressed blocks, one block cached (like nsz_rs).
+// Sequential reader over independently-compressed blocks. Keeps a small LRU cache of recently
+// decoded blocks so random reads (e.g. update NCA with thousands of sections) don't re-decompress
+// the same block over and over.
 class BlockReader {
 public:
+    static constexpr std::size_t BlockCacheSize = 8;
+
     BlockReader(FileSys::VirtualFile f, const BlockHeader& bh, u64 payload_start)
         : source{std::move(f)}, block_size{1ULL << bh.exponent}, sizes{bh.sizes},
           decompressed_size{bh.decompressed_size} {
@@ -139,11 +144,13 @@ public:
         while (done < out.size() && position < decompressed_size) {
             const u64 id = position / block_size;
             if (id >= sizes.size()) break;
-            if (cache_id != id && !Load(id)) break;
+            const std::vector<u8>* block = GetBlock(id);
+            if (block == nullptr) break;
             const u64 in = position - id * block_size;
+            if (in >= block->size()) break;
             const std::size_t n = static_cast<std::size_t>(
-                std::min<u64>(out.size() - done, cache.size() - in));
-            std::memcpy(out.data() + done, cache.data() + in, n);
+                std::min<u64>(out.size() - done, block->size() - in));
+            std::memcpy(out.data() + done, block->data() + in, n);
             done += n;
             position += n;
         }
@@ -151,23 +158,44 @@ public:
     }
 
 private:
-    bool Load(u64 id) {
+    const std::vector<u8>* GetBlock(u64 id) {
+        // LRU hit: move to front.
+        for (auto it = cache.begin(); it != cache.end(); ++it) {
+            if (it->first == id) {
+                cache.splice(cache.begin(), cache, it);
+                return &cache.front().second;
+            }
+        }
+
+        // Miss: decode the block.
+        std::vector<u8> buffer;
+        if (cache.size() >= BlockCacheSize) {
+            buffer = std::move(cache.back().second);
+            cache.pop_back();
+        }
+        if (!DecodeBlock(id, buffer)) {
+            return nullptr;
+        }
+        cache.emplace_front(id, std::move(buffer));
+        return &cache.front().second;
+    }
+
+    bool DecodeBlock(u64 id, std::vector<u8>& buffer) {
         u64 want = block_size;
         if (id + 1 == sizes.size()) {
             const u64 rem = decompressed_size % block_size;
             if (rem > 0) want = rem; // avoid the 0-size bug from the original nsz
         }
-        try { cache.resize(static_cast<std::size_t>(want)); }
+        try { buffer.resize(static_cast<std::size_t>(want)); }
         catch (const std::bad_alloc&) { return false; }
         const u32 csize = sizes[id];
         if (csize < want) {
             const auto comp = source->ReadBytes(csize, offsets[id]);
             if (comp.size() != csize ||
-                Common::Compression::DecompressDataZSTD(comp, cache) != want) return false;
-        } else if (source->Read(cache.data(), cache.size(), offsets[id]) != cache.size()) {
+                Common::Compression::DecompressDataZSTD(comp, buffer) != want) return false;
+        } else if (source->Read(buffer.data(), buffer.size(), offsets[id]) != buffer.size()) {
             return false;
         }
-        cache_id = id;
         return true;
     }
 
@@ -176,8 +204,7 @@ private:
     std::vector<u64> offsets;
     std::vector<u32> sizes;
     u64 decompressed_size;
-    u64 cache_id = ~0ULL;
-    std::vector<u8> cache;
+    std::list<std::pair<u64, std::vector<u8>>> cache;  // LRU: front = most recent
 };
 
 class BlockNczFile final : public FileSys::VfsFile {
