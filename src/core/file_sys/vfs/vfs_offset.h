@@ -37,6 +37,10 @@ public:
 
     std::size_t GetOffset() const;
 
+    bool HasDecryptedSections() const override {
+        return file && file->HasDecryptedSections();
+    }
+
 private:
     std::size_t TrimToFit(std::size_t r_size, std::size_t r_offset) const;
 

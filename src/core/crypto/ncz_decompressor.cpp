@@ -8,7 +8,6 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <list>
 #include <string>
 #include <vector>
 
@@ -121,12 +120,12 @@ std::optional<std::pair<std::vector<Section>, std::optional<BlockHeader>>> Parse
     return std::make_pair(std::move(sections), std::move(bh));
 }
 
-// Sequential reader over independently-compressed blocks. Keeps a small LRU cache of recently
-// decoded blocks so random reads (e.g. update NCA with thousands of sections) don't re-decompress
-// the same block over and over.
+// Sequential reader over independently-compressed blocks. Uses a direct-mapped cache (like
+// NCZVirtualFile) instead of an LRU list: block_index % CacheSlots picks the slot, so a hit is
+// O(1). Reuses one ZSTD_DCtx for the lifetime of the reader.
 class BlockReader {
 public:
-    static constexpr std::size_t BlockCacheSize = 8;
+    static constexpr std::size_t CacheSlots = 32;
 
     BlockReader(FileSys::VirtualFile f, const BlockHeader& bh, u64 payload_start)
         : source{std::move(f)}, block_size{1ULL << bh.exponent}, sizes{bh.sizes},
@@ -136,9 +135,19 @@ public:
         u64 off = payload_start;
         offsets.reserve(sizes.size());
         for (u32 s : sizes) { offsets.push_back(off); off += s; }
+        dctx = ZSTD_createDCtx();
+        if (dctx == nullptr) throw std::runtime_error("ZSTD_createDCtx failed");
+        cache.resize(CacheSlots);
+        for (auto& slot : cache) slot.id = ~0ULL;
     }
 
-    // Fills `out` from `position`; returns bytes written.
+    ~BlockReader() {
+        if (dctx != nullptr) ZSTD_freeDCtx(dctx);
+    }
+
+    BlockReader(const BlockReader&) = delete;
+    BlockReader& operator=(const BlockReader&) = delete;
+
     std::size_t ReadAt(u64 position, std::span<u8> out) {
         std::size_t done = 0;
         while (done < out.size() && position < decompressed_size) {
@@ -158,41 +167,45 @@ public:
     }
 
 private:
-    const std::vector<u8>* GetBlock(u64 id) {
-        // LRU hit: move to front.
-        for (auto it = cache.begin(); it != cache.end(); ++it) {
-            if (it->first == id) {
-                cache.splice(cache.begin(), cache, it);
-                return &cache.front().second;
-            }
-        }
+    struct Slot {
+        u64 id = ~0ULL;
+        std::vector<u8> data;
+    };
 
-        // Miss: decode the block.
-        std::vector<u8> buffer;
-        if (cache.size() >= BlockCacheSize) {
-            buffer = std::move(cache.back().second);
-            cache.pop_back();
+    const std::vector<u8>* GetBlock(u64 id) {
+        Slot& slot = cache[id % CacheSlots];
+        if (slot.id == id) {
+            return &slot.data;  // O(1) hit
         }
+        std::vector<u8> buffer;
+        buffer.swap(slot.data);  // reuse existing allocation
         if (!DecodeBlock(id, buffer)) {
             return nullptr;
         }
-        cache.emplace_front(id, std::move(buffer));
-        return &cache.front().second;
+        slot.data = std::move(buffer);
+        slot.id = id;
+        return &slot.data;
     }
 
     bool DecodeBlock(u64 id, std::vector<u8>& buffer) {
         u64 want = block_size;
         if (id + 1 == sizes.size()) {
             const u64 rem = decompressed_size % block_size;
-            if (rem > 0) want = rem; // avoid the 0-size bug from the original nsz
+            if (rem > 0) want = rem;  // avoid the 0-size bug from the original nsz
         }
         try { buffer.resize(static_cast<std::size_t>(want)); }
         catch (const std::bad_alloc&) { return false; }
         const u32 csize = sizes[id];
         if (csize < want) {
             const auto comp = source->ReadBytes(csize, offsets[id]);
-            if (comp.size() != csize ||
-                Common::Compression::DecompressDataZSTD(comp, buffer) != want) return false;
+            if (comp.size() != csize) return false;
+            const std::size_t res = ZSTD_decompressDCtx(
+                dctx, buffer.data(), buffer.size(), comp.data(), comp.size());
+            if (ZSTD_isError(res) || res != want) {
+                LOG_ERROR(Crypto, "Failed to decompress NCZBLOCK block {}: {}", id,
+                          ZSTD_isError(res) ? ZSTD_getErrorName(res) : "size mismatch");
+                return false;
+            }
         } else if (source->Read(buffer.data(), buffer.size(), offsets[id]) != buffer.size()) {
             return false;
         }
@@ -204,7 +217,8 @@ private:
     std::vector<u64> offsets;
     std::vector<u32> sizes;
     u64 decompressed_size;
-    std::list<std::pair<u64, std::vector<u8>>> cache;  // LRU: front = most recent
+    ZSTD_DCtx* dctx = nullptr;
+    std::vector<Slot> cache;  // direct-mapped, CacheSlots entries
 };
 
 class BlockNczFile final : public FileSys::VfsFile {
@@ -216,10 +230,6 @@ public:
         nca_size = HeaderSize;
         for (const auto& s : sections)
             nca_size = std::max<u64>(nca_size, static_cast<u64>(s.offset + s.size));
-        ciphers.reserve(sections.size());
-        for (const auto& s : sections)
-            ciphers.push_back(s.Ctr() ? std::make_unique<AESCipher<Key128>>(s.key, Mode::CTR)
-                                      : nullptr);
     }
 
     std::string GetName() const override { return name; }
@@ -228,6 +238,10 @@ public:
     FileSys::VirtualDir GetContainingDirectory() const override { return nullptr; }
     bool IsWritable() const override { return false; }
     bool IsReadable() const override { return true; }
+
+    // NCZ stores CTR sections decrypted; this file serves them as-is, and NcaFileSystemDriver
+    // skips its AES layers because of this flag.
+    bool HasDecryptedSections() const override { return true; }
 
     std::size_t Read(u8* data, std::size_t len, std::size_t off) const override {
         if (off >= nca_size) return 0;
@@ -240,8 +254,15 @@ public:
             pos += n;
         }
         std::scoped_lock lock{mutex};
-        for (std::size_t i = 0; i < sections.size() && pos < end; ++i) {
-            const auto& s = sections[i];
+        // Sections are sorted by offset; find the first one whose stop > pos.
+        auto it = std::lower_bound(
+            sections.begin(), sections.end(), pos, [](const Section& s, u64 p) {
+                const u64 b = std::max<u64>(static_cast<u64>(s.offset), HeaderSize);
+                const u64 e = std::max<u64>(static_cast<u64>(s.offset) + static_cast<u64>(s.size), b);
+                return e <= p;
+            });
+        for (; it != sections.end() && pos < end; ++it) {
+            const auto& s = *it;
             const u64 begin = std::max<u64>(static_cast<u64>(s.offset), HeaderSize);
             const u64 stop = std::max<u64>(static_cast<u64>(s.offset + s.size), begin);
             if (stop <= pos) continue;
@@ -255,12 +276,7 @@ public:
             const std::span<u8> piece(data + (pos - off), static_cast<std::size_t>(pe - pos));
             if (body->ReadAt(pos - HeaderSize, piece) != piece.size())
                 return static_cast<std::size_t>(pos - off);
-            if (ciphers[i]) {
-                Key128 iv{};
-                SetIv(iv, s.counter, pos);
-                ciphers[i]->SetIV(iv);
-                ciphers[i]->Transcode(piece.data(), piece.size(), piece.data(), Op::Encrypt);
-            }
+            // No CTR here: NCZ body is already decrypted, and NcaFileSystemDriver skips AES.
             pos = pe;
         }
         return len;
@@ -274,7 +290,6 @@ private:
     const std::vector<u8> hdr;
     const std::vector<Section> sections;
     const std::unique_ptr<BlockReader> body;
-    std::vector<std::unique_ptr<AESCipher<Key128>>> ciphers;
     mutable std::mutex mutex;
     u64 nca_size{};
 };
