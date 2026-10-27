@@ -442,7 +442,7 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
     int last_player = -1;
     for (const auto& entry : players) {
         if (!entry.leaving) {
-            last_player = std::max(last_player, entry.player);
+            last_player = (std::max)(last_player, entry.player);
         }
     }
 

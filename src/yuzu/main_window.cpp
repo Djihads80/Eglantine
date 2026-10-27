@@ -1598,32 +1598,6 @@ QString PadPath(SDL_JoystickID id) {
     return out;
 }
 
-/// The hex body of an identity token (serial or guid), for tolerant matching against the
-/// input subsystem's own guid strings.
-/// The GUID key InputCommon uses for its device ids: the hex after "guid:" with bytes
-/// 2-3 (the controller-name CRC, which rewrites itself when the name rotates) zeroed,
-/// exactly like SDLDriver::GetGUID. Anything else never matches the settings tab.
-std::string StableGuidHex(const std::string& ident) {
-    if (ident.rfind("guid:", 0) != 0) {
-        return {};
-    }
-    std::string hex = ident.substr(5);
-    if (hex.size() >= 8) {
-        hex.replace(4, 4, "0000");
-    }
-    return hex;
-}
-
-std::string IdentityHex(const std::string& ident) {
-    std::string out;
-    for (char c : ident) {
-        if (std::isxdigit(static_cast<unsigned char>(c))) {
-            out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-    }
-    return out;
-}
-
 /// True while any button of a pad is held: the Identify handshake reads this.
 bool PadAnyButtonPressed(SDL_JoystickID id) {
     const JoystickApiLock lock;
@@ -2103,7 +2077,7 @@ void MainWindow::RenderControllerOverlay() {
     const QFontMetrics fm{font};
     int width = 12;
     for (const auto& row : overlay_rows) {
-        width = std::max(width, fm.horizontalAdvance(row.text) + 12);
+        width = (std::max)(width, fm.horizontalAdvance(row.text) + 12);
     }
     const int height = 12 + fm.lineSpacing() * static_cast<int>(overlay_rows.size());
     QImage image{width, height, QImage::Format_RGBA8888};
@@ -2774,7 +2748,7 @@ void MainWindow::ApplyConsoleControllerMode() {
     for (const auto& [id, ident] : live) {
         claim_order.push_back(id);
     }
-    std::sort(claim_order.begin(), claim_order.end(), [&live](u32 a, u32 b) {
+    std::sort(claim_order.begin(), claim_order.end(), [](u32 a, u32 b) {
         const int ia = PadPlayerIndex(a);
         const int ib = PadPlayerIndex(b);
         if (ia != ib) {
