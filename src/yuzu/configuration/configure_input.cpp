@@ -261,9 +261,9 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
         if (tabs && tabs != rumble_tabs) {
             rumble_tabs = tabs;
             connect(tabs->tabBar(), &QTabBar::tabBarClicked, this, [this, tabs](int index) {
-                const auto mode = Settings::values.controller_applet_mode.GetValue();
-                if (mode != Settings::AppletMode::ConsoleMode &&
-                    mode != Settings::AppletMode::HandheldConsoleMode) {
+                const auto applet_mode = Settings::values.controller_applet_mode.GetValue();
+                if (applet_mode != Settings::AppletMode::ConsoleMode &&
+                    applet_mode != Settings::AppletMode::HandheldConsoleMode) {
                     return;
                 }
                 const auto it = std::find(player_tabs.begin(), player_tabs.end(),
