@@ -784,7 +784,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
-    if (!use_asynchronous_shaders) {
+    if (maxwell3d->GetNativeMacroEngine().native_turing || !use_asynchronous_shaders) {
         return pipeline;
     }
     // If games are using a small index count, we can assume these are full screen quads.
