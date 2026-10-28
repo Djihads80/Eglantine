@@ -20,6 +20,8 @@
 #include "ui_configure_input.h"
 
 class QCheckBox;
+class QComboBox;
+class QGroupBox;
 class QKeyEvent;
 class QLabel;
 class QPushButton;
@@ -27,6 +29,7 @@ class QSlider;
 class QSpinBox;
 class QString;
 class QTimer;
+class QToolButton;
 class QWidget;
 
 class InputProfiles;
@@ -183,6 +186,31 @@ private:
     std::size_t player_index;
     bool debug;
     bool is_powered_on;
+    /// Players are assigned automatically: the connection and controller are not this tab's
+    bool connection_locked{};
+
+    /// The profile card shown instead of the Profile group while players are assigned
+    /// automatically. It drives the same profile list (comboProfiles stays the selection).
+    void BuildProfileCard();
+    void UpdateProfileCard();
+    /// The selected profile's mapping, kept to tell when the tab's mapping differs from it
+    void RememberProfileMapping();
+    std::string CurrentMappingKey() const;
+    void SelectProfile(const QString& name);
+    void RenameProfile();
+    void DuplicateProfile();
+    void DeleteProfileAsked();
+    QGroupBox* profile_card{};
+    QComboBox* card_profiles{};
+    QPushButton* card_save{};
+    QToolButton* card_remove{};
+    QToolButton* card_more{};
+    QLabel* card_status{};
+    QTimer* card_timer{};
+    std::string card_profile_key;
+    QString card_profile_name;
+    /// The profile the engine last reported for this player
+    QString card_engine_profile;
 
     InputCommon::InputSubsystem* input_subsystem;
 

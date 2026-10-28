@@ -31,6 +31,7 @@ struct ControllerConsoleState {
         bool leaving; ///< the controller left and nothing took its place: shown red, then gone
         int flash;    ///< 0 none, 1 green (a controller took the player), 2 red (one left)
         long long flash_since; ///< ms since epoch; the flash blinks for 1.5 seconds from here
+        std::string profile;   ///< the input profile the player's controller carries ("" none)
     };
     /// True while an automatic assignment mode runs (the engine owns the players)
     bool engine_active = false;
@@ -44,6 +45,15 @@ struct ControllerConsoleState {
     std::vector<std::pair<int, int>> swap_requests;
     /// Players whose controller the Controllers tab asked to rumble (a click on its row)
     std::vector<int> rumble_requests;
+    /// An input profile picked for a player: the engine puts the profile's mappings on the set
+    /// the player's controller carries. No name takes the profile off: `restore` puts back the
+    /// mappings the set had before this session's first profile, else only the name goes.
+    struct ProfileRequest {
+        int player;
+        std::string name;
+        bool restore = false;
+    };
+    std::vector<ProfileRequest> profile_requests;
     /// Bumped whenever the engine reloads the emulated controllers (a swap, a pad arriving or
     /// leaving): the Controls page refreshes its player tabs from them when it changes
     unsigned long long generation = 0;

@@ -78,71 +78,76 @@ void WindowAdaptPass::Draw(const Device& device, RasterizerVulkan& rasterizer, S
         layer_it++;
     }
 
-    // The controller debug overlay: one more quad, straight-alpha, drawn last.
-    bool overlay_draw = false;
-    PresentPushConstants overlay_push{};
-    VkDescriptorSet overlay_set{};
-    {
-        auto& overlay_frame = Common::GetControllerOverlayFrame();
+    // The controller overlays (players panel, hints): one more quad each, straight-alpha,
+    // drawn last.
+    std::array<bool, 2> overlay_draw{};
+    std::array<PresentPushConstants, 2> overlay_push{};
+    std::array<VkDescriptorSet, 2> overlay_set{};
+    const auto frames = Common::GetControllerOverlayFrames();
+    for (size_t o = 0; o < frames.size(); ++o) {
+        auto& overlay_frame = *frames[o];
+        auto& quad = overlays[o];
         std::scoped_lock lock{overlay_frame.mutex};
-        if (overlay_frame.enabled && !overlay_frame.pixels.empty() && overlay_frame.width > 0 &&
-            overlay_frame.height > 0) {
-            constexpr VkFormat overlay_format = VK_FORMAT_R8G8B8A8_UNORM;
-            const VkExtent2D extent{overlay_frame.width, overlay_frame.height};
-            if (!overlay_ready || overlay_extent.width != extent.width ||
-                overlay_extent.height != extent.height) {
-                overlay_image = CreateWrappedImage(memory_allocator, extent, overlay_format);
-                overlay_view = CreateWrappedImageView(device, overlay_image, overlay_format);
-                overlay_pool = CreateWrappedDescriptorPool(device, 1, 1);
-                const std::vector layouts(1u, *descriptor_set_layout);
-                overlay_sets = CreateWrappedDescriptorSets(overlay_pool, layouts);
-                overlay_extent = extent;
-                overlay_ready = true;
-                overlay_version = 0;
-            }
-            if (overlay_version != overlay_frame.version) {
-                UploadImage(device, memory_allocator, scheduler, overlay_image, extent,
-                            overlay_format, overlay_frame.pixels);
-                overlay_version = overlay_frame.version;
-                const VkDescriptorImageInfo image_info{
-                    .sampler = *sampler,
-                    .imageView = *overlay_view,
-                    .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-                };
-                const VkWriteDescriptorSet write{
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = overlay_sets[0],
-                    .dstBinding = 0,
-                    .dstArrayElement = 0,
-                    .descriptorCount = 1,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .pImageInfo = &image_info,
-                    .pBufferInfo = nullptr,
-                    .pTexelBufferView = nullptr,
-                };
-                device.GetLogical().UpdateDescriptorSets(std::array{write}, {});
-            }
-            overlay_set = overlay_sets[0];
+        if (!overlay_frame.enabled || overlay_frame.pixels.empty() || overlay_frame.width == 0 ||
+            overlay_frame.height == 0) {
+            continue;
+        }
+        constexpr VkFormat overlay_format = VK_FORMAT_R8G8B8A8_UNORM;
+        const VkExtent2D extent{overlay_frame.width, overlay_frame.height};
+        if (!quad.ready || quad.extent.width != extent.width ||
+            quad.extent.height != extent.height) {
+            quad.image = CreateWrappedImage(memory_allocator, extent, overlay_format);
+            quad.view = CreateWrappedImageView(device, quad.image, overlay_format);
+            quad.pool = CreateWrappedDescriptorPool(device, 1, 1);
+            const std::vector layouts(1u, *descriptor_set_layout);
+            quad.sets = CreateWrappedDescriptorSets(quad.pool, layouts);
+            quad.extent = extent;
+            quad.ready = true;
+            quad.version = 0;
+        }
+        if (quad.version != overlay_frame.version) {
+            UploadImage(device, memory_allocator, scheduler, quad.image, extent, overlay_format,
+                        overlay_frame.pixels);
+            quad.version = overlay_frame.version;
+            const VkDescriptorImageInfo image_info{
+                .sampler = *sampler,
+                .imageView = *quad.view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            };
+            const VkWriteDescriptorSet write{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = quad.sets[0],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_info,
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            };
+            device.GetLogical().UpdateDescriptorSets(std::array{write}, {});
+        }
+        overlay_set[o] = quad.sets[0];
 
-            overlay_push.modelview_matrix =
-                MakeOrthographicMatrix(f32(layout.width), static_cast<f32>(layout.height));
-            const auto& screen = layout.screen;
-            const f32 x = f32(screen.left) + 4.f;
-            const f32 y = f32(screen.top) + 4.f;
-            const f32 w = f32(extent.width);
-            const f32 h = f32(extent.height);
-            overlay_push.vertices[0] = ScreenRectVertex(x, y, 0.f, 0.f);
-            overlay_push.vertices[1] = ScreenRectVertex(x + w, y, 1.f, 0.f);
-            overlay_push.vertices[2] = ScreenRectVertex(x, y + h, 0.f, 1.f);
-            overlay_push.vertices[3] = ScreenRectVertex(x + w, y + h, 1.f, 1.f);
-            overlay_draw = true;
+        auto& push = overlay_push[o];
+        push.modelview_matrix =
+            MakeOrthographicMatrix(f32(layout.width), static_cast<f32>(layout.height));
+        const auto& screen = layout.screen;
+        const f32 w = f32(extent.width);
+        const f32 h = f32(extent.height);
+        const f32 x = f32(screen.left) + 4.f;
+        const f32 y = overlay_frame.bottom ? f32(screen.bottom) - h - 4.f : f32(screen.top) + 4.f;
+        push.vertices[0] = ScreenRectVertex(x, y, 0.f, 0.f);
+        push.vertices[1] = ScreenRectVertex(x + w, y, 1.f, 0.f);
+        push.vertices[2] = ScreenRectVertex(x, y + h, 0.f, 1.f);
+        push.vertices[3] = ScreenRectVertex(x + w, y + h, 1.f, 1.f);
+        overlay_draw[o] = true;
 
-            static u32 logged_quads = 0;
-            if (logged_quads < 3) {
-                ++logged_quads;
-                LOG_INFO(Render_Vulkan, "overlay: quad drawn {}x{} at {},{}", extent.width,
-                         extent.height, x, y);
-            }
+        static u32 logged_quads = 0;
+        if (logged_quads < 3) {
+            ++logged_quads;
+            LOG_INFO(Render_Vulkan, "overlay: quad drawn {}x{} at {},{}", extent.width,
+                     extent.height, x, y);
         }
     }
 
@@ -180,12 +185,15 @@ void WindowAdaptPass::Draw(const Device& device, RasterizerVulkan& rasterizer, S
             cmdbuf.Draw(4, 1, 0, 0);
         }
 
-        if (overlay_draw) {
+        for (size_t o = 0; o < overlay_draw.size(); ++o) {
+            if (!overlay_draw[o]) {
+                continue;
+            }
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *coverage_pipeline);
             cmdbuf.PushConstants(graphics_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT,
-                                 overlay_push);
+                                 overlay_push[o]);
             cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline_layout,
-                                      0, overlay_set, {});
+                                      0, overlay_set[o], {});
             cmdbuf.Draw(4, 1, 0, 0);
         }
 

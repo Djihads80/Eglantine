@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -21,11 +22,25 @@ struct ControllerOverlayFrame {
     bool enabled = false;
     /// Incremented on every push so presenters can cache by version
     u64 version = 0;
+    /// Drawn in the screen's bottom-left corner instead of its top-left
+    bool bottom = false;
 };
 
+/// The players panel (top left)
 [[nodiscard]] inline ControllerOverlayFrame& GetControllerOverlayFrame() {
     static ControllerOverlayFrame instance;
     return instance;
+}
+
+/// The hints naming a controller that joined or left (bottom left)
+[[nodiscard]] inline ControllerOverlayFrame& GetControllerHintFrame() {
+    static ControllerOverlayFrame instance{.bottom = true};
+    return instance;
+}
+
+/// Both, in drawing order
+[[nodiscard]] inline std::array<ControllerOverlayFrame*, 2> GetControllerOverlayFrames() {
+    return {&GetControllerOverlayFrame(), &GetControllerHintFrame()};
 }
 
 } // namespace Common

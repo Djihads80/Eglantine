@@ -32,6 +32,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
 
     // Toggled from View > Show Controller Overlay
     INSERT(Settings, console_debug_overlay, QString(), QString());
+    INSERT(Settings, console_hints, QString(), QString());
     INSERT(Settings, builtin_pad_identity, QString(), QString());
     INSERT(Settings, builtin_pad_steam_handle, QString(), QString());
     INSERT(Settings, builtin_pad_manual, QString(), QString());

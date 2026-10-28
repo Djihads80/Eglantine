@@ -55,6 +55,7 @@
 #include "configuration/configure_input.h"
 #include "configuration/configure_per_game.h"
 #include "configuration/configure_tas.h"
+#include "configuration/input_profiles.h"
 
 #include "util/clickable_label.h"
 #include "util/controller_navigation.h"
@@ -1715,6 +1716,12 @@ bool IsControllerMaker(Uint16 vendor) {
     }
 }
 
+/// Makers of handhelds with built-in controls: Valve, Lenovo, ASUS, MSI. A pad from one of
+/// them is taken as the handheld's own on a direct launch.
+bool IsHandheldMaker(Uint16 vendor) {
+    return vendor == 0x28DE || vendor == 0x17EF || vendor == 0x0B05 || vendor == 0x0DB0;
+}
+
 /// True for the controller types Steam reports for standalone controllers
 bool IsStandaloneControllerType(SDL_GamepadType type) {
     return type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_STANDARD;
@@ -1839,9 +1846,22 @@ void MainWindow::RestoreConsoleProfile() {
     // keeps the engine's pre-boot state and that is what the next save writes.
     Settings::values.players.GetValue(true) = *console_profile;
     if (!Settings::values.players.UsingGlobal()) {
-        Settings::values.players.GetValue() = *console_profile;
+        Settings::values.players.GetValue() = ConsoleBindingSets();
     }
     console_profile.reset();
+    game_profiles.reset();
+}
+
+std::array<Settings::PlayerInput, 10> MainWindow::ConsoleBindingSets() const {
+    auto sets = *console_profile;
+    if (game_profiles) {
+        for (size_t i = 0; i < sets.size(); ++i) {
+            if (!(*game_profiles)[i].profile_name.empty()) {
+                sets[i] = (*game_profiles)[i];
+            }
+        }
+    }
+    return sets;
 }
 
 namespace {
@@ -1886,6 +1906,33 @@ std::string BindingMapping(const std::string& raw) {
         out += f + ',';
     }
     return out;
+}
+
+/// Puts a profile's mappings on a binding set, keeping the set's own controller (guid, port)
+/// on SDL bindings: the set stays on whatever controller carries it
+void ApplyProfileMappings(Settings::PlayerInput& set, const Settings::PlayerInput& profile) {
+    const auto apply = [](auto& to, const auto& from) {
+        for (size_t i = 0; i < to.size(); ++i) {
+            Common::ParamPackage taken{from[i]};
+            const Common::ParamPackage kept{to[i]};
+            if (!from[i].empty() && !to[i].empty() && taken.Get("engine", "") == "sdl" &&
+                kept.Get("engine", "") == "sdl") {
+                taken.Set("guid", kept.Get("guid", ""));
+                taken.Set("port", kept.Get("port", 0));
+                if (kept.Has("guid2")) {
+                    taken.Set("guid2", kept.Get("guid2", ""));
+                } else {
+                    taken.Erase("guid2");
+                }
+                to[i] = taken.Serialize();
+            } else {
+                to[i] = from[i];
+            }
+        }
+    };
+    apply(set.buttons, profile.buttons);
+    apply(set.analogs, profile.analogs);
+    apply(set.motions, profile.motions);
 }
 
 /// Brings the edited mappings of one binding array into the profile's, keeping the profile's
@@ -1962,11 +2009,8 @@ void MainWindow::MergeConsoleProfileEdits(const std::array<Settings::PlayerInput
         // re-pointing bindings while the tab is open (the tab even switches the players to
         // the global copy the engine drives), so only mapping changes count as edits. An edit
         // on the handheld's own pad goes to player one's set, the one it carries everywhere.
-        size_t target = i;
         const auto own = pad_slots.find(builtin_pad_id);
-        if (builtin_pad_id && own != pad_slots.end() && own->second == static_cast<int>(i)) {
-            target = 0;
-        }
+        size_t target = static_cast<size_t>(slot_set[i]);
         auto& p = (*console_profile)[target];
         bool edited = MergeMappings(p.buttons, b.buttons, a.buttons);
         edited = MergeMappings(p.analogs, b.analogs, a.analogs) || edited;
@@ -1990,6 +2034,11 @@ void MainWindow::MergeConsoleProfileEdits(const std::array<Settings::PlayerInput
             }
         }
         edited = MergeMappings(p.motions, b.motions, edited_motions) || edited;
+        // The profile picked in the player's tab (its name, for the tab to show it again)
+        if (a.profile_name != b.profile_name) {
+            p.profile_name = a.profile_name;
+            edited = true;
+        }
         if (a.controller_type != b.controller_type || a.vibration_enabled != b.vibration_enabled ||
             a.vibration_strength != b.vibration_strength) {
             p.controller_type = a.controller_type;
@@ -2131,65 +2180,307 @@ void MainWindow::RenderControllerOverlay() {
     const auto mode = Settings::values.controller_applet_mode.GetValue();
     const bool automatic = mode == Settings::AppletMode::ConsoleMode ||
                            mode == Settings::AppletMode::HandheldConsoleMode;
-    auto& overlay = Common::GetControllerOverlayFrame();
+    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    const auto publish = [](Common::ControllerOverlayFrame& frame, const QImage* image) {
+        std::scoped_lock lock{frame.mutex};
+        if (!image) {
+            if (frame.enabled) {
+                frame.enabled = false;
+                ++frame.version;
+            }
+            return;
+        }
+        frame.width = static_cast<u32>(image->width());
+        frame.height = static_cast<u32>(image->height());
+        frame.pixels.resize(image->sizeInBytes());
+        std::memcpy(frame.pixels.data(), image->constBits(), image->sizeInBytes());
+        frame.enabled = true;
+        ++frame.version;
+    };
+
+    static constexpr std::array<QColor, 8> player_colors{
+        QColor(79, 142, 247), QColor(239, 91, 91), QColor(47, 191, 113), QColor(245, 184, 46),
+        QColor(155, 108, 242), QColor(242, 140, 56), QColor(46, 196, 201), QColor(227, 107, 174),
+    };
+    const auto player_color = [](int player) { return player_colors[player % 8]; };
+    QFont badge_font;
+    badge_font.setPixelSize(12);
+    badge_font.setBold(true);
+
+    // Hints: a controller that took a player (green flash) or left one (red flash), named for a
+    // few seconds in the bottom-left corner, whether the overlay shows or not
+    constexpr qint64 hint_ms = 3000;
+    for (const auto& row : overlay_rows) {
+        const int i = row.player;
+        if (row.flash == 1 && row.pad != 0 && row.flash_since > hinted_join[i]) {
+            hinted_join[i] = row.flash_since;
+            controller_hints.push_back({overlay_row_name[i], i, true, row.flash_since});
+        } else if (row.flash == 2 && row.flash_since > hinted_leave[i]) {
+            hinted_leave[i] = row.flash_since;
+            controller_hints.push_back({overlay_row_name[i], i, false, row.flash_since});
+        }
+    }
+    std::erase_if(controller_hints,
+                  [now_ms](const auto& hint) { return now_ms - hint.at >= hint_ms; });
+    if (!automatic || !Settings::values.console_hints.GetValue() || controller_hints.empty()) {
+        publish(Common::GetControllerHintFrame(), nullptr);
+    } else {
+        QFont hint_font;
+        hint_font.setPixelSize(15);
+        hint_font.setBold(true);
+        const QFontMetrics hint_fm{hint_font};
+        constexpr int hint_h = 30;
+        constexpr int hint_gap = 6;
+        constexpr int badge_w = 36;
+        const auto text_of = [](const ControllerHint& hint) {
+            return hint.joined ? tr("%1 joined").arg(hint.name) : tr("%1 left").arg(hint.name);
+        };
+        int width = 0;
+        for (const auto& hint : controller_hints) {
+            width = (std::max)(width, 14 + hint_fm.horizontalAdvance(text_of(hint)) + 10 +
+                                          badge_w + 6);
+        }
+        // The widest a hint can be, so the image keeps its size while hints come and go
+        width = (std::max)(width, 260) + 2;
+        const int count = static_cast<int>(controller_hints.size());
+        QImage image{width, count * (hint_h + hint_gap), QImage::Format_RGBA8888};
+        image.fill(Qt::transparent);
+        QPainter painter{&image};
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::TextAntialiasing);
+        // Newest at the bottom, nearest the corner
+        int y = 0;
+        for (const auto& hint : controller_hints) {
+            const QString text = text_of(hint);
+            const int w = 14 + hint_fm.horizontalAdvance(text) + 10 + badge_w + 6;
+            const qint64 left = hint_ms - (now_ms - hint.at);
+            const int alpha = left < 500 ? static_cast<int>(255 * left / 500) : 255;
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(hint.joined ? QColor(18, 18, 22, 215 * alpha / 255)
+                                         : QColor(96, 22, 28, 220 * alpha / 255));
+            painter.drawRoundedRect(QRectF(1, y, w, hint_h), hint_h / 2.0, hint_h / 2.0);
+            painter.setFont(hint_font);
+            painter.setPen(QColor(255, 255, 255, alpha));
+            painter.drawText(QRect(15, y, w, hint_h), Qt::AlignVCenter | Qt::AlignLeft, text);
+            QColor badge = player_color(hint.player);
+            badge.setAlpha(hint.joined ? alpha : alpha / 2);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(badge);
+            const QRectF badge_rect(1 + w - 6 - badge_w, y + 5, badge_w, hint_h - 10);
+            painter.drawRoundedRect(badge_rect, badge_rect.height() / 2, badge_rect.height() / 2);
+            painter.setFont(badge_font);
+            painter.setPen(QColor(255, 255, 255, alpha));
+            painter.drawText(badge_rect, Qt::AlignCenter,
+                             QStringLiteral("P%1").arg(hint.player + 1));
+            y += hint_h + hint_gap;
+        }
+        painter.end();
+        publish(Common::GetControllerHintFrame(), &image);
+    }
+
+    overlay_blink.clear();
+    for (const auto& row : overlay_rows) {
+        overlay_blink.push_back(row.flash != 0 && BlinkOn(now_ms - row.flash_since));
+    }
     if (!Settings::values.console_debug_overlay.GetValue() || !automatic ||
         overlay_rows.empty()) {
-        std::scoped_lock lock{overlay.mutex};
-        if (overlay.enabled) {
-            overlay.enabled = false;
-            ++overlay.version;
-        }
+        publish(Common::GetControllerOverlayFrame(), nullptr);
         return;
     }
-    QFont font{QStringLiteral("monospace")};
-    font.setPointSize(9);
-    const QFontMetrics fm{font};
-    int width = 12;
+
+    // The Switch buttons as chips: a label and a colour
+    const auto chip = [](int button) -> std::pair<QString, QColor> {
+        using namespace Settings::NativeButton;
+        switch (button) {
+        case A:
+            return {QStringLiteral("A"), QColor(231, 76, 60)};
+        case B:
+            return {QStringLiteral("B"), QColor(230, 180, 20)};
+        case X:
+            return {QStringLiteral("X"), QColor(52, 152, 219)};
+        case Y:
+            return {QStringLiteral("Y"), QColor(46, 184, 104)};
+        case LStick:
+            return {QStringLiteral("LS"), QColor(70, 90, 112)};
+        case RStick:
+            return {QStringLiteral("RS"), QColor(70, 90, 112)};
+        case L:
+            return {QStringLiteral("L"), QColor(120, 132, 140)};
+        case R:
+            return {QStringLiteral("R"), QColor(120, 132, 140)};
+        case ZL:
+            return {QStringLiteral("ZL"), QColor(98, 108, 116)};
+        case ZR:
+            return {QStringLiteral("ZR"), QColor(98, 108, 116)};
+        case Plus:
+            return {QStringLiteral("+"), QColor(142, 88, 182)};
+        case Minus:
+            return {QStringLiteral("−"), QColor(142, 88, 182)};
+        case DLeft:
+            return {QStringLiteral("←"), QColor(84, 99, 116)};
+        case DUp:
+            return {QStringLiteral("↑"), QColor(84, 99, 116)};
+        case DRight:
+            return {QStringLiteral("→"), QColor(84, 99, 116)};
+        case DDown:
+            return {QStringLiteral("↓"), QColor(84, 99, 116)};
+        case Home:
+            return {QStringLiteral("⌂"), QColor(60, 60, 66)};
+        case Screenshot:
+            return {QStringLiteral("◉"), QColor(60, 60, 66)};
+        case SLLeft:
+        case SLRight:
+            return {QStringLiteral("SL"), QColor(120, 132, 140)};
+        default:
+            return {QStringLiteral("SR"), QColor(120, 132, 140)};
+        }
+    };
+    QFont name_font;
+    name_font.setPixelSize(13);
+    QFont chip_font;
+    chip_font.setPixelSize(11);
+    chip_font.setBold(true);
+    const QFontMetrics name_fm{name_font};
+    const QFontMetrics chip_fm{chip_font};
+
+    constexpr int row_h = 28;
+    constexpr int row_gap = 4;
+    constexpr int badge_w = 30;
+    constexpr int inner = 6;
+    constexpr int bubble_gap = 6;
+    constexpr int chip_h = 18;
+    constexpr int chip_gap = 3;
+    constexpr int widest_chip = 26;
+    const auto chip_width = [&](const QString& text) {
+        return (std::max)(chip_h, chip_fm.horizontalAdvance(text) + 10);
+    };
+    // An entry lives 5 seconds, then shrinks away
+    constexpr qint64 press_life_ms = 5000;
+    constexpr qint64 press_shrink_ms = 400;
+    const auto press_scale = [now_ms](const ButtonPress& press) {
+        const qint64 over = now_ms - press.at - press_life_ms;
+        if (over <= 0) {
+            return 1.0;
+        }
+        return (std::max)(0.0, 1.0 - static_cast<double>(over) / press_shrink_ms);
+    };
+
+    int name_w = 0;
     for (const auto& row : overlay_rows) {
-        width = (std::max)(width, fm.horizontalAdvance(row.text) + 12);
+        name_w = (std::max)(name_w, name_fm.horizontalAdvance(overlay_row_name[row.player]));
     }
-    const int height = 12 + fm.lineSpacing() * static_cast<int>(overlay_rows.size());
+    const int controller_w = inner + badge_w + 8 + name_w + inner + 4;
+    // Room for ten of the widest chips, so the image keeps its size as the bubbles change
+    const int history_room = inner * 2 + 10 * (widest_chip + chip_gap);
+    const int width = controller_w + bubble_gap + history_room + 2;
+    const int count = static_cast<int>(overlay_rows.size());
+    const int height = count * row_h + (count - 1) * row_gap + 2;
+
     QImage image{width, height, QImage::Format_RGBA8888};
-    image.fill(QColor(0, 0, 0, 140));
+    image.fill(Qt::transparent);
     QPainter painter{&image};
-    painter.setFont(font);
-    painter.setPen(Qt::white);
-    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
-    overlay_blink.clear();
-    int y = 6 + fm.ascent();
-    for (const auto& row : overlay_rows) {
-        const bool blink = row.flash != 0 && BlinkOn(now_ms - row.flash_since);
-        overlay_blink.push_back(blink);
-        std::optional<QColor> fill;
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    painter.setPen(Qt::NoPen);
+    int y = 1;
+    for (std::size_t r = 0; r < overlay_rows.size(); ++r) {
+        const auto& row = overlay_rows[r];
+        const bool blink = overlay_blink[r];
+        const bool gone = row.pad == 0;
+
+        // The controller bubble: its state lights it (blue held, green joined, red left)
+        QColor fill(14, 14, 18, 175);
         if (row.flash == 2) {
             if (blink) {
-                fill = QColor(210, 60, 60, 190);
+                fill = QColor(190, 50, 50, 200);
             }
-        } else if (row.pad != 0 && active.contains(row.pad)) {
-            fill = QColor(60, 120, 230, 190);
+        } else if (!gone && active.contains(row.pad)) {
+            fill = QColor(45, 95, 200, 200);
         } else if (blink) {
-            fill = QColor(60, 180, 90, 190);
+            fill = QColor(45, 160, 80, 200);
         }
-        if (fill) {
-            painter.fillRect(2, y - fm.ascent() - 1, width - 4, fm.lineSpacing(), *fill);
+        painter.setBrush(fill);
+        painter.drawRoundedRect(QRectF(1, y, controller_w, row_h), row_h / 2.0, row_h / 2.0);
+        QColor badge = player_color(row.player);
+        if (gone) {
+            badge.setAlpha(110);
         }
-        painter.drawText(6, y, row.text);
-        y += fm.lineSpacing();
+        painter.setBrush(badge);
+        const QRectF badge_rect(1 + inner, y + 5, badge_w, row_h - 10);
+        painter.drawRoundedRect(badge_rect, badge_rect.height() / 2, badge_rect.height() / 2);
+        painter.setFont(badge_font);
+        painter.setPen(Qt::white);
+        painter.drawText(badge_rect, Qt::AlignCenter, QStringLiteral("P%1").arg(row.player + 1));
+        painter.setFont(name_font);
+        painter.setPen(gone ? QColor(255, 255, 255, 120) : QColor(240, 240, 240));
+        painter.drawText(QRect(1 + inner + badge_w + 8, y, name_w + 4, row_h),
+                         Qt::AlignVCenter | Qt::AlignLeft, overlay_row_name[row.player]);
+        painter.setPen(Qt::NoPen);
+
+        // The history bubble: the last presses, newest first and brightest, each shrinking
+        // away at the far end as it expires (and the bubble with them)
+        const auto& presses = press_history[row.player];
+        double chips_w = 0;
+        for (const auto& press : presses) {
+            chips_w += (chip_width(chip(press.button).first) + chip_gap) * press_scale(press);
+        }
+        if (chips_w > 0.5) {
+            const double bubble_x = 1 + controller_w + bubble_gap;
+            const double bubble_w = inner * 2 + chips_w - chip_gap;
+            painter.setBrush(QColor(14, 14, 18, 175));
+            painter.drawRoundedRect(QRectF(bubble_x, y, (std::max)(bubble_w, double{row_h}), row_h),
+                                    row_h / 2.0, row_h / 2.0);
+            double cx = bubble_x + inner;
+            const int n = static_cast<int>(presses.size());
+            for (int k = n - 1; k >= 0; --k) {
+                const double scale = press_scale(presses[k]);
+                if (scale <= 0.0) {
+                    continue;
+                }
+                const auto& [label, color] = chip(presses[k].button);
+                const int alpha = static_cast<int>((255 - (n - 1 - k) * 12) * scale);
+                const double w = chip_width(label) * scale;
+                const double h = chip_h * scale;
+                QColor chip_color = color;
+                chip_color.setAlpha(alpha);
+                const QRectF rect(cx, y + (row_h - h) / 2.0, w, h);
+                painter.setBrush(chip_color);
+                painter.drawRoundedRect(rect, h / 2.0, h / 2.0);
+                if (scale > 0.6) {
+                    painter.setFont(chip_font);
+                    painter.setPen(QColor(255, 255, 255, alpha));
+                    painter.drawText(rect, Qt::AlignCenter, label);
+                    painter.setPen(Qt::NoPen);
+                }
+                cx += w + chip_gap * scale;
+            }
+        }
+        y += row_h + row_gap;
     }
     painter.end();
+    publish(Common::GetControllerOverlayFrame(), &image);
+}
 
-    std::scoped_lock lock{overlay.mutex};
-    overlay.width = static_cast<u32>(width);
-    overlay.height = static_cast<u32>(height);
-    overlay.pixels.resize(image.sizeInBytes());
-    std::memcpy(overlay.pixels.data(), image.constBits(), image.sizeInBytes());
-    overlay.enabled = true;
-    ++overlay.version;
+bool MainWindow::OverlayAnimating() const {
+    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    if (!controller_hints.empty()) {
+        return true;
+    }
+    for (const auto& history : press_history) {
+        if (!history.empty() && now_ms - history.front().at > 4900) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void MainWindow::PollControllerActivity() {
     // Input shows faster than the 250ms assignment tick: redraw only when who is active changes
+    // (or while the hints and history animate)
     if (overlay_rows.empty()) {
+        if (!controller_hints.empty()) {
+            RenderControllerOverlay();
+        }
         return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -2210,9 +2501,58 @@ void MainWindow::PollControllerActivity() {
     for (const auto& row : overlay_rows) {
         blink.push_back(row.flash != 0 && BlinkOn(now_ms - row.flash_since));
     }
-    if (active != overlay_active_pads || blink != overlay_blink) {
+    const bool pressed = PollButtonHistory();
+    if (pressed || OverlayAnimating() || active != overlay_active_pads || blink != overlay_blink) {
         RenderControllerOverlay();
     }
+}
+
+bool MainWindow::PollButtonHistory() {
+    if (!QtCommon::system || !QtCommon::system->IsPoweredOn()) {
+        return false;
+    }
+    auto& hid = QtCommon::system->HIDCore();
+    const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    bool pressed = false;
+    for (const auto& row : overlay_rows) {
+        if (row.pad == 0 || row.player < 0 || row.player >= 8) {
+            continue;
+        }
+        const int i = row.player;
+        // Another controller took the player: its history starts over
+        if (row.flash == 1 && row.flash_since != press_history_since[i]) {
+            press_history_since[i] = row.flash_since;
+            press_history[i].clear();
+            pressed = true;
+        }
+        const auto& player = Settings::values.players.GetValue()[i];
+        auto* controller = i == 0 && player.controller_type == Settings::ControllerType::Handheld
+                               ? hid.GetEmulatedController(Core::HID::NpadIdType::Handheld)
+                               : hid.GetEmulatedControllerByIndex(i);
+        if (!controller) {
+            continue;
+        }
+        // Entries gone through their life and shrink leave the history
+        auto& history = press_history[i];
+        while (!history.empty() && now_ms - history.front().at > 5400) {
+            history.pop_front();
+            pressed = true;
+        }
+        const auto values = controller->GetButtonsValues();
+        auto& down = buttons_down[i];
+        for (int b = 0; b < Settings::NativeButton::NumButtons; ++b) {
+            const bool held = values[b].value;
+            if (held && !down[b]) {
+                history.push_back({b, now_ms});
+                if (history.size() > 10) {
+                    history.pop_front();
+                }
+                pressed = true;
+            }
+            down[b] = held;
+        }
+    }
+    return pressed;
 }
 
 void MainWindow::ApplyConsoleControllerMode() {
@@ -2298,6 +2638,20 @@ void MainWindow::ApplyConsoleControllerMode() {
                 } else if (now - first_seen[id] < std::chrono::seconds{3}) {
                     continue;
                 }
+            }
+            // What a user's log needs for adding their handheld to the allowlist
+            static std::set<std::string> described;
+            if (described.insert(ident).second) {
+                const Uint16 vendor = SDL_GetJoystickVendorForID(id);
+                // (SDL has no name for an unknown type: null, which fmt refuses)
+                const char* type = SDL_GetGamepadStringForType(SDL_GetGamepadTypeForID(id));
+                LOG_INFO(Frontend,
+                         "console-mode: device {:04x}:{:04x} name=\"{}\" type={} steam={} "
+                         "gyro={} handheld_maker={} controller_maker={} ident={}",
+                         vendor, SDL_GetJoystickProductForID(id), PadName(id).toStdString(),
+                         type ? type : "unknown",
+                         IsSteamVirtualPad(id), PadHasGyro(id), IsHandheldMaker(vendor),
+                         IsControllerMaker(vendor), ident);
             }
             live[id] = std::move(ident);
         }
@@ -2452,6 +2806,8 @@ void MainWindow::ApplyConsoleControllerMode() {
         }
     }
 
+    // The overlay only exists in the automatic modes: so does its View menu toggle
+    ui->action_Show_Controller_Overlay->setVisible(handheld || console);
     if (!handheld && !console) {
         if (!overlay_rows.empty()) {
             overlay_rows.clear();
@@ -2471,6 +2827,9 @@ void MainWindow::ApplyConsoleControllerMode() {
             RestoreConsoleProfile();
             pad_slots.clear();
             pad_identity.clear();
+            pad_sets.clear();
+            slot_set = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+            set_before_profile.clear();
             LOG_INFO(Frontend, "console-mode: left, the user's players are restored");
             if (QtCommon::system && QtCommon::system->IsPoweredOn()) {
                 QtCommon::system->HIDCore().ReloadInputDevices();
@@ -2494,9 +2853,23 @@ void MainWindow::ApplyConsoleControllerMode() {
         // Entering a console mode: the user's own players are kept aside, and everything the
         // engine changes from here on stays runtime only (see SaveAllConfigValues)
         console_profile = Settings::values.players.GetValue(true);
+        game_profiles.reset();
         LOG_INFO(Frontend, "console-mode: entered, the user's players are kept aside "
                            "(PROBE P1 motions {})",
                  MotionTrace((*console_profile)[0]));
+    }
+    // A game booted with input profiles of its own: those players' sets are the profile's, read
+    // before the engine drives the game's copy (a game's copy is read in one go at boot)
+    if (Settings::values.players.UsingGlobal()) {
+        game_profiles.reset();
+    } else if (!game_profiles) {
+        game_profiles = Settings::values.players.GetValue();
+        for (size_t i = 0; i < game_profiles->size(); ++i) {
+            if (!(*game_profiles)[i].profile_name.empty()) {
+                LOG_INFO(Frontend, "console-mode: P{} uses the game's input profile \"{}\"",
+                         i + 1, (*game_profiles)[i].profile_name);
+            }
+        }
     }
     if (builtin_identity.empty()) {
         // Console Mode also needs to know the handheld's own pad: it carries player one's set
@@ -2732,8 +3105,7 @@ void MainWindow::ApplyConsoleControllerMode() {
                         continue;
                     }
                     const Uint16 vendor = PadVendor(id);
-                    if (vendor == 0x28DE || vendor == 0x17EF || vendor == 0x0B05 ||
-                        vendor == 0x0DB0) {
+                    if (IsHandheldMaker(vendor)) {
                         makers.push_back(id);
                         // Valve also makes standalone controllers: the deck's own wins
                         if (vendor == 0x28DE && PadProduct(id) == 0x1205) {
@@ -2752,6 +3124,8 @@ void MainWindow::ApplyConsoleControllerMode() {
             // P1 and the externals P2.., and releasing the deck's P1 a tick later leaves P1
             // empty (deck log: "player 1 deactivated", externals on P2-P5)
             if (candidate) {
+                LOG_INFO(Frontend, "console-mode: handheld {:04x}:{:04x} detected by its maker",
+                         PadVendor(candidate), PadProduct(candidate));
                 builtin_pad_id = candidate;
                 builtin_identity = live[candidate];
                 builtin_seen_first = true;
@@ -2760,6 +3134,8 @@ void MainWindow::ApplyConsoleControllerMode() {
                 builtin_match_id = candidate;
                 builtin_valid = true;
             } else if (live.size() == 1 && !IsControllerMaker(PadVendor(live.begin()->first))) {
+                LOG_INFO(Frontend, "console-mode: handheld {:04x}:{:04x} assumed: the only pad",
+                         PadVendor(live.begin()->first), PadProduct(live.begin()->first));
                 builtin_match_id = live.begin()->first;
                 builtin_valid = true;
                 builtin_pad_id = live.begin()->first;
@@ -3027,6 +3403,51 @@ void MainWindow::ApplyConsoleControllerMode() {
         }
     }
 
+    // Profiles picked in the Controls page: their mappings go on the set the player's
+    // controller carries (part of the user's own setup, so they are kept), on its device
+    {
+        std::vector<Common::ControllerConsoleState::ProfileRequest> picks;
+        {
+            auto& state = Common::GetControllerConsoleState();
+            std::scoped_lock lock{state.mutex};
+            picks.swap(state.profile_requests);
+        }
+        std::optional<InputProfiles> input_profiles;
+        for (const auto& [player, name, restore] : picks) {
+            if (!console_profile || player < 0 || player >= static_cast<int>(players.size())) {
+                continue;
+            }
+            const int set = slot_set[player];
+            const bool game_set = game_profiles && !(*game_profiles)[set].profile_name.empty();
+            auto& target = game_set ? (*game_profiles)[set] : (*console_profile)[set];
+            if (name.empty() && restore) {
+                if (const auto before = set_before_profile.find(set);
+                    before != set_before_profile.end()) {
+                    target.buttons = before->second.buttons;
+                    target.analogs = before->second.analogs;
+                    target.motions = before->second.motions;
+                    set_before_profile.erase(before);
+                }
+            }
+            if (!name.empty()) {
+                set_before_profile.try_emplace(set, target);
+                if (!input_profiles) {
+                    input_profiles.emplace();
+                }
+                const auto read = input_profiles->PeekProfile(name, player);
+                if (!read) {
+                    LOG_WARNING(Frontend, "console-mode: input profile \"{}\" not found", name);
+                    continue;
+                }
+                ApplyProfileMappings(target, *read);
+            }
+            target.profile_name = name;
+            LOG_INFO(Frontend, "console-mode: P{} input profile \"{}\" on the P{} set{}",
+                     player + 1, name, set + 1, game_set ? " (the game's)" : "");
+            changed = true;
+        }
+    }
+
     // Rumble requested from the Controllers tab: a short pulse on the player's controller
     {
         std::vector<int> rumbles;
@@ -3059,8 +3480,9 @@ void MainWindow::ApplyConsoleControllerMode() {
     // external pad takes its slot's set, minus the handheld's non-SDL motion, plus its own
     // SDL gyro when it has one and the set has no motion. A pad the driver has not opened
     // yet is retried next tick.
+    slot_set = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
     if (input_subsystem && console_profile) {
-        const auto& profile = *console_profile;
+        const auto profile = ConsoleBindingSets();
         const auto is_handheld_motion = [&profile](const std::string& raw) {
             if (raw.empty() || Common::ParamPackage{raw}.Get("engine", "") == "sdl") {
                 return false;
@@ -3080,6 +3502,24 @@ void MainWindow::ApplyConsoleControllerMode() {
             }
             const int slot = it->second;
             const bool is_builtin = builtin_valid && id == builtin_match_id;
+            // A controller carries the set it first got for the session: its slot's, unless
+            // another controller has that one (after a swap), then the first set nobody has
+            if (!is_builtin && !pad_sets.contains(ident)) {
+                std::set<int> taken;
+                for (const auto& [other, set] : pad_sets) {
+                    taken.insert(set);
+                }
+                int set = slot;
+                for (int k = 0; taken.contains(set) && k < static_cast<int>(players.size());
+                     ++k) {
+                    set = k;
+                }
+                if (taken.contains(set)) {
+                    set = slot;
+                }
+                pad_sets[ident] = set;
+                LOG_INFO(Frontend, "console-mode: inst={} carries the P{} set", id, set + 1);
+            }
             // A slot the user never bound a controller to (keyboard or empty, P6+ typically)
             // would leave its pad dead: borrow the nearest lower external slot's set.
             const auto has_sdl = [](const Settings::PlayerInput& p) {
@@ -3087,9 +3527,9 @@ void MainWindow::ApplyConsoleControllerMode() {
                     return !b.empty() && Common::ParamPackage{b}.Get("engine", "") == "sdl";
                 });
             };
-            int set_index = is_builtin ? 0 : slot;
+            int set_index = is_builtin ? 0 : pad_sets[ident];
             if (!is_builtin && !has_sdl(profile[set_index])) {
-                for (int k = slot - 1; k >= 0; --k) {
+                for (int k = set_index - 1; k >= 0; --k) {
                     if (has_sdl(profile[k]) && (k > 0 || !builtin_valid || !handheld)) {
                         set_index = k;
                         break;
@@ -3097,10 +3537,12 @@ void MainWindow::ApplyConsoleControllerMode() {
                 }
             }
             const auto& own = profile[set_index];
+            slot_set[slot] = set_index;
             Settings::PlayerInput want = players[slot];
             want.buttons = own.buttons;
             want.analogs = own.analogs;
             want.motions = own.motions;
+            want.profile_name = own.profile_name;
             RouteSdlBindings(want, binding->first, binding->second);
             // Under Steam the virtual pad has no motion: take the paired real device's. The
             // deck's own controller is unique (28DE:1205); another model pairs when only one
@@ -3149,6 +3591,7 @@ void MainWindow::ApplyConsoleControllerMode() {
                 }
             }
             auto& player = players[slot];
+            player.profile_name = want.profile_name;
             if (player.buttons != want.buttons || player.analogs != want.analogs ||
                 player.motions != want.motions) {
                 player.buttons = want.buttons;
@@ -3300,7 +3743,7 @@ void MainWindow::ApplyConsoleControllerMode() {
                                            overlay_row_name[i]),
                                     gone != 0 ? 0u : pad, flash, flash_since});
             tab_rows.push_back({i, overlay_row_name[i].toStdString(), false, gone != 0, flash,
-                                flash_since});
+                                flash_since, ConsoleBindingSets()[slot_set[i]].profile_name});
         }
         {
             std::string handheld_name;

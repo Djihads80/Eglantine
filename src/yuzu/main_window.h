@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QTimer>
 #include <array>
+#include <bitset>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -573,6 +574,14 @@ private:
     /// connection instance -> stable identity (serial, else model GUID), for matching a
     /// returning pad that comes back under a new instance
     std::map<u32, std::string> pad_identity;
+    /// identity -> the binding set (a player's mappings in the user's setup) the controller
+    /// carries for the session: a controller keeps its own mappings when it changes player
+    std::map<std::string, int> pad_sets;
+    /// player -> the set its controller carries, as of the last tick (the player's own when
+    /// it has no controller)
+    std::array<int, 10> slot_set{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    /// A set's mappings before this session's first profile on it, for taking the profile off
+    std::map<int, Settings::PlayerInput> set_before_profile;
     /// The handheld's own pad (connection instance): never a player while other pads are
     /// connected
     u32 builtin_pad_id = 0;
@@ -614,10 +623,39 @@ private:
     QTimer console_activity_timer;
     void RenderControllerOverlay();
     void PollControllerActivity();
+    /// The last buttons each player pressed (emulated, as the game sees them), newest last,
+    /// for the overlay; cleared when another controller takes the player
+    struct ButtonPress {
+        int button;
+        qint64 at;
+    };
+    std::array<std::deque<ButtonPress>, 10> press_history{};
+    std::array<std::bitset<32>, 10> buttons_down{};
+    std::array<qint64, 10> press_history_since{};
+    /// Reads the players' buttons; true when the history changed (a press, or one expiring)
+    bool PollButtonHistory();
+    /// A controller named on screen for a moment: it joined as a player, or left one
+    struct ControllerHint {
+        QString name;
+        int player;
+        bool joined;
+        qint64 at;
+    };
+    std::vector<ControllerHint> controller_hints;
+    /// The flashes already turned into hints, per player (green, red)
+    std::array<qint64, 10> hinted_join{};
+    std::array<qint64, 10> hinted_leave{};
+    /// True while the overlay animates (hints fading, history entries shrinking away)
+    bool OverlayAnimating() const;
     /// The user's own players (bindings, types, connected flags) while a console mode drives
     /// them: the binding sets each pad carries come from here, the config file only ever
     /// sees this, and leaving the mode puts it back
     std::optional<std::array<Settings::PlayerInput, 10>> console_profile;
+    /// The running game's own players, when it was booted with input profiles of its own:
+    /// those players' sets come from here instead of the user's global ones
+    std::optional<std::array<Settings::PlayerInput, 10>> game_profiles;
+    /// The binding sets the pads carry: the user's own, with a game's input profiles on top
+    std::array<Settings::PlayerInput, 10> ConsoleBindingSets() const;
     /// Saves the configuration, writing the user's own players while a console mode runs
     void SaveAllConfigValues();
     /// Puts the user's own players back (leaving a console mode, or before the config is

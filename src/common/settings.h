@@ -140,7 +140,7 @@ struct Values {
     // Applet
     SwitchableSetting<AppletMode> cabinet_applet_mode{linkage, AppletMode::LLE, "cabinet_applet_mode",
                                             Category::LibraryApplet};
-    SwitchableSetting<AppletMode> controller_applet_mode{linkage, AppletMode::HLE, "controller_applet_mode",
+    SwitchableSetting<AppletMode> controller_applet_mode{linkage, AppletMode::Disabled, "controller_applet_mode",
                                                Category::LibraryApplet};
     Setting<AppletMode> data_erase_applet_mode{linkage, AppletMode::HLE, "data_erase_applet_mode",
                                                Category::LibraryApplet};
@@ -204,8 +204,11 @@ struct Values {
     SwitchableSetting<bool> use_multi_core{linkage, true, "use_multi_core", Category::Core};
 
     /// Show the controller debug overlay (the real pad state plus the logic's actions)
-    SwitchableSetting<bool> console_debug_overlay{linkage, false, "console_debug_overlay",
+    SwitchableSetting<bool> console_debug_overlay{linkage, true, "console_debug_overlay",
                                                   Category::LibraryApplet};
+    /// Name a controller on screen for a moment when it takes a player or leaves one
+    SwitchableSetting<bool> console_hints{linkage, true, "console_hints",
+                                          Category::LibraryApplet};
 
     /// True when the user declared the handheld's own pad by hand (the picker or the
     /// Identify button); the auto latch must not overwrite it

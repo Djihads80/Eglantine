@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <list>
 
@@ -65,13 +66,17 @@ private:
     // Controller debug overlay: a straight-alpha quad composited on top of the layers.
     // The CPU blend in Layer::UpdateRawImage only covers the unaccelerated present path;
     // the accelerated path presents a GPU texture directly, so the panel lives here.
-    vk::Image overlay_image;
-    vk::ImageView overlay_view;
-    vk::DescriptorPool overlay_pool;
-    vk::DescriptorSets overlay_sets;
-    VkExtent2D overlay_extent{};
-    std::uint64_t overlay_version = 0;
-    bool overlay_ready = false;
+    // One per overlay frame: the players panel and the hints.
+    struct OverlayQuad {
+        vk::Image image;
+        vk::ImageView view;
+        vk::DescriptorPool pool;
+        vk::DescriptorSets sets;
+        VkExtent2D extent{};
+        std::uint64_t version = 0;
+        bool ready = false;
+    };
+    std::array<OverlayQuad, 2> overlays;
 };
 
 } // namespace Vulkan

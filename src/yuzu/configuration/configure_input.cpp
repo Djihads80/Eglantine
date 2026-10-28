@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2016 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <map>
 #include <memory>
 #include <thread>
 
@@ -30,11 +31,15 @@
 #include <vector>
 #include <algorithm>
 #include <QTabWidget>
+#include <QButtonGroup>
 #include <QRadioButton>
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QTabBar>
 #include <QDateTime>
+#include <QEvent>
+#include <QMouseEvent>
+#include <QToolButton>
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/configuration/configure_motion_touch.h"
 #include "yuzu/configuration/configure_ringcon.h"
@@ -172,11 +177,12 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
     {
         auto* console_box = new QGroupBox(tr("Console Mode"), assignment);
         auto* console_layout = new QHBoxLayout(console_box);
-        auto* docked = new QRadioButton(tr("Docked"), console_box);
-        auto* handheld = new QRadioButton(tr("Handheld"), console_box);
-        console_layout->addWidget(docked);
-        console_layout->addWidget(handheld);
+        auto* console_group = new QButtonGroup(console_box);
+        console_layout->addWidget(ConfigurePlayerAssignment::MakeSegmented(
+            console_box, {tr("Docked"), tr("Handheld")}, {0, 1}, console_group));
         console_layout->addStretch(1);
+        auto* docked = console_group->button(0);
+        auto* handheld = console_group->button(1);
         assignment->AddTopWidget(console_box);
         const auto mirror = [this, docked, handheld] {
             docked->setChecked(ui->radioDocked->isChecked());
@@ -186,8 +192,9 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
         };
         connect(ui->radioDocked, &QRadioButton::toggled, this, mirror);
         connect(ui->radioUndocked, &QRadioButton::toggled, this, mirror);
-        connect(docked, &QRadioButton::clicked, this, [this] { ui->radioDocked->setChecked(true); });
-        connect(handheld, &QRadioButton::clicked, this,
+        connect(docked, &QAbstractButton::clicked, this,
+                [this] { ui->radioDocked->setChecked(true); });
+        connect(handheld, &QAbstractButton::clicked, this,
                 [this] { ui->radioUndocked->setChecked(true); });
         mirror_console_mode = mirror;
         mirror();
@@ -210,6 +217,7 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
             engine_active = state.engine_active;
             rows = state.players;
         }
+        last_rows = rows;
         // Automatic assignment owns the players: only their tabs show, and their connection
         // cannot be toggled by hand
         const auto mode = Settings::values.controller_applet_mode.GetValue();
@@ -248,14 +256,51 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
                     label = QColor(40, 160, 70);
                 }
             }
-            if (tabs) {
+            if (tabs && !tab_dragging) {
                 if (const int index = tabs->indexOf(player_tabs[i]); index >= 0) {
+                    if (player_tab_titles[i].isEmpty()) {
+                        player_tab_titles[i] = tabs->tabText(index);
+                    }
                     tabs->setTabVisible(index, shown);
                     tabs->tabBar()->setTabTextColor(index, label);
+                    if (!automatic) {
+                        tabs->setTabText(index, player_tab_titles[i]);
+                        tabs->setTabToolTip(index, {});
+                    } else if (shown) {
+                        // The grip says the tab drags, like the Controllers tab's rows
+                        tabs->setTabText(index, QStringLiteral("\u283F P%1").arg(i + 1));
+                        tabs->setTabToolTip(
+                            index, tr("P%1: %2\nDrag left or right to change the player order")
+                                       .arg(i + 1)
+                                       .arg(QString::fromStdString(row->name)));
+                    }
                 }
             }
             player_controllers[i]->SetConnectionLocked(automatic);
         }
+        // In the automatic modes the player tabs drag to change the player order
+        if (tabs) {
+            tabs->setMovable(automatic && engine_active && tabs->indexOf(player_tabs[0]) >= 0);
+            if (tabs != drag_tabs) {
+                drag_tabs = tabs;
+                tabs->tabBar()->installEventFilter(this);
+                connect(tabs, &QTabWidget::currentChanged, this,
+                        &ConfigureInput::UpdateTabArrows);
+            }
+            if (pending_select >= 0) {
+                const int index = tabs->indexOf(player_tabs[pending_select]);
+                if (index >= 0 && tabs->isTabVisible(index)) {
+                    tabs->setCurrentIndex(index);
+                    pending_select = -1;
+                } else if (now > pending_select_until) {
+                    pending_select = -1;
+                }
+            }
+            if (!tab_dragging) {
+                UpdateTabArrows();
+            }
+        }
+
         // Clicking a player's tab rumbles its controller in the automatic modes, so the user
         // can tell which controller the tab is about (tab changes made by the code do not)
         if (tabs && tabs != rumble_tabs) {
@@ -362,6 +407,149 @@ void ConfigureInput::PropagatePlayerNumberChanged(size_t player_index, bool chec
 
     if (reconnect_current) {
         connected_controller_checkboxes[player_index]->setCheckState(Qt::Checked);
+    }
+}
+
+void ConfigureInput::SwapPlayers(int a, int b) {
+    if (a == b || a < 0 || b < 0 || a >= 8 || b >= 8) {
+        return;
+    }
+    auto& state = Common::GetControllerConsoleState();
+    std::scoped_lock lock{state.mutex};
+    state.swap_requests.emplace_back(a, b);
+}
+
+bool ConfigureInput::eventFilter(QObject* object, QEvent* event) {
+    if (drag_tabs && object == drag_tabs->tabBar() && drag_tabs->isMovable()) {
+        if (event->type() == QEvent::MouseButtonPress &&
+            static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            tab_order.clear();
+            for (int k = 0; k < drag_tabs->count(); ++k) {
+                tab_order.push_back(drag_tabs->widget(k));
+            }
+            const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
+            dragged_tab = drag_tabs->widget(drag_tabs->tabBar()->tabAt(at));
+            tab_dragging = true;
+        } else if (event->type() == QEvent::MouseButtonRelease && tab_dragging) {
+            tab_dragging = false;
+            // After the tab bar has finished its own drop
+            QTimer::singleShot(0, this, &ConfigureInput::FinishTabDrag);
+        }
+    }
+    return QWidget::eventFilter(object, event);
+}
+
+void ConfigureInput::FinishTabDrag() {
+    QTabWidget* tabs = drag_tabs;
+    if (!tabs || tab_order.isEmpty()) {
+        return;
+    }
+    // The players in the order their tabs were dropped in
+    std::vector<int> dropped;
+    for (int k = 0; k < tabs->count(); ++k) {
+        const auto it = std::find(player_tabs.begin(), player_tabs.end(), tabs->widget(k));
+        if (it != player_tabs.end() && tabs->isTabVisible(k)) {
+            dropped.push_back(static_cast<int>(it - player_tabs.begin()));
+        }
+    }
+    // The tabs go back in player order: the controllers move instead
+    for (int k = 0; k < static_cast<int>(tab_order.size()); ++k) {
+        const int from = tabs->indexOf(tab_order[k]);
+        if (from >= 0 && from != k) {
+            tabs->tabBar()->moveTab(from, k);
+        }
+    }
+    tab_order.clear();
+    std::vector<int> places = dropped;
+    std::sort(places.begin(), places.end());
+    if (dropped == places) {
+        return;
+    }
+
+    // Place k takes the controller player dropped[k] has now, as one swap at a time (the
+    // engine applies them in order)
+    std::map<int, int> holder;
+    for (const int place : places) {
+        holder[place] = place;
+    }
+    for (std::size_t k = 0; k < places.size(); ++k) {
+        int from = places[k];
+        for (const auto& [place, original] : holder) {
+            if (original == dropped[k]) {
+                from = place;
+            }
+        }
+        if (from != places[k]) {
+            SwapPlayers(places[k], from);
+            std::swap(holder[places[k]], holder[from]);
+        }
+    }
+
+    // The selected tab follows the controller that was dragged
+    const auto dragged = std::find(player_tabs.begin(), player_tabs.end(), dragged_tab);
+    if (dragged != player_tabs.end()) {
+        const auto at = std::find(dropped.begin(), dropped.end(),
+                                  static_cast<int>(dragged - player_tabs.begin()));
+        if (at != dropped.end()) {
+            pending_select = places[at - dropped.begin()];
+            pending_select_until = QDateTime::currentMSecsSinceEpoch() + 2000;
+        }
+    }
+}
+
+void ConfigureInput::UpdateTabArrows() {
+    QTabWidget* tabs = drag_tabs;
+    if (!tabs) {
+        return;
+    }
+    const bool movable = tabs->isMovable();
+    int last_player = -1;
+    for (const auto& row : last_rows) {
+        if (!row.leaving) {
+            last_player = (std::max)(last_player, row.player);
+        }
+    }
+    for (int player = 0; player < static_cast<int>(player_tabs.size()); ++player) {
+        const int index = tabs->indexOf(player_tabs[player]);
+        if (index < 0) {
+            continue;
+        }
+        // (A tab's buttons go when the tab is removed, as on leaving the Controls page)
+        auto& left = tab_lefts[player];
+        auto& right = tab_rights[player];
+        // Only a shown tab carries arrows: a hidden tab's buttons would float over the tab bar
+        // and swap a controller onto a player nobody holds
+        if (!movable || !tabs->isTabVisible(index)) {
+            if (left || right) {
+                tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, nullptr);
+                tabs->tabBar()->setTabButton(index, QTabBar::RightSide, nullptr);
+                delete left;
+                delete right;
+            }
+            continue;
+        }
+        if (!left || !right) {
+            const auto make = [this, player](Qt::ArrowType arrow, int step) {
+                auto* button = new QToolButton;
+                button->setArrowType(arrow);
+                button->setAutoRaise(true);
+                button->setFixedSize(16, 16);
+                connect(button, &QToolButton::clicked, this, [this, player, step] {
+                    SwapPlayers(player, player + step);
+                    pending_select = player + step;
+                    pending_select_until = QDateTime::currentMSecsSinceEpoch() + 2000;
+                });
+                return button;
+            };
+            left = make(Qt::LeftArrow, -1);
+            right = make(Qt::RightArrow, 1);
+            tabs->tabBar()->setTabButton(index, QTabBar::LeftSide, left);
+            tabs->tabBar()->setTabButton(index, QTabBar::RightSide, right);
+        }
+        left->setEnabled(player > 0);
+        left->setToolTip(tr("Swap with P%1").arg(player));
+        right->setEnabled(player < last_player);
+        right->setToolTip(tr("Swap with P%1").arg(player + 2));
     }
 }
 

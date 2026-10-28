@@ -11,6 +11,7 @@
 #include <QString>
 #include <QWidget>
 
+class QAbstractButton;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
@@ -39,6 +40,10 @@ public:
     /// Puts a widget above everything else in the tab
     void AddTopWidget(QWidget* widget);
 
+    /// A row of joined buttons, one checked at a time (the group gets them, with these ids)
+    static QWidget* MakeSegmented(QWidget* parent, const QStringList& labels,
+                                  const std::vector<int>& ids, QButtonGroup* group);
+
 private:
     void LoadConfiguration();
     /// The controller applet mode the controls select
@@ -54,13 +59,22 @@ private:
     void RequestSwap(int a, int b);
     void RequestRumble(int player);
 
-    /// Custom frontend or Real applet; the frontend's modes are radio buttons below it
-    QComboBox* mode = nullptr;
-    QWidget* frontend_row = nullptr;
-    QButtonGroup* frontend_modes = nullptr;
+    /// The handler (Manual, Modern Console, Real Hardware) and, under Modern Console, whether
+    /// this is a handheld with built-in controls (Docked Handheld). Legacy Applet has no button
+    /// for now; a setting already on it is kept until another pick.
+    enum Handler { HandlerManual, HandlerModern, HandlerReal };
+    QButtonGroup* handler_group = nullptr;
+    QFrame* handheld_panel = nullptr;
+    QAbstractButton* handheld_switch = nullptr;
+    bool legacy_applet = false;
     QLabel* mode_info = nullptr;
-    QCheckBox* overlay_toggle = nullptr;
+    QWidget* display_box = nullptr;
+    /// The scrolled page the cards stack in
+    QVBoxLayout* content_layout = nullptr;
+    QAbstractButton* overlay_toggle = nullptr;
     bool original_overlay = false;
+    QAbstractButton* hints_toggle = nullptr;
+    bool original_hints = true;
     QWidget* now_box = nullptr;
 
     QWidget* builtin_row = nullptr;
