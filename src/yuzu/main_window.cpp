@@ -166,6 +166,10 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "video_core/shader_notify.h"
 
 #include <SDL3/SDL.h>
+#ifdef __linux__
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include <boost/container/flat_set.hpp>
 
@@ -1581,7 +1585,10 @@ bool IsSteamVirtualPad(SDL_JoystickID id) {
     }
     const SDL_GUID guid = SDL_GetJoystickGUID(js);
     SDL_CloseJoystick(js);
-    return guid.data[4] == 0xDE && guid.data[5] == 0x28;
+    // Valve makes real controllers too (the deck's own, unhidden for its motion): the virtual
+    // gamepad product (0x11FF, bytes 8-9) is what marks Steam's virtual pads
+    return guid.data[4] == 0xDE && guid.data[5] == 0x28 && guid.data[8] == 0xFF &&
+           guid.data[9] == 0x11;
 }
 
 /// The OS device node of a pad (e.g. /dev/input/event5): sometimes the one identity a
@@ -1649,6 +1656,68 @@ bool PadHasGyro(SDL_JoystickID id) {
     const bool gyro = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO);
     SDL_CloseGamepad(pad);
     return gyro;
+}
+
+/// Asks the Steam Deck's own controller to report its motion sensors. Steam Input turns them
+/// on only while its layout uses the gyro, so this sends the controller's settings report
+/// (0x87): IMU mode (0x30) = 0x18, both trackpads (0x07, 0x08) at 7 as Steam keeps them,
+/// 0x31 = 2, 0x18 = 0.
+bool EnableDeckMotion(const QString& path) {
+#ifdef __linux__
+    if (!path.startsWith(QStringLiteral("/dev/hidraw"))) {
+        return false;
+    }
+    const int fd = ::open(path.toStdString().c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    std::array<unsigned char, 65> report{0x00, 0x87, 0x0f, 0x30, 0x18, 0x00, 0x07, 0x07, 0x00,
+                                         0x08, 0x07, 0x00, 0x31, 0x02, 0x00, 0x18, 0x00};
+    const bool sent =
+        ::write(fd, report.data(), report.size()) == static_cast<ssize_t>(report.size());
+    ::close(fd);
+    return sent;
+#else
+    return false;
+#endif
+}
+
+/// A pad's USB product id, under the same lock as the rest of the API use.
+Uint16 PadProduct(SDL_JoystickID id) {
+    const JoystickApiLock lock;
+    SDL_Joystick* js = SDL_OpenJoystick(id);
+    if (!js) {
+        return 0;
+    }
+    const Uint16 product = SDL_GetJoystickProduct(js);
+    SDL_CloseJoystick(js);
+    return product;
+}
+
+/// Makers of standalone controllers: never a handheld's built-in controls, even when alone
+bool IsControllerMaker(Uint16 vendor) {
+    switch (vendor) {
+    case 0x045E: // Microsoft
+    case 0x054C: // Sony
+    case 0x057E: // Nintendo
+    case 0x2DC8: // 8BitDo
+    case 0x046D: // Logitech
+    case 0x20D6: // PowerA
+    case 0x0E6F: // PDP
+    case 0x0F0D: // Hori
+    case 0x1532: // Razer
+    case 0x0738: // Mad Catz
+    case 0x146B: // Nacon
+    case 0x3537: // GameSir
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// True for the controller types Steam reports for standalone controllers
+bool IsStandaloneControllerType(SDL_GamepadType type) {
+    return type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_STANDARD;
 }
 
 /// Steam Input's handle for the physical controller behind a pad (0 when not under Steam
@@ -2185,6 +2254,8 @@ void MainWindow::ApplyConsoleControllerMode() {
     // identity there. Steam fills it in a moment after a virtual pad appears: until then the
     // pad is not live yet (3 seconds at most, then its GUID identity has to do).
     std::map<u32, std::string> live;
+    /// Under Steam: real devices unhidden for their motion (never players)
+    std::vector<u32> motion_devices;
     {
         static std::map<u32, std::chrono::steady_clock::time_point> first_seen;
         const auto now = std::chrono::steady_clock::now();
@@ -2196,6 +2267,30 @@ void MainWindow::ApplyConsoleControllerMode() {
             const u32 id = ids[i];
             present.insert(id);
             first_seen.try_emplace(id, now);
+            if (LaunchedThroughSteam() && !IsSteamVirtualPad(id)) {
+                // A real device next to Steam's virtual pads, unhidden for its motion: never a
+                // player; logged once, with the virtual pads of the same model
+                motion_devices.push_back(id);
+                static std::set<u32> probed;
+                if (probed.insert(id).second) {
+                    std::string twins;
+                    const Uint16 vendor = SDL_GetJoystickVendorForID(id);
+                    const Uint16 product = SDL_GetJoystickProductForID(id);
+                    for (int k = 0; k < count; ++k) {
+                        if (ids[k] != id && IsSteamVirtualPad(ids[k]) &&
+                            SDL_GetJoystickVendorForID(ids[k]) == vendor &&
+                            SDL_GetJoystickProductForID(ids[k]) == product) {
+                            twins += fmt::format("{} ", ids[k]);
+                        }
+                    }
+                    LOG_INFO(Frontend,
+                             "console-mode: real device inst={} {:04x}:{:04x} name={} "
+                             "gyro={} path={} same model as virtual inst=[{}]",
+                             id, vendor, product, PadName(id).toStdString(), PadHasGyro(id),
+                             PadPath(id).toStdString(), twins);
+                }
+                continue;
+            }
             std::string ident = PadIdentity(id);
             if (LaunchedThroughSteam()) {
                 if (const Uint64 handle = PadSteamHandle(id)) {
@@ -2208,6 +2303,28 @@ void MainWindow::ApplyConsoleControllerMode() {
         }
         SDL_free(ids);
         std::erase_if(first_seen, [&present](const auto& e) { return !present.contains(e.first); });
+    }
+
+    // The deck's own controller only reports motion while its IMU is on, which Steam Input
+    // leaves off unless its layout uses the gyro: keep it on while the real device is open,
+    // so its motion is there whenever the deck holds a player
+    {
+        const auto deck = std::find_if(motion_devices.begin(), motion_devices.end(), [](u32 id) {
+            return SDL_GetJoystickVendorForID(id) == 0x28DE &&
+                   SDL_GetJoystickProductForID(id) == 0x1205;
+        });
+        const qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+        if (deck != motion_devices.end() && now_ms - deck_motion_sent_at >= 3000) {
+            deck_motion_sent_at = now_ms;
+            const QString path = PadPath(*deck);
+            const bool sent = EnableDeckMotion(path);
+            static bool logged = false;
+            if (!sent || !logged) {
+                logged = true;
+                LOG_INFO(Frontend, "console-mode: deck motion on via {}: {}", path.toStdString(),
+                         sent ? "sent" : "failed");
+            }
+        }
     }
 
     // A controller Steam moved to another virtual pad takes its slot and its handheld latch
@@ -2512,7 +2629,8 @@ void MainWindow::ApplyConsoleControllerMode() {
                 count = 1;
                 holder = fit;
                 adopted = true;
-            } else if (want.empty() && live.size() == 1) {
+            } else if (want.empty() && live.size() == 1 &&
+                       !IsStandaloneControllerType(SDL_GetGamepadTypeForID(live.begin()->first))) {
                 count = 1;
                 holder = live.begin()->first;
             }
@@ -2577,11 +2695,6 @@ void MainWindow::ApplyConsoleControllerMode() {
     }
 
     if (handheld) {
-        if (live.empty() && !builtin_seen_first) {
-            // Handheld engaged with nothing connected: no handheld can be identified
-            Settings::values.controller_applet_mode.SetValue(Settings::AppletMode::ConsoleMode);
-            return;
-        }
         const std::string stored{Settings::values.builtin_pad_identity.GetValue()};
         const bool manual = Settings::values.builtin_pad_manual.GetValue();
         if (manual) {
@@ -2610,8 +2723,8 @@ void MainWindow::ApplyConsoleControllerMode() {
         // direct launches' identity and must not take a Steam pad's)
         if (!builtin_pad_id && !manual && !LaunchedThroughSteam()) {
             auto handheld_candidate = [&]() -> u32 {
-                u32 found = 0;
-                int matches = 0;
+                std::vector<u32> makers;
+                std::vector<u32> decks;
                 for (const auto& [id, ident] : live) {
                     if (IsSteamVirtualPad(id)) {
                         // A virtual pad carries its launcher's vendor (Valve under Steam
@@ -2619,14 +2732,19 @@ void MainWindow::ApplyConsoleControllerMode() {
                         continue;
                     }
                     const Uint16 vendor = PadVendor(id);
-                    const bool handheld_maker = vendor == 0x28DE || vendor == 0x17EF ||
-                                                vendor == 0x0B05 || vendor == 0x0DB0;
-                    if (handheld_maker) {
-                        ++matches;
-                        found = id;
+                    if (vendor == 0x28DE || vendor == 0x17EF || vendor == 0x0B05 ||
+                        vendor == 0x0DB0) {
+                        makers.push_back(id);
+                        // Valve also makes standalone controllers: the deck's own wins
+                        if (vendor == 0x28DE && PadProduct(id) == 0x1205) {
+                            decks.push_back(id);
+                        }
                     }
                 }
-                return matches == 1 ? found : 0;
+                if (makers.size() == 1) {
+                    return makers.front();
+                }
+                return decks.size() == 1 ? decks.front() : 0;
             };
             const u32 candidate = handheld_candidate();
             // A pad identified here is the handheld's own from this very tick on: the claims
@@ -2641,7 +2759,7 @@ void MainWindow::ApplyConsoleControllerMode() {
                 builtin_warned = false;
                 builtin_match_id = candidate;
                 builtin_valid = true;
-            } else if (live.size() == 1) {
+            } else if (live.size() == 1 && !IsControllerMaker(PadVendor(live.begin()->first))) {
                 builtin_match_id = live.begin()->first;
                 builtin_valid = true;
                 builtin_pad_id = live.begin()->first;
@@ -2653,15 +2771,14 @@ void MainWindow::ApplyConsoleControllerMode() {
                 // note, where the mislabel risk is real.
                 if (!builtin_warned && !IsSteamVirtualPad(live.begin()->first)) {
                     QMessageBox::information(
-                        this, tr("Handheld Console Mode"),
+                        this, tr("Assign Handheld Controller"),
                         tr("Unknown handheld detected.\n\n"
                            "Careful: a less popular controller could be labeled as a handheld."));
                     builtin_warned = true;
                 }
-            } else if (!manual) {
-                Settings::values.controller_applet_mode.SetValue(Settings::AppletMode::ConsoleMode);
-                return;
             }
+            // Nothing identified: this tick works like Modern, and the mode stays chosen
+            // (the next tick looks again, e.g. once the pads have enumerated)
         }
     }
 
@@ -2985,7 +3102,40 @@ void MainWindow::ApplyConsoleControllerMode() {
             want.analogs = own.analogs;
             want.motions = own.motions;
             RouteSdlBindings(want, binding->first, binding->second);
-            if (!is_builtin) {
+            // Under Steam the virtual pad has no motion: take the paired real device's. The
+            // deck's own controller is unique (28DE:1205); another model pairs when only one
+            // of it is connected (the virtual pad reports the real controller's ids).
+            u32 motion_source = 0;
+            if (LaunchedThroughSteam()) {
+                const Uint16 vendor = is_builtin ? 0x28DE : SDL_GetJoystickVendorForID(id);
+                const Uint16 product = is_builtin ? 0x1205 : SDL_GetJoystickProductForID(id);
+                const auto same_model = [vendor, product](u32 other) {
+                    return SDL_GetJoystickVendorForID(other) == vendor &&
+                           SDL_GetJoystickProductForID(other) == product;
+                };
+                const auto real = std::count_if(motion_devices.begin(), motion_devices.end(),
+                                                same_model);
+                const auto virtuals = std::count_if(live.begin(), live.end(), [&](const auto& e) {
+                    return same_model(e.first);
+                });
+                if (real == 1 && (is_builtin || virtuals == 1)) {
+                    const u32 device =
+                        *std::find_if(motion_devices.begin(), motion_devices.end(), same_model);
+                    if (PadHasGyro(device)) {
+                        motion_source = device;
+                    }
+                }
+            }
+            if (motion_source != overlay_motion_source[slot]) {
+                overlay_motion_source[slot] = motion_source;
+                LOG_INFO(Frontend, "console-mode: P{} motion from real device inst={}", slot + 1,
+                         motion_source);
+            }
+            if (motion_source) {
+                if (const auto source = input_subsystem->GetSDLBinding(motion_source)) {
+                    want.motions.fill(SdlMotionParam(source->first, source->second));
+                }
+            } else if (!is_builtin) {
                 for (std::string& motion : want.motions) {
                     if (is_handheld_motion(motion)) {
                         motion.clear();

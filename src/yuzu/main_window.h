@@ -595,6 +595,10 @@ private:
     std::array<int, 10> overlay_flash{};
     std::array<qint64, 10> overlay_flash_since{};
     std::array<qint64, 10> overlay_green_at{};
+    /// Per player: the real device its motion comes from under Steam (0: none)
+    std::array<u32, 10> overlay_motion_source{};
+    /// When the deck's controller was last asked to keep its motion sensors on
+    qint64 deck_motion_sent_at = 0;
     /// The overlay's rows as the last assignment tick left them: flash 1 green, 2 red
     struct OverlayRow {
         int player;

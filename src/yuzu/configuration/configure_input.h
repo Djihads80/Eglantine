@@ -21,6 +21,7 @@ class System;
 class QCheckBox;
 class QString;
 class QTimer;
+class QTabWidget;
 
 class ConfigureInputAdvanced;
 class ConfigureInputPlayer;
@@ -83,6 +84,8 @@ private:
     QTimer* follow_timer = nullptr;
     unsigned long long followed_generation = 0;
     std::function<void()> mirror_console_mode;
+    /// The settings dialog's tab widget whose tab clicks rumble the players' controllers
+    QTabWidget* rumble_tabs = nullptr;
     std::array<QWidget*, 8> player_tabs{};
     // Checkboxes representing the "Connected Controllers".
     std::array<QCheckBox*, 8> connected_controller_checkboxes{};

@@ -3,8 +3,16 @@
 // SPDX-FileCopyrightText: 2018 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <numbers>
+#include <sstream>
+#include <string>
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/param_package.h"
@@ -676,6 +684,64 @@ void SDLDriver::CloseJoysticks() {
     joystick_map.clear();
 }
 
+namespace {
+
+/// Controllers with motion sensors that Steam Input hides behind its sensorless virtual pads
+bool IsMotionController(unsigned vendor, unsigned product) {
+    switch (vendor) {
+    case 0x28DE: // Valve: Steam Deck, Steam Controller (wired, wireless)
+        return product == 0x1205 || product == 0x1102 || product == 0x1142;
+    case 0x054C: // Sony
+    case 0x057E: // Nintendo
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Under Steam, takes the motion controllers off Steam's hide list, so SDL also opens the real
+/// devices (for their motion) next to Steam's sensorless virtual pads
+void UnhideMotionControllers() {
+    if (!std::getenv("SteamGameId") && !std::getenv("SteamAppId")) {
+        return;
+    }
+    const char* env = std::getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    std::string list = env ? env : "";
+    if (list.starts_with('@')) {
+        std::ifstream file{list.substr(1)};
+        list.assign(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{});
+    }
+    std::string kept;
+    std::string dropped;
+    std::stringstream entries{list};
+    for (std::string entry; std::getline(entries, entry, ',');) {
+        entry.erase(std::remove_if(entry.begin(), entry.end(),
+                                   [](unsigned char c) { return std::isspace(c); }),
+                    entry.end());
+        unsigned vendor = 0;
+        unsigned product = 0;
+        if (entry.empty()) {
+            continue;
+        }
+        if (std::sscanf(entry.c_str(), "%x/%x", &vendor, &product) == 2 &&
+            IsMotionController(vendor, product)) {
+            dropped += entry + ',';
+            continue;
+        }
+        kept += entry + ',';
+    }
+    if (!kept.empty()) {
+        kept.pop_back();
+    }
+    LOG_INFO(Input, "Steam Input: opening motion controllers for their sensors: {}",
+             dropped.empty() ? std::string{"none hidden"} : dropped);
+    SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, kept.c_str(),
+                            SDL_HINT_OVERRIDE);
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "1", SDL_HINT_OVERRIDE);
+}
+
+} // Anonymous namespace
+
 SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_engine_)) {
     // Set our application name. Currently passed to DBus by SDL and visible to the user through
     // their desktop environment.
@@ -693,6 +759,7 @@ SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_en
 
     // SDL3 defaults Steam Controller Bluetooth HIDAPI support to off, which can disable gyro.
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+    UnhideMotionControllers();
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_SENSOR_FUSION, "1");
     SDL_SetHint(SDL_HINT_AUTO_UPDATE_SENSORS, "1");
 

@@ -908,6 +908,9 @@ void ConfigureInputPlayer::RefreshFromController() {
 
 void ConfigureInputPlayer::SetConnectionLocked(bool locked) {
     ui->devicesGroup->setVisible(!locked);
+    // The automatic modes bind motion themselves (the controller's own, or its real device's)
+    ui->buttonMotionLeftGroup->setVisible(!locked);
+    ui->buttonMotionRightGroup->setVisible(!locked);
     if (ui->groupConnectedController->isCheckable() == !locked) {
         return;
     }

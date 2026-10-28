@@ -236,11 +236,16 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
             QColor label;
             if (automatic) {
                 shown = engine_active && row != rows.end();
-                if (shown && row->flash != 0) {
-                    const long long elapsed = now - row->flash_since;
-                    if (elapsed < flash_ms && (elapsed / 125) % 2 == 0) {
-                        label = row->flash == 2 ? QColor(200, 50, 50) : QColor(40, 160, 70);
-                    }
+                // Red (leaving) wins, then blue (input held), then the green connect blink
+                const long long elapsed = shown ? now - row->flash_since : 0;
+                const bool blink = shown && row->flash != 0 && elapsed < flash_ms &&
+                                   (elapsed / 125) % 2 == 0;
+                if (blink && row->flash == 2) {
+                    label = QColor(200, 50, 50);
+                } else if (shown && row->active && !row->leaving) {
+                    label = QColor(50, 110, 220);
+                } else if (blink) {
+                    label = QColor(40, 160, 70);
                 }
             }
             if (tabs) {
@@ -251,6 +256,32 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
             }
             player_controllers[i]->SetConnectionLocked(automatic);
         }
+        // Clicking a player's tab rumbles its controller in the automatic modes, so the user
+        // can tell which controller the tab is about (tab changes made by the code do not)
+        if (tabs && tabs != rumble_tabs) {
+            rumble_tabs = tabs;
+            connect(tabs->tabBar(), &QTabBar::tabBarClicked, this, [this, tabs](int index) {
+                const auto mode = Settings::values.controller_applet_mode.GetValue();
+                if (mode != Settings::AppletMode::ConsoleMode &&
+                    mode != Settings::AppletMode::HandheldConsoleMode) {
+                    return;
+                }
+                const auto it = std::find(player_tabs.begin(), player_tabs.end(),
+                                          tabs->widget(index));
+                if (it == player_tabs.end()) {
+                    return;
+                }
+                const auto player = static_cast<std::size_t>(it - player_tabs.begin());
+                if (!Settings::values.vibration_enabled.GetValue() ||
+                    !Settings::values.players.GetValue()[player].vibration_enabled) {
+                    return;
+                }
+                auto& state = Common::GetControllerConsoleState();
+                std::scoped_lock lock{state.mutex};
+                state.rumble_requests.push_back(static_cast<int>(player));
+            });
+        }
+
         // The Controllers tab carries Console Mode in the automatic modes
         ui->handheldGroup->setVisible(!automatic);
         ui->connectedControllers->setVisible(!automatic);
