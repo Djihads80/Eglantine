@@ -959,7 +959,8 @@ void ConfigureInputPlayer::SetConnectionLocked(bool locked) {
     // the same spacing as before (the page fills the Deck's screen exactly)
     if (changed) {
         setStyleSheet(
-            locked ? QStringLiteral(
+            locked ? ConfigurePlayerAssignment::Themed(QStringLiteral(
+                         "QLabel { background: transparent; }"
                          "QGroupBox { border: 1px solid palette(mid); border-radius: 8px; "
                          "margin-top: 1.1em; padding-bottom: 5px; "
                          "background: palette(alternate-base); }"
@@ -999,7 +1000,7 @@ void ConfigureInputPlayer::SetConnectionLocked(bool locked) {
                          "padding: 2px 6px; background: palette(base); }"
                          "QPushButton:hover { border-color: palette(highlight); }"
                          "QPushButton:pressed, QPushButton:checked { "
-                         "background: palette(highlight); color: palette(highlighted-text); }") +
+                         "background: palette(highlight); color: palette(highlighted-text); }")) +
                          ConfigurePlayerAssignment::ModernComboStyle()
                    : QString{});
         if (!locked) {

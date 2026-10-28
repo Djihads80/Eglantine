@@ -36,6 +36,7 @@
 #include "common/controller_console_state.h"
 #include "common/fs/path_util.h"
 #include "common/settings.h"
+#include "qt_common/config/uisettings.h"
 #include "yuzu/configuration/configure_player_assignment.h"
 #include "yuzu/configuration/input_profiles.h"
 
@@ -76,7 +77,9 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         painter.setPen(Qt::NoPen);
         const QRectF track = QRectF(rect()).adjusted(1, 1, -1, -1);
-        QColor fill = isChecked() ? palette().highlight().color() : palette().mid().color();
+        QColor fill = isChecked() ? ConfigurePlayerAssignment::Accent(this)
+                                  : (UISettings::IsDarkTheme() ? QColor(255, 255, 255, 70)
+                                                               : palette().mid().color());
         if (!isEnabled()) {
             fill.setAlpha(110);
         }
@@ -153,7 +156,7 @@ protected:
             // Where the dragged player lands
             QPainter painter{this};
             painter.setRenderHint(QPainter::Antialiasing);
-            painter.setPen(QPen(palette().highlight().color(), 2, Qt::DashLine));
+            painter.setPen(QPen(ConfigurePlayerAssignment::Accent(this), 2, Qt::DashLine));
             painter.drawRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 4, 4);
         }
     }
@@ -195,12 +198,39 @@ private:
 
 } // Anonymous namespace
 
+QString ConfigurePlayerAssignment::Themed(QString style) {
+    if (!UISettings::IsDarkTheme()) {
+        return style.replace(QStringLiteral("muted-text"), QStringLiteral("#7d838b"));
+    }
+    // Cards show the theme's own background (its widgets all paint it), fields and buttons a
+    // light tint, and the accent is the dark theme's blue
+    static const std::array<std::pair<const char*, const char*>, 8> dark{{
+        {"palette(alternate-base)", "transparent"},
+        {"palette(base)", "rgba(255, 255, 255, 14)"},
+        {"palette(button)", "rgba(255, 255, 255, 22)"},
+        {"palette(mid)", "rgba(255, 255, 255, 70)"},
+        {"palette(highlighted-text)", "#ffffff"},
+        {"palette(highlight)", "#3daee9"},
+        {"palette(text)", "#eff0f1"},
+        {"muted-text", "#9da3aa"},
+    }};
+    for (const auto& [from, to] : dark) {
+        style.replace(QString::fromLatin1(from), QString::fromLatin1(to));
+    }
+    return style;
+}
+
+QColor ConfigurePlayerAssignment::Accent(const QWidget* widget) {
+    return UISettings::IsDarkTheme() ? QColor(0x3d, 0xae, 0xe9)
+                                     : widget->palette().highlight().color();
+}
+
 QColor ConfigurePlayerAssignment::PlayerColor(int player) {
     return PlayerColors[static_cast<std::size_t>(player) % PlayerColors.size()];
 }
 
 QString ConfigurePlayerAssignment::ModernComboStyle() {
-    return QStringLiteral(
+    return Themed(QStringLiteral(
         "QComboBox { border: 1px solid palette(mid); border-radius: 6px; padding: 3px 10px; "
         "background: palette(base); }"
         "QComboBox:hover, QComboBox:focus { border-color: palette(highlight); }"
@@ -210,7 +240,7 @@ QString ConfigurePlayerAssignment::ModernComboStyle() {
         "border: 1px solid palette(mid); outline: 0; padding: 2px; }"
         "QComboBox QAbstractItemView::item { min-height: 24px; padding: 0 8px; }"
         "QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected { "
-        "background: palette(highlight); color: palette(highlighted-text); }");
+        "background: palette(highlight); color: palette(highlighted-text); }"));
 }
 
 void ConfigurePlayerAssignment::ModernizeCombos(QWidget* root) {
@@ -225,14 +255,14 @@ void ConfigurePlayerAssignment::ModernizeCombos(QWidget* root) {
 }
 
 QString ConfigurePlayerAssignment::OutlinedButtonStyle() {
-    return QStringLiteral(
+    return Themed(QStringLiteral(
         "QPushButton, QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
         "padding: 3px 12px; color: palette(highlight); font-weight: bold; "
         "background: palette(base); }"
         "QPushButton:hover, QToolButton:hover { background: palette(highlight); "
         "color: palette(highlighted-text); }"
         "QPushButton:disabled, QToolButton:disabled { border-color: palette(mid); "
-        "color: palette(mid); }");
+        "color: palette(mid); }"));
 }
 
 QWidget* ConfigurePlayerAssignment::MakeSegmented(QWidget* parent, const QStringList& labels,
@@ -262,7 +292,7 @@ QWidget* ConfigurePlayerAssignment::MakeSegmented(QWidget* parent, const QString
             style += QStringLiteral("QPushButton { border-top-right-radius: 6px; "
                                     "border-bottom-right-radius: 6px; }");
         }
-        button->setStyleSheet(style);
+        button->setStyleSheet(Themed(style));
         group->addButton(button, ids[static_cast<std::size_t>(k)]);
         bar_layout->addWidget(button);
     }
@@ -288,11 +318,15 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
     layout->setSpacing(8);
     // Each section is a rounded card with its title on the edge; drop-downs are rounded fields
     // (kept tight: the Deck's screen is 800 pixels tall)
-    setStyleSheet(QStringLiteral(
-        "QGroupBox { border: 1px solid palette(mid); border-radius: 10px; margin-top: 10px; "
-        "padding: 8px 8px 4px 8px; background: palette(alternate-base); }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 4px; "
-        "font-weight: bold; }") +
+    setStyleSheet(Themed(QStringLiteral(
+                      "QGroupBox { border: 1px solid palette(mid); border-radius: 10px; "
+                      "margin-top: 10px; padding: 8px 8px 4px 8px; "
+                      "background: palette(alternate-base); }"
+                      "QGroupBox::title { subcontrol-origin: margin; left: 14px; "
+                      "padding: 0 4px; font-weight: bold; }"
+                      // Labels show the card behind them (a dark theme paints every widget)
+                      "QLabel { background: transparent; }"
+                      "QLabel#note { color: muted-text; }")) +
                   ModernComboStyle());
 
     // The controller applet's mode, as a segmented control: Manual (players set by hand),
@@ -310,9 +344,9 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
     // Under Modern Console: whether this is a handheld with its own controls (Docked Handheld)
     handheld_panel = new QFrame(mode_box);
     handheld_panel->setObjectName(QStringLiteral("handheldPanel"));
-    handheld_panel->setStyleSheet(QStringLiteral(
-        "#handheldPanel { border: 1px solid palette(mid); border-radius: 8px; "
-        "background: palette(base); }"));
+    handheld_panel->setStyleSheet(
+        Themed(QStringLiteral("#handheldPanel { border: 1px solid palette(mid); "
+                              "border-radius: 8px; background: palette(base); }")));
     auto* panel_layout = new QHBoxLayout(handheld_panel);
     panel_layout->setContentsMargins(12, 8, 12, 8);
     auto* panel_text = new QVBoxLayout();
@@ -327,7 +361,7 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
                                      "only when none is connected."),
                                   handheld_panel);
     panel_note->setWordWrap(true);
-    panel_note->setEnabled(false);
+    panel_note->setObjectName(QStringLiteral("note"));
     panel_text->addWidget(panel_title);
     panel_text->addWidget(panel_note);
     panel_layout->addLayout(panel_text, 1);
@@ -390,7 +424,7 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
         title_label->setFont(font);
         auto* note_label = new QLabel(note, display);
         note_label->setWordWrap(true);
-        note_label->setEnabled(false);
+        note_label->setObjectName(QStringLiteral("note"));
         text->addWidget(title_label);
         text->addWidget(note_label);
         line->addLayout(text, 1);
@@ -700,7 +734,7 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
             line->setSpacing(6);
             auto* grip = new QLabel(QStringLiteral("\u283F"), row);
             grip->setToolTip(tr("Drag onto another player to swap"));
-            grip->setEnabled(false);
+            grip->setObjectName(QStringLiteral("note"));
             line->addWidget(grip);
             // The player's badge, in the overlay's colour for that player
             auto* badge = new QLabel(QStringLiteral("P%1").arg(player + 1), row);
@@ -735,10 +769,10 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
             // Swap and Config stand out: outlined in the highlight colour, filled on hover (and
             // Swap filled while it waits for the second player)
             const QString outlined = OutlinedButtonStyle();
-            const QString filled = QStringLiteral(
+            const QString filled = Themed(QStringLiteral(
                 "QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
                 "padding: 3px 12px; background: palette(highlight); "
-                "color: palette(highlighted-text); font-weight: bold; }");
+                "color: palette(highlighted-text); font-weight: bold; }"));
             auto* swap = new QToolButton(row);
             swap->setCursor(Qt::PointingHandCursor);
             swap->setStyleSheet(swap_from >= 0 ? filled : outlined);
@@ -827,13 +861,14 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
     // Red while leaving; blue while its controller has an input held or was just clicked to
     // rumble (pressing a button shows which controller is which player); green when new
     // Rows look like cards that can be picked up; a fill marks what is happening to them
-    const QString card = QStringLiteral("QFrame#playerRow { border: 1px solid palette(mid); "
-                                        "border-radius: 8px; background: palette(base); }");
+    const QString card = Themed(QStringLiteral("QFrame#playerRow { border: 1px solid "
+                                               "palette(mid); border-radius: 8px; "
+                                               "background: palette(base); }"));
     const auto fill = [](const char* rgba) {
-        return QStringLiteral("QFrame#playerRow { border: 1px solid palette(mid); border-radius: "
+        return Themed(QStringLiteral("QFrame#playerRow { border: 1px solid palette(mid); border-radius: "
                               "8px; background-color: rgba(%1); } "
                               "QFrame#playerRow QLabel { color: white; }")
-            .arg(QString::fromLatin1(rgba));
+            .arg(QString::fromLatin1(rgba)));
     };
     const auto blink_on = [now](qint64 since) {
         const qint64 elapsed = now - since;

@@ -45,6 +45,12 @@ public:
     /// Rounded fields and outlined buttons, as the Controllers tab draws them
     static QString ModernComboStyle();
     static QString OutlinedButtonStyle();
+    /// A style sheet for the current theme: Eden's dark themes paint with style sheets and
+    /// leave the palette light, so there the palette colours become dark-friendly ones
+    /// (and "muted-text" is the colour of a note)
+    static QString Themed(QString style);
+    /// The accent colour, as Themed gives palette(highlight)
+    static QColor Accent(const QWidget* widget);
     /// A player's colour, as the overlay and the player badges draw it
     static QColor PlayerColor(int player);
     /// Lets the open lists of a widget's drop-downs follow ModernComboStyle
