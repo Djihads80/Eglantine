@@ -28,6 +28,7 @@
 #include <QDir>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -194,6 +195,46 @@ private:
 
 } // Anonymous namespace
 
+QColor ConfigurePlayerAssignment::PlayerColor(int player) {
+    return PlayerColors[static_cast<std::size_t>(player) % PlayerColors.size()];
+}
+
+QString ConfigurePlayerAssignment::ModernComboStyle() {
+    return QStringLiteral(
+        "QComboBox { border: 1px solid palette(mid); border-radius: 6px; padding: 3px 10px; "
+        "background: palette(base); }"
+        "QComboBox:hover, QComboBox:focus { border-color: palette(highlight); }"
+        "QComboBox:disabled { color: palette(mid); }"
+        // The open list: readable rows, the hovered one in the highlight colour
+        "QComboBox QAbstractItemView { background: palette(base); color: palette(text); "
+        "border: 1px solid palette(mid); outline: 0; padding: 2px; }"
+        "QComboBox QAbstractItemView::item { min-height: 24px; padding: 0 8px; }"
+        "QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected { "
+        "background: palette(highlight); color: palette(highlighted-text); }");
+}
+
+void ConfigurePlayerAssignment::ModernizeCombos(QWidget* root) {
+    // A combo box's own list painter ignores the style sheet and paints the hovered row white:
+    // the standard painter follows it
+    for (auto* combo : root->findChildren<QComboBox*>()) {
+        if (!combo->property("modern_list").toBool()) {
+            combo->setItemDelegate(new QStyledItemDelegate(combo));
+            combo->setProperty("modern_list", true);
+        }
+    }
+}
+
+QString ConfigurePlayerAssignment::OutlinedButtonStyle() {
+    return QStringLiteral(
+        "QPushButton, QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
+        "padding: 3px 12px; color: palette(highlight); font-weight: bold; "
+        "background: palette(base); }"
+        "QPushButton:hover, QToolButton:hover { background: palette(highlight); "
+        "color: palette(highlighted-text); }"
+        "QPushButton:disabled, QToolButton:disabled { border-color: palette(mid); "
+        "color: palette(mid); }");
+}
+
 QWidget* ConfigurePlayerAssignment::MakeSegmented(QWidget* parent, const QStringList& labels,
                                                  const std::vector<int>& ids,
                                                  QButtonGroup* group) {
@@ -244,13 +285,15 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
     outer->addWidget(scroll);
     auto* layout = new QVBoxLayout(content);
     content_layout = layout;
-    layout->setSpacing(12);
-    // Each section is a rounded card with its title on the edge
+    layout->setSpacing(8);
+    // Each section is a rounded card with its title on the edge; drop-downs are rounded fields
+    // (kept tight: the Deck's screen is 800 pixels tall)
     setStyleSheet(QStringLiteral(
-        "QGroupBox { border: 1px solid palette(mid); border-radius: 10px; margin-top: 12px; "
-        "padding: 12px 10px 8px 10px; background: palette(alternate-base); }"
+        "QGroupBox { border: 1px solid palette(mid); border-radius: 10px; margin-top: 10px; "
+        "padding: 8px 8px 4px 8px; background: palette(alternate-base); }"
         "QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 4px; "
-        "font-weight: bold; }"));
+        "font-weight: bold; }") +
+                  ModernComboStyle());
 
     // The controller applet's mode, as a segmented control: Manual (players set by hand),
     // Modern Console (automatic) and Real Hardware (the console's own applet)
@@ -310,6 +353,8 @@ ConfigurePlayerAssignment::ConfigurePlayerAssignment(QWidget* parent) : QWidget(
     builtin_picker->addItem(tr("Auto-detect"), QString{});
     picker_row->addWidget(builtin_picker, 1);
     builtin_identify = new QPushButton(tr("Identify"), builtin_row);
+    builtin_identify->setCursor(Qt::PointingHandCursor);
+    builtin_identify->setStyleSheet(OutlinedButtonStyle());
     picker_row->addWidget(builtin_identify);
     builtin_layout->addLayout(picker_row);
     builtin_status = new QLabel(builtin_row);
@@ -458,10 +503,8 @@ void ConfigurePlayerAssignment::UpdateModeUi() {
                               "to the next available player when it connects."));
         break;
     case Settings::AppletMode::HandheldConsoleMode:
-        mode_info->setText(tr("Controller assignment is automatic. For handhelds connected to a "
-                              "TV or monitor: connected controllers take priority, and the "
-                              "built-in controls are used only when no other controller is "
-                              "connected."));
+        mode_info->setText(tr("Controller assignment is automatic, with the handheld's own "
+                              "controls last."));
         break;
     case Settings::AppletMode::Disabled:
         mode_info->setText(tr("Controllers are assigned in each player's tab. Games use the "
@@ -529,7 +572,8 @@ void ConfigurePlayerAssignment::RefreshBuiltin() {
                               .count();
         builtin_status->setText(tr("Waiting for a button press (%1 seconds)...")
                                     .arg(std::max<qint64>(0, left)));
-        builtin_identify->setText(tr("Press a button on the handheld's pad..."));
+        // (The line below counts down)
+        builtin_identify->setText(tr("Press a button..."));
         return;
     }
     builtin_identify->setText(tr("Identify"));
@@ -670,6 +714,58 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
             line->addWidget(new QLabel(QString::fromStdString(entry.name), row), 1);
             const bool live = !entry.leaving;
 
+            auto* up = new QToolButton(row);
+            up->setArrowType(Qt::UpArrow);
+            up->setAutoRaise(true);
+            up->setToolTip(tr("Swap with P%1").arg(player));
+            up->setEnabled(live && player > 0);
+            connect(up, &QToolButton::clicked, this,
+                    [this, player] { RequestSwap(player, player - 1); });
+            line->addWidget(up);
+            auto* down = new QToolButton(row);
+            down->setArrowType(Qt::DownArrow);
+            down->setAutoRaise(true);
+            down->setToolTip(tr("Swap with P%1").arg(player + 2));
+            down->setEnabled(live && player < last_player);
+            connect(down, &QToolButton::clicked, this,
+                    [this, player] { RequestSwap(player, player + 1); });
+            line->addWidget(down);
+
+
+            // Swap and Config stand out: outlined in the highlight colour, filled on hover (and
+            // Swap filled while it waits for the second player)
+            const QString outlined = OutlinedButtonStyle();
+            const QString filled = QStringLiteral(
+                "QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
+                "padding: 3px 12px; background: palette(highlight); "
+                "color: palette(highlighted-text); font-weight: bold; }");
+            auto* swap = new QToolButton(row);
+            swap->setCursor(Qt::PointingHandCursor);
+            swap->setStyleSheet(swap_from >= 0 ? filled : outlined);
+            if (swap_from < 0) {
+                swap->setText(tr("Swap"));
+            } else if (swap_from == player) {
+                swap->setText(tr("Cancel"));
+            } else {
+                swap->setText(tr("Swap with P%1").arg(swap_from + 1));
+            }
+            swap->setEnabled(live);
+            connect(swap, &QToolButton::clicked, this, [this, player] { OnSwapPressed(player); });
+            line->addWidget(swap);
+
+            auto* settings = new QToolButton(row);
+            settings->setText(tr("Config"));
+            settings->setCursor(Qt::PointingHandCursor);
+            settings->setStyleSheet(outlined);
+            settings->setToolTip(tr("Open P%1's tab").arg(player + 1));
+            settings->setEnabled(static_cast<bool>(open_player_tab));
+            connect(settings, &QToolButton::clicked, this, [this, player] {
+                if (open_player_tab) {
+                    open_player_tab(player);
+                }
+            });
+            line->addWidget(settings);
+
             // The profile the player's controller carries; picking one puts it on it, and
             // "No profile" takes it off (the controller's mappings from before come back)
             auto* profile = new QComboBox(row);
@@ -707,63 +803,6 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
             });
             line->addWidget(remove);
 
-            auto* up = new QToolButton(row);
-            up->setArrowType(Qt::UpArrow);
-            up->setAutoRaise(true);
-            up->setToolTip(tr("Swap with P%1").arg(player));
-            up->setEnabled(live && player > 0);
-            connect(up, &QToolButton::clicked, this,
-                    [this, player] { RequestSwap(player, player - 1); });
-            line->addWidget(up);
-            auto* down = new QToolButton(row);
-            down->setArrowType(Qt::DownArrow);
-            down->setAutoRaise(true);
-            down->setToolTip(tr("Swap with P%1").arg(player + 2));
-            down->setEnabled(live && player < last_player);
-            connect(down, &QToolButton::clicked, this,
-                    [this, player] { RequestSwap(player, player + 1); });
-            line->addWidget(down);
-
-
-            // Swap and Config stand out: outlined in the highlight colour, filled on hover (and
-            // Swap filled while it waits for the second player)
-            const QString outlined = QStringLiteral(
-                "QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
-                "padding: 3px 12px; color: palette(highlight); font-weight: bold; "
-                "background: palette(base); }"
-                "QToolButton:hover { background: palette(highlight); "
-                "color: palette(highlighted-text); }"
-                "QToolButton:disabled { border-color: palette(mid); color: palette(mid); }");
-            const QString filled = QStringLiteral(
-                "QToolButton { border: 1px solid palette(highlight); border-radius: 6px; "
-                "padding: 3px 12px; background: palette(highlight); "
-                "color: palette(highlighted-text); font-weight: bold; }");
-            auto* swap = new QToolButton(row);
-            swap->setCursor(Qt::PointingHandCursor);
-            swap->setStyleSheet(swap_from >= 0 ? filled : outlined);
-            if (swap_from < 0) {
-                swap->setText(tr("Swap"));
-            } else if (swap_from == player) {
-                swap->setText(tr("Cancel"));
-            } else {
-                swap->setText(tr("Swap with P%1").arg(swap_from + 1));
-            }
-            swap->setEnabled(live);
-            connect(swap, &QToolButton::clicked, this, [this, player] { OnSwapPressed(player); });
-            line->addWidget(swap);
-
-            auto* settings = new QToolButton(row);
-            settings->setText(tr("Config"));
-            settings->setCursor(Qt::PointingHandCursor);
-            settings->setStyleSheet(outlined);
-            settings->setToolTip(tr("Open P%1's tab").arg(player + 1));
-            settings->setEnabled(static_cast<bool>(open_player_tab));
-            connect(settings, &QToolButton::clicked, this, [this, player] {
-                if (open_player_tab) {
-                    open_player_tab(player);
-                }
-            });
-            line->addWidget(settings);
 
             players_list->addWidget(row);
             player_rows.push_back(row);
@@ -835,6 +874,7 @@ void ConfigurePlayerAssignment::RefreshPlayers() {
                                  "for this session and do not change your saved controls."));
     }
     players_box->setVisible(in_effect && engine_active);
+    ModernizeCombos(this);
 }
 
 void ConfigurePlayerAssignment::OnBuiltinPicked(int index) {

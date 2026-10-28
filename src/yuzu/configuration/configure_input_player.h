@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <QPointer>
 #include <QWidget>
 
 #include "common/param_package.h"
@@ -188,6 +189,10 @@ private:
     bool is_powered_on;
     /// Players are assigned automatically: the connection and controller are not this tab's
     bool connection_locked{};
+    bool style_applied{};
+    bool home_centred{};
+    /// The section boxes given a bold title in the automatic modes
+    std::vector<QPointer<QGroupBox>> bolded_boxes;
 
     /// The profile card shown instead of the Profile group while players are assigned
     /// automatically. It drives the same profile list (comboProfiles stays the selection).

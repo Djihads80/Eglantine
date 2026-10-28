@@ -36,6 +36,10 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QTabBar>
+#include <QApplication>
+#include <QPainter>
+#include <QStyleOptionTab>
+#include <QProxyStyle>
 #include <QDateTime>
 #include <QEvent>
 #include <QMouseEvent>
@@ -278,9 +282,33 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
             }
             player_controllers[i]->SetConnectionLocked(automatic);
         }
-        // In the automatic modes the player tabs drag to change the player order
+        // In the automatic modes the player tabs drag to change the player order, and the
+        // selected tab reads bold
         if (tabs) {
-            tabs->setMovable(automatic && engine_active && tabs->indexOf(player_tabs[0]) >= 0);
+            const bool controls_page = tabs->indexOf(player_tabs[0]) >= 0;
+            tabs->setMovable(automatic && engine_active && controls_page);
+            // Pill tabs in the players' colours, the selected one filled (the tab bar is the
+            // settings dialog's, shared with the other pages: only on this page, in these modes)
+            QTabBar* bar = tabs->tabBar();
+            const bool pills = automatic && controls_page;
+            // (The bar is remembered: under a style sheet its style() is a wrapper, not ours)
+            if (pills && pill_bar != bar) {
+                auto* style = new PlayerTabStyle(QApplication::style()->name());
+                style->setParent(bar);
+                bar->setStyle(style);
+                pill_bar = bar;
+            } else if (!pills && pill_bar == bar) {
+                bar->setStyle(nullptr);
+                pill_bar = nullptr;
+            }
+            // A player tab's colour is what makes it a bubble: none outside these modes
+            for (std::size_t i = 0; i < player_tabs.size(); ++i) {
+                if (const int index = tabs->indexOf(player_tabs[i]); index >= 0) {
+                    bar->setTabData(index, pills ? QVariant(ConfigurePlayerAssignment::PlayerColor(
+                                                       static_cast<int>(i)))
+                                                 : QVariant{});
+                }
+            }
             if (tabs != drag_tabs) {
                 drag_tabs = tabs;
                 tabs->tabBar()->installEventFilter(this);
@@ -408,6 +436,76 @@ void ConfigureInput::PropagatePlayerNumberChanged(size_t player_index, bool chec
     if (reconnect_current) {
         connected_controller_checkboxes[player_index]->setCheckState(Qt::Checked);
     }
+}
+
+PlayerTabStyle::PlayerTabStyle(const QString& base) : QProxyStyle(base) {}
+
+void PlayerTabStyle::drawControl(ControlElement element, const QStyleOption* option,
+                                 QPainter* painter, const QWidget* widget) const {
+    const auto* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
+    const auto* bar = qobject_cast<const QTabBar*>(widget);
+    if (!tab || !bar || (element != CE_TabBarTabShape && element != CE_TabBarTabLabel)) {
+        QProxyStyle::drawControl(element, option, painter, widget);
+        return;
+    }
+    // The tab is found by its text: a dragged tab is painted into an image of its own, where
+    // its position says nothing
+    int index = -1;
+    for (int i = 0; i < bar->count() && index < 0; ++i) {
+        if (bar->tabText(i) == tab->text) {
+            index = i;
+        }
+    }
+    // Only a player tab is a bubble, in its player's colour; the others stay as they were
+    const QVariant data = index >= 0 ? bar->tabData(index) : QVariant{};
+    if (data.metaType() != QMetaType::fromType<QColor>()) {
+        QProxyStyle::drawControl(element, option, painter, widget);
+        return;
+    }
+    const QColor accent = data.value<QColor>();
+    const bool selected = tab->state & State_Selected;
+    if (element == CE_TabBarTabShape) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        const QRectF pill = QRectF(tab->rect).adjusted(2, 3, -2, -3);
+        if (selected) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(accent);
+        } else {
+            QColor edge = accent;
+            edge.setAlpha(170);
+            painter->setPen(QPen(edge, 1.5));
+            QColor fill = accent;
+            fill.setAlpha(tab->state & State_MouseOver ? 45 : 0);
+            painter->setBrush(fill);
+        }
+        painter->drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+        painter->restore();
+        return;
+    }
+    // The label: white and bold on the filled tab
+    QStyleOptionTab label{*tab};
+    if (selected) {
+        label.palette.setColor(QPalette::WindowText, Qt::white);
+        label.palette.setColor(QPalette::ButtonText, Qt::white);
+    }
+    painter->save();
+    QFont font = painter->font();
+    font.setBold(selected);
+    painter->setFont(font);
+    QProxyStyle::drawControl(element, &label, painter, widget);
+    painter->restore();
+}
+
+QSize PlayerTabStyle::sizeFromContents(ContentsType type, const QStyleOption* option,
+                                       const QSize& size, const QWidget* widget) const {
+    QSize result = QProxyStyle::sizeFromContents(type, option, size, widget);
+    // Room for a bubble's rounded ends and bold label (a player tab starts with its grip)
+    const auto* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
+    if (type == CT_TabBarTab && tab && tab->text.startsWith(QChar(0x283F))) {
+        result += QSize(14, 4);
+    }
+    return result;
 }
 
 void ConfigureInput::SwapPlayers(int a, int b) {

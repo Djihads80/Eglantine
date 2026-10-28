@@ -32,6 +32,7 @@
 #include "ui_configure_input_player.h"
 #include "yuzu/bootmanager.h"
 #include "yuzu/configuration/configure_input_player.h"
+#include "yuzu/configuration/configure_player_assignment.h"
 #include "yuzu/configuration/configure_input_player_widget.h"
 #include "yuzu/configuration/configure_mouse_panning.h"
 #include "yuzu/configuration/input_profiles.h"
@@ -951,7 +952,114 @@ void ConfigureInputPlayer::RefreshFromController() {
 }
 
 void ConfigureInputPlayer::SetConnectionLocked(bool locked) {
+    const bool changed = connection_locked != locked || !style_applied;
     connection_locked = locked;
+    style_applied = true;
+    // The automatic modes draw the tab like the Controllers tab: rounded cards and fields, with
+    // the same spacing as before (the page fills the Deck's screen exactly)
+    if (changed) {
+        setStyleSheet(
+            locked ? QStringLiteral(
+                         "QGroupBox { border: 1px solid palette(mid); border-radius: 8px; "
+                         "margin-top: 1.1em; padding-bottom: 5px; "
+                         "background: palette(alternate-base); }"
+                         "QGroupBox::title { subcontrol-origin: margin; "
+                         "subcontrol-position: top center; padding: 0 3px; }"
+                         "QGroupBox QGroupBox { border: none; background: transparent; "
+                         "padding-bottom: 0px; }"
+                         "QGroupBox QGroupBox::title { padding: 0px; }"
+                         // The single-button boxes carry their label inside, above the button
+                         "QGroupBox#buttonShoulderButtonsButtonZLGroup, "
+                         "QGroupBox#buttonShoulderButtonsButtonLGroup, "
+                         "QGroupBox#buttonMiscButtonsMinusGroup, "
+                         "QGroupBox#buttonMiscButtonsPlusGroup, "
+                         "QGroupBox#buttonShoulderButtonsZRGroup, "
+                         "QGroupBox#buttonShoulderButtonsRGroup, "
+                         "QGroupBox#buttonMiscButtonsHomeGroup, "
+                         "QGroupBox#buttonMiscButtonsScreenshotGroup { margin-top: 0px; "
+                         "padding-top: 1.3em; }"
+                         // The top row starts level with the section cards beside it
+                         "QGroupBox#buttonShoulderButtonsButtonZLGroup, "
+                         "QGroupBox#buttonShoulderButtonsButtonLGroup, "
+                         "QGroupBox#buttonMiscButtonsMinusGroup, "
+                         "QGroupBox#buttonMiscButtonsPlusGroup, "
+                         "QGroupBox#buttonShoulderButtonsZRGroup, "
+                         "QGroupBox#buttonShoulderButtonsRGroup { margin-top: 1.1em; }"
+                         "QGroupBox#buttonShoulderButtonsButtonZLGroup::title, "
+                         "QGroupBox#buttonShoulderButtonsButtonLGroup::title, "
+                         "QGroupBox#buttonMiscButtonsMinusGroup::title, "
+                         "QGroupBox#buttonMiscButtonsPlusGroup::title, "
+                         "QGroupBox#buttonShoulderButtonsZRGroup::title, "
+                         "QGroupBox#buttonShoulderButtonsRGroup::title, "
+                         "QGroupBox#buttonMiscButtonsHomeGroup::title, "
+                         "QGroupBox#buttonMiscButtonsScreenshotGroup::title { "
+                         "subcontrol-origin: padding; subcontrol-position: top center; "
+                         "top: 3px; padding: 0px; }"
+                         "QPushButton { border: 1px solid palette(mid); border-radius: 6px; "
+                         "padding: 2px 6px; background: palette(base); }"
+                         "QPushButton:hover { border-color: palette(highlight); }"
+                         "QPushButton:pressed, QPushButton:checked { "
+                         "background: palette(highlight); color: palette(highlighted-text); }") +
+                         ConfigurePlayerAssignment::ModernComboStyle()
+                   : QString{});
+        if (!locked) {
+            // Back to the inherited fonts
+            for (QGroupBox* box : bolded_boxes) {
+                if (box) {
+                    box->setFont(QFont());
+                    for (QWidget* child :
+                         box->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+                        child->setFont(QFont());
+                    }
+                }
+            }
+            bolded_boxes.clear();
+        }
+        if (locked) {
+            ConfigurePlayerAssignment::ModernizeCombos(this);
+            // The section titles are bold (a style sheet cannot bold only a title: the box's
+            // font is bold and everything in it goes back to normal)
+            QFont normal = font();
+            normal.setBold(false); // explicit, or the box's bold is inherited after all
+            QFont bold = normal;
+            bold.setBold(true);
+            for (QGroupBox* box : findChildren<QGroupBox*>()) {
+                // A section has no box around it (a button's label box may sit in a plain
+                // widget inside one)
+                bool inside_box = false;
+                for (QWidget* up = box->parentWidget(); up && up != this; up = up->parentWidget()) {
+                    inside_box = inside_box || qobject_cast<QGroupBox*>(up) != nullptr;
+                }
+                const bool section = !inside_box &&
+                                     !box->objectName().startsWith(QStringLiteral("buttonMisc")) &&
+                                     !box->objectName().startsWith(
+                                         QStringLiteral("buttonShoulderButtons"));
+                if (!section) {
+                    continue;
+                }
+                box->setFont(bold);
+                for (QWidget* child : box->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+                    child->setFont(normal);
+                }
+                bolded_boxes.push_back(box);
+            }
+            // Home sits under the middle of the controller: the row's spacer on the left gets
+            // a stretch on the right to balance it
+            if (!home_centred) {
+                home_centred = true;
+                ui->miscButtons->setStretch(0, 1);
+                ui->miscButtons->addStretch(1);
+            }
+            // L, R, Minus and Plus line up with ZL and ZR, whose buttons sit at the top (their
+            // trigger slider is below)
+            for (QPushButton* button : {ui->buttonL, ui->buttonR, ui->buttonMinus,
+                                        ui->buttonPlus}) {
+                if (QWidget* box = button->parentWidget(); box && box->layout()) {
+                    box->layout()->setAlignment(button, Qt::AlignTop | Qt::AlignHCenter);
+                }
+            }
+        }
+    }
     if (!profile_card && locked) {
         BuildProfileCard();
     }
@@ -1044,6 +1152,7 @@ void ConfigureInputPlayer::BuildProfileCard() {
     auto* row = new QHBoxLayout;
     card_profiles = new QComboBox(profile_card);
     card_profiles->setPlaceholderText(tr("No profile"));
+    ConfigurePlayerAssignment::ModernizeCombos(profile_card);
     card_profiles->setMinimumWidth(160);
     card_profiles->setToolTip(tr("Picking a profile applies it to this player at once."));
     card_save = new QPushButton(tr("Save"), profile_card);
@@ -1140,6 +1249,15 @@ void ConfigureInputPlayer::BuildProfileCard() {
 
     if (auto* layout = LayoutHolding(this->layout(), ui->profilesGroup)) {
         layout->insertWidget(layout->indexOf(ui->profilesGroup) + 1, profile_card, 1);
+    }
+    // A bold title like the other sections, with its contents in the normal font
+    QFont normal = font();
+    normal.setBold(false); // explicit, or the card's bold is inherited after all
+    QFont bold = normal;
+    bold.setBold(true);
+    profile_card->setFont(bold);
+    for (QWidget* child : profile_card->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+        child->setFont(normal);
     }
     profile_card->setVisible(false);
 }

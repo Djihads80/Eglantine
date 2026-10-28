@@ -15,6 +15,7 @@
 #include <QKeyEvent>
 #include <QList>
 #include <QPointer>
+#include <QProxyStyle>
 #include <QToolButton>
 #include <QWidget>
 
@@ -27,6 +28,7 @@ class System;
 class QCheckBox;
 class QString;
 class QTimer;
+class QTabBar;
 class QTabWidget;
 
 class ConfigureInputAdvanced;
@@ -44,6 +46,17 @@ class ConfigureInput;
 }
 
 void OnDockedModeChanged(bool last_state, bool new_state, Core::System& system);
+
+/// The settings dialog's tab bar in the automatic modes: the player tabs are bubbles in their
+/// player's colour (the tab's data), the selected one filled; the other tabs are unchanged
+class PlayerTabStyle : public QProxyStyle {
+public:
+    explicit PlayerTabStyle(const QString& base);
+    void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter,
+                     const QWidget* widget) const override;
+    QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size,
+                           const QWidget* widget) const override;
+};
 
 class ConfigureInput : public QWidget {
     Q_OBJECT
@@ -103,6 +116,8 @@ private:
     /// Dragging the player tabs (the automatic modes): the tab bar watched, and the tab order
     /// when the drag began
     QTabWidget* drag_tabs = nullptr;
+    /// The tab bar drawn with PlayerTabStyle (its player tabs as bubbles)
+    QPointer<QTabBar> pill_bar;
     QList<QWidget*> tab_order;
     QWidget* dragged_tab = nullptr;
     bool tab_dragging = false;

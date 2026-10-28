@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <QColor>
 #include <QString>
 #include <QWidget>
 
@@ -41,6 +42,14 @@ public:
     void AddTopWidget(QWidget* widget);
 
     /// A row of joined buttons, one checked at a time (the group gets them, with these ids)
+    /// Rounded fields and outlined buttons, as the Controllers tab draws them
+    static QString ModernComboStyle();
+    static QString OutlinedButtonStyle();
+    /// A player's colour, as the overlay and the player badges draw it
+    static QColor PlayerColor(int player);
+    /// Lets the open lists of a widget's drop-downs follow ModernComboStyle
+    static void ModernizeCombos(QWidget* root);
+
     static QWidget* MakeSegmented(QWidget* parent, const QStringList& labels,
                                   const std::vector<int>& ids, QButtonGroup* group);
 
