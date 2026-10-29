@@ -879,7 +879,10 @@ private:
         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
         {
             using us = std::chrono::microseconds;
-            const auto to_us = [](auto d) { return std::chrono::duration_cast<us>(d).count(); };
+            // long long like the stats: microseconds::rep is long on Linux (std::max needs one type).
+            const auto to_us = [](auto d) -> long long {
+                return std::chrono::duration_cast<us>(d).count();
+            };
             m_stats.fence_us += to_us(waited - entered);
             m_stats.composite_us += to_us(composited - waited);
             m_stats.pace_us += to_us(paced - composited);
