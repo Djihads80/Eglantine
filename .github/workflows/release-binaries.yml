@@ -54,6 +54,9 @@ jobs:
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=.github/mingw-w64-toolchain.cmake
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          -DCMAKE_FIND_ROOT_PATH="$QT_ROOT_DIR;/usr/x86_64-w64-mingw32"
+          -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6"
           -DMAKE=/usr/bin/make
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
