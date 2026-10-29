@@ -66,6 +66,7 @@ struct ConstBufferAddr {
     IR::U32 dynamic_offset;
     u32 count;
     bool has_secondary;
+    BufferTextureSource buffer_source{};
 };
 
 class Environment {
@@ -73,6 +74,8 @@ public:
     virtual ~Environment() = default;
 
     [[nodiscard]] virtual u64 ReadInstruction(u32 address) = 0;
+
+    [[nodiscard]] virtual u32 TranslateProgramAddress(u32 address) const { return address; }
 
     [[nodiscard]] virtual u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) = 0;
 

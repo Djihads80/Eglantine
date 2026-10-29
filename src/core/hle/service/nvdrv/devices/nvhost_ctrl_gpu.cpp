@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -11,6 +12,7 @@
 #include "core/core_timing.h"
 #include "core/hle/service/nvdrv/devices/ioctl_serialization.h"
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h"
+#include "core/hle/service/nvdrv/devices/native_gpu_characteristics.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 
 namespace Service::Nvidia::Devices {
@@ -94,6 +96,36 @@ NvResult nvhost_ctrl_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8>
     case 'G':
         switch (command.cmd) {
         case 0x5:
+            if (command.raw == 0xc0e04705 || command.raw == 0xc0e84705) {
+                const size_t native_size = command.raw == 0xc0e84705
+                                               ? ExtendedNativeGpuCharacteristicsSize
+                                               : NativeGpuCharacteristicsSize;
+                const size_t packet_size = 0x10 + native_size;
+                if (input.size() < packet_size || output.size() < packet_size ||
+                    inline_output.size() < native_size) {
+                    return NvResult::BadParameter;
+                }
+                IoctlCharacteristics legacy{};
+                GetCharacteristics3(legacy, {});
+                const std::span<const u8, 0xa0> legacy_bytes{
+                    reinterpret_cast<const u8*>(&legacy.gc), 0xa0};
+                std::array<u8, ExtendedNativeGpuCharacteristicsSize> native{};
+                if (native_size == ExtendedNativeGpuCharacteristicsSize) {
+                    native = MakeNativeGpuCharacteristics<ExtendedNativeGpuCharacteristicsSize>(
+                        legacy_bytes);
+                } else {
+                    const auto original = MakeNativeGpuCharacteristics(legacy_bytes);
+                    std::copy(original.begin(), original.end(), native.begin());
+                }
+                std::fill(output.begin(), output.end(), u8{});
+                std::fill(inline_output.begin(), inline_output.end(), u8{});
+                std::memcpy(output.data(), input.data(), 0x10);
+                const u64_le size{native_size};
+                std::memcpy(output.data(), &size, sizeof(size));
+                std::memcpy(output.data() + 0x10, native.data(), native_size);
+                std::memcpy(inline_output.data(), native.data(), native_size);
+                return NvResult::Success;
+            }
             return WrapFixedInlOut(this, &nvhost_ctrl_gpu::GetCharacteristics3, input, output,
                                    inline_output);
         case 0x6:

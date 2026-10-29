@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
 #include "common/bit_field.h"
+#include "shader_recompiler/exception.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -376,6 +377,26 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
         const auto read_handle{[&](const auto& desc, u32 index) {
             ASSERT(cbufs[desc.cbuf_index].enabled);
+            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
+                if (desc.buffer_source.enabled) {
+                    const auto& source = desc.buffer_source;
+                    const GPUVAddr root = cbufs[desc.cbuf_index].address + desc.cbuf_offset;
+                    const GPUVAddr base = gpu_memory->Read<u64>(root);
+                    if (gpu_memory->Read<u64>(root + 8) != source.size || !base ||
+                        base + source.size < base || !gpu_memory->IsFullyMappedRange(base, source.size))
+                        throw Shader::RuntimeError("Buffer-backed texture array changed or is unmapped");
+                    const auto device_address = gpu_memory->GpuToCpuAddress(base);
+                    if (!device_address) throw Shader::RuntimeError("Unmapped texture-handle buffer");
+                    if (index == 0) buffer_cache.DownloadMemory(*device_address, source.size);
+                    const u64 offset = source.offset + u64{index} * source.stride;
+                    if (offset + sizeof(u32) > source.size)
+                        throw Shader::RuntimeError("Texture-handle record outside buffer");
+                    const auto pair = TexturePair(gpu_memory->Read<u32>(base + offset), via_header_index);
+                    if (pair.first > regs.tex_header.limit || pair.second > regs.tex_sampler.limit)
+                        throw Shader::RuntimeError("Buffer-backed texture handle outside descriptor tables");
+                    return pair;
+                }
+            }
             const u32 index_offset{index << desc.size_shift};
             const u32 offset{desc.cbuf_offset + index_offset};
             const GPUVAddr addr{cbufs[desc.cbuf_index].address + offset};

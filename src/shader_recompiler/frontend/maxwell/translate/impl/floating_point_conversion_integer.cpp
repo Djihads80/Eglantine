@@ -6,6 +6,8 @@
 
 #include <limits>
 
+#include "shader_recompiler/shader_info.h"
+
 #include "common/common_types.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/maxwell/opcodes.h"
@@ -98,7 +100,7 @@ IR::F64 UnpackCbuf(TranslatorVisitor& v, u64 insn) {
         BitField<20, 14, s64> offset;
         BitField<34, 5, u64> binding;
     } const cbuf{insn};
-    if (cbuf.binding >= 18) {
+    if (cbuf.binding >= Info::MAX_CBUFS) {
         throw NotImplementedException("Out of bounds constant buffer binding {}", cbuf.binding);
     }
     if (cbuf.offset >= 0x4'000 || cbuf.offset < 0) {

@@ -205,6 +205,16 @@ struct ImageBufferDescriptor {
 };
 using ImageBufferDescriptors = boost::container::small_vector<ImageBufferDescriptor, 2>;
 
+struct BufferTextureSource {
+    u32 offset{};
+    u32 stride{};
+    u32 size{};
+    bool enabled{};
+    bool width_query{};
+
+    auto operator<=>(const BufferTextureSource&) const = default;
+};
+
 struct TextureDescriptor {
     TextureType type;
     bool is_depth;
@@ -219,6 +229,8 @@ struct TextureDescriptor {
     u32 secondary_shift_left;
     u32 count;
     u32 size_shift;
+
+    BufferTextureSource buffer_source{};
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
@@ -241,7 +253,7 @@ using ImageDescriptors = boost::container::small_vector<ImageDescriptor, 4>;
 
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
-    static constexpr size_t MAX_CBUFS{18};
+    static constexpr size_t MAX_CBUFS{32};
     static constexpr size_t MAX_SSBOS{32};
 
     bool uses_workgroup_id{};
