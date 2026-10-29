@@ -28,12 +28,14 @@ namespace VideoCommon {
 // second thread (the back), fed through a single-producer single-consumer ring. Work the front
 // would do on back-owned state is deferred into the same ring; the front waits for the back to
 // catch up (Drain) only where it needs a result from that state, e.g. a semaphore it acquires.
-// Opt-in for Switch 2 titles: EDEN_NX2_SPLIT=1. EDEN_NX2_SPLIT=2 also runs the 3D and compute
-// engines' macros on the front, against copies of the registers they read (Maxwell3D and
-// KeplerCompute Front*), and sends the writes they make.
+// On for Switch 2 titles with the 3D and compute engines' macros on the front, against copies of
+// the registers they read (Maxwell3D and KeplerCompute Front*), which sends the writes they make.
+// EDEN_NX2_SPLIT=1 keeps the macros on the back; EDEN_NX2_SPLIT=0 runs everything on one thread.
 class GpuSplit {
 public:
-    static GpuSplit& Get();
+    static GpuSplit& Get() {
+        return instance;
+    }
 
     /// Whether the front sends work to the back (front thread only).
     [[nodiscard]] bool Active() const {
@@ -52,11 +54,28 @@ public:
     /// An engine method write, executed as DmaPusher would (method sink, ConsumeSink, call).
     /// `segment`: the engine's current_dma_segment for the call, when the engine reads it.
     void Method(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument, bool is_last,
-                const GPUVAddr* segment);
+                const GPUVAddr* segment) {
+        SelectEngine(engine);
+        const size_t words = segment != nullptr ? 2 : 1;
+        u64* const entry = Reserve(words);
+        entry[0] = static_cast<u64>(Kind::Method) | (is_last ? IsLast : 0) |
+                   (segment != nullptr ? HasSegment : 0) | (u64{method & 0xffff} << 8) |
+                   (u64{argument} << 32);
+        if (segment != nullptr) {
+            entry[1] = *segment;
+        }
+        Commit(words);
+    }
     void MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                      u32 amount, u32 methods_pending, const GPUVAddr* segment);
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
-    void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument);
+    void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
+        SelectEngine(engine);
+        u64* const entry = Reserve(1);
+        entry[0] = static_cast<u64>(Kind::Method) | IsLast | Direct | (u64{method & 0xffff} << 8) |
+                   (u64{argument} << 32);
+        Commit(1);
+    }
 
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
     template <typename Func>
@@ -103,7 +122,16 @@ private:
         (*reinterpret_cast<const Func*>(payload))();
     }
 
-    u64* Reserve(size_t words);
+    /// Room for an entry of `words` at the write position (never across the ring's end).
+    u64* Reserve(size_t words) {
+        const size_t index = write_position & RingMask;
+        if (index + words <= RingWords && write_position + words - consumed_cache <= RingWords)
+            [[likely]] {
+            return &ring[index];
+        }
+        return ReserveSlow(words);
+    }
+    u64* ReserveSlow(size_t words);
     void Commit(size_t words) {
         write_position += words;
         if (write_position - published_local >= publish_every) {
@@ -111,7 +139,12 @@ private:
         }
     }
     void WaitForSpace(size_t words);
-    void SelectEngine(Tegra::Engines::EngineInterface* engine);
+    void SelectEngine(Tegra::Engines::EngineInterface* engine) {
+        if (engine != front_engine) [[unlikely]] {
+            SwitchEngine(engine);
+        }
+    }
+    void SwitchEngine(Tegra::Engines::EngineInterface* engine);
 
     void BackLoop(std::stop_token stop_token);
     size_t Execute(const u64* entry);
@@ -131,6 +164,8 @@ private:
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
+
+    static GpuSplit instance;
 
     alignas(64) std::atomic<u64> published{};
     alignas(64) std::atomic<u64> consumed{};

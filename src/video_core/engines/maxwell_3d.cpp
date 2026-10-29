@@ -800,6 +800,7 @@ struct Maxwell3D::FrontState {
     /// A method the draw manager handles was sent since the back last ran DrawDeferred: only
     /// then can it have a deferred instanced draw to issue at the end of a macro.
     bool draw_pending{true};
+    bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
 };
 
 namespace {
@@ -865,6 +866,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->regs.data(), regs.reg_array.data(), sizeof(front->regs));
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
+        front->skip_same = SkipSameValueWrites() && FrontSkipSame();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -897,7 +899,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     if (!execution_mask[method]) {
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
-        if (fs.regs[method] == value && shadow_kept && SkipSameValueWrites() && FrontSkipSame()) {
+        if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
             if (Profile::Enabled()) [[unlikely]] {
                 Profile::Add(Profile::Counter::SameValueWrites, 1);
             }

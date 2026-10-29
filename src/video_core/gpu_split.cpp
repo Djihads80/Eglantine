@@ -80,15 +80,12 @@ void GpuSplit::CheckOwner(const char* where) {
 #endif
 }
 
-GpuSplit& GpuSplit::Get() {
-    static GpuSplit split;
-    return split;
-}
+GpuSplit GpuSplit::instance;
 
 void GpuSplit::MaybeStart(Core::System& system_) {
     static const char mode = [] {
         const char* value = std::getenv("EDEN_NX2_SPLIT");
-        return value != nullptr ? value[0] : '0';
+        return value != nullptr ? value[0] : '2';
     }();
     const bool wanted = mode == '1' || mode == '2';
     if (active || !wanted || !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
@@ -127,7 +124,7 @@ void GpuSplit::Stop() {
     active = false;
 }
 
-u64* GpuSplit::Reserve(size_t words) {
+u64* GpuSplit::ReserveSlow(size_t words) {
     size_t index = write_position & RingMask;
     if (index + words > RingWords) {
         // Entries never wrap: skip to the start of the ring.
@@ -194,37 +191,12 @@ void GpuSplit::Drain() {
     }
 }
 
-void GpuSplit::SelectEngine(Tegra::Engines::EngineInterface* engine) {
-    if (engine == front_engine) {
-        return;
-    }
+void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
     front_engine = engine;
     u64* const entry = Reserve(2);
     entry[0] = static_cast<u64>(Kind::Engine);
     entry[1] = reinterpret_cast<u64>(engine);
     Commit(2);
-}
-
-void GpuSplit::Method(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument,
-                      bool is_last, const GPUVAddr* segment) {
-    SelectEngine(engine);
-    const size_t words = segment != nullptr ? 2 : 1;
-    u64* const entry = Reserve(words);
-    entry[0] = static_cast<u64>(Kind::Method) | (is_last ? IsLast : 0) |
-               (segment != nullptr ? HasSegment : 0) | (u64{method & 0xffff} << 8) |
-               (u64{argument} << 32);
-    if (segment != nullptr) {
-        entry[1] = *segment;
-    }
-    Commit(words);
-}
-
-void GpuSplit::MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
-    SelectEngine(engine);
-    u64* const entry = Reserve(1);
-    entry[0] = static_cast<u64>(Kind::Method) | IsLast | Direct | (u64{method & 0xffff} << 8) |
-               (u64{argument} << 32);
-    Commit(1);
 }
 
 void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,

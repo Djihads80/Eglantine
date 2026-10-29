@@ -59,4 +59,5 @@ on the back, `EDEN_NX2_SPLIT=2` also runs the 3D and compute macros on the front
 copies. Measured in title 1 (NX2_NOTES rows 142-144): ~44,000 draws a second on one thread, ~47,400
 with stage 2, 50,000-66,500 with stage 3. The front waits ~4,000-5,000 times a second (semaphore
 acquires, MME DMA reads); the back still spends ~200 ms a second outside its zones (ring dispatch,
-method sink). Next: a clean A/B for the default, then trimming the back's ring overhead.
+method sink). Clean A/B (NX2_NOTES row 145): 1.46x throughput, frames 17% shorter; on by
+default since. The back is ~92% busy, ~53% of it draw setup: the next step is there, not the ring.
