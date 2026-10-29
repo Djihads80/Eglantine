@@ -14,133 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: ${{ matrix.platform }} binary
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          - platform: windows-x86_64
-            runner: windows-2022
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'linux-x86_64'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
-            libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
-            mesa-common-dev nasm ninja-build qt6-base-private-dev \
-            qt6-charts-dev qt6-tools-dev libavfilter-dev libavcodec-dev \
-            libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
-            spirv-tools spirv-headers libusb-1.0-0-dev \
-            libboost-dev libboost-fiber-dev libboost-context-dev \
-            libopus-dev libasound2-dev
-
-      - name: Install Qt on Linux
-        if: matrix.platform == 'linux-x86_64'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.8.3'
-          host: linux
-          target: desktop
-          arch: linux_gcc_64
-          modules: qtcharts
-          cache: true
-
-      - name: Set up MSVC
-        if: matrix.platform == 'windows-x86_64'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Vulkan SDK on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: ./tools/windows/install-vulkan-sdk.ps1
-
-      - name: Verify Vulkan tools on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: glslangValidator --version
-
-      - name: Cache CPM downloads
-        uses: actions/cache@v4
-        with:
-          path: .cache/cpm
-          key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
-          restore-keys: |
-            cpm-${{ runner.os }}-
-
-      - name: Configure Linux
-        if: matrix.platform == 'linux-x86_64'
-        shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=OFF
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DVulkanHeaders_FORCE_BUNDLED=ON
-          -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
-
-      - name: Configure Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=ON
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
-
-      - name: Build
-        shell: bash
-        run: cmake --build build/release --target yuzu --parallel
-
-      - name: Package Linux binary
-        if: matrix.platform == 'linux-x86_64'
-        shell: bash
-        run: |
-          test -x build/release/bin/eglantine
-          tar -C build/release/bin -czf "eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" eglantine
-
-      - name: Package Windows binary
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path build/release/bin/eglantine.exe)) {
-            throw 'build/release/bin/eglantine.exe was not produced'
-          }
-          Compress-Archive -Path build/release/bin/eglantine.exe -DestinationPath "eglantine-${env:GITHUB_SHA}-windows-x86_64.zip"
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
   build-windows-mingw:
     name: windows-x86_64-mingw binary
     runs-on: ubuntu-24.04
@@ -161,7 +34,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
-          host: linux
+          host: windows
           target: desktop
           arch: win64_mingw
           modules: qtcharts
