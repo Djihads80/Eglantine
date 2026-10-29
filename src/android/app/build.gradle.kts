@@ -139,7 +139,8 @@ android {
                 applicationIdSuffix = ".nightly"
                 manifestPlaceholders += mapOf("appNameSuffix" to " Nightly")
             } else {
-                manifestPlaceholders += mapOf("appNameSuffix" to "")
+                applicationIdSuffix = ".eglantine"
+                manifestPlaceholders += mapOf("appNameSuffix" to " Eglantine")
             }
 
             isMinifyEnabled = true

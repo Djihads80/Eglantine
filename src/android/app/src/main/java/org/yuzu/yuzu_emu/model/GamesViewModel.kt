@@ -117,11 +117,14 @@ class GamesViewModel : ViewModel() {
                                     return@forEach
                                 }
 
-                                val gameExists =
+                                val gameExists = if (game.path.startsWith("/")) {
+                                    java.io.File(game.path).exists()
+                                } else {
                                     DocumentFile.fromSingleUri(
                                         YuzuApplication.appContext,
                                         Uri.parse(game.path)
                                     )?.exists()
+                                }
                                 if (gameExists == true) {
                                     deserializedGames.add(game)
                                 }

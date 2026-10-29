@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.YuzuApplication
+import org.yuzu.yuzu_emu.getPublicFilesDir
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.model.GameDir
 import org.yuzu.yuzu_emu.model.MinimalDocumentFile
@@ -83,6 +84,8 @@ object GameHelper {
             }
         }
         NativeConfig.setGameDirs(gameDirs.toTypedArray())
+
+        addLocalExtractedGames(games, gamesByProgramId, gameDirs)
 
         // Cache list of games found on disk
         val serializedGames = mutableSetOf<String>()
@@ -252,6 +255,143 @@ object GameHelper {
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * Extracted games (an exefs folder holding "main", with romfs beside it) placed under
+     * <app files>/games/<name>/ are opened by plain path, since the deconstructed ROM loader
+     * needs to see sibling folders, which content URIs do not allow.
+     */
+    /** Maps an external-storage tree URI (e.g. primary:Games) to a plain path. */
+    private fun treeUriToPath(uriString: String): File? {
+        return try {
+            val uri = uriString.toUri()
+            if (uri.authority != "com.android.externalstorage.documents") return null
+            val docId = DocumentsContract.getTreeDocumentId(uri)
+            val volume = docId.substringBefore(':')
+            val relative = docId.substringAfter(':', "")
+            val base = if (volume.equals("primary", true)) {
+                android.os.Environment.getExternalStorageDirectory()
+            } else {
+                File("/storage/$volume")
+            }
+            if (relative.isEmpty()) base else File(base, relative)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private var askedForAllFilesAccess = false
+
+    private fun requestAllFilesAccess() {
+        if (askedForAllFilesAccess) return
+        askedForAllFilesAccess = true
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val context = YuzuApplication.appContext
+            android.widget.Toast.makeText(
+                context,
+                "Allow \"All files access\" for Eden NS2 so it can open extracted Switch 2 games in your game folders",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            try {
+                val intent = android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    "package:${context.packageName}".toUri()
+                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.warning("[GameHelper] Could not open all-files-access settings: ${e.message}")
+            }
+        }
+    }
+
+    private fun addLocalExtractedGames(
+        games: MutableList<Game>,
+        gamesByProgramId: MutableMap<String, Game>,
+        gameDirs: List<GameDir>
+    ) {
+        val root = File(YuzuApplication.appContext.getPublicFilesDir(), "games")
+        if (!root.isDirectory) {
+            root.mkdirs()
+        }
+
+        // Any "main" with a "main.npdm" beside it, up to four folders deep.
+        val mains = mutableListOf<File>()
+        fun search(dir: File, depth: Int) {
+            if (depth < 0) return
+            val main = File(dir, "main")
+            if (main.isFile && File(dir, "main.npdm").isFile) {
+                mains.add(main)
+                return
+            }
+            dir.listFiles()?.filter { it.isDirectory }?.forEach { search(it, depth - 1) }
+        }
+        search(root, 4)
+
+        // Game folders added in Eden are content URIs, which the folder loader can't
+        // use; with all-files access, scan them again by plain path.
+        val folderPaths = gameDirs.mapNotNull { treeUriToPath(it.uriString) }.distinct()
+        if (folderPaths.isNotEmpty()) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+                !android.os.Environment.isExternalStorageManager()
+            ) {
+                requestAllFilesAccess()
+            } else {
+                folderPaths.forEach { if (it.isDirectory) search(it, 4) }
+            }
+        }
+
+        val report = mutableListOf<String>()
+        mains.sortedBy { it.absolutePath }.forEach { main ->
+            val path = main.absolutePath
+            val shortPath = main.parentFile?.parentFile?.name ?: main.path
+            if (!GameMetadata.getIsValid(path)) {
+                report.add("Not recognized: $shortPath")
+                Log.warning("[GameHelper] Extracted game not recognized: $path")
+                return@forEach
+            }
+            var gameDir = main.parentFile!!
+            while (gameDir.parentFile != null &&
+                gameDir.name.lowercase() in setOf("exefs", "base")
+            ) {
+                gameDir = gameDir.parentFile!!
+            }
+            val title = GameMetadata.getTitle(path).ifEmpty { gameDir.name }
+            val programId = GameMetadata.getProgramId(path).ifEmpty { gameDir.name }
+            val game = Game(
+                title,
+                path,
+                programId,
+                GameMetadata.getDeveloper(path),
+                GameMetadata.getVersion(path, false),
+                GameMetadata.getIsHomebrew(path)
+            )
+            games.add(game)
+            if (programId != "0") {
+                gamesByProgramId[programId] = game
+            }
+            report.add("Added: $title")
+        }
+
+        val folders = root.listFiles()?.count { it.isDirectory } ?: 0
+        if (mains.isEmpty() && folders == 0) {
+            return
+        }
+        val message = if (mains.isEmpty()) {
+            "Extracted games: $folders folder(s) in games/, but no exefs/main with main.npdm found"
+        } else {
+            report.joinToString("\n")
+        }
+        Log.info("[GameHelper] $message")
+        run {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    YuzuApplication.appContext,
+                    message,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
