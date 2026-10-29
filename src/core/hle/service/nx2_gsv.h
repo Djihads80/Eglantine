@@ -1134,7 +1134,7 @@ private:
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 
-// The Switch 2 video decoder (nn::codec::video::detail::ipc). gsv 902/1002 hand out a session
+// The Switch 2 video decoder (nn::codec::video::detail::ipc). gsv 902/906/1002 hand out a session
 // whose TIPC 1 (CreateVideoDecoderService: handle at word 3, result at word 4) creates a decoder
 // service, another session of this class. Layouts read from the SDK's nn::codec VP9 decoder:
 // - 200(copy handle: work buffer transfer memory, u64 size, u32, u32, u32): initialize.
@@ -1367,6 +1367,7 @@ public:
              "CalculateDecoderImagePoolBuffer"},
             {901, &INx2GraphicsSystemSession::Stub, "VideoInitialize (guessed)"},
             {902, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession (guessed)"},
+            {906, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithVersion"},
             {1001, &INx2GraphicsSystemSession::Stub, "VideoInitialize2 (guessed)"},
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
             {601, &INx2GraphicsSystemSession::Stub, "CameraInitialize (guessed)"},
@@ -1415,10 +1416,14 @@ private:
     // nn::codec::video::detail::ipc::Initialize sends 901, 902, 1001, 1002. 902 and 1002 return
     // a session handle at word 3 and the result at word 4; left to the auto stub, the handle was 0
     // and InitializeVp9Decoder failed with 2001-0114 (title 1 aborts when a movie starts).
+    // Newer SDKs (nn::codec::video::detail::InitializeServerContext) send 906(u8, u64 decoder
+    // library version) instead of 902; title 4 sends version 0x3'00030000 and aborted with
+    // InvalidHandle at its first movie while 906 was auto-stubbed.
     void OpenVideoSession(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
         const bool second = ctx.GetCommand() == 1002;
-        LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC {}, returning a video decoder session",
-                    ctx.GetCommand());
+        LOG_INFO(Service, "nx2:gsv TIPC {} [2]={:#x} [3]={:#x} [4]={:#x}, returning a video decoder session",
+                 ctx.GetCommand(), w[2], w[3], w[4]);
         ReturnRawSession(system, ctx,
                          std::make_shared<INx2VideoSession>(system, m_objects,
                                                             second ? "nx2:vdec2" : "nx2:vdec"));
