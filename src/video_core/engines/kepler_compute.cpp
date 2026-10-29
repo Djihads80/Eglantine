@@ -17,6 +17,7 @@
 #include "common/logging.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
+#include "video_core/gpu_split.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2.h"
 #include "video_core/engines/fermi_2d.h"
@@ -120,7 +121,7 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
 }
 
 bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call) {
-    if (native_context) {
+    if (native_context && !front_macros) {
         if (method == 0x45 || method == 0x47) native_compute_uploaded = true;
         native_macro = native_compute_uploaded ? &native_context->compute_engine : &native_context->engine;
         native_macro_positions = native_compute_uploaded ? std::span<u32>{native_context->compute_positions} : std::span<u32>{native_context->positions};
@@ -307,6 +308,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             native_registers[0xad] = previous;
         }
         return true;
+    }
+    if (front_macros && method >= 0x45 && method <= 0x48) {
+        return true; // Loaded and bound by the split GPU thread's front (FrontApply).
     }
     switch (method) {
     case 0x45: native_macro->ClearCode(argument); return true;
@@ -752,6 +756,164 @@ Texture::TSCEntry KeplerCompute::GetTSCEntry(u32 tsc_index) const {
     Texture::TSCEntry tsc_entry;
     memory_manager.ReadBlockUnsafe(tsc_address_gpu, &tsc_entry, sizeof(Texture::TSCEntry));
     return tsc_entry;
+}
+
+// Split GPU thread with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2): the front
+// runs compute macros against its own copy of the native registers (which hold the last value
+// written to each, on the back too) and loads and binds the compute macro code itself.
+struct KeplerCompute::FrontState {
+    std::array<u32, 0x1000> registers{};
+    std::optional<u32> executing_macro;
+    std::vector<u32> parameters;
+    bool compute_uploaded{};
+    u32 bind_pointer{};
+    MacroEngine* macro{}; ///< Without a native context: the one macro engine
+};
+
+KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
+    if (!front) [[unlikely]] {
+        // Copy the back's state and take the macros over while it is idle.
+        split.Drain();
+        front = std::make_unique<FrontState>();
+        front->registers = native_registers;
+        front->executing_macro = native_executing_macro;
+        front->parameters = std::move(native_parameters);
+        native_parameters.clear();
+        native_executing_macro.reset();
+        front->compute_uploaded = native_compute_uploaded;
+        front->bind_pointer = native_bind_pointer;
+        front->macro = native_macro;
+        front_macros = true;
+    }
+    return *front;
+}
+
+void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
+    // As ProcessNativeMethod does with the macro code and bindings.
+    if (method == 0x45 || method == 0x47) {
+        fs.compute_uploaded = true;
+    }
+    fs.registers[method] = argument;
+    switch (method) {
+    case 0x45:
+        FrontMacroEngine(fs).ClearCode(argument);
+        break;
+    case 0x46:
+        FrontMacroEngine(fs).AddCode(0, argument);
+        break;
+    case 0x47:
+        fs.bind_pointer = argument;
+        break;
+    case 0x48: {
+        const auto positions = FrontMacroPositions(fs);
+        if (fs.bind_pointer < positions.size()) {
+            positions[fs.bind_pointer++] = argument;
+        } else {
+            LOG_ERROR(HW_GPU, "Native compute macro bind out of bounds");
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+MacroEngine& KeplerCompute::FrontMacroEngine(FrontState& fs) {
+    if (native_context) {
+        return fs.compute_uploaded ? native_context->compute_engine : native_context->engine;
+    }
+    return *fs.macro;
+}
+
+std::span<u32> KeplerCompute::FrontMacroPositions(FrontState& fs) {
+    if (native_context) {
+        return fs.compute_uploaded ? std::span<u32>{native_context->compute_positions}
+                                      : std::span<u32>{native_context->positions};
+    }
+    return native_macro_positions;
+}
+
+void KeplerCompute::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split,
+                                    u32 method, u32 argument, bool is_last_call,
+                                    const GPUVAddr* segment) {
+    auto& fs = Front(split);
+    if (method >= fs.registers.size()) {
+        split.Method(this, method, argument, is_last_call, segment);
+        return;
+    }
+    if (method >= 0xe00) {
+        if (!fs.executing_macro) {
+            if (method & 1) {
+                LOG_ERROR(HW_GPU, "Native compute macro starts on argument method");
+                return;
+            }
+            fs.executing_macro = method;
+        }
+        fs.parameters.push_back(argument);
+        if (is_last_call) {
+            FrontRunMacro(system, split, fs);
+        }
+        return;
+    }
+    FrontApply(fs, method, argument);
+    split.Method(this, method, argument, is_last_call, segment);
+}
+
+void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
+                                         u32 method, const u32* base_start, u32 amount,
+                                         u32 methods_pending, const GPUVAddr* segment) {
+    auto& fs = Front(split);
+    if (method >= 0xe00 && method < fs.registers.size()) {
+        for (u32 i = 0; i < amount; ++i) {
+            FrontCallMethod(system, split, method, base_start[i], methods_pending - i <= 1, segment);
+        }
+        return;
+    }
+    if (method < fs.registers.size()) {
+        for (u32 i = 0; i < amount; ++i) {
+            FrontApply(fs, method, base_start[i]);
+        }
+    }
+    split.MultiMethod(this, method, base_start, amount, methods_pending, segment);
+}
+
+void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
+                                  FrontState& fs) {
+#ifdef ARCHITECTURE_x86_64
+    const auto positions = FrontMacroPositions(fs);
+    const u32 start = positions[((*fs.executing_macro - 0xe00) / 2) % positions.size()];
+    fs.executing_macro.reset();
+    auto& macro = FrontMacroEngine(fs);
+    if (native_data_ram) {
+        macro.native_interpreter.active_dram = native_data_ram;
+    }
+    VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+    if (!macro.native_jit) {
+        macro.native_jit = std::make_shared<TuringMacroJit>();
+    }
+    macro.native_jit->Prepare(macro.native_code, macro.native_code_generation);
+    const auto result = macro.native_jit->Execute(
+        start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram},
+        [&fs](u32 address) {
+            return address < fs.registers.size() ? fs.registers[address] : 0U;
+        },
+        [&](u32 address, u32 value) {
+            if (address >= 0xe00) {
+                return false;
+            }
+            FrontApply(fs, address, value);
+            split.MacroWrite(this, address, value);
+            return true;
+        });
+    if (!result.success) {
+        macro.native_execution_failed = true;
+        LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: compute start={:#x}, consumed={}, error={}",
+                  start, result.consumed, result.error);
+    }
+#else
+    fs.executing_macro.reset();
+#endif
+    fs.parameters.clear();
 }
 
 } // namespace Tegra::Engines

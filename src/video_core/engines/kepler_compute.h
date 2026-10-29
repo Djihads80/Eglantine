@@ -9,7 +9,9 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 #include "common/bit_field.h"
 #include "common/common_funcs.h"
@@ -22,6 +24,10 @@
 
 namespace Core {
 class System;
+}
+
+namespace VideoCommon {
+class GpuSplit;
 }
 
 namespace Tegra {
@@ -237,7 +243,26 @@ public:
 
     bool IsNativeMode() const { return native_mode; }
 
+    /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
+    /// the front instead of CallMethod for native compute engines: runs their macros and macro
+    /// uploads against a copy of the registers and sends the register writes to the back.
+    bool FrontRunsMacros() const { return native_mode; }
+    void FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                         u32 argument, bool is_last_call, const GPUVAddr* segment);
+    void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                              const u32* base_start, u32 amount, u32 methods_pending,
+                              const GPUVAddr* segment);
+
 private:
+    struct FrontState;
+    FrontState& Front(VideoCommon::GpuSplit& split);
+    void FrontApply(FrontState& state, u32 method, u32 argument);
+    MacroEngine& FrontMacroEngine(FrontState& state);
+    std::span<u32> FrontMacroPositions(FrontState& state);
+    void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    std::unique_ptr<FrontState> front;
+    bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
+
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     void ProcessNativeReportSemaphore(u32 argument);
     void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd);

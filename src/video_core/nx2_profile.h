@@ -49,6 +49,8 @@ enum class Zone : u32 {
     Fence,        ///< Fences made (SignalFence)
     FenceSkipped, ///< Empty fences not made
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
+    SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
+    SplitWait,    ///< Split GPU thread: the back waits for work
     Count,
 };
 
@@ -59,7 +61,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method",
+    "fence skipped", "method", "split drain", "split wait",
 };
 
 inline bool Enabled() {
@@ -141,8 +143,9 @@ inline void Add(Counter counter, u64 amount) {
     }
 }
 
-/// Called by the GPU thread between commands: logs and resets the totals every 10 s.
-inline void Report() {
+/// Called by the GPU thread (and the split's back thread) between commands: logs and resets
+/// the totals every 10 s.
+inline void Report(const char* thread_name = "GPU thread") {
     if (!Enabled()) {
         return;
     }
@@ -185,7 +188,7 @@ inline void Report() {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
-    LOG_INFO(HW_GPU, "GPU thread per second:{}", line);
+    LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;
 }

@@ -12,8 +12,23 @@
 #include "video_core/control/channel_state.h"
 #include "video_core/control/scheduler.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 
 namespace Tegra::Control {
+
+void Scheduler::BindChannel(GPU& gpu, s32 bind_id) {
+    // With the GPU thread split the rasterizer's channel switches with the methods around it, on
+    // the back thread (deferred outside the lock: the back takes it to bind).
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        split.Defer([this, gpu_ptr = &gpu, bind_id] {
+            std::scoped_lock lk{scheduling_guard};
+            gpu_ptr->BindChannel(bind_id);
+        });
+        return;
+    }
+    std::scoped_lock lk{scheduling_guard};
+    gpu.BindChannel(bind_id);
+}
 
 void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
     std::shared_ptr<ChannelState> channel_state;
@@ -22,8 +37,8 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
         auto it = channels.find(channel);
         ASSERT(it != channels.end());
         channel_state = it->second;
-        gpu.BindChannel(channel_state->bind_id);
     }
+    BindChannel(gpu, channel_state->bind_id);
     // Process commands outside the lock to reduce contention.
     // Multiple channels can prepare their commands in parallel.
     channel_state->payload->dma_pusher.Push(std::move(entries));
@@ -47,10 +62,7 @@ void Scheduler::ResumePending(GPU& gpu) {
             if (!dma_pusher.HasPendingAcquire() || !dma_pusher.CanResumeAcquire()) {
                 continue;
             }
-            {
-                std::scoped_lock lk{scheduling_guard};
-                gpu.BindChannel(state->bind_id);
-            }
+            BindChannel(gpu, state->bind_id);
             dma_pusher.DispatchCalls();
             progress = true;
         }
