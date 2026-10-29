@@ -309,6 +309,7 @@ public:
             {101, &INx2GpuSession::SubRegisterMemory, "CreateGpuAccessibleMemory"},
             {102, &INx2GpuSession::SubDestroyMemory, "DestroyGpuAccessibleMemory (guessed)"},
             {211, &INx2GpuSession::SubSubmitJob, "NormalMapGpuMemory4K"},
+            {212, &INx2GpuSession::SubModifyKind, "NormalModifyMemoryKind4K"},
             {213, &INx2GpuSession::SubUnmapJob, "NormalUnmapGpuMemory4K"},
             {214, &INx2GpuSession::SubCreateGpuOnlyRegion, "CreateSparseRegion"},
             {215, &INx2GpuSession::SubDestroySparseRegion, "DestroySparseRegion"},
@@ -455,6 +456,21 @@ private:
         EventFor(slot)->Signal(system.Kernel());
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
+    }
+
+    // Sub 212 (nn::gpu::sdk::NormalModifyMemoryKind4K, behind NvRmGpuMappingModify): word 2 the
+    // address space, 3-4 first GPU address, 5-6 last, 7 the wanted (compressible) kind, 8 the
+    // fallback kind, 9 a sync flag, 10 the job slot. The reply's word 3 is the kind applied. Kinds
+    // do not matter to the emulated GPU, so keep the mapping and report the wanted kind.
+    void SubModifyKind(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 first = u64{w[3]} | (u64{w[4]} << 32);
+        const u64 last = u64{w[5]} | (u64{w[6]} << 32);
+        const u32 kind = w[7] & 0xff;
+        LOG_DEBUG(Service, "nx2:gpu 212 modify [{:#x}, {:#x}] kind={:#x} fallback={:#x} slot={}",
+                  first, last, kind, w[8] & 0xff, w[10]);
+        EventFor(w[10])->Signal(system.Kernel());
+        TipcReplyWords(ctx, {kind});
     }
 
     // Sub 213: words 3-4 first GPU address, 5-6 last, job slot in word 8.
