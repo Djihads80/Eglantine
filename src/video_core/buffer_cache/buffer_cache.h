@@ -62,17 +62,28 @@ void BufferCache<P>::RunGarbageCollector() {
     const bool aggressive_gc = total_used_memory >= critical_memory;
     const u64 ticks_to_destroy = aggressive_gc ? 60 : 120;
     int num_iterations = aggressive_gc ? 64 : 32;
-    const auto clean_up = [this, &num_iterations](BufferId buffer_id) {
+    // Their GPU-written data is downloaded first, all with one wait for the GPU: one wait per
+    // buffer stalled the GPU thread every frame on title 1 (an 8 GB GPU near its budget, no
+    // per-fence downloads keeping the buffers clean), ~2.5% of its time.
+    boost::container::small_vector<BufferId, 64> evicted;
+    lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, [&](BufferId buffer_id) {
         if (num_iterations == 0) {
             return true;
         }
         --num_iterations;
-        auto& buffer = slot_buffers[buffer_id];
-        DownloadBufferMemory(buffer);
-        DeleteBuffer(buffer_id);
+        evicted.push_back(buffer_id);
         return false;
-    };
-    lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, clean_up);
+    });
+    if constexpr (USE_MEMORY_MAPS) {
+        DownloadBuffersMemory(evicted);
+    } else {
+        for (const BufferId buffer_id : evicted) {
+            DownloadBufferMemory(slot_buffers[buffer_id]);
+        }
+    }
+    for (const BufferId buffer_id : evicted) {
+        DeleteBuffer(buffer_id);
+    }
 }
 
 template <class P>
@@ -1949,6 +1960,52 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
 template <class P>
 void BufferCache<P>::DownloadBufferMemory(Buffer& buffer) {
     DownloadBufferMemory(buffer, buffer.CpuAddr(), buffer.SizeBytes());
+}
+
+template <class P>
+void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids) {
+    struct Download {
+        BufferId buffer_id;
+        BufferCopy copy;
+    };
+    std::vector<Download> downloads;
+    u64 total_size_bytes = 0;
+    for (const BufferId buffer_id : buffer_ids) {
+        Buffer& buffer = slot_buffers[buffer_id];
+        const DAddr buffer_addr = buffer.CpuAddr();
+        memory_tracker.ForEachDownloadRangeAndClear(
+            buffer_addr, buffer.SizeBytes(), [&](u64 device_addr_out, u64 range_size) {
+                gpu_modified_ranges.ForEachInRange(device_addr_out, range_size,
+                                                   [&](DAddr start, DAddr end) {
+                    downloads.push_back({buffer_id, BufferCopy{
+                                                        .src_offset = start - buffer_addr,
+                                                        .dst_offset = total_size_bytes,
+                                                        .size = end - start,
+                                                    }});
+                    total_size_bytes += Common::AlignUp(end - start, 64);
+                });
+                ClearDownload(device_addr_out, range_size);
+                gpu_modified_ranges.Subtract(device_addr_out, range_size);
+            });
+    }
+    if (total_size_bytes == 0) {
+        return;
+    }
+    auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
+    for (Download& download : downloads) {
+        download.copy.dst_offset += download_staging.offset;
+        Buffer& buffer = slot_buffers[download.buffer_id];
+        buffer.MarkUsage(download.copy.src_offset, download.copy.size);
+        runtime.CopyBuffer(download_staging.buffer, buffer, std::span{&download.copy, 1}, true);
+    }
+    runtime.Finish();
+    const u8* const mapped_memory = download_staging.mapped_span.data();
+    for (const Download& download : downloads) {
+        const DAddr device_addr = slot_buffers[download.buffer_id].CpuAddr() + download.copy.src_offset;
+        device_memory.WriteBlockUnsafe(
+            device_addr, mapped_memory + (download.copy.dst_offset - download_staging.offset),
+            download.copy.size);
+    }
 }
 
 template <class P>

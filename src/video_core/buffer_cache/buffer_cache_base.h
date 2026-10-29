@@ -468,6 +468,9 @@ private:
 
     void DownloadBufferMemory(Buffer& buffer_id, DAddr device_addr, u64 size);
 
+    /// Downloads the GPU-written data of several buffers with one wait for the GPU.
+    void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
+
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
