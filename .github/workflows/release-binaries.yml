@@ -54,6 +54,7 @@ jobs:
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=.github/mingw-w64-toolchain.cmake
+          -DMAKE=/usr/bin/make
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
           -DYUZU_TESTS=OFF
