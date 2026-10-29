@@ -19,6 +19,28 @@
 
 namespace Common {
 
+/// The default hash of Common::unordered_map/set. std::hash of an integer or a pointer is a
+/// byte-wise FNV-1a on MSVC, and boost's flat containers mix a hash that does not say it
+/// avalanches anyway: pass those keys through (the GPU thread's page maps looked keys up
+/// tens of thousands of times a second with it). Other keys keep std::hash.
+template <class Key>
+struct FastHash : std::hash<Key> {};
+
+template <class Key>
+    requires std::is_integral_v<Key>
+struct FastHash<Key> {
+    std::size_t operator()(Key key) const noexcept {
+        return static_cast<std::size_t>(key);
+    }
+};
+
+template <class T>
+struct FastHash<T*> {
+    std::size_t operator()(T* pointer) const noexcept {
+        return reinterpret_cast<std::size_t>(pointer);
+    }
+};
+
 namespace detail {
 
 template <typename T>

@@ -9,7 +9,7 @@
 
 namespace Common {
 
-template <class Key, class Hash = std::hash<Key>, class Pred = std::equal_to<Key>,
+template <class Key, class Hash = FastHash<Key>, class Pred = std::equal_to<Key>,
           class Allocator = std::allocator<Key>>
 using unordered_set = boost::unordered::unordered_flat_set<Key, Hash, Pred, Allocator>;
 

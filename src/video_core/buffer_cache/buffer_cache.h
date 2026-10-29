@@ -746,9 +746,9 @@ void BufferCache<P>::PopAsyncBuffers() {
 
 template <class P>
 bool BufferCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
-    bool is_dirty = false;
-    gpu_modified_ranges.ForEachInRange(addr, size, [&](DAddr, DAddr) { is_dirty = true; });
-    return is_dirty;
+    // One lookup instead of visiting every range inside (~4% of the GPU thread for title 1's
+    // inline uploads once GPU-written ranges are no longer cleared by downloads).
+    return gpu_modified_ranges.Intersects(addr, size);
 }
 
 template <class P>
