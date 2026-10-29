@@ -39,7 +39,18 @@ jobs:
           arch: win64_mingw
           modules: qtcharts
           cache: true
-
+      
+      - name: Install Qt host tools (Linux)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          dir: ${{ runner.temp }}/qt-host
+          set-env: false
+          cache: true
+          
       - name: Cache CPM downloads
         uses: actions/cache@v4
         with:
