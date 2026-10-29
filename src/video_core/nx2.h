@@ -46,20 +46,6 @@ inline void Nx2RemoveSemaphoreRegion(u64 start) {
     }
 }
 
-/// GPU VA in the first page that mirrors a release at `address`, or 0.
-inline u64 Nx2SemaphoreMirror(u64 address) {
-    for (const auto& region : g_nx2_semaphore_regions) {
-        const u64 start = region.load(std::memory_order_relaxed);
-        if (start == 0) {
-            continue;
-        }
-        if (address >= start + 0x1000 && address < start + 0x2000) {
-            return address - 0x1000;
-        }
-    }
-    return 0;
-}
-
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.

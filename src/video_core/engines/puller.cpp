@@ -196,11 +196,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
         dma_pusher.rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
-        if (const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
-            mirror != 0) {
-            LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
-            dma_pusher.rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
-        }
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
