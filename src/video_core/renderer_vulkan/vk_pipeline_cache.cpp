@@ -768,10 +768,66 @@ void PipelineCache::QueueVulkanPipelineCacheFlush() {
     });
 }
 
+namespace {
+// EDEN_NX2_PIPELINE_DIFF=1: for a new graphics pipeline whose shaders an earlier one uses too,
+// log which parts of the fixed state differ from that one (finds state that splits the same
+// draws into many pipelines, each translated on the GPU thread).
+void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
+    static const bool enabled = std::getenv("EDEN_NX2_PIPELINE_DIFF") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    static std::unordered_map<u64, GraphicsPipelineCacheKey> last_by_shaders;
+    static u32 logged{};
+    const u64 shaders = Common::CityHash64(reinterpret_cast<const char*>(key.unique_hashes.data()),
+                                           sizeof(key.unique_hashes));
+    const auto [it, first] = last_by_shaders.try_emplace(shaders, key);
+    if (first) {
+        return;
+    }
+    const FixedPipelineState& now = key.state;
+    const FixedPipelineState& before = it->second.state;
+    std::string diffs;
+    if (now.raw1 != before.raw1) diffs += fmt::format(" raw1^{:#x}", now.raw1 ^ before.raw1);
+    if (now.raw2 != before.raw2) diffs += fmt::format(" raw2^{:#x}", now.raw2 ^ before.raw2);
+    if (now.color_formats != before.color_formats) {
+        diffs += fmt::format(" color_formats {:02x} -> {:02x}", fmt::join(before.color_formats, ""),
+                             fmt::join(now.color_formats, ""));
+    }
+    if (now.alpha_test_ref != before.alpha_test_ref) {
+        diffs += fmt::format(" alpha_test_ref {:#x} -> {:#x} (func {})", before.alpha_test_ref,
+                             now.alpha_test_ref, now.alpha_test_func.Value());
+    }
+    if (now.point_size != before.point_size) {
+        diffs += fmt::format(" point_size {:#x} -> {:#x}", before.point_size, now.point_size);
+    }
+    if (now.viewport_swizzles != before.viewport_swizzles) diffs += " viewport_swizzles";
+    if (now.attribute_types != before.attribute_types) {
+        diffs += fmt::format(" attribute_types^{:#x}", now.attribute_types ^ before.attribute_types);
+    }
+    if (std::memcmp(&now.dynamic_state, &before.dynamic_state, sizeof(now.dynamic_state)) != 0) {
+        diffs += " dynamic_state";
+    }
+    if (now.driver_id != before.driver_id || now.driver_version != before.driver_version) {
+        diffs += " driver";
+    }
+    const size_t size = now.Size();
+    if (diffs.empty() && size > offsetof(FixedPipelineState, attachments)) {
+        diffs = fmt::format(" past attachments (key size {})", size);
+    }
+    it->second = key;
+    if (logged++ < 400) {
+        LOG_INFO(Render_Vulkan, "New pipeline for known shaders {:016x} differs in:{}", shaders,
+                 diffs.empty() ? std::string{" nothing in the key prefix"} : diffs);
+    }
+}
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
+        ReportNewPipelineKey(graphics_key);
         pipeline = CreateGraphicsPipeline();
     }
     if (!pipeline) {
