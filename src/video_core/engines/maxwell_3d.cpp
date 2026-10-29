@@ -20,6 +20,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 
@@ -307,17 +308,25 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const auto control = shadow_state.shadow_ram_control;
+    // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
+    // CallMethod does.
+    const bool skip_same = SkipSameValueWrites();
+    const auto process = [&](u32 method, u32 value) {
+        if (!skip_same || regs.reg_array[method] != value) {
+            ProcessDirtyRegisters(method, value);
+        }
+    };
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
             shadow_state.reg_array[method] = value;
-            ProcessDirtyRegisters(method, value);
+            process(method, value);
         }
     } else if (control == Regs::ShadowRamControl::Replay) {
         for (auto [method, value] : method_sink)
-            ProcessDirtyRegisters(method, shadow_state.reg_array[method]);
+            process(method, shadow_state.reg_array[method]);
     } else {
         for (auto [method, value] : method_sink)
-            ProcessDirtyRegisters(method, value);
+            process(method, value);
     }
     method_sink.clear();
 }
@@ -445,7 +454,21 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
     }
 
     ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register, increase the size of the Regs structure");
+    if (VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::MethodWrites, 1);
+        if (regs.reg_array[method] == method_argument) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SameValueWrites, 1);
+        }
+    }
     const u32 argument = ProcessShadowRam(method, method_argument);
+    // A state register written with the value it holds changes nothing: no dirty flags (they
+    // would make the next draw re-check that state), no method processing. Title 1 makes ~6
+    // million 3D register writes a second, ~60% of them same-value, most from macro replays.
+    // Methods with side effects (execution_mask: draws, clears, constant buffer data and
+    // binds, semaphores, ...) always run. EDEN_NX2_SKIP_SAME=0 turns it off.
+    if (SkipSameValueWrites() && !execution_mask[method] && regs.reg_array[method] == argument) {
+        return;
+    }
     ProcessDirtyRegisters(method, argument);
     ProcessMethodCall(method, argument, method_argument, is_last_call);
 }

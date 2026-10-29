@@ -9,6 +9,7 @@
 #include <array>
 #include <bitset>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <span>
@@ -3249,6 +3250,15 @@ private:
      * @param parameters Arguments to the method call
      */
     void CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters);
+
+    /// Whether state register writes that keep the register's value are dropped (CallMethod).
+    static bool SkipSameValueWrites() {
+        static const bool skip = [] {
+            const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
+            return value == nullptr || value[0] != '0';
+        }();
+        return skip;
+    }
 
     /// Handles writes to the macro uploading register.
     void ProcessMacroUpload(u32 data);
