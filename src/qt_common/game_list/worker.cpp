@@ -167,6 +167,19 @@ QString FormatGameName(const std::string& physical_name) {
     return physical_name_as_qstring;
 }
 
+// Loose ExeFS dumps (<game>/exefs/main, updates in <game>/updates/exefs/main) have no control
+// data, so they are named after their game folder.
+QString LooseExeFSName(const std::string& physical_name) {
+    QDir dir = QFileInfo(QString::fromStdString(physical_name)).dir();
+    if (dir.dirName().compare(QStringLiteral("exefs"), Qt::CaseInsensitive) != 0 || !dir.cdUp()) {
+        return {};
+    }
+    if (dir.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0 && dir.cdUp()) {
+        return QObject::tr("%1 (update)").arg(dir.dirName());
+    }
+    return dir.dirName();
+}
+
 QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
                                 Loader::AppLoader& loader, bool updatable = true) {
     QString out;
@@ -392,7 +405,13 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
                     [[maybe_unused]] const auto res1 = app_loader->ReadIcon(icon);
 
                     std::string name = " ";
-                    [[maybe_unused]] const auto res3 = app_loader->ReadTitle(name);
+                    const auto res3 = app_loader->ReadTitle(name);
+                    if ((res3 != Loader::ResultStatus::Success || name.empty() || name == " ") &&
+                        IsExtractedNCAMain(physical_name)) {
+                        if (const QString loose = LooseExeFSName(physical_name); !loose.isEmpty()) {
+                            name = loose.toStdString();
+                        }
+                    }
 
                     const FileSys::PatchManager patch{id, system.GetFileSystemController(),
                                                       system.GetContentProvider()};
