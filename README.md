@@ -9,13 +9,13 @@
 
 <h1 align="center">
   <br>
-  <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="./dist/qt_themes/default/icons/256x256/eden.png" alt="Eden" width="200"></a>
+  <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/836c5067-7fb6-44b9-9d3a-f07a986d591d" alt="Eden" width="200"></a>
   <br>
-  <b>Eden</b>
+  <b>Eglantine</b>
   <br>
 </h1>
 
-<h4 align="center"><b>Eden</b> is a free and opensource (FOSS) Switch 1 emulator, derived from Yuzu and Sudachi - started by developer Camille LaVey.
+<h4 align="center"><b>Eglantine</b> is a free and opensource (FOSS) Switch 2 emulator, derived from Eden, Yuzu and Sudachi - started by developer Camille LaVey.
 It's written in C++ with portability in mind, with builds for Windows, Linux, macOS, Android, FreeBSD and more.
 </h4>
 
