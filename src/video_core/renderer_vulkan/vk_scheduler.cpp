@@ -84,11 +84,17 @@ void Scheduler::WaitWorker() {
 
 void Scheduler::DispatchWork() {
     if (chunk && !chunk->Empty()) {
+        // Waking the worker is a system call (~2% of the GPU thread at one dispatch per 8
+        // draws): skip it while the worker is still busy, it pops the queue before waiting.
+        bool wake;
         {
             std::scoped_lock ql{queue_mutex};
             work_queue.push(std::move(chunk));
+            wake = worker_waiting;
         }
-        event_cv.notify_all();
+        if (wake) {
+            event_cv.notify_all();
+        }
         AcquireNewChunk();
     }
 }
@@ -290,7 +296,11 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
             std::unique_lock lk{queue_mutex};
 
             // Wait for work.
-            event_cv.wait(lk, stop_token, [&] { return TryPopQueue(work); });
+            event_cv.wait(lk, stop_token, [&] {
+                worker_waiting = !TryPopQueue(work);
+                return !worker_waiting;
+            });
+            worker_waiting = false;
 
             // If we've been asked to stop, we're done.
             if (stop_token.stop_requested()) {

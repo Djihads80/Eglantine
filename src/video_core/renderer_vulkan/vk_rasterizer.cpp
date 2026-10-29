@@ -1309,8 +1309,10 @@ void RasterizerVulkan::FlushWork() {
     static constexpr u32 DRAWS_TO_DISPATCH = 512;
     static constexpr u32 CHECK_MASK = 3;
 #else
+    // Every 32 draws (was 8): each dispatch woke the worker thread, and Switch 2 titles make
+    // ~55,000 draws a second. A full chunk is dispatched on its own (Scheduler::Record).
     static constexpr u32 DRAWS_TO_DISPATCH = 4096;
-    static constexpr u32 CHECK_MASK = 7;
+    static constexpr u32 CHECK_MASK = 31;
 #endif // __ANDROID__
 
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
