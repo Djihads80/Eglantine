@@ -630,6 +630,7 @@ struct Nx2NativeObjects {
         u32 memory{};
         std::array<u32, 16> preference{};
         u64 size{};
+        u32 count{1}; // images in the pool; handle id + i is image i
         bool window_pool{};
     };
     std::mutex mutex;
@@ -671,6 +672,48 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     layout.alignment = std::max<u64>(64 * block_rows, 0x1000);
     return layout;
 }
+
+// GameChat's graphics side (nn::chat::gsv), handed out by gsv 1202. Read from the SDK's
+// nn::chat::gsv::Initialize: TIPC 1() returns a u32 id at word 3 (it aborts with 2162-0001 if
+// the id is over 0x3ff), then TIPC 11(u32 id) returns an event (copy handle at word 3, result at
+// word 4) that it attaches as a system event. Everything else falls through to the nx2 auto stub.
+class INx2ChatGsvSession final : public ServiceFramework<INx2ChatGsvSession> {
+public:
+    explicit INx2ChatGsvSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:chat:gsv"}, m_context{system_, "nx2:chat:gsv"} {
+        RegisterHandlersTipc({
+            {1, &INx2ChatGsvSession::GetEventId, "GetEventId (guessed)"},
+            {11, &INx2ChatGsvSession::GetEvent, "GetEvent (guessed)"},
+        });
+    }
+
+    ~INx2ChatGsvSession() override {
+        for (auto& [id, event] : m_events) {
+            m_context.CloseEvent(event);
+        }
+    }
+
+private:
+    void GetEventId(HLERequestContext& ctx) {
+        LOG_WARNING(Service, "(STUBBED) nx2:chat:gsv TIPC 1, returning id 0");
+        TipcReplyWords(ctx, {0});
+    }
+
+    void GetEvent(HLERequestContext& ctx) {
+        const u32 id = ctx.CommandBuffer()[2];
+        LOG_WARNING(Service, "(STUBBED) nx2:chat:gsv TIPC 11 id={}, returning an event", id);
+        auto*& event = m_events[id];
+        if (event == nullptr) {
+            event = m_context.CreateEvent(fmt::format("nx2:chat:gsv:Event{}", id));
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 1, 0};
+        rb.Push(ResultSuccess);
+        rb.PushCopyObjects(ctx, event->GetReadableEvent());
+    }
+
+    KernelHelpers::ServiceContext m_context;
+    std::map<u32, Kernel::KEvent*> m_events;
+};
 
 // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
 // shapes read from the SDK: TIPC 1 -> u32 < 0x400, TIPC 3 -> u32 < 8, TIPC 11/31(u32) and
@@ -1292,6 +1335,8 @@ public:
             {423, &INx2GraphicsSystemSession::BindNativeGpuMemory, "BindNativeGpuMemory"},
             {429, &INx2GraphicsSystemSession::CreateNativeImage, "CreateNativeImage"},
             {430, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyNativeImage"},
+            {426, &INx2GraphicsSystemSession::QueryNativeImage, "MapNativeImage"},
+            {428, &INx2GraphicsSystemSession::QueryNativeImage, "QueryNativeImage"},
             {435, &INx2GraphicsSystemSession::CalculateNativeImageSize, "CalculateNativeImageSize"},
             {1402, &INx2GraphicsSystemSession::OpenNvsrvSession, "OpenNvsrvSession (guessed)"},
             {1510, &INx2GraphicsSystemSession::CalculateRequirements, "CalculateRequirements"},
@@ -1301,6 +1346,14 @@ public:
             {902, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession (guessed)"},
             {1001, &INx2GraphicsSystemSession::Stub, "VideoInitialize2 (guessed)"},
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
+            {601, &INx2GraphicsSystemSession::Stub, "CameraInitialize (guessed)"},
+            {602, &INx2GraphicsSystemSession::OpenCameraSession, "OpenCameraContext (guessed)"},
+            {1201, &INx2GraphicsSystemSession::Stub, "ChatInitialize (guessed)"},
+            {1202, &INx2GraphicsSystemSession::OpenChatSession, "OpenChatSession (guessed)"},
+            // Same request as 429: nn::chat::gsv::CreateImagePool (GameChat camera images).
+            {1211, &INx2GraphicsSystemSession::CreateNativeImage, "CreateChatImagePool (guessed)"},
+            {1291, &INx2GraphicsSystemSession::CalculateChatImagePoolSize,
+             "CalculateChatImagePoolSize (guessed)"},
             // Same request as 429: the image backing a decoder output (nn::codec image pools).
             {911, &INx2GraphicsSystemSession::CreateNativeImage, "CreateDecoderImage (guessed)"},
         });
@@ -1346,6 +1399,24 @@ private:
         ReturnRawSession(system, ctx,
                          std::make_shared<INx2VideoSession>(system, m_objects,
                                                             second ? "nx2:vdec2" : "nx2:vdec"));
+    }
+
+    // nn::camera::sdk::CreateCameraContext sends 601() then 602(u64 1), which returns the camera
+    // context session (handle at word 3, result at word 4). Auto-stubbed, 602 had no handle, the
+    // SDK sent 603 (destroy) and title 1 (1.8.0) aborted with 2034-0000. Its commands fall
+    // through to the nx2 auto stub.
+    void OpenCameraSession(HLERequestContext& ctx) {
+        LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 602, returning a nx2:camera session");
+        ReturnRawSession(system, ctx,
+                         std::make_shared<INx2StubInterface>(
+                             system, INx2StubInterface::InternName("nx2:camera")));
+    }
+
+    // nn::chat::gsv::Initialize sends 1201 then 1202, the same pair as 901/902 and 1001/1002.
+    // Left to the auto stub it aborted with 2162-0001 (GameChat), so 1202 gets a session too.
+    void OpenChatSession(HLERequestContext& ctx) {
+        LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1202, returning a nx2:chat session");
+        ReturnRawSession(system, ctx, std::make_shared<INx2ChatGsvSession>(system));
     }
 
     void OpenSyncptSession(HLERequestContext& ctx) {
@@ -1571,14 +1642,86 @@ private:
     void CreateNativeImage(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         std::scoped_lock lk{m_objects->mutex};
-        const u32 id = m_objects->next_image++;
+        const u32 id = m_objects->next_image;
         auto& image = m_objects->images[id];
+        image.count = std::max<u32>(w[18], 1);
+        // nn::gs::sdk::CalculateNativeImageHandle(pool, i) is pool + i, so keep those free.
+        m_objects->next_image += image.count;
         image.memory = w[19];
         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
         image.size = Nx2CalculateImageLayout(w + 2).size;
         LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
                  w[19], w[18], image.size, id);
         TipcReplyWords(ctx, {id});
+    }
+
+    // nn::chat::gsv::CalculateRequiredBufferMemory: 1291(preference[16], u32 count), the request
+    // of 1510, replies result, u64 size, u64 alignment. Auto-stubbed, the size became 0x1000 and
+    // the camera pool (1211) got memory for none of its images.
+    void CalculateChatImagePoolSize(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const auto layout = Nx2CalculateImageLayout(w + 2);
+        const u64 size = layout.size * std::max<u32>(w[18], 1);
+        LOG_DEBUG(Service, "nx2:gsv 1291 {}x{} count={} -> size={:#x}", layout.width,
+                  layout.height, w[18], size);
+        TipcReplyWords(ctx, {static_cast<u32>(size), static_cast<u32>(size >> 32),
+                             static_cast<u32>(layout.alignment),
+                             static_cast<u32>(layout.alignment >> 32)});
+    }
+
+    // 428(u32 native image handle) nn::gpu::sdk::QueryNativeImage and 426(u32 handle, u32, u32
+    // address space, u8 permission) nn::gpu::sdk::MapNativeImage, used by NVN for images another
+    // server created (GameChat's camera pool from 1211). Reply words 3-4 the GPU address of the
+    // image (426 only; GPU == CPU address, see Nx2NativeObjects::Memory), 5-6 the u64 offset of
+    // the image in its memory, 7-38 a GpuOunceUserImageDescriptor and 39 the flags. The SDK
+    // requires descriptor byte 0x00 == 1, byte 0x20 == 1 and a non-zero size at 0x2c (offset at
+    // 0x28); NVN reads (width - 1) | (height - 1) << 16 at 0x08 and the layout kind at 0x24 (1
+    // takes RGBA formats 0x25/0x37/0x38, 2 the 0x99-0x9c formats). Block height and pitch use
+    // the 429 preference words (0x10, 0x14), a guess.
+    void QueryNativeImage(HLERequestContext& ctx) {
+        const u32 handle = ctx.CommandBuffer()[2];
+        std::array<u32, 16> preference{};
+        u64 image_offset = 0;
+        u64 memory_address = 0;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            auto it = m_objects->images.upper_bound(handle);
+            if (it != m_objects->images.begin()) {
+                --it;
+                if (handle - it->first < it->second.count) {
+                    preference = it->second.preference;
+                    image_offset = (handle - it->first) * it->second.size;
+                    if (const auto memory = m_objects->memories.find(it->second.memory);
+                        memory != m_objects->memories.end()) {
+                        memory_address = memory->second.address;
+                    }
+                }
+            }
+        }
+        const auto layout = Nx2CalculateImageLayout(preference.data());
+        const u64 gpu_address = ctx.GetCommand() == 426 ? memory_address + image_offset : 0;
+        std::array<u32, 37> words{};
+        words[0] = static_cast<u32>(gpu_address);
+        words[1] = static_cast<u32>(gpu_address >> 32);
+        words[2] = static_cast<u32>(image_offset);
+        words[3] = static_cast<u32>(image_offset >> 32);
+        u32* const desc = words.data() + 4;
+        desc[0] = 1;
+        desc[1] = preference[1];
+        desc[2] = preference[2];
+        desc[4] = layout.block_height_log2;
+        desc[5] = static_cast<u32>(layout.pitch / 64);
+        desc[8] = 1;
+        desc[9] = 1;
+        desc[11] = static_cast<u32>(layout.size);
+        LOG_WARNING(Service, "(STUBBED) nx2:gsv {} handle={} {}x{} size={:#x} gpu={:#x}",
+                    ctx.GetCommand(), handle, layout.width, layout.height, layout.size,
+                    gpu_address);
+        IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + words.size())};
+        rb.PushRaw<u32>(ResultSuccess.raw);
+        for (const u32 w : words) {
+            rb.Push<u32>(w);
+        }
     }
 
     void DestroyNativeImage(HLERequestContext& ctx) {

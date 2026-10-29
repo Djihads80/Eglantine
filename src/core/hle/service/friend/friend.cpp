@@ -558,6 +558,55 @@ public:
     }
 };
 
+// Session returned by chat:u 0. Command 1 hands back a handle the title waits on, so it gets an
+// event that is never signalled; everything else falls through to the nx2 auto stub.
+class IChatSession final : public ServiceFramework<IChatSession> {
+public:
+    explicit IChatSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:chat:u::0"}, service_context{system_, "IChatSession"} {
+        static const FunctionInfo functions[] = {
+            {1, &IChatSession::GetEvent, "GetEvent (guessed)"},
+        };
+        RegisterHandlers(functions);
+        event = service_context.CreateEvent("IChatSession:Event");
+    }
+
+    ~IChatSession() override {
+        service_context.CloseEvent(event);
+    }
+
+private:
+    void GetEvent(HLERequestContext& ctx) {
+        LOG_WARNING(Service_Friend, "(STUBBED) chat:u::0 1 [5]={:#x}", ctx.CommandBuffer()[5]);
+        IPC::ResponseBuilder rb{ctx, 2, 1};
+        rb.Push(ResultSuccess);
+        rb.PushCopyObjects(ctx, event->GetReadableEvent());
+    }
+
+    KernelHelpers::ServiceContext service_context;
+    Kernel::KEvent* event;
+};
+
+// Switch 2 GameChat (chat:u). Command 0 opens a session the title keeps using, so it has to
+// return an interface; everything else falls through to the nx2 auto stub.
+class IChatService final : public ServiceFramework<IChatService> {
+public:
+    explicit IChatService(Core::System& system_) : ServiceFramework{system_, "nx2:chat:u"} {
+        static const FunctionInfo functions[] = {
+            {0, &IChatService::OpenSession, "OpenSession"},
+        };
+        RegisterHandlers(functions);
+    }
+
+private:
+    void OpenSession(HLERequestContext& ctx) {
+        LOG_WARNING(Service_Friend, "(STUBBED) chat:u 0, returning a chat session");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IChatSession>(ctx, system);
+    }
+};
+
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
     auto module = std::make_shared<Module>();
@@ -570,6 +619,9 @@ void LoopProcess(Core::System& system) {
     server_manager->RegisterNamedService("friend:s", std::make_shared<Friend>(module, system, "friend:s"));
     server_manager->RegisterNamedService("friend:u", std::make_shared<Friend>(module, system, "friend:u"));
     server_manager->RegisterNamedService("friend:v", std::make_shared<Friend>(module, system, "friend:v"));
+
+    // Switch 2 GameChat. Titles block in sm until it exists, so register a stub for now.
+    server_manager->RegisterNamedService("chat:u", std::make_shared<IChatService>(system));
 
     ServerManager::RunServer(std::move(server_manager));
 }
