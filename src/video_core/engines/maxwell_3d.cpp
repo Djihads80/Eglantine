@@ -466,7 +466,11 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
     // million 3D register writes a second, ~60% of them same-value, most from macro replays.
     // Methods with side effects (execution_mask: draws, clears, constant buffer data and
     // binds, semaphores, ...) always run. EDEN_NX2_SKIP_SAME=0 turns it off.
-    if (SkipSameValueWrites() && !execution_mask[method] && regs.reg_array[method] == argument) {
+    if (!execution_mask[method]) {
+        // ProcessMethodCall (and the draw manager behind it) acts only on executable methods.
+        if (!SkipSameValueWrites() || regs.reg_array[method] != argument) {
+            ProcessDirtyRegisters(method, argument);
+        }
         return;
     }
     ProcessDirtyRegisters(method, argument);
