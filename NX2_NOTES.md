@@ -192,6 +192,10 @@ With the patched decoder, games 1/3/4 only leave ~60-110 rare SIMD encodings in 
 | 128 | Vulkan worker woken with a system call every 8 draws (~2% of the GPU thread) | DispatchWork notified even when the worker was busy | every 32 draws, notify only a waiting worker (d9d7e94) |
 | 129 | macro memo arena (16 MiB) cleared every ~2 s | records stored again with another shape left their old copies | compaction (9a37142); live records are ~12 MiB, so most compactions still end in a clear; hits stay ~97% (46% on the last call's slot) |
 | 130 | measurements | a stuck `nvidia-smi -l` loop had spun one core for 12 h (every run since the evening of 10-28 had one core less); the attract loop shows different courses each run (frame means vary +-15%); stopped test loops kept running and overlapped | compare per-call costs (`C:\dev\nx2work\zones.py` on `EDEN_NX2_GPU_PROFILE` logs); `ab_env.sh` and `hangcheck.sh` refuse to start while eden-cli runs; `stopall.ps1` stops every loop |
+| 131 | (title 1) 250-330 MB/s of buffer data copied back at fences (13,000-20,000 ranges a second) | Eden downloads every GPU-written range at the next fence. Measured: the native MME's DMA reads never touched those pages (`EDEN_NX2_GPU_PROFILE` counter), and with reactive flushing the guest CPU read GPU-written memory at most 64 times in 200 s | off for Switch 2 titles (d530bc4, `EDEN_NX2_BUFFER_DOWNLOADS=0/1` forces): fences ~1.1 us (were ~5), draw setup -7%, cache-lock spinning 1.8% |
+| 132 | inline uploads 10.5% of the GPU thread | IsRegionGpuModified visited every GPU-written range in the query (they stay fragmented without downloads); std::hash of integers and pointers is FNV-1a on MSVC in every Common::unordered_map | RangeSet::Intersects (one lookup) and a pass-through hash for integer/pointer keys (0fe581f): 7.5% |
+| 133 | some courses (desert/canyon, dense city) bound by the host GPU: presents blocked 9-15 ms on the frame's fence (also before today: t14) | 8 GB laptop GPU: Vulkan usage 6.6-6.9 GB of a 7.1 GB budget; the collector evicts hundreds of decoded ASTC images per 600 frames and they are recreated (GPU ASTC->BC transcode). The two 8192x8192x68 ASTC arrays are already kept as RGBA8 from mip 3 (~380 MB each) | `EDEN_NX2_TC_MIN_AGE=120` (0f0fbb9) made no difference over three runs; open: where the host GPU time goes on those courses |
+| 134 | each inline write invalidated the buffer, texture, shader and query caches on its own | thousands of small writes between draws | guest memory written at once, pending query results dropped at once, GPU-written buffer data uploaded in place; the other caches get merged ranges at the next FlushCaching (c06ac80, `EDEN_NX2_INLINE_DEFER=0` off): inline writes 4.4% |
 
 Run settings used (in `build/bin/user/config/sdl2-config.ini`): `memory_layout_mode=4`
 (12 GB). Debug knobs: `EDEN_NX2_TC_EXPECTED_MIB` / `EDEN_NX2_TC_CRITICAL_MIB` (collector thresholds),
@@ -203,6 +207,7 @@ faulting stack as module+offset, then a minidump), `EDEN_NX2_AUTO_STUB`, `EDEN_N
 `EDEN_NX2_MME_RECORD=<file>` (macro calls for `C:\dev\nx2work\mme_test`),
 `EDEN_NX2_FENCE_BATCH=0`, `EDEN_NX2_MACRO_COPY=1`, `EDEN_NX2_CNTPCT_PAUSE=0` (turn rows 124, 126, 127 off),
 `EDEN_NX2_MME_MEMO_STATS` (memo counters),
+`EDEN_NX2_BUFFER_DOWNLOADS=0/1`, `EDEN_NX2_INLINE_DEFER=0`, `EDEN_NX2_TC_MIN_AGE=<frames>` (rows 131, 134, 133),
 `EDEN_NX2_FRAME_CAPTURE=<dir>` (every 120th presented frame as TGA), `EDEN_NX2_PB_CHECK`
 (pushbuffer entries changed between submit and execution), `EDEN_NX2_QUERY_TRACE` (every GPU
 report/semaphore write). `C:\dev\crashrun.sh` runs eden-cli under cdb and prints the crash stack;
