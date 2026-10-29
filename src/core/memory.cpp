@@ -28,6 +28,8 @@
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/physical_core.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
@@ -622,8 +624,18 @@ struct Memory::Impl {
     template <typename T>
     inline T Read(Common::ProcessAddress vaddr) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
-        if (auto const ptr = GetPointerImpl(addr, [addr]() {
+        if (auto const ptr = GetPointerImpl(addr, [this, addr]() {
             LOG_ERROR(HW_Memory, "Unmapped Read{} @ {:#016x}", sizeof(T) * 8, addr);
+            // Diagnostic (fork A): backtrace the first null-page read to find the faulting caller.
+            static bool traced = false;
+            static bool traced_wild = false;
+            if (addr < 0x1000 && !traced) {
+                traced = true;
+                system.CurrentPhysicalCore().LogBacktrace(system.Kernel());
+            } else if (addr >= (1ULL << 48) && !traced_wild) {
+                traced_wild = true;
+                system.CurrentPhysicalCore().LogBacktrace(system.Kernel());
+            }
         }, [&]() {
             HandleRasterizerDownload(addr, sizeof(T));
         }); ptr) [[likely]] {

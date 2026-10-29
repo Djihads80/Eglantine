@@ -80,6 +80,7 @@ protected:
 
     void InitializeNativeCode(u32 source_header_size = 128);
     size_t native_source_size{};
+    u32 native_source_header_size{};
 
     Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
                                              bool via_header_index, u32 raw);

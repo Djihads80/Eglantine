@@ -132,7 +132,8 @@ Result InfoUpdater::UpdateVoices(VoiceContext& voice_context,
             static_assert(sizeof(VoiceInParameterV2) == 0x188);
             static_assert(offsetof(VoiceInParameterV2, crossfade_curve) == 0x177);
             const auto* vin = reinterpret_cast<const VoiceInParameterV2*>(input + i * in_stride);
-            if (behaviour.GetUserRevisionNum() >= 16 && vin->in_use && vin->crossfade_curve != 0) {
+            if (behaviour.GetUserRevisionNum() >= 16 && vin->in_use &&
+                vin->crossfade_curve != 0) {
                 LOG_ERROR(Service_Audio, "Unsupported voice biquad crossfade curve {}",
                           vin->crossfade_curve);
                 return Service::Audio::ResultInvalidUpdateInfo;
@@ -594,10 +595,19 @@ Result InfoUpdater::UpdateBehaviorInfo(BehaviorInfo& behaviour_) {
     const auto in_params{reinterpret_cast<const BehaviorInfo::InParameter*>(input)};
 
     if (!CheckValidRevision(in_params->revision)) {
+        LOG_ERROR(Service_Audio,
+                  "Invalid behavior revision {:#x}; user revision={:#x}, header revision={:#x}, "
+                  "behavior size={:#x}",
+                  in_params->revision, behaviour_.GetUserRevision(), in_header->revision,
+                  in_header->behaviour_size);
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 
     if (in_params->revision != behaviour_.GetUserRevision()) {
+        LOG_ERROR(Service_Audio,
+                  "Behavior revision mismatch: input={:#x}, user={:#x}, header={:#x}, size={:#x}",
+                  in_params->revision, behaviour_.GetUserRevision(), in_header->revision,
+                  in_header->behaviour_size);
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 
@@ -605,6 +615,10 @@ Result InfoUpdater::UpdateBehaviorInfo(BehaviorInfo& behaviour_) {
     behaviour_.UpdateFlags(in_params->flags);
 
     if (in_header->behaviour_size != sizeof(BehaviorInfo::InParameter)) {
+        LOG_ERROR(Service_Audio,
+                  "Behavior size mismatch: input={:#x}, expected={:#x}, revision={:#x}",
+                  in_header->behaviour_size, sizeof(BehaviorInfo::InParameter),
+                  in_params->revision);
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 

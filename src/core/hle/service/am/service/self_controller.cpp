@@ -81,6 +81,8 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, nullptr, "GetDebugStorageChannel"},
         {2000, &ISelfController::GetGraphicsSupervisor, "GetGraphicsSupervisor"},
+        {2400, D<&ISelfController::SetRtcScreenSharingAudioEnabled>,
+         "SetRtcScreenSharingAudioEnabled"},
     };
     // clang-format on
 
@@ -471,6 +473,12 @@ Result ISelfController::Unknown230(u32 in_val, Out<u16> out_val) {
 Result ISelfController::Unknown240(u32 in_val) {
     LOG_WARNING(Service_AM, "(STUBBED) called, in_val={}", in_val);
 
+    R_SUCCEED();
+}
+
+Result ISelfController::SetRtcScreenSharingAudioEnabled(bool enabled) {
+    // SDK 23.0 serializes this command as one bool input with no output payload.
+    LOG_DEBUG(Service_AM, "called, enabled={}", enabled);
     R_SUCCEED();
 }
 

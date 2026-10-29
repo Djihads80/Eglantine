@@ -111,7 +111,9 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
     case Puller::FenceOperation::Increment:
         if (dma_pusher.channel_state.native_abi) {
             const auto& context = dma_pusher.channel_state.native_macro_context;
-            if (context && (context->engine.native_execution_failed || context->compute_engine.native_execution_failed)) {
+            static const bool strict = std::getenv("EDEN_NATIVE_STRICT") != nullptr;
+            if (strict && context &&
+                (context->engine.native_execution_failed || context->compute_engine.native_execution_failed)) {
                 LOG_ERROR(HW_GPU, "Native submission completion blocked by failed GPU work: syncpoint={}", regs.fence_action.syncpoint_id.Value());
                 break;
             }
@@ -269,7 +271,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         break;
     }
     case BufferMethods::MemOpA: {
-        LOG_ERROR(HW_GPU, "Memory Operation A");
+        LOG_TRACE(HW_GPU, "Memory Operation A");
         break;
     }
     case BufferMethods::MemOpB: {
@@ -279,7 +281,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
     }
     case BufferMethods::MemOpC:
     case BufferMethods::MemOpD: {
-        LOG_ERROR(HW_GPU, "Memory Operation C,D");
+        LOG_TRACE(HW_GPU, "Memory Operation C,D");
         break;
     }
     case BufferMethods::SemaphoreAcquire: {

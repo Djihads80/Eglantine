@@ -167,6 +167,8 @@ public:
      */
     void Run();
 
+    void DumpGuestThreads();
+
     /**
      * Pause the OS and Application
      * This function will pause emulation and stop the relevant devices

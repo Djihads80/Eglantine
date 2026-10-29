@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <fmt/ranges.h>
 #include "common/assert.h"
@@ -123,6 +124,9 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const auto guard = LockService();
+    const bool diag_account_lock = std::getenv("EDEN_DIAG_THREAD_DUMP") != nullptr &&
+                                   std::string_view{service_name} == "acc:u0" &&
+                                   ctx.GetCommand() == 150;
 
     Result result = ResultSuccess;
 
@@ -141,7 +145,15 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
     }
     case IPC::CommandType::RequestWithContext:
     case IPC::CommandType::Request: {
+        if (diag_account_lock) {
+            LOG_INFO(Service, "diag: acc:u0 cmd150 before handler");
+            system.DumpGuestThreads();
+        }
         InvokeRequest(ctx);
+        if (diag_account_lock) {
+            LOG_INFO(Service, "diag: acc:u0 cmd150 after handler");
+            system.DumpGuestThreads();
+        }
         break;
     }
     default:
@@ -157,7 +169,15 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
     // If emulation was shutdown, we are closing service threads, do not write the response back to
     // memory that may be shutting down as well.
     if (system.IsPoweredOn()) {
-        ctx.WriteToOutgoingCommandBuffer();
+        if (diag_account_lock) {
+            LOG_INFO(Service, "diag: acc:u0 cmd150 before outgoing write");
+        }
+        const Result write_result = ctx.WriteToOutgoingCommandBuffer();
+        if (diag_account_lock) {
+            LOG_INFO(Service, "diag: acc:u0 cmd150 after outgoing write result={:#x}",
+                     write_result.raw);
+            system.DumpGuestThreads();
+        }
     }
 
     return result;

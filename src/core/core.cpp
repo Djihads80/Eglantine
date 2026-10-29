@@ -107,6 +107,38 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
     return vfs->OpenFile(path, FileSys::OpenMode::Read);
 }
 
+#ifdef CreateEvent
+#undef CreateEvent
+#endif
+
+// Diagnostic (fork A): log every application thread's state, wait target and guest call chain.
+void System::DumpGuestThreads() {
+    auto* process = ApplicationProcess();
+    if (!process) {
+        return;
+    }
+    auto& memory = process->GetMemory();
+    LOG_INFO(Core, "diag: thread dump begin");
+    for (auto& thread : process->GetThreadList()) {
+        const auto& context = thread.GetContext();
+        std::vector<u64> frames;
+        u64 fp = context.fp;
+        for (int i = 0; i < 8 && fp && memory.IsValidVirtualAddressRange(fp, 16); ++i) {
+            frames.push_back(memory.Read64(fp + 8));
+            fp = memory.Read64(fp);
+        }
+        LOG_INFO(Core,
+                 "diag: thread {} prio={} core={} state={:#x} reason={} cv_key={:#x} arb_key={:#x} "
+                 "addr_key={:#x}/{:#x} pc={:#x} lr={:#x} chain={:#x}",
+                 thread.GetThreadId(), thread.GetPriority(), thread.GetActiveCore(),
+                 static_cast<u32>(thread.GetRawState()),
+                 static_cast<u32>(thread.GetWaitReasonForDebugging()), thread.GetConditionVariableKey(),
+                 thread.GetAddressArbiterKey(), GetInteger(thread.GetAddressKey()),
+                 thread.GetAddressKeyValue(), context.pc, context.lr, fmt::join(frames, ","));
+    }
+    LOG_INFO(Core, "diag: thread dump end");
+}
+
 struct System::Impl {
     explicit Impl(System& system)
         : kernel{system}, fs_controller{system}, hid_core{kernel}, cpu_manager{system},
@@ -389,6 +421,14 @@ struct System::Impl {
             game_info.version = title_version;
             room_member->SendGameInfo(game_info);
         }
+        if (std::getenv("EDEN_DIAG_THREAD_DUMP")) {
+            thread_dump_event = Core::Timing::CreateEvent(
+                "DiagThreadDump", [&system](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                    system.DumpGuestThreads();
+                    return std::nullopt;
+                });
+            core_timing.ScheduleLoopingEvent(std::chrono::seconds{10}, std::chrono::seconds{30}, thread_dump_event);
+        }
         return SystemResultStatus::Success;
     }
 
@@ -455,6 +495,7 @@ struct System::Impl {
     }
 
     Timing::CoreTiming core_timing;
+    std::shared_ptr<Timing::EventType> thread_dump_event;
     Kernel::KernelCore kernel;
     /// RealVfsFilesystem instance
     FileSys::VirtualFilesystem virtual_filesystem;

@@ -380,6 +380,64 @@ TEST_CASE("Native MME taken back edges suppress fallthrough termination", "[nati
     }
 }
 
+TEST_CASE("Native MME decoded uploads track partial writes and replacement", "[native-gpu]") {
+    Tegra::MacroEngine engine{true};
+    engine.native_turing = true;
+    constexpr std::array<u32, 6> code{
+        0x20340003U, 0x18084740U, 0x3bc00301U,
+        0x00000003U, 0x18c00000U, 0x318c0300U,
+    };
+    const std::array<u32, 2> params{0xffffffffU, 1};
+    const auto compare = [&] {
+        Tegra::TuringMacroInterpreter raw, decoded;
+        std::vector<std::pair<u32, u32>> expected, actual;
+        const auto read = [](u32) { return 0U; };
+        const auto a = raw.Execute(engine.native_code, 8, params, read,
+            [&](u32 m, u32 v) { expected.emplace_back(m, v); return true; });
+        const auto b = decoded.ExecuteDecoded(engine.native_decoded_code, 8, params, read,
+            [&](u32 m, u32 v) { actual.emplace_back(m, v); return true; });
+        REQUIRE(a.success == b.success);
+        REQUIRE(a.pc == b.pc);
+        REQUIRE(a.consumed == b.consumed);
+        REQUIRE(a.error == b.error);
+        REQUIRE(expected == actual);
+    };
+    engine.ClearCode(8);
+    for (const auto word : code) {
+        engine.AddCode(8, word);
+        compare();
+    }
+    engine.ClearCode(8);
+    for (const auto word : {0x00340003U, 0x18084740U, 0x3bc00301U}) {
+        engine.AddCode(8, word);
+        compare();
+    }
+    REQUIRE(engine.native_decoded_code[8].out_emit[1] == 0);
+}
+
+TEST_CASE("Native MME decoded instruction survives writes from an emit callback", "[native-gpu]") {
+    Tegra::TuringMacroInterpreter interpreter;
+    constexpr std::array<u32, 6> code{
+        0x20340003U, 0x18084740U, 0x3bc00301U,
+        0x00000003U, 0x18c00000U, 0x318c0300U,
+    };
+    std::array<Tegra::TuringMacroInterpreter::Instruction, 2> decoded{
+        Tegra::TuringMacroInterpreter::Decode(std::span<const u32, 3>{code.data(), 3}),
+        Tegra::TuringMacroInterpreter::Decode(std::span<const u32, 3>{code.data() + 3, 3}),
+    };
+    const std::array<u32, 2> params{0xffffffffU, 1};
+    std::vector<std::pair<u32, u32>> writes;
+    const auto result = interpreter.ExecuteDecoded(decoded, 0, params, [](u32) { return 0U; },
+        [&](u32 method, u32 value) {
+            decoded[0].out_emit[1] = 0;
+            writes.emplace_back(method, value);
+            return true;
+        });
+    REQUIRE(result.success);
+    REQUIRE(result.consumed == 2);
+    REQUIRE(writes == std::vector<std::pair<u32, u32>>{{0xd00, 0}, {0xd01, 1}});
+}
+
 TEST_CASE("Native compute QMD releases follow successful dispatch and retain reduction flags", "[native-gpu]") {
     Tegra::NativeQmdScheduler scheduler;
     Tegra::NativeQmdScheduler::Descriptor descriptor{};

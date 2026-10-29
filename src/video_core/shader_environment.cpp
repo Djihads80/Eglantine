@@ -167,9 +167,37 @@ u64 GenericEnvironment::ReadInstruction(u32 address) {
 }
 
 u32 GenericEnvironment::TranslateProgramAddress(u32 address) const {
-    if (const auto translated = Shader::Ampere::NativeProgramAddress(code, address)) return *translated;
-    if (native_source_size || Shader::Ampere::HasNativeAddressMap(code))
+    if (const auto translated = Shader::Ampere::NativeProgramAddress(
+            code, address, native_source_header_size)) return *translated;
+    if (native_source_size || Shader::Ampere::HasNativeAddressMap(code)) {
+        if (const char* path = std::getenv("EDEN_NATIVE_BRANCH_TRACE_PATH")) {
+            std::ofstream trace(path, std::ios::app);
+            trace << fmt::format("target={:#x} program_base={:#x} source_size={} code_words={} cbuf_values={}\n",
+                                 address, program_base, native_source_size, code.size(), cbuf_values.size());
+            const u32 trace_start = std::min(address, static_cast<u32>(native_source_size));
+            for (u32 index = 0; index < 64; ++index) {
+                const u32 native_offset =
+                    trace_start + index * sizeof(Shader::Ampere::Instruction);
+                const GPUVAddr native_target = program_base + native_offset;
+                if (!gpu_memory->IsFullyMappedRange(native_target,
+                                                    sizeof(Shader::Ampere::Instruction))) {
+                    trace << fmt::format("  target[{:#x}]=unmapped\n", native_offset);
+                    break;
+                }
+                Shader::Ampere::Instruction instruction{};
+                gpu_memory->ReadBlock(native_target, &instruction, sizeof(instruction));
+                trace << fmt::format("  target[{:#x}]={:08x} {:08x} {:08x} {:08x}\n",
+                                     native_offset, instruction.words[0], instruction.words[1],
+                                     instruction.words[2], instruction.words[3]);
+                if (instruction.Bits(0, 12) == 0x94d && instruction.Bits(12, 4) == 7) break;
+            }
+            for (const auto& [key, value] : cbuf_values) {
+                trace << fmt::format("  cbuf={} offset={:#x} value={:#x}\n",
+                                     static_cast<u32>(key >> 32), static_cast<u32>(key), value);
+            }
+        }
         throw Shader::RuntimeError("Invalid native indirect branch address {:#x}", address);
+    }
     return address;
 }
 
@@ -177,7 +205,7 @@ std::optional<u64> GenericEnvironment::Analyze() {
     if (native_source_size) {
         // Include the converted header and a version tag to isolate this experimental ABI.
         return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
-                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000002ULL;
+                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000003ULL;
     }
     const std::optional<u64> size{TryFindSize()};
     if (!size) {
@@ -327,6 +355,7 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
 void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     using Shader::Ampere::Instruction;
     const u32 native_header_size = source_header_size;
+    native_source_header_size = source_header_size;
     constexpr u32 maximum_instructions = Shader::Ampere::ProgramCaptureState::MaximumInstructions;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
@@ -338,9 +367,96 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         auto& instruction = native.emplace_back();
         gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
         const auto status = capture.Observe(instruction, index);
-        if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget)
-            throw Shader::RuntimeError("Native shader branch outside capture bounds");
+        if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            const u32 opcode = instruction.Bits(0, 12);
+            const s64 relative = opcode == 0x945
+                ? Shader::Ampere::RelativeOffset30(instruction)
+                : Shader::Ampere::RelativeOffset48(instruction);
+            const s64 target = s64{index} * sizeof(Instruction) +
+                sizeof(Instruction) + relative;
+            if (const char* corpus = std::getenv("EDEN_NATIVE_SHADER_CORPUS_DIR")) {
+                const auto folder = std::filesystem::path{corpus};
+                std::filesystem::create_directories(folder);
+                std::ofstream dump(folder / fmt::format(
+                    "invalid-target-{:x}-{:x}.mapped.bin", program_base,
+                    index * sizeof(Instruction)), std::ios::binary);
+                std::array<u8, 0x1000> block{};
+                for (u32 offset = 0; offset < 0x2000;
+                     offset += static_cast<u32>(block.size())) {
+                    const GPUVAddr block_address = program_base + native_header_size + offset;
+                    if (!gpu_memory->IsFullyMappedRange(block_address, block.size())) break;
+                    gpu_memory->ReadBlock(block_address, block.data(), block.size());
+                    dump.write(reinterpret_cast<const char*>(block.data()), block.size());
+                }
+            }
+            throw Shader::RuntimeError(
+                "Native shader branch outside capture bounds at {:#x}: opcode={:#x}, "
+                "words={:08x},{:08x},{:08x},{:08x}, relative={:#x}, target={:#x}",
+                index * sizeof(Instruction), opcode, instruction.words[0],
+                instruction.words[1], instruction.words[2], instruction.words[3],
+                relative, target);
+        }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
+    }
+    const u64 native_program_key = Shader::Ampere::NativeProgramKey(native);
+    if (std::ranges::any_of(native, [](const Instruction& instruction) {
+            const u32 opcode = instruction.Bits(0, 12);
+            return opcode == 0x949 || opcode == 0x958;
+        })) {
+        LOG_INFO(Shader, "Captured native BRX shader: key={:016x}, instructions={}, stage={}",
+                 native_program_key, native.size(), static_cast<u32>(stage));
+    }
+    const auto branch_table = source_header_size == 128
+                                  ? Shader::Ampere::TrackCaptureIndirectBranchTable(native)
+                                  : std::optional<Shader::Ampere::CaptureIndirectBranchTable>{};
+    if (branch_table) {
+        const std::array<u32, 3> table{
+            ReadCbufValue(branch_table->cbuf_index, branch_table->cbuf_offset),
+            ReadCbufValue(branch_table->cbuf_index, branch_table->cbuf_offset + 4),
+            ReadCbufValue(branch_table->cbuf_index, branch_table->cbuf_offset + 8)};
+        const auto target_indices = Shader::Ampere::ValidateCaptureIndirectBranchTargets(
+            table, source_header_size, static_cast<u32>(native.size()));
+        if (!target_indices) {
+            throw Shader::RuntimeError("Invalid native indirect branch table [{:#x}, {:#x}, {:#x}]",
+                                       table[0], table[1], table[2]);
+        }
+        bool extended_complete = Shader::Ampere::CaptureIncludesIndirectBranchTargets(
+            *target_indices, static_cast<u32>(native.size()));
+        for (u32 index = static_cast<u32>(native.size());
+             !extended_complete && index < maximum_instructions; ++index) {
+            const GPUVAddr address =
+                program_base + source_header_size + index * sizeof(Instruction);
+            if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
+                throw Shader::RuntimeError("Unmapped extended native shader instruction at {:#x}",
+                                           address);
+            }
+            auto& instruction = native.emplace_back();
+            gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
+            const auto status = capture.Observe(instruction, index);
+            if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+                throw Shader::RuntimeError("Extended native shader branch outside capture bounds");
+            }
+            if (status == Shader::Ampere::ProgramCaptureState::Result::Complete &&
+                Shader::Ampere::CaptureIncludesIndirectBranchTargets(
+                    *target_indices, static_cast<u32>(native.size()))) {
+                extended_complete = true;
+                break;
+            }
+        }
+        if (!extended_complete) {
+            throw Shader::RuntimeError("Unexpected native indirect branch tail");
+        }
+    }
+    if (const char* corpus = std::getenv("EDEN_NATIVE_SHADER_CORPUS_DIR")) {
+        // Keep every native program so lowering changes can be regression-tested offline.
+        const auto folder = std::filesystem::path{corpus};
+        std::filesystem::create_directories(folder);
+        const auto path =
+            folder / fmt::format("{:016x}.source.bin", Shader::Ampere::NativeProgramKey(native));
+        if (!std::filesystem::exists(path)) {
+            std::ofstream dump(path, std::ios::binary);
+            dump.write(reinterpret_cast<const char*>(native.data()), native.size() * sizeof(Shader::Ampere::Instruction));
+        }
     }
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
     if (!lowered) {
@@ -367,7 +483,9 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
             }
             LOG_WARNING(Shader, "Native shader paused: key={}, offset={:#x}, reason={}, source={}",
                         key, lowered.error_offset, lowered.error, source_path.string());
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{30};
+            // EDEN_NATIVE_SHADER_NO_PAUSE collects dumps without waiting for a hand-written override.
+            static const bool no_pause = std::getenv("EDEN_NATIVE_SHADER_NO_PAUSE") != nullptr;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{no_pause ? 0 : 30};
             while (!gpu_memory->IsShuttingDown() && std::chrono::steady_clock::now() < deadline) {
                 if (std::filesystem::exists(override_path)) {
                     std::ifstream file(override_path, std::ios::binary | std::ios::ate);
@@ -412,8 +530,6 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         }
         code.push_back(instruction);
     }
-    // Keep the original padding ABI, then retain the native address map as
-    // unreachable data. Existing disk-cache serialization carries it with code.
     code.push_back(0);
     Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
     cached_lowest = 0;
@@ -434,7 +550,14 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
-        if (VideoCommon::NativeDrawDiagnosticsEnabled()) {
+        if (program == Maxwell::ShaderType::Pixel) {
+            stage = Shader::Stage::Fragment;
+            stage_index = 4;
+        } else {
+            stage = Shader::Stage::VertexB;
+            stage_index = 0;
+        }
+        if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
             const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : 0;
             for (u32 slot : {0U, 1U}) {
                 const auto& table = maxwell3d->state.shader_stages[native_stage].const_buffers[slot];
@@ -694,7 +817,9 @@ void FileEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
 }
 
 u32 FileEnvironment::TranslateProgramAddress(u32 address) const {
-    if (const auto translated = Shader::Ampere::NativeProgramAddress(code, address)) return *translated;
+    const u32 source_base = stage == Shader::Stage::Compute ? 0 : 128;
+    if (const auto translated = Shader::Ampere::NativeProgramAddress(code, address, source_base))
+        return *translated;
     if (Shader::Ampere::HasNativeAddressMap(code))
         throw Shader::RuntimeError("Invalid cached native indirect branch address {:#x}", address);
     return address;

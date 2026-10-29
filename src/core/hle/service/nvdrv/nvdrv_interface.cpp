@@ -35,14 +35,8 @@ void NVDRV::Open(HLERequestContext& ctx) {
     const auto& buffer = ctx.ReadBuffer();
     const std::string device_name(Common::StringFromBuffer(buffer));
 
-    if (device_name == "/dev/nvhost-prof-gpu") {
-        rb.Push<DeviceFD>(0);
-        rb.PushEnum(NvResult::NotSupported);
-
-        LOG_WARNING(Service_NVDRV, "/dev/nvhost-prof-gpu cannot be opened in production");
-        return;
-    }
-
+    // Native SDKs open the GPU profiler during GPU initialisation and abort it on failure,
+    // so /dev/nvhost-prof-gpu opens through the stub device like any other node.
     DeviceFD fd = nvdrv->Open(device_name, session_id);
 
     rb.Push<DeviceFD>(fd);

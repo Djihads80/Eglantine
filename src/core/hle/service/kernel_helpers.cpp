@@ -63,6 +63,7 @@ Kernel::KEvent* ServiceContext::CreateEvent(std::string&& name) {
 
     // Register the event.
     Kernel::KEvent::Register(kernel, event);
+    LOG_DEBUG(Service, "diag: created service event '{}' at {}", name, static_cast<const void*>(event));
 
     return event;
 }

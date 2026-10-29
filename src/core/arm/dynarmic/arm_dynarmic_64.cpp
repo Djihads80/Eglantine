@@ -127,6 +127,22 @@ void DynarmicCallbacks64::ExceptionRaised(u64 pc, Dynarmic::A64::Exception excep
         } else {
             m_parent.LogBacktrace(m_process);
             LOG_CRITICAL(Core_ARM, "ExceptionRaised(exception = {}, pc = {:08X}, code = {:08X})", static_cast<std::size_t>(exception), pc, m_memory.Read32(pc));
+            // Diagnostic (fork A): dump the object in X0 and its vtable once, to identify bad indirect calls.
+            static bool dumped = false;
+            if (!dumped) {
+                dumped = true;
+                const u64 object = m_parent.m_jit->GetRegister(0);
+                if (m_memory.IsValidVirtualAddressRange(object, 64)) {
+                    std::array<u64, 8> words{};
+                    for (size_t i = 0; i < words.size(); ++i) words[i] = m_memory.Read64(object + i * 8);
+                    LOG_CRITICAL(Core_ARM, "X0 object {:#x}: {:#x}", object, fmt::join(words, ","));
+                    if (m_memory.IsValidVirtualAddressRange(words[0], 128)) {
+                        std::array<u64, 16> vtable{};
+                        for (size_t i = 0; i < vtable.size(); ++i) vtable[i] = m_memory.Read64(words[0] + i * 8);
+                        LOG_CRITICAL(Core_ARM, "X0 vtable {:#x}: {:#x}", words[0], fmt::join(vtable, ","));
+                    }
+                }
+            }
         }
     }
 }

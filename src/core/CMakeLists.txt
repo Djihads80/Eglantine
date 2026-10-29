@@ -390,6 +390,8 @@ add_library(core STATIC
     hle/kernel/svc_results.h
     hle/kernel/svc_types.h
     hle/result.h
+    hle/zlib_acceleration.cpp
+    hle/zlib_acceleration.h
     hle/service/acc/acc.cpp
     hle/service/acc/acc.h
     hle/service/acc/async_context.cpp
@@ -874,6 +876,8 @@ add_library(core STATIC
     hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
     hle/service/nvdrv/devices/nvhost_nvdec_common.h
     hle/service/nvdrv/devices/nvhost_nvjpg.cpp
+    hle/service/nvdrv/devices/nvhost_prof_gpu.cpp
+    hle/service/nvdrv/devices/nvhost_prof_gpu.h
     hle/service/nvdrv/devices/nvhost_nvjpg.h
     hle/service/nvdrv/devices/nvhost_vic.cpp
     hle/service/nvdrv/devices/nvhost_vic.h

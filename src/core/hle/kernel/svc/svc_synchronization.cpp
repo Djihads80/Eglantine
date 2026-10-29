@@ -109,6 +109,18 @@ Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_ha
         timeout = timeout_ns;
     }
 
+    // Diagnostic (fork A): describe long or infinite waits so stuck threads can be matched to events.
+    if (timeout_ns < 0 || timeout_ns > 500'000'000) {
+        std::string desc;
+        for (s32 i = 0; i < num_handles; ++i) {
+            const void* parent = nullptr;
+            if (auto* readable = objs[i]->DynamicCast<KReadableEvent*>()) {
+                parent = readable->GetParent();
+            }
+            desc += fmt::format(" [{}:{} parent={}]", objs[i]->GetTypeName(), static_cast<const void*>(objs[i]), parent);
+        }
+        LOG_DEBUG(Kernel_SVC, "diag: thread {} waits timeout={} on{}", GetCurrentThread(system.Kernel()).GetThreadId(), timeout_ns, desc);
+    }
     // Wait on the objects.
     Result res = KSynchronizationObject::Wait(system.Kernel(), out_index, objs.data(), num_handles, timeout);
 

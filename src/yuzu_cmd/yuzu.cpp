@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <iostream>
+#include <csignal>
+#include <cstdlib>
+#include <cstdio>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -52,6 +56,47 @@
 #include <windows.h>
 #include <shellapi.h>
 #include "common/windows/timer_resolution.h"
+
+static const char* abort_trace_path;
+static char terminate_message[1024]{};
+
+static void WriteAbortTrace(int) {
+    if (abort_trace_path == nullptr) {
+        return;
+    }
+    FILE* output = std::fopen(abort_trace_path, "wb");
+    if (output == nullptr) {
+        return;
+    }
+    void* frames[64]{};
+    const auto count = CaptureStackBackTrace(0, std::size(frames), frames, nullptr);
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (terminate_message[0] != '\0') {
+        std::fprintf(output, "exception=%s\n", terminate_message);
+    }
+    std::fprintf(output, "base=%p frames=%hu\n", reinterpret_cast<void*>(base), count);
+    for (USHORT i = 0; i < count; ++i) {
+        const auto address = reinterpret_cast<uintptr_t>(frames[i]);
+        std::fprintf(output, "%02hu address=%p module_offset=%#llx\n", i, frames[i],
+                     static_cast<unsigned long long>(address - base));
+    }
+    std::fclose(output);
+}
+
+static void WriteTerminateTrace() {
+    try {
+        if (const auto exception = std::current_exception()) {
+            std::rethrow_exception(exception);
+        }
+        std::snprintf(terminate_message, std::size(terminate_message), "no active exception");
+    } catch (const std::exception& exception) {
+        std::snprintf(terminate_message, std::size(terminate_message), "%s", exception.what());
+    } catch (...) {
+        std::snprintf(terminate_message, std::size(terminate_message), "non-standard exception");
+    }
+    WriteAbortTrace(0);
+    std::_Exit(3);
+}
 #endif
 
 #ifdef _WIN32
@@ -165,15 +210,28 @@ struct SdlState {
 };
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
+    // SDL_AppIterate only checks whether the window is open, so iterate on events instead of spinning.
+    SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "waitevent");
     SdlState* state = new SdlState();
     *appstate = state;
     // Emulation and presentation run on their own threads.
     SDL_SetHint(SDL_HINT_MAIN_CALLBACK_RATE, "240");
 
 #ifdef _WIN32
+    // Match the GUI frontend's file limit for games that keep large asset sets open.
+#ifdef __MSVCRT__
+    _setmaxstdio(2048);
+#else
+    _setmaxstdio(8192);
+#endif
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         freopen("CONOUT$", "wb", stdout);
         freopen("CONOUT$", "wb", stderr);
+    }
+    abort_trace_path = std::getenv("EDEN_ABORT_TRACE_PATH");
+    if (abort_trace_path != nullptr) {
+        std::signal(SIGABRT, WriteAbortTrace);
+        std::set_terminate(WriteTerminateTrace);
     }
 #endif
 

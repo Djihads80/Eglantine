@@ -19,8 +19,8 @@ struct NativeImageRequirements {
 inline std::optional<NativeImageRequirements> CalculateNativeImageRequirements(
     std::span<const u32> preference, u32 count) {
     if (preference.size() != 16 || count != 1 || preference[0] != 0 ||
-        (preference[1] != 1 && preference[1] != 2) || preference[3] != 0 ||
-        (preference[6] != 1 && preference[6] != 4) ||
+        (preference[1] != 1 && preference[1] != 2) || preference[3] != 0 || preference[6] < 1 ||
+        preference[6] > 16 ||
         preference[7] != 1 || preference[4] < 3 || preference[4] > 8) {
         return std::nullopt;
     }
@@ -35,7 +35,8 @@ inline std::optional<NativeImageRequirements> CalculateNativeImageRequirements(
     }
     const u64 block_height = 1ULL << preference[4];
     const u64 aligned_height = (height + block_height - 1) & ~(block_height - 1);
-    return NativeImageRequirements{pitch_gobs * 64 * aligned_height, 64 * block_height};
+    // Word 6 is a level/layer count in newer SDKs; scaling the base size covers either meaning.
+    return NativeImageRequirements{pitch_gobs * 64 * aligned_height * preference[6], 64 * block_height};
 }
 
 } // namespace Service::AM

@@ -12,12 +12,17 @@
 
 #include "dynarmic/backend/x64/perf_map.h"
 #include "common/common_types.h"
-#if defined(__linux__) && !defined(__ANDROID__)
+#if (defined(__linux__) && !defined(__ANDROID__)) || defined(_WIN32)
 #    include <cstdio>
 #    include <cstdlib>
 #    include <mutex>
-#    include <sys/types.h>
-#    include <unistd.h>
+#    ifdef _WIN32
+#        include <process.h>
+#        define getpid _getpid
+#    else
+#        include <sys/types.h>
+#        include <unistd.h>
+#    endif
 
 namespace Dynarmic::Backend::X64 {
 
@@ -32,7 +37,7 @@ void OpenFile() {
         return;
     }
 
-    const pid_t pid = getpid();
+    const auto pid = getpid();
     const std::string filename = fmt::format("{:s}/perf-{:d}.map", perf_dir, pid);
 
     file = std::fopen(filename.c_str(), "w");

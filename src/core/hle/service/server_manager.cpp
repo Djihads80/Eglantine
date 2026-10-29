@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+
 #include "common/scope_exit.h"
 
 #include "core/core.h"
@@ -392,8 +394,18 @@ Result ServerManager::CompleteSyncRequest(Session* session) {
         R_SUCCEED();
     }
 
+    const bool diag_account_reply = std::getenv("EDEN_DIAG_THREAD_DUMP") != nullptr &&
+                                    session->GetContext()->GetCommand() == 150;
+
     // Send the reply.
+    if (diag_account_reply) {
+        LOG_INFO(Service, "diag: cmd150 before SendReplyHLE");
+    }
     res = server_session->SendReplyHLE(m_system.Kernel(), service_res == IPC::ResultSessionClosed);
+    if (diag_account_reply) {
+        LOG_INFO(Service, "diag: cmd150 after SendReplyHLE result={:#x}", res.raw);
+        m_system.DumpGuestThreads();
+    }
 
     // If the session has been closed, we're done.
     if (res == Kernel::ResultSessionClosed || service_res == IPC::ResultSessionClosed) {

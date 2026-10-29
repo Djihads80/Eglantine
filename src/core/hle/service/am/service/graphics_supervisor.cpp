@@ -196,15 +196,24 @@ public:
             {11, &IVi2Session::GetNotificationEvent, "GetNotificationEvent"},
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
-            {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
-            {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {31, &IVi2Session::CreateRequestGroupEvent, "CreateRequestGroupEvent"},
+            {32, &IVi2Session::AttachNotificationEvent32, "AttachNotificationEvent32"},
             {104, &IVi2Session::GetHdrStatus, "GetHdrStatus"},
             {106, &IVi2Session::GetBufferMaxResolution, "GetBufferMaxResolution"},
+            {261, &IVi2Session::SetDisplayParameter, "SetDisplayParameter261"},
+            {262, &IVi2Session::SetDisplayParameter, "SetDisplayParameter262"},
+            {263, &IVi2Session::SetDisplayParameter, "SetDisplayParameter263"},
+            {264, &IVi2Session::SetDisplayParameter, "SetDisplayParameter264"},
             {265, &IVi2Session::RegisterDisplayMonitor, "RegisterHdrStatusMonitor"},
             {266, &IVi2Session::UnregisterDisplayMonitor, "UnregisterHdrStatusMonitor"},
+            {267, &IVi2Session::SetDisplayParameter, "SetDisplayParameter267"},
+            {268, &IVi2Session::SetDisplayParameter, "SetDisplayParameter268"},
             {269, &IVi2Session::RegisterDisplayMonitor, "RegisterBufferMaxResolutionMonitor"},
             {270, &IVi2Session::UnregisterDisplayMonitor, "UnregisterBufferMaxResolutionMonitor"},
+            {271, &IVi2Session::SetDisplayParameter, "SetDisplayParameter271"},
+            {272, &IVi2Session::SetDisplayParameter, "SetDisplayParameter272"},
+            {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
+            {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
             {101, &IVi2Session::OpenDisplay, "OpenDisplay"},
             {102, &IVi2Session::CloseDisplay, "CloseDisplay"},
@@ -241,12 +250,29 @@ public:
         const auto guard = LockService();
         LOG_DEBUG(Service_AM, "VI2 unsupported command={}, words={:08x}", ctx.GetCommand(),
                   fmt::join(std::span<const u32>(ctx.CommandBuffer() + 2, std::min<u32>(ctx.CommandBuffer()[1], 32)), ","));
+        LogCaller(ctx);
         InvokeRequestTipc(ctx);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(Kernel::ResultNotImplemented.raw);
         return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
     }
 private:
+    // Logs the requesting guest thread's frame-pointer chain to locate unsupported command callers.
+    static void LogCaller(HLERequestContext& ctx) {
+        auto& thread = ctx.GetThread();
+        auto* process = thread.GetOwnerProcess();
+        if (!process) return;
+        auto& memory = process->GetMemory();
+        const auto& context = thread.GetContext();
+        std::vector<u64> frames{context.lr};
+        u64 fp = context.fp;
+        for (int i = 0; i < 12 && fp && memory.IsValidVirtualAddressRange(fp, 16); ++i) {
+            frames.push_back(memory.Read64(fp + 8));
+            fp = memory.Read64(fp);
+        }
+        LOG_WARNING(Service_AM, "VI2 unsupported command={} caller chain={:#x}", ctx.GetCommand(),
+                    fmt::join(frames, ","));
+    }
     static std::optional<size_t> GetPlayerDisplayIndex(u64 name) {
         if ((name & 0xffffffffffffULL) != 0x726579616c70ULL || (name >> 56) != 0) {
             return std::nullopt;
@@ -466,15 +492,20 @@ private:
     }
     Result QueueNativeImage(ClientState& state, const u32* packet) {
         const u32 slot = GraphicsSupervisorProtocol::DecodeBufferSlot(packet[4]);
+        LOG_DEBUG(Service_AM,
+                  "Native present state player_display={}, layer={}, display={}, slot={}, queued={}",
+                  state.player_display.has_value(), state.layer.has_value(), state.display.has_value(),
+                  slot, slot < state.queued.size() && state.queued[slot].has_value());
         R_UNLESS(!state.player_display, Kernel::ResultNotImplemented);
         R_UNLESS(state.layer && state.display && slot < 15 && !state.queued[slot], Kernel::ResultInvalidState);
         const std::scoped_lock images_lock{m_images->mutex};
         const auto image = std::ranges::find(m_images->images, packet[5], &NativeImage::id);
         R_UNLESS(image != m_images->images.end() && image->window_pool && m_images->module, Kernel::ResultNotFound);
         LOG_DEBUG(Service_AM,
-                  "Native present layout offset={}, dimensions={:#x}/{:#x}, layout={}, block={}, format={}, encoding={:#x}",
+                  "Native present layout offset={}, dimensions={:#x}/{:#x}, layout={}, block={}, "
+                  "format={}, pitch={}, encoding={:#x}",
                   packet[6], packet[7], image->preference[2], packet[8], image->preference[4],
-                  image->preference[6], state.output_encoding);
+                  image->preference[6], image->preference[5], state.output_encoding);
         // The observed presentation is a four-byte color image with the
         // backend's 16-GOB block height and no byte offset within its pool.
         const u32 present_width = (packet[7] & 0xffffU) + 1;
@@ -810,6 +841,142 @@ private:
         rb.Push<u32>(ctx.GetCommand() == 5 ? 7 : 0);
     }
 
+    void GetHdrStatus(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        u64 format{};
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        if (packet[0] == 0x78 && packet[1] == 2) {
+            result = Result{ErrorModule::VI, 7};
+            if (name == 0x00746c7561666564ULL && m_default_display && m_display_service) {
+                format = 1;
+                result = ResultSuccess;
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 HDR status name={:#x}, format={:#x}, result={:#x}", name,
+                  format, result.raw);
+        IPC::ResponseBuilder rb{ctx, 5};
+        rb.Push(result.raw);
+        rb.Push(format);
+        rb.Push<u32>(0);
+    }
+    void GetBufferMaxResolution(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        u64 resolution{};
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        if (packet[0] == 0x7a && packet[1] == 2) {
+            result = Result{ErrorModule::VI, 7};
+            if (name == 0x00746c7561666564ULL && m_default_display && m_display_service) {
+                s64 width{}, height{};
+                result =
+                    m_display_service->GetDisplayResolution(&width, &height, *m_default_display);
+                if (result.IsSuccess()) {
+                    if (width == 1280 && height == 720) {
+                        resolution = 1;
+                    } else {
+                        result = Kernel::ResultNotImplemented;
+                    }
+                }
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 maximum buffer resolution name={:#x}, mode={:#x}, result={:#x}",
+                  name, resolution, result.raw);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push(resolution);
+    }
+    void RegisterDisplayMonitor(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        const u32 group = packet[4];
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == ctx.GetCommand() + 16 && packet[1] == 3) {
+            if (group >= m_request_group_events.size() || !name) {
+                result = Result{ErrorModule::VI, 4};
+            } else if (!m_request_group_events[group] || m_request_group_displays[group]) {
+                result = Result{ErrorModule::VI, 5};
+            } else if (name != 0x00746c7561666564ULL || !m_default_display) {
+                result = Result{ErrorModule::VI, 7};
+            } else {
+                m_request_group_events[group]->Clear(kernel);
+                m_request_group_displays[group] = DisplayMonitor{name, ctx.GetCommand()};
+                m_request_group_events[group]->Signal(kernel);
+                result = ResultSuccess;
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 display monitor command={}, name={:#x}, group={}, result={:#x}",
+                  ctx.GetCommand(), name, group, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void UnregisterDisplayMonitor(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        const u32 group = packet[4];
+        Result result = Kernel::ResultInvalidCombination;
+        if (packet[0] == ctx.GetCommand() + 16 && packet[1] == 3) {
+            if (group >= m_request_group_events.size() || !name) {
+                result = Result{ErrorModule::VI, 4};
+            } else if (!m_request_group_displays[group] ||
+                       m_request_group_displays[group]->display != name ||
+                       m_request_group_displays[group]->command + 1 != ctx.GetCommand()) {
+                result = Result{ErrorModule::VI, 7};
+            } else {
+                m_request_group_displays[group].reset();
+                m_request_group_events[group]->Signal(kernel);
+                result = ResultSuccess;
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void CreateRequestGroupEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x2f && packet[1] == 1) {
+            const u32 group = packet[2];
+            if (group >= m_request_group_events.size()) {
+                result = Result{ErrorModule::VI, 4};
+            } else if (!m_request_groups_initialized || m_request_group_events[group]) {
+                result = Result{ErrorModule::VI, 5};
+            } else {
+                auto*& event = m_request_group_events[group];
+                event = m_context.CreateEvent("Vi2RequestCompletion");
+                result = event ? ResultSuccess : Kernel::ResultOutOfResource;
+                if (event) {
+                    readable = &event->GetReadableEvent();
+                    readable->Open(kernel);
+                }
+            }
+        }
+        LOG_DEBUG(Service_AM, "VI2 request group event index={}, result={:#x}", packet[2],
+                  result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+    void AttachNotificationEvent32(HLERequestContext& ctx) {
+        // Counterpart of command 31: one copied handle plus one word; the reply is a result only.
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x30 && (packet[1] & 0x3ff) == 1
+                                  ? ResultSuccess : Kernel::ResultInvalidCombination;
+        LOG_DEBUG(Service_AM, "VI2 command 32 words={:08x} result={:#x}",
+                  fmt::join(std::span<const u32>(packet, 5), ","), result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void SetDisplayParameter(HLERequestContext& ctx) {
+        // Commands 261-272 in current SDK stubs: display name (u64) plus one word in, result only out.
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 16 + ctx.GetCommand() && packet[1] == 3
+                                  ? ResultSuccess : Kernel::ResultInvalidCombination;
+        LOG_DEBUG(Service_AM, "VI2 display parameter command={} name={:#x} value={:#x} result={:#x}",
+                  ctx.GetCommand(), u64{packet[2]} | (u64{packet[3]} << 32), packet[4], result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
     void GetNotifications(HLERequestContext& ctx) {
         Result result = Kernel::ResultInvalidSize;
         if (ctx.GetWriteBufferSize() >= sizeof(m_notifications)) {
@@ -908,6 +1075,9 @@ IGraphicsSupervisor::IGraphicsSupervisor(Core::System& system, Kernel::KProcess*
         {497, &IGraphicsSupervisor::OpenGpuSession, "OpenGpuSession"},
         {1101, &IGraphicsSupervisor::InitializeFrameContext, "InitializeFrameContext"},
         {1102, &IGraphicsSupervisor::InitializeFrameContext, "ActivateFrameContext"},
+        {1111, &IGraphicsSupervisor::SetFrameParameter, "SetFrameParameter1111"},
+        {1112, &IGraphicsSupervisor::SetFrameParameter, "SetFrameParameter1112"},
+        {1113, &IGraphicsSupervisor::SetFrameParameter, "SetFrameParameter1113"},
         {1402, &IGraphicsSupervisor::GetNvidiaDriver, "GetNvidiaDriver"},
         {1501, &IGraphicsSupervisor::InitializeImageContext, "InitializeImageContext1501"},
         {435, &IGraphicsSupervisor::CalculateImageRequirements, "CalculateNativeImageSize"},
@@ -1180,6 +1350,17 @@ void IGraphicsSupervisor::InitializeFrameContext(HLERequestContext& ctx) {
         }
     }
     LOG_DEBUG(Service_AM, "empty frame context command={}, result={:#x}", ctx.GetCommand(), result.raw);
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result.raw);
+}
+
+void IGraphicsSupervisor::SetFrameParameter(HLERequestContext& ctx) {
+    // Newer SDK setters with one word in and only a result out; the value is not used yet.
+    const auto* packet = ctx.CommandBuffer();
+    const Result result = packet[0] == 16 + ctx.GetCommand() && packet[1] == 1
+                              ? ResultSuccess : Kernel::ResultInvalidCombination;
+    LOG_DEBUG(Service_AM, "frame parameter command={}, value={:#x}, result={:#x}", ctx.GetCommand(),
+              packet[2], result.raw);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(result.raw);
 }

@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <cstdlib>
+
+#include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
@@ -42,8 +46,23 @@ void DmaPusher::DispatchCalls() {
 
 bool DmaPusher::HasFailedNativeWork() const {
     const auto& context = channel_state.native_macro_context;
-    return channel_state.native_abi && context &&
-           (context->engine.native_execution_failed || context->compute_engine.native_execution_failed);
+    if (!channel_state.native_abi || !context ||
+        !(context->engine.native_execution_failed || context->compute_engine.native_execution_failed)) {
+        return false;
+    }
+    // EDEN_NATIVE_STRICT keeps the channel stalled for debugging; otherwise drop the failed work
+    // (a skipped draw or dispatch) and keep the game running instead of hanging on its fences.
+    static const bool strict = std::getenv("EDEN_NATIVE_STRICT") != nullptr;
+    if (strict) {
+        return true;
+    }
+    static std::atomic<u32> reported{};
+    if (reported.fetch_add(1) < 32) {
+        LOG_WARNING(HW_GPU, "Native GPU work failed; skipping it and continuing the channel");
+    }
+    context->engine.native_execution_failed = false;
+    context->compute_engine.native_execution_failed = false;
+    return false;
 }
 
 bool DmaPusher::Step() {

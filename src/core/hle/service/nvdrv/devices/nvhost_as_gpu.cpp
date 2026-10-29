@@ -187,7 +187,12 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
 
     std::shared_ptr<nvhost_as_gpu> shared_parent;
     if (m_extended_abi && params.as_fd != 0) {
-        if (params.as_fd == m_fd) { return NvResult::BadParameter; }
+        // Graphics requests flags 5 with no split; the CUDA runtime requests flags 0 with
+        // split == end. Both describe a small-page-only view of the parent's region.
+        const bool reservation_view = params.flags == 5 && params.va_range_split == 0;
+        const bool small_page_view = params.flags == 0 && params.va_range_split == params.va_range_end;
+        if (params.as_fd == m_fd || !(reservation_view || small_page_view) ||
+            params.big_page_size != 0x1000 || params.reserved != 0) { return NvResult::BadParameter; }
         const auto device = module.GetDevice<nvdevice>(params.as_fd);
         if (!device || device->GetType() != Type::GpuAddressSpace) { return NvResult::BadParameter; }
         shared_parent = std::static_pointer_cast<nvhost_as_gpu>(device);
@@ -631,14 +636,17 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
             .pages = vm.big_page_allocator->GetVALimit() - vm.big_page_allocator->GetVAStart(),
         },
     };
-    if (m_extended_abi && params.regions[1].pages == 0) {
-        params.regions[1] = {};
+
+    if (m_extended_abi && vm.va_range_split == vm.va_range_end &&
+        params.regions[1].pages == 0) {
         params.buf_size = sizeof(VaRegion);
+        params.regions[1] = {};
     }
 }
 
 NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
     LOG_DEBUG(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr, params.buf_size);
+    const u32 requested_size = params.buf_size;
 
     std::scoped_lock lock(mutex);
 
@@ -647,6 +655,17 @@ NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
     }
 
     GetVARegionsImpl(params);
+
+    LOG_DEBUG(Service_NVDRV,
+              "native VA regions fd={} extended={} VA={:#x}/{:#x}/{:#x} requested={:#x} "
+              "advertised={:#x} inline_capacity=0 r0={:#x}/{:#x}/{:#x}/{:#x} "
+              "r1={:#x}/{:#x}/{:#x}/{:#x}",
+              m_fd, m_extended_abi, vm.va_range_start, vm.va_range_split, vm.va_range_end,
+              requested_size, params.buf_size, params.regions[0].offset,
+              params.regions[0].page_size, params.regions[0].pages,
+              params.regions[0].page_size * params.regions[0].pages,
+              params.regions[1].offset, params.regions[1].page_size, params.regions[1].pages,
+              params.regions[1].page_size * params.regions[1].pages);
 
     return NvResult::Success;
 }
@@ -654,6 +673,7 @@ NvResult nvhost_as_gpu::GetVARegions1(IoctlGetVaRegions& params) {
 NvResult nvhost_as_gpu::GetVARegions3(IoctlGetVaRegions& params, std::span<VaRegion> regions) {
     LOG_DEBUG(Service_NVDRV, "called, buf_addr={:X}, buf_size={:X}", params.buf_addr,
               params.buf_size);
+    const u32 requested_size = params.buf_size;
 
     std::scoped_lock lock(mutex);
 
@@ -663,8 +683,20 @@ NvResult nvhost_as_gpu::GetVARegions3(IoctlGetVaRegions& params, std::span<VaReg
 
     GetVARegionsImpl(params);
 
-    const size_t num_regions = (std::min)(static_cast<size_t>(params.buf_size) / sizeof(VaRegion),
-                                        regions.size());
+    LOG_DEBUG(Service_NVDRV,
+              "native VA regions fd={} extended={} VA={:#x}/{:#x}/{:#x} requested={:#x} "
+              "advertised={:#x} inline_capacity={} r0={:#x}/{:#x}/{:#x}/{:#x} "
+              "r1={:#x}/{:#x}/{:#x}/{:#x}",
+              m_fd, m_extended_abi, vm.va_range_start, vm.va_range_split, vm.va_range_end,
+              requested_size, params.buf_size, regions.size(), params.regions[0].offset,
+              params.regions[0].page_size, params.regions[0].pages,
+              params.regions[0].page_size * params.regions[0].pages,
+              params.regions[1].offset, params.regions[1].page_size, params.regions[1].pages,
+              params.regions[1].page_size * params.regions[1].pages);
+
+    const size_t advertised_regions = params.buf_size / sizeof(VaRegion);
+    const size_t num_regions =
+        (std::min)({params.regions.size(), regions.size(), advertised_regions});
     for (size_t i = 0; i < num_regions; i++) {
         regions[i] = params.regions[i];
     }

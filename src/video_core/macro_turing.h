@@ -146,8 +146,10 @@ private:
                 ? instruction.predicate_masks[get(instruction.pred_reg, 0) != 0] : 15;
             Word next_pc = pc + 1;
             bool branch_cancels_end{};
+            Word executed_mask{};
             for (Word lane = 0; lane < 2 && error.empty(); ++lane) {
                 if (!(mask & (1U << lane))) continue;
+                executed_mask |= 1U << lane;
                 const Word x = get(src_a[lane], lane), y = get(src_b[lane], lane);
                 Word value{};
                 const auto condition = [&](Word comparison) {
@@ -222,7 +224,7 @@ private:
                 if (dst[lane] > 24) fail("invalid destination register");
             }
             for (Word lane = 0; lane < 2; ++lane) {
-                if ((mask & (1U << lane)) && dst[lane] < 24) {
+                if ((executed_mask & (1U << lane)) && dst[lane] < 24) {
                     regs[dst[lane]] = alu[lane];
                     initialized |= 1U << dst[lane];
                 }

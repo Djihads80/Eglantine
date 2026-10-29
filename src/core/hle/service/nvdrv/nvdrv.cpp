@@ -23,6 +23,7 @@
 #include "core/hle/service/nvdrv/devices/nvhost_nvdec.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvdec_common.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvjpg.h"
+#include "core/hle/service/nvdrv/devices/nvhost_prof_gpu.h"
 #include "core/hle/service/nvdrv/devices/nvhost_vic.h"
 #include "core/hle/service/nvdrv/devices/nvmap.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
@@ -161,6 +162,10 @@ Module::Module(Core::System& system)
     };
     builders["/dev/nvhost-nvjpg"] = [this, &system](DeviceFD fd) {
         auto device = std::make_shared<Devices::nvhost_nvjpg>(system);
+        return open_files.emplace(fd, std::move(device)).first;
+    };
+    builders["/dev/nvhost-prof-gpu"] = [this, &system](DeviceFD fd) {
+        auto device = std::make_shared<Devices::nvhost_prof_gpu>(system);
         return open_files.emplace(fd, std::move(device)).first;
     };
     builders["/dev/nvhost-vic"] = [this, &system](DeviceFD fd) {

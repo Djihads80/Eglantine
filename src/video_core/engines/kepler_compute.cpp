@@ -20,6 +20,12 @@
 
 namespace Tegra::Engines {
 
+// Read once: these checks sit on the per-dispatch path.
+static bool NativeDrawDiagnosticsEnabled() {
+    static const bool enabled = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
+    return enabled;
+}
+
 KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     : memory_manager{memory_manager_}
     , upload_state{memory_manager, regs.upload}
@@ -94,10 +100,10 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
         const GPUVAddr program = (GPUVAddr{native_registers[0xc8 + 49] & 0x1ffff} << 32) |
             native_registers[0xc8 + 48];
         const u32 control = native_registers[0xa7];
-        LOG_WARNING(HW_GPU, "Native inline QMD: address={:#x}, program={:#x}, control={:#x}, grid={}/{}/{}",
+        LOG_TRACE(HW_GPU, "Native inline QMD: address={:#x}, program={:#x}, control={:#x}, grid={}/{}/{}",
             address, program, control, native_registers[0xc8 + 12],
             native_registers[0xc8 + 13] & 0xffff, native_registers[0xc8 + 14] & 0xffff);
-        if (VideoCommon::NativeDrawDiagnosticsEnabled()) {
+        if (NativeDrawDiagnosticsEnabled()) {
             std::ofstream dump("native-inline-qmd.bin", std::ios::binary);
             dump.write(reinterpret_cast<const char*>(native_registers.data() + 0xc8), 256);
             std::ofstream registers("native-inline-compute-registers.bin", std::ios::binary);
@@ -138,7 +144,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             memory_manager.GpuToCpuAddress(qmd_address).value_or(0), method, argument, 0);
         if (method == 0xae || (method == 0xaf && !(argument & 2)) ||
             (method == 0xb0 && ((argument & 15) == 0 || (argument & 15) == 1))) return true;
-        if ((argument & 15) == 12 && VideoCommon::NativeDrawDiagnosticsEnabled()) {
+        if ((argument & 15) == 12 && NativeDrawDiagnosticsEnabled()) {
             static u32 captured{};
             if (captured++ == 0 && memory_manager.IsFullyMappedRange(qmd_address, 256)) {
                 std::array<u32, 64> descriptor{};

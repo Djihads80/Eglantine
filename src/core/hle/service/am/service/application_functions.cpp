@@ -120,6 +120,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {310, nullptr, "Unknown310"}, // [20.0.0+]
         {320, D<&IApplicationFunctions::GetScreenShotAndContinuousRecordingInitiallyEnabled>,
          "GetScreenShotAndContinuousRecordingInitiallyEnabled"},
+        {321, D<&IApplicationFunctions::Unknown321>, "Unknown321"},
         {330, D<&IApplicationFunctions::Unknown330>, "Unknown330"}, // [20.0.0+]
         {500, nullptr, "StartContinuousRecordingFlushForDebug"},
         {1000, nullptr, "CreateMovieMaker"},
@@ -553,6 +554,13 @@ Result IApplicationFunctions::GetScreenShotAndContinuousRecordingInitiallyEnable
                              m_applet->game_play_recording_state == GamePlayRecordingState::Enabled;
     LOG_DEBUG(Service_AM, "called, screenshot={}, recording={}", *out_screenshot_enabled,
               *out_recording_enabled);
+    R_SUCCEED();
+}
+
+Result IApplicationFunctions::Unknown321(Out<bool> out_enabled) {
+    // SDK 23.0 uses this initial bool for VI buffer permission bit 4 and RTC sharing audio.
+    *out_enabled = false;
+    LOG_DEBUG(Service_AM, "called, enabled={}", *out_enabled);
     R_SUCCEED();
 }
 
