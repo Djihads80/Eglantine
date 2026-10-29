@@ -201,3 +201,53 @@ This policy document has been adapted from the AI policies of numerous other fre
 - [Gentoo Linux](https://wiki.gentoo.org/wiki/Project:Council/AI_policy)
 - [cURL](https://curl.se/dev/contribute.html#on-ai-use-in-curl)
 - [FastAPI](https://tiangolo.com/open-source/contributing/#automated-code-and-ai)
+
+## Addendum: agents operating in this repository
+
+Eglantine runs agent-first workflows on top of this policy. Everything below is
+Eglantine-local *mechanism* for rules already stated above; it does not relax
+anything. Where the two readings differ, the stricter one wins. Operational detail
+(build gate, branch grammar, hot files) lives in `docs/agents/`, not here.
+
+### Disclosure in a series
+
+`Assisted-by:` belongs in **every** commit of a series that may be squashed, and in a
+PR body as one plain sentence (`I used <model> to help with <X>.`). An agent may draft
+commit and PR prose; the human rewrites and owns the final text.
+
+### Authorship
+
+Agents never add `Signed-off-by:` or `Co-authored-by:`, never self-certify review, and
+never approve, merge or mark a PR ready. `.githooks/commit-msg` fails a commit that puts
+a model name in a co-author trailer.
+
+### Where an agent may write
+
+- Push: only `ai/*` branches and the agent's own `work/*` branch. Never `master`,
+  `int/*`, `rel/*`, `sync/*`, or another person's branch; `--force-with-lease` on your own
+  and nothing else. `.githooks/pre-push` enforces this.
+- Tracker: this repository's issues and PRs, with human-confirmed text. Never open an
+  issue, PR or comment on the upstream Eden repositories (`git.eden-emu.dev`, its GitHub
+  and Codeberg mirrors).
+- Files: never `dist/languages/**`, non-English
+  `src/android/app/src/main/res/values-*/`, or `externals/**`; never renormalise line
+  endings inside a feature change.
+- Record: every branch carries an issue, or issue `0` when the area is self-describing
+  (`cmake`, `ci`, `docs`, `meta`) and the change is decidable from its diff. Behaviour
+  changes carry a real issue -- an agent neither invents one nor files issues only to
+  satisfy the grammar.
+
+### Evidence
+
+`tools/agents/verify.sh` is the only accepted evidence that a change works. Its test
+stage compares against `tools/agents/known-failures.txt`: cases listed there already fail
+on master and are not the contributor's responsibility. Adding a line to that baseline to
+make a PR green is the same offence as an undisclosed AI change — it moves work onto the
+reviewer. Every baseline entry therefore needs an issue, like a `TEMP()` marker.
+
+### Denial of service
+
+The Human Effort Denial of Service section covers this repository's tracker as well: one
+issue per claim, no batches of generated PRs, no agent-authored comment threads.
+Overlapping work is reported by a script (`tools/agents/claim.sh`), not by someone
+posting "please don't touch my file".
