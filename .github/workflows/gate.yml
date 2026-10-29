@@ -1,0 +1,250 @@
+name: gate
+
+# The two-platform gate. master is "feature safe" only because every one of
+# these jobs is a required check on it: Linux/GCC and Linux/Clang carry
+# warnings-as-errors, Windows/MSVC carries the Windows-only breakage. Neither
+# leg is redundant, and dropping one is how the tree stops building for someone.
+#
+# These are compile-and-test legs on the dependency-light ci-core presets (no
+# Qt). Full frontend + packaging builds run nightly through the release-parity
+# presets, which mirror .ci/{linux,windows}/build.sh.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'int/**'
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  branch-name:
+    name: gate/branch-name
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Head branch must match the branch grammar
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # shellcheck disable=SC1091
+          . tools/agents/lib.sh
+          if agent_branch_valid "$HEAD_REF"; then
+            echo "branch name conforms: $HEAD_REF"
+            exit 0
+          fi
+          echo "::error::branch '$HEAD_REF' is not in the grammar (docs/agents/branching.md)"
+          echo "Create branches with: tools/agents/branch.sh <issue> <slug> --area <area>"
+          echo "Expected forms:"
+          agent_branch_regex | sed 's/^/  /'
+          exit 1
+
+  lint:
+    name: gate/lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install codespell
+        run: pip install codespell
+
+      - name: Fetch master for the header check
+        run: git fetch --no-tags origin master:master
+
+      - name: License headers
+        run: sh .ci/license-header.sh
+
+      - name: Spelling
+        run: |
+          base="$(git merge-base origin/master HEAD)"
+          files="$(git diff --name-only "$base" -- '*.md' '*.txt' '*.h' '*.cpp' '*.kt' '*.py' '*.sh' '*.yml' '*.yaml' || true)"
+          if [ -n "$files" ]; then
+            # shellcheck disable=SC2086
+            codespell -q 3 $files
+          else
+            echo "no files to spell-check"
+          fi
+
+      - name: Trailing whitespace and tabs
+        run: |
+          base="$(git merge-base origin/master HEAD)"
+          git diff --check "$base" HEAD
+
+      - name: Provider adapters stay pointers
+        run: |
+          fail=0
+          for f in CLAUDE.md GEMINI.md .github/copilot-instructions.md .cursor/rules/agents.mdc; do
+            [ -f "$f" ] || continue
+            lines="$(wc -l < "$f")"
+            if [ "$lines" -gt 8 ]; then
+              echo "::error file=$f::$f is $lines lines; adapters are pointers, AGENTS.md is canonical"
+              fail=1
+            fi
+            grep -q 'AGENTS.md' "$f" || {
+              echo "::error file=$f::$f must point at AGENTS.md"
+              fail=1
+            }
+          done
+          exit "$fail"
+
+      - name: TEMP marker budget
+        run: |
+          base="$(git merge-base origin/master HEAD)"
+          # Source files only: prose that documents the marker form is not a marker.
+          added=0
+          for f in $(git diff --name-only "$base" HEAD | grep -E '\.(c|cc|cpp|h|hpp|hxx|cxx|kt|kts|qml|py|sh)$' || true); do
+            n="$(git diff "$base" HEAD -- "$f" -U0 | grep -cE '^\+.*(//|#|--)\s*TEMP\(' || true)"
+            added=$((added + n))
+          done
+          echo "TEMP() markers added by this change: $added"
+          {
+            echo "### TEMP() markers"
+            echo ""
+            echo "$added marker(s) added by this change."
+            echo "Every one needs a linked cleanup issue; see docs/agents/branching.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Advisory in phase 1. Phase 4 turns this into a ratchet against a
+          # committed baseline once the marker debt is counted.
+
+  linux-gcc:
+    name: gate/linux-gcc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-gcc
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build ccache pkg-config libssl-dev zlib1g-dev
+
+      - name: Configure
+        run: cmake --preset linux-ci-core
+
+      - name: Build
+        run: cmake --build --preset linux-ci-core -- -k 0
+
+      - name: Test (baseline-aware)
+        run: tools/agents/verify.sh --tests-only --preset linux-ci-core
+
+  linux-clang:
+    name: gate/linux-clang
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-clang
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build ccache pkg-config libssl-dev zlib1g-dev clang
+
+      - name: Configure
+        run: cmake --preset linux-clang-ci
+
+      - name: Build
+        run: cmake --build --preset linux-clang-ci -- -k 0
+
+      - name: Test (baseline-aware)
+        run: tools/agents/verify.sh --tests-only --preset linux-clang-ci
+
+  windows-msvc:
+    name: gate/windows-msvc
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-msvc
+          variant: sccache
+
+      - name: Configure
+        run: cmake --preset windows-ci-core
+
+      - name: Build
+        run: cmake --build --preset windows-ci-core -- -k 0
+
+      - name: Test (baseline-aware)
+        shell: bash
+        run: tools/agents/verify.sh --tests-only --preset windows-ci-core
+
+  overlap:
+    name: gate/overlap
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Report files shared with other open PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          base="$(git merge-base origin/master HEAD)"
+          mine="$(git diff --name-only "$base" HEAD | sort -u)"
+          [ -n "$mine" ] || { echo "no files changed"; exit 0; }
+
+          body="### File overlap with other open PRs
+
+          Files in this PR that other open PRs also touch. Overlap is not an error,
+          it is an early warning: claim the file in the issue and land the smaller
+          change first.
+          "
+          found=0
+          for pr in $(gh pr list --state open --json number --jq '.[].number'); do
+            [ "$pr" = "${{ github.event.pull_request.number }}" ] && continue
+            theirs="$(gh pr diff "$pr" --name-only | sort -u)"
+            shared="$(comm -12 <(printf '%s\n' "$mine") <(printf '%s\n' "$theirs") | grep -v '^$' || true)"
+            if [ -n "$shared" ]; then
+              found=1
+              body="$body
+          <details><summary>#${pr}: $(printf '%s\n' "$shared" | wc -l) shared file(s)</summary>
+
+          \`\`\`
+          $(printf '%s\n' "$shared")
+          \`\`\`
+          </details>"
+            fi
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "no overlap with other open PRs"
+            exit 0
+          fi
+          printf '%s\n' "$body" > overlap.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file overlap.md
