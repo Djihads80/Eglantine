@@ -48,6 +48,7 @@ enum class Zone : u32 {
     TextureUpload,
     Fence,        ///< Fences made (SignalFence)
     FenceSkipped, ///< Empty fences not made
+    Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     Count,
 };
 
@@ -58,7 +59,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped",
+    "fence skipped", "method",
 };
 
 inline bool Enabled() {
@@ -75,7 +76,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 6> counters{}; ///< See Counter
+    std::array<u64, 8> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -123,6 +124,8 @@ enum class Counter : u32 {
     DownloadBytesOnDmaPages, ///< Of DownloadBytes: on pages the MME has DMA-read
     MethodWrites,   ///< 3D register writes (Maxwell3D::CallMethod below the macro range)
     SameValueWrites, ///< Of MethodWrites: the register already held the value
+    AcquireChecks,  ///< Semaphore acquires evaluated
+    AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -179,6 +182,9 @@ inline void Report() {
     line += fmt::format(" | 3D register writes {:.0f} ({:.0f} same value)",
                         static_cast<double>(data.counters[4]) * 1e9 / window,
                         static_cast<double>(data.counters[5]) * 1e9 / window);
+    line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
+                        static_cast<double>(data.counters[6]) * 1e9 / window,
+                        static_cast<double>(data.counters[7]) * 1e9 / window);
     LOG_INFO(HW_GPU, "GPU thread per second:{}", line);
     data = {};
     data.window_start = now;

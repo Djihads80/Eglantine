@@ -201,6 +201,8 @@ With the patched decoder, games 1/3/4 only leave ~60-110 rare SIMD encodings in 
 | 137 | 2D blits (Fermi2D) 3.6% on heavy courses | mip chains 64x64..4x1 copied near the GPU-only regions; neither image is GPU-written, so the software blitter (un)swizzles them on the CPU | open (expected for small copies; many of them) |
 | 138 | `async_presentation=true` crashed 4 of 8 runs ~26 s in (row 118) | retested after the fence-operation race (row 118) and translation cache race (row 125) were fixed: 0 crashes in 4 runs, screenshots correct | on in the dev config (`async_presentation\default=false`, `async_presentation=true`); every later run is a crash test for it |
 | 139 | buffer collector: up to 64 buffers evicted every frame, GPU-written ones downloaded with a GPU wait (~5% of the GPU thread on 8 GB) | it compared the whole device's use (textures, ~6.8 GB) with thresholds from the device size (6.14 GiB reported): aggressive every frame, while the buffers were ~200 MiB | Switch 2 titles collect on the buffers' own size (1 GiB, aggressive 2 GiB) and keep GPU-written buffers outside aggressive mode (c4eaa4b): 0%, presents no longer blocked on those courses (22-26 ms in t23) |
+| 140 | macros ~20% of the GPU thread; the memo's lookups (~76 ns a call in the game, 48 ns in a warm harness) missed the CPU caches | memo records and its map fall out of cache between calls; 4-way last-call slots raised slot hits 48% -> 63% but saved nothing | x86-64 compiler for the Turing MME (a95cedd, `macro_turing_jit.h`, `EDEN_NX2_MME_JIT=0` off): identical to the interpreter on 200,000 recorded calls (`C:\dev\nx2work\mme_test\jit_test.cpp`); in the game 148 ns a call instead of 174, 0 failures, 0 crashes in 3 runs |
+| 141 | draw setup ~6.4 us a draw (55,000 a second) | spread over ~12 steps: uniform buffer copies (2.4%, the fast path streams them every draw and bypasses write tracking), texture views (8.5% incl. ~3.6% streaming new course textures), handle reads, vertex/storage buffer lookups | no single cache-able step; open: small per-step trims. The way past it is a second thread (NX2_GPU_THREAD_SPLIT.md) |
 
 Run settings used (in `build/bin/user/config/sdl2-config.ini`): `memory_layout_mode=4`
 (12 GB). Debug knobs: `EDEN_NX2_TC_EXPECTED_MIB` / `EDEN_NX2_TC_CRITICAL_MIB` (collector thresholds),
@@ -214,6 +216,7 @@ faulting stack as module+offset, then a minidump), `EDEN_NX2_AUTO_STUB`, `EDEN_N
 `EDEN_NX2_MME_MEMO_STATS` (memo counters),
 `EDEN_NX2_BUFFER_DOWNLOADS=0/1`, `EDEN_NX2_INLINE_DEFER=0`, `EDEN_NX2_TC_MIN_AGE=<frames>` (rows 131, 134, 133),
 `EDEN_NX2_SKIP_SAME=0` (row 135),
+`EDEN_NX2_MME_JIT=0` (row 140),
 `EDEN_NX2_FRAME_CAPTURE=<dir>` (every 120th presented frame as TGA), `EDEN_NX2_PB_CHECK`
 (pushbuffer entries changed between submit and execution), `EDEN_NX2_QUERY_TRACE` (every GPU
 report/semaphore write). `C:\dev\crashrun.sh` runs eden-cli under cdb and prints the crash stack;

@@ -1405,7 +1405,10 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                                  modes[0], modes[1], modes[2], modes[3]);
                     }
                 }
-                maxwell3d.CallMethod(system, address, value, true);
+                {
+                    VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+                    maxwell3d.CallMethod(system, address, value, true);
+                }
                 // Turing MME memory reads (methods 0x550 SET_MME_MEM_ADDRESS_A/B, 0x558 data RAM
                 // address, 0x55c MME_DMA_READ into data RAM, 0x560 MME_DMA_READ_FIFOED into
                 // the load FIFO, which the macro then reads after a load barrier).
