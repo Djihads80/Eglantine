@@ -8,11 +8,13 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <vector>
 #include <queue>
 
 #include "common/common_types.h"
@@ -217,9 +219,29 @@ private:
         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         Common::SetCurrentThreadToPerformanceCores();
 
-        TFence current_fence;
-        std::deque<std::function<void()>> current_operations;
-        u8 current_flushes{};
+        // Every fence the host GPU has already passed is released together: Switch 2 titles
+        // signal thousands a second and the host GPU completes them in bursts, so each cache's
+        // lock is taken once per burst instead of once per fence (the GPU thread, which holds
+        // them for nearly every command, spun, slept and woke this thread for each one).
+        // EDEN_NX2_FENCE_BATCH=0: one fence at a time (for comparisons).
+        static const size_t MaxBatch = [] {
+            const char* value = std::getenv("EDEN_NX2_FENCE_BATCH");
+            return value != nullptr && value[0] == '0' ? size_t{1} : size_t{64};
+        }();
+        struct Released {
+            TFence fence;
+            std::deque<std::function<void()>> operations;
+            u8 flushes;
+        };
+        std::vector<Released> batch;
+        batch.reserve(MaxBatch);
+        const auto take_front = [&] {
+            batch.push_back({std::move(fences.front()), std::move(pending_operations.front()),
+                             pending_flushes.front()});
+            fences.pop();
+            pending_operations.pop_front();
+            pending_flushes.pop_front();
+        };
         while (!stop_token.stop_requested()) {
             {
                 std::unique_lock lock(guard);
@@ -227,24 +249,50 @@ private:
                 if (stop_token.stop_requested()) [[unlikely]] {
                     return;
                 }
-                current_fence = std::move(fences.front());
-                current_operations = std::move(pending_operations.front());
-                current_flushes = pending_flushes.front();
-                fences.pop();
-                pending_operations.pop_front();
-                pending_flushes.pop_front();
+                take_front();
             }
-            if (!current_fence->IsStubbed()) {
-                WaitFence(current_fence);
+            if (!batch.front().fence->IsStubbed()) {
+                WaitFence(batch.front().fence);
             }
-            PopAsyncFlushes(current_flushes);
-            for (auto& operation : current_operations) {
-                operation();
+            {
+                std::unique_lock lock(guard);
+                while (batch.size() < MaxBatch && !fences.empty() &&
+                       (fences.front()->IsStubbed() || IsFenceSignaled(fences.front()))) {
+                    take_front();
+                }
+            }
+            size_t texture_pops = 0;
+            size_t buffer_pops = 0;
+            for (const Released& released : batch) {
+                texture_pops += (released.flushes & TextureFlushes) != 0 ? 1 : 0;
+                buffer_pops += (released.flushes & BufferFlushes) != 0 ? 1 : 0;
+            }
+            if (texture_pops != 0) {
+                std::scoped_lock lock{texture_cache.mutex};
+                for (size_t i = 0; i < texture_pops; ++i) {
+                    texture_cache.PopAsyncFlushes();
+                }
+            }
+            if (buffer_pops != 0) {
+                std::scoped_lock lock{buffer_cache.mutex};
+                for (size_t i = 0; i < buffer_pops; ++i) {
+                    buffer_cache.PopAsyncFlushes();
+                }
+            }
+            // Queries and operations keep their per-fence order.
+            for (Released& released : batch) {
+                query_cache.PopAsyncFlushes();
+                for (auto& operation : released.operations) {
+                    operation();
+                }
             }
             {
                 std::unique_lock lock(ring_guard);
-                delayed_destruction_ring.Push(std::move(current_fence));
+                for (Released& released : batch) {
+                    delayed_destruction_ring.Push(std::move(released.fence));
+                }
             }
+            batch.clear();
         }
     }
 
