@@ -82,8 +82,9 @@ private:
     Result GetHealthWarningDisappearedSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result CreateApplicationAndRequestToStart(u64 application_id);
     Result GetUnknownEvent210(OutCopyHandle<Kernel::KReadableEvent> out_event);
-    Result Unknown320();
-    Result Unknown321();
+    Result GetScreenShotAndContinuousRecordingInitiallyEnabled(
+        Out<bool> out_screenshot_enabled, Out<bool> out_recording_enabled);
+    Result Unknown321(u32 in_val);
     Result Unknown330(Out<u8> out);
     Result PrepareForJit();
 
