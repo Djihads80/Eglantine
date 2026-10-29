@@ -43,6 +43,20 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
     execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
     execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
     execution_mask[KEPLER_COMPUTE_REG_INDEX(launch)] = true;
+    // Everything ProcessNativeMethod acts on besides storing the value; the QMD and 0x5a
+    // trace range too while native draw diagnostics trace it.
+    native_plain_methods.set();
+    for (const u32 method : {0x45U, 0x46U, 0x47U, 0x48U, 0xaeU, 0xafU, 0xb0U, 0x107U, 0x6c3U,
+                             static_cast<u32>(KEPLER_COMPUTE_REG_INDEX(exec_upload)),
+                             static_cast<u32>(KEPLER_COMPUTE_REG_INDEX(data_upload))}) {
+        native_plain_methods[method] = false;
+    }
+    if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr) {
+        native_plain_methods[0x5a] = false;
+        for (u32 method = 0xc6; method <= 0x108; ++method) {
+            native_plain_methods[method] = false;
+        }
+    }
 }
 
 KeplerCompute::~KeplerCompute() = default;
@@ -390,7 +404,19 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    if (native_mode && ProcessNativeMethod(system, method, method_argument, is_last_call)) return;
+    if (native_mode) {
+        // Most of the compute class's register writes (QMD fields replayed by its macros for
+        // each of thousands of dispatches a second) only store the value: ~4% of title 1's GPU
+        // thread went through ProcessNativeMethod's checks for them.
+        if (method < native_plain_methods.size() && native_plain_methods[method]) {
+            native_registers[method] = method_argument;
+            if (method < Regs::NUM_REGS) {
+                regs.reg_array[method] = method_argument;
+            }
+            return;
+        }
+        if (ProcessNativeMethod(system, method, method_argument, is_last_call)) return;
+    }
     if (method >= Regs::NUM_REGS) {
         LOG_ERROR(HW_GPU, "Compute register out of range: {:#x}", method);
         return;
