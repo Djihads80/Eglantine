@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bit>
 #include <functional>
@@ -514,6 +515,24 @@ private:
 
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
+
+    /// Whether GPU-written buffer ranges are copied back to guest memory at the next fence;
+    /// otherwise only when something flushes them (as upstream yuzu below High GPU accuracy).
+    /// Not for Switch 2 titles: title 1 had 250-330 MB/s copied back (a fence per compute
+    /// dispatch, the fencing thread holding the buffer cache while it wrote them), while its CPU
+    /// read GPU-written memory at most 64 times in 200 s (counted with reactive flushing) and
+    /// the native MME's DMA reads never touched those pages. Without them a fence costs ~1 us
+    /// instead of ~5 and draw setup ~7% less. EDEN_NX2_BUFFER_DOWNLOADS=0/1 forces it.
+    bool AsyncBufferDownloads() const {
+        static const int forced = [] {
+            const char* value = std::getenv("EDEN_NX2_BUFFER_DOWNLOADS");
+            return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+        }();
+        if (forced >= 0) {
+            return forced == 1;
+        }
+        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
+    }
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
