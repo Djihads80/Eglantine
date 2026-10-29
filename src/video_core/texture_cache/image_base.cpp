@@ -109,7 +109,9 @@ std::optional<SubresourceBase> ImageBase::TryFindBase(GPUVAddr other_addr) const
 }
 
 ImageViewId ImageBase::FindView(const ImageViewInfo& view_info) const noexcept {
-    const auto it = std::ranges::find(image_view_infos, view_info);
+    const auto it = std::ranges::find_if(image_view_infos, [&view_info](const ImageViewInfo& info) {
+        return info == view_info;
+    });
     if (it == image_view_infos.end()) {
         return ImageViewId{};
     }

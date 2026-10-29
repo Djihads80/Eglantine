@@ -282,7 +282,7 @@ u32 Maxwell3D::GetMaxCurrentVertices() {
         const u64 stream_size = GetNativeMacroEngine().native_turing
                                     ? regs.NativeVertexStreamSize(index)
                                     : gpu_addr_end - gpu_addr_begin;
-        const u32 address_size = static_cast<u32>(std::min<u64>(stream_size, std::numeric_limits<u32>::max()));
+        const u32 address_size = static_cast<u32>((std::min<u64>)(stream_size, (std::numeric_limits<u32>::max)()));
         num_vertices = (std::max)(
             num_vertices, address_size / (std::max)(attribute.SizeInBytes(), array.stride.Value()));
         break;

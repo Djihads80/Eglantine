@@ -103,8 +103,8 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
         rasterizer->SignalFence([this, address, payload, reduction] {
             const u32 old_value = memory_manager.Read<u32>(address);
             const u32 value = reduction == 0   ? old_value + payload
-                              : reduction == 1 ? std::min(old_value, payload)
-                              : reduction == 2 ? std::max(old_value, payload)
+                              : reduction == 1 ? (std::min)(old_value, payload)
+                              : reduction == 2 ? (std::max)(old_value, payload)
                               : reduction == 3 ? (old_value >= payload ? 0 : old_value + 1)
                               : reduction == 4 ? (old_value == 0 || old_value > payload ? payload : old_value - 1)
                               : reduction == 5 ? (old_value & payload)
@@ -383,7 +383,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                     // releases also advance: a plain write would move it backwards and leave
                     // GEQ acquires waiting forever.
                     rasterizer->SignalFence([this, address, payload] {
-                        const u32 value = std::max(memory_manager.Read<u32>(address), payload);
+                        const u32 value = (std::max)(memory_manager.Read<u32>(address), payload);
                         memory_manager.Write<u32>(address, value);
                         if (const auto device = memory_manager.GpuToCpuAddress(address)) {
                             Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*device, value);
