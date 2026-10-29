@@ -119,6 +119,18 @@ public:
             });
     }
 
+    /// Whether the recording thread submitted `tick` within 20 ms.
+    [[nodiscard]] bool WaitForSubmission(u64 tick) const {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+        while (tick >= master_semaphore->CurrentTick()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds{100});
+        }
+        return true;
+    }
+
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return master_semaphore->CurrentTick();
@@ -129,9 +141,13 @@ public:
         return master_semaphore->IsFree(tick);
     }
 
-    /// Waits for the given GPU tick, optionally pacing frames.
-    void Wait(u64 tick, double target_fps = 0.0) {
-        if (tick > 0) {
+    /// Waits for the given GPU tick, optionally pacing frames. Threads other than the one that
+    /// records (the async present thread) pass may_flush = false: flushing from there records
+    /// into the current chunk while that thread does (corrupt command buffers, crashes). They
+    /// wait for the recording thread to submit the tick instead, and give up after 20 ms (it may
+    /// be waiting for them).
+    void Wait(u64 tick, double target_fps = 0.0, bool may_flush = true) {
+        if (tick > 0 && (may_flush || WaitForSubmission(tick))) {
             if (tick >= master_semaphore->CurrentTick()) {
                 Flush();
             }
