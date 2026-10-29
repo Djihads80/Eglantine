@@ -1,4 +1,4 @@
-# Splitting the GPU thread (design, not implemented yet)
+# Splitting the GPU thread
 
 Title 1 (Mario Kart World) is bound by one host thread, the GPU thread: ~100% busy while the
 host GPU is 20-40% busy and the game's own CPU thread mostly polls the counter. Per second of
@@ -51,3 +51,12 @@ heavy courses needs work on more than one core.
 3. Move macros to the front with the register mirrors; verify mirrors against the back's
    registers in a debug mode (compare on every MME_READ).
 4. Sync points; crash and screenshot tests across courses; then title 4.
+
+## Status (2026-10-29)
+
+Stages 1-3 are in (babd395, `gpu_split.h`), off by default: `EDEN_NX2_SPLIT=1` runs engine methods
+on the back, `EDEN_NX2_SPLIT=2` also runs the 3D and compute macros on the front against register
+copies. Measured in title 1 (NX2_NOTES rows 142-144): ~44,000 draws a second on one thread, ~47,400
+with stage 2, 50,000-66,500 with stage 3. The front waits ~4,000-5,000 times a second (semaphore
+acquires, MME DMA reads); the back still spends ~200 ms a second outside its zones (ring dispatch,
+method sink). Next: a clean A/B for the default, then trimming the back's ring overhead.
