@@ -1,0 +1,263 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 24,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "BUILD_TESTING": "ON",
+                "YUZU_TESTS": "ON",
+                "ENABLE_QT_TRANSLATION": "OFF",
+                "USE_DISCORD_PRESENCE": "OFF",
+                "YUZU_DOWNLOAD_ANDROID_VVL": "OFF"
+            }
+        },
+        {
+            "name": "linux-gcc-dev",
+            "displayName": "Linux x86_64, GCC, Qt, tests",
+            "description": "The default development build on Linux. System Qt/SDL2, suite enabled.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "ENABLE_QT": "ON",
+                "YUZU_USE_BUNDLED_QT": "OFF",
+                "YUZU_USE_BUNDLED_SDL2": "OFF",
+                "YUZU_USE_EXTERNAL_SDL2": "ON"
+            }
+        },
+        {
+            "name": "linux-clang-dev",
+            "displayName": "Linux x86_64, Clang, Qt, tests",
+            "description": "Second opinion on GCC: Clang carries extra -Werror diagnoses that GCC does not.",
+            "inherits": "linux-gcc-dev",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        },
+        {
+            "name": "linux-ci-core",
+            "displayName": "Linux x86_64, no Qt, core + CLI + tests",
+            "description": "Dependency-light gate build: no Qt, no libusb, no OpenGL, LLVM off. What gate/linux-* runs.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "ENABLE_QT": "OFF",
+                "ENABLE_OPENGL": "OFF",
+                "ENABLE_LIBUSB": "OFF",
+                "YUZU_CMD": "ON",
+                "YUZU_ROOM": "OFF",
+                "YUZU_ROOM_STANDALONE": "OFF",
+                "YUZU_DISABLE_LLVM": "ON",
+                "YUZU_CRASH_DUMPS": "OFF"
+            }
+        },
+        {
+            "name": "linux-clang-ci",
+            "displayName": "Linux x86_64, Clang, no Qt, core + CLI + tests",
+            "description": "Second Linux gate leg: Clang carries -Werror diagnoses that GCC does not.",
+            "inherits": "linux-ci-core",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        },
+        {
+            "name": "windows-msvc-dev",
+            "displayName": "Windows x86_64, MSVC, Qt, tests",
+            "description": "MSVC has no warnings-as-errors, which is exactly why this leg exists. Run from a Developer Command Prompt.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl",
+                "CMAKE_CXX_COMPILER": "cl",
+                "ENABLE_QT": "ON",
+                "YUZU_USE_BUNDLED_QT": "ON",
+                "YUZU_USE_BUNDLED_SDL2": "ON"
+            },
+            "binaryDir": "C:/b/${presetName}"
+        },
+        {
+            "name": "windows-clang-cl-dev",
+            "displayName": "Windows x86_64, clang-cl, Qt, tests",
+            "description": "clang-cl keeps most of Clang's diagnostics on the MSVC ABI. Second Windows opinion.",
+            "inherits": "windows-msvc-dev",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-cl",
+                "CMAKE_CXX_COMPILER": "clang-cl"
+            }
+        },
+        {
+            "name": "windows-ci-core",
+            "displayName": "Windows x86_64, no Qt, core + CLI + tests",
+            "description": "What gate/windows-msvc runs. Bundled SDL2, no Qt, short build path for MAX_PATH.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl",
+                "CMAKE_CXX_COMPILER": "cl",
+                "ENABLE_QT": "OFF",
+                "ENABLE_OPENGL": "OFF",
+                "ENABLE_LIBUSB": "OFF",
+                "YUZU_CMD": "ON",
+                "YUZU_ROOM": "OFF",
+                "YUZU_ROOM_STANDALONE": "OFF",
+                "YUZU_DISABLE_LLVM": "ON",
+                "YUZU_CRASH_DUMPS": "OFF",
+                "YUZU_USE_BUNDLED_SDL2": "ON"
+            },
+            "binaryDir": "C:/b/${presetName}"
+        },
+        {
+            "name": "linux-release-parity",
+            "displayName": "Linux release parity (nightly only)",
+            "description": "Mirrors the effective flags of .ci/linux/build.sh with ARCH=amd64 (x86-64-v3). LTO/E2 flags in that script are dead: the tree defines no ENABLE_LTO, YUZU_USE_FASTER_LD or YUZU_USE_PRECOMPILED_HEADERS, so CMake silently ignores them.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_C_FLAGS": "-march=x86-64-v3 -O3",
+                "CMAKE_CXX_FLAGS": "-march=x86-64-v3 -O3",
+                "BUILD_TESTING": "OFF",
+                "YUZU_TESTS": "OFF",
+                "ENABLE_QT": "ON",
+                "ENABLE_QT_TRANSLATION": "ON",
+                "ENABLE_UPDATE_CHECKER": "ON",
+                "USE_DISCORD_PRESENCE": "ON",
+                "YUZU_USE_BUNDLED_QT": "OFF",
+                "YUZU_USE_BUNDLED_SDL2": "OFF",
+                "YUZU_USE_EXTERNAL_SDL2": "ON"
+            }
+        },
+        {
+            "name": "windows-release-parity",
+            "displayName": "Windows release parity (nightly only)",
+            "description": "Mirrors .ci/windows/build.sh: bundled SDL2, no CLI, no standalone room.",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_COMPILER": "cl",
+                "CMAKE_CXX_COMPILER": "cl",
+                "BUILD_TESTING": "OFF",
+                "YUZU_TESTS": "OFF",
+                "ENABLE_QT": "ON",
+                "ENABLE_QT_TRANSLATION": "ON",
+                "ENABLE_UPDATE_CHECKER": "ON",
+                "USE_DISCORD_PRESENCE": "ON",
+                "YUZU_USE_BUNDLED_QT": "ON",
+                "YUZU_USE_BUNDLED_SDL2": "ON",
+                "YUZU_CMD": "OFF",
+                "YUZU_ROOM_STANDALONE": "OFF"
+            },
+            "binaryDir": "C:/b/${presetName}"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "linux-gcc-dev",
+            "configurePreset": "linux-gcc-dev",
+            "jobs": 0
+        },
+        {
+            "name": "linux-clang-dev",
+            "configurePreset": "linux-clang-dev",
+            "jobs": 0
+        },
+        {
+            "name": "linux-ci-core",
+            "configurePreset": "linux-ci-core",
+            "jobs": 0
+        },
+        {
+            "name": "linux-clang-ci",
+            "configurePreset": "linux-clang-ci",
+            "jobs": 0
+        },
+        {
+            "name": "windows-msvc-dev",
+            "configurePreset": "windows-msvc-dev",
+            "jobs": 0
+        },
+        {
+            "name": "windows-clang-cl-dev",
+            "configurePreset": "windows-clang-cl-dev",
+            "jobs": 0
+        },
+        {
+            "name": "windows-ci-core",
+            "configurePreset": "windows-ci-core",
+            "jobs": 0
+        },
+        {
+            "name": "linux-release-parity",
+            "configurePreset": "linux-release-parity",
+            "jobs": 0
+        },
+        {
+            "name": "windows-release-parity",
+            "configurePreset": "windows-release-parity",
+            "jobs": 0
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "linux-gcc-dev",
+            "configurePreset": "linux-gcc-dev",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-clang-dev",
+            "configurePreset": "linux-clang-dev",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-ci-core",
+            "configurePreset": "linux-ci-core",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-clang-ci",
+            "configurePreset": "linux-clang-ci",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "windows-msvc-dev",
+            "configurePreset": "windows-msvc-dev",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "windows-clang-cl-dev",
+            "configurePreset": "windows-clang-cl-dev",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "windows-ci-core",
+            "configurePreset": "windows-ci-core",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
