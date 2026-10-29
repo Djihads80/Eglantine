@@ -45,6 +45,8 @@ enum class Zone : u32 {
     DynamicState,
     DrawRecord,
     TextureUpload,
+    Fence,        ///< Fences made (SignalFence)
+    FenceSkipped, ///< Empty fences not made
     Count,
 };
 
@@ -54,7 +56,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "clear",         "compute",       "flush work",     "pipeline lookup", "configure",
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
-    "configure draw", "dynamic state", "draw record", "texture upload",
+    "configure draw", "dynamic state", "draw record", "texture upload", "fence",
+    "fence skipped",
 };
 
 inline bool Enabled() {
@@ -71,6 +74,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
+    std::array<u64, 2> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -110,6 +114,18 @@ private:
     u64 parent_child_ns{};
 };
 
+/// Amounts counted on the GPU thread, logged per second with the zones.
+enum class Counter : u32 {
+    DownloadBytes,  ///< Buffer data copied back from the host GPU at fences
+    DownloadCopies, ///< Buffer ranges copied back
+};
+
+inline void Add(Counter counter, u64 amount) {
+    if (Enabled()) {
+        t_data.counters[static_cast<size_t>(counter)] += amount;
+    }
+}
+
 /// Called by the GPU thread between commands: logs and resets the totals every 10 s.
 inline void Report() {
     if (!Enabled()) {
@@ -142,6 +158,9 @@ inline void Report() {
         const double calls = static_cast<double>(data.count[i]) * 1e9 / window;
         line += fmt::format(" | {} {:.1f} ms ({:.0f}/s)", zone_names[i], ms, calls);
     }
+    line += fmt::format(" | buffer downloads {:.0f} KiB in {:.0f} copies",
+                        static_cast<double>(data.counters[0]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[1]) * 1e9 / window);
     LOG_INFO(HW_GPU, "GPU thread per second:{}", line);
     data = {};
     data.window_start = now;

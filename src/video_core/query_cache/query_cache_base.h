@@ -109,6 +109,9 @@ public:
 
     bool HasUncommittedFlushes() const;
 
+    /// Whether a new fence has queries to flush or host writes to sync for this cache.
+    bool HasPendingFenceWork() const;
+
     bool ShouldWaitAsyncFlushes();
 
     void PopAsyncFlushes();

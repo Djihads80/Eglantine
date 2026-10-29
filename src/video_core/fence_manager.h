@@ -22,6 +22,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace VideoCommon {
@@ -76,12 +77,21 @@ public:
     }
 
     void SignalFence(std::function<void()>&& func) {
+        Nx2Profile::Scope profile_scope{Nx2Profile::Zone::Fence};
         const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
-        const bool should_flush = ShouldFlush();
         if constexpr (!can_async_check) {
             TryReleasePendingFences<false>();
         }
-        const u8 committed_flushes = CommitAsyncFlushes();
+        auto [should_flush, committed_flushes] = CommitCacheFlushes();
+        if (!delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
+            Nx2Profile::Scope skipped_scope{Nx2Profile::Zone::FenceSkipped};
+            func();
+            rasterizer.InvalidateGPUCache();
+            return;
+        }
+        skipped_fences = 0;
+        should_flush |= query_cache.HasUncommittedFlushes();
+        query_cache.CommitAsyncFlushes();
         TFence new_fence = CreateFence(!should_flush);
         if constexpr (can_async_check) {
             guard.lock();
@@ -244,12 +254,6 @@ private:
                query_cache.ShouldWaitAsyncFlushes();
     }
 
-    bool ShouldFlush() const {
-        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-        return texture_cache.HasUncommittedFlushes() || buffer_cache.HasUncommittedFlushes() ||
-               query_cache.HasUncommittedFlushes();
-    }
-
     static constexpr u8 TextureFlushes = 1;
     static constexpr u8 BufferFlushes = 2;
 
@@ -266,35 +270,66 @@ private:
         query_cache.PopAsyncFlushes();
     }
 
-    /// Returns which caches committed downloads for this fence (TextureFlushes, BufferFlushes).
-    /// Switch 2 titles signal a fence per compute dispatch (thousands a second), mostly with
-    /// nothing or only buffer data to download: the fencing thread then takes only the lock of
-    /// the cache with work, instead of holding both while it copies (the GPU thread's draws and
-    /// uploads waited for it).
-    u8 CommitAsyncFlushes() {
-        u8 committed = 0;
+    struct CacheFlushes {
+        bool should_flush;  ///< Downloads to wait for: the fence must reach the host GPU
+        u8 committed;       ///< TextureFlushes, BufferFlushes: the caches that committed downloads
+    };
+
+    /// Commits the texture and buffer caches' downloads for a new fence (the query cache's are
+    /// committed once a fence is made). Switch 2 titles signal a fence per compute dispatch
+    /// (thousands a second), mostly with nothing or only buffer data to download: each cache's
+    /// lock is taken once, alone, and the fencing thread later takes only the lock of the cache
+    /// with work, instead of holding both while it copies (the GPU thread's draws and uploads
+    /// waited for it).
+    CacheFlushes CommitCacheFlushes() {
+        CacheFlushes flushes{};
         {
             std::scoped_lock lock{texture_cache.mutex};
+            flushes.should_flush = texture_cache.HasUncommittedFlushes();
             if (texture_cache.HasAsyncFlushWork()) {
                 texture_cache.CommitAsyncFlushes();
-                committed |= TextureFlushes;
+                flushes.committed |= TextureFlushes;
             }
         }
         {
             std::scoped_lock lock{buffer_cache.mutex};
             if (buffer_cache.HasUncommittedFlushes()) {
                 buffer_cache.CommitAsyncFlushes();
-                committed |= BufferFlushes;
+                flushes.should_flush = true;
+                flushes.committed |= BufferFlushes;
             }
         }
-        query_cache.CommitAsyncFlushes();
-        return committed;
+        return flushes;
+    }
+
+    /// Whether a fence with no downloads would do nothing, so need not be made: with fast GPU
+    /// fences its callback runs at once anyway, and most of the per-dispatch fences of Switch 2
+    /// titles have no queries or queued operations either. Making, queueing and retiring them
+    /// cost the GPU thread ~5% and woke the fencing thread for each. One in 64 is still made, so
+    /// the operations fences carry along (query slot cleanup) keep running.
+    bool SkipEmptyFence() {
+        if constexpr (requires { query_cache.HasPendingFenceWork(); }) {
+            if (skipped_fences >= 64 || query_cache.HasPendingFenceWork()) {
+                return false;
+            }
+            {
+                std::scoped_lock lock{uncommitted_guard};
+                if (!uncommitted_operations.empty()) {
+                    return false;
+                }
+            }
+            ++skipped_fences;
+            return true;
+        } else {
+            return false;
+        }
     }
 
     std::queue<TFence> fences;
     std::deque<std::function<void()>> uncommitted_operations;
     std::deque<std::deque<std::function<void()>>> pending_operations;
     std::deque<u8> pending_flushes; ///< Per fence: the caches that committed downloads
+    u32 skipped_fences{}; ///< Empty fences skipped since the last one made (GPU thread only)
 
     std::mutex guard;
     std::mutex ring_guard;
