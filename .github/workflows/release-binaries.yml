@@ -48,6 +48,17 @@ jobs:
           restore-keys: |
             cpm-mingw-
             cpm-${{ runner.os }}-
+      
+      - name: Build libiconv for MinGW
+        shell: bash
+        run: |
+          curl -L https://ftpmirror.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz | tar xz
+          cd libiconv-1.19
+          ./configure --host=x86_64-w64-mingw32 \
+            --prefix=/usr/x86_64-w64-mingw32 \
+            --enable-static --disable-shared
+          make -j"$(nproc)"
+          sudo make install
 
       - name: Configure Windows MinGW
         shell: bash
