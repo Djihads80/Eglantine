@@ -58,8 +58,7 @@ template <class P>
 BufferCache<P>::~BufferCache() = default;
 
 template <class P>
-void BufferCache<P>::RunGarbageCollector() {
-    const bool aggressive_gc = total_used_memory >= critical_memory;
+void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
     const u64 ticks_to_destroy = aggressive_gc ? 60 : 120;
     int num_iterations = aggressive_gc ? 64 : 32;
     // Their GPU-written data is downloaded first, all with one wait for the GPU: one wait per
@@ -71,6 +70,14 @@ void BufferCache<P>::RunGarbageCollector() {
             return true;
         }
         --num_iterations;
+        // Below the critical threshold, buffers holding GPU-written data stay: evicting one
+        // means downloading it first. The thresholds compare the whole device's use (mostly
+        // textures) with fixed headroom, so on an 8 GB GPU the collector ran every frame once a
+        // title 1 course was loaded, and the downloads were ~2.7% of the GPU thread.
+        const Buffer& buffer = slot_buffers[buffer_id];
+        if (!aggressive_gc && gpu_modified_ranges.Intersects(buffer.CpuAddr(), buffer.SizeBytes())) {
+            return false;
+        }
         evicted.push_back(buffer_id);
         return false;
     });
@@ -129,8 +136,17 @@ void BufferCache<P>::TickFrame() {
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
     }
-    if (total_used_memory >= minimum_memory) {
-        RunGarbageCollector();
+    if (gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
+        // Switch 2 titles fill the device with textures (their collector watches the budget);
+        // title 1's buffers were ~200 MiB of an 8 GB GPU's ~6.8 GB in use, yet this collector
+        // ran aggressively every frame on the device-wide figure, evicting up to 64 buffers (and
+        // downloading the GPU-written ones, ~5% of the GPU thread) that were recreated later.
+        // Collect when the buffers themselves are large.
+        if (buffer_bytes >= 1_GiB) {
+            RunGarbageCollector(buffer_bytes >= 2_GiB);
+        }
+    } else if (total_used_memory >= minimum_memory) {
+        RunGarbageCollector(total_used_memory >= critical_memory);
     }
     ++frame_tick;
     delayed_destruction_ring.Tick();
@@ -1770,9 +1786,11 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
     Buffer& buffer = slot_buffers[buffer_id];
     const auto size = buffer.SizeBytes();
     if (insert) {
+        buffer_bytes += Common::AlignUp(size, 1024);
         total_used_memory += Common::AlignUp(size, 1024);
         buffer.setLRUID(lru_cache.Insert(buffer_id, frame_tick));
     } else {
+        buffer_bytes -= Common::AlignUp(size, 1024);
         total_used_memory -= Common::AlignUp(size, 1024);
         lru_cache.Free(buffer.getLRUID());
     }
