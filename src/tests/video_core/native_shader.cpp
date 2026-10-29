@@ -1127,12 +1127,13 @@ TEST_CASE("Native scaled multiplication preserves captured power-of-two scales",
 }
 
 TEST_CASE("Native integer multiply preserves high words and modular multiply-add", "[native-shader]") {
-    const u32 mode = GENERATE(0U, 1U, 2U, 3U, 4U);
+    const u32 mode = GENERATE(0U, 1U, 2U, 3U, 4U, 5U);
     Native instruction{{0x00037827, 0xcccccccd, 0x078e00ff, 0}};
     if (mode == 1) instruction = Native{{0x00037824, 0xfffffff6, 0x078e0202, 0}};
     if (mode == 2) instruction = Native{{0x00037a24, 0x00c00000, 0x078e0202, 0}};
     if (mode == 4) instruction = Native{{0x00037811, 0x00000070, 0x078e20ff, 0}};
     if (mode == 3) instruction = Native{{0x00037224, 0x00000001, 0x078e0202, 0}};
+    if (mode == 5) instruction = Native{{0x00037824, 0x00000001, 0x078e0a02, 0}};
     const std::array<Native, 2> input{{instruction, VertexTransform.back()}};
     const auto lowered = Shader::Ampere::LowerToMaxwell(input);
     REQUIRE(lowered);
@@ -1182,12 +1183,13 @@ TEST_CASE("Native integer multiply preserves high words and modular multiply-add
             case IR::Opcode::ULessThan: values[&inst] = arg(0) < arg(1); break;
             case IR::Opcode::SLessThan: values[&inst] = static_cast<s32>(arg(0)) < static_cast<s32>(arg(1)); break;
             case IR::Opcode::SelectU32: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+            case IR::Opcode::INeg32: values[&inst] = 0U - arg(0); break;
             default: FAIL("Unexpected multiplication IR operation " << IR::NameOf(inst.GetOpcode()));
             }
         }
         const u32 b = mode == 0 ? 0xcccccccd : mode == 1 ? 0xfffffff6 : 0x76543210;
         const u64 product = u64{a} * b;
-        const u32 expected = mode == 4 ? (a << 4) + 0x70U : mode == 0 ? static_cast<u32>(product >> 32)
+        const u32 expected = mode == 5 ? a - 0xfedcba98U : mode == 4 ? (a << 4) + 0x70U : mode == 0 ? static_cast<u32>(product >> 32)
                                        : static_cast<u32>(product + 0xfedcba98U);
         REQUIRE(regs[3] == expected);
     }

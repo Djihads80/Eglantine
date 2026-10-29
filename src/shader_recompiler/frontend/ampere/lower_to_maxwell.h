@@ -457,9 +457,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 break;
             }
             if (insn.words[1] != 48 || insn.words[2] != 0x078e02ff) {
-                if ((insn.words[2] & ~0x2ffU) != 0x078e0000)
+                if ((insn.words[2] & ~0xaffU) != 0x078e0000)
                     return fail(index, "native integer multiply mode");
-                multiply_low(insn.Bits(24, 8), insn.words[1], insn.Bits(64, 8), true);
+                u32 addend = insn.Bits(64, 8);
+                if (insn.Bits(75, 1)) {
+                    emit(0x5c10000000000000ULL | predicate | 252 | (u64{255} << 8) |
+                         (u64{addend} << 20) | (u64{1} << 48));
+                    addend = 252;
+                }
+                multiply_low(insn.Bits(24, 8), insn.words[1], addend, true);
                 break;
             }
             const u64 source = insn.Bits(24, 8);
