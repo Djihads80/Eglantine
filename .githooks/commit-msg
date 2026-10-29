@@ -1,0 +1,64 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Enforce the parts of docs/policies/AI.md a hook can actually see, and remind
+# about the parts it cannot. Advisory output goes to stderr and never blocks;
+# only the two hard policy violations fail the commit.
+
+msg_file="${1:?commit-msg hook needs the message file}"
+subject="$(grep -v '^#' "$msg_file" | sed '/^$/d' | head -n 1)"
+
+# --- hard failures ----------------------------------------------------------
+
+# Agents must not claim authorship or co-authorship (AI policy, "Sign-off,
+# Authorship, and Copyright"). A model name in a co-author trailer is the one
+# case a hook can detect.
+if grep -Eiq '^Co-authored-by:.*(claude|gpt|chatgpt|codex|copilot|gemini|llama|mistral|amp|opencode|cursor)' "$msg_file"; then
+    cat >&2 <<'END'
+Error: Co-authored-by trailers naming a model are forbidden by docs/policies/AI.md.
+The human author owns the commit; disclose assistance with:
+    Assisted-by: <model> (<what it was used for>)
+END
+    exit 1
+fi
+
+if [ -z "$subject" ]; then
+    echo "Error: empty commit message." >&2
+    exit 1
+fi
+
+# --- advisories -------------------------------------------------------------
+
+non_ascii="$(printf '%s' "$subject" | LC_ALL=C grep -n '[^ -~]' || true)"
+if [ -n "$non_ascii" ]; then
+    cat >&2 <<'END'
+note: the subject has non-ASCII characters. The AI policy calls these out (they
+      break command-line editors); prefer plain ASCII.
+END
+fi
+
+case "$subject" in
+'['*']'*) ;;
+*)
+    cat >&2 <<'END'
+note: subjects should be namespaced, e.g. "[video_core] fix TOTK dark squares".
+      See docs/Development.md; maintainers rename on merge anyway.
+END
+    ;;
+esac
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'HEAD')"
+case "$branch" in
+work/* | exp/* | ai/*)
+    if ! grep -q '^Assisted-by: ' "$msg_file"; then
+        cat >&2 <<'END'
+note: no "Assisted-by:" trailer. If a model touched this change, docs/policies/AI.md
+      requires disclosure in the commit message and the PR body:
+          Assisted-by: <model> (<what it was used for>)
+END
+    fi
+    ;;
+esac
+
+exit 0

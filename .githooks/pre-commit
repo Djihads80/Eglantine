@@ -1,0 +1,43 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Whitespace and line-ending policy. Installed by tools/agents/setup.sh, which
+# sets core.hooksPath=.githooks: the old hooks/ directory was never wired up, so
+# nothing it contained ever ran.
+
+# Every path counts, including repo-root files: only vendor- and bot-owned trees
+# are excluded, because they legitimately contain trailing whitespace.
+paths_to_check=". :(exclude)externals :(exclude)dist/languages :(exclude)LICENSES"
+fail=0
+
+if ! git diff --cached --check -- $paths_to_check; then
+    cat <<'END'
+
+Error: this commit contains trailing whitespace. Check with 'git diff --check'.
+END
+    fail=1
+fi
+
+added_tabs="$(git diff --cached -- $paths_to_check | awk '/^\+/ && index($0, "\t")' | head -n 3)"
+if [ -n "$added_tabs" ]; then
+    echo "Error: this commit adds tabs. Use spaces:"
+    printf '%s\n' "$added_tabs"
+    fail=1
+fi
+
+cr="$(printf '\r')"
+crlf_files="$(git diff --cached --name-only --diff-filter=ACM | while IFS= read -r f; do
+    case "$f" in
+    *.ps1 | *.bat | *.cmd | *.vcxproj | *.sln) continue ;;
+    esac
+    [ -f "$f" ] || continue
+    if grep -q "$cr" "$f" 2>/dev/null; then printf '%s\n' "$f"; fi
+done)"
+if [ -n "$crlf_files" ]; then
+    echo "Error: CRLF line endings; .gitattributes pins these to LF:"
+    printf '%s\n' "$crlf_files"
+    fail=1
+fi
+
+exit "$fail"

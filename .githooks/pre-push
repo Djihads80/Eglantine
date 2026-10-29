@@ -1,0 +1,78 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Refuse to publish a branch that breaks the grammar, and refuse to rewrite a ref
+# that is not yours. The branch that used to be called
+# 2ndAdjustmentVulkanV3-STOP_FORCE_PUSHING_CAMILLE is what this prevents.
+
+lib="$(git rev-parse --show-toplevel)/tools/agents/lib.sh"
+if [ -f "$lib" ]; then
+    # shellcheck disable=SC1090
+    . "$lib"
+fi
+
+zero="0000000000000000000000000000000000000000"
+me="$(git config user.github 2>/dev/null || git config user.name 2>/dev/null || true)"
+me="$(printf '%s' "$me" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
+
+fail=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -n "$remote_ref" ] || continue
+    case "$remote_ref" in
+    refs/heads/*) ;;
+    *) continue ;;
+    esac
+    branch="${remote_ref#refs/heads/}"
+
+    # Deletion is always allowed on your own refs; the audit action handles the rest.
+    if [ "$local_sha" = "$zero" ]; then
+        continue
+    fi
+
+    # Trunk has no grammar of its own; the force-push rule below decides.
+    case "$branch" in
+    master) ;;
+    *)
+        if command -v agent_branch_valid >/dev/null 2>&1; then
+            if ! agent_branch_valid "$branch"; then
+                case "$branch" in
+                int/* | rel/* | sync/* | work/* | exp/* | ai/*)
+                    # Parses as a kind but not the rest of the form: a typo.
+                    echo "Error: '$branch' is close to the grammar but not it; see docs/agents/branching.md." >&2
+                    ;;
+                *)
+                    echo "Error: '$branch' has a legacy name and is frozen. Cut a conforming branch for" >&2
+                    echo "       new work: tools/agents/branch.sh <issue> <slug> --area <area>" >&2
+                    ;;
+                esac
+                fail=1
+                continue
+            fi
+        fi
+        ;;
+    esac
+
+    # Rewriting history: only on branches you own, never on trunk or integration.
+    if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        case "$branch" in
+        master | int/* | rel/* | sync/*)
+            echo "Error: '$branch' is shared; force-pushing it is forbidden." >&2
+            fail=1
+            ;;
+        work/* | exp/*)
+            owner="$(printf '%s' "$branch" | cut -d/ -f2)"
+            if [ -n "$me" ] && [ "$owner" != "$me" ]; then
+                echo "Error: '$branch' belongs to $owner; force-pushing it is forbidden." >&2
+                fail=1
+            fi
+            ;;
+        esac
+        if [ "$fail" -eq 0 ]; then
+            echo "note: this push rewrites '$branch' (allowed: your own branch)." >&2
+        fi
+    fi
+done
+
+exit "$fail"
