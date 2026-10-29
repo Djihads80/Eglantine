@@ -15,3 +15,6 @@ if(DEFINED ENV{QT_ROOT_DIR})
     list(APPEND CMAKE_FIND_ROOT_PATH "$ENV{QT_ROOT_DIR}")
     list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT_DIR}")
 endif()
+
+set(ENV{PKG_CONFIG_LIBDIR} "/usr/x86_64-w64-mingw32/lib/pkgconfig")
+set(ENV{PKG_CONFIG_PATH} "")
