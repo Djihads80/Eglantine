@@ -1,0 +1,38 @@
+# Test cases that fail on master, and are therefore not your fault.
+#
+# One Catch2 test case name per line; append " [flaky]" to a name that passes
+# sometimes (the gate then treats a pass as expected instead of stale). verify.sh
+# runs the suite with the JUnit reporter, diffs failing cases against this list,
+# and fails only on cases that are NOT here. When a non-flaky case starts
+# passing, the gate tells you to prune it.
+#
+# Provenance: measured on 2026-10-29 against work/kraibse/meta/0-governance-
+# bootstrap, a branch whose only difference from master is tooling and docs
+# (`git diff --stat origin/master HEAD -- src/ CMakeLists.txt CMakeModules/` is
+# empty). So these are master's failures, not a contributor's -- the clean-base
+# answer that was previously only assumed.
+#
+# Environment: x86_64 Linux, GCC, ci-core preset (no Qt).
+#
+# Diagnosis: the memory_tracker cases assert on rasterizer.Count() and get 0, so
+# the tracker is not being populated at all in this configuration. CoreTiming
+# [BasicOrder] leaves a callback flagged as not-run.
+#
+# Also measured: the suite hangs intermittently (one hang in two consecutive runs
+# at ~7 s each when it completes). verify.sh therefore runs the binary under a
+# timeout and reports a timeout as its own failure. Tagging the timing-sensitive
+# cases and excluding them from the gate is a change to src/tests, so it belongs
+# in its own PR with its own issue, not in a governance branch.
+#
+# Do not add lines here to get a PR green. A new entry needs the same treatment as
+# a TEMP marker: an issue that explains it and a plan to remove it.
+
+CoreTiming[BasicOrder] [flaky]
+MemoryTracker: Cached write downloads
+MemoryTracker: FlushCachedWrites batching
+MemoryTracker: Out of bound ranges 1
+MemoryTracker: Out of bound ranges 2
+MemoryTracker: Out of bound ranges 3
+MemoryTracker: Rasterizer counting
+MemoryTracker: Small region
+MemoryTracker: Sparse regions 2
