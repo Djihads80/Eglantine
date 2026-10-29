@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/assert.h"
+#include "core/core.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/control/scheduler.h"
 #include "video_core/gpu.h"
@@ -59,6 +60,12 @@ void Scheduler::ResumePending(GPU& gpu) {
         progress = false;
         for (const auto& state : pending_channels) {
             auto& dma_pusher = state->payload->dma_pusher;
+            // Powered off (shutting down), DispatchCalls returns at once and the acquire stays
+            // pending: resuming it again counted as progress forever and the GPU thread never
+            // reached its stop request (closing the game hung).
+            if (!dma_pusher.system.IsPoweredOn()) {
+                return;
+            }
             if (!dma_pusher.HasPendingAcquire() || !dma_pusher.CanResumeAcquire()) {
                 continue;
             }
