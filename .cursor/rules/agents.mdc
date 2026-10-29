@@ -1,0 +1,7 @@
+---
+description: Repo rules live in AGENTS.md and docs/
+alwaysApply: true
+---
+
+Read AGENTS.md, docs/policies/AI.md and docs/agents/context.md first; this rule only
+makes Cursor load the pointer. Do not duplicate their contents here.
