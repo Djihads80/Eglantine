@@ -1420,6 +1420,14 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // from a culling dispatch) and still be only in host buffers: flush them first,
                     // or the macro draws with an older frame's arguments (objects pop in and out).
                     const size_t read_bytes = size_t{std::min<u32>(value, 0x1000)} * 4;
+                    if (VideoCommon::Nx2Profile::Enabled()) {
+                        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
+                        for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes; page += 0x1000) {
+                            if (const auto device = memory.GpuToCpuAddress(page)) {
+                                VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
+                            }
+                        }
+                    }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
@@ -1462,10 +1470,11 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 memo_stats && (++native_calls & 0xffffff) == 0) {
                 const auto& stats = native_memo.GetStatistics();
                 LOG_INFO(HW_GPU,
-                         "Macro memo: {} hits, {} misses, {} guard failures, {} stores ({} in "
-                         "place), {} clears; {} entries, {} KiB",
-                         stats.hits, stats.misses, stats.guard_failures, stats.stores,
-                         stats.overwrites, stats.clears, native_memo.Size(),
+                         "Macro memo: {} hits ({} on the last call's slot), {} misses, {} guard "
+                         "failures, {} stores ({} in place), {} compactions, {} clears; {} entries, "
+                         "{} KiB",
+                         stats.hits, stats.slot_hits, stats.misses, stats.guard_failures, stats.stores,
+                         stats.overwrites, stats.compactions, stats.clears, native_memo.Size(),
                          native_memo.ArenaWords() * 4 / 1024);
             }
             native_memo.Synchronize(native_code_generation);

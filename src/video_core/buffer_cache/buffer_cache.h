@@ -679,6 +679,19 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         Buffer& buffer = slot_buffers[buffer_id];
         second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
         const DAddr orig_device_addr = static_cast<DAddr>(second_copy.src_offset);
+        if (Nx2Profile::Enabled()) {
+            u64 on_dma_pages = 0;
+            const auto& pages = Nx2Profile::DmaReadPages();
+            for (DAddr page = orig_device_addr >> 12; page <= (orig_device_addr + copy.size - 1) >> 12;
+                 ++page) {
+                if (pages.contains(page)) {
+                    const DAddr begin = (std::max)(orig_device_addr, page << 12);
+                    const DAddr end = (std::min)(orig_device_addr + copy.size, (page + 1) << 12);
+                    on_dma_pages += end - begin;
+                }
+            }
+            Nx2Profile::Add(Nx2Profile::Counter::DownloadBytesOnDmaPages, on_dma_pages);
+        }
         async_downloads.Add(orig_device_addr, copy.size);
         buffer.MarkUsage(copy.src_offset, copy.size);
         runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);

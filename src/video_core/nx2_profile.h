@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <unordered_set>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -74,7 +75,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 2> counters{}; ///< See Counter
+    std::array<u64, 4> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -118,7 +119,16 @@ private:
 enum class Counter : u32 {
     DownloadBytes,  ///< Buffer data copied back from the host GPU at fences
     DownloadCopies, ///< Buffer ranges copied back
+    DmaReadBytes,   ///< Guest memory the native MME read with DMA
+    DownloadBytesOnDmaPages, ///< Of DownloadBytes: on pages the MME has DMA-read
 };
+
+/// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
+/// while profiling): which buffer downloads anything on the GPU thread reads back.
+inline std::unordered_set<u64>& DmaReadPages() {
+    static std::unordered_set<u64> pages;
+    return pages;
+}
 
 inline void Add(Counter counter, u64 amount) {
     if (Enabled()) {
@@ -158,9 +168,12 @@ inline void Report() {
         const double calls = static_cast<double>(data.count[i]) * 1e9 / window;
         line += fmt::format(" | {} {:.1f} ms ({:.0f}/s)", zone_names[i], ms, calls);
     }
-    line += fmt::format(" | buffer downloads {:.0f} KiB in {:.0f} copies",
+    line += fmt::format(" | buffer downloads {:.0f} KiB in {:.0f} copies ({:.0f} KiB on pages "
+                        "MME DMA reads) | MME DMA reads {:.0f} KiB",
                         static_cast<double>(data.counters[0]) * 1e9 / 1024.0 / window,
-                        static_cast<double>(data.counters[1]) * 1e9 / window);
+                        static_cast<double>(data.counters[1]) * 1e9 / window,
+                        static_cast<double>(data.counters[3]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[2]) * 1e9 / 1024.0 / window);
     LOG_INFO(HW_GPU, "GPU thread per second:{}", line);
     data = {};
     data.window_start = now;
