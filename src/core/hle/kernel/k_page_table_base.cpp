@@ -2155,8 +2155,10 @@ Result KPageTableBase::SetHeapSize(KProcessAddress* out, size_t size) {
 
         // Validate that setting heap size is possible at all.
         R_UNLESS(!m_is_kernel, ResultOutOfMemory);
-        R_UNLESS(size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start),
-                 ResultOutOfMemory);
+        if (m_max_heap_size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start)) {
+            R_UNLESS(size <= static_cast<size_t>(m_heap_region_end - m_heap_region_start),
+                     ResultOutOfMemory);
+        }
         R_UNLESS(size <= m_max_heap_size, ResultOutOfMemory);
 
         if (size < static_cast<size_t>(m_current_heap_end - m_heap_region_start)) {
