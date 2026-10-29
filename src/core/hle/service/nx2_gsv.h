@@ -213,6 +213,10 @@ private:
         }
         auto& request = m_requests[slot];
         Cancel(request);
+        // A new request starts unsignalled. Slots are reused by different client objects: title 1's
+        // movie player got slot 0 after NVN's fence waits had left it signalled, took that as a
+        // decoded frame and aborted when the decoder had none.
+        event->Clear(system.Kernel());
         request.syncpoint = syncpoint;
         request.pending = true;
         auto& manager = system.Host1x().GetSyncpointManager();
@@ -234,15 +238,20 @@ private:
     void CancelSlotEvent(HLERequestContext& ctx) {
         const u32 slot = ctx.CommandBuffer()[2];
         LOG_INFO(Service, "nx2:syncpt TIPC 202 slot={:#x}", slot);
-        if (auto it = m_requests.find(slot); it != m_requests.end() && Cancel(it->second)) {
-            // The client waits on the slot's event after a cancel (NvOsEventPool, after its
-            // ~100 ms wait times out), so a cancel must signal it like a completion; it rechecks
-            // the counter (TIPC 103) itself. Title 1 hung forever there when the GPU thread ran
-            // a frame behind (EDEN_NX2_FRAMES_AHEAD) and a mid-frame wait outlasted 100 ms.
-            if (const auto event = m_events.find(slot); event != m_events.end()) {
-                event->second->Signal(system.Kernel());
-            }
+        if (auto it = m_requests.find(slot); it != m_requests.end()) {
+            Cancel(it->second);
         }
+        // nn::syncpt::sdk's cancel always waits on the slot's event after this reply, so a cancel
+        // signals it like a completion, also when nothing was pending; the client rechecks the
+        // counter (TIPC 103) itself. Title 1 hung forever there when the GPU thread ran a frame
+        // behind (EDEN_NX2_FRAMES_AHEAD) and a mid-frame wait outlasted NvOsEventPool's 100 ms,
+        // and its movie player cancels each slot before its first request: signalled only for
+        // pending requests, the player never got to start a movie.
+        auto*& event = m_events[slot];
+        if (event == nullptr) {
+            event = m_context.CreateEvent(fmt::format("nx2:syncpt:Slot{:x}", slot));
+        }
+        event->Signal(system.Kernel());
         TipcReplyWords(ctx, {});
     }
 
