@@ -21,6 +21,8 @@
 
 #ifdef _WIN32
 #include <cstdio> // _getmaxstdio
+#else
+#include <sys/resource.h> // getrlimit
 #endif
 
 #ifdef _MSC_VER
@@ -37,16 +39,23 @@ namespace FS = Common::FS;
 
 namespace {
 
-// Files the cache keeps open. On Windows it has to stay below the C runtime's open-file limit with
-// room to spare: at the limit every other open fails (saves, shader caches, and the cache's own
-// next file, which it only evicts for once it reaches its cap).
+// Files the cache keeps open. It has to stay below the process's open-file limit (the C runtime's
+// on Windows, RLIMIT_NOFILE elsewhere) with room to spare: at the limit every other open fails
+// (saves, shader caches, and the cache's own next file, which it only evicts for once it reaches
+// its cap).
 size_t MaxOpenFiles() {
 #ifdef _WIN32
     static const size_t limit = static_cast<size_t>((std::max)(_getmaxstdio() - 512, 64));
-    return (std::min)(size_t{8192}, limit);
 #else
-    return 8192;
+    static const size_t limit = [] {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY) {
+            return size_t{8192};
+        }
+        return static_cast<size_t>(std::max<rlim_t>(rl.rlim_cur, 576) - 512);
+    }();
 #endif
+    return (std::min)(size_t{8192}, limit);
 }
 
 bool IsWithinRoot(std::string_view root, std::string_view full_path) {
