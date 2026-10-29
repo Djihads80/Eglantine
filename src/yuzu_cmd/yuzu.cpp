@@ -484,7 +484,9 @@ extern "C" SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     SdlState *state = (SdlState *)appstate;
     state->system.DetachDebugger();
-    void(state->system.Pause());
+    if (state->system.IsPoweredOn()) {
+        void(state->system.Pause());
+    }
     state->system.ShutdownMainProcess();
     delete state;
 }
