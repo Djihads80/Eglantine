@@ -1,0 +1,60 @@
+name: Cleanup debt
+description: Something deliberately temporary is in the tree and needs removing.
+title: "[cleanup] "
+labels: ["kind/cleanup-debt"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every `TEMP(...)` marker, debug toggle and probe that ships "for now"
+        gets one of these, so the debt is visible instead of remembered.
+        `tools/agents/verify.sh` lists markers a change adds; this issue is what
+        makes that list actionable.
+
+  - type: textarea
+    id: debt
+    attributes:
+      label: What is temporary
+      description: The marker, toggle or diagnostic, quoted as it appears in the tree.
+      placeholder: '// TEMP(4551): remove when dynamic state lands'
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Files and, if useful, the search pattern that finds every occurrence.
+      placeholder: |
+        src/video_core/renderer_vulkan/vk_rasterizer.cpp
+        grep -rn 'TEMP(4551)' src/
+    validations:
+      required: true
+
+  - type: input
+    id: origin
+    attributes:
+      label: Introduced by
+      description: PR, commit or issue that added it.
+      placeholder: "#4531"
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: What the tree looks like afterwards. "grep returns nothing" is a valid answer.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lane
+    attributes:
+      label: What replaces it
+      description: The cleanup usually converts a temporary toggle into one of the other two lanes.
+      options:
+        - Remove entirely (behaviour becomes unconditional)
+        - Promote to a permanent setting (documented, bounded, sane default)
+        - Fold into the debug_knobs bitmask
+        - Keep as a diagnostic, documented in the user handbook
+    validations:
+      required: true

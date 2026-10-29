@@ -1,0 +1,84 @@
+name: Experiment
+description: A time-boxed spike that is allowed to fail. Use this before cutting an exp/ branch.
+title: "[exp] "
+labels: ["kind/experiment"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Experiments expire. This issue is the record of *why* the spike exists and
+        *when* it gets decided, so a branch cannot quietly become permanent.
+        The branch is `exp/<owner>/<area>/<this issue>-<slug>`.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What question is this spike answering? One or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: The observable result that ends the experiment, including "it does not work".
+      placeholder: "Frames render without the dark squares on RADV, or we learn the dynamic-state path cannot express it."
+    validations:
+      required: true
+
+  - type: textarea
+    id: signal
+    attributes:
+      label: Signal
+      description: How will we know? A log line, a frame capture, a metric — something checkable.
+    validations:
+      required: true
+
+  - type: input
+    id: decide-by
+    attributes:
+      label: Decide by
+      description: Date. Overdue experiments are flagged by the weekly audit and must be promoted or deleted.
+      placeholder: "2026-11-19"
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files expected to move
+      description: Paths you intend to touch. This is the collision warning for everyone else.
+      placeholder: |
+        src/video_core/renderer_vulkan/vk_rasterizer.cpp
+        src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+    validations:
+      required: true
+
+  - type: input
+    id: integration
+    attributes:
+      label: Integration target
+      description: Which int/<area> branch this becomes if it succeeds, or "none".
+      placeholder: "int/vulkan"
+    validations:
+      required: true
+
+  - type: textarea
+    id: upstream
+    attributes:
+      label: Upstream relevance
+      description: Is this local-only, or a candidate for Eden upstream? "Candidate" means the disclosure rules apply to the final patch.
+      placeholder: "local-only / upstream candidate"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: housekeeping
+    attributes:
+      label: Housekeeping
+      options:
+        - label: I understand this branch expires and will be promoted or deleted at the decide-by date.
+          required: true
+        - label: Any temporary toggle or probe will carry a TEMP(<this issue>) marker.
+          required: true
