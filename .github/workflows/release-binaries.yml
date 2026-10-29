@@ -73,6 +73,8 @@ jobs:
 
       - name: Configure Windows MinGW
         shell: bash
+        env:
+          CROSS_COMPILE: x86_64-w64-mingw32-
         run: >-
           cmake -S . -B build/release -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=.github/mingw-w64-toolchain.cmake
