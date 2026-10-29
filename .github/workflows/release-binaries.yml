@@ -50,7 +50,7 @@ jobs:
           dir: ${{ runner.temp }}/qt-host
           set-env: false
           cache: true
-          
+
       - name: Cache CPM downloads
         uses: actions/cache@v4
         with:
@@ -79,6 +79,7 @@ jobs:
           -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
           -DCMAKE_FIND_ROOT_PATH="$QT_ROOT_DIR;/usr/x86_64-w64-mingw32"
           -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6"
+          -DQT_HOST_PATH="${{ runner.temp }}/qt-host/Qt/6.8.3/gcc_64"
           -DYUZU_USE_BUNDLED_FFMPEG=ON
           -DMAKE=/usr/bin/make
           -DCMAKE_BUILD_TYPE=Release
