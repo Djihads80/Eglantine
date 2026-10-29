@@ -351,13 +351,21 @@ object GameHelper {
                 Log.warning("[GameHelper] Extracted game not recognized: $path")
                 return@forEach
             }
+            // Walk up past exefs/, base/ and update folders (e.g. updates/917504/exefs) to the
+            // folder named after the game.
             var gameDir = main.parentFile!!
-            while (gameDir.parentFile != null &&
-                gameDir.name.lowercase() in setOf("exefs", "base")
-            ) {
+            var isUpdate = false
+            while (gameDir.parentFile != null) {
+                val name = gameDir.name.lowercase()
+                if (name in setOf("updates", "update")) {
+                    isUpdate = true
+                } else if (name !in setOf("exefs", "base") && !name.all { it.isDigit() }) {
+                    break
+                }
                 gameDir = gameDir.parentFile!!
             }
-            val title = GameMetadata.getTitle(path).ifEmpty { gameDir.name }
+            val folderTitle = if (isUpdate) "${gameDir.name} (update)" else gameDir.name
+            val title = GameMetadata.getTitle(path).ifEmpty { folderTitle }
             val programId = GameMetadata.getProgramId(path).ifEmpty { gameDir.name }
             val game = Game(
                 title,
