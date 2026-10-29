@@ -125,6 +125,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     // Periodic statistics (TickFrame).
     u64 gc_deletes{};
     u64 gc_costly_deletes{};
+    u64 gc_download_deletes{}; ///< Evictions that downloaded the image first (a full GPU wait)
     u64 async_decodes_queued{};
     u64 images_created{};
     bool native_thresholds_applied{};
