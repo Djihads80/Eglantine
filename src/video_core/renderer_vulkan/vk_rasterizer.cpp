@@ -1250,20 +1250,37 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
         return;
     }
     gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+    // EDEN_NX2_INLINE_DEFER=0: invalidate every cache at once (for comparisons).
+    static const bool defer = [] {
+        const char* value = std::getenv("EDEN_NX2_INLINE_DEFER");
+        return value == nullptr || value[0] != '0';
+    }();
     // One cache at a time: holding both while waiting for either (std::lock) waited longer, the
     // fencing thread and CPU write traps holding one of them most of the time.
+    bool uploaded;
     {
         std::scoped_lock lock{buffer_cache.mutex};
-        if (!buffer_cache.InlineMemory(*cpu_addr, copy_size, memory)) {
+        uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
+        if (!uploaded && !defer) {
             buffer_cache.WriteMemory(*cpu_addr, copy_size);
         }
+    }
+    // Pending query results must not land over the new words later: drop them now.
+    query_cache.InvalidateRegion(*cpu_addr, copy_size);
+    if (!uploaded && defer) {
+        // Title 1 makes thousands of small inline writes between draws (~10% of the GPU
+        // thread invalidating every cache for each). Guest memory is written; the buffer,
+        // texture and shader caches see the merged ranges at the next FlushCaching, which runs
+        // before anything of theirs is used. Writes into GPU-written buffer data were uploaded
+        // in place above, as before.
+        gpu_memory->AccumulateInvalidation(address, copy_size);
+        return;
     }
     {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.WriteMemory(*cpu_addr, copy_size);
     }
     pipeline_cache.InvalidateRegion(*cpu_addr, copy_size);
-    query_cache.InvalidateRegion(*cpu_addr, copy_size);
 }
 
 std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
