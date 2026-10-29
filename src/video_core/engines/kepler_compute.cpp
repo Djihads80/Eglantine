@@ -23,6 +23,9 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
+#ifdef ARCHITECTURE_x86_64
+#include "video_core/macro_turing_jit.h"
+#endif
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 
@@ -171,6 +174,32 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             CallMethod(system, address, value, true);
             return true;
         };
+#ifdef ARCHITECTURE_x86_64
+        // Compiled macro code, as for 3D macros (macro_turing_jit.h); EDEN_NX2_MME_JIT=0 off.
+        static const bool use_jit = [] {
+            const char* value = std::getenv("EDEN_NX2_MME_JIT");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (use_jit && !watched) {
+            if (!native_macro->native_jit) {
+                native_macro->native_jit = std::make_shared<TuringMacroJit>();
+            }
+            native_macro->native_jit->Prepare(native_macro->native_code,
+                                              native_macro->native_code_generation);
+            const auto result = native_macro->native_jit->Execute(
+                start, native_parameters,
+                std::span<u32>{*native_macro->native_interpreter.active_dram},
+                [&](u32 address) { return address < native_registers.size() ? native_registers[address] : 0U; },
+                emit);
+            if (!result.success) {
+                native_macro->native_execution_failed = true;
+                LOG_ERROR(HW_GPU, "Native MME (JIT) failed: compute start={:#x}, consumed={}/{}, error={}",
+                          start, result.consumed, native_parameters.size(), result.error);
+            }
+            native_parameters.clear();
+            return true;
+        }
+#endif
         // Repeated calls replay their writes, as for 3D macros (macro_memo.h).
         static const bool use_memo = [] {
             const char* value = std::getenv("EDEN_NX2_MME_MEMO");
