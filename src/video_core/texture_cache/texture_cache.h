@@ -1204,11 +1204,11 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
 template <class P>
 ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
     const bool native = gpu_memory->UsesNativeTiling();
-    if (native && raw_config.BaseLayer() && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
+    if (raw_config.BaseLayer() && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
         static u32 texture_view_traces{};
         if (texture_view_traces++ < 8) {
-            LOG_WARNING(HW_GPU, "Native texture view header: address={:#x}, dimensions={}x{}x{}, type={}, legacy_layer={}, raw={:016x}/{:016x}/{:016x}/{:016x}",
-                        raw_config.Address(), raw_config.Width(), raw_config.Height(), raw_config.Depth(),
+            LOG_WARNING(HW_GPU, "Native texture view header: native={}, graphics_native={}, address={:#x}, dimensions={}x{}x{}, type={}, legacy_layer={}, raw={:016x}/{:016x}/{:016x}/{:016x}",
+                        native, maxwell3d->GetNativeMacroEngine().native_turing, raw_config.Address(), raw_config.Width(), raw_config.Height(), raw_config.Depth(),
                         static_cast<u32>(raw_config.texture_type.Value()), raw_config.BaseLayer(),
                         raw_config.raw[0], raw_config.raw[1], raw_config.raw[2], raw_config.raw[3]);
         }

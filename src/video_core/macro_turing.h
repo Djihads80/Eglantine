@@ -9,6 +9,8 @@
 #include <bit>
 #include <cstdint>
 #include <span>
+#include <optional>
+#include <vector>
 #include <string_view>
 
 namespace Tegra {
@@ -27,6 +29,17 @@ public:
     template <typename Read, typename Emit>
     Result Execute(std::span<const Word> code, Word start,
                    std::span<const Word> parameters, Read read, Emit emit) {
+        return Execute(code, start, parameters, read, emit,
+            []() -> std::optional<std::vector<Word>> { return std::nullopt; });
+    }
+
+    template <typename Read, typename Emit, typename Barrier>
+    Result Execute(std::span<const Word> code, Word start,
+                   std::span<const Word> parameters, Read read, Emit emit, Barrier barrier) {
+        std::vector<Word> dma_parameters;
+        std::span<const Word> fifo = parameters;
+        std::size_t fifo_index{};
+        bool dma_fifo{};
         std::array<Word, 24> regs{};
         Word initialized{}, carry{}, method{}, increment{};
         Word pc = start, loop_count{}, loop_start{}, loop_end{};
@@ -60,8 +73,9 @@ public:
                     src_b[0] == reg || src_b[1] == reg || out_method[0] == out ||
                     out_method[1] == out || out_emit[0] == out || out_emit[1] == out;
                 if (needed) {
-                    if (consumed >= parameters.size()) { fail("parameter FIFO underflow"); break; }
-                    load[i] = parameters[consumed++];
+                    if (fifo_index >= fifo.size()) { fail("parameter FIFO underflow"); break; }
+                    load[i] = fifo[fifo_index++];
+                    if (!dma_fifo) ++consumed;
                 }
             }
             // Both ALUs read the register file before either destination is
@@ -120,7 +134,21 @@ public:
                     value = Word(product); carry = Word(product >> 32); break;
                 }
                 case 5: value = carry; break;
-                case 7: fail("unsupported extended operation"); break;
+                case 7: {
+                    if (x != 0x1000 || y != 1) {
+                        fail("unsupported extended operation");
+                        break;
+                    }
+                    auto data = barrier();
+                    if (!data) { fail("macro DMA barrier failed"); break; }
+                    if (!data->empty()) {
+                        dma_parameters = std::move(*data);
+                        fifo = dma_parameters;
+                        fifo_index = 0;
+                        dma_fifo = true;
+                    }
+                    break;
+                }
                 case 8: value = Word(std::countl_zero(x)); break;
                 case 9: value = x << (y & 31); break;
                 case 10: value = x >> (y & 31); break;

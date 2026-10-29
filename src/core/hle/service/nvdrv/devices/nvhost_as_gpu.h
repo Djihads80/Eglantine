@@ -64,6 +64,8 @@ public:
 
     Kernel::KEvent* QueryEvent(u32 event_id) override;
 
+    NvResult CreateNativeSparseRegion(u64 address, u64 size);
+    NvResult DestroyNativeSparseRegion(u64 address, u64 size);
     NvResult MapNative4K(u32 handle, u64 address, u64 buffer_offset, u64 size, u8 kind);
     NvResult UnmapNative4K(u64 address, u64 size);
     NvResult GetNativeSyncpointShim(u64& address, u32& stride, u32& count);

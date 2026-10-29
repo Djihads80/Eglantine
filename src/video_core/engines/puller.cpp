@@ -101,6 +101,14 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
 }
 
 void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
+    if (dma_pusher.channel_state.native_abi && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
+        static u32 fence_traces{};
+        if (fence_traces++ < 512) {
+            LOG_INFO(HW_GPU, "Native fence action: channel={}, id={}, op={}, value={}",
+                     dma_pusher.channel_state.bind_id, regs.fence_action.syncpoint_id.Value(),
+                     static_cast<u32>(regs.fence_action.op.Value()), regs.fence_value);
+        }
+    }
     switch (regs.fence_action.op) {
     case Puller::FenceOperation::Acquire:
         // UNIMPLEMENTED_MSG("Channel Scheduling pending.");

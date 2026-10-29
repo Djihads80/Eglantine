@@ -252,6 +252,8 @@ struct GPU::Impl {
     }
 
     void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers, std::vector<Service::Nvidia::NvFence>&& fences) {
+        static u32 trace_composites{};
+        if (trace_composites++ < 16) LOG_INFO(HW_GPU, "Composite requested: layers={}, fences={}", layers.size(), fences.size());
         const size_t num_fences{fences.size()};
         size_t current_request_counter{};
         if (num_fences != 0) {
@@ -281,6 +283,7 @@ struct GPU::Impl {
                         }
                         free_swap_counters.push_back(current_request_counter);
                     }
+                    LOG_DEBUG(HW_GPU, "Composite fences complete");
                     renderer->Composite(composite_layers);
                 };
                 for (size_t i = 0; i < num_fences; i++) {

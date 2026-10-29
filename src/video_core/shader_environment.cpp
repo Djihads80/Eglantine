@@ -330,7 +330,14 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     for (u32 index = 0; index < maximum_instructions; ++index) {
         const GPUVAddr address = program_base + native_header_size + index * sizeof(Instruction);
         if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
-            throw Shader::RuntimeError("Unmapped native shader instruction at {:#x}", address);
+            if (const char* directory = std::getenv("EDEN_NATIVE_SHADER_CAPTURE_DIR")) {
+                std::filesystem::create_directories(directory);
+                std::ofstream dump(std::filesystem::path{directory} /
+                    fmt::format("{:016x}.capture.bin", program_base), std::ios::binary);
+                dump.write(reinterpret_cast<const char*>(native.data()), native.size() * sizeof(Instruction));
+            }
+            throw Shader::RuntimeError("Unmapped native shader instruction at {:#x} (program={:#x}, index={})",
+                                       address, program_base, index);
         }
         auto& instruction = native.emplace_back();
         gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
@@ -340,6 +347,14 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    if (!lowered) {
+        if (const char* directory = std::getenv("EDEN_NATIVE_SHADER_CAPTURE_DIR")) {
+            std::filesystem::create_directories(directory);
+            std::ofstream dump(std::filesystem::path{directory} /
+                fmt::format("{:016x}.capture.bin", program_base), std::ios::binary);
+            dump.write(reinterpret_cast<const char*>(native.data()), native.size() * sizeof(Instruction));
+        }
+    }
     if (!lowered) {
         if (const char* directory = std::getenv("EDEN_NATIVE_SHADER_OVERRIDE_DIR")) {
             const auto key = fmt::format("{:016x}", Shader::Ampere::NativeProgramKey(native));

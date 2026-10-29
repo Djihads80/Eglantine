@@ -3197,6 +3197,8 @@ public:
         return current_macro_dirty;
     }
 
+    bool ReadMacroMemory(GPUVAddr address, std::span<u32> destination);
+
     u32 GetMaxCurrentVertices();
 
     size_t EstimateIndexBufferSize();

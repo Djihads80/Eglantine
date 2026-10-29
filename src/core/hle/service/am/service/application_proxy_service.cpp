@@ -47,7 +47,7 @@ Result IApplicationProxyService::OpenApplicationProxyWithFlags(
     InCopyHandle<Kernel::KProcess> process_handle) {
     LOG_DEBUG(Service_AM, "called, flags={:#x}", flags);
     // The extended SDK supplies an additional u32 before the process ID.
-    R_UNLESS(flags == 0, ResultUnknown);
+    R_UNLESS(flags == 0 || flags == 2, ResultUnknown);
     R_RETURN(OpenApplicationProxy(out_application_proxy, pid, process_handle));
 }
 

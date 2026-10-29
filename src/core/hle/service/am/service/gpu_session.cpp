@@ -58,6 +58,8 @@ public:
             {211, &IGpuWorker::NormalMapGpuMemory4K, "NormalMapGpuMemory4K"},
             {212, &IGpuWorker::NormalModifyGpuMemory4K, "NormalModifyGpuMemory4K"},
             {213, &IGpuWorker::NormalUnmapGpuMemory4K, "NormalUnmapGpuMemory4K"},
+            {214, &IGpuWorker::CreateSparseRegion, "CreateSparseRegion"},
+            {215, &IGpuWorker::DestroySparseRegion, "DestroySparseRegion"},
         };
         RegisterHandlersTipc(functions);
     }
@@ -65,6 +67,11 @@ public:
         for (const auto& mapping : m_mappings) {
             if (auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(mapping.as_id)) {
                 as->UnmapNative4K(mapping.address, mapping.size);
+            }
+        }
+        for (const auto& region : m_sparse_regions) {
+            if (auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(region.as_id)) {
+                as->DestroyNativeSparseRegion(region.address, region.size);
             }
         }
         auto& nvmap = m_module->GetContainer().GetNvMapFile();
@@ -95,6 +102,7 @@ public:
 private:
     struct Mapping { u32 as_id; u64 address; u64 size; u32 memory_id; };
     std::vector<Mapping> m_mappings;
+    std::vector<Mapping> m_sparse_regions;
     static u64 ReadPair(const u32* packet, size_t index) {
         return u64{packet[index]} | (u64{packet[index + 1]} << 32);
     }
@@ -105,6 +113,59 @@ private:
                 m_devices->address_space_registered[i]) { return true; }
         }
         return false;
+    }
+    void CreateSparseRegion(HLERequestContext& ctx) {
+        const std::scoped_lock device_lock{m_devices->mutex};
+        const auto* p = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        const u64 begin = ReadPair(p, 3), end = ReadPair(p, 5);
+        const u32 notification = p[11];
+        if (p[0] == 0xe6 && p[1] == 10 && notification < m_devices->events.size() && m_devices->events[notification]) {
+            result = Kernel::ResultNotFound;
+            const u32 shift = p[7] & 0xff, device = p[9] & 0xff;
+            if (OwnsAddressSpace(p[2]) && device < m_devices->devices.size() && m_devices->devices[device]) {
+                result = Kernel::ResultInvalidArgument;
+                if ((shift == 12 || shift == 16) && (p[8] & 0xff) <= 1 && (p[10] & 0xff) <= 1 &&
+                    end >= begin && end != ~u64{0} && Common::IsAligned(begin, 1ULL << shift) &&
+                    Common::IsAligned(end - begin + 1, 1ULL << shift)) {
+                    const auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(p[2]);
+                    result = as && as->CreateNativeSparseRegion(begin, end - begin + 1) == Nvidia::NvResult::Success
+                        ? ResultSuccess : Kernel::ResultInvalidCurrentMemory;
+                    if (result.IsSuccess()) { m_sparse_regions.push_back({p[2], begin, end - begin + 1, 0}); }
+                }
+            }
+            m_devices->events[notification]->Signal(kernel);
+        }
+        LOG_DEBUG(Service_AM, "GPU sparse region as={}, VA={:#x}..{:#x}, result={:#x}", p[2], begin, end, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void DestroySparseRegion(HLERequestContext& ctx) {
+        const std::scoped_lock device_lock{m_devices->mutex};
+        const auto* p = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        const u64 begin = ReadPair(p, 3), end = ReadPair(p, 5);
+        const u32 notification = p[8];
+        if (p[0] == 0xe7 && p[1] == 7 && (p[7] & 0xff) <= 1 &&
+            notification < m_devices->events.size() && m_devices->events[notification]) {
+            const auto it = std::find_if(m_sparse_regions.begin(), m_sparse_regions.end(), [&](const auto& region) {
+                return region.as_id == p[2] && region.address == begin && end >= begin && region.size == end - begin + 1;
+            });
+            result = Kernel::ResultNotFound;
+            if (it != m_sparse_regions.end()) {
+                const auto as = m_module->GetDevice<Nvidia::Devices::nvhost_as_gpu>(p[2]);
+                if (as && as->DestroyNativeSparseRegion(begin, it->size) == Nvidia::NvResult::Success) {
+                    std::erase_if(m_mappings, [&](const auto& mapping) {
+                        return mapping.as_id == p[2] && mapping.address >= begin && mapping.address <= end;
+                    });
+                    m_sparse_regions.erase(it);
+                    result = ResultSuccess;
+                }
+            }
+            m_devices->events[notification]->Signal(kernel);
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
     }
     Result MapMemory(const u32* packet, u8& selected_kind) {
         R_UNLESS(OwnsAddressSpace(packet[2]), Kernel::ResultNotFound);
@@ -317,9 +378,9 @@ private:
 } // namespace
 
 IGpuSession::IGpuSession(Core::System& system, std::shared_ptr<Nvidia::Module> module,
-                         Kernel::KProcess* process)
+                         Kernel::KProcess* process, bool legacy_protocol)
     : ServiceFramework{system, "IGpuSession"},
-      m_process{process}, m_module{std::move(module)} {
+      m_process{process}, m_module{std::move(module)}, m_legacy_protocol{legacy_protocol} {
     m_process->Open(kernel);
     m_devices = std::make_shared<GpuDeviceRegistry>(system, m_module, m_process);
     static const FunctionInfo functions[] = {
@@ -330,6 +391,7 @@ IGpuSession::IGpuSession(Core::System& system, std::shared_ptr<Nvidia::Module> m
         {33, &IGpuSession::CreateAddressSpace, "CreateAddressSpace"},
         {41, &IGpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
         {42, &IGpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
+        {201, &IGpuSession::GetAddressSpacePartition, "GetLegacyGsvPartition"},
         {202, &IGpuSession::GetAddressSpacePartition, "GetGsvPartition"},
         {203, &IGpuSession::GetAddressSpacePartition, "GetUserPartition"},
     };
@@ -369,7 +431,8 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
     const auto* packet = ctx.CommandBuffer();
     Result result = Kernel::ResultInvalidCombination;
     std::array<u64, 9> values{};
-    const bool user = ctx.GetCommand() == 203;
+    const bool legacy_user = m_legacy_protocol && (ctx.GetCommand() == 201 || ctx.GetCommand() == 202);
+    const bool user = legacy_user || ctx.GetCommand() == 203;
     if (!user) {
         values[0] = ~u64{0}; // No supervisor-owned partition is reserved by this adapter.
     }
@@ -389,9 +452,16 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
                 Nvidia::NvResult::Success) {
                 std::array<Nvidia::Devices::nvhost_as_gpu::VaRegion, 2> regions;
                 std::memcpy(regions.data(), output.data() + 16, sizeof(regions));
-                values[0] = 1;
-                values[1] = regions[0].offset;
-                values[2] = regions[1].offset + regions[1].pages * regions[1].page_size - 1;
+                const u64 end = regions[1].offset + regions[1].pages * regions[1].page_size - 1;
+                if (legacy_user) {
+                    const auto& region = regions[ctx.GetCommand() == 201 ? 0 : 1];
+                    values[0] = region.offset;
+                    values[1] = region.offset + region.pages * region.page_size - 1;
+                } else {
+                    values[0] = 1;
+                    values[1] = regions[0].offset;
+                    values[2] = end;
+                }
             } else {
                 result = Kernel::ResultInvalidState;
             }
@@ -400,9 +470,9 @@ void IGpuSession::GetAddressSpacePartition(HLERequestContext& ctx) {
                   ctx.GetCommand(), id, user ? values[1] : values[0],
                   user ? values[2] : values[1], result.raw);
     }
-    IPC::ResponseBuilder rb{ctx, user ? 20U : 6U};
+    IPC::ResponseBuilder rb{ctx, user && !legacy_user ? 20U : 6U};
     rb.Push(result.raw);
-    for (size_t i = 0; i < (user ? values.size() : size_t{2}); ++i) {
+    for (size_t i = 0; i < (user && !legacy_user ? values.size() : size_t{2}); ++i) {
         rb.Push(values[i]);
     }
 }

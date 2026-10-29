@@ -43,11 +43,11 @@ inline std::array<u8, NativeGpuCharacteristicsSize> MakeNativeGpuCharacteristics
     // Native SDK class enumeration filters 2D/3D/compute/inline families
     // with bits 40..43 before selecting context identities from its profile.
     // The native SDK gates ModifyKind (AS ioctl 12) on capability bit 34.
-    flags = static_cast<u64>(flags) | (1ULL << 8) | (1ULL << 26) | (1ULL << 34) | (0xfULL << 40);
+    flags = static_cast<u64>(flags) | (1ULL << 8) | (1ULL << 22) | (1ULL << 26) | (1ULL << 34) | (0xfULL << 40);
     std::memcpy(result.data() + 0x50, &flags, sizeof(flags));
     constexpr std::array<s16, 9> levels{
         0x1c, // GPU control: GetGpuTime
-        2,    // TSG: bind/unbind channel
+        11,   // TSG: bind/unbind channel with native subcontext IDs
         -1,   // GPU debugger device is unavailable
         0x1d, // Channel: SetTimeslice
         0x14, // Address space: Remap
@@ -57,6 +57,10 @@ inline std::array<u8, NativeGpuCharacteristicsSize> MakeNativeGpuCharacteristics
         const u16_le value{static_cast<u16>(levels[i])};
         std::memcpy(result.data() + 0x70 + i * sizeof(value), &value, sizeof(value));
     }
+    // The native SDK allocates shared queue subcontexts locally, then binds
+    // each channel with TSG ioctl 11. Each emulated channel retains its own state.
+    const u32_le max_subcontexts{64};
+    std::memcpy(result.data() + 0xb4, &max_subcontexts, sizeof(max_subcontexts));
     return result;
 }
 

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
@@ -34,6 +35,14 @@ void DmaPusher::DispatchCalls() {
     while (system.IsPoweredOn()) {
         if (!Step()) {
             break;
+        }
+    }
+    if (channel_state.native_abi && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
+        static u32 dispatch_traces{};
+        if (dispatch_traces++ < 512) {
+            LOG_INFO(HW_GPU, "Native dispatch end: channel={}, queued={}, failed={}, acquire={}, method={:#x}, remaining={}, resume={}",
+                     channel_state.bind_id, dma_pushbuffer.size(), HasFailedNativeWork(),
+                     HasPendingNativeAcquire(), dma_state.method, dma_state.method_count, command_resume_offset);
         }
     }
     system.GPU().FlushCommands();

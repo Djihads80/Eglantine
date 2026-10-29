@@ -1436,39 +1436,43 @@ TEST_CASE("Native forward branches retain paths beyond an early unconditional ex
 
 TEST_CASE("Native register-to-predicate writes only masked predicate bits", "[native-shader]") {
     const std::array<Native, 2> source{{{{0x05007804, 7, 0, 0x000fe200}}, VertexTransform.back()}};
-    const auto lowered = Shader::Ampere::LowerToMaxwell(source);
-    REQUIRE(lowered);
-    REQUIRE(Shader::Maxwell::Decode(lowered.instructions[0]) == Shader::Maxwell::Opcode::R2P_imm);
-    Shader::ObjectPool<IR::Inst> pool;
-    IR::Block block{pool};
-    EmptyEnvironment env;
-    Shader::Maxwell::TranslatorVisitor visitor{env, block};
-    visitor.R2P_imm(lowered.instructions[0]);
-    for (u32 value = 0; value < 128; ++value) {
-        std::array<bool, 7> predicates{true, false, true, false, true, false, true};
-        std::unordered_map<const IR::Inst*, u32> values;
-        const auto get = [&](const IR::Value& v) -> u32 {
-            if (!v.IsImmediate()) return values.at(v.Inst());
-            return v.Type() == IR::Type::U1 ? static_cast<u32>(v.U1()) : v.U32();
-        };
-        for (const auto& inst : block.Instructions()) {
-            const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
-            switch (inst.GetOpcode()) {
-            case IR::Opcode::GetRegister:
-                REQUIRE(static_cast<u32>(inst.Arg(0).Reg()) == 5);
-                values[&inst] = value; break;
-            case IR::Opcode::GetPred: values[&inst] = predicates[static_cast<u32>(inst.Arg(0).Pred())]; break;
-            case IR::Opcode::SetPred: predicates[static_cast<u32>(inst.Arg(0).Pred())] = arg(1) != 0; break;
-            case IR::Opcode::BitFieldUExtract: values[&inst] = (arg(0) >> arg(1)) & ((1U << arg(2)) - 1); break;
-            case IR::Opcode::GetZeroFromOp: values[&inst] = arg(0) == 0; break;
-            case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
-            case IR::Opcode::LogicalNot: values[&inst] = !arg(0); break;
-            case IR::Opcode::SelectU1: values[&inst] = arg(0) ? arg(1) : arg(2); break;
-            default: FAIL("Unexpected R2P IR " << IR::NameOf(inst.GetOpcode()));
+    for (u32 byte = 0; byte < 4; ++byte) {
+        auto selected = source;
+        selected[0].words[2] = byte << 12;
+        const auto lowered = Shader::Ampere::LowerToMaxwell(selected);
+        REQUIRE(lowered);
+        REQUIRE(Shader::Maxwell::Decode(lowered.instructions[0]) == Shader::Maxwell::Opcode::R2P_imm);
+        Shader::ObjectPool<IR::Inst> pool;
+        IR::Block block{pool};
+        EmptyEnvironment env;
+        Shader::Maxwell::TranslatorVisitor visitor{env, block};
+        visitor.R2P_imm(lowered.instructions[0]);
+        for (u32 value = 0; value < 128; ++value) {
+            std::array<bool, 7> predicates{true, false, true, false, true, false, true};
+            std::unordered_map<const IR::Inst*, u32> values;
+            const auto get = [&](const IR::Value& v) -> u32 {
+                if (!v.IsImmediate()) return values.at(v.Inst());
+                return v.Type() == IR::Type::U1 ? static_cast<u32>(v.U1()) : v.U32();
+            };
+            for (const auto& inst : block.Instructions()) {
+                const auto arg = [&](size_t i) { return get(inst.Arg(i)); };
+                switch (inst.GetOpcode()) {
+                case IR::Opcode::GetRegister:
+                    REQUIRE(static_cast<u32>(inst.Arg(0).Reg()) == 5);
+                    values[&inst] = value << (byte * 8); break;
+                case IR::Opcode::GetPred: values[&inst] = predicates[static_cast<u32>(inst.Arg(0).Pred())]; break;
+                case IR::Opcode::SetPred: predicates[static_cast<u32>(inst.Arg(0).Pred())] = arg(1) != 0; break;
+                case IR::Opcode::BitFieldUExtract: values[&inst] = (arg(0) >> arg(1)) & ((1U << arg(2)) - 1); break;
+                case IR::Opcode::GetZeroFromOp: values[&inst] = arg(0) == 0; break;
+                case IR::Opcode::IEqual: values[&inst] = arg(0) == arg(1); break;
+                case IR::Opcode::LogicalNot: values[&inst] = !arg(0); break;
+                case IR::Opcode::SelectU1: values[&inst] = arg(0) ? arg(1) : arg(2); break;
+                default: FAIL("Unexpected R2P IR " << IR::NameOf(inst.GetOpcode()));
+                }
             }
+            for (u32 bit = 0; bit < 7; ++bit)
+                REQUIRE(predicates[bit] == (bit < 3 ? bool(value & (1U << bit)) : bool(bit % 2 == 0)));
         }
-        for (u32 bit = 0; bit < 7; ++bit)
-            REQUIRE(predicates[bit] == (bit < 3 ? bool(value & (1U << bit)) : bool(bit % 2 == 0)));
     }
     auto invalid = source;
     invalid[0].words[2] = 1;
@@ -2580,6 +2584,11 @@ TEST_CASE("Native capture distinguishes forward branches from call targets beyon
     REQUIRE(multiple.Observe(VertexTransform.back(), 4) == Capture::Result::Continue);
     REQUIRE(multiple.Observe(Native{{0x08007950, 0, 0, 0}}, 9) == Capture::Result::Continue);
     REQUIRE(multiple.Observe(Native{{0x08007950, 0, 0, 0}}, 13) == Capture::Result::Complete);
+    Capture loop_exit;
+    REQUIRE(loop_exit.Observe(Native{{0x0944, 16, 0x03c00000, 0}}, 0) == Capture::Result::Continue);
+    REQUIRE(loop_exit.Observe(Native{{0x7947, 0xfffffff0, 0x0383ffff, 0}}, 1) == Capture::Result::Continue);
+    REQUIRE(loop_exit.Observe(Native{{0x7941, 0, 0x03800000, 0}}, 2) == Capture::Result::Continue);
+    REQUIRE(loop_exit.Observe(VertexTransform.back(), 3) == Capture::Result::Complete);
     Capture invalid;
     REQUIRE(invalid.Observe(Native{{0x7947, 1, 0x03800000, 0}}, 0) == Capture::Result::InvalidTarget);
 }

@@ -300,7 +300,9 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
         return false;
     try {
+        LOG_INFO(HW_GPU, "Native compute begin: program={:#x}", regs.code_loc.Address());
         rasterizer->DispatchCompute();
+        LOG_INFO(HW_GPU, "Native compute complete");
     } catch (const Shader::Exception& error) {
         LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
         return false;

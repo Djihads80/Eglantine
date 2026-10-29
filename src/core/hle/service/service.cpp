@@ -111,7 +111,7 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     if (info == nullptr || info->handler_callback == nullptr)
         return ReportUnimplementedFunction(ctx, info);
 
-    LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
+    LOG_DEBUG(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
     handler_invoker(this, info->handler_callback, ctx);
 
     if (is_i_storage && is_cmd_read) {
@@ -128,7 +128,7 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
     if (info == nullptr || info->handler_callback == nullptr)
         return ReportUnimplementedFunction(ctx, info);
 
-    LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
+    LOG_DEBUG(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
     handler_invoker(this, info->handler_callback, ctx);
 }
 

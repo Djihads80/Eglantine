@@ -83,13 +83,23 @@ namespace {
 class ISyncpointSupervisor final : public ServiceFramework<ISyncpointSupervisor> {
 public:
     ISyncpointSupervisor(Core::System& system, std::shared_ptr<Nvidia::Module> module)
-        : ServiceFramework{system, "ISyncpointSupervisor"}, m_module{std::move(module)} {
+        : ServiceFramework{system, "ISyncpointSupervisor"}, m_module{std::move(module)},
+          m_context{system, "NativeSyncpoint"} {
         static const FunctionInfo functions[] = {
+            {0, &ISyncpointSupervisor::ExchangeClientToken, "ExchangeClientToken"},
             {1, &ISyncpointSupervisor::GetMaximumEventCount, "GetMaximumEventCount"},
             {21, &ISyncpointSupervisor::SetEventCount, "SetEventCount"},
+            {22, &ISyncpointSupervisor::GetEvent, "GetEvent"},
+            {201, &ISyncpointSupervisor::ArmEvent, "ArmEvent"},
+            {202, &ISyncpointSupervisor::CancelEvent, "CancelEvent"},
             {103, &ISyncpointSupervisor::QueryCounter, "QueryCounter"},
         };
         RegisterHandlersTipc(functions);
+    }
+
+    ~ISyncpointSupervisor() override {
+        if (m_poll) system.CoreTiming().UnscheduleEvent(m_poll);
+        for (auto& event : m_events) m_context.CloseEvent(event.event);
     }
 
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
@@ -108,6 +118,16 @@ public:
 private:
     static constexpr u32 MaximumEventCount = 63;
 
+    void ExchangeClientToken(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const Result result = packet[0] == 0x10 && packet[1] == 2
+            ? ResultSuccess : Kernel::ResultInvalidCombination;
+        const u64 token = u64{packet[2]} | (u64{packet[3]} << 32);
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push(token);
+        LOG_DEBUG(Service_AM, "syncpoint token={:#x}, result={:#x}", token, result.raw);
+    }
     void GetMaximumEventCount(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         const Result result = packet[0] == 0x11 && packet[1] == 0
@@ -130,6 +150,89 @@ private:
         LOG_DEBUG(Service_AM, "syncpoint event count={}, result={:#x}", m_event_count, result.raw);
     }
 
+    void GetEvent(HLERequestContext& ctx) {
+        const auto* p = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (p[0] == 0x26 && p[1] == 1 && p[2] < m_event_count) {
+            auto& event = m_events[p[2]];
+            if (!event.event) event.event = m_context.CreateEvent("SyncpointCompletion");
+            result = event.event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (event.event) {
+                readable = &event.event->GetReadableEvent();
+                readable->Open(kernel);
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
+    void RefreshEvents() {
+        auto& manager = m_module->GetContainer().GetSyncpointManager();
+        for (auto& event : m_events) {
+            if (!event.pending) continue;
+            const auto current = manager.ReadAllocatedSyncpoint(event.id);
+            if (current && event.last_observed != *current) {
+                event.last_observed = *current;
+                LOG_INFO(Service_AM, "Syncpoint wait progress: id={}, current={}, target={}", event.id, *current, event.threshold);
+            }
+            if (current && static_cast<s32>(*current - event.threshold) >= 0) {
+                event.pending = false;
+                event.event->Signal(kernel);
+            }
+        }
+    }
+    void ArmEvent(HLERequestContext& ctx) {
+        const auto* p = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        const u32 id = ~p[3];
+        if (p[0] == 0xd9 && p[1] == 5 && p[2] < m_event_count &&
+            p[5] == 0 && p[6] == 0 &&
+            m_module->GetContainer().GetSyncpointManager().ReadAllocatedSyncpoint(id)) {
+            auto& event = m_events[p[2]];
+            if (!event.event) event.event = m_context.CreateEvent("SyncpointCompletion");
+            result = event.event ? ResultSuccess : Kernel::ResultOutOfResource;
+            if (event.event) {
+                event.event->Clear(kernel);
+                event.id = id;
+                event.threshold = p[4];
+                event.last_observed = ~u32{0};
+                LOG_INFO(Service_AM, "Arm syncpoint wait: slot={}, id={}, target={}", p[2], id, event.threshold);
+                event.pending = true;
+                RefreshEvents();
+                if (!m_poll) {
+                    m_poll = Core::Timing::CreateEvent("NativeSyncpointCompletion",
+                        [this](s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                            const auto guard = LockService();
+                            RefreshEvents();
+                            return std::nullopt;
+                        });
+                    system.CoreTiming().ScheduleLoopingEvent(std::chrono::milliseconds{1},
+                        std::chrono::milliseconds{1}, m_poll);
+                }
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+        LOG_DEBUG(Service_AM, "syncpoint arm event={}, id={}, threshold={}, result={:#x}",
+                  p[2], id, p[4], result.raw);
+    }
+    void CancelEvent(HLERequestContext& ctx) {
+        const auto* p = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (p[0] == 0xda && p[1] == 1 && p[2] < m_event_count) {
+            auto& event = m_events[p[2]];
+            event.pending = false;
+            // The native SDK waits for this event after cancelling a timed wait
+            // before it releases the event slot. Cancellation acknowledges that
+            // the wait is retired; it does not advance the syncpoint counter.
+            if (event.event) event.event->Signal(kernel);
+            result = ResultSuccess;
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+
     void QueryCounter(HLERequestContext& ctx) {
         const auto* packet = ctx.CommandBuffer();
         Result result = Kernel::ResultInvalidCombination;
@@ -149,6 +252,16 @@ private:
 
     std::shared_ptr<Nvidia::Module> m_module;
     u32 m_event_count{};
+    struct CompletionEvent {
+        Kernel::KEvent* event{};
+        u32 id{};
+        u32 threshold{};
+        u32 last_observed = ~u32{0};
+        bool pending{};
+    };
+    KernelHelpers::ServiceContext m_context;
+    std::array<CompletionEvent, MaximumEventCount> m_events{};
+    std::shared_ptr<Core::Timing::EventType> m_poll;
 };
 
 class IVi2Session final : public ServiceFramework<IVi2Session> {
@@ -173,6 +286,8 @@ public:
             {11, &IVi2Session::GetNotificationEvent, "GetNotificationEvent"},
             {13, &IVi2Session::ReleaseNotificationEvent, "ReleaseNotificationEvent"},
             {21, &IVi2Session::GetNotifications, "GetNotifications"},
+            {31, &IVi2Session::DuplicateVsyncEvent, "GetDisplayEvent"},
+            {32, &IVi2Session::DuplicateDisplayEvent, "DuplicateDisplayEvent"},
             {3, &IVi2Session::GetSessionLimit, "GetSessionLimit"},
             {5, &IVi2Session::GetSessionLimit, "GetRequestGroupLimit"},
             {51, &IVi2Session::ConfigureRequestGroups, "ConfigureRequestGroups"},
@@ -186,6 +301,10 @@ public:
             {229, &IVi2Session::PresentClientBuffer, "PresentClientBuffer"},
             {228, &IVi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {351, &IVi2Session::SetClientOutputEncoding, "SetClientOutputEncoding"},
+            {261, &IVi2Session::SetDisplayCapability, "SetDisplayCapability261"},
+            {265, &IVi2Session::SetDisplayCapability, "SetDisplayCapability265"},
+            {267, &IVi2Session::SetDisplayCapability, "SetDisplayCapability267"},
+            {271, &IVi2Session::SetDisplayCapability, "SetDisplayCapability271"},
             {251, &IVi2Session::BindClientDisplay, "BindClientDisplay"},
             {252, &IVi2Session::UnbindClientDisplay, "UnbindClientDisplay"},
         };
@@ -200,6 +319,7 @@ public:
             }
         }
         if (m_default_display) { m_display_service->CloseDisplay(*m_default_display); }
+        for (auto* event : m_display_change_events) m_context.CloseEvent(event);
         m_context.CloseEvent(m_event);
     }
 
@@ -216,6 +336,63 @@ public:
         return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
     }
 private:
+    void SetDisplayCapability(HLERequestContext& ctx) {
+        const auto* p = ctx.CommandBuffer();
+        const u64 name = u64{p[2]} | (u64{p[3]} << 32);
+        Result result = Kernel::ResultInvalidCombination;
+        if (p[0] == ctx.GetCommand() + 16 && p[1] == 3 && p[4] <= 1) {
+            result = name == 0x00746c7561666564ULL && m_default_display
+                ? ResultSuccess : Kernel::ResultNotFound;
+            if (result.IsSuccess()) {
+                // Per-client display mode capabilities do not change the host video mode.
+                m_display_capabilities[(ctx.GetCommand() - 261) / 2] = p[4] != 0;
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(result.raw);
+    }
+    void DuplicateVsyncEvent(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (packet[0] == 0x2f && packet[1] == 1 && packet[2] < 5) {
+            result = m_display_service && m_default_display
+                ? ResultSuccess : Kernel::ResultInvalidState;
+            if (result.IsSuccess() && !m_vsync_event) {
+                result = m_display_service->GetDisplayVsyncEvent(&m_vsync_event, *m_default_display);
+            }
+            if (result.IsSuccess()) {
+                if (packet[2] == 0) {
+                    readable = m_vsync_event;
+                } else {
+                    // Fixed host display properties have no change to report until changed.
+                    auto*& event = m_display_change_events[packet[2] - 1];
+                    if (!event) event = m_context.CreateEvent("DisplayPropertyChange");
+                    if (event) readable = &event->GetReadableEvent();
+                    else result = Kernel::ResultOutOfResource;
+                }
+                if (readable) readable->Open(kernel);
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+        LOG_DEBUG(Service_AM, "VI2 vsync event result={:#x}", result.raw);
+    }
+    void DuplicateDisplayEvent(HLERequestContext& ctx) {
+        const auto* p = ctx.CommandBuffer();
+        auto source = ctx.GetObjectFromHandle<Kernel::KReadableEvent>(ctx.GetCopyHandle(0));
+        const Result result = p[0] == 0x30 && p[1] == 0x80000001 && p[4] <= 1 && source.IsNotNull()
+            ? ResultSuccess : Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (result.IsSuccess()) {
+            readable = source.GetPointerUnsafe();
+            readable->Open(kernel);
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(result.raw);
+        ctx.AddMoveObject(readable);
+    }
     static std::optional<size_t> GetPlayerDisplayIndex(u64 name) {
         if ((name & 0xffffffffffffULL) != 0x726579616c70ULL || (name >> 56) != 0) {
             return std::nullopt;
@@ -440,7 +617,8 @@ private:
         // The observed presentation is a four-byte color image with the
         // backend's 16-GOB block height and no byte offset within its pool.
         R_UNLESS(packet[6] == 0 && packet[7] == image->preference[2] && packet[8] == 3 &&
-                 image->preference[4] == 7 && state.output_encoding == 0x14,
+                 image->preference[4] == 7 &&
+                 (state.output_encoding == 0x14 || state.output_encoding == 0x5),
                  Kernel::ResultNotImplemented);
         const u32 fence_id = ~packet[22];
         R_UNLESS(packet[23] == 0 && packet[25] == 0 &&
@@ -524,7 +702,7 @@ private:
             if (token && state != m_client_states.end()) {
                 result = Kernel::ResultNotImplemented;
                 // Only the SDK's observed default output encoding is supported.
-                if (encoding == 0x14) {
+                if (encoding == 0x14 || encoding == 0x5) {
                     state->output_encoding = encoding;
                     result = ResultSuccess;
                 }
@@ -691,7 +869,10 @@ private:
     std::array<ClientState, 16> m_client_states{};
     u32 m_client_slots{};
     std::shared_ptr<VI::IApplicationDisplayService> m_display_service;
+    Kernel::KReadableEvent* m_vsync_event{};
+    std::array<Kernel::KEvent*, 4> m_display_change_events{};
     std::optional<u64> m_default_display;
+    std::array<bool, 6> m_display_capabilities{};
     u32 m_display_references{};
     u32 m_display_notification{};
     std::array<u32, 3> m_player_display_references{};
@@ -796,7 +977,7 @@ void IGraphicsSupervisor::Initialize(HLERequestContext& ctx) {
             result = Kernel::ResultInvalidState;
         } else if (request->applet_resource_user_id != m_aruid) {
             result = Kernel::ResultInvalidArgument;
-        } else if (request->flags != 0x8000000000000005ULL || !empty_remote_memory) {
+        } else if ((request->flags != 0x8000000000000001ULL && request->flags != 0x8000000000000005ULL && request->flags != 0x8000000000000006ULL && request->flags != 0x8000000000000007ULL) || !empty_remote_memory) {
             result = Kernel::ResultNotImplemented;
         } else {
             m_phase = Phase::Initialized;
@@ -871,13 +1052,14 @@ void IGraphicsSupervisor::OpenGpuSession(HLERequestContext& ctx) {
     Result result = Kernel::ResultInvalidCombination;
     Kernel::KClientSession* client{};
     const u64 flags = u64{packet[2]} | (u64{packet[3]} << 32);
-    if (packet[0] == 0x201 && packet[1] == 2 && flags == 4) {
+    if (packet[0] == 0x201 && packet[1] == 2 && (flags == 3 || flags == 4)) {
         if (m_phase != Phase::Ready || !m_nv_module) {
             result = Kernel::ResultInvalidState;
         } else {
-            auto handler = std::make_shared<IGpuSession>(system, m_nv_module, m_process);
+            auto handler = std::make_shared<IGpuSession>(system, m_nv_module, m_process, flags == 3);
             result = CreateGraphicsSession(system, ctx, handler, &client);
             if (result.IsSuccess()) {
+                if (flags == 3) { m_image_formats_initialized = true; }
                 std::erase_if(m_gpu_sessions, [](const auto& item) { return item.expired(); });
                 m_gpu_sessions.emplace_back(handler);
             }
@@ -930,7 +1112,7 @@ void IGraphicsSupervisor::OpenDisplaySession(HLERequestContext& ctx) {
     Kernel::KClientSession* client{};
     const u64 flags = u64{packet[2]} | (u64{packet[3]} << 32);
     Result result = Kernel::ResultInvalidCombination;
-    if (packet[0] == 0x141 && packet[1] == 2 && flags == 0x300020000ULL) {
+    if (packet[0] == 0x141 && packet[1] == 2 && (flags == 0x300010000ULL || flags == 0x300020000ULL)) {
         result = m_display_context_initialized ? ResultSuccess : Kernel::ResultInvalidState;
         if (result.IsSuccess()) {
             result = CreateGraphicsSession(system, ctx, std::make_shared<IVi2Session>(system, m_aruid, m_image_registry),
@@ -1044,7 +1226,7 @@ void IGraphicsSupervisor::GetNvidiaDriver(HLERequestContext& ctx) {
         Fail(Kernel::ResultInvalidCombination);
         return;
     }
-    if (m_phase != Phase::Ready || !m_image_formats_initialized) {
+    if (m_phase != Phase::Ready) {
         Fail(Kernel::ResultInvalidState);
         return;
     }

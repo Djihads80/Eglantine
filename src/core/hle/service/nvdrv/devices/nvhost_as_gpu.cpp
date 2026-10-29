@@ -110,6 +110,44 @@ void nvhost_as_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
 }
 void nvhost_as_gpu::OnClose(DeviceFD fd) {}
 
+NvResult nvhost_as_gpu::CreateNativeSparseRegion(u64 address, u64 size) {
+    if (!m_extended_abi || !size || !Common::IsAligned(address, VM::YUZU_PAGESIZE) ||
+        !Common::IsAligned(size, VM::YUZU_PAGESIZE) || (size >> VM::PAGE_SIZE_BITS) > 0xffffffffULL) {
+        return NvResult::BadParameter;
+    }
+    {
+        const std::scoped_lock lock{mutex};
+        if (!vm.initialised || address < vm.va_range_start || address >= vm.va_range_split ||
+            size > vm.va_range_split - address) { return NvResult::BadParameter; }
+        const auto next = allocation_map.lower_bound(address);
+        if ((next != allocation_map.end() && next->first < address + size) ||
+            (next != allocation_map.begin() && std::prev(next)->first + std::prev(next)->second.size > address)) {
+            return NvResult::BadParameter;
+        }
+    }
+    IoctlAllocSpace reservation{};
+    reservation.pages = static_cast<u32>(size >> VM::PAGE_SIZE_BITS);
+    reservation.page_size = VM::YUZU_PAGESIZE;
+    reservation.flags = MappingFlags::Fixed | MappingFlags::Sparse;
+    reservation.offset = address;
+    return AllocateSpace(reservation);
+}
+
+NvResult nvhost_as_gpu::DestroyNativeSparseRegion(u64 address, u64 size) {
+    {
+        const std::scoped_lock lock{mutex};
+        const auto it = allocation_map.find(address);
+        if (!m_extended_abi || it == allocation_map.end() || !it->second.sparse || it->second.size != size) {
+            return NvResult::BadParameter;
+        }
+    }
+    IoctlFreeSpace release{};
+    release.offset = address;
+    release.pages = static_cast<u32>(size >> VM::PAGE_SIZE_BITS);
+    release.page_size = VM::YUZU_PAGESIZE;
+    return FreeSpace(release);
+}
+
 NvResult nvhost_as_gpu::MapNative4K(u32 handle_id, u64 address, u64 buffer_offset, u64 size, u8 kind) {
     if (!m_extended_abi || !size || !Common::IsAligned(address, VM::YUZU_PAGESIZE) ||
         !Common::IsAligned(size, VM::YUZU_PAGESIZE) ||
@@ -120,16 +158,23 @@ NvResult nvhost_as_gpu::MapNative4K(u32 handle_id, u64 address, u64 buffer_offse
     if (!handle || buffer_offset > handle->orig_size || size > handle->orig_size - buffer_offset) {
         return NvResult::BadParameter;
     }
+    bool sparse_reservation = false;
     {
         const std::scoped_lock lock{mutex};
         if (!vm.initialised || address < vm.va_range_start || address >= vm.va_range_split ||
             size > vm.va_range_split - address) {
             return NvResult::BadParameter;
         }
+        const auto upper = allocation_map.upper_bound(address);
+        if (upper != allocation_map.begin()) {
+            const auto owner = std::prev(upper);
+            sparse_reservation = owner->second.sparse && address >= owner->first &&
+                address - owner->first < owner->second.size && size <= owner->second.size - (address - owner->first);
+        }
         const auto next = allocation_map.lower_bound(address);
-        if ((next != allocation_map.end() && next->first < address + size) ||
+        if (!sparse_reservation && ((next != allocation_map.end() && next->first < address + size) ||
             (next != allocation_map.begin() &&
-             std::prev(next)->first + std::prev(next)->second.size > address)) {
+             std::prev(next)->first + std::prev(next)->second.size > address))) {
             return NvResult::BadParameter;
         }
     }
@@ -138,7 +183,7 @@ NvResult nvhost_as_gpu::MapNative4K(u32 handle_id, u64 address, u64 buffer_offse
     reservation.page_size = VM::YUZU_PAGESIZE;
     reservation.flags = MappingFlags::Fixed;
     reservation.offset = address;
-    const auto reserved = AllocateSpace(reservation);
+    const auto reserved = sparse_reservation ? NvResult::Success : AllocateSpace(reservation);
     if (reserved != NvResult::Success) { return reserved; }
     IoctlMapBufferEx mapping{};
     mapping.flags = MappingFlags::Fixed;
@@ -149,7 +194,7 @@ NvResult nvhost_as_gpu::MapNative4K(u32 handle_id, u64 address, u64 buffer_offse
     mapping.mapping_size = size;
     mapping.offset = static_cast<s64>(address);
     const auto result = MapBufferEx(mapping);
-    if (result != NvResult::Success) {
+    if (result != NvResult::Success && !sparse_reservation) {
         nvmap.UnpinHandle(handle_id);
         IoctlFreeSpace release{};
         release.offset = address;
@@ -164,6 +209,17 @@ NvResult nvhost_as_gpu::UnmapNative4K(u64 address, u64 size) {
     if (!m_extended_abi || !size || !Common::IsAligned(address, VM::YUZU_PAGESIZE) ||
         !Common::IsAligned(size, VM::YUZU_PAGESIZE)) {
         return NvResult::BadParameter;
+    }
+    bool sparse_mapping = false;
+    {
+        const std::scoped_lock lock{mutex};
+        const auto it = mapping_map.find(address);
+        sparse_mapping = it != mapping_map.end() && it->second.sparse_alloc && it->second.size == size;
+    }
+    if (sparse_mapping) {
+        IoctlUnmapBuffer unmap{};
+        unmap.offset = address;
+        return UnmapBuffer(unmap);
     }
     IoctlFreeSpace release{};
     release.offset = address;
@@ -275,7 +331,7 @@ NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
         return NvResult::BadValue;
     }
 
-    if (params.page_size != vm.big_page_size &&
+    if (!m_extended_abi && params.page_size != vm.big_page_size &&
         ((params.flags & MappingFlags::Sparse) != MappingFlags::None)) {
         UNIMPLEMENTED_MSG("Sparse small pages are not implemented!");
         return NvResult::NotImplemented;
@@ -300,7 +356,7 @@ NvResult nvhost_as_gpu::AllocateSpace(IoctlAllocSpace& params) {
     u64 size{static_cast<u64>(params.pages) * params.page_size};
 
     if ((params.flags & MappingFlags::Sparse) != MappingFlags::None) {
-        gmmu->MapSparse(params.offset, size);
+        gmmu->MapSparse(params.offset, size, params.page_size != VM::YUZU_PAGESIZE);
     }
 
     allocation_map[params.offset] = {

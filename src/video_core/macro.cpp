@@ -1351,12 +1351,22 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         }
         LOG_DEBUG(HW_GPU, "Native MME context={:#x}", context);
         LOG_DEBUG(HW_GPU, "Native MME start={:#x}, parameters={}, data={:08x}", method, parameters.size(), fmt::join(parameters, ","));
+        u32 dma_count{};
         const auto result = native_interpreter.Execute(native_code, method, parameters,
             [&](u32 address) { return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U; },
             [&](u32 address, u32 value) {
                 if (address >= 0xe00) return false;
+                if (address == 0x158) dma_count = value; // MME_DMA_READ_FIFOED
                 maxwell3d.CallMethod(system, address, value, true);
                 return true;
+            }, [&]() -> std::optional<std::vector<u32>> {
+                if (dma_count > 0x10000) return std::nullopt;
+                std::vector<u32> data(dma_count);
+                const GPUVAddr address = (u64{maxwell3d.GetRegisterValue(0x154) & 0xff} << 32) |
+                                         maxwell3d.GetRegisterValue(0x155);
+                if (dma_count && !maxwell3d.ReadMacroMemory(address, data)) return std::nullopt;
+                dma_count = 0;
+                return data;
             });
         if (!result.success) {
             native_execution_failed = true;

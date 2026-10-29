@@ -838,7 +838,7 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     if (gpu_memory.GpuToCpuAddress(address).has_value()) {
         return true;
     }
-    const ImageInfo info{config};
+    const ImageInfo info{TextureViewHeader(config, gpu_memory.UsesNativeTiling())};
     const size_t guest_size_bytes = CalculateGuestSizeInBytes(info);
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }

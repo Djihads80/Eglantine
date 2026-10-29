@@ -221,7 +221,31 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci) const
     VkImage handle{};
     VmaAllocation allocation{};
     VmaAllocationInfo alloc_info{};
-    vk::Check(vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    const VkResult result = vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan,
+                  "Vulkan image allocation failed (result={}): {}x{}x{}, format={:#x}, type={}, "
+                  "layers={}, mips={}, samples={}, usage={:#x}, flags={:#x}",
+                  static_cast<s32>(result), ci.extent.width, ci.extent.height, ci.extent.depth,
+                  static_cast<u32>(ci.format), static_cast<u32>(ci.imageType), ci.arrayLayers,
+                  ci.mipLevels, static_cast<u32>(ci.samples), ci.usage, ci.flags);
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+        vmaGetHeapBudgets(allocator, budgets);
+        const auto format_properties = device.GetPhysical().GetFormatProperties(ci.format);
+        const auto physical_properties = device.GetPhysical().GetProperties();
+        LOG_ERROR(Render_Vulkan,
+                  "Image device limits: max2D={}, max allocations={}, format optimal features={:#x}",
+                  physical_properties.limits.maxImageDimension2D,
+                  physical_properties.limits.maxMemoryAllocationCount,
+                  format_properties.optimalTilingFeatures);
+        for (u32 heap = 0; heap < properties.memoryHeapCount; ++heap) {
+            LOG_ERROR(Render_Vulkan,
+                      "Vulkan heap {} budget at image failure: usage={} MiB, budget={} MiB, blocks={}, allocations={}",
+                      heap, budgets[heap].usage / (1024 * 1024), budgets[heap].budget / (1024 * 1024),
+                      budgets[heap].statistics.blockCount, budgets[heap].statistics.allocationCount);
+        }
+    }
+    vk::Check(result);
 
     // Log GPU memory allocation for images
     if (GPU::Logging::IsActive() &&

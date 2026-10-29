@@ -44,10 +44,16 @@ NvResult nvhost_tsg_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> 
     LOG_DEBUG(Service_NVDRV, "native TSG ioctl={:#x}, input={}, output={}, words={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
               command.raw, input.size(), output.size(), words[0], words[1], words[2], words[3],
               words[4], words[5], words[6], words[7]);
-    if (command.raw != 0xc0045401 && command.raw != 0xc0045402) { return NvResult::NotImplemented; }
-    if (!process || input.size() != 4 || output.size() != 4) { return NvResult::BadParameter; }
+    if (command.raw != 0xc0045401 && command.raw != 0xc0045402 && command.raw != 0xc018540b) { return NvResult::NotImplemented; }
+    const size_t packet_size = command.raw == 0xc018540b ? 24 : 4;
+    if (!process || input.size() != packet_size || output.size() != packet_size) {
+        return NvResult::BadParameter;
+    }
+    if (packet_size == 24 && (words[1] >= 64 || words[2] || words[3] || words[4] || words[5])) {
+        return NvResult::BadParameter;
+    }
     const DeviceFD channel_fd = static_cast<s32>(words[0]);
-    if (command.cmd == 1) {
+    if (command.cmd == 1 || command.cmd == 11) {
         if (channels.contains(channel_fd)) { return NvResult::Busy; }
         if (channels.size() >= 64) { return NvResult::InsufficientMemory; }
         const auto device = module.GetDevice<nvdevice>(channel_fd);

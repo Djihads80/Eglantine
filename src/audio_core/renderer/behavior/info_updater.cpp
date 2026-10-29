@@ -30,6 +30,9 @@ InfoUpdater::InfoUpdater(std::span<const u8> input_, std::span<u8> output_,
       expected_input_size{input_.size()}, expected_output_size{output_.size()},
       process_handle{process_handle_}, behaviour{behaviour_} {
     std::construct_at<UpdateDataHeader>(out_header, behaviour.GetProcessRevision());
+    if ((in_header->revision & 0x00ffffffU) == 0x00764552U) {
+        out_header->revision ^= 0x00200000U;
+    }
 }
 
 Result InfoUpdater::UpdateVoiceChannelResources(VoiceContext& voice_context) {
@@ -584,11 +587,19 @@ Result InfoUpdater::UpdatePerformanceBuffer(std::span<u8> performance_output,
 Result InfoUpdater::UpdateBehaviorInfo(BehaviorInfo& behaviour_) {
     const auto in_params{reinterpret_cast<const BehaviorInfo::InParameter*>(input)};
 
+    static bool logged_header = false;
+    if (!logged_header) {
+        logged_header = true;
+        LOG_WARNING(Service_Audio, "Audio update header revision={:#x}, behavior revision={:#x}, expected={:#x}, behavior_size={}, total={}",
+                    in_header->revision, in_params->revision, behaviour_.GetUserRevision(), in_header->behaviour_size, in_header->size);
+    }
     if (!CheckValidRevision(in_params->revision)) {
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 
-    if (in_params->revision != behaviour_.GetUserRevision()) {
+    const u32 revision = (in_params->revision & 0x00ffffffU) == 0x00764552U
+        ? in_params->revision ^ 0x00200000U : in_params->revision;
+    if (revision != behaviour_.GetUserRevision()) {
         return Service::Audio::ResultInvalidUpdateInfo;
     }
 

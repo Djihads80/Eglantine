@@ -223,6 +223,13 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
     }
 }
 
+bool Maxwell3D::ReadMacroMemory(GPUVAddr address, std::span<u32> destination) {
+    if (!memory_manager.IsFullyMappedRange(address, destination.size_bytes())) return false;
+    // ReadBlock flushes renderer caches before reading data written by GPU work.
+    memory_manager.ReadBlock(address, destination.data(), destination.size_bytes());
+    return true;
+}
+
 void Maxwell3D::RefreshParametersImpl() {
     if (!Settings::IsGPULevelHigh()) {
         return;
