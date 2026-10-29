@@ -3384,3 +3384,17 @@ TEST_CASE("Native constant interpolation retains attribute and flat input behavi
     }
     REQUIRE(reads == 1);
 }
+TEST_CASE("Native convergence setup records matching scope state", "[native-shader]") {
+    const u32 depth = GENERATE(1U, 2U, 3U, 4U);
+    std::vector<Native> input;
+    for (u32 i = 0; i < depth; ++i)
+        input.push_back(Native{{0x7945U | (i << 16), (2 * depth - 2 * i - 1) * 16, 0x03800000, 0}});
+    for (u32 i = depth; i > 0; --i)
+        input.push_back(Native{{0x7941U | ((i - 1) << 16), 0, 0x03800000, 0}});
+    input.push_back(VertexTransform.back());
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    REQUIRE(lowered.source_size == input.size() * sizeof(Native));
+    REQUIRE(lowered.instructions.size() == depth * 2 + 1);
+}

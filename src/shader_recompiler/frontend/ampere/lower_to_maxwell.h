@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <span>
 #include <set>
 #include <optional>
@@ -2666,6 +2667,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             if (opcode == 0x945) {
                 if (barrier_tokens.size() >= 16 || std::find(barrier_tokens.begin(), barrier_tokens.end(), insn.Bits(16, 4)) != barrier_tokens.end() || insn.Bits(12, 4) != 7) return fail(index, "native nested reconvergence token");
+                barrier_sync_scopes.push_back(!has_barrier_break || barrier_tokens.empty() ||
+                    std::ranges::find(cancellation_parent_scopes, index) != cancellation_parent_scopes.end());
                 barrier_tokens.push_back(insn.Bits(16, 4));
                 barrier_targets.push_back(s64{index + 1} * 16 + static_cast<s32>(insn.words[1]));
             }
