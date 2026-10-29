@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <cstdlib>
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
@@ -166,7 +170,26 @@ u64 DynarmicCallbacks64::GetTicksRemaining() {
 }
 
 u64 DynarmicCallbacks64::GetCNTPCT() {
-    return m_parent.m_system.CoreTiming().GetClockTicks();
+    const u64 ticks = m_parent.m_system.CoreTiming().GetClockTicks();
+    // Guest code that waits by polling the counter (title 1's main thread reads it ~17 million
+    // times a second while waiting for the GPU) keeps a host core busy at full speed, and the
+    // GPU thread is often on the other half of that SMT core. Two reads within ~1.7 us of each
+    // other are such a loop: pause, which hands the core's resources to the sibling thread for a
+    // moment. The guest sees the same counter. EDEN_NX2_CNTPCT_PAUSE=0 turns it off.
+    static const bool pause_spins = [] {
+        const char* value = std::getenv("EDEN_NX2_CNTPCT_PAUSE");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (pause_spins && ticks - m_last_cntpct < 32) {
+#if defined(_M_X64) || defined(__x86_64__)
+        _mm_pause();
+        _mm_pause();
+#elif defined(__aarch64__)
+        asm volatile("yield");
+#endif
+    }
+    m_last_cntpct = ticks;
+    return ticks;
 }
 
 bool DynarmicCallbacks64::CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type) {

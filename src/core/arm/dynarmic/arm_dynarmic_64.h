@@ -65,6 +65,7 @@ public:
     Core::Memory::Memory& m_memory;
     u64 m_tpidrro_el0{};
     u64 m_tpidr_el0{};
+    u64 m_last_cntpct{}; ///< The previous counter read (GetCNTPCT spin detection)
     Kernel::KProcess* m_process{};
     const bool m_debugger_enabled{};
     const bool m_check_memory_access{};
