@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -208,10 +210,28 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         executing_macro = method;
     }
 
-    macro_params.insert(macro_params.end(), base_start, base_start + amount);
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
+
+    // Nearly every call arrives whole in one method run (title 1 makes ~1,000,000 a second):
+    // copy it to the stack instead of growing the parameter vector. Still a copy: the command
+    // list is often guest memory read in place, which the guest may reuse while the macro runs
+    // (and the macro memo stores the parameters after it ran). Only accurate GPU mode rewrites
+    // the parameters in place (RefreshParameters), so it keeps the vector.
+    // EDEN_NX2_MACRO_COPY=1: always use the vector (for comparisons).
+    static const bool always_copy = std::getenv("EDEN_NX2_MACRO_COPY") != nullptr;
+    if (is_last_call && macro_params.empty() && amount <= 64 && !always_copy &&
+        !Settings::IsGPULevelHigh()) {
+        std::array<u32, 64> parameters;
+        std::copy_n(base_start, amount, parameters.begin());
+        ConsumeSink(system);
+        CallMacroMethod(system, executing_macro, std::span<const u32>{parameters.data(), amount});
+        macro_segments.clear();
+        current_macro_dirty = false;
+        return;
+    }
+    macro_params.insert(macro_params.end(), base_start, base_start + amount);
 
     // Call the macro when there are no more parameters in the command buffer
     if (is_last_call) {
@@ -379,7 +399,7 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
     }
 }
 
-void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters) {
+void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters) {
     // Reset the current macro.
     executing_macro = 0;
 

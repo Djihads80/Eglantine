@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -3247,7 +3248,7 @@ private:
      * @param method Method to call
      * @param parameters Arguments to the method call
      */
-    void CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
+    void CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters);
 
     /// Handles writes to the macro uploading register.
     void ProcessMacroUpload(u32 data);
