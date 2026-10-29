@@ -58,6 +58,26 @@ public:
                            const QWidget* widget) const override;
 };
 
+/// Under Eden's dark themes their style sheet draws the tabs, never PlayerTabStyle: this layer
+/// over the tab bar paints the player tabs' bubbles instead (under the tab buttons, which stay
+/// usable)
+class PlayerTabOverlay : public QWidget {
+public:
+    PlayerTabOverlay(QTabBar* bar, QColor background);
+    /// A player tab being dragged (-1: none), drawn this far from its place
+    void SetDrag(int index, int offset);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QTabBar* bar;
+    /// The theme's own background, which covers its tab under the bubble
+    QColor background;
+    int drag_index = -1;
+    int drag_offset = 0;
+};
+
 class ConfigureInput : public QWidget {
     Q_OBJECT
 
@@ -79,6 +99,10 @@ private:
 
     /// Player tabs dropped in a new order: the controllers take that order, the tabs go back
     void FinishTabDrag();
+    /// The players' new order, as their tabs were dropped: the controllers move to match
+    void ApplyDroppedOrder(const std::vector<int>& dropped, int dragged_player);
+    /// Eden's own drag of a player tab, under the dark themes (Qt's would be the theme's tab)
+    bool DragPlayerTab(QEvent* event);
     /// The arrows on each player tab, swapping with the player before or after it
     void UpdateTabArrows();
     void SwapPlayers(int a, int b);
@@ -118,6 +142,13 @@ private:
     QTabWidget* drag_tabs = nullptr;
     /// The tab bar drawn with PlayerTabStyle (its player tabs as bubbles)
     QPointer<QTabBar> pill_bar;
+    QPointer<PlayerTabOverlay> tab_overlay;
+    /// The players can be reordered from their tabs (the automatic modes, on this page)
+    bool tabs_editable = false;
+    /// Eden's own tab drag: the tab pressed, where, and whether it is being dragged
+    int own_drag_index = -1;
+    int own_drag_press_x = 0;
+    bool own_dragging = false;
     QList<QWidget*> tab_order;
     QWidget* dragged_tab = nullptr;
     bool tab_dragging = false;

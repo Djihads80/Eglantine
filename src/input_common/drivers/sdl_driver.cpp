@@ -689,8 +689,8 @@ namespace {
 /// Controllers with motion sensors that Steam Input hides behind its sensorless virtual pads
 bool IsMotionController(unsigned vendor, unsigned product) {
     switch (vendor) {
-    case 0x28DE: // Valve: Steam Deck, Steam Controller (wired, wireless)
-        return product == 0x1205 || product == 0x1102 || product == 0x1142;
+    case 0x28DE: // Valve: Steam Deck, Steam Controller (wired, wireless), Steam Controller (2026)
+        return product == 0x1205 || product == 0x1102 || product == 0x1142 || product == 0x1302;
     case 0x054C: // Sony
     case 0x057E: // Nintendo
         return true;

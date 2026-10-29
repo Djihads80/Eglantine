@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "common/settings.h"
+#include "qt_common/config/uisettings.h"
 #include "common/settings_enums.h"
 #include "core/core.h"
 #include "core/hle/service/am/am.h"
@@ -36,6 +37,7 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QTabBar>
+#include <QCursor>
 #include <QApplication>
 #include <QPainter>
 #include <QStyleOptionTab>
@@ -265,18 +267,33 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
                     if (player_tab_titles[i].isEmpty()) {
                         player_tab_titles[i] = tabs->tabText(index);
                     }
-                    tabs->setTabVisible(index, shown);
-                    tabs->tabBar()->setTabTextColor(index, label);
+                    // Only what changed: each of these lays the tab bar out again, and done every
+                    // pass that shook it under the Midnight Blue themes
+                    const auto set_text = [tabs, index](const QString& text) {
+                        if (tabs->tabText(index) != text) {
+                            tabs->setTabText(index, text);
+                        }
+                    };
+                    const auto set_tip = [tabs, index](const QString& tip) {
+                        if (tabs->tabToolTip(index) != tip) {
+                            tabs->setTabToolTip(index, tip);
+                        }
+                    };
+                    if (tabs->isTabVisible(index) != shown) {
+                        tabs->setTabVisible(index, shown);
+                    }
+                    if (tabs->tabBar()->tabTextColor(index) != label) {
+                        tabs->tabBar()->setTabTextColor(index, label);
+                    }
                     if (!automatic) {
-                        tabs->setTabText(index, player_tab_titles[i]);
-                        tabs->setTabToolTip(index, {});
+                        set_text(player_tab_titles[i]);
+                        set_tip({});
                     } else if (shown) {
                         // The grip says the tab drags, like the Controllers tab's rows
-                        tabs->setTabText(index, QStringLiteral("\u283F P%1").arg(i + 1));
-                        tabs->setTabToolTip(
-                            index, tr("P%1: %2\nDrag left or right to change the player order")
-                                       .arg(i + 1)
-                                       .arg(QString::fromStdString(row->name)));
+                        set_text(QStringLiteral("\u283F P%1").arg(i + 1));
+                        set_tip(tr("P%1: %2\nDrag left or right to change the player order")
+                                    .arg(i + 1)
+                                    .arg(QString::fromStdString(row->name)));
                     }
                 }
             }
@@ -286,7 +303,9 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
         // selected tab reads bold
         if (tabs) {
             const bool controls_page = tabs->indexOf(player_tabs[0]) >= 0;
-            tabs->setMovable(automatic && engine_active && controls_page);
+            tabs_editable = automatic && engine_active && controls_page;
+            // Under the dark themes Qt's drag would show the theme's tab: Eden drags it instead
+            tabs->setMovable(tabs_editable && !UISettings::IsDarkTheme());
             // Pill tabs in the players' colours, the selected one filled (the tab bar is the
             // settings dialog's, shared with the other pages: only on this page, in these modes)
             QTabBar* bar = tabs->tabBar();
@@ -301,12 +320,52 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
                 bar->setStyle(nullptr);
                 pill_bar = nullptr;
             }
+            // The Midnight Blue themes give a hovered tab a 1-pixel border on three sides and
+            // narrow its padding: the tab and the whole tab bar change size, the page below
+            // moves, and with the hover lost it moves back, shaking. A hovered tab keeps its
+            // size: their padding (8 at the sides, 2 above and below) less that border (the
+            // bottom one grows from 2 to 3). (Every page of the settings dialog shares this bar.)
+            const bool midnight =
+                QString::fromStdString(UISettings::values.theme).contains(QStringLiteral("midnight"));
+            const QString steady =
+                midnight ? QStringLiteral("QTabBar::tab:top:!selected:hover { padding-left: 7px; "
+                                          "padding-right: 7px; padding-top: 1px; "
+                                          "padding-bottom: 1px; }")
+                         : QString{};
+            if (bar->styleSheet() != steady) {
+                bar->setStyleSheet(steady);
+            }
+            // The dark themes' style sheet draws the tabs itself: the bubbles are painted over it
+            const bool painted = pills && UISettings::IsDarkTheme();
+            if (painted) {
+                if (!tab_overlay || tab_overlay->parentWidget() != bar) {
+                    delete tab_overlay;
+                    tab_overlay = new PlayerTabOverlay(
+                        bar, QString::fromStdString(UISettings::values.theme)
+                                     .contains(QStringLiteral("midnight"))
+                                 ? QColor(0x19, 0x23, 0x2D)
+                                 : QColor(0x31, 0x36, 0x3B));
+                }
+                if (tab_overlay->geometry() != bar->rect()) {
+                    tab_overlay->setGeometry(bar->rect());
+                }
+                if (!tab_overlay->isVisible()) {
+                    tab_overlay->lower();
+                    tab_overlay->show();
+                }
+                tab_overlay->update();
+            } else if (tab_overlay) {
+                tab_overlay->hide();
+            }
             // A player tab's colour is what makes it a bubble: none outside these modes
             for (std::size_t i = 0; i < player_tabs.size(); ++i) {
                 if (const int index = tabs->indexOf(player_tabs[i]); index >= 0) {
-                    bar->setTabData(index, pills ? QVariant(ConfigurePlayerAssignment::PlayerColor(
-                                                       static_cast<int>(i)))
-                                                 : QVariant{});
+                    const QVariant tab_data =
+                        pills ? QVariant(ConfigurePlayerAssignment::PlayerColor(static_cast<int>(i)))
+                              : QVariant{};
+                    if (bar->tabData(index) != tab_data) {
+                        bar->setTabData(index, tab_data);
+                    }
                 }
             }
             if (tabs != drag_tabs) {
@@ -483,12 +542,14 @@ void PlayerTabStyle::drawControl(ControlElement element, const QStyleOption* opt
         painter->restore();
         return;
     }
-    // The label: white and bold on the filled tab
+    // The label: white and bold on the filled tab, else in the player's colour, which reads on
+    // a light tab bar and a dark one (Windows in dark mode keeps light tabs with white text);
+    // a flash colour wins
     QStyleOptionTab label{*tab};
-    if (selected) {
-        label.palette.setColor(QPalette::WindowText, Qt::white);
-        label.palette.setColor(QPalette::ButtonText, Qt::white);
-    }
+    const QColor flash = bar->tabTextColor(index);
+    const QColor text = selected ? QColor(Qt::white) : (flash.isValid() ? flash : accent);
+    label.palette.setColor(QPalette::WindowText, text);
+    label.palette.setColor(QPalette::ButtonText, text);
     painter->save();
     QFont font = painter->font();
     font.setBold(selected);
@@ -508,6 +569,84 @@ QSize PlayerTabStyle::sizeFromContents(ContentsType type, const QStyleOption* op
     return result;
 }
 
+PlayerTabOverlay::PlayerTabOverlay(QTabBar* bar_, QColor background_)
+    : QWidget(bar_), bar{bar_}, background{background_} {
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    setAttribute(Qt::WA_NoSystemBackground);
+    // The dark themes give a plain widget a solid background, which would cover the tab bar
+    setStyleSheet(QStringLiteral("background: transparent;"));
+}
+
+void PlayerTabOverlay::SetDrag(int index, int offset) {
+    drag_index = index;
+    drag_offset = offset;
+    update();
+}
+
+void PlayerTabOverlay::paintEvent(QPaintEvent*) {
+    QPainter painter{this};
+    painter.setRenderHint(QPainter::Antialiasing);
+    const int hovered = bar->underMouse() ? bar->tabAt(bar->mapFromGlobal(QCursor::pos())) : -1;
+    const auto bubble = [&](int i, QRect tab, bool around_arrows) {
+        const QColor accent = bar->tabData(i).value<QColor>();
+        const bool selected = i == bar->currentIndex();
+        const QRectF pill = QRectF(tab).adjusted(2, 3, -2, -3);
+        if (selected) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(accent);
+        } else {
+            QColor edge = accent;
+            edge.setAlpha(170);
+            painter.setPen(QPen(edge, 1.5));
+            QColor fill = accent;
+            fill.setAlpha(i == hovered ? 45 : 0);
+            painter.setBrush(fill);
+        }
+        painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+        // The label, between the tab's arrows; a flash colours it as on the tabs it covers
+        QRect text = tab;
+        if (around_arrows) {
+            if (const QWidget* left = bar->tabButton(i, QTabBar::LeftSide)) {
+                text.setLeft(left->geometry().right() + 1);
+            }
+            if (const QWidget* right = bar->tabButton(i, QTabBar::RightSide)) {
+                text.setRight(right->geometry().left() - 1);
+            }
+        }
+        QFont font = bar->font();
+        font.setBold(selected);
+        painter.setFont(font);
+        const QColor flash = bar->tabTextColor(i);
+        painter.setPen(selected ? QColor(Qt::white)
+                                : (flash.isValid() ? flash : QColor(0xEF, 0xF0, 0xF1)));
+        painter.drawText(text, Qt::AlignCenter, bar->tabText(i));
+    };
+    for (int i = 0; i < bar->count(); ++i) {
+        const QVariant tab_data = bar->tabData(i);
+        if (tab_data.metaType() != QMetaType::fromType<QColor>() || !bar->isTabVisible(i)) {
+            continue;
+        }
+        const QRect tab = bar->tabRect(i);
+        // The theme's tab goes under the theme's background, and the bubble goes on top
+        painter.fillRect(tab, background);
+        if (i == drag_index) {
+            // Where the dragged tab came from: an empty slot
+            QColor edge = tab_data.value<QColor>();
+            edge.setAlpha(90);
+            painter.setPen(QPen(edge, 1, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            const QRectF slot = QRectF(tab).adjusted(3, 4, -3, -4);
+            painter.drawRoundedRect(slot, slot.height() / 2, slot.height() / 2);
+            continue;
+        }
+        bubble(i, tab, true);
+    }
+    // The dragged tab, last, over the others
+    if (drag_index >= 0 && drag_index < bar->count()) {
+        bubble(drag_index, bar->tabRect(drag_index).translated(drag_offset, 0), false);
+    }
+}
+
 void ConfigureInput::SwapPlayers(int a, int b) {
     if (a == b || a < 0 || b < 0 || a >= 8 || b >= 8) {
         return;
@@ -518,6 +657,10 @@ void ConfigureInput::SwapPlayers(int a, int b) {
 }
 
 bool ConfigureInput::eventFilter(QObject* object, QEvent* event) {
+    if (drag_tabs && object == drag_tabs->tabBar() && tab_overlay && tab_overlay->isVisible() &&
+        DragPlayerTab(event)) {
+        return true;
+    }
     if (drag_tabs && object == drag_tabs->tabBar() && drag_tabs->isMovable()) {
         if (event->type() == QEvent::MouseButtonPress &&
             static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
@@ -558,6 +701,13 @@ void ConfigureInput::FinishTabDrag() {
         }
     }
     tab_order.clear();
+    const auto dragged = std::find(player_tabs.begin(), player_tabs.end(), dragged_tab);
+    ApplyDroppedOrder(dropped, dragged != player_tabs.end()
+                                   ? static_cast<int>(dragged - player_tabs.begin())
+                                   : -1);
+}
+
+void ConfigureInput::ApplyDroppedOrder(const std::vector<int>& dropped, int dragged_player) {
     std::vector<int> places = dropped;
     std::sort(places.begin(), places.end());
     if (dropped == places) {
@@ -584,15 +734,85 @@ void ConfigureInput::FinishTabDrag() {
     }
 
     // The selected tab follows the controller that was dragged
-    const auto dragged = std::find(player_tabs.begin(), player_tabs.end(), dragged_tab);
-    if (dragged != player_tabs.end()) {
-        const auto at = std::find(dropped.begin(), dropped.end(),
-                                  static_cast<int>(dragged - player_tabs.begin()));
-        if (at != dropped.end()) {
-            pending_select = places[at - dropped.begin()];
-            pending_select_until = QDateTime::currentMSecsSinceEpoch() + 2000;
-        }
+    const auto at = std::find(dropped.begin(), dropped.end(), dragged_player);
+    if (at != dropped.end()) {
+        pending_select = places[at - dropped.begin()];
+        pending_select_until = QDateTime::currentMSecsSinceEpoch() + 2000;
     }
+}
+
+bool ConfigureInput::DragPlayerTab(QEvent* event) {
+    QTabBar* bar = drag_tabs->tabBar();
+    const auto type = event->type();
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseMove &&
+        type != QEvent::MouseButtonRelease) {
+        return false;
+    }
+    const auto* mouse = static_cast<QMouseEvent*>(event);
+    const QPoint at = mouse->position().toPoint();
+    const auto set_arrows = [bar](int index, bool shown) {
+        for (const auto side : {QTabBar::LeftSide, QTabBar::RightSide}) {
+            if (QWidget* button = bar->tabButton(index, side)) {
+                button->setVisible(shown);
+            }
+        }
+    };
+    if (type == QEvent::MouseButtonPress) {
+        const int index = bar->tabAt(at);
+        own_drag_index = mouse->button() == Qt::LeftButton && index >= 0 &&
+                                 bar->tabData(index).metaType() == QMetaType::fromType<QColor>()
+                             ? index
+                             : -1;
+        own_drag_press_x = at.x();
+        own_dragging = false;
+        return false; // the tab bar still selects the tab
+    }
+    if (own_drag_index < 0) {
+        return false;
+    }
+    const int offset = at.x() - own_drag_press_x;
+    if (type == QEvent::MouseMove) {
+        if (!own_dragging && std::abs(offset) < QApplication::startDragDistance()) {
+            return false;
+        }
+        if (!own_dragging) {
+            own_dragging = true;
+            set_arrows(own_drag_index, false);
+        }
+        tab_overlay->SetDrag(own_drag_index, offset);
+        return true;
+    }
+    // Released: the players take the order of the tabs with the dragged one where it was let go
+    const int index = own_drag_index;
+    const bool dragged = own_dragging;
+    own_drag_index = -1;
+    own_dragging = false;
+    if (!dragged) {
+        return false;
+    }
+    set_arrows(index, true);
+    tab_overlay->SetDrag(-1, 0);
+    std::vector<std::pair<int, int>> centres; // (x, player)
+    int dragged_player = -1;
+    for (int k = 0; k < bar->count(); ++k) {
+        const auto it = std::find(player_tabs.begin(), player_tabs.end(), drag_tabs->widget(k));
+        if (it == player_tabs.end() || !bar->isTabVisible(k)) {
+            continue;
+        }
+        const int player = static_cast<int>(it - player_tabs.begin());
+        const int x = bar->tabRect(k).center().x() + (k == index ? offset : 0);
+        if (k == index) {
+            dragged_player = player;
+        }
+        centres.emplace_back(x, player);
+    }
+    std::stable_sort(centres.begin(), centres.end());
+    std::vector<int> dropped;
+    for (const auto& [x, player] : centres) {
+        dropped.push_back(player);
+    }
+    ApplyDroppedOrder(dropped, dragged_player);
+    return true;
 }
 
 void ConfigureInput::UpdateTabArrows() {
@@ -600,7 +820,7 @@ void ConfigureInput::UpdateTabArrows() {
     if (!tabs) {
         return;
     }
-    const bool movable = tabs->isMovable();
+    const bool movable = tabs_editable;
     int last_player = -1;
     for (const auto& row : last_rows) {
         if (!row.leaving) {
@@ -632,6 +852,11 @@ void ConfigureInput::UpdateTabArrows() {
                 button->setArrowType(arrow);
                 button->setAutoRaise(true);
                 button->setFixedSize(16, 16);
+                // The size a style sheet reports is the size the tab makes room for (the dark
+                // themes say 12 pixels, and the tab text went under the buttons)
+                button->setStyleSheet(QStringLiteral("QToolButton { width: 16px; height: 16px; "
+                                                     "padding: 0px; border: none; "
+                                                     "background: transparent; }"));
                 connect(button, &QToolButton::clicked, this, [this, player, step] {
                     SwapPlayers(player, player + step);
                     pending_select = player + step;

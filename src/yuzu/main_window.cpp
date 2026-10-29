@@ -1724,6 +1724,16 @@ bool IsHandheldMaker(Uint16 vendor) {
     return vendor == 0x28DE || vendor == 0x17EF || vendor == 0x0B05 || vendor == 0x0DB0;
 }
 
+/// Whether a pad can be a handheld's own controls. Valve also makes standalone controllers
+/// (the Steam Controllers report no gamepad type under Steam either): only the Deck's counts.
+/// Under Steam the virtual pad reports the real controller's ids.
+bool CouldBeHandheld(Uint16 vendor, Uint16 product) {
+    if (vendor == 0x28DE) {
+        return product == 0x1205;
+    }
+    return !IsControllerMaker(vendor);
+}
+
 /// True for the controller types Steam reports for standalone controllers
 bool IsStandaloneControllerType(SDL_GamepadType type) {
     return type != SDL_GAMEPAD_TYPE_UNKNOWN && type != SDL_GAMEPAD_TYPE_STANDARD;
@@ -3009,10 +3019,19 @@ void MainWindow::ApplyConsoleControllerMode() {
         u32 holder = 0;
         if (!want.empty()) {
             for (const auto& [id, ident] : live) {
-                if (fmt::format("{:#x}", PadSteamHandle(id)) == want) {
-                    ++count;
-                    holder = id;
+                if (fmt::format("{:#x}", PadSteamHandle(id)) != want) {
+                    continue;
                 }
+                if (!CouldBeHandheld(PadVendor(id), PadProduct(id))) {
+                    // An earlier build took a standalone controller for the handheld's own
+                    LOG_INFO(Frontend, "console-mode: stored handheld {} is a {:04x}:{:04x} "
+                                       "controller, not a handheld's: forgotten",
+                             want, PadVendor(id), PadProduct(id));
+                    Settings::values.builtin_pad_steam_handle.SetValue(std::string{});
+                    continue;
+                }
+                ++count;
+                holder = id;
             }
         }
         bool adopted = false;
@@ -3025,7 +3044,7 @@ void MainWindow::ApplyConsoleControllerMode() {
             u32 fit = 0;
             for (const auto& [id, ident] : live) {
                 if (SDL_GetGamepadTypeForID(id) == SDL_GAMEPAD_TYPE_UNKNOWN &&
-                    PadSteamHandle(id) != 0) {
+                    PadSteamHandle(id) != 0 && CouldBeHandheld(PadVendor(id), PadProduct(id))) {
                     ++fits;
                     fit = id;
                 }
@@ -3035,7 +3054,9 @@ void MainWindow::ApplyConsoleControllerMode() {
                 holder = fit;
                 adopted = true;
             } else if (want.empty() && live.size() == 1 &&
-                       !IsStandaloneControllerType(SDL_GetGamepadTypeForID(live.begin()->first))) {
+                       !IsStandaloneControllerType(SDL_GetGamepadTypeForID(live.begin()->first)) &&
+                       CouldBeHandheld(PadVendor(live.begin()->first),
+                                       PadProduct(live.begin()->first))) {
                 count = 1;
                 holder = live.begin()->first;
             }
@@ -3137,7 +3158,7 @@ void MainWindow::ApplyConsoleControllerMode() {
                         continue;
                     }
                     const Uint16 vendor = PadVendor(id);
-                    if (IsHandheldMaker(vendor)) {
+                    if (IsHandheldMaker(vendor) && CouldBeHandheld(vendor, PadProduct(id))) {
                         makers.push_back(id);
                         // Valve also makes standalone controllers: the deck's own wins
                         if (vendor == 0x28DE && PadProduct(id) == 0x1205) {
@@ -3568,14 +3589,42 @@ void MainWindow::ApplyConsoleControllerMode() {
                     }
                 }
             }
-            const auto& own = profile[set_index];
             slot_set[slot] = set_index;
             Settings::PlayerInput want = players[slot];
-            want.buttons = own.buttons;
-            want.analogs = own.analogs;
-            want.motions = own.motions;
-            want.profile_name = own.profile_name;
-            RouteSdlBindings(want, binding->first, binding->second);
+            if (has_sdl(profile[set_index])) {
+                const auto& own = profile[set_index];
+                want.buttons = own.buttons;
+                want.analogs = own.analogs;
+                want.motions = own.motions;
+                want.profile_name = own.profile_name;
+                RouteSdlBindings(want, binding->first, binding->second);
+            } else {
+                // No controller mappings to carry (a fresh setup maps player one to the
+                // keyboard): the controller gets its own default mapping, for this session
+                Common::ParamPackage device;
+                device.Set("engine", "sdl");
+                device.Set("guid", binding->first);
+                device.Set("port", binding->second);
+                want.buttons.fill({});
+                want.analogs.fill({});
+                want.motions.fill({});
+                for (const auto& [index, param] : input_subsystem->GetButtonMappingForDevice(device)) {
+                    want.buttons[index] = param.Serialize();
+                }
+                for (const auto& [index, param] : input_subsystem->GetAnalogMappingForDevice(device)) {
+                    want.analogs[index] = param.Serialize();
+                }
+                for (const auto& [index, param] : input_subsystem->GetMotionMappingForDevice(device)) {
+                    want.motions[index] = param.Serialize();
+                }
+                want.profile_name.clear();
+                static std::set<u32> defaulted;
+                if (defaulted.insert(id).second) {
+                    LOG_INFO(Frontend, "console-mode: P{} set has no controller mappings: inst={} "
+                                       "gets its default mapping",
+                             set_index + 1, id);
+                }
+            }
             // Under Steam the virtual pad has no motion: take the paired real device's. The
             // deck's own controller is unique (28DE:1205); another model pairs when only one
             // of it is connected (the virtual pad reports the real controller's ids).
