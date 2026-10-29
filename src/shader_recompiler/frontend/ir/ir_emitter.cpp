@@ -95,6 +95,10 @@ void IREmitter::EndPrimitive(const U32& stream) {
     Inst(Opcode::EndPrimitive, stream);
 }
 
+void IREmitter::SubgroupBarrier() {
+    Inst(Opcode::SubgroupBarrier);
+}
+
 void IREmitter::Barrier() {
     Inst(Opcode::Barrier);
 }

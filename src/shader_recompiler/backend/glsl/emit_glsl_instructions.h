@@ -31,6 +31,7 @@ void EmitReference(EmitContext& ctx, const IR::Value& value);
 void EmitPhiMove(EmitContext& ctx, const IR::Value& phi, const IR::Value& value);
 void EmitJoin(EmitContext& ctx);
 void EmitDemoteToHelperInvocation(EmitContext& ctx);
+void EmitSubgroupBarrier(EmitContext& ctx);
 void EmitBarrier(EmitContext& ctx);
 void EmitWorkgroupMemoryBarrier(EmitContext& ctx);
 void EmitDeviceMemoryBarrier(EmitContext& ctx);

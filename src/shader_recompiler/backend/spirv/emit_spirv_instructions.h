@@ -32,6 +32,7 @@ void EmitReference(EmitContext&);
 void EmitPhiMove(EmitContext&);
 void EmitJoin(EmitContext& ctx);
 void EmitDemoteToHelperInvocation(EmitContext& ctx);
+void EmitSubgroupBarrier(EmitContext& ctx);
 void EmitBarrier(EmitContext& ctx);
 void EmitWorkgroupMemoryBarrier(EmitContext& ctx);
 void EmitDeviceMemoryBarrier(EmitContext& ctx);

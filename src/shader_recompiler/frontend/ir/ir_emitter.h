@@ -155,6 +155,7 @@ public:
     [[nodiscard]] Value Select(const U1& condition, const Value& true_value,
                                const Value& false_value);
 
+    void SubgroupBarrier();
     void Barrier();
     void WorkgroupMemoryBarrier();
     void DeviceMemoryBarrier();

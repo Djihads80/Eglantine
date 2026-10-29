@@ -14,6 +14,7 @@
 
 #include <ranges>
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/decode.h"
 #include "shader_recompiler/frontend/maxwell/indirect_branch_table_track.h"
@@ -285,7 +286,12 @@ CFG::AnalysisState CFG::AnalyzeInst(Block* block, FunctionId function_id, Locati
         switch (opcode) {
         case Opcode::BRA:
         case Opcode::JMP:
-            AnalyzeBRA(block, function_id, pc, inst, IsAbsoluteJump(opcode));
+            if (opcode == Opcode::BRA && (inst.raw & Ampere::RetireBranchFlag)) {
+                const auto [ignored, stack] = block->stack.Pop(Token::SSY);
+                block->branch_true = AddLabel(block, stack, BranchOffset(pc, inst), function_id);
+            } else {
+                AnalyzeBRA(block, function_id, pc, inst, IsAbsoluteJump(opcode));
+            }
             break;
         case Opcode::RET:
             block->end_class = EndClass::Return;

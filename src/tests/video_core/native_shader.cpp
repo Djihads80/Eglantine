@@ -14,6 +14,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "shader_recompiler/environment.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ampere/program_override.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
@@ -2041,6 +2042,98 @@ TEST_CASE("Native global stores carry a register offset into the high address wo
     REQUIRE(machine.global == std::unordered_map<u64, u32>{{0x2200000020ULL, 0xdeadbeef}});
 }
 
+TEST_CASE("Native high LEA retains the base register and destination aliases", "[native-shader]") {
+    const u32 dest = GENERATE(0U, 1U, 2U);
+    const u32 shift = GENERATE(0U, 1U, 16U, 31U);
+    const std::array<Native, 2> input{{
+        {{0x00007211U | (dest << 16), 1, 0x078f00ffU | (shift << 11), 0}},
+        VertexTransform.back(),
+    }};
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    TranslateScalarNative(input, block);
+    for (u32 low : {0U, 1U, 0x80000000U, 0xffffffffU}) {
+        ScalarNativeMachine machine;
+        machine.regs[0] = low;
+        machine.regs[1] = 0xfedcba98U;
+        machine.Execute(block);
+        REQUIRE(machine.regs[dest] == static_cast<u32>((u64{low} << shift) >> 32) + 0xfedcba98U);
+    }
+}
+
+TEST_CASE("Native convergence retirement preserves nested exits and warp barriers", "[native-shader]") {
+    const std::array<Native, 12> input{{
+        {{0x00007945, 0x80, 0x03800000, 0}},
+        {{0x00017945, 0x50, 0x03800000, 0}},
+        {{0x00010942, 0, 0x03800000, 0}},
+        {{0x00000802, 42, 0x00000f00, 0}},
+        {{0x00000947, 0x30, 0x03800000, 0}},
+        {{0x00007802, 7, 0x00000f00, 0}},
+        {{0x00017941, 0, 0x03800000, 0}},
+        {{0x00017802, 1, 0x00000f00, 0}},
+        {{0x00007941, 0, 0x03800000, 0}},
+        {{0x00007948, 0xffffffff, 0x03800000, 0}},
+        {{0xff007322, 0x00007000, 0xff, 0}},
+        VertexTransform.back(),
+    }};
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    std::vector<u64> code(0x50 / 8);
+    for (u64 word : lowered.instructions) {
+        if ((code.size() * 8) % 32 == 0) code.push_back(0);
+        code.push_back(word);
+    }
+    class BreakEnvironment final : public EmptyEnvironment {
+    public:
+        explicit BreakEnvironment(const std::vector<u64>& code_) : code{code_} { stage = Shader::Stage::VertexB; }
+        u64 ReadInstruction(u32 address) override { return code.at(address / 8); }
+        const std::vector<u64>& code;
+    } env{code};
+    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_pool;
+    Shader::ObjectPool<IR::Inst> inst_pool;
+    Shader::ObjectPool<IR::Block> block_pool;
+    Shader::Maxwell::Flow::CFG cfg{env, flow_pool, 0x50};
+    u32 retired_edges = 0;
+    for (const auto& block : cfg.Functions().front().blocks) {
+        if (block.end.Offset() / 8 >= code.size()) continue;
+        const auto word = env.ReadInstruction(block.end.Offset());
+        if (Shader::Maxwell::Decode(word) != Shader::Maxwell::Opcode::BRA ||
+            !(word & Shader::Ampere::RetireBranchFlag)) continue;
+        if (!block.branch_false) continue;
+        REQUIRE(block.branch_true != nullptr);
+        REQUIRE(block.branch_true->stack.Peek(Shader::Maxwell::Flow::Token::SSY) !=
+                block.branch_false->stack.Peek(Shader::Maxwell::Flow::Token::SSY));
+        ++retired_edges;
+    }
+    REQUIRE(retired_edges == 1);
+    Shader::HostTranslateInfo host;
+    const auto program = Shader::Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host);
+    u32 barriers = 0;
+    for (const auto* block : program.blocks)
+        for (const auto& inst : block->Instructions())
+            barriers += inst.GetOpcode() == IR::Opcode::SubgroupBarrier;
+    REQUIRE(barriers == 1);
+    auto emitted_program = program;
+    Shader::Profile profile;
+    profile.supported_spirv = 0x00010300;
+    const auto spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, emitted_program);
+    u32 subgroup_barriers = 0;
+    std::unordered_map<u32, u32> constants;
+    for (size_t i = 5; i < spirv.size();) {
+        const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xffff;
+        REQUIRE(count != 0);
+        if (opcode == 43 && count == 4) constants[spirv[i + 2]] = spirv[i + 3];
+        if (opcode == 224) {
+            REQUIRE(constants.at(spirv[i + 1]) == 3);
+            REQUIRE(constants.at(spirv[i + 2]) == 3);
+            ++subgroup_barriers;
+        }
+        i += count;
+    }
+    REQUIRE(subgroup_barriers == 1);
+}
+
 TEST_CASE("Native LEA predicate carry reaches the high pointer word", "[native-shader]") {
     const std::array<Native, 4> input{{
         {{0x00007a11, 0x800, 0x078010ff, 0}},
@@ -2840,4 +2933,42 @@ TEST_CASE("Native constant interpolation retains attribute and flat input behavi
         }
     }
     REQUIRE(reads == 1);
+}
+
+TEST_CASE("Private native capture compiles through the shader frontend", "[.native-capture]") {
+    const char* path = std::getenv("EDEN_NATIVE_CAPTURE_FILE");
+    REQUIRE(path != nullptr);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    REQUIRE(file.good());
+    std::vector<Native> input(static_cast<size_t>(file.tellg()) / sizeof(Native));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(input.data()), input.size() * sizeof(Native));
+    const auto lowered = Shader::Ampere::LowerToMaxwell(input);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    std::vector<u64> code(0x50 / 8);
+    for (u64 word : lowered.instructions) {
+        if ((code.size() * 8) % 32 == 0) code.push_back(0);
+        code.push_back(word);
+    }
+    class CaptureEnvironment final : public EmptyEnvironment {
+    public:
+        explicit CaptureEnvironment(const std::vector<u64>& code_) : code{code_} {
+            stage = Shader::Stage::VertexB;
+            is_proprietary_driver = true;
+        }
+        u64 ReadInstruction(u32 address) override { return code.at(address / 8); }
+        u32 ReadCbufValue(u32, u32) override { return 0; }
+        const std::vector<u64>& code;
+    } env{code};
+    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_pool;
+    Shader::ObjectPool<IR::Inst> inst_pool;
+    Shader::ObjectPool<IR::Block> block_pool;
+    Shader::Maxwell::Flow::CFG cfg{env, flow_pool, 0x50};
+    Shader::HostTranslateInfo host;
+    host.support_int64 = true;
+    host.support_float64 = true;
+    host.support_float16 = true;
+    const auto program = Shader::Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host);
+    REQUIRE_FALSE(program.blocks.empty());
 }

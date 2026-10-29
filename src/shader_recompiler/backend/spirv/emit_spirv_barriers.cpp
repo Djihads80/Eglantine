@@ -15,6 +15,16 @@ void MemoryBarrier(EmitContext& ctx, spv::Scope scope) {
 }
 } // Anonymous namespace
 
+void EmitSubgroupBarrier(EmitContext& ctx) {
+    ctx.AddCapability(spv::Capability::GroupNonUniform);
+    ctx.OpControlBarrier(ctx.Const(static_cast<u32>(spv::Scope::Subgroup)),
+                         ctx.Const(static_cast<u32>(spv::Scope::Subgroup)),
+                         ctx.Const(static_cast<u32>(spv::MemorySemanticsMask::AcquireRelease |
+                             spv::MemorySemanticsMask::UniformMemory |
+                             spv::MemorySemanticsMask::WorkgroupMemory |
+                             spv::MemorySemanticsMask::ImageMemory)));
+}
+
 void EmitBarrier(EmitContext& ctx) {
     const auto execution{spv::Scope::Workgroup};
     const auto memory{spv::Scope::Workgroup};

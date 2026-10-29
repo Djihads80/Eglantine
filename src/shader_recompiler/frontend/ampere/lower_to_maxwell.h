@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 #include "common/common_types.h"
+#include "shader_recompiler/frontend/ampere/control_flow.h"
 
 namespace Shader::Ampere {
 
@@ -46,6 +47,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     struct Relocation { u32 output_index; s64 target; };
     std::vector<Relocation> relocations;
     std::vector<u32> barrier_tokens;
+    std::vector<u32> retire_branches;
     std::vector<u32> call_targets;
     std::vector<u32> call_links;
     bool main_exited = false;
@@ -777,6 +779,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
             break;
         }
+        case 0x948: // WARPSYNC with all lanes participating.
+            if (insn.words[1] != 0xffffffffU || insn.words[2] != 0x03800000 || native_predicate != 7)
+                return fail(index, "native partial warp synchronization");
+            emit(WarpSync | predicate);
+            break;
         case 0x918:
             if (insn.words[1] || insn.words[2]) return fail(index, "native NOP mode");
             emit(0x50b0000000000f00ULL | predicate);
@@ -1430,10 +1437,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0x211: case 0x811: { // LEA low word, no carry result
             if (opcode == 0x211 && insn.Bits(80, 1)) {
                 if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(81, 3) != 7 ||
-                    insn.Bits(32, 8) != 255 || insn.Bits(64, 8) != 255 || insn.Bits(62, 2))
+                    insn.Bits(64, 8) != 255 || insn.Bits(62, 2))
                     return fail(index, "native high effective address mode");
-                emit(base(0x3828000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
+                emit(0x3828000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
                     (u64{32 - insn.Bits(75, 5)} << 20));
+                emit(base(0x5c10000000000000ULL) | (u64{250} << 8) |
+                     (u64{insn.Bits(32, 8)} << 20));
                 break;
             }
             if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
@@ -1556,6 +1565,24 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (complete) return finish(index);
             break;
         }
+        case 0x942: { // Retire a barrier before a predicated move and escape branch.
+            if (barrier_tokens.empty() || barrier_tokens.back() != insn.Bits(16, 4) ||
+                insn.words[1] || insn.words[2] != 0x03800000 || index + 2 >= code.size())
+                return fail(index, "native convergence break token");
+            const auto& move = code[index + 1];
+            const auto& branch = code[index + 2];
+            const u32 move_op = move.Bits(0, 12);
+            const bool simple_move = move_op == 0x802 || move_op == 0x202 ||
+                ((move_op == 0x424 || (move_op == 0x224 && move.words[1] == 255)) &&
+                 move.Bits(24, 8) == 255 && move.words[2] == 0x078e00ff);
+            if (!simple_move || move.Bits(12, 4) != native_predicate ||
+                branch.Bits(0, 12) != 0x947 || branch.Bits(12, 4) != native_predicate ||
+                branch.Bits(87, 4) != 7)
+                return fail(index, "native convergence break escape pattern");
+            retire_branches.push_back(index + 2);
+            emit(0x50b0000000000f00ULL | predicate);
+            break;
+        }
         case 0x947: case 0x945: case 0x941: { // BRA / BSSY B0 / BSYNC B0
             u64 branch_predicate = predicate;
             if (opcode == 0x947 && insn.Bits(87, 4) != 7) {
@@ -1585,7 +1612,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
             relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
-            emit((opcode == 0x947 ? 0xe24000000000000fULL | branch_predicate : 0xe29000000007000fULL));
+            const bool retire = std::find(retire_branches.begin(), retire_branches.end(), index) != retire_branches.end();
+            emit((opcode == 0x947 ? 0xe24000000000000fULL | branch_predicate |
+                 (retire ? RetireBranchFlag : 0) : 0xe29000000007000fULL));
             break;
         }
         case 0x94d: { // EXIT
