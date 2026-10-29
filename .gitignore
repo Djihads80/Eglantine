@@ -11,6 +11,18 @@ out/
 AppDir/
 uruntime
 
+# One worktree per agent/branch (tools/agents/branch.sh), never committed
+.worktrees/
+
+# Agent harness state is local to each operator. Anything a harness writes while
+# it runs (sessions, local settings, caches) stays out of the tree; the vendored
+# skills are committed on purpose, so an agent working from a bare checkout has
+# the same procedural knowledge. See docs/agents/README.md.
+.claude/*
+!.claude/skills/
+.codex/*
+!.codex/skills/
+
 # dtrace and ktrace stuffs
 [dk]trace-out/
 [dk]trace.out

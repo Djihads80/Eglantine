@@ -5,3 +5,18 @@ dist/languages/* linguist-vendored
 dist/qt_themes/* linguist-vendored
 externals/* linguist-vendored
 *.h linguist-language=cpp
+
+# Line endings: one policy, both platforms. LF in the index and in the worktree
+# everywhere, CRLF only for the Windows-native file types that require it.
+# Renormalising the existing tree (`git add --renormalize .`) is deliberately a
+# separate meta commit; this must not ride along in a feature change.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.vcxproj text eol=crlf
+*.sln text eol=crlf
+
+# Generated or third-party content that must never be reformatted.
+dist/languages/** -text
+externals/** -text
