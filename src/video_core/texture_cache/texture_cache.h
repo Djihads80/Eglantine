@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <numeric>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -1306,6 +1307,10 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
+    if (True(image.flags & ImageFlagBits::SparseLayers)) {
+        RefreshSparseLayers(image);
+        return;
+    }
     if (!image.dirty_layers.empty() && UploadWrittenLayers(image)) {
         runtime.InsertUploadMemoryBarrier();
         return;
@@ -1354,6 +1359,9 @@ bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
     // Title 1's terrain arrays (8192x8192x68 ASTC, 1.45 GB each) get a few layers streamed in at a
     // time; re-decoding all of them for each took a 2 GiB staging buffer and stalled the GPU.
     if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
+        if (True(image.flags & ImageFlagBits::SparseLayers)) {
+            return true;
+        }
         return True(image.flags & ImageFlagBits::AcceleratedUpload) &&
                image.info.type == ImageType::e2D && image.info.resources.layers > 1 &&
                image.guest_size_bytes >= LayerUploadMinSize &&
@@ -1401,6 +1409,71 @@ bool TextureCache<P>::UploadWrittenLayers(Image& image) {
         if (layers.empty() || layers.size() == num_layers) {
             return false;
         }
+        UploadLayers(image, layers);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+template <class P>
+void TextureCache<P>::RefreshSparseLayers(Image& image) {
+    if constexpr (requires { &Image::BindLayers; }) {
+        // The layers written since the last upload, or, for a new image, every layer any of whose
+        // blocks has been written.
+        const u32 num_layers = static_cast<u32>(image.info.resources.layers);
+        const u64 stride = image.info.layer_stride;
+        std::vector<u32> layers;
+        for (u32 layer = 0; layer < num_layers; ++layer) {
+            const bool written =
+                image.dirty_layers.empty()
+                    ? !Tegra::Nx2SparseUnwritten(image.gpu_addr + layer * stride, stride)
+                    : ((image.dirty_layers[layer / 64] >> (layer % 64)) & 1) != 0;
+            if (written) {
+                layers.push_back(layer);
+            }
+        }
+        image.dirty_layers.clear();
+        const std::vector<u32> bound = layers.empty() ? std::vector<u32>{} : image.BindLayers(layers);
+        if (bound.empty()) {
+            runtime.TransitionImageLayout(image);
+            return;
+        }
+        UploadLayers(image, bound);
+        runtime.InsertUploadMemoryBarrier();
+    }
+}
+
+template <class P>
+void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
+    if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
+        if (False(image.flags & ImageFlagBits::AcceleratedUpload)) {
+            // Plain formats: each layer unswizzled on its own into its layer of the image.
+            ImageInfo layer_info = image.info;
+            layer_info.resources.layers = 1;
+            const size_t layer_size = CalculateUnswizzledSizeBytes(layer_info);
+            auto staging = runtime.UploadStagingBuffer(layer_size * layers.size());
+            std::vector<BufferImageCopy> copies;
+            for (size_t i = 0; i < layers.size(); ++i) {
+                const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                                 &swizzle_data_buffer);
+                auto layer_copies =
+                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
+                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                for (BufferImageCopy copy : layer_copies) {
+                    copy.buffer_offset += i * layer_size;
+                    copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
+                    copies.push_back(copy);
+                }
+            }
+            image.UploadMemory(staging, copies);
+            ++images_uploaded;
+            uploaded_bytes += u64{image.info.layer_stride} * layers.size();
+            ++layer_uploads;
+            return;
+        }
         // Each layer's mip chain from the first level the host keeps on (as UploadImageContents).
         auto uploads = FullUploadSwizzles(image.info);
         const size_t level_offset = uploads[image.host_level_offset].buffer_offset;
@@ -1420,9 +1493,6 @@ bool TextureCache<P>::UploadWrittenLayers(Image& image) {
         ++images_uploaded;
         uploaded_bytes += tail * layers.size();
         ++layer_uploads;
-        return true;
-    } else {
-        return false;
     }
 }
 
@@ -2524,7 +2594,8 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
     if (const ImageViewId image_view_id = image.FindView(info); image_view_id) {
         return image_view_id;
     }
-    if (True(image.flags & ImageFlagBits::Unbacked)) {
+    if (True(image.flags & ImageFlagBits::Unbacked) &&
+        False(image.flags & ImageFlagBits::SparseLayers)) {
         // How the game uses an image too large to back (e.g. a sparse virtual texture).
         LOG_INFO(HW_GPU, "View of unbacked image {:#x}: type {} format {} levels {}+{} layers {}+{}",
                  image.gpu_addr, static_cast<u32>(info.type), static_cast<u32>(info.format),
@@ -2924,6 +2995,13 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     if (is_modification) {
+        if constexpr (requires { &Image::BindLayers; }) {
+            if (True(image.flags & ImageFlagBits::SparseLayers)) {
+                std::vector<u32> layers(static_cast<size_t>(image.info.resources.layers));
+                std::iota(layers.begin(), layers.end(), 0U);
+                image.BindLayers(layers);
+            }
+        }
         if (True(image.flags & ImageFlagBits::UnwrittenSparse) &&
             False(image.flags & ImageFlagBits::Remapped)) {
             // The GPU renders into it: these writes are lost, later uses get a backed image.

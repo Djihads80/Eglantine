@@ -321,6 +321,11 @@ public:
         return features.features.sparseBinding && graphics_family_sparse_binding;
     }
 
+    /// 2D images whose memory can be bound in parts, on the graphics queue.
+    bool IsSparseResidencyImage2DSupported() const {
+        return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {

@@ -385,6 +385,10 @@ public:
     /// A storage view of one layer of a host level (decoding only some layers of an array).
     VkImageView StorageImageLayerView(s32 level, u32 layer);
 
+    /// SparseLayers images: gives `layers` device memory where they have none yet. Returns the
+    /// layers that have memory afterwards (a cap per image can leave some out).
+    std::vector<u32> BindLayers(std::span<const u32> layers);
+
     bool IsRescaled() const noexcept;
 
     bool ScaleUp(bool ignore = false);
@@ -402,6 +406,67 @@ private:
 
     Scheduler* scheduler{};
     TextureCacheRuntime* runtime{};
+
+    /// Memory bound to the layers of a SparseLayers image. Declared before the images, so it is
+    /// released after them.
+    struct SparseLayerMemory {
+        SparseLayerMemory() = default;
+        SparseLayerMemory(const SparseLayerMemory&) = delete;
+        SparseLayerMemory& operator=(const SparseLayerMemory&) = delete;
+        SparseLayerMemory(SparseLayerMemory&& other) noexcept {
+            *this = std::move(other);
+        }
+        SparseLayerMemory& operator=(SparseLayerMemory&& other) noexcept {
+            Release();
+            allocator = std::exchange(other.allocator, nullptr);
+            requirements = other.requirements;
+            sparse = other.sparse;
+            width = other.width;
+            height = other.height;
+            levels = other.levels;
+            tile_width = other.tile_width;
+            tile_height = other.tile_height;
+            layer_bytes = other.layer_bytes;
+            layer_memory = std::move(other.layer_memory);
+            other.layer_memory.clear();
+            tail_memory = std::exchange(other.tail_memory, VK_NULL_HANDLE);
+            bound_bytes = other.bound_bytes;
+            warned = other.warned;
+            return *this;
+        }
+        ~SparseLayerMemory() {
+            Release();
+        }
+        void Release() noexcept {
+            if (allocator == nullptr) {
+                return;
+            }
+            for (const VmaAllocation allocation : layer_memory) {
+                allocator->FreeSparseMemory(allocation);
+            }
+            allocator->FreeSparseMemory(tail_memory);
+            layer_memory.clear();
+            tail_memory = VK_NULL_HANDLE;
+        }
+
+        const MemoryAllocator* allocator{};
+        VkMemoryRequirements requirements{};
+        VkSparseImageMemoryRequirements sparse{};
+        u32 width{};       ///< Host level 0
+        u32 height{};
+        u32 levels{};      ///< Host levels
+        u32 tile_width{};  ///< Sparse block, in texels
+        u32 tile_height{};
+        VkDeviceSize layer_bytes{}; ///< One layer's levels before the mip tail, and its own tail
+        std::vector<VmaAllocation> layer_memory; ///< Per layer, null until bound
+        VmaAllocation tail_memory{};             ///< The mip tail all layers share, if one
+        VkDeviceSize bound_bytes{};
+        bool warned{};
+    };
+    SparseLayerMemory sparse_layers;
+
+    /// Reads the image's sparse requirements; false when it can't be bound by layer.
+    bool InitSparseLayers();
 
     vk::Image original_image;
     vk::Image scaled_image;
