@@ -89,6 +89,17 @@ public:
         return ssa_reg_values[RegIndex(reg)];
     }
 
+    /// Number of other fixed-count variables the SSA pass stores in blocks
+    /// (predicates, the four condition flags and the indirect branch variable).
+    static constexpr size_t NUM_SSA_VALUES = NUM_USER_PREDS + 5;
+
+    void SetSsaValue(size_t index, const Value& value) noexcept {
+        ssa_values[index] = value;
+    }
+    const Value& SsaValue(size_t index) const noexcept {
+        return ssa_values[index];
+    }
+
     void SsaSeal() noexcept {
         is_ssa_sealed = true;
     }
@@ -182,6 +193,8 @@ private:
 
     /// Intrusively store the value of a register in the block.
     std::array<Value, NUM_REGS> ssa_reg_values;
+    /// Intrusively store the value of the other fixed-count SSA variables in the block.
+    std::array<Value, NUM_SSA_VALUES> ssa_values;
     /// Intrusively store if the block is sealed in the SSA pass.
     bool is_ssa_sealed{false};
 
