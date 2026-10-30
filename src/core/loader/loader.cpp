@@ -16,6 +16,7 @@
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/card_image.h"
+#include "core/file_sys/control_metadata.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/registered_cache.h"
@@ -308,6 +309,15 @@ std::ostream& operator<<(std::ostream& os, ResultStatus status) {
 
 AppLoader::AppLoader(FileSys::VirtualFile file_) : file(std::move(file_)) {}
 AppLoader::~AppLoader() = default;
+
+ResultStatus AppLoader::ReadDisplayVersion(std::string& version) {
+    FileSys::NACP control;
+    if (const ResultStatus result = ReadControlData(control); result != ResultStatus::Success) {
+        return result;
+    }
+    version = control.GetVersionString();
+    return ResultStatus::Success;
+}
 
 /**
  * Get a loader for a file with a specific type

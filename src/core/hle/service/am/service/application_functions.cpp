@@ -9,6 +9,7 @@
 #include "common/hex_util.h"
 #include "common/settings.h"
 #include "common/uuid.h"
+#include "core/core.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
@@ -27,6 +28,7 @@
 #include "core/hle/service/ns/application_manager_interface.h"
 #include "core/hle/service/ns/service_getter_interface.h"
 #include "core/hle/service/sm/sm.h"
+#include "core/loader/loader.h"
 
 namespace Service::AM {
 
@@ -216,18 +218,32 @@ Result IApplicationFunctions::SetTerminateResult(Result terminate_result) {
     R_SUCCEED();
 }
 
+// A loose ExeFS/RomFS dump has no installed control data: its loader's (a control.nacp next to the
+// dump, else the RomFS's version tag). Only for the program it loaded, not for library applets.
+bool IApplicationFunctions::LooseDumpDisplayVersion(std::string& version) {
+    auto& loader = system.GetAppLoader();
+    u64 program_id{};
+    if (loader.ReadProgramId(program_id) != Loader::ResultStatus::Success ||
+        FileSys::GetBaseTitleID(program_id) != FileSys::GetBaseTitleID(m_applet->program_id) ||
+        loader.ReadDisplayVersion(version) != Loader::ResultStatus::Success || version.empty()) {
+        return false;
+    }
+    LOG_INFO(Service_AM, "Display version {} from the dump's files", version);
+    return true;
+}
+
 Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_version) {
     LOG_DEBUG(Service_AM, "called");
 
     const auto res = GetApplicationMetadata(system, m_applet->program_id);
+    std::string version;
     if (res.first != nullptr) {
-        const auto& version = res.first->GetVersionString();
-        std::memcpy(out_display_version->string.data(), version.data(),
-                    (std::min)(version.size(), out_display_version->string.size()));
-    } else {
-        static constexpr char default_version[]{"1.0.0"};
-        std::memcpy(out_display_version->string.data(), default_version, sizeof(default_version));
+        version = res.first->GetVersionString();
+    } else if (!LooseDumpDisplayVersion(version)) {
+        version = "1.0.0";
     }
+    std::memcpy(out_display_version->string.data(), version.data(),
+                (std::min)(version.size(), out_display_version->string.size()));
 
     out_display_version->string[out_display_version->string.size() - 1] = '\0';
     R_SUCCEED();
