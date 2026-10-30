@@ -116,12 +116,16 @@ public:
     virtual bool EmitTerminal(IR::Term::Terminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept = 0;
 
     // Patching
+    enum class PatchKind : u32 { Jg, Jz, Jmp, MovRcx };
+    /// Places in emitted code that jump to a block (or load its entrypoint), patched when it is
+    /// compiled or invalidated: each the place's offset in the code space times four plus its
+    /// PatchKind, 0 when unused. Most blocks are linked from one or two places.
     struct PatchInformation {
-        boost::container::small_vector<CodePtr, 4> jg; //4*8=32
-        boost::container::small_vector<CodePtr, 4> jz; //4*8=32
-        boost::container::small_vector<CodePtr, 4> jmp; //4*8=32
-        boost::container::small_vector<CodePtr, 4> mov_rcx; //4*8=32
+        std::array<u32, 2> first{};
+        std::unique_ptr<std::vector<u32>> rest;
     };
+    /// Records that the code about to be emitted at the current position is a patch of `kind`.
+    void AddPatchLocation(const IR::LocationDescriptor& target_desc, PatchKind kind);
     void Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
     virtual void Unpatch(const IR::LocationDescriptor& target_desc);
     virtual void EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) = 0;
