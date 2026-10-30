@@ -954,6 +954,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (u64{15} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
+        case 0x59f: { // SURED.D.2D.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute).
+            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 || binding >= 18 ||
+                offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
+                return fail(index, "native surface reduction mode");
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                return fail(index, "native surface descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+            // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
+            // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
+            emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
+                (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+            break;
+        }
         case 0x301: // BREV register.
             if (insn.words[2] || insn.words[1] > 255) return fail(index, "native bit reverse mode");
             emit(base(0x3828000000000000ULL) | (u64{insn.words[1]} << 8) |
