@@ -342,7 +342,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 }
 
 [[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
-                                            VkFormat format) {
+                                            VkFormat format, u32 base_layer = 0,
+                                            u32 layer_count = VK_REMAINING_ARRAY_LAYERS) {
     static constexpr VkImageViewUsageCreateInfo storage_image_view_usage_create_info{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -365,8 +366,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = level,
             .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+            .baseArrayLayer = base_layer,
+            .layerCount = layer_count,
         },
     });
 }
@@ -2493,6 +2494,19 @@ VkImageView Image::StorageImageView(s32 level) noexcept {
     return *view;
 }
 
+VkImageView Image::StorageImageLayerView(s32 level, u32 layer) {
+    const u32 layers = static_cast<u32>(info.resources.layers);
+    if (storage_layer_views.empty()) {
+        storage_layer_views.resize(storage_image_views.size() * layers);
+    }
+    auto& view = storage_layer_views[static_cast<size_t>(level) * layers + layer];
+    if (!view) {
+        view = MakeStorageView(runtime->device.GetLogical(), level, *(this->*current_image),
+                               VK_FORMAT_A8B8G8R8_UNORM_PACK32, layer, 1);
+    }
+    return *view;
+}
+
 bool Image::IsRescaled() const noexcept {
     return True(flags & ImageFlagBits::Rescaled);
 }
@@ -3324,6 +3338,12 @@ void TextureCacheRuntime::AccelerateImageUpload(
     }
 
     ASSERT(false);
+}
+
+void TextureCacheRuntime::AccelerateImageUploadLayers(
+    Image& image, const StagingBufferRef& map,
+    std::span<const VideoCommon::SwizzleParameters> swizzles, std::span<const u32> layers) {
+    astc_decoder_pass->AssembleLayers(image, map, swizzles, layers);
 }
 
 void TextureCacheRuntime::TranscodeAstcToBcn(

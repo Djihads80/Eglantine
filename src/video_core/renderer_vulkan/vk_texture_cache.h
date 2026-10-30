@@ -109,6 +109,11 @@ public:
                                std::span<const VideoCommon::SwizzleParameters>,
                                u32 z_start, u32 z_count);
 
+    /// Decodes only `layers` of an ASTC array; the staging buffer holds those layers in order.
+    void AccelerateImageUploadLayers(Image&, const StagingBufferRef&,
+                                     std::span<const VideoCommon::SwizzleParameters>,
+                                     std::span<const u32> layers);
+
     void InsertUploadMemoryBarrier() {}
 
     void TransitionImageLayout(Image& image);
@@ -377,6 +382,9 @@ public:
 
     VkImageView StorageImageView(s32 level) noexcept;
 
+    /// A storage view of one layer of a host level (decoding only some layers of an array).
+    VkImageView StorageImageLayerView(s32 level, u32 layer);
+
     bool IsRescaled() const noexcept;
 
     bool ScaleUp(bool ignore = false);
@@ -409,6 +417,7 @@ private:
     vk::Image Image::*current_image{};
 
     std::vector<vk::ImageView> storage_image_views;
+    std::vector<vk::ImageView> storage_layer_views; ///< By host level * layers + layer
     VkImageAspectFlags aspect_mask = 0;
     bool initialized = false;
 
