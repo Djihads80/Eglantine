@@ -46,6 +46,13 @@ inline void Nx2RemoveSemaphoreRegion(u64 start) {
     }
 }
 
+/// A new emulation session starts: no queue has a region yet.
+inline void Nx2ClearSemaphoreRegions() {
+    for (auto& region : g_nx2_semaphore_regions) {
+        region.store(0);
+    }
+}
+
 /// GPU VA in the first page that mirrors a release at `address`, or 0.
 inline u64 Nx2SemaphoreMirror(u64 address) {
     for (const auto& region : g_nx2_semaphore_regions) {
