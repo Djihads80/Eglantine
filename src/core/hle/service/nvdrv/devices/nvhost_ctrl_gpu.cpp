@@ -320,6 +320,7 @@ NvResult nvhost_ctrl_gpu::GetCharacteristics3(
         nx2_caller = true;
         g_nx2_driver = true;
         Tegra::g_nx2_ampere = true;
+        Tegra::g_nx2_program_id = system.GetApplicationProcessProgramID();
         ApplyNx2Characteristics(params.gc);
         params.gpu_characteristics_buf_size = Nx2CharacteristicsSize;
         LOG_WARNING(Service_NVDRV, "Switch 2 caller, reporting Ampere chip 0x17E");

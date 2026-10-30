@@ -19,6 +19,61 @@ namespace Tegra {
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};
 
+// The running title, for the few places that must behave differently per game.
+inline std::atomic<u64> g_nx2_program_id{0};
+
+// Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
+// see, so their buffers must be copied back to guest memory at every fence
+// (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
+// Pokopia: with the copy-back off its sky is black or flickers. Open work: find what reads it,
+// then the list goes.
+inline bool Nx2NeedsBufferDownloads() {
+    switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
+    case 0x0400A3A01EE4C000ULL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
+// runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
+// without a flush they are stale and the draws behind them (trees) go missing. The bits never
+// clear: the dispatch that rewrites a page may still be queued on the split's back when its front
+// reads the command list. One bit per 4 KiB of the 36-bit device address space (2 MiB).
+inline constexpr u64 Nx2WrittenPageBits = 12;
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
+
+inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_gpu_written_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        auto& word = g_nx2_gpu_written_pages[page / 64];
+        const u64 bit = u64{1} << (page % 64);
+        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+            word.fetch_or(bit, std::memory_order_relaxed);
+        }
+    }
+}
+
+/// A new emulation session starts: no page has been written by its GPU yet.
+inline void Nx2ClearGpuWrittenPages() {
+    for (auto& word : g_nx2_gpu_written_pages) {
+        word.store(0, std::memory_order_relaxed);
+    }
+}
+
+[[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    if (page >= g_nx2_gpu_written_pages.size() * 64) {
+        return false;
+    }
+    return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
+}
+
 // NVN2 queues release their progress values into the second page of a two-page GPU-accessible
 // region and GPU acquires read the same offsets in the first page (the CPU polls the second).
 // Something on the console copies one into the other; until that is known, the puller mirrors
@@ -96,7 +151,7 @@ inline void Nx2BackSparseWrite(u64 gpu_address, u64 size) {
 
 // Which blocks of each sparse region have been written (got memory), for the texture cache: an
 // image over blocks nobody wrote is all zeros and needs no device memory. Its own lock, taken last:
-// the texture cache asks with its lock held, and nx2:gpu updates it holding none of the GPU's.
+// the texture cache asks with its lock held, and nx2:gpu updates it holding only its region mutex.
 struct Nx2SparseRegionState {
     u64 size;
     u64 block_size;

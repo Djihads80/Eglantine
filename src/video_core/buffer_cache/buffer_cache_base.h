@@ -33,6 +33,7 @@
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/nx2.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -526,7 +527,8 @@ private:
     /// dispatch, the fencing thread holding the buffer cache while it wrote them), while its CPU
     /// read GPU-written memory at most 64 times in 200 s (counted with reactive flushing) and
     /// the native MME's DMA reads never touched those pages. Without them a fence costs ~1 us
-    /// instead of ~5 and draw setup ~7% less. EDEN_NX2_BUFFER_DOWNLOADS=0/1 forces it.
+    /// instead of ~5 and draw setup ~7% less. The titles that do read those pages back are listed
+    /// in Nx2NeedsBufferDownloads (nx2.h). EDEN_NX2_BUFFER_DOWNLOADS=0/1 overrides both.
     bool AsyncBufferDownloads() const {
         static const int forced = [] {
             const char* value = std::getenv("EDEN_NX2_BUFFER_DOWNLOADS");
@@ -535,7 +537,8 @@ private:
         if (forced >= 0) {
             return forced == 1;
         }
-        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
+        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling() ||
+               Tegra::Nx2NeedsBufferDownloads();
     }
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
