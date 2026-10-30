@@ -134,12 +134,13 @@ struct OperationEvent : public Common::IntrusiveListBaseNode<OperationEvent> {
     Kernel::KEvent* m_event{};
 };
 
-constexpr inline std::chrono::nanoseconds ConvertToTimeSpan(s64 ticks) {
+inline std::chrono::nanoseconds ConvertToTimeSpan(s64 ticks) {
     constexpr auto one_second_ns{
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)).count()};
 
-    constexpr s64 max{Common::WallClock::CNTFRQ *
-                      ((std::numeric_limits<s64>::max)() / one_second_ns)};
+    // The guest counter's frequency: 31.25 MHz for Switch 2 titles.
+    const s64 frequency{static_cast<s64>(Common::g_wall_clock.GetGuestCNTFRQ())};
+    const s64 max{frequency * ((std::numeric_limits<s64>::max)() / one_second_ns)};
 
     if (ticks > max) {
         return std::chrono::nanoseconds((std::numeric_limits<s64>::max)());
@@ -147,8 +148,8 @@ constexpr inline std::chrono::nanoseconds ConvertToTimeSpan(s64 ticks) {
         return std::chrono::nanoseconds((std::numeric_limits<s64>::min)());
     }
 
-    auto a{ticks / Common::WallClock::CNTFRQ * one_second_ns};
-    auto b{((ticks % Common::WallClock::CNTFRQ) * one_second_ns) / Common::WallClock::CNTFRQ};
+    auto a{ticks / frequency * one_second_ns};
+    auto b{((ticks % frequency) * one_second_ns) / frequency};
 
     return std::chrono::nanoseconds(a + b);
 }

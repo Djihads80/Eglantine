@@ -57,12 +57,15 @@ endif()
 
 if(WIN32)
     # compile as a win32 gui application instead of a console application
-    if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        # clang-cl: SDL emits main, not wmain
-        set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup")
-    elseif(MSVC)
-        # UNICODE is defined, so SDL's entry point is wmain, not main
-        set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup")
+    if(MSVC)
+        # SDL's main implementation provides wmain when UNICODE is defined, which src/CMakeLists.txt
+        # does for cl.exe but not for clang-cl; forcing mainCRTStartup failed to link with cl.exe.
+        if(CXX_CLANG)
+            set(YUZU_CMD_ENTRY mainCRTStartup)
+        else()
+            set(YUZU_CMD_ENTRY wmainCRTStartup)
+        endif()
+        set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:${YUZU_CMD_ENTRY}")
     elseif(MINGW)
         set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "-Wl,--subsystem,windows")
     endif()

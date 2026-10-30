@@ -46,6 +46,20 @@ inline void Nx2RemoveSemaphoreRegion(u64 start) {
     }
 }
 
+/// A write into a region's second page: the address one page below, else 0.
+inline u64 Nx2SemaphoreMirror(u64 address) {
+    for (const auto& region : g_nx2_semaphore_regions) {
+        const u64 start = region.load(std::memory_order_relaxed);
+        if (start == 0) {
+            continue;
+        }
+        if (address >= start + 0x1000 && address < start + 0x2000) {
+            return address - 0x1000;
+        }
+    }
+    return 0;
+}
+
 /// A new emulation session starts: no queue has a region yet.
 inline void Nx2ClearSemaphoreRegions() {
     for (auto& region : g_nx2_semaphore_regions) {

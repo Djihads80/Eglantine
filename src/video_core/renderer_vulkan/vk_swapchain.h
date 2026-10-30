@@ -37,7 +37,8 @@ public:
         u32 height);
 
     /// Acquires the next image in the swapchain, waits as needed.
-    bool AcquireNextImage();
+    /// `may_flush`: false on the async present thread (see Scheduler::Wait).
+    bool AcquireNextImage(bool may_flush = true);
 
     /// Presents the rendered image to the swapchain.
     void Present(VkSemaphore render_semaphore);

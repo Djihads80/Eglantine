@@ -165,6 +165,12 @@ public:
 
     void FlushCaching();
 
+    /// Leaves the caches' invalidation of a range already written for the next FlushCaching
+    /// (before every draw, dispatch, clear and copy), merged with neighbouring ranges.
+    void AccumulateInvalidation(GPUVAddr gpu_addr, std::size_t size) {
+        accumulator.Add(gpu_addr, size);
+    }
+
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
 

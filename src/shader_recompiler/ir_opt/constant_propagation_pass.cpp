@@ -953,6 +953,36 @@ void FoldDriverConstBuffer(Environment& env, IR::Block& block, IR::Inst& inst, u
     }
 }
 
+void FoldSMax32(IR::Block& block, IR::Inst& inst) {
+    for (size_t index = 0; index < 2; ++index) {
+        const IR::Value value{inst.Arg(index).Resolve()};
+        const IR::Inst* const negation{inst.Arg(1 - index).TryInstRecursive()};
+        if (!negation || negation->GetOpcode() != IR::Opcode::INeg32 ||
+            negation->Arg(0).Resolve() != value) {
+            continue;
+        }
+        const IR::Inst* const select{value.TryInstRecursive()};
+        if (!select || select->GetOpcode() != IR::Opcode::SelectU32) {
+            continue;
+        }
+        const IR::Value true_value{select->Arg(1).Resolve()};
+        const IR::Value false_value{select->Arg(2).Resolve()};
+        const auto is_mask = [](const IR::Value& candidate) {
+            return candidate.IsImmediate() &&
+                   (candidate.U32() == 0 || candidate.U32() == 1 ||
+                    candidate.U32() == 0xffffffffU);
+        };
+        if (!is_mask(true_value) || !is_mask(false_value)) {
+            continue;
+        }
+        // max(x, -x) is 0 or 1 for boolean and predicate-mask constants.
+        IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
+        inst.ReplaceUsesWith(ir.Select(IR::U1{select->Arg(0)},
+                                      ir.Imm32(true_value.U32() != 0 ? 1U : 0U),
+                                      ir.Imm32(false_value.U32() != 0 ? 1U : 0U)));
+        return;
+    }
+}
 void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
     switch (inst.GetOpcode()) {
     case IR::Opcode::GetRegister:
@@ -963,6 +993,8 @@ void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
         return FoldAdd<u32>(block, inst);
     case IR::Opcode::ISub32:
         return FoldISub32(inst);
+    case IR::Opcode::SMax32:
+        return FoldSMax32(block, inst);
     case IR::Opcode::IMul32:
         FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a * b; });
         return;

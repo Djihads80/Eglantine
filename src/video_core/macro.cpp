@@ -17,6 +17,7 @@
 
 #ifdef ARCHITECTURE_x86_64
 #include "common/x64/xbyak.h"
+#include "video_core/macro_turing_jit.h"
 #endif
 
 #include "common/assert.h"
@@ -1404,7 +1405,10 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                                  modes[0], modes[1], modes[2], modes[3]);
                     }
                 }
-                maxwell3d.CallMethod(system, address, value, true);
+                {
+                    VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+                    maxwell3d.CallMethod(system, address, value, true);
+                }
                 // Turing MME memory reads (methods 0x550 SET_MME_MEM_ADDRESS_A/B, 0x558 data RAM
                 // address, 0x55c MME_DMA_READ into data RAM, 0x560 MME_DMA_READ_FIFOED into
                 // the load FIFO, which the macro then reads after a load barrier).
@@ -1420,6 +1424,14 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // from a culling dispatch) and still be only in host buffers: flush them first,
                     // or the macro draws with an older frame's arguments (objects pop in and out).
                     const size_t read_bytes = size_t{std::min<u32>(value, 0x1000)} * 4;
+                    if (VideoCommon::Nx2Profile::Enabled()) {
+                        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
+                        for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes; page += 0x1000) {
+                            if (const auto device = memory.GpuToCpuAddress(page)) {
+                                VideoCommon::Nx2Profile::DmaReadPages().insert(*device >> 12);
+                            }
+                        }
+                    }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
@@ -1451,6 +1463,33 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 }
                 return true;
             };
+#ifdef ARCHITECTURE_x86_64
+        // Macro code runs compiled to x86-64 (macro_turing_jit.h) instead of through the memo
+        // and the interpreter; EDEN_NX2_MME_JIT=0 goes back to those.
+        static const bool use_jit = [] {
+            const char* value = std::getenv("EDEN_NX2_MME_JIT");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (use_jit) {
+            if (!native_jit) {
+                native_jit = std::make_shared<TuringMacroJit>();
+            }
+            native_jit->Prepare(native_code, native_code_generation);
+            fifo.assign(parameters.begin(), parameters.end());
+            const auto result = native_jit->Execute(
+                method, fifo, std::span<u32>{*native_interpreter.active_dram},
+                [&](u32 address) {
+                    return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U;
+                },
+                emit);
+            if (!result.success) {
+                native_execution_failed = true;
+                LOG_ERROR(HW_GPU, "Native MME (JIT) failed: start={:#x}, consumed={}/{}, error={}",
+                          method, result.consumed, parameters.size(), result.error);
+            }
+            return;
+        }
+#endif
         // EDEN_NX2_MME_MEMO=0: interpret every call (see macro_memo.h).
         static const bool use_memo = [] {
             const char* value = std::getenv("EDEN_NX2_MME_MEMO");
@@ -1462,10 +1501,11 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 memo_stats && (++native_calls & 0xffffff) == 0) {
                 const auto& stats = native_memo.GetStatistics();
                 LOG_INFO(HW_GPU,
-                         "Macro memo: {} hits, {} misses, {} guard failures, {} stores ({} in "
-                         "place), {} clears; {} entries, {} KiB",
-                         stats.hits, stats.misses, stats.guard_failures, stats.stores,
-                         stats.overwrites, stats.clears, native_memo.Size(),
+                         "Macro memo: {} hits ({} on the last call's slot), {} misses, {} guard "
+                         "failures, {} stores ({} in place), {} compactions, {} clears; {} entries, "
+                         "{} KiB",
+                         stats.hits, stats.slot_hits, stats.misses, stats.guard_failures, stats.stores,
+                         stats.overwrites, stats.compactions, stats.clears, native_memo.Size(),
                          native_memo.ArenaWords() * 4 / 1024);
             }
             native_memo.Synchronize(native_code_generation);

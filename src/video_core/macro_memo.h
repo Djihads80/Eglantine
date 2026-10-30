@@ -41,7 +41,8 @@ public:
     };
 
     struct Statistics {
-        std::uint64_t hits{}, misses{}, guard_failures{}, stores{}, overwrites{}, clears{};
+        std::uint64_t hits{}, slot_hits{}, misses{}, guard_failures{}, stores{}, overwrites{},
+            compactions{}, clears{};
     };
 
     BasicMacroMemo() {
@@ -57,6 +58,7 @@ public:
         if (last.first == start && last.second != NoRecord &&
             Match(last.second, start, parameters, data_ram, effects)) {
             ++statistics.hits;
+            ++statistics.slot_hits;
             return true;
         }
         const auto it = entries.find(Hash(start, parameters));
@@ -127,8 +129,7 @@ public:
             }
         }
         if (arena.size() >= MaxArenaWords) {
-            Clear();
-            ++statistics.clears;
+            Compact();
         }
         const auto offset = static_cast<std::uint32_t>(arena.size());
         arena.push_back(start);
@@ -186,8 +187,31 @@ private:
         last_by_start.fill({0, NoRecord});
     }
 
+    /// Copies the records still in the map to a new arena. A call stored again with another
+    /// shape leaves its old record behind: title 1 filled the arena with them every ~2 s, and
+    /// clearing it made the next ~20,000 calls interpret again. Clears only when the live
+    /// records alone would fill most of it.
+    void Compact() {
+        compacted.clear();
+        for (auto& entry : entries) {
+            const std::uint32_t* record = arena.data() + entry.second;
+            const std::size_t words =
+                HeaderWords + record[1] + std::size_t{2} * (record[2] + record[3] + record[4]);
+            entry.second = static_cast<std::uint32_t>(compacted.size());
+            compacted.insert(compacted.end(), record, record + words);
+        }
+        arena.swap(compacted);
+        last_by_start.fill({0, NoRecord});
+        ++statistics.compactions;
+        if (arena.size() >= MaxArenaWords / 4 * 3) {
+            Clear();
+            ++statistics.clears;
+        }
+    }
+
     Map entries;
     std::vector<std::uint32_t> arena;
+    std::vector<std::uint32_t> compacted; ///< Compact's new arena (kept for its capacity)
     /// The last record found or stored per macro start (direct mapped).
     std::array<std::pair<std::uint32_t, std::uint32_t>, 256> last_by_start{};
     std::uint64_t generation{};

@@ -520,6 +520,16 @@ bool QueryCacheBase<Traits>::HasUncommittedFlushes() const {
 }
 
 template <typename Traits>
+bool QueryCacheBase<Traits>::HasPendingFenceWork() const {
+    bool result = false;
+    impl->ForEachStreamer([&result](StreamerInterface* streamer) {
+        result |= streamer->HasUnsyncedQueries() || streamer->HasPendingSync();
+        return result;
+    });
+    return result;
+}
+
+template <typename Traits>
 bool QueryCacheBase<Traits>::ShouldWaitAsyncFlushes() {
     std::scoped_lock lk(impl->flush_guard);
     return !impl->flushes_pending.empty() && impl->flushes_pending.front() != 0ULL;

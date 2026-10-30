@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - nx2
+      - nx2-experimental
 
 permissions:
   contents: read
@@ -131,26 +132,58 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cmake --build build/release --target yuzu --parallel
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
 
-      - name: Package Linux binary
+      # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
+      # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
+      # and its Qt plugin adds the Qt libraries and platform plugins. Runs on glibc 2.39+ systems.
+      - name: Package Linux AppImage
         if: matrix.platform == 'linux-x86_64'
         shell: bash
         run: |
+          set -euo pipefail
           test -x build/release/bin/eglantine
-          tar -C build/release/bin -czf "eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" eglantine
+          test -x build/release/bin/eden-cli
+          # Libraries Qt's xcb platform plugin needs, so linuxdeploy can resolve and bundle them.
+          sudo apt-get install -y --no-install-recommends libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+          tools="$RUNNER_TEMP/linuxdeploy"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/linuxdeploy-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x "$tools"/*.AppImage
+          # The desktop file names its icon dev.eglantine.eglantine.
+          icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
+          cp dist/Eglantine.png "$icon"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-linux-x86_64.AppImage"
+          export OUTPUT="$LDAI_OUTPUT"
+          "$tools/linuxdeploy-x86_64.AppImage" --appdir AppDir \
+            --executable build/release/bin/eglantine \
+            --executable build/release/bin/eden-cli \
+            --desktop-file dist/dev.eden_emu.eden.desktop \
+            --icon-file "$icon" \
+            --plugin qt \
+            --output appimage
+          test -s "$LDAI_OUTPUT"
+          ls -la "$LDAI_OUTPUT"
 
       - name: Package Windows binary
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: |
-          if (-not (Test-Path build/release/bin/eglantine.exe)) {
-            throw 'build/release/bin/eglantine.exe was not produced'
+          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/release/bin/$exe")) {
+              throw "build/release/bin/$exe was not produced"
+            }
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
 
-      # The Windows artifact is the bin folder itself: GitHub zips artifacts on download, and
-      # uploading a zip gave a zip inside a zip.
+      # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
+      # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
         if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v4
@@ -160,19 +193,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # The tarball keeps the executable bit, which artifacts lose.
       - name: Upload Linux binary
         if: matrix.platform == 'linux-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
+          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
-  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2,
-  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
+  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2
+  # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
+  # unticked.
   release:
     name: Publish release
     needs: build
@@ -193,7 +226,7 @@ jobs:
           mkdir dist
           (cd "artifacts/eglantine-windows-x86_64-${GITHUB_SHA}" &&
             zip -qr "${GITHUB_WORKSPACE}/dist/eglantine-${GITHUB_SHA}-windows-x86_64.zip" .)
-          cp "artifacts/eglantine-linux-x86_64-${GITHUB_SHA}/eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" dist/
+          cp "artifacts/eglantine-linux-x86_64-${GITHUB_SHA}/eglantine-${GITHUB_SHA}-linux-x86_64.AppImage" dist/
 
       - name: Create release
         shell: bash
@@ -208,5 +241,5 @@ jobs:
             --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
 
-          Windows: extract the zip and run eglantine.exe.
-          Linux: extract the tarball and run ./eglantine."
+          Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
+          Linux: make the AppImage executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch)."

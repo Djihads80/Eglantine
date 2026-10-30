@@ -9,8 +9,10 @@
 #include <array>
 #include <bitset>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -33,6 +35,10 @@ class System;
 
 namespace Tegra {
 class MemoryManager;
+}
+
+namespace VideoCommon {
+class GpuSplit;
 }
 
 namespace VideoCore {
@@ -3161,6 +3167,14 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
+    /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
+    /// registers and sends the register writes to the back thread.
+    void FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                         u32 argument, bool is_last_call);
+    void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                              const u32* base_start, u32 amount, u32 methods_pending);
+
     bool ShouldExecute() const {
         return execute_on;
     }
@@ -3247,7 +3261,16 @@ private:
      * @param method Method to call
      * @param parameters Arguments to the method call
      */
-    void CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
+    void CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters);
+
+    /// Whether state register writes that keep the register's value are dropped (CallMethod).
+    static bool SkipSameValueWrites() {
+        static const bool skip = [] {
+            const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
+            return value == nullptr || value[0] != '0';
+        }();
+        return skip;
+    }
 
     /// Handles writes to the macro uploading register.
     void ProcessMacroUpload(u32 data);
@@ -3313,6 +3336,28 @@ private:
 
     std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
     bool current_macro_dirty{};
+
+    // Split GPU thread, macros on the front (FrontCallMethod): the front's state, and whether
+    // the front owns the macro code and bindings (the back thread then leaves them alone).
+    struct FrontState;
+    FrontState& Front(Core::System& system, VideoCommon::GpuSplit& split);
+    void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
+                    bool is_last_call, bool from_macro);
+    void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 count);
+    void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
+    void FinishFrontMacro(Core::System& system);
+    std::unique_ptr<FrontState> front;
+    bool front_macros{};
+    // EDEN_NX2_SPLIT_VERIFY: the last SET_SHADOW_RAM_CONTROL writes each side saw (argument,
+    // mode before, path), printed when the sides disagree.
+    struct ControlWrite {
+        u32 argument;
+        u32 before;
+        u32 path;
+    };
+    std::array<ControlWrite, 16> back_control_writes{};
+    u32 back_control_count{};
 };
 
 #define ASSERT_REG_POSITION(field_name, position)                                                  \
