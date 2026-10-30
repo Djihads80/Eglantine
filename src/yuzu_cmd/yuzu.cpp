@@ -483,11 +483,17 @@ extern "C" SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
 }
 extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
     SdlState *state = (SdlState *)appstate;
+    if (!state) {
+        return;
+    }
     state->system.DetachDebugger();
+    // SDL calls this even when SDL_AppInit never powered the system on (no ROM given, --help or
+    // --version): the kernel is uninitialised then, and Pause()/ShutdownMainProcess() would
+    // dereference it.
     if (state->system.IsPoweredOn()) {
         void(state->system.Pause());
+        state->system.ShutdownMainProcess();
     }
-    state->system.ShutdownMainProcess();
     delete state;
 }
 
