@@ -343,7 +343,7 @@ if (CXX_GCC OR CXX_CLANG)
         endif()
     elseif(ARCHITECTURE_arm64)
         # See https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
-        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, optimized, armv9, native")
+        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, optimized, armv9, sd8elite, sd8gen3, sd870, native")
         set(mtune generic)
         if (${YUZU_BUILD_PRESET} STREQUAL "generic")
             set(march armv8-a)
@@ -351,6 +351,20 @@ if (CXX_GCC OR CXX_CLANG)
             set(march armv8.2-a+lse+rcpc)
         elseif (${YUZU_BUILD_PRESET} STREQUAL "armv9")
             set(march armv9-a)
+        # Per-SoC presets. Each -march is the instruction set shared by every core of the chip (the
+        # little cores run the same threads), -mtune targets its big cores.
+        elseif (${YUZU_BUILD_PRESET} STREQUAL "sd8elite")
+            # Snapdragon 8 Elite (Oryon): ARMv8.x without SVE; clang 19 has no Oryon model yet.
+            set(march armv8.5-a+fp16+dotprod)
+            set(mtune cortex-x4)
+        elseif (${YUZU_BUILD_PRESET} STREQUAL "sd8gen3")
+            # Snapdragon 8 Gen 3: Cortex-X4, A720 and A520 are all ARMv9.2 with SVE2.
+            set(march armv9.2-a)
+            set(mtune cortex-x4)
+        elseif (${YUZU_BUILD_PRESET} STREQUAL "sd870")
+            # Snapdragon 870: Cortex-A77 and A55 share ARMv8.2 with FP16, dot product and RCpc.
+            set(march armv8.2-a+fp16+dotprod+rcpc)
+            set(mtune cortex-a77)
         endif()
     endif()
 
