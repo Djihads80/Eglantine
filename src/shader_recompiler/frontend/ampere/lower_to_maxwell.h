@@ -868,10 +868,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.
             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
             const u32 words = insn.Bits(73, 1) ? 2 : 1;
-            if (dest != 255 || source >= 254 || (words == 2 && (source & 1)) || target >= 6 ||
+            const u32 scratch = target == 6 ? 5U : 6U; // the comparison, saved around the match
+            if (dest != 255 || source >= 254 || (words == 2 && (source & 1)) || target == 7 ||
                 native_predicate != 7 || insn.words[1] || (insn.words[2] & ~0xe0200U) != 0)
                 return fail(index, "native warp match mode");
-            save_predicate();
+            save_predicate(1U << scratch);
             // Compare every lane with the lowest active one, then require all to agree.
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
             emit(0x5c10000000070000ULL | 251 | (u64{250} << 8) | (u64{255} << 20) | (u64{1} << 49));
@@ -880,13 +881,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             for (u32 word = 0; word < words; ++word)
                 emit(0xef10000000070000ULL | (251 + word) | (u64{source + word} << 8) |
                     (u64{250} << 20) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
-            emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source} << 8) |
+            emit(0x5b60000000070000ULL | 7 | (u64{scratch} << 3) | (u64{source} << 8) |
                 (u64{251} << 20) | (u64{7} << 39) | (u64{2} << 49));
             if (words == 2)
-                emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source + 1} << 8) |
-                    (u64{252} << 20) | (u64{6} << 39) | (u64{2} << 49));
-            emit(0x50d8000000070000ULL | 255 | (u64{6} << 39) | (u64{target} << 45));
-            restore_predicate();
+                emit(0x5b60000000070000ULL | 7 | (u64{scratch} << 3) | (u64{source + 1} << 8) |
+                    (u64{252} << 20) | (u64{scratch} << 39) | (u64{2} << 49));
+            emit(0x50d8000000070000ULL | 255 | (u64{scratch} << 39) | (u64{target} << 45));
+            restore_predicate(1U << scratch);
             break;
         }
         case 0x80d: { // CSMTEST: a test of shading-mode state Eden does not model, taken as false.
