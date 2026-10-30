@@ -28,7 +28,8 @@ enum class Role : unsigned {
     Count,
 };
 enum class Kind : unsigned { Graphics, Compute, Count };
-enum class Stage : unsigned { Lower, Translate, Emit, Module, Driver, Count };
+// Reuse: finding shaders an earlier pipeline translated and checking they fit (ShaderReuseCache).
+enum class Stage : unsigned { Lower, Translate, Emit, Module, Driver, Reuse, Count };
 
 inline constexpr size_t NumRoles = static_cast<size_t>(Role::Count);
 inline constexpr size_t NumKinds = static_cast<size_t>(Kind::Count);
@@ -70,15 +71,19 @@ public:
         std::atomic<uint64_t> repeat_combos{};
         std::atomic<uint64_t> translations{};
         std::atomic<uint64_t> new_programs{};
+        std::atomic<uint64_t> reused{};        // pipelines built with an earlier pipeline's shaders
+        std::atomic<uint64_t> reuse_rejects{}; // shaders found that did not fit: translated again
         std::array<std::atomic<uint64_t>, NumStages> count{};
         std::array<std::atomic<uint64_t>, NumStages> nanos{};
     };
     struct Snapshot {
-        uint64_t pipelines{}, repeat_combos{}, translations{}, new_programs{};
+        uint64_t pipelines{}, repeat_combos{}, translations{}, new_programs{}, reused{},
+            reuse_rejects{};
         std::array<uint64_t, NumStages> count{};
         std::array<uint64_t, NumStages> nanos{};
         bool Active() const {
-            return pipelines || translations || count != std::array<uint64_t, NumStages>{};
+            return pipelines || translations || reused || reuse_rejects ||
+                   count != std::array<uint64_t, NumStages>{};
         }
     };
 
@@ -128,6 +133,14 @@ public:
         }
     }
 
+    // A graphics pipeline that reused an earlier pipeline's shaders, or found some that did not
+    // fit its environments and translated its own.
+    void NoteReuse(Kind kind, bool reused) {
+        Cell& c = CellOf(CurrentRole(), kind);
+        (reused ? c.reused : c.reuse_rejects).fetch_add(1, std::memory_order_relaxed);
+        MaybeReport();
+    }
+
 private:
     static constexpr int64_t WindowNanos = 10'000'000'000;
 
@@ -149,6 +162,8 @@ private:
         s.repeat_combos = c.repeat_combos.load(std::memory_order_relaxed);
         s.translations = c.translations.load(std::memory_order_relaxed);
         s.new_programs = c.new_programs.load(std::memory_order_relaxed);
+        s.reused = c.reused.load(std::memory_order_relaxed);
+        s.reuse_rejects = c.reuse_rejects.load(std::memory_order_relaxed);
         for (size_t i = 0; i < NumStages; ++i) {
             s.count[i] = c.count[i].load(std::memory_order_relaxed);
             s.nanos[i] = c.nanos[i].load(std::memory_order_relaxed);
@@ -165,13 +180,15 @@ private:
         const auto n = [&](Stage stage) { return s.count[static_cast<size_t>(stage)]; };
         LOG_INFO(Render_Vulkan,
                  "PipelineStats [{}] role={} kind={} pipelines={} repeat_combos={} translations={} "
-                 "new_programs={} | lower {}x{:.1f}ms translate {}x{:.1f}ms emit {}x{:.1f}ms "
-                 "module {}x{:.1f}ms driver {}x{:.1f}ms",
+                 "new_programs={} reused={} reuse_rejects={} | lower {}x{:.1f}ms translate "
+                 "{}x{:.1f}ms emit {}x{:.1f}ms module {}x{:.1f}ms driver {}x{:.1f}ms reuse "
+                 "{}x{:.1f}ms",
                  scope, role_names[static_cast<size_t>(role)], kind_names[static_cast<size_t>(kind)],
-                 s.pipelines, s.repeat_combos, s.translations, s.new_programs, n(Stage::Lower),
-                 ms(Stage::Lower), n(Stage::Translate), ms(Stage::Translate), n(Stage::Emit),
-                 ms(Stage::Emit), n(Stage::Module), ms(Stage::Module), n(Stage::Driver),
-                 ms(Stage::Driver));
+                 s.pipelines, s.repeat_combos, s.translations, s.new_programs, s.reused,
+                 s.reuse_rejects, n(Stage::Lower), ms(Stage::Lower), n(Stage::Translate),
+                 ms(Stage::Translate), n(Stage::Emit), ms(Stage::Emit), n(Stage::Module),
+                 ms(Stage::Module), n(Stage::Driver), ms(Stage::Driver), n(Stage::Reuse),
+                 ms(Stage::Reuse));
     }
 
     void MaybeReport() {
@@ -192,6 +209,8 @@ private:
                 delta.repeat_combos = current.repeat_combos - before.repeat_combos;
                 delta.translations = current.translations - before.translations;
                 delta.new_programs = current.new_programs - before.new_programs;
+                delta.reused = current.reused - before.reused;
+                delta.reuse_rejects = current.reuse_rejects - before.reuse_rejects;
                 for (size_t i = 0; i < NumStages; ++i) {
                     delta.count[i] = current.count[i] - before.count[i];
                     delta.nanos[i] = current.nanos[i] - before.nanos[i];
@@ -263,6 +282,12 @@ inline void NotePipeline(Kind kind, uint64_t combo) {
 inline void NoteTranslation(Kind kind, unsigned stage_slot, uint64_t hash) {
     if (Enabled()) {
         Registry::Get().NoteTranslation(kind, stage_slot, hash);
+    }
+}
+
+inline void NoteReuse(Kind kind, bool reused) {
+    if (Enabled()) {
+        Registry::Get().NoteReuse(kind, reused);
     }
 }
 
