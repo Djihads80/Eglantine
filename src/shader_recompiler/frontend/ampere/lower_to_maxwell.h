@@ -2244,12 +2244,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 break;
             }
             if (opcode == 0xa10 && insn.Bits(74, 1)) {
-                if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0x07800000U) != 0x007fe4ffU)
+                if ((insn.words[2] & ~0x07800000U) != 0x007fe4ffU)
                     return fail(index, "native extended constant add mode");
-                const u32 b = operand(1, false);
+                const u32 a = insn.Bits(24, 8), b = operand(1, false);
                 mov_imm(250, 1);
                 emit(0x5ca0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
                     (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
+                if (a != 255) emit(0x5c10000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{250} << 20));
                 emit(base(0x5c10000000000000ULL) | (u64{b} << 8) | (u64{250} << 20));
                 break;
             }
