@@ -28,6 +28,7 @@
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/textures/decoders.h"
 
@@ -717,6 +718,11 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
     ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+        if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
+            // Written at last: a backed image replaces it where it is used next.
+            image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+            return;
+        }
         if (UploadsByLayer(image)) {
             MarkLayersWritten(image, cpu_addr, size);
             return;
@@ -2918,6 +2924,14 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     if (is_modification) {
+        if (True(image.flags & ImageFlagBits::UnwrittenSparse) &&
+            False(image.flags & ImageFlagBits::Remapped)) {
+            // The GPU renders into it: these writes are lost, later uses get a backed image.
+            LOG_WARNING(HW_GPU, "GPU write into unwritten sparse image {:#x}; replacing it",
+                        image.gpu_addr);
+            Tegra::Nx2SparseMarkWritten(image.gpu_addr, image.guest_size_bytes);
+            image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+        }
         MarkModification(image);
     }
     lru_cache.Touch(image.lru_index, frame_tick);
