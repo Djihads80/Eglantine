@@ -81,6 +81,7 @@
         <item>0</item>
         <item>7</item>
         <item>14</item>
+        <item>15</item>
         <item>9</item>
         <item>10</item>
         <item>15</item>
@@ -279,6 +280,7 @@
         <item>@string/scaling_filter_spline1</item>
         <item>@string/scaling_filter_sgsr</item>
         <item>@string/scaling_filter_sgsr_edge</item>
+        <item>@string/scaling_filter_fsr3</item>
     </string-array>
 
     <integer-array name="rendererScalingFilterValues">
@@ -297,6 +299,7 @@
         <item>12</item>
         <item>13</item>
         <item>14</item>
+        <item>15</item>
     </integer-array>
 
     <string-array name="rendererAntiAliasingNames">
@@ -453,6 +456,7 @@
         <item>12</item>
         <item>13</item>
         <item>14</item>
+        <item>15</item>
         <item>15</item>
         <item>16</item>
         <item>17</item>

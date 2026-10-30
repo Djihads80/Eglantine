@@ -36,6 +36,7 @@ private:
     Result GetDesiredLanguage(Out<u64> out_language_code);
     Result SetTerminateResult(Result terminate_result);
     Result GetDisplayVersion(Out<DisplayVersion> out_display_version);
+    bool LooseDumpDisplayVersion(std::string& version);
     Result ExtendSaveData(Out<u64> out_required_size, FileSys::SaveDataType type,
                           Common::UUID user_id, u64 normal_size, u64 journal_size);
     Result GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size,
@@ -81,7 +82,7 @@ private:
     Result GetNotificationStorageChannelEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result GetHealthWarningDisappearedSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result CreateApplicationAndRequestToStart(u64 application_id);
-    Result GetUnknownEvent210(OutCopyHandle<Kernel::KReadableEvent> out_event);
+    Result GetOperationModeRefreshEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result Unknown320();
     Result Unknown321();
     Result Unknown330(Out<u8> out);

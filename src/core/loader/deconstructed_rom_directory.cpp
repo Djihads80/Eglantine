@@ -4,7 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstring>
+#include <string_view>
 #include "common/logging.h"
 #include "common/random.h"
 #include "common/settings.h"
@@ -94,6 +96,40 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     return nullptr;
 }
 
+// The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
+// their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
+// Kart World 1.8.0). A hotfix can keep its minor version's tables (Product.110 in a 1.1.1).
+std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
+    if (romfs_dir == nullptr) {
+        return {};
+    }
+    const auto system_dir = romfs_dir->GetSubdirectory("System");
+    const auto resource_dir = system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr;
+    if (resource_dir == nullptr) {
+        return {};
+    }
+    constexpr std::string_view Prefix = "ResourceSizeTable.Product.";
+    std::string best;
+    for (const auto& file : resource_dir->GetFiles()) {
+        const std::string file_name = file->GetName();
+        if (!file_name.starts_with(Prefix) || file_name.size() < Prefix.size() + 4) {
+            continue;
+        }
+        const std::string_view digits = std::string_view{file_name}.substr(Prefix.size(), 3);
+        if (file_name[Prefix.size() + 3] != '.' ||
+            !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            continue;
+        }
+        if (std::string version{digits}; version > best) {
+            best = version;
+        }
+    }
+    if (best.empty()) {
+        return {};
+    }
+    return fmt::format("{}.{}.{}", best[0], best[1], best[2]);
+}
+
 } // namespace
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_)
@@ -132,7 +168,8 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
             icon_data = (*icon_iter)->ReadAllBytes();
     }
 
-    // Metadata
+    // Metadata: control.nacp (or any .nacp) next to main, else a control.nacp in the folders above
+    // it (dumps keep the title's or the update's control data at their root).
     FileSys::VirtualFile nacp_file = file_dir->GetFile("control.nacp");
     if (nacp_file == nullptr) {
         const auto& files = file_dir->GetFiles();
@@ -142,13 +179,21 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         if (nacp_iter != files.end())
             nacp_file = *nacp_iter;
     }
+    auto parent = file_dir->GetParentDirectory();
+    for (int level = 0; level < 3 && nacp_file == nullptr && parent != nullptr; ++level) {
+        nacp_file = parent->GetFile("control.nacp");
+        parent = parent->GetParentDirectory();
+    }
 
     if (nacp_file != nullptr) {
-        FileSys::NACP nacp(nacp_file);
-        name = nacp.GetApplicationName();
+        control.emplace(nacp_file);
+        name = control->GetApplicationName();
     }
 
     romfs = FindLooseRomFS(file_dir);
+    if (const auto title_dir = file_dir->GetParentDirectory()) {
+        romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
+    }
 }
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
@@ -355,6 +400,26 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadTitle(std::string& out_tit
 
     out_title = name;
     return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadControlData(FileSys::NACP& out_control) {
+    if (!control) {
+        return ResultStatus::ErrorNoControl;
+    }
+    out_control = *control;
+    return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadDisplayVersion(std::string& version) {
+    if (control && !control->GetVersionString().empty()) {
+        version = control->GetVersionString();
+        return ResultStatus::Success;
+    }
+    if (!romfs_version.empty()) {
+        version = romfs_version;
+        return ResultStatus::Success;
+    }
+    return ResultStatus::ErrorNoControl;
 }
 
 bool AppLoader_DeconstructedRomDirectory::IsRomFSUpdatable() const {

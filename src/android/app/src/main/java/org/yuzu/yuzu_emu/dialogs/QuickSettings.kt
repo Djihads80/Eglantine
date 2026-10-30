@@ -15,6 +15,7 @@ import android.widget.TextView
 import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.materialswitch.MaterialSwitch
+import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.YuzuApplication
 import org.yuzu.yuzu_emu.features.settings.model.BooleanSetting
@@ -150,6 +151,10 @@ class QuickSettings(val emulationFragment: EmulationFragment) {
         switchView.setOnCheckedChangeListener { _, isChecked ->
             setting.setBoolean(isChecked)
             saveSettings()
+            // Lets the running game know it was docked or undocked.
+            if (setting == BooleanSetting.USE_DOCKED_MODE) {
+                NativeLibrary.applySettings()
+            }
         }
 
         switchContainer.setOnClickListener {
