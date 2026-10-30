@@ -15,6 +15,7 @@ Eglantine) is [`NX2_NOTES.md`](../../NX2_NOTES.md) (one row per problem solved).
 | Page | For whom | What it covers |
 | --- | --- | --- |
 | [Getting started](getting-started.md) | Players | Dump layout, keys, first launch, recommended settings, troubleshooting |
+| [Settings reference](settings-reference.md) | Players, developers | Every setting and environment variable: what the code really does, its effect on Mario Kart World (speed, timing, performance, video memory), recommended values |
 | [Building](building.md) | Developers | Toolchain, exact build commands (clang-cl and MSVC), packaging, updating from Eglantine |
 | [Changes in this fork](changes.md) | Developers, reviewers | Every commit on top of Eglantine `nx2`: why, what, files, origin |
 | [Experiments that were dropped](experiments.md) | Developers | What was tried to remove shader stutter and raise the frame rate, with measurements, and why it is not in the release |
