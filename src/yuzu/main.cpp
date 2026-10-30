@@ -125,8 +125,8 @@ int main(int argc, char* argv[]) {
     // Raise the open file limit to at least 8192, or the hard limit.
     // Most sane systems should not hit the hard limit here.
     struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < 8192) {
-        rl.rlim_cur = std::min<rlim_t>(8192, rl.rlim_max);
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+        rl.rlim_cur = std::min<rlim_t>(1048576, rl.rlim_max);
         setrlimit(RLIMIT_NOFILE, &rl);
     }
 #endif // _WIN32

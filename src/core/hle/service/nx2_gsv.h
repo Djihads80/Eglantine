@@ -929,6 +929,29 @@ private:
                         image_id, address);
             return;
         }
+        u32 crop_width = layout.width;
+        u32 crop_height = layout.height;
+        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
+            layout.width == 3840 && layout.height == 2160) {
+            crop_width = 2560;
+            crop_height = 1440;
+        }
+        static const u32 env_crop_w = [] {
+            const char* v = std::getenv("EDEN_NX2_CROP_WIDTH");
+            return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0U;
+        }();
+        static const u32 env_crop_h = [] {
+            const char* v = std::getenv("EDEN_NX2_CROP_HEIGHT");
+            return v ? static_cast<u32>(std::strtoul(v, nullptr, 10)) : 0U;
+        }();
+        if (env_crop_w != 0 && env_crop_h != 0) {
+            crop_width = env_crop_w;
+            crop_height = env_crop_h;
+        }
+        if (m_presents <= 4) {
+            LOG_INFO(Service, "nx2:vi2 composite image {} layout {}x{}, crop {}x{}",
+                     image_id, layout.width, layout.height, crop_width, crop_height);
+        }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
             .offset = 0,
@@ -937,7 +960,7 @@ private:
             .stride = static_cast<u32>(layout.pitch / 4),
             .pixel_format = android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
-            .crop_rect = {0, 0, static_cast<int>(layout.width), static_cast<int>(layout.height)},
+            .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
         }};

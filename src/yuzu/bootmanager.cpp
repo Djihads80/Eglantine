@@ -764,12 +764,15 @@ bool GRenderWindow::InitRenderTarget() {
     // Update the Window System information with the new render target
     window_info = QtCommon::GetWindowSystemInfo(child_widget->windowHandle());
 
-    child_widget->resize(Layout::ScreenUndocked::Width, Layout::ScreenUndocked::Height);
+    const auto target_width = Settings::IsDockedMode() ? Layout::ScreenDocked::Width : Layout::ScreenUndocked::Width;
+    const auto target_height = Settings::IsDockedMode() ? Layout::ScreenDocked::Height : Layout::ScreenUndocked::Height;
+
+    child_widget->resize(target_width, target_height);
     layout()->addWidget(child_widget);
     // Reset minimum required size to avoid resizing issues on the main window after restarting.
     setMinimumSize(1, 1);
 
-    resize(Layout::ScreenUndocked::Width, Layout::ScreenUndocked::Height);
+    resize(target_width, target_height);
 
     OnMinimalClientAreaChangeRequest(GetActiveConfig().min_client_area_size);
     OnFramebufferSizeChanged();

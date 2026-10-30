@@ -444,7 +444,10 @@ void System::Stop() {
     }
 
     if (execution_mode == ExecutionMode::Auto) {
-        terminate_event.Wait();
+        // The system manager thread signals this; it may already be gone during shutdown.
+        if (!terminate_event.WaitFor(std::chrono::seconds(1))) {
+            LOG_WARNING(Service_Audio, "Timed out waiting for the renderer to terminate");
+        }
     }
 }
 

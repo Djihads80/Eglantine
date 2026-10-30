@@ -2049,6 +2049,12 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     emulation_running = true;
     if (ui->action_Fullscreen->isChecked()) {
         ShowFullscreen();
+    } else {
+        if (Settings::IsDockedMode()) {
+            ResetWindowSize1080();
+        } else {
+            ResetWindowSize720();
+        }
     }
     OnStartGame();
 }
@@ -2129,7 +2135,11 @@ void MainWindow::OnEmulationStopped() {
     shutdown_timer.stop();
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->disconnect();
-        QtCommon::emu_thread->wait();
+        if (!QtCommon::emu_thread->wait(QDeadlineTimer(10'000))) {
+            LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+            QtCommon::emu_thread->terminate();
+            QtCommon::emu_thread->wait();
+        }
         QtCommon::emu_thread.reset();
     }
 
@@ -3311,12 +3321,36 @@ void MainWindow::ToggleWindowMode() {
 void MainWindow::ResetWindowSize(u32 width, u32 height) {
     const auto aspect_ratio = Layout::EmulationAspectRatio(Settings::values.aspect_ratio.GetValue(),
                                                            float(height) / width);
-    if (!ui->action_Single_Window_Mode->isChecked()) {
-        render_window->resize(height / aspect_ratio, height);
+    const bool single_window = ui->action_Single_Window_Mode->isChecked();
+    const bool show_status_bar = ui->action_Show_Status_Bar->isChecked();
+    const auto status_bar_height = (single_window && show_status_bar) ? statusBar()->height() : 0;
+    const auto menu_bar_height = single_window ? menuBar()->height() : 0;
+    const auto extra_height = menu_bar_height + status_bar_height;
+
+    auto* current_screen = this->screen();
+    if (!current_screen) {
+        current_screen = QGuiApplication::primaryScreen();
+    }
+    const auto available = current_screen ? current_screen->availableGeometry() : QRect();
+
+    u32 target_h = height;
+    u32 target_w = static_cast<u32>(std::round(height / aspect_ratio));
+
+    if (!available.isEmpty()) {
+        const int max_w = available.width();
+        const int max_h = available.height() - extra_height;
+        if (max_w > 0 && max_h > 0 &&
+            (target_w > static_cast<u32>(max_w) || target_h > static_cast<u32>(max_h))) {
+            const float scale = (std::min)(float(max_w) / target_w, float(max_h) / target_h);
+            target_w = (std::max)(1U, static_cast<u32>(std::round(target_w * scale)));
+            target_h = (std::max)(1U, static_cast<u32>(std::round(target_h * scale)));
+        }
+    }
+
+    if (!single_window) {
+        render_window->resize(target_w, target_h);
     } else {
-        const bool show_status_bar = ui->action_Show_Status_Bar->isChecked();
-        const auto status_bar_height = show_status_bar ? statusBar()->height() : 0;
-        resize(height / aspect_ratio, height + menuBar()->height() + status_bar_height);
+        resize(target_w, target_h + extra_height);
     }
 }
 
