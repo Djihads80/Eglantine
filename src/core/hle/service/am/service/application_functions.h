@@ -81,7 +81,7 @@ private:
     Result GetNotificationStorageChannelEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result GetHealthWarningDisappearedSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result CreateApplicationAndRequestToStart(u64 application_id);
-    Result GetUnknownEvent210(OutCopyHandle<Kernel::KReadableEvent> out_event);
+    Result GetOperationModeRefreshEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result Unknown320();
     Result Unknown321();
     Result Unknown330(Out<u8> out);

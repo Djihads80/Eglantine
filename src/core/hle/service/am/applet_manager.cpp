@@ -248,11 +248,16 @@ void AppletManager::RequestExit() {
     }
 }
 
+// Frontends call this after any settings change, so only an actual docked/handheld switch is
+// passed on.
 void AppletManager::OperationModeChanged() {
     std::scoped_lock lk{m_lock};
-    if (m_window_system) {
-        m_window_system->OnOperationModeChanged();
+    const bool docked = Settings::IsDockedMode();
+    if (!m_window_system || docked == m_docked) {
+        return;
     }
+    m_docked = docked;
+    m_window_system->OnOperationModeChanged();
 }
 
 void AppletManager::SetWindowSystem(WindowSystem* window_system) {
@@ -262,6 +267,7 @@ void AppletManager::SetWindowSystem(WindowSystem* window_system) {
     if (!m_window_system) {
         return;
     }
+    m_docked = Settings::IsDockedMode();
 
     m_cv.wait(lk, [&] { return m_pending_process != nullptr; });
 
