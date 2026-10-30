@@ -414,7 +414,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
             LOG_WARNING(Shader, "Storage buffer failed to track, using global memory fallbacks");
             return;
         }
-        LOG_WARNING(Shader, "Storage buffer tracked without bias, index {} offset {}",
+        LOG_DEBUG(Shader, "Storage buffer tracked without bias, index {} offset {}",
                     storage_buffer->index, storage_buffer->offset);
     }
     // Collect storage buffer and the instruction
