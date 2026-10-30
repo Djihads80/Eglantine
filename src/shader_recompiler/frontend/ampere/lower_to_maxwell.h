@@ -496,6 +496,28 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
+        case 0x825: { // IMAD.WIDE.U32 Rd:Rd+1 = Ra * immediate + Rc:Rc+1 (pointer arithmetic)
+            const u32 a = insn.Bits(24, 8), b = insn.words[1], c = insn.Bits(64, 8);
+            const u32 d = static_cast<u32>(dest), c_high = c == 255 ? 255U : c + 1;
+            if ((insn.words[2] & ~0xffU) != 0x078e0000 || (d & 1) || d >= 246 || a >= 246 ||
+                (c != 255 && ((c & 1) || c >= 246)))
+                return fail(index, "native wide multiply mode");
+            // As UIMAD.WIDE.U32: the high word in R253, the low word in R250, then the 64-bit add.
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 250, true, false, 2, true);
+            xmad(250, a, b, 251, false, true, 1, true);
+            xmad(252, a, b, 251, true, true, 2, true);
+            emit(0x3828000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000000000ULL | predicate | 253 | (u64{250} << 8) | (u64{252} << 20));
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 255, true, false, 0, true);
+            xmad(251, a, b, 251, false, true, 0, true);
+            emit(0x5c18000000000000ULL | predicate | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{c} << 20) | (u64{1} << 47));
+            emit(0x5c10000000000000ULL | predicate | (d + 1) | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000000000ULL | predicate | d | (u64{250} << 8) | (u64{255} << 20));
+            break;
+        }
         case 0x827: { // IMAD.HI.U32, captured zero addend
             if (insn.words[2] != 0x078e00ff) return fail(index, "native high multiply mode");
             const u32 a = insn.Bits(24, 8), b = insn.words[1];
