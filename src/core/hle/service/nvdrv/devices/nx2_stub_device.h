@@ -42,6 +42,10 @@ public:
     using Listener = std::function<void(u64 gpu_address, u64 cpu_address, u64 size)>;
     using UnmapListener = std::function<void(u64 gpu_address, u64 size)>;
     using ReleaseListener = std::function<void(u64 cpu_address, u64 size)>;
+    /// A sparse region is created (true) or destroyed (false).
+    using SparseListener = std::function<void(u64 gpu_address, u64 size, bool create)>;
+    /// A block of a sparse region gets memory [cpu_address, +size).
+    using BackListener = std::function<void(u64 gpu_address, u64 cpu_address, u64 size)>;
 
     static Nx2GpuMemoryRegistry& Get() {
         static Nx2GpuMemoryRegistry registry;
@@ -85,14 +89,55 @@ public:
         }
     }
 
+    // Sparse regions (nx2:gpu 214 with the sparse flag): the GPU range reaches device memory of its
+    // own from the start, and each block gets memory when the GPU first writes it (BackSparse).
+    // The GPU mapping never changes, so the texture cache doesn't rebuild the images over it as
+    // blocks get memory; unbacked blocks read zero.
+    void CreateSparse(u64 gpu_address, u64 size) {
+        std::scoped_lock lk{mutex};
+        sparse_regions[gpu_address] = size;
+        for (auto& [owner, listener] : listeners) {
+            if (listener.sparse) {
+                listener.sparse(gpu_address, size, true);
+            }
+        }
+    }
+
+    void DestroySparse(u64 gpu_address, u64 size) {
+        std::scoped_lock lk{mutex};
+        sparse_regions.erase(gpu_address);
+        for (auto& [owner, listener] : listeners) {
+            if (listener.sparse) {
+                listener.sparse(gpu_address, size, false);
+            }
+        }
+    }
+
+    void BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
+        std::scoped_lock lk{mutex};
+        for (auto& [owner, listener] : listeners) {
+            if (listener.back) {
+                listener.back(gpu_address, cpu_address, size);
+            }
+        }
+    }
+
     void AddListener(const void* owner, Listener listener, UnmapListener unmap_listener,
-                     ReleaseListener release_listener = {}) {
+                     ReleaseListener release_listener = {}, SparseListener sparse_listener = {},
+                     BackListener back_listener = {}) {
         std::scoped_lock lk{mutex};
         for (const auto& m : mappings) {
             listener(m.gpu_address, m.cpu_address, m.size);
         }
+        if (sparse_listener) {
+            for (const auto& [gpu_address, size] : sparse_regions) {
+                sparse_listener(gpu_address, size, true);
+            }
+        }
         listeners.insert_or_assign(owner, Listeners{std::move(listener), std::move(unmap_listener),
-                                                    std::move(release_listener)});
+                                                    std::move(release_listener),
+                                                    std::move(sparse_listener),
+                                                    std::move(back_listener)});
     }
 
     void RemoveListener(const void* owner) {
@@ -109,6 +154,7 @@ public:
         }
         std::scoped_lock lk{mutex};
         mappings.clear();
+        sparse_regions.clear();
     }
 
     // Device (SMMU) address of a CPU range an address space mapped; used to present images.
@@ -146,6 +192,8 @@ private:
         Listener map;
         UnmapListener unmap;
         ReleaseListener release;
+        SparseListener sparse;
+        BackListener back;
     };
 
     // Drops [gpu_address, +size) from the recorded mappings, keeping the parts outside it.
@@ -171,6 +219,7 @@ private:
 
     std::mutex mutex;
     std::vector<Mapping> mappings;
+    std::map<u64, u64> sparse_regions; ///< GPU address -> size
     std::map<const void*, Listeners> listeners;
 };
 
