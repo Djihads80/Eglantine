@@ -1526,6 +1526,28 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            if (!insn.Bits(60, 1) && dimension == 7 && lod == 3) {
+                const u32 components = std::popcount(mask);
+                if (depth_compare || !components || split != (components > 2) ||
+                    insn.Bits(76, 1) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                    insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
+                    source_a >= 246 || source_b >= 250 || dest == 255 ||
+                    (components > 1 && ((dest & 1) || dest >= 254)) ||
+                    (components == 4 && ((second_dest & 1) || second_dest >= 254)))
+                    return fail(index, "native array-cube vector sample mode");
+                result.required_texture_buffer = 2;
+                // Vector coordinates already use layer,X,Y,Z order. LOD is
+                // supplied separately, matching the Maxwell TEX operand ABI.
+                emit(0xc000000000000000ULL | predicate | 250 | (u64{source_a} << 8) |
+                     (u64{source_b} << 20) | (u64{7} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(77, 1)} << 35) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{lod} << 55));
+                for (u32 i = 0; i < components; ++i)
+                    emit(0x5c98000000000000ULL | predicate |
+                         (i < 2 ? dest + i : second_dest + i - 2) |
+                         (u64{15} << 39) | (u64{250 + i} << 20));
+                break;
+            }
             if (dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
                 if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
@@ -1937,9 +1959,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{insn.Bits(78, 2)} << 39));
             break;
         }
-        case 0x207: case 0x807: case 0xa07:
-        case 0x208: case 0x808: case 0xa08: { // Bitwise SEL / FSEL
+        case 0x207: case 0x807: case 0xa07: { // Bitwise SEL
             const u32 a = operand(0, false), b = operand(1, false);
+            emit(base(0x5ca0000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) |
+                (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
+            break;
+        }
+        case 0x208: case 0x808: case 0xa08: { // FSEL: the sources keep their .NEG/.ABS
+            const u32 a = operand(0), b = operand(1);
             emit(base(0x5ca0000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) |
                 (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
             break;
