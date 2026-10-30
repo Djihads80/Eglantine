@@ -122,6 +122,21 @@ void GpuSplit::Stop() {
     wake.notify_one();
     back_thread.join();
     active = false;
+    // The split is static and outlives the emulation session. The next session's back thread
+    // starts reading at 0: with the old positions kept it skipped through the new, empty ring a
+    // wrap at a time and never reached the old write position (the next game's first GPU work
+    // never ran, it waited on its syncpoint forever), and the engines it held were freed.
+    ring.reset();
+    write_position = 0;
+    published_local = 0;
+    consumed_cache = 0;
+    publish_every = PublishEvery;
+    front_engine = nullptr;
+    back_engine = nullptr;
+    front_macros = false;
+    published.store(0, std::memory_order_relaxed);
+    consumed.store(0, std::memory_order_relaxed);
+    back_waiting.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
