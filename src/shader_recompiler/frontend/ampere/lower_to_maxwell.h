@@ -1398,8 +1398,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{insn.Bits(90, 1)} << 49));
             break;
         }
-        case 0xb66: { // TLD.SCR.LZ, direct texel fetch
+        case 0xb66: { // TLD.SCR, direct texel fetch at level zero (.LZ) or a given level (.LL)
             const u32 mask = insn.Bits(72, 4);
+            const bool level = insn.Bits(87, 3) == 3; // .LL: the level follows the coordinates
             const u32 dimension = insn.Bits(61, 3);
             const bool array = dimension == 5;
             const bool volume = dimension == 2;
@@ -1416,7 +1417,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             if (!insn.Bits(60, 1) || (dimension != 0 && dimension != 1 && !array && !volume) ||
                 swizzle == ~0U || insn.Bits(76, 5) ||
-                insn.Bits(81, 3) != 7 || insn.Bits(87, 3) != 1 ||
+                insn.Bits(81, 3) != 7 || (insn.Bits(87, 3) != 1 && !level) || (level && volume) ||
+                (level && dimension == 1 && ((source_a & 1) || source_a >= 254)) ||
+                (level && array && ((source_b & 1) || source_b >= 254)) ||
                 insn.Bits(59, 1) ||
                 insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
                 dest == 255 || (mask & (mask - 1) && ((dest & 1) || dest >= 254)) ||
@@ -1429,6 +1432,25 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native texture descriptor buffer conflict");
             result.required_texture_buffer = binding;
+            if (array && level) {
+                // TLDS has no array form with a level: TLD takes (layer, x, y) from Ra and the level
+                // from Rb (layer, x in Ra, Ra+1; y, level in Rb, Rb+1 here). Results come out packed,
+                // then go where the Ampere destinations (Rd, Rd+1, then the second pair) take them.
+                for (u32 i = 0; i < 2; ++i) {
+                    emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) | (u64{source_a + i} << 20));
+                    emit(0x5c98000000000000ULL | predicate | (252 + i) | (u64{15} << 39) | (u64{source_b + i} << 20));
+                }
+                emit(0xdc00000000000000ULL | predicate | 246 | (u64{250} << 8) | (u64{253} << 20) |
+                     (u64{3} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{1} << 55));
+                const u32 components = static_cast<u32>(std::popcount(mask));
+                for (u32 i = 0; i < components; ++i) {
+                    const u32 target = !split || i < 2 ? static_cast<u32>(dest) + i : second_dest + (i - 2);
+                    if (target != 255 && (split || i < 2))
+                        emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{246 + i} << 20));
+                }
+                break;
+            }
             if (array) {
                 emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a + 1} << 20));
                 emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_b} << 20));
@@ -1437,7 +1459,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0xda00000000000000ULL | predicate | dest | (u64{source_a} << 8) |
                  (u64{source_b} << 20) | (u64{insn.Bits(64, 8)} << 28) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
-                 (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
+                 (u64{swizzle} << 50) |
+                 (u64{array ? 8U : volume ? 7U : dimension == 0 ? (level ? 1U : 0U) : (level ? 5U : 2U)} << 53));
             break;
         }
         case 0x91a: // DEPBAR.LE SB5, 1: scoreboard wait, represented by IR data dependencies.
