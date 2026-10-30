@@ -458,7 +458,7 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
     cached_lowest = 0;
     cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
-    LOG_INFO(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
+    LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
              program_base, native_source_size, lowered.instructions.size());
 }
 

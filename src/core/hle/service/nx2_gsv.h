@@ -210,7 +210,7 @@ private:
         const u32 syncpoint = ~cmd_buf[3];
         const u64 value = u64{cmd_buf[4]} | (u64{cmd_buf[5]} << 32);
         const u32 mode = cmd_buf[6];
-        LOG_INFO(Service, "nx2:syncpt TIPC 201 slot={:#x} syncpoint={} value={:#x} mode={}", slot,
+        LOG_DEBUG(Service, "nx2:syncpt TIPC 201 slot={:#x} syncpoint={} value={:#x} mode={}", slot,
                   syncpoint, value, mode);
         auto*& event = m_events[slot];
         if (event == nullptr) {
@@ -249,7 +249,7 @@ private:
 
     void CancelSlotEvent(HLERequestContext& ctx) {
         const u32 slot = ctx.CommandBuffer()[2];
-        LOG_INFO(Service, "nx2:syncpt TIPC 202 slot={:#x}", slot);
+        LOG_DEBUG(Service, "nx2:syncpt TIPC 202 slot={:#x}", slot);
         if (auto it = m_requests.find(slot); it != m_requests.end()) {
             Cancel(it->second);
         }
@@ -402,7 +402,7 @@ private:
         const auto* b = ctx.CommandBuffer();
         const u64 start = u64{b[2]} | (u64{b[3]} << 32);
         const u64 last = u64{b[4]} | (u64{b[5]} << 32);
-        LOG_INFO(Service, "nx2:gpu sub 101 start={:#x} last={:#x} [6]={:#x} [7]={:#x}", start,
+        LOG_DEBUG(Service, "nx2:gpu sub 101 start={:#x} last={:#x} [6]={:#x} [7]={:#x}", start,
                     last, b[6], b[7]);
         if (last > start) {
             Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(start, last - start + 1);
@@ -410,7 +410,7 @@ private:
             // read the first (see video_core/nx2.h).
             if (last - start + 1 == 0x2000) {
                 Tegra::Nx2AddSemaphoreRegion(start);
-                LOG_INFO(Service, "nx2:gpu semaphore page {:#x} mirrored to {:#x}", start + 0x1000,
+                LOG_DEBUG(Service, "nx2:gpu semaphore page {:#x} mirrored to {:#x}", start + 0x1000,
                          start);
             }
         }
@@ -425,7 +425,7 @@ private:
     template <size_t Slot>
     void SubSlotJob(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        LOG_INFO(Service, "(STUBBED) nx2:gpu {} words {:08x} slot={}", ctx.GetCommand(),
+        LOG_DEBUG(Service, "(STUBBED) nx2:gpu {} words {:08x} slot={}", ctx.GetCommand(),
                  fmt::join(std::span<const u32>{w + 2, 18}, " "), w[Slot]);
         EventFor(w[Slot])->Signal(system.Kernel());
         IPC::ResponseBuilder rb{ctx, 2};
@@ -443,7 +443,7 @@ private:
         const u64 c = u64{cmd_buf[8]} | (u64{cmd_buf[9]} << 32);
         // Words 3-4: first GPU address, 5-6: last, 7: memory handle, 8-9: offset into it.
         const u32 handle = cmd_buf[7];
-        LOG_INFO(Service, "nx2:gpu 211 map [{:#x}, {:#x}] handle={} offset={:#x} slot={}", a, b,
+        LOG_DEBUG(Service, "nx2:gpu 211 map [{:#x}, {:#x}] handle={} offset={:#x} slot={}", a, b,
                  handle, c, slot);
         if (const auto it = m_memory.find(handle); it != m_memory.end() && b > a) {
             // Also at the memory's own address: an earlier 213 may have unmapped the mapping 101
@@ -528,7 +528,7 @@ private:
         const u64 start = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
         const u32 slot = w[11];
-        LOG_INFO(Service, "nx2:gpu 214 words {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
+        LOG_DEBUG(Service, "nx2:gpu 214 words {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}",
                  w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
         if (last > start && ((last + 1 - start) % Core::Memory::YUZU_PAGESIZE) == 0) {
             const u64 size = last + 1 - start;
@@ -554,7 +554,7 @@ private:
         const auto* w = ctx.CommandBuffer();
         const u64 first = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
-        LOG_INFO(Service, "nx2:gpu 215 destroy sparse region [{:#x}, {:#x}] words {:#x} {:#x} {:#x} {:#x}",
+        LOG_DEBUG(Service, "nx2:gpu 215 destroy sparse region [{:#x}, {:#x}] words {:#x} {:#x} {:#x} {:#x}",
                  first, last, w[1], w[2], w[7], w[8]);
         FreeReleasedRegions();
         if (last > first) {
