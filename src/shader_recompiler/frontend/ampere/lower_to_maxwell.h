@@ -1587,14 +1587,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0xb60: case 0xf60: case 0x361: { // TEX; 0xf60: handle in a uniform register; 0x361: TEX.B
             // Bindless forms become Maxwell TEX.B, the handle first among the meta registers (the
-            // texture pass tracks it back to its constant buffer words). 0x361 keeps the
-            // coordinates together from Ra and the handle in Rb; only plain samples are taken.
+            // texture pass tracks it back to its constant buffer words). 0x361 lists the handle
+            // right after the coordinates (see general_tex); forms with a LOD value or offsets,
+            // whose place next to the handle is unverified, are not taken.
             const bool bindless = opcode != 0xb60;
-            const u32 handle = opcode == 0xf60 ? uniform_register(insn.Bits(40, 6)) : insn.Bits(32, 8);
-            if (bindless && (handle == ~0U || handle >= 246 ||
-                             (opcode == 0xf60 && insn.Bits(46, 13)) ||
-                             (opcode == 0x361 && (insn.Bits(40, 19) || insn.Bits(87, 3) || insn.Bits(76, 1) ||
-                                                  insn.Bits(78, 1)))))
+            const u32 handle = opcode == 0xf60 ? uniform_register(insn.Bits(40, 6)) : 255;
+            if (bindless && ((opcode == 0xf60 && (handle == ~0U || handle >= 246 || insn.Bits(46, 13))) ||
+                             (opcode == 0x361 && (insn.Bits(40, 19) || insn.Bits(87, 3) > 1 || insn.Bits(76, 1)))))
                 return fail(index, "native bindless texture mode");
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
@@ -1605,7 +1604,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
-            if (dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
+            if (!bindless && dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
                 if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
                     (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
@@ -1638,15 +1637,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                     return false;
                 const u32 coordinates = coordinate_count[dimension];
                 const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
-                const u32 count = coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
+                // 0x361's handle is one more value after the coordinates: 2D.DC is (x, y | handle,
+                // reference), ARRAY_2D is (layer, x | y, handle).
+                const u32 handle_slot = opcode == 0x361 ? 1 : 0;
+                const u32 count = coordinates + handle_slot + (has_lod ? 1 : 0) + (offsets ? 1 : 0) +
+                                  (depth_compare ? 1 : 0);
                 const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
                 const auto value = [&](u32 i) -> u32 {
-                    if (opcode == 0x361 || i < in_a) return source_a == 255 ? 255U : source_a + i;
+                    if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                     return source_b == 255 ? 255U : source_b + (i - in_a);
                 };
-                if ((source_a != 255 && source_a + (opcode == 0x361 ? count : in_a) > 246) ||
-                    (opcode != 0x361 && count > in_a && source_b != 255 && source_b + (count - in_a) > 246))
+                if ((source_a != 255 && source_a + in_a > 246) ||
+                    (count > in_a && source_b != 255 && source_b + (count - in_a) > 246))
                     return false;
+                const u32 texture_handle = opcode == 0x361 ? value(coordinates) : handle;
+                if (bindless && texture_handle >= 246) return false;
                 if (!bindless) {
                     const u32 binding = insn.Bits(54, 5);
                     if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
@@ -1659,8 +1664,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 // Coordinates to R250.., then LOD/bias, offsets and reference to R246...
                 for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
                 u32 meta = 246;
-                u32 next = coordinates;
-                if (bindless) copy(meta++, handle);
+                u32 next = coordinates + handle_slot;
+                if (bindless) copy(meta++, texture_handle);
                 if (has_lod) copy(meta++, value(next++));
                 if (offsets) copy(meta++, value(next++));
                 if (depth_compare) copy(meta++, value(next++));
