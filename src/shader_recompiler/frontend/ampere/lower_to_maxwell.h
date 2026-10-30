@@ -1377,10 +1377,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
             if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
-                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) != 2 ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) >= 18 ||
                 insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
-            result.required_texture_buffer = 2;
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != insn.Bits(54, 5))
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = insn.Bits(54, 5);
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49));
