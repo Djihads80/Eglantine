@@ -27,7 +27,6 @@
 #include "core/hle/service/ns/application_manager_interface.h"
 #include "core/hle/service/ns/service_getter_interface.h"
 #include "core/hle/service/sm/sm.h"
-#include "core/loader/loader.h"
 
 namespace Service::AM {
 
@@ -222,10 +221,6 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     const auto res = GetApplicationMetadata(system, m_applet->program_id);
     if (res.first != nullptr) {
         const auto& version = res.first->GetVersionString();
-        std::memcpy(out_display_version->string.data(), version.data(),
-                    (std::min)(version.size(), out_display_version->string.size()));
-    } else if (std::string version;
-               system.GetAppLoader().ReadDisplayVersion(version) == Loader::ResultStatus::Success) {
         std::memcpy(out_display_version->string.data(), version.data(),
                     (std::min)(version.size(), out_display_version->string.size()));
     } else {
