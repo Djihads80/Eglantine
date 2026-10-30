@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <cstring>
 #include "common/logging.h"
 #include "common/random.h"
@@ -94,6 +95,36 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     return nullptr;
 }
 
+// Display version for a loose ExeFS, which has no installed control data: a control.nacp, else a
+// display_version.txt holding e.g. "1.8.0", in the exefs/ directory or next to it.
+std::string FindLooseDisplayVersion(const FileSys::VirtualDir& exefs_dir) {
+    if (exefs_dir == nullptr) {
+        return {};
+    }
+    const std::array<FileSys::VirtualDir, 2> dirs{exefs_dir, exefs_dir->GetParentDirectory()};
+    for (const auto& d : dirs) {
+        if (d == nullptr) {
+            continue;
+        }
+        if (const auto nacp_file = d->GetFile("control.nacp")) {
+            const auto version = FileSys::NACP(nacp_file).GetVersionString();
+            if (!version.empty()) {
+                return version;
+            }
+        }
+        if (const auto txt = d->GetFile("display_version.txt")) {
+            const auto bytes = txt->ReadAllBytes();
+            std::string version(bytes.begin(), bytes.end());
+            const auto end = version.find_first_of("\r\n\t ");
+            version = version.substr(0, end);
+            if (!version.empty()) {
+                return version;
+            }
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_)
@@ -149,6 +180,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     }
 
     romfs = FindLooseRomFS(file_dir);
+    display_version = FindLooseDisplayVersion(file_dir);
 }
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
@@ -158,6 +190,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     , override_update(override_update_)
 {
     romfs = FindLooseRomFS(dir);
+    display_version = FindLooseDisplayVersion(dir);
 }
 
 FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
@@ -354,6 +387,15 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadTitle(std::string& out_tit
     }
 
     out_title = name;
+    return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_DeconstructedRomDirectory::ReadDisplayVersion(std::string& out_version) {
+    if (display_version.empty()) {
+        return ResultStatus::ErrorNoControl;
+    }
+
+    out_version = display_version;
     return ResultStatus::Success;
 }
 

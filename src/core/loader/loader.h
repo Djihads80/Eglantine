@@ -338,6 +338,17 @@ public:
         return ResultStatus::ErrorNotImplemented;
     }
 
+    /**
+     * Get the display version of the application when it has no installed control data
+     *
+     * @param[out] out_version Reference to store the version string (e.g. "1.8.0") into
+     *
+     * @return ResultStatus result of function
+     */
+    virtual ResultStatus ReadDisplayVersion(std::string& out_version) {
+        return ResultStatus::ErrorNotImplemented;
+    }
+
     using Modules = std::map<VAddr, std::string>;
 
     virtual ResultStatus ReadNSOModules(Modules& modules) {

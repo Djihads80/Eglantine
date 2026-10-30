@@ -49,6 +49,7 @@ public:
     ResultStatus ReadIcon(std::vector<u8>& out_buffer) override;
     ResultStatus ReadProgramId(u64& out_program_id) override;
     ResultStatus ReadTitle(std::string& title) override;
+    ResultStatus ReadDisplayVersion(std::string& out_version) override;
     bool IsRomFSUpdatable() const override;
 
     ResultStatus ReadNSOModules(Modules& out_modules) override;
@@ -60,6 +61,7 @@ private:
 
     std::vector<u8> icon_data;
     std::string name;
+    std::string display_version;
     u64 title_id{};
     bool override_update;
 
