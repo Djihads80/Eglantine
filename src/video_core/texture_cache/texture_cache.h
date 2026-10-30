@@ -2732,9 +2732,9 @@ bool TextureCache<P>::RefreshPartialContents(Image& image) {
         const u64 page_begin = u64{page} << Core::DEVICE_PAGEBITS;
         const u64 begin = page_begin > head ? page_begin - head : 0;
         const u64 end =
-            std::min<u64>(page_begin + Core::DEVICE_PAGESIZE - head, image.guest_size_bytes);
+            (std::min<u64>)(page_begin + Core::DEVICE_PAGESIZE - head, image.guest_size_bytes);
         if (!ranges.empty() && ranges.back().second >= begin) {
-            ranges.back().second = std::max(ranges.back().second, end);
+            ranges.back().second = (std::max)(ranges.back().second, end);
         } else {
             ranges.emplace_back(begin, end);
         }
@@ -2745,7 +2745,7 @@ bool TextureCache<P>::RefreshPartialContents(Image& image) {
         std::vector<std::pair<u64, u64>> merged;
         for (const auto& range : ranges) {
             if (!merged.empty() && merged.back().second >= range.first) {
-                merged.back().second = std::max(merged.back().second, range.second);
+                merged.back().second = (std::max)(merged.back().second, range.second);
             } else {
                 merged.push_back(range);
             }
