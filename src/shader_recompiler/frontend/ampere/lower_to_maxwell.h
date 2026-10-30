@@ -1790,16 +1790,17 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             result.instructions.push_back(translated);
             break;
         }
-        case 0x387: case 0x983: { // Local spill: 32 or 128 bits at [Ra + immediate byte offset].
-            // 128-bit accesses (bits 72-74 = 6) become four 32-bit ones; a load's bit 85 (.LU) is a
-            // cache hint.
-            const bool store = opcode == 0x387, wide = insn.Bits(72, 3) == 6;
+        case 0x387: case 0x983: { // Local spill: 32, 64 or 128 bits at [Ra + immediate byte offset].
+            // The size is bits 73-75 (4, 5, 6 = 32, 64, 128 bits); wider accesses become 32-bit ones.
+            // A load's bit 85 (.LU) is a cache hint.
+            const bool store = opcode == 0x387;
+            const u32 size = insn.Bits(73, 3);
             const u32 data = insn.Bits(32, 8), offset = insn.Bits(40, 24), address = insn.Bits(24, 8);
-            const u32 words = wide ? 4 : 1, value = store ? data : static_cast<u32>(dest);
+            const u32 words = size == 6 ? 4 : size == 5 ? 2 : 1, value = store ? data : static_cast<u32>(dest);
             if ((address != 255 && address >= 246) || (store && insn.Bits(16, 8)) || (!store && data) ||
-                (value != 255 && (value + words > 248 || (wide && (value & 3)))) || (!store && value == 255) ||
-                (offset & 3) || offset + 4 * words > 0x800000 ||
-                (insn.words[2] & ~(store ? 0x400U : 0x200400U)) != 0x00100800U)
+                (value != 255 && (value + words > 248 || (value & (words - 1)))) || (!store && value == 255) ||
+                (offset & 3) || offset + 4 * words > 0x800000 || size < 4 || size > 6 ||
+                (insn.words[2] & ~(store ? 0xe00U : 0x200e00U)) != 0x00100000U)
                 return fail(index, "native local scalar spill mode");
             for (u32 word = 0; word < words; ++word)
                 emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
