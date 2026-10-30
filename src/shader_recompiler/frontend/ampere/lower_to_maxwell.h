@@ -1447,18 +1447,34 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             break;
         }
-        case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
+        case 0xb6f: case 0x370: { // TXQ texture dimensions (0x370: TXQ.B).
+            // TXQ.B takes the handle in Ra and the level in Ra+1, as Maxwell's. Up to two outputs
+            // go to Rd, Rd+1 directly; more, or a second destination (bits 64-71) for the third and
+            // fourth, come out packed in scratch and are copied as for TEX.
+            const bool bindless = opcode == 0x370;
             const u32 binding = insn.Bits(54, 5); // descriptor buffer, as for TLD
-            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
-                insn.Bits(76, 14) || insn.Bits(91, 1) || binding >= 18 ||
-                insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
+            const u32 mask = insn.Bits(72, 4), components = static_cast<u32>(std::popcount(mask));
+            const u32 second_dest = insn.Bits(64, 8);
+            const bool direct = second_dest == 255;
+            if (insn.Bits(59, 5) != (bindless ? 1U : 0U) || mask == 0 || (direct && components > 2) ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || (!bindless && binding >= 18) ||
+                (bindless && (insn.Bits(32, 27) || insn.Bits(24, 8) >= 245)) ||
+                (!direct && (second_dest >= 245 || dest >= 245)) ||
+                insn.Bits(40, 14) > 0x1fff || (direct && components == 2 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native texture descriptor buffer conflict");
-            result.required_texture_buffer = binding;
-            emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
-                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
-                 (u64{insn.Bits(90, 1)} << 49));
+            if (!bindless) {
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+            }
+            emit((bindless ? 0xdf50000000000000ULL : 0xdf48000000000000ULL) | predicate | (direct ? dest : 250) |
+                 (u64{insn.Bits(24, 8)} << 8) | (u64{1} << 22) | (u64{mask} << 31) |
+                 (u64{bindless ? 0U : insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49));
+            for (u32 i = 0; !direct && i < components; ++i) {
+                const u32 target = i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i) : second_dest + (i - 2);
+                if (target != 255)
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
+            }
             break;
         }
         case 0xb66: { // TLD.SCR, direct texel fetch at level zero (.LZ) or a given level (.LL)
