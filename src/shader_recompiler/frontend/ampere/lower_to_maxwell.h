@@ -2085,13 +2085,32 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 break;
             }
-            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
+            // A carry out (bits 81-83) is the low half of a 64-bit address; IADD3.X adds it next.
+            const u32 carry_out = insn.Bits(81, 3);
+            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
+                (carry_out != 7 && (opcode != 0x211 || insn.Bits(63, 1) || (rewritten_uniform && carry_out > 1))) ||
                 (opcode == 0x211 && insn.Bits(62, 1)) ||
                 (opcode == 0xc11 && (insn.Bits(62, 2) || uniform_register(insn.Bits(32, 8)) == ~0U)))
                 return fail(index, "native LEA carry/high mode");
             // 0x211 bit 63 negates Rb (LEA Rd, Ra, -Rb, s), as Maxwell ISCADD's bit 48.
             u32 b = opcode == 0xc11 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (opcode == 0x811) { mov_imm(251, insn.words[1]); b = 251; }
+            if (carry_out != 7) {
+                // The sum in R250, carry = sum < Rb (unsigned), as IADD3's carry out; a uniform
+                // predicate goes through P(6-n) into R239.
+                const u32 target = rewritten_uniform ? 6 - carry_out : carry_out, mask = 1U << target;
+                emit(0x5c18000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{b} << 20) | (u64{insn.Bits(75, 5)} << 39));
+                if (rewritten_uniform) emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
+                emit(0x5b60000000000000ULL | predicate | 7 | (u64{target} << 3) | (u64{250} << 8) |
+                     (u64{b} << 20) | (u64{7} << 39) | (u64{1} << 49));
+                if (rewritten_uniform) {
+                    emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
+                    emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
+                }
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{250} << 20));
+                break;
+            }
             emit(base(0x5c18000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{b} << 20) | (u64{insn.Bits(75, 5)} << 39) |
                  (u64{opcode == 0x211 ? insn.Bits(63, 1) : 0U} << 48));
