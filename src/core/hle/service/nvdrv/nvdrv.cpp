@@ -132,6 +132,7 @@ Module::Module(Core::System& system)
     // (their table filled up, so the new game's GPU waits never completed) and the Switch 2 flags.
     Devices::Nx2GpuMemoryRegistry::Get().Reset();
     Tegra::Nx2ClearSemaphoreRegions();
+    Tegra::Nx2ClearGpuWrittenPages();
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;
     Core::g_nx2_present_count = 0;
