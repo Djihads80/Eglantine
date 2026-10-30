@@ -496,6 +496,9 @@ struct System::Impl {
     }
 
     PerfStatsResults GetAndResetPerfStats() {
+        if (!perf_stats) {
+            return {};
+        }
         return perf_stats->GetAndResetStats(core_timing.GetGlobalTimeUs());
     }
 
