@@ -1017,10 +1017,18 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
-        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
-            layout.width == 3840 && layout.height == 2160) {
-            crop_width = 2560;
-            crop_height = 1440;
+        // Mario Kart World draws into the top-left corner of its present images: 2560x1440 docked
+        // (in 3840x2160 images), 1920x1080 handheld. It keeps its docked images after a switch to
+        // handheld, and showing all of them put the frame in a corner with stale docked frames
+        // around it.
+        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL) {
+            if (!Settings::IsDockedMode()) {
+                crop_width = (std::min)(crop_width, 1920U);
+                crop_height = (std::min)(crop_height, 1080U);
+            } else if (layout.width == 3840 && layout.height == 2160) {
+                crop_width = 2560;
+                crop_height = 1440;
+            }
         }
         static const u32 env_crop_w = [] {
             const char* v = std::getenv("EDEN_NX2_CROP_WIDTH");
@@ -1034,7 +1042,10 @@ private:
             crop_width = env_crop_w;
             crop_height = env_crop_h;
         }
-        if (m_presents <= 4) {
+        const u64 shown = (u64{layout.width} << 48) | (u64{layout.height} << 32) |
+                          (u64{crop_width} << 16) | crop_height;
+        if (shown != m_shown_layout) {
+            m_shown_layout = shown;
             LOG_INFO(Service, "nx2:vi2 composite image {} layout {}x{}, crop {}x{}",
                      image_id, layout.width, layout.height, crop_width, crop_height);
         }
@@ -1217,6 +1228,7 @@ private:
     std::shared_ptr<VsyncState> m_vsync = std::make_shared<VsyncState>();
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
+    u64 m_shown_layout{}; // image and crop size last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 
