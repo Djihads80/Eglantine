@@ -1168,7 +1168,7 @@ bool EmitTerminalImpl(A32EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
     } else {
         if (e.conf.enable_cycle_counting) {
             e.code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
-            e.patch_information[terminal.next].jg.push_back(e.code.getCurr());
+            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jg);
             if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
                 e.EmitPatchJg(terminal.next, next_bb->entrypoint);
             } else {
@@ -1176,7 +1176,7 @@ bool EmitTerminalImpl(A32EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
             }
         } else {
             e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A32JitState, halt_reason)], 0);
-            e.patch_information[terminal.next].jz.push_back(e.code.getCurr());
+            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jz);
             if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
                 e.EmitPatchJz(terminal.next, next_bb->entrypoint);
             } else {
@@ -1196,7 +1196,7 @@ bool EmitTerminalImpl(A32EmitX64& e, IR::Term::LinkBlockFast terminal, IR::Locat
         e.code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
         e.code.ReturnFromRunCode();
     } else {
-        e.patch_information[terminal.next].jmp.push_back(e.code.getCurr());
+        e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jmp);
         if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
             e.EmitPatchJmp(terminal.next, next_bb->entrypoint);
         } else {
