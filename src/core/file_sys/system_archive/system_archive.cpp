@@ -76,6 +76,11 @@ constexpr inline SystemArchiveDescriptor GetSystemArchive(u64 title_id) {
 
 VirtualFile SynthesizeSystemArchive(const u64 title_id) {
     auto const desc = GetSystemArchive(title_id);
+    if (desc.name == nullptr) {
+        // Not a system archive Eden knows (fmt throws on a null string, ending the process).
+        LOG_WARNING(Service_FS, "No system archive {:#016x} to synthesize", title_id);
+        return nullptr;
+    }
     LOG_INFO(Service_FS, "Synthesizing system archive '{}' ({:#016x}).", desc.name, title_id);
     if (desc.supplier != nullptr) {
         if (auto const dir = desc.supplier(); dir != nullptr) {
