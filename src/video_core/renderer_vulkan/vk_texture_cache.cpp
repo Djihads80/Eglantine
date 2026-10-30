@@ -3158,6 +3158,16 @@ vk::ImageView ImageView::MakeView(VkFormat vk_format, VkImageAspectFlags aspect_
                                   std::optional<Shader::TextureType> texture_type) {
     VkImageViewType view_type = ImageViewType(type);
     VkImageSubresourceRange subresource_range = MakeSubresourceRange(aspect_mask, range);
+    const auto is_3d = [](VkImageViewType t) { return t == VK_IMAGE_VIEW_TYPE_3D; };
+    if (texture_type && is_3d(ImageViewType(*texture_type)) != is_3d(view_type)) {
+        // A 3D view of a 2D image (or the reverse) is invalid in Vulkan and aborts on Metal; keep
+        // the image's own type when the shader's declared dimension disagrees with it.
+        LOG_WARNING(Render_Vulkan,
+                    "Shader image type {} does not match view type {} at 0x{:x} (format={} "
+                    "size={}x{}x{}), using the view type",
+                    *texture_type, type, gpu_addr, format, size.width, size.height, size.depth);
+        texture_type.reset();
+    }
     if (texture_type) {
         view_type = ImageViewType(*texture_type);
         switch (view_type) {
