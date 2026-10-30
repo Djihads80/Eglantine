@@ -16,6 +16,7 @@ namespace Kernel {
 class KernelCore;
 class KEvent;
 class KProcess;
+class KReadableEvent;
 } // namespace Kernel
 
 namespace Service::KernelHelpers {
@@ -36,5 +37,8 @@ public:
     Kernel::KProcess* process{};
     bool process_created{false};
 };
+
+/// The name a service gave an event (EDEN_NX2_SVC_TRACE shows the handles a thread waits on).
+std::string DebugEventName(const Kernel::KReadableEvent* event);
 
 } // namespace Service::KernelHelpers

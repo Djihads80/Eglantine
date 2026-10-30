@@ -14,6 +14,8 @@
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc.h"
+#include "core/hle/kernel/k_readable_event.h"
+#include "core/hle/service/kernel_helpers.h"
 
 namespace Kernel::Svc {
 
@@ -2522,6 +2524,21 @@ void Call(Core::System& system, u32 imm) {
         LOG_INFO(Kernel_SVC, "svc {:#04x} in  t{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x}", imm,
                  GetCurrentThread(kernel).GetThreadId(),
                  GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2), GetArg64(args, 3));
+        if (imm == 0x18) {
+            // WaitSynchronization: the handles, with the names services gave their events.
+            std::string list;
+            const s32 count = static_cast<s32>(GetArg64(args, 2));
+            for (s32 i = 0; i < std::min(count, 8); ++i) {
+                const u32 handle = process.GetMemory().Read32(GetArg64(args, 1) + 4 * i);
+                KScopedAutoObject event =
+                    process.GetHandleTable().GetObject<KReadableEvent>(kernel, handle);
+                list += fmt::format(" {:#x}{}", handle,
+                                    event.IsNotNull()
+                                        ? "=" + Service::KernelHelpers::DebugEventName(event.GetPointerUnsafe())
+                                        : std::string{});
+            }
+            LOG_INFO(Kernel_SVC, "svc 0x18 t{} waits on{}", GetCurrentThread(kernel).GetThreadId(), list);
+        }
     }
     if (imm == 0x80) {
         // Switch 2 only: svcSetGpuMemoryAttribute(address, size, mask, attr). nn::gpu::sdk and
