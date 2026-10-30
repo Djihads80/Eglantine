@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <optional>
 #include <string_view>
 #include <chrono>
@@ -20,10 +21,23 @@ namespace Common {
 class WallClock {
 public:
     static constexpr u64 CNTFRQ = 19'200'000;         // CNTPCT_EL0 Frequency = 19.2 MHz
+    static constexpr u64 Switch2CNTFRQ = 31'250'000;  // Switch 2 CNTPCT_EL0 Frequency = 31.25 MHz
     static constexpr u64 GPUTickFreq = 614'400'000;   // GM20B GPU Tick Frequency = 614.4 MHz
     static constexpr u64 CPUTickFreq = 1'020'000'000; // T210/4 A57 CPU Tick Frequency = 1020.0 MHz
 
     explicit WallClock(bool invariant, u64 rdtsc_frequency_) noexcept;
+
+    /// Sets the guest counter's frequency: CNTFRQ, or Switch2CNTFRQ for Switch 2 titles (their SDK
+    /// converts ticks with a constant 31.25 MHz). Called at boot, before guest code runs.
+    void SetGuestCNTFRQ(u64 frequency);
+
+    /// @returns The guest counter's frequency (CNTFRQ_EL0).
+    [[nodiscard]] u64 GetGuestCNTFRQ() const {
+        return guest_cntfrq.load(std::memory_order_relaxed);
+    }
+
+    /// @returns Emulated CPU ticks (single core timing) as guest CNTPCT ticks.
+    [[nodiscard]] u64 CPUTickToGuestCNTPCT(u64 cpu_tick) const;
 
     /// @returns The time in nanoseconds since the construction of this clock.
     std::chrono::nanoseconds GetTimeNS() const;
@@ -34,7 +48,7 @@ public:
     /// @returns The time in milliseconds since the construction of this clock.
     std::chrono::milliseconds GetTimeMS() const;
 
-    /// @returns The guest CNTPCT ticks since the construction of this clock.
+    /// @returns The guest CNTPCT ticks (at GetGuestCNTFRQ()) since the construction of this clock.
     s64 GetCNTPCT() const;
 
     /// @returns The guest GPU ticks since the construction of this clock.
@@ -91,6 +105,7 @@ public:
     using CPUTickToCNTPCTRatio = std::ratio<CNTFRQ, CPUTickFreq>;
     using CPUTickToGPUTickRatio = std::ratio<GPUTickFreq, CPUTickFreq>;
 
+    std::atomic<u64> guest_cntfrq{CNTFRQ};
 #if defined(ARCHITECTURE_x86_64)
     u64 rdtsc_frequency;
     u64 ns_rdtsc_factor;
@@ -98,7 +113,7 @@ public:
     u64 ms_rdtsc_factor;
     u64 rdtsc_ns_integer;
     u64 rdtsc_ns_factor;
-    u64 cntpct_rdtsc_factor;
+    std::atomic<u64> cntpct_rdtsc_factor;
     u64 gputick_rdtsc_factor;
     bool invariant;
 #elif defined(HAS_NCE)
@@ -106,6 +121,7 @@ public:
     [[nodiscard]] inline FactorType GetGuestCNTFRQFactor() const {
         return guest_cntfrq_factor;
     }
+    u64 host_cntfrq;
     FactorType ns_cntfrq_factor;
     FactorType us_cntfrq_factor;
     FactorType ms_cntfrq_factor;
@@ -183,6 +199,6 @@ std::optional<int> GetProcessorCount();
 /// @brief Global cpu caps
 extern const CPUCaps g_cpu_caps;
 /// @brief Global wall clock
-extern const WallClock g_wall_clock;
+extern WallClock g_wall_clock;
 
 } // namespace Common
