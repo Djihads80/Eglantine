@@ -35,11 +35,12 @@ EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Co
         LOG_CRITICAL(Frontend, "Failed to initialize SDL3: {}, Exiting...", SDL_GetError());
         exit(1);
     }
+    titlebar_event = SDL_RegisterEvents(1);
     titlebar_timer = SDL_AddTimer(2000, [](void *userdata, SDL_TimerID, Uint32) -> Uint32 {
         auto* this_ = (EmuWindow_SDL3*)userdata;
-        auto const results = this_->system.GetAndResetPerfStats();
-        auto const title = fmt::format("{} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname, Common::g_scm_branch, Common::g_scm_desc, results.average_game_fps, results.emulation_speed * 100.0f);
-        SDL_SetWindowTitle(this_->render_window, title.c_str());
+        SDL_Event event{};
+        event.type = this_->titlebar_event;
+        SDL_PushEvent(&event);
         return 2000;
     }, this);
     mouse_timer = SDL_AddTimer(100, [](void *userdata, SDL_TimerID, Uint32) -> Uint32 {
@@ -210,6 +211,12 @@ void EmuWindow_SDL3::Fullscreen() {
 }
 
 void EmuWindow_SDL3::OnEvent(SDL_Event& event) {
+    if (titlebar_event != 0 && event.type == titlebar_event) {
+        auto const results = system.GetAndResetPerfStats();
+        auto const title = fmt::format("{} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname, Common::g_scm_branch, Common::g_scm_desc, results.average_game_fps, results.emulation_speed * 100.0f);
+        SDL_SetWindowTitle(render_window, title.c_str());
+        return;
+    }
     // Notice how we skip the "update title" aspect on most events
     // this is because some WMs do NOT like changing titles while resizing
     // so let's just... not do that, thanks :)
