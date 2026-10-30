@@ -10,6 +10,7 @@
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/core_timing.h"
+#include "core/guest_clock.h"
 #include "core/hle/kernel/k_process.h"
 #include "dynarmic/interface/A64/config.h"
 
@@ -166,7 +167,8 @@ u64 DynarmicCallbacks64::GetTicksRemaining() {
 }
 
 u64 DynarmicCallbacks64::GetCNTPCT() {
-    return m_parent.m_system.CoreTiming().GetClockTicks();
+    return Timing::GetGuestCounterTicks(m_parent.m_system.CoreTiming().GetClockTicks(),
+                                        m_process && m_process->IsSwitch2());
 }
 
 bool DynarmicCallbacks64::CheckMemoryAccess(u64 addr, u64 size, Kernel::DebugWatchpointType type) {
@@ -246,7 +248,7 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     config.tpidr_el0 = &m_cb->m_tpidr_el0;
     config.dczid_el0 = 4;
     config.ctr_el0 = 0x8444c004;
-    config.cntfrq_el0 = Hardware::CNTFREQ;
+    config.cntfrq_el0 = Timing::GetGuestCounterFrequency(m_cb->m_process && m_cb->m_process->IsSwitch2());
 
     // Unpredictable instructions
     config.define_unpredictable_behaviour = true;
