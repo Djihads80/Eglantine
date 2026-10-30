@@ -219,6 +219,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetEventStatus);
     X(vkGetFenceStatus);
     X(vkGetImageMemoryRequirements);
+    X(vkGetImageSparseMemoryRequirements);
     X(vkGetPipelineCacheData);
     X(vkGetMemoryFdKHR);
 #ifdef _WIN32
@@ -863,6 +864,16 @@ VkMemoryRequirements Device::GetBufferMemoryRequirements(VkBuffer buffer,
 VkMemoryRequirements Device::GetImageMemoryRequirements(VkImage image) const noexcept {
     VkMemoryRequirements requirements;
     dld->vkGetImageMemoryRequirements(handle, image, &requirements);
+    return requirements;
+}
+
+std::vector<VkSparseImageMemoryRequirements> Device::GetImageSparseMemoryRequirements(
+    VkImage image) const {
+    u32 count = 0;
+    dld->vkGetImageSparseMemoryRequirements(handle, image, &count, nullptr);
+    std::vector<VkSparseImageMemoryRequirements> requirements(count);
+    dld->vkGetImageSparseMemoryRequirements(handle, image, &count, requirements.data());
+    requirements.resize(count);
     return requirements;
 }
 

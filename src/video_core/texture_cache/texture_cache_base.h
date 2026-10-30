@@ -167,6 +167,12 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     /// Uploads the image's dirty layers. False when it needs a full upload instead.
     bool UploadWrittenLayers(Image& image);
 
+    /// Gives the written layers of a SparseLayers image memory and uploads them.
+    void RefreshSparseLayers(Image& image);
+
+    /// Uploads `layers` of the image from guest memory.
+    void UploadLayers(Image& image, std::span<const u32> layers);
+
     struct PendingUnswizzle {
         ImageId image_id;
         VideoCommon::ImageInfo info;
