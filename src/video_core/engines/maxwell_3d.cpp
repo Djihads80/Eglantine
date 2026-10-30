@@ -336,6 +336,12 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
+    // The instances after the first are drawn together once their loop ends, and they must see
+    // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
+    // c[0][0x644]) right after the loop, before the macro returns.
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+        draw_manager.DrawDeferred(*this);
+    }
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
@@ -515,6 +521,10 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     if (method >= MacroRegistersStart) {
         ProcessMacro(system, method, base_start, amount, amount == methods_pending);
         return;
+    }
+    // As in ProcessDirtyRegisters: the paths below write without it.
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+        draw_manager.DrawDeferred(*this);
     }
     switch (method) {
     case MAXWELL3D_REG_INDEX(const_buffer.buffer):
