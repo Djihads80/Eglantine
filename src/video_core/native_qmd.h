@@ -32,7 +32,13 @@ public:
         pending[0] = {address, argument & 15, ((argument >> 14) & 0x3ff) + 1};
         for (std::size_t i = 0; i < count; ++i) {
             const auto request = pending[i];
-            if (states.size() >= 4096 && !states.contains(request.address)) return "QMD cache limit";
+            if (states.size() >= 4096 && !states.contains(request.address)) {
+                // Finished QMDs with nothing deferred are only history, drop them instead of stalling.
+                std::erase_if(states, [](const auto& entry) {
+                    return entry.second.completed && entry.second.deferred == 0;
+                });
+                if (states.size() >= 4096) return "QMD cache limit";
+            }
             auto& state = states[request.address];
             if (request.action == 3 || request.action == 2) {
                 if (request.action == 3 || !state.loaded) {
