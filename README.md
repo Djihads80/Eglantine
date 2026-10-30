@@ -43,8 +43,6 @@ The emulator is capable of running Mario Kart World at decent/full speed dependi
 
 A list of supported games will be available in future. Please be patient.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/eden-emulator.svg)](https://repology.org/project/eden-emulator/versions)
-
 ## Development
 For development discussions, please join us on [Discord](https://discord.gg/jCCZ58VExk)
 
