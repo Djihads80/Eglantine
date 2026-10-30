@@ -618,7 +618,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0x886: { // VOTEU ballot and independent uniform predicate output.
             const u32 output = insn.Bits(81, 3), target = insn.Bits(16, 8);
-            if ((target >= 16 && target != 63) || insn.words[1] ||
+            if (uniform_register(target) == ~0U || insn.words[1] ||
                 insn.Bits(72, 2) > 2 || native_predicate != 7)
                 return fail(index, "native uniform vote mode");
             const u32 temporary = output == 7 ? 7 : 6 - output;
