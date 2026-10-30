@@ -1,0 +1,106 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D CurrentFrame;
+layout(binding = 1) uniform sampler2D PreviousFrame;
+layout(binding = 2) uniform sampler2D MotionVectors;
+layout(binding = 3, rgba8) uniform writeonly image2D OutGeneratedFrame;
+
+layout(push_constant) uniform PushConstants {
+    vec2 inv_render_size;
+    vec2 render_size;
+    float blend_factor; // timestamp between 0.0 and 1.0
+    float flow_scale;
+};
+
+// ΓöÇΓöÇ Optimized 3├ù3 motion vector median using textureGather ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// textureGather fetches a 2├ù2 quad per call, so we only need 4 calls
+// to cover a 3├ù3 neighbourhood (vs 9 individual texture() calls).
+// We extract the median of X and Y components independently.
+void insertionSort5(inout float a[5]) {
+    for (int i = 1; i < 5; i++) {
+        float key = a[i];
+        int j = i - 1;
+        while (j >= 0 && a[j] > key) {
+            a[j + 1] = a[j];
+            j--;
+        }
+        a[j + 1] = key;
+    }
+}
+
+vec2 sampleMotionMedian(vec2 uv) {
+    vec2 texel = inv_render_size;
+
+    // textureGather returns 2├ù2 quads: (x-0.5, y-0.5) to (x+0.5, y+0.5)
+    // We use 4 gathers offset to cover the 3├ù3 region
+    // Gather component 0 = R (motion X), component 1 = G (motion Y)
+    vec4 gx0 = textureGather(MotionVectors, uv + vec2(-0.5, -0.5) * texel, 0); // TL quad
+    vec4 gx1 = textureGather(MotionVectors, uv + vec2( 0.5, -0.5) * texel, 0); // TR quad
+    vec4 gx2 = textureGather(MotionVectors, uv + vec2(-0.5,  0.5) * texel, 0); // BL quad
+    vec4 gx3 = textureGather(MotionVectors, uv + vec2( 0.5,  0.5) * texel, 0); // BR quad
+
+    vec4 gy0 = textureGather(MotionVectors, uv + vec2(-0.5, -0.5) * texel, 1);
+    vec4 gy1 = textureGather(MotionVectors, uv + vec2( 0.5, -0.5) * texel, 1);
+    vec4 gy2 = textureGather(MotionVectors, uv + vec2(-0.5,  0.5) * texel, 1);
+    vec4 gy3 = textureGather(MotionVectors, uv + vec2( 0.5,  0.5) * texel, 1);
+
+    // Extract 9 unique samples from overlapping 2├ù2 quads
+    // gatherN.w=TL, .z=TR, .x=BL, .y=BR of each quad
+    // 3├ù3 grid: row0=[gx0.w, gx0.z/gx1.w, gx1.z]
+    //           row1=[gx0.x/gx2.w, center, gx1.y/gx3.z]
+    //           row2=[gx2.x, gx2.y/gx3.x, gx3.y]
+    float xs[9] = float[](gx0.w, gx1.w, gx1.z, gx0.x, texture(MotionVectors, uv).x, gx1.y, gx2.x, gx3.x, gx3.y);
+    float ys[9] = float[](gy0.w, gy1.w, gy1.z, gy0.x, texture(MotionVectors, uv).y, gy1.y, gy2.x, gy3.x, gy3.y);
+
+    // Partial sort: only need to find element [4] (median)
+    // Use two passes of 5-element insertion sort on the lower half
+    float xlo[5] = float[](xs[0], xs[1], xs[2], xs[3], xs[4]);
+    float ylo[5] = float[](ys[0], ys[1], ys[2], ys[3], ys[4]);
+    insertionSort5(xlo);
+    insertionSort5(ylo);
+
+    // Insert remaining 4 elements, keeping only the 5 smallest
+    for (int i = 5; i < 9; i++) {
+        if (xs[i] < xlo[4]) { xlo[4] = xs[i]; insertionSort5(xlo); }
+        if (ys[i] < ylo[4]) { ylo[4] = ys[i]; insertionSort5(ylo); }
+    }
+
+    return vec2(xlo[4], ylo[4]);
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coord.x >= int(render_size.x) || pixel_coord.y >= int(render_size.y)) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) * inv_render_size;
+
+    // Median-filtered motion vector (reduces outlier jitter)
+    vec2 motion = sampleMotionMedian(uv) * (flow_scale * inv_render_size);
+
+    // Forward and backward warped coordinates
+    vec2 forward_uv  = clamp(uv - motion * blend_factor,        0.0, 1.0);
+    vec2 backward_uv = clamp(uv + motion * (1.0 - blend_factor), 0.0, 1.0);
+
+    vec4 forward_color  = texture(PreviousFrame, forward_uv);
+    vec4 backward_color = texture(CurrentFrame,  backward_uv);
+
+    // Colour-difference occlusion
+    vec3 color_diff = abs(forward_color.rgb - backward_color.rgb);
+    float occlusion = clamp(dot(color_diff, vec3(0.333)) * 2.0, 0.0, 1.0);
+
+    // Smooth bilateral interpolation ΓÇö bias toward centre on occlusion
+    float alpha = mix(blend_factor, 0.5, occlusion * 0.4);
+    vec4 interpolated = mix(forward_color, backward_color, alpha);
+
+    // ΓöÇΓöÇ Anti-flicker: blend with un-warped centre pixel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    float motion_magnitude = length(motion * render_size);
+    float direct_weight = exp(-motion_magnitude * 0.5);
+    vec4 center_color = mix(texture(CurrentFrame, uv), texture(PreviousFrame, uv), blend_factor);
+    interpolated = mix(interpolated, center_color, direct_weight * 0.3);
+
+    imageStore(OutGeneratedFrame, pixel_coord, interpolated);
+}

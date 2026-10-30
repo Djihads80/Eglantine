@@ -1,0 +1,112 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D CurrentFrame;
+layout(binding = 1) uniform sampler2D PreviousFrame;
+layout(binding = 2, rg16f) uniform writeonly image2D OutMotionVectors;
+
+layout(push_constant) uniform PushConstants {
+    vec2 inv_render_size;
+    vec2 render_size;
+    float search_radius;
+    float block_size;
+};
+
+// ΓöÇΓöÇ Shared memory tile cache ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+const uint TILE = 16u;
+const uint BORDER = 2u;
+const uint PADDED = TILE + 2u * BORDER; // 20
+shared float s_curr_luma[PADDED * PADDED];
+
+float rgb2luma(vec3 c) {
+    return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+void loadTile(ivec2 tile_origin) {
+    uint thread_id = gl_LocalInvocationID.y * TILE + gl_LocalInvocationID.x;
+    for (uint i = thread_id; i < PADDED * PADDED; i += TILE * TILE) {
+        uint lx = i % PADDED;
+        uint ly = i / PADDED;
+        ivec2 coord = tile_origin + ivec2(lx, ly) - ivec2(BORDER);
+        vec2 uv = (vec2(coord) + 0.5) * inv_render_size;
+        s_curr_luma[i] = rgb2luma(texture(CurrentFrame, uv).rgb);
+    }
+    barrier();
+}
+
+float getCachedLuma(ivec2 local_coord) {
+    ivec2 padded = local_coord + ivec2(BORDER);
+    return s_curr_luma[padded.y * PADDED + padded.x];
+}
+
+void main() {
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+    ivec2 tile_origin = ivec2(gl_WorkGroupID.xy) * ivec2(TILE);
+    loadTile(tile_origin);
+
+    if (pixel_coord.x >= int(render_size.x) || pixel_coord.y >= int(render_size.y)) {
+        return;
+    }
+
+    vec2 uv = (vec2(pixel_coord) + 0.5) * inv_render_size;
+    ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    float curr_luma = getCachedLuma(local);
+
+    float center_diff = abs(curr_luma - rgb2luma(texture(PreviousFrame, uv).rgb));
+
+    // Early-out only for truly identical pixels (very tight threshold)
+    if (center_diff < 0.002) {
+        imageStore(OutMotionVectors, pixel_coord, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    vec2 best_motion = vec2(0.0);
+    float min_diff = center_diff;
+
+    // Large diamond (radius 2)
+    const vec2 diamond_large[4] = vec2[](
+        vec2(0.0, -2.0),
+        vec2(-2.0, 0.0), vec2(2.0, 0.0),
+        vec2(0.0, 2.0)
+    );
+
+    for (int i = 0; i < 4; ++i) {
+        vec2 offset_uv = uv + diamond_large[i] * inv_render_size;
+        float luma = rgb2luma(texture(PreviousFrame, offset_uv).rgb);
+        float d = abs(curr_luma - luma) + 0.04 * length(diamond_large[i]);
+        if (d < min_diff) {
+            min_diff = d;
+            best_motion = diamond_large[i];
+        }
+    }
+
+    // Small refinement diamond (radius 1)
+    const vec2 diamond_small[4] = vec2[](
+        vec2(0.0, -1.0),
+        vec2(-1.0, 0.0), vec2(1.0, 0.0),
+        vec2(0.0, 1.0)
+    );
+
+    vec2 center = best_motion;
+    for (int i = 0; i < 4; ++i) {
+        vec2 cand = center + diamond_small[i];
+        vec2 offset_uv = uv + cand * inv_render_size;
+        float luma = rgb2luma(texture(PreviousFrame, offset_uv).rgb);
+        float d = abs(curr_luma - luma) + 0.04 * length(cand);
+        if (d < min_diff) {
+            min_diff = d;
+            best_motion = cand;
+        }
+    }
+
+    // ΓöÇΓöÇ Dampen very small motions to prevent micro-jitter ΓöÇΓöÇ
+    // Motions below ~0.5 pixels are likely noise, not real movement
+    float motion_len = length(best_motion);
+    if (motion_len < 0.5) {
+        best_motion *= motion_len * 2.0; // smooth fade to zero
+    }
+
+    imageStore(OutMotionVectors, pixel_coord, vec4(best_motion, 0.0, 0.0));
+}

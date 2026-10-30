@@ -83,7 +83,7 @@ option(ENABLE_DEBUG_TOOLS "Enable debugging tools (maxwell disassembler, SPIRV t
 option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
 
 # Lossless Scaling frame generation. Only Android.
-cmake_dependent_option(ENABLE_LSFG "Enable Lossless Scaling frame generation" ON "ANDROID" OFF)
+option(ENABLE_LSFG "Enable frame generation (LSFG and FSR 3 Fluid Motion)" ON)
 
 option(ENABLE_RESHADE "Enable ReShade FX post-processing effects" ON)
 
