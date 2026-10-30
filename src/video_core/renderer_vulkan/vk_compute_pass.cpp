@@ -583,6 +583,24 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
                  swizzles);
 }
 
+void ASTCDecoderPass::AssembleLayers(Image& image, const StagingBufferRef& map,
+                                     std::span<const VideoCommon::SwizzleParameters> swizzles,
+                                     std::span<const u32> layers) {
+    const Target target{
+        .image = image.Handle(),
+        .aspect_mask = image.AspectMask(),
+        .initialized = image.ExchangeInitialization(),
+        .level_view = [&image](s32 host_level) { return image.StorageImageView(host_level); },
+        .wait = true,
+        .layers = layers,
+        .layer_view = [&image](s32 host_level, u32 layer) {
+            return image.StorageImageLayerView(host_level, layer);
+        },
+    };
+    AssembleInto(image.info, image.host_level_offset, image.guest_size_bytes, target, map,
+                 swizzles);
+}
+
 void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
                                    size_t guest_size_bytes, const Target& target,
                                    const StagingBufferRef& map,
@@ -631,7 +649,42 @@ void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
                   : info.layer_stride;
     const size_t input_size = skip != 0 ? size_t{input_layer_stride} * info.resources.layers
                                         : guest_size_bytes;
-    for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
+    // Only some layers: one dispatch per layer and level, into that layer's own view.
+    for (size_t i = 0; i < target.layers.size(); ++i) {
+        for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
+            const size_t layer_offset = i * input_layer_stride;
+            compute_pass_descriptor_queue.Acquire(scheduler, 2);
+            compute_pass_descriptor_queue.AddBuffer(map.buffer,
+                                                    map.offset + layer_offset + swizzle.buffer_offset,
+                                                    input_layer_stride - swizzle.buffer_offset);
+            compute_pass_descriptor_queue.AddImage(
+                target.layer_view(swizzle.level - static_cast<s32>(skip), target.layers[i]));
+            const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
+            auto params = MakeBlockLinearSwizzle2DParams(swizzle, info);
+            params.layer_stride = input_layer_stride;
+            const u32 num_dispatches_x = Common::DivCeil(swizzle.num_tiles.width, 8U);
+            const u32 num_dispatches_y = Common::DivCeil(swizzle.num_tiles.height, 8U);
+            scheduler.Record([this, num_dispatches_x, num_dispatches_y, block_dims, params,
+                              descriptor_data](vk::CommandBuffer cmdbuf) {
+                const AstcPushConstants uniforms{
+                    .blocks_dims = block_dims,
+                    .layer_stride = params.layer_stride,
+                    .block_size = params.block_size,
+                    .x_shift = params.x_shift,
+                    .block_height = params.block_height,
+                    .block_height_mask = params.block_height_mask,
+                    .native_tiling = params.native_tiling,
+                };
+                const VkDescriptorSet set = descriptor_allocator.Commit();
+                device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
+                cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+                cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, uniforms);
+                cmdbuf.Dispatch(num_dispatches_x, num_dispatches_y, 1);
+            });
+        }
+    }
+    for (const VideoCommon::SwizzleParameters& swizzle : target.layers.empty() ? swizzles
+                                                        : std::span<const VideoCommon::SwizzleParameters>{}) {
         const size_t input_offset = swizzle.buffer_offset + map.offset;
         const u32 num_dispatches_x = Common::DivCeil(swizzle.num_tiles.width, 8U);
         const u32 num_dispatches_y = Common::DivCeil(swizzle.num_tiles.height, 8U);
