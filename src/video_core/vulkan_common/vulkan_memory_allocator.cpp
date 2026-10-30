@@ -465,7 +465,7 @@ void LogMemoryStatistics(const Device& device) {
         if (s.blockCount == 0) {
             continue;
         }
-        LOG_INFO(Render_Vulkan, "VMA type {} (heap {}, flags {:#x}): {} blocks {} MiB, {} allocations {} MiB",
+        LOG_DEBUG(Render_Vulkan, "VMA type {} (heap {}, flags {:#x}): {} blocks {} MiB, {} allocations {} MiB",
                  type, properties->memoryTypes[type].heapIndex,
                  static_cast<u32>(properties->memoryTypes[type].propertyFlags), s.blockCount,
                  s.blockBytes >> 20, s.allocationCount, s.allocationBytes >> 20);

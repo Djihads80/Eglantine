@@ -253,7 +253,7 @@ void TextureCache<P>::TickFrame() {
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
             const Image& image = *largest[i].second;
-            LOG_INFO(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
+            LOG_DEBUG(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
                      largest[i].first >> 20, image.gpu_addr, image.info.size.width, image.info.size.height,
                      image.info.size.depth, image.info.resources.layers, image.info.resources.levels,
                      static_cast<u32>(image.info.format), static_cast<u32>(image.info.type),
@@ -263,7 +263,7 @@ void TextureCache<P>::TickFrame() {
         for (const auto& [format, total] : by_format) formats.emplace_back(total.first, format);
         std::sort(formats.rbegin(), formats.rend());
         for (size_t i = 0; i < std::min<size_t>(8, formats.size()); ++i) {
-            LOG_INFO(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
+            LOG_DEBUG(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
                      by_format[formats[i].second].second);
         }
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
@@ -278,7 +278,7 @@ void TextureCache<P>::TickFrame() {
         std::sort(shapes.rbegin(), shapes.rend());
         for (size_t i = 0; i < std::min<size_t>(10, shapes.size()); ++i) {
             const u64 key = shapes[i].second;
-            LOG_INFO(HW_GPU, "  created {}x: format {} type {} levels {} layers {} {}x{} (last at {:#x})",
+            LOG_DEBUG(HW_GPU, "  created {}x: format {} type {} levels {} layers {} {}x{} (last at {:#x})",
                      shapes[i].first, key >> 56, (key >> 52) & 0xF, (key >> 48) & 0xF,
                      (key >> 36) & 0xFFF, (key >> 18) & 0x3FFFF, key & 0x3FFFF,
                      created_shapes[key].second);
@@ -1755,7 +1755,7 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
     storage_info.native_tiling = gpu_memory->UsesNativeTiling();
     if (storage_info.native_tiling && info.type == ImageType::e3D) {
         // Switch 2 3D images (lighting/fog volumes) are rare: log each one's shape.
-        LOG_INFO(HW_GPU, "3D image at {:#x}: {}x{}x{} levels {} format {} block {}x{}x{}",
+        LOG_DEBUG(HW_GPU, "3D image at {:#x}: {}x{}x{} levels {} format {} block {}x{}x{}",
                  gpu_addr, info.size.width, info.size.height, info.size.depth, info.resources.levels,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
