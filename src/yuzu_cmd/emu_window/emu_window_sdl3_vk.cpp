@@ -73,7 +73,7 @@ EmuWindow_SDL3_VK::EmuWindow_SDL3_VK(InputCommon::InputSubsystem* input_subsyste
     } else if (SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
                                       nullptr) != nullptr) {
         window_info.type = Core::Frontend::WindowSystemType::Cocoa;
-        window_info.render_surface = SDL_Metal_CreateView(render_window);
+        window_info.render_surface = SDL_Metal_GetLayer(SDL_Metal_CreateView(render_window));
     } else if (void* android_window =
                    SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
                                           nullptr);

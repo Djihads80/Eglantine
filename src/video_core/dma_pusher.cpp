@@ -151,7 +151,10 @@ bool DmaPusher::Step() {
             }
         }
         // A resumed entry is read again: the words after the acquire may be new by now.
-        const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
+        // A safe read flushes the caches, which belong to the split's back thread while it runs
+        // (the split only starts with unsafe reads; the settings can change mid-game).
+        const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
+                              (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
         if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
