@@ -32,6 +32,13 @@ It's written in C++ with portability in mind, with builds for Windows, Linux, ma
 </p>
 
 <p align="center">
+    <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
+        <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
+            alt="Donate with PayPal">
+    </a>
+</p>
+
+<p align="center">
   <a href="#compatibility">Compatibility</a> |
   <a href="#development">Development</a> |
   <a href="#building">Building</a> |
