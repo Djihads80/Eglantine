@@ -872,6 +872,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(0x3828000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 8) |
                  (u64{1} << 39) | (u64{1} << 40));
             break;
+        case 0x2bf: // UPOPC, as POPC of the uniform's register.
+            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
+                return fail(index, "native uniform population count mode");
+            emit(0x5c08000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 20));
+            break;
         case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.
             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
             const u32 words = insn.Bits(73, 1) ? 2 : 1;
@@ -2529,6 +2534,24 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(0xe24000000000000fULL | branch_predicate);
             if (computed_branch && target == s64{index} * 16 && branch_predicate == (u64{7} << 16))
                 return finish(index); // the closing self-branch
+            break;
+        }
+        case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
+            // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
+            // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
+            // Kept as an nx2 pseudo instruction (Maxwell 0xefc0, free there) that the frontend
+            // reads for the task or mesh stage: data/dest 0-7, Ra 8-15, offset 20-43, .32 44,
+            // .ATTR 45, .SKEW 46, .O 47, write 48. Addresses are linear bytes in the region.
+            const bool write = opcode == 0x927;
+            const u32 region = insn.Bits(76, 2);
+            const bool output = insn.Bits(79, 1) != 0;
+            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
+                (!write && region != 3) || (!write && dest == 255))
+                return fail(index, "native stage buffer access mode");
+            emit(0xefc0000000000000ULL | predicate | (write ? u64{insn.Bits(32, 8)} : dest) |
+                 (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(40, 24)} << 20) |
+                 (u64{insn.Bits(75, 1)} << 44) | (u64{region == 3} << 45) |
+                 (u64{insn.Bits(78, 1)} << 46) | (u64{output} << 47) | (u64{write} << 48));
             break;
         }
         case 0x94d: { // EXIT
