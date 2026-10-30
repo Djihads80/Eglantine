@@ -99,6 +99,11 @@ struct ImageBase {
     u32 converted_size_bytes = 0;
     u32 scale_rating = 0;
     u32 host_level_offset = 0; ///< Guest mip level held by host mip 0 (see TrimmedLevels).
+    /// Pages (from the image's first page) the CPU wrote while the rest of a large image stays
+    /// tracked; they are re-uploaded alone (partial refresh) and are untracked until then.
+    std::vector<u32> partial_dirty_pages;
+    /// Byte ranges (from the image start) whose GPU mapping changed; re-uploaded like the pages.
+    std::vector<std::pair<u64, u64>> partial_remapped;
     u64 scale_tick = 0;
     bool has_scaled = false;
 
