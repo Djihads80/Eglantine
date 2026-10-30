@@ -1722,15 +1722,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             result.instructions.push_back(translated);
             break;
         }
-        case 0x387: case 0x983: { // Captured scalar local spill at an immediate byte offset.
-            const bool store = opcode == 0x387;
-            const u32 data = insn.Bits(32, 8), offset = insn.Bits(40, 24);
-            if (insn.Bits(24, 8) != 255 || (store && (insn.Bits(16, 8) || data > 247)) ||
-                (!store && (data || dest >= 248)) || (offset & 3) || offset > 0x7fffff ||
-                insn.words[2] != (store ? 0x00100800U : 0x00300800U))
+        case 0x387: case 0x983: { // Local spill: 32 or 128 bits at [Ra + immediate byte offset].
+            // 128-bit accesses (bits 72-74 = 6) become four 32-bit ones; a load's bit 85 (.LU) is a
+            // cache hint.
+            const bool store = opcode == 0x387, wide = insn.Bits(72, 3) == 6;
+            const u32 data = insn.Bits(32, 8), offset = insn.Bits(40, 24), address = insn.Bits(24, 8);
+            const u32 words = wide ? 4 : 1, value = store ? data : static_cast<u32>(dest);
+            if ((address != 255 && address >= 246) || (store && insn.Bits(16, 8)) || (!store && data) ||
+                (value != 255 && (value + words > 248 || (wide && (value & 3)))) || (!store && value == 255) ||
+                (offset & 3) || offset + 4 * words > 0x800000 ||
+                (insn.words[2] & ~(store ? 0x400U : 0x200400U)) != 0x00100800U)
                 return fail(index, "native local scalar spill mode");
-            emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
-                 (store ? data : dest) | (u64{255} << 8) | (u64{offset} << 20) | (u64{4} << 48));
+            for (u32 word = 0; word < words; ++word)
+                emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
+                     (value == 255 ? 255U : value + word) | (u64{address} << 8) |
+                     (u64{offset + 4 * word} << 20) | (u64{4} << 48));
             break;
         }
         case 0x803: { // P2R PR, register merge source, immediate mask, byte select (76-77)
