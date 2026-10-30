@@ -1580,22 +1580,26 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 return fail(index, "native dependency barrier mode");
             }
             break;
-        case 0xb69: case 0xf69: { // TMML (LOD query), 1D/2D/3D/CUBE. Results are 8.8 fixed point, as on Maxwell.
-            // 0xf69: the handle in a uniform register (bit 91), Maxwell TMML.B with the handle in Rb.
-            const bool bindless = opcode == 0xf69;
-            const u32 handle = bindless ? uniform_register(insn.Bits(40, 6)) : 255;
+        case 0xb69: case 0xf69: case 0x36a: { // TMML (LOD query), 1D/2D/3D/CUBE. Results are 8.8 fixed point, as on Maxwell.
+            // 0xf69: the handle in a uniform register (bit 91); 0x36a, TMML.B: the handle in Rb and
+            // every coordinate in Ra. Both become Maxwell TMML.B with the handle in Rb.
+            const bool bindless = opcode != 0xb69;
+            const u32 handle = opcode == 0xf69 ? uniform_register(insn.Bits(40, 6))
+                             : opcode == 0x36a ? insn.Bits(32, 8) : 255;
             const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 binding = insn.Bits(54, 5), dimension = insn.Bits(61, 3);
             // Coordinates: all from Ra when Rb is RZ, else split as for TEX (2D: Ra, Rb).
             constexpr std::array<u32, 4> coordinate_count{1, 2, 3, 3};
             const u32 coordinates = dimension < 4 ? coordinate_count[dimension] : 0;
-            const u32 in_a = source_b == 255 ? coordinates : (coordinates + 1) / 2;
-            if (coordinates == 0 || insn.Bits(76, 4) || insn.Bits(80, 10) || insn.Bits(59, 1) || mask == 0 ||
-                source_a + in_a > 246 || (source_b != 255 && source_b + (coordinates - in_a) > 246) ||
-                (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
-                          : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
-                             (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))))
+            const u32 in_a = source_b == 255 || opcode == 0x36a ? coordinates : (coordinates + 1) / 2;
+            if (coordinates == 0 || insn.Bits(76, 4) || insn.Bits(80, 10) || mask == 0 ||
+                insn.Bits(59, 1) != (opcode == 0x36a ? 1U : 0U) || source_a + in_a > 246 ||
+                (in_a < coordinates && source_b + (coordinates - in_a) > 246) ||
+                (opcode == 0xf69 && (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))) ||
+                (opcode == 0x36a && (handle >= 246 || insn.Bits(40, 19) || insn.Bits(91, 1))) ||
+                (!bindless && (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
+                               (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))))
                 return fail(index, "native texture LOD query mode");
             if (!bindless) result.required_texture_buffer = binding;
             for (u32 i = 0; i < coordinates; ++i)
