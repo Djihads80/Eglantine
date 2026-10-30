@@ -202,6 +202,11 @@ void ApplyNx2Characteristics(GC& gc) {
     gc.flags |= 0x100;             // NVGPU_GPU_FLAGS_SUPPORT_TSG: NvRm binds channels to a TSG
     gc.flags |= 1ULL << 22;        // NVGPU_GPU_FLAGS_SUPPORT_TSG_SUBCONTEXTS (see below)
     gc.flags |= 1ULL << 26;        // NVGPU_GPU_FLAGS_SUPPORT_SYNCPOINT_ADDRESS: syncpoint shim
+    // NVGPU_GPU_FLAGS_SUPPORT_MAPPING_MODIFY: NVN2 gives a texture in a compressible pool its
+    // address only after NvRmGpuMappingModify switched the pool's mapping to the texture's kind.
+    // Without the flag NvRm fails that call and the texture stays at GPU address 0 (title 1's
+    // movie and the passes rendered into compressible pools never showed).
+    gc.flags |= 1ULL << 34;
 
     // The Switch 2 layout keeps nine s16 interface versions at 0x70..0x80 (like nvgpu's
     // *_ioctl_nr_last); its NvRm requires e.g. [0x78] >= 6 and enables features above 0xa, 0x1f
