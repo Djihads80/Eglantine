@@ -111,6 +111,12 @@ namespace Vulkan {
         /// a null image when the device can't make one.
         vk::Image CreateUnbackedImage(const VkImageCreateInfo &ci) const;
 
+        /// Device memory to bind to part of a sparse resource. Null when there is none left.
+        VmaAllocation AllocateSparseMemory(const VkMemoryRequirements &requirements,
+                                           VkDeviceMemory &memory, VkDeviceSize &offset) const;
+
+        void FreeSparseMemory(VmaAllocation allocation) const;
+
         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const;
 
         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage,

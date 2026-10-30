@@ -295,6 +295,35 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci) cons
                      device.GetDispatchLoader());
 }
 
+VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &requirements,
+                                                   VkDeviceMemory &memory,
+                                                   VkDeviceSize &offset) const {
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = 0,
+        .usage = VMA_MEMORY_USAGE_UNKNOWN,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        .preferredFlags = 0,
+        .memoryTypeBits = requirements.memoryTypeBits,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+        .priority = 0.f,
+    };
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    if (vmaAllocateMemory(allocator, &requirements, &alloc_ci, &allocation, &info) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    memory = info.deviceMemory;
+    offset = info.offset;
+    return allocation;
+}
+
+void MemoryAllocator::FreeSparseMemory(VmaAllocation allocation) const {
+    if (allocation != VK_NULL_HANDLE) {
+        vmaFreeMemory(allocator, allocation);
+    }
+}
+
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
     // MESA will do memcpy() if not marked as host cached, so just force mark it for most buffers
     auto const anv_flags = (usage == MemoryUsage::Stream

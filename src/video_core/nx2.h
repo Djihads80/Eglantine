@@ -123,6 +123,21 @@ inline void Nx2SparseBlockWritten(u64 region_address, u64 block) {
     }
 }
 
+/// True when [gpu_address, +size) lies in one sparse region.
+inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
+    if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        return false;
+    }
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    auto it = g_nx2_sparse_state.upper_bound(gpu_address);
+    if (it == g_nx2_sparse_state.begin()) {
+        return false;
+    }
+    --it;
+    return gpu_address + size <= it->first + it->second.size;
+}
+
 /// The GPU renders into [gpu_address, +size): count its blocks as written, so images made there
 /// later get memory (their contents live in the host image, not in guest memory).
 inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
