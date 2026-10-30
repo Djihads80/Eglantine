@@ -328,6 +328,15 @@ public:
     }
 
     /**
+     * Get the application's display version ("1.8.0"), from its control data by default
+     *
+     * @param[out] version Reference to store the display version into
+     *
+     * @return ResultStatus result of function
+     */
+    virtual ResultStatus ReadDisplayVersion(std::string& version);
+
+    /**
      * Get the RomFS of the manual of the application
      *
      * @param[out] out_file The raw manual RomFS of the game

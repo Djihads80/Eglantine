@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include "common/common_types.h"
+#include "core/file_sys/control_metadata.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/loader/loader.h"
 
@@ -49,6 +51,8 @@ public:
     ResultStatus ReadIcon(std::vector<u8>& out_buffer) override;
     ResultStatus ReadProgramId(u64& out_program_id) override;
     ResultStatus ReadTitle(std::string& title) override;
+    ResultStatus ReadControlData(FileSys::NACP& control) override;
+    ResultStatus ReadDisplayVersion(std::string& version) override;
     bool IsRomFSUpdatable() const override;
 
     ResultStatus ReadNSOModules(Modules& out_modules) override;
@@ -60,6 +64,8 @@ private:
 
     std::vector<u8> icon_data;
     std::string name;
+    std::optional<FileSys::NACP> control; ///< control.nacp next to the dump, if it has one
+    std::string romfs_version;            ///< "1.8.0" from the RomFS's Product.180 tables, if any
     u64 title_id{};
     bool override_update;
 
