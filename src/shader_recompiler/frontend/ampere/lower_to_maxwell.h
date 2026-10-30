@@ -927,14 +927,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (u64{1} << 48));
             break;
         }
-        case 0xb97: { // SULD.P.2D/2D_ARRAY.IGN, direct descriptor, channel mask at 72-75.
+        case 0xb97: { // SULD.P.2D/2D_ARRAY/3D.IGN, direct descriptor, channel mask at 72-75.
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 coordinate = insn.Bits(24, 8);
             const u32 channels = insn.Bits(72, 4);
-            const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY
-            if ((insn.words[2] & ~0xf00U) != 0x001e0000 || channels == 0 || (dimension != 3 && dimension != 4) ||
+            const u32 dimension = insn.Bits(61, 3); // Maxwell's codes: 3 = 2D, 4 = 2D_ARRAY, 5 = 3D
+            if ((insn.words[2] & ~0xf00U) != 0x001e0000 || channels == 0 || dimension < 3 || dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || dest == 255 ||
-                coordinate > (dimension == 4 ? 252U : 253U))
+                coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native formatted surface load mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native surface descriptor buffer conflict");
