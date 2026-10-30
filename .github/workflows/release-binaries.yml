@@ -143,13 +143,25 @@ jobs:
             throw 'build/release/bin/eglantine.exe was not produced'
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
-          Compress-Archive -Path build/release/bin/* -DestinationPath "eglantine-${env:GITHUB_SHA}-windows-x86_64.zip"
 
-      - name: Upload binary
+      # The Windows artifact is the bin folder itself: GitHub zips artifacts on download, and
+      # uploading a zip gave a zip inside a zip.
+      - name: Upload Windows binary
+        if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.*
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
+
+      # The tarball keeps the executable bit, which artifacts lose.
+      - name: Upload Linux binary
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
