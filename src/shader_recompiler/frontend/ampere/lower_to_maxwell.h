@@ -480,6 +480,27 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             multiply_low(insn.Bits(24, 8), insn.Bits(32, 8), insn.Bits(64, 8), false);
             break;
         }
+        case 0x225: { // IMAD.WIDE.U32, register multiplier and 64-bit addend pair
+            const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
+            const u32 c_high = c == 255 ? 255 : c + 1;
+            if ((insn.words[2] & ~0xffU) != 0x078e0000 || (insn.words[1] & ~0xffU) ||
+                (dest & 1) || dest >= 248 || (c != 255 && ((c & 1) || c >= 248)) || dest == c_high)
+                return fail(index, "native wide integer multiply mode");
+            // High word with the IMAD.HI base-2^16 sequence, then the low word, into R253/R252.
+            xmad(250, a, b, 255, false, false, 0, false);
+            xmad(251, a, b, 250, true, false, 2, false);
+            xmad(250, a, b, 251, false, true, 1, false);
+            xmad(252, a, b, 251, true, true, 2, false);
+            emit(0x3828000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000000000ULL | predicate | 253 | (u64{250} << 8) | (u64{252} << 20));
+            xmad(250, a, b, 255, false, false, 0, false);
+            xmad(251, a, b, 255, true, false, 0, false);
+            xmad(251, a, b, 251, false, true, 0, false);
+            emit(0x5c18000000000000ULL | predicate | 252 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000000000ULL | predicate | dest | (u64{252} << 8) | (u64{c} << 20) | (u64{1} << 47));
+            emit(0x5c10000000000000ULL | predicate | (dest + 1) | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            break;
+        }
         case 0x2a5: { // UIMAD.WIDE.U32 UR(d):UR(d+1) = URa * URb + URc:UR(c+1)
             const u32 a = uniform_register(insn.Bits(24, 8)), b = uniform_register(insn.Bits(32, 8));
             const u32 c = insn.Bits(64, 8);
