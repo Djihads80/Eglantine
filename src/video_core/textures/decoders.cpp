@@ -13,10 +13,8 @@
 #include "common/assert.h"
 #include "common/bit_util.h"
 #include "common/div_ceil.h"
-#include "common/literals.h"
 #include "video_core/gpu.h"
 #include "video_core/textures/decoders.h"
-#include "video_core/textures/workers.h"
 
 namespace Tegra::Texture {
 namespace {
@@ -43,31 +41,9 @@ void incrpdep(u32& value) {
     value = ((value | ~mask) + swizzled_incr) & mask;
 }
 
-/// Runs body(line_begin, line_end) over [0, height) in bands of whole block rows (GOB rows times the
-/// block height), several at once when there is enough data: each band reads and writes bytes of
-/// its own on both the swizzled and the linear side.
-template <typename Body>
-void ForEachLineBand(u64 bytes_per_line, u32 height, u32 depth, u32 block_height, Body&& body) {
-    using namespace Common::Literals;
-    constexpr u64 MinParallelBytes = 4_MiB;
-    constexpr u64 BandBytes = 1_MiB;
-    const u64 bytes_per_band_line = (std::max<u64>)(bytes_per_line * depth, 1);
-    if (bytes_per_band_line * height < MinParallelBytes) {
-        body(0U, height);
-        return;
-    }
-    const u32 align = 1U << (GOB_SIZE_Y_SHIFT + block_height);
-    const u32 rows = static_cast<u32>(
-        Common::AlignUp((std::max<u64>)(BandBytes / bytes_per_band_line, 1), align));
-    ParallelFor(Common::DivCeil(height, rows), [&](u32 band) {
-        body(band * rows, (std::min)(height, (band + 1) * rows));
-    });
-}
-
 template <bool TO_LINEAR, u32 BYTES_PER_PIXEL>
 void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32 height, u32 depth,
-                 u32 block_height, u32 block_depth, u32 stride, bool native_tiling, u32 line_begin,
-                 u32 line_end) {
+                 u32 block_height, u32 block_depth, u32 stride, bool native_tiling) {
     // The origin of the transformation can be configured here, leave it as zero as the current API
     // doesn't expose it.
     static constexpr u32 origin_x = 0;
@@ -91,7 +67,7 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
         const u32 z = slice + origin_z;
         const u32 offset_z = (z >> block_depth) * slice_size +
                              ((z & block_depth_mask) << (GOB_SIZE_SHIFT + block_height));
-        for (u32 line = line_begin; line < line_end; ++line) {
+        for (u32 line = 0; line < height; ++line) {
             const u32 y = line + origin_y;
             const u32 swizzled_y = pdep<SWIZZLE_Y_BITS>(y);
 
@@ -123,8 +99,7 @@ void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32
 template <bool TO_LINEAR, u32 BYTES_PER_PIXEL>
 void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32 height,
                         u32 depth, u32 origin_x, u32 origin_y, u32 extent_x, u32 num_lines,
-                        u32 block_height, u32 block_depth, u32 pitch_linear, bool native_tiling,
-                        u32 line_begin = 0, u32 line_end = ~0U) {
+                        u32 block_height, u32 block_depth, u32 pitch_linear, bool native_tiling) {
     // The origin of the transformation can be configured here, leave it as zero as the current API
     // doesn't expose it.
     static constexpr u32 origin_z = 0;
@@ -151,7 +126,7 @@ void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 wid
         const u32 offset_z = (z >> block_depth) * slice_size +
                              ((z & block_depth_mask) << (GOB_SIZE_SHIFT + block_height));
         const u32 lines_in_y = (std::min)(unprocessed_lines, extent_y);
-        for (u32 line = line_begin; line < (std::min)(lines_in_y, line_end); ++line) {
+        for (u32 line = 0; line < lines_in_y; ++line) {
             const u32 y = line + origin_y;
             const u32 swizzled_y = pdep<SWIZZLE_Y_BITS>(y);
 
@@ -187,13 +162,11 @@ void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 wid
 template <bool TO_LINEAR>
 void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
              u32 height, u32 depth, u32 block_height, u32 block_depth, u32 stride_alignment, bool native_tiling) {
-    const auto run = [&](u32 line_begin, u32 line_end) {
-        switch (bytes_per_pixel) {
+    switch (bytes_per_pixel) {
 #define BPP_CASE(x)                                                                                \
     case x:                                                                                        \
         return SwizzleImpl<TO_LINEAR, x>(output, input, width, height, depth, block_height,        \
-                                         block_depth, stride_alignment, native_tiling, line_begin, \
-                                         line_end);
+                                         block_depth, stride_alignment, native_tiling);
         BPP_CASE(1)
         BPP_CASE(2)
         BPP_CASE(3)
@@ -203,48 +176,10 @@ void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixe
         BPP_CASE(12)
         BPP_CASE(16)
 #undef BPP_CASE
-        default:
-            ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
-            break;
-        }
-    };
-    ForEachLineBand(u64{width} * bytes_per_pixel, height, depth, block_height, run);
-}
-
-/// The subrect copies, in bands of lines when the copy is a single slice.
-template <bool TO_LINEAR>
-void SwizzleSubrectBands(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
-                         u32 width, u32 height, u32 depth, u32 origin_x, u32 origin_y,
-                         u32 extent_x, u32 extent_y, u32 block_height, u32 block_depth,
-                         u32 pitch_linear, bool native_tiling) {
-    const auto run = [&](u32 line_begin, u32 line_end) {
-        switch (bytes_per_pixel) {
-#define BPP_CASE(x)                                                                                \
-    case x:                                                                                        \
-        return SwizzleSubrectImpl<TO_LINEAR, x>(output, input, width, height, depth, origin_x,     \
-                                                origin_y, extent_x, extent_y, block_height,        \
-                                                block_depth, pitch_linear, native_tiling,          \
-                                                line_begin, line_end);
-            BPP_CASE(1)
-            BPP_CASE(2)
-            BPP_CASE(3)
-            BPP_CASE(4)
-            BPP_CASE(6)
-            BPP_CASE(8)
-            BPP_CASE(12)
-            BPP_CASE(16)
-#undef BPP_CASE
-        default:
-            ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
-            break;
-        }
-    };
-    if (depth != 1 || origin_y >= height) {
-        run(0U, ~0U);
-        return;
+    default:
+        ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
+        break;
     }
-    ForEachLineBand(u64{extent_x} * bytes_per_pixel, (std::min)(extent_y, height - origin_y), 1,
-                    block_height, run);
 }
 
 } // Anonymous namespace
@@ -274,17 +209,49 @@ void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_p
 void SwizzleSubrect(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
                     u32 height, u32 depth, u32 origin_x, u32 origin_y, u32 extent_x, u32 extent_y,
                     u32 block_height, u32 block_depth, u32 pitch_linear, bool native_tiling) {
-    SwizzleSubrectBands<true>(output, input, bytes_per_pixel, width, height, depth, origin_x,
-                              origin_y, extent_x, extent_y, block_height, block_depth, pitch_linear,
-                              native_tiling);
+    switch (bytes_per_pixel) {
+#define BPP_CASE(x)                                                                                \
+    case x:                                                                                        \
+        return SwizzleSubrectImpl<true, x>(output, input, width, height, depth, origin_x,          \
+                                           origin_y, extent_x, extent_y, block_height,             \
+                                           block_depth, pitch_linear, native_tiling);
+        BPP_CASE(1)
+        BPP_CASE(2)
+        BPP_CASE(3)
+        BPP_CASE(4)
+        BPP_CASE(6)
+        BPP_CASE(8)
+        BPP_CASE(12)
+        BPP_CASE(16)
+#undef BPP_CASE
+    default:
+        ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
+        break;
+    }
 }
 
 void UnswizzleSubrect(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
                       u32 width, u32 height, u32 depth, u32 origin_x, u32 origin_y, u32 extent_x,
                       u32 extent_y, u32 block_height, u32 block_depth, u32 pitch_linear, bool native_tiling) {
-    SwizzleSubrectBands<false>(output, input, bytes_per_pixel, width, height, depth, origin_x,
-                               origin_y, extent_x, extent_y, block_height, block_depth,
-                               pitch_linear, native_tiling);
+    switch (bytes_per_pixel) {
+#define BPP_CASE(x)                                                                                \
+    case x:                                                                                        \
+        return SwizzleSubrectImpl<false, x>(output, input, width, height, depth, origin_x,         \
+                                            origin_y, extent_x, extent_y, block_height,            \
+                                            block_depth, pitch_linear, native_tiling);
+        BPP_CASE(1)
+        BPP_CASE(2)
+        BPP_CASE(3)
+        BPP_CASE(4)
+        BPP_CASE(6)
+        BPP_CASE(8)
+        BPP_CASE(12)
+        BPP_CASE(16)
+#undef BPP_CASE
+    default:
+        ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
+        break;
+    }
 }
 
 std::size_t CalculateSize(bool tiled, u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
