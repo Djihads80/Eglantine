@@ -64,6 +64,9 @@ inline std::recursive_mutex g_nx2_sparse_backing_mutex;
 inline Nx2SparseBackingHandler g_nx2_sparse_backing;
 inline std::atomic<u64> g_nx2_sparse_low{~u64{0}};
 inline std::atomic<u64> g_nx2_sparse_high{0};
+/// Set by the renderer before a game runs: false when the host driver can't use the sparse images
+/// lazily backed regions lead to (AMD's Windows driver divides by zero in amdvlk64.dll).
+inline std::atomic<bool> g_nx2_sparse_lazy_supported{true};
 
 inline void Nx2SetSparseBacking(Nx2SparseBackingHandler handler) {
     std::scoped_lock lk{g_nx2_sparse_backing_mutex};
