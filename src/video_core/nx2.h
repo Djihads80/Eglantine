@@ -46,6 +46,13 @@ inline void Nx2RemoveSemaphoreRegion(u64 start) {
     }
 }
 
+/// A new emulation session starts: no queue has a region yet.
+inline void Nx2ClearSemaphoreRegions() {
+    for (auto& region : g_nx2_semaphore_regions) {
+        region.store(0);
+    }
+}
+
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.

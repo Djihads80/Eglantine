@@ -100,6 +100,17 @@ public:
         listeners.erase(owner);
     }
 
+    // A new emulation session starts: forget the previous game's mappings and device ranges (its
+    // address spaces removed their listeners when they closed).
+    void Reset() {
+        {
+            std::scoped_lock lk{device_mutex};
+            device_ranges.clear();
+        }
+        std::scoped_lock lk{mutex};
+        mappings.clear();
+    }
+
     // Device (SMMU) address of a CPU range an address space mapped; used to present images.
     void RecordDeviceRange(u64 cpu_address, u64 size, u64 device_address) {
         std::scoped_lock lk{device_mutex};
