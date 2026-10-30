@@ -7,8 +7,10 @@
 #pragma once
 
 #include <array>
+#include <bit>
 
 #include <sirit/sirit.h>
+#include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
 
 #include "shader_recompiler/backend/bindings.h"
@@ -174,7 +176,7 @@ public:
     [[nodiscard]] Id BitOffset16(const IR::Value& offset);
 
     Id Const(u32 value) {
-        return Constant(U32[1], value);
+        return CachedConstant(u32_constants, U32[1], value, value);
     }
 
     Id Const(u32 element_1, u32 element_2) {
@@ -208,7 +210,19 @@ public:
     }
 
     Id Const(f32 value) {
-        return Constant(F32[1], value);
+        return CachedConstant(f32_constants, F32[1], std::bit_cast<u32>(value), value);
+    }
+
+    /// Sirit deduplicates constants, but by hashing a freshly allocated copy of their words on
+    /// every call; immediates are emitted over and over, so remember the ids of scalar constants.
+    /// Keys are bit patterns, like Sirit's (0.0f and -0.0f stay distinct).
+    template <typename T>
+    Id CachedConstant(::Common::unordered_map<u32, Id>& cache, Id type, u32 bits, T value) {
+        const auto [it, is_new]{cache.try_emplace(bits)};
+        if (is_new) {
+            it->second = Constant(type, value);
+        }
+        return it->second;
     }
 
     const Profile& profile;
@@ -227,6 +241,9 @@ public:
     VectorTypes S32;
     VectorTypes F16;
     VectorTypes F64;
+
+    ::Common::unordered_map<u32, Id> u32_constants;
+    ::Common::unordered_map<u32, Id> f32_constants;
 
     Id true_value{};
     Id false_value{};
