@@ -2,6 +2,11 @@ name: release-binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the binaries as a GitHub release
+        type: boolean
+        default: true
   push:
     branches:
       - nx2
@@ -126,21 +131,24 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cmake --build build/release --target yuzu --parallel
+        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
 
       - name: Package Linux binary
         if: matrix.platform == 'linux-x86_64'
         shell: bash
         run: |
           test -x build/release/bin/eglantine
-          tar -C build/release/bin -czf "eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" eglantine
+          test -x build/release/bin/eden-cli
+          tar -C build/release/bin -czf "eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" eglantine eden-cli
 
       - name: Package Windows binary
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: |
-          if (-not (Test-Path build/release/bin/eglantine.exe)) {
-            throw 'build/release/bin/eglantine.exe was not produced'
+          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/release/bin/$exe")) {
+              throw "build/release/bin/$exe was not produced"
+            }
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
           Compress-Archive -Path build/release/bin/* -DestinationPath "eglantine-${env:GITHUB_SHA}-windows-x86_64.zip"
@@ -153,3 +161,36 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2,
+  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' || inputs.publish_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eglantine-*-${{ github.sha }}
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "build-${GITHUB_RUN_NUMBER}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
+
+          Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
+          Linux: extract the tar.gz; it needs Qt 6.8 and the libraries Eglantine is built against installed on the system."
