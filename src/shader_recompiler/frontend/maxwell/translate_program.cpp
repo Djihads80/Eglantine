@@ -410,7 +410,8 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
         if (program.stage == Stage::Mesh) {
             if (program.mesh.topology != 4) {
-                throw NotImplementedException("Mesh output topology {}", program.mesh.topology);
+                throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",
+                                              program.mesh.topology, shader_a);
             }
             AddMeshLines(env.SPH(), program.mesh.vertex_lines);
             AddMeshLines(env.MeshPrimitiveHeader(), program.mesh.primitive_lines);
