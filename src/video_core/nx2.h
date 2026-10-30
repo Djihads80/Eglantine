@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -50,6 +51,45 @@ inline void Nx2RemoveSemaphoreRegion(u64 start) {
 inline void Nx2ClearSemaphoreRegions() {
     for (auto& region : g_nx2_semaphore_regions) {
         region.store(0);
+    }
+}
+
+// Switch 2 sparse regions (nx2:gpu 214, word 7 bit 0x200: title 1's terrain texture arrays and
+// layer pools, 170 MB-5.8 GB each, of which the game fills a little) get memory per block when the
+// GPU first writes there, not in full. nx2:gpu installs the handler and the span its regions cover;
+// the GPU memory manager calls Nx2BackSparseWrite before each write.
+using Nx2SparseBackingHandler = std::function<void(u64 gpu_address, u64 size)>;
+inline std::recursive_mutex g_nx2_sparse_backing_mutex;
+inline Nx2SparseBackingHandler g_nx2_sparse_backing;
+inline std::atomic<u64> g_nx2_sparse_low{~u64{0}};
+inline std::atomic<u64> g_nx2_sparse_high{0};
+
+inline void Nx2SetSparseBacking(Nx2SparseBackingHandler handler) {
+    std::scoped_lock lk{g_nx2_sparse_backing_mutex};
+    g_nx2_sparse_backing = std::move(handler);
+    g_nx2_sparse_low.store(~u64{0});
+    g_nx2_sparse_high.store(0);
+}
+
+/// Widens the span that writes are checked against (a new lazily backed region).
+inline void Nx2AddSparseSpan(u64 gpu_address, u64 size) {
+    u64 low = g_nx2_sparse_low.load();
+    while (gpu_address < low && !g_nx2_sparse_low.compare_exchange_weak(low, gpu_address)) {
+    }
+    u64 high = g_nx2_sparse_high.load();
+    while (gpu_address + size > high &&
+           !g_nx2_sparse_high.compare_exchange_weak(high, gpu_address + size)) {
+    }
+}
+
+inline void Nx2BackSparseWrite(u64 gpu_address, u64 size) {
+    if (gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        return;
+    }
+    std::scoped_lock lk{g_nx2_sparse_backing_mutex};
+    if (g_nx2_sparse_backing) {
+        g_nx2_sparse_backing(gpu_address, size);
     }
 }
 
