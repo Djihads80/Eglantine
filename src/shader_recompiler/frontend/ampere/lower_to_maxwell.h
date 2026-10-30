@@ -1658,12 +1658,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0xb60: case 0xf60: case 0x361: { // TEX; 0xf60: handle in a uniform register; 0x361: TEX.B
             // Bindless forms become Maxwell TEX.B, the handle first among the meta registers (the
             // texture pass tracks it back to its constant buffer words). 0x361 lists the handle
-            // right after the coordinates (see general_tex); forms with a LOD value or offsets,
+            // right after the coordinates, then the LOD (see general_tex); forms with offsets,
             // whose place next to the handle is unverified, are not taken.
             const bool bindless = opcode != 0xb60;
             const u32 handle = opcode == 0xf60 ? uniform_register(insn.Bits(40, 6)) : 255;
             if (bindless && ((opcode == 0xf60 && (handle == ~0U || handle >= 246 || insn.Bits(46, 13))) ||
-                             (opcode == 0x361 && (insn.Bits(40, 19) || insn.Bits(87, 3) > 1 || insn.Bits(76, 1)))))
+                             (opcode == 0x361 && (insn.Bits(40, 19) || insn.Bits(87, 3) > 3 || insn.Bits(76, 1)))))
                 return fail(index, "native bindless texture mode");
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
@@ -1708,11 +1708,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 const u32 coordinates = coordinate_count[dimension];
                 const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
                 // 0x361's handle is one more value after the coordinates: 2D.DC is (x, y | handle,
-                // reference), ARRAY_2D is (layer, x | y, handle).
+                // reference), ARRAY_2D is (layer, x | y, handle); with five or more values the
+                // coordinates keep Ra (CUBE.LL is (x, y, z | handle, LOD)).
                 const u32 handle_slot = opcode == 0x361 ? 1 : 0;
                 const u32 count = coordinates + handle_slot + (has_lod ? 1 : 0) + (offsets ? 1 : 0) +
                                   (depth_compare ? 1 : 0);
-                const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
+                const u32 in_a = count <= 4 ? (count + 1) / 2 : opcode == 0x361 ? coordinates : 4;
                 const auto value = [&](u32 i) -> u32 {
                     if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                     return source_b == 255 ? 255U : source_b + (i - in_a);
