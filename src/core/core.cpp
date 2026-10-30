@@ -497,6 +497,9 @@ struct System::Impl {
     }
 
     PerfStatsResults GetAndResetPerfStats() {
+        if (!perf_stats) {
+            return {};
+        }
         return perf_stats->GetAndResetStats(core_timing.GetGlobalTimeUs());
     }
 
@@ -1057,6 +1060,8 @@ void System::ApplySettings() {
 
     if (IsPoweredOn()) {
         Renderer().RefreshBaseSettings();
+        // Frontends switch docked/handheld through the settings; let the running game know.
+        GetAppletManager().OperationModeChanged();
     }
 }
 

@@ -58,6 +58,7 @@ private:
     std::condition_variable m_cv;
 
     WindowSystem* m_window_system{};
+    bool m_docked{}; // console mode the applets were last told about
 
     FrontendAppletParameters m_pending_parameters{};
     std::unique_ptr<Process> m_pending_process{};
