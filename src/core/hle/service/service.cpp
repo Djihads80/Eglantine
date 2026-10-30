@@ -93,7 +93,48 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     }
 }
 
+namespace {
+void TraceHidRequest(const std::string& service, HLERequestContext& ctx) {
+    static const bool enabled = std::getenv("EDEN_NX2_HID_TRACE") != nullptr;
+    if (!enabled || service != "hid") {
+        return;
+    }
+    fmt::memory_buffer trace;
+    fmt::format_to(std::back_inserter(trace), "hid trace cmd={} tipc={} x={} a={} b={} c={}",
+                   ctx.GetCommand(), ctx.IsTipc(), ctx.BufferDescriptorX().size(),
+                   ctx.BufferDescriptorA().size(), ctx.BufferDescriptorB().size(),
+                   ctx.BufferDescriptorC().size());
+    for (const auto& descriptor : ctx.BufferDescriptorX()) {
+        fmt::format_to(std::back_inserter(trace), " X({:#x}@{:#x})", descriptor.Size(),
+                       descriptor.Address());
+    }
+    for (const auto& descriptor : ctx.BufferDescriptorA()) {
+        fmt::format_to(std::back_inserter(trace), " A({:#x}@{:#x})", descriptor.Size(),
+                       descriptor.Address());
+    }
+    for (const auto& descriptor : ctx.BufferDescriptorB()) {
+        fmt::format_to(std::back_inserter(trace), " B({:#x}@{:#x})", descriptor.Size(),
+                       descriptor.Address());
+    }
+    for (const auto& descriptor : ctx.BufferDescriptorC()) {
+        fmt::format_to(std::back_inserter(trace), " C({:#x}@{:#x})", descriptor.Size(),
+                       descriptor.Address());
+    }
+    fmt::format_to(std::back_inserter(trace), " words:");
+    for (u32 index = 0; index < 12; ++index) {
+        fmt::format_to(std::back_inserter(trace), " {:#x}", ctx.CommandBuffer()[index]);
+    }
+    const auto payload = ctx.ReadBufferCopy();
+    fmt::format_to(std::back_inserter(trace), " payload({:#x}):", payload.size());
+    for (std::size_t i = 0; i < std::min<std::size_t>(payload.size(), 32); ++i) {
+        fmt::format_to(std::back_inserter(trace), " {:02x}", payload[i]);
+    }
+    LOG_INFO(Service, "{}", fmt::to_string(trace));
+}
+} // Anonymous namespace
+
 void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
+    TraceHidRequest(service_name, ctx);
     auto it = handlers.find(ctx.GetCommand());
     FunctionInfoBase const* info = it == handlers.end() ? nullptr : &it->second;
     if (info == nullptr || info->handler_callback == nullptr)

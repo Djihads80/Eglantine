@@ -38,6 +38,7 @@ class GenericEnvironment;
 struct ShaderInfo {
     u64 unique_hash{};
     size_t size_bytes{};
+    bool requires_rasterizer_clip{};
 };
 
 class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {

@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <vector>
 
@@ -27,12 +28,15 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/native_video.h"
+#include "video_core/textures/decoders.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_system_resource.h"
+#include "core/hle/kernel/svc_results.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_resource_limit.h"
@@ -50,6 +54,8 @@
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/nvdrv/core/container.h"
+#include "core/hle/service/nvdrv/core/syncpoint_manager.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -96,6 +102,39 @@ inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::
     rb.Push(ResultSuccess);
     rb.PushCopyObjects(ctx, *client);
 }
+
+// nn::gs::sdk::QueryApplicationGpuTimeSpan opens this session with GSV 1121.
+// Keep the token handshake valid so callers can handle an unavailable measurement.
+class INx2GpuTimeSession final : public ServiceFramework<INx2GpuTimeSession> {
+public:
+    explicit INx2GpuTimeSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:gpu-time"} {
+        RegisterHandlersTipc({
+            {0, &INx2GpuTimeSession::Initialize, "Initialize"},
+            {11, &INx2GpuTimeSession::QueryApplicationGpuTimeSpan, "QueryApplicationGpuTimeSpan"},
+        });
+    }
+
+private:
+    void Initialize(HLERequestContext& ctx) {
+        const auto* words = ctx.CommandBuffer();
+        m_token = u64{words[2]} | (u64{words[3]} << 32);
+        TipcReplyWords(ctx, {static_cast<u32>(*m_token), static_cast<u32>(*m_token >> 32)});
+    }
+
+    void QueryApplicationGpuTimeSpan(HLERequestContext& ctx) {
+        if (!m_logged) {
+            LOG_WARNING(Service, "nx2:gpu-time: GPU execution-time measurement is unavailable");
+            m_logged = true;
+        }
+        // No GPU-duration accounting exists yet. Return an error, never a fabricated duration.
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.PushRaw<u32>((m_token ? Kernel::ResultNotImplemented : Kernel::ResultInvalidState).raw);
+    }
+
+    std::optional<u64> m_token;
+    bool m_logged{};
+};
 
 // Placeholder for the Switch 2 NVIDIA driver server (nn::nvsrv). It has no handlers, so every
 // command (CMIF or TIPC) gets an empty success and is logged through the nx2: prefix.
@@ -197,7 +236,7 @@ private:
         const u32 slot = cmd_buf[2];
         const u32 syncpoint = ~cmd_buf[3];
         const u64 value = u64{cmd_buf[4]} | (u64{cmd_buf[5]} << 32);
-        const u32 mode = cmd_buf[6];
+        const u32 mode = static_cast<u8>(cmd_buf[6]);
         LOG_INFO(Service, "nx2:syncpt TIPC 201 slot={:#x} syncpoint={} value={:#x} mode={}", slot,
                   syncpoint, value, mode);
         auto*& event = m_events[slot];
@@ -213,6 +252,8 @@ private:
         }
         auto& request = m_requests[slot];
         Cancel(request);
+        // A reused slot may still carry the previous completion/cancellation signal.
+        event->Clear(system.Kernel());
         request.syncpoint = syncpoint;
         request.pending = true;
         auto& manager = system.Host1x().GetSyncpointManager();
@@ -288,6 +329,7 @@ public:
             {101, &INx2GpuSession::SubRegisterMemory, "CreateGpuAccessibleMemory"},
             {102, &INx2GpuSession::SubDestroyMemory, "DestroyGpuAccessibleMemory (guessed)"},
             {211, &INx2GpuSession::SubSubmitJob, "NormalMapGpuMemory4K"},
+            {212, &INx2GpuSession::SubModifyKind, "NormalModifyMemoryKind4K"},
             {213, &INx2GpuSession::SubUnmapJob, "NormalUnmapGpuMemory4K"},
             {214, &INx2GpuSession::SubCreateGpuOnlyRegion, "CreateSparseRegion"},
             {215, &INx2GpuSession::SubDestroySparseRegion, "DestroySparseRegion"},
@@ -436,18 +478,36 @@ private:
         rb.Push(ResultSuccess);
     }
 
+    // SDK +0x3e90e0: AS, first/last, two u8 kinds, sync flags, job slot.
+    void SubModifyKind(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 first = u64{w[3]} | (u64{w[4]} << 32);
+        const u64 last = u64{w[5]} | (u64{w[6]} << 32);
+        const u8 kind = static_cast<u8>(w[8]);
+        LOG_INFO(Service, "nx2:gpu 212 modify [{:#x}, {:#x}] compressed={} fallback={} slot={}",
+                 first, last, static_cast<u8>(w[7]), kind, w[10]);
+        if (last < first || last == UINT64_MAX ||
+            !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ModifyKind(first, last - first + 1, kind)) {
+            LOG_CRITICAL(Service, "Native GPU mapping-kind modification could not commit");
+            std::abort();
+        }
+        EventFor(w[10])->Signal(system.Kernel());
+        TipcReplyWords(ctx, {kind});
+    }
+
     // Sub 213: words 3-4 first GPU address, 5-6 last, job slot in word 8.
     void SubUnmapJob(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         const u64 first = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
         LOG_DEBUG(Service, "nx2:gpu 213 unmap [{:#x}, {:#x}] slot={}", first, last, w[8]);
+        u64 unmapped{};
         if (last > first) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
+            unmapped = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
         }
         SignalAfterGpu(w[8]);
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        // The SDK subtracts this u64 from its address space's mapped-byte count.
+        TipcReplyWords(ctx, {static_cast<u32>(unmapped), static_cast<u32>(unmapped >> 32)});
     }
 
     // Signals a job slot's event once the GPU thread has run everything queued so far, as the
@@ -947,9 +1007,42 @@ private:
             crop_width = env_crop_w;
             crop_height = env_crop_h;
         }
+        static const bool linear_scanout = std::getenv("EDEN_NX2_LINEAR_SCANOUT") != nullptr;
+        static const std::set<u64> dump_presents = [] {
+            std::set<u64> values;
+            const char* v = std::getenv("EDEN_NX2_DUMP_PRESENT");
+            for (size_t pos = 0; v && v[pos] != '\0';) {
+                values.insert(std::strtoull(v + pos, nullptr, 10));
+                const char* comma = std::strchr(v + pos, ',');
+                if (comma == nullptr) {
+                    break;
+                }
+                pos = static_cast<size_t>(comma - v) + 1;
+            }
+            return values;
+        }();
+        if (dump_presents.contains(m_presents)) {
+            const u64 size = 0x1fe0000;
+            std::vector<u8> bytes(size);
+            system.GPU().Renderer().ReadRasterizer()->FlushRegion(*device, size);
+            system.Host1x().MemoryManager().ReadBlock(*device, bytes.data(), size);
+            const std::string path = fmt::format("{}/scanout-{}-device-{:x}.bin",
+                                                 std::getenv("EDEN_NX2_FRAME_CAPTURE"),
+                                                 m_presents, *device);
+            if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), file);
+                std::fclose(file);
+            }
+            const auto nonzero = std::count_if(bytes.begin(), bytes.end(),
+                                               [](u8 byte) { return byte != 0; });
+            LOG_INFO(Service, "nx2: vi2 scanout dump present {} image {} at {:#x} size {:#x} "
+                     "nonzero {}", m_presents, image_id, *device, size, nonzero);
+        }
         if (m_presents <= 4) {
-            LOG_INFO(Service, "nx2:vi2 composite image {} layout {}x{}, crop {}x{}",
-                     image_id, layout.width, layout.height, crop_width, crop_height);
+            LOG_INFO(Service, "nx2:vi2 composite image {} layout {}x{}, crop {}x{}, pitch {:#x}, "
+                     "memory {:#x}, device {:#x}",
+                     image_id, layout.width, layout.height, crop_width, crop_height, layout.pitch,
+                     address, *device);
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
@@ -961,7 +1054,7 @@ private:
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
-            .native_tiling = true,
+            .native_tiling = !linear_scanout,
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -979,7 +1072,12 @@ private:
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        static const u64 interval = [] {
+            const char* value = std::getenv("EDEN_NX2_FRAME_CAPTURE_INTERVAL");
+            const u64 parsed = value ? std::strtoull(value, nullptr, 10) : 120;
+            return parsed ? parsed : 120;
+        }();
+        if (directory == nullptr || ((m_presents - 1) % interval) != 0 || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
@@ -1149,8 +1247,7 @@ private:
 // - 109(A: one compressed frame, u64 pts in us, u8 end of stream): submit input; reply a u64.
 // - 213(): the next finished frame (16 words): u32 image id, u32 width, u32 height, u32 width,
 //   u32 height, u32 colour space, u64 pts, u8 end of stream.
-// Frames are not decoded yet: each submitted frame completes at once into the next free output
-// image, so movies run to their end (with no picture) instead of stalling.
+// H.264 Annex B input is decoded into registered native images before output is reported.
 class INx2VideoSession final : public ServiceFramework<INx2VideoSession> {
 public:
     explicit INx2VideoSession(Core::System& system_, std::shared_ptr<Nx2NativeObjects> objects_,
@@ -1175,16 +1272,13 @@ public:
     }
 
     ~INx2VideoSession() override {
-        // The ready timer runs on the HostTiming thread: clear its event under its lock first.
-        {
-            std::scoped_lock lk{m_ready->mutex};
-            m_ready->event = nullptr;
-        }
-        if (m_ready_timer) {
-            system.CoreTiming().UnscheduleEvent(m_ready_timer);
-        }
         if (m_event != nullptr) {
             m_context.CloseEvent(m_event);
+        }
+        if (m_nv_module) {
+            for (const auto& [image, fence] : m_fences) {
+                m_nv_module->GetContainer().GetSyncpointManager().FreeSyncpoint(fence.id);
+            }
         }
     }
 
@@ -1194,6 +1288,15 @@ private:
         u64 pts;
         bool end;
     };
+
+    static void RequireVideo(bool condition, std::string_view message) {
+        if (!condition) {
+            LOG_CRITICAL(Service, "Native video unsupported/error: {}", message);
+            std::fprintf(stderr, "Native video unsupported/error: %.*s\n",
+                         static_cast<int>(message.size()), message.data());
+            std::abort();
+        }
+    }
 
     void Log(HLERequestContext& ctx, std::string_view what) {
         if (m_logged++ < 64) {
@@ -1220,6 +1323,16 @@ private:
         m_width = w[5];
         m_height = w[6];
         Log(ctx, "configure");
+        RequireVideo((w[4] & 0xFFFF) == 4, "unsupported codec configuration");
+        RequireVideo(m_decoder.ConfigureH264(ctx.ReadBuffer()), "H.264 configuration failed");
+        if (const char* directory = std::getenv("EDEN_NX2_VIDEO_DIAG")) {
+            const auto bytes = ctx.ReadBuffer();
+            const auto path = fmt::format("{}/video-config.bin", directory);
+            if (auto* file = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), file);
+                std::fclose(file);
+            }
+        }
         TipcReplyWords(ctx, {});
     }
 
@@ -1227,27 +1340,10 @@ private:
         Log(ctx, "event");
         if (m_event == nullptr) {
             m_event = m_context.CreateEvent(fmt::format("{}:Ready", GetServiceName()));
-            // Ready for input at all times (frames complete as they are submitted). The client
-            // attaches it auto-clearing, so one signal is consumed by the first wait: re-signal
-            // every 4 ms; a spurious wake only makes it check again.
-            {
-                std::scoped_lock lk{m_ready->mutex};
-                m_ready->event = m_event;
-            }
-            m_ready_timer = Core::Timing::CreateEvent(
-                "nx2:vdec ready",
-                [ready = m_ready, &kernel = system.Kernel()](
-                    s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
-                    std::scoped_lock lk{ready->mutex};
-                    if (ready->event != nullptr) {
-                        ready->event->Signal(kernel);
-                    }
-                    return std::nullopt;
-                });
-            constexpr std::chrono::nanoseconds ReadyInterval{std::chrono::milliseconds{4}};
-            system.CoreTiming().ScheduleLoopingEvent(ReadyInterval, ReadyInterval, m_ready_timer);
         }
-        m_event->Signal(system.Kernel());
+        if (!m_free.empty()) {
+            m_event->Signal(system.Kernel());
+        }
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push(ResultSuccess);
         rb.PushCopyObjects(ctx, m_event->GetReadableEvent());
@@ -1255,46 +1351,153 @@ private:
 
     void RegisterBuffer(HLERequestContext& ctx) {
         Log(ctx, "register output");
-        GiveBack(ctx.CommandBuffer()[2]);
-        TipcReplyWords(ctx, {0, 0, 0, 0});
+        const u32 image = ctx.CommandBuffer()[2];
+        if (!m_nv_module) {
+            m_nv_module = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", true)->GetModule();
+        }
+        auto& allocator = m_nv_module->GetContainer().GetSyncpointManager();
+        if (m_fences.contains(image)) {
+            LOG_CRITICAL(Service, "Native video image registered twice");
+            std::abort();
+        }
+        const u32 id = allocator.AllocateSyncpoint(false);
+        const u32 value = allocator.IncrementSyncpointMaxExt(id, 1);
+        m_fences.emplace(image, Nvidia::NvFence{id, value});
+        GiveBack(ctx, image);
+        TipcReplyWords(ctx, {~id, 0, value, 0});
     }
 
     void ReleaseBuffer(HLERequestContext& ctx) {
         Log(ctx, "release output");
-        GiveBack(ctx.CommandBuffer()[2]);
-        TipcReplyWords(ctx, {0, 0, 0, 0});
+        const auto* w = ctx.CommandBuffer();
+        if (w[4] != 0 || w[6] != 0 || w[7] != 0) {
+            const u32 consumer = ~w[4];
+            RequireVideo(consumer < 192 && static_cast<u8>(w[5]) <= 1 && w[7] == 0,
+                         "unsupported decoder consumer fence");
+            system.Host1x().GetSyncpointManager().WaitGuest(consumer, w[6]);
+        }
+        const u32 image = ctx.CommandBuffer()[2];
+        const auto it = m_fences.find(image);
+        if (it == m_fences.end()) {
+            LOG_CRITICAL(Service, "Unknown native video release image {}", image);
+            std::abort();
+        }
+        auto& fence = it->second;
+        fence.value = m_nv_module->GetContainer().GetSyncpointManager().IncrementSyncpointMaxExt(fence.id, 1);
+        GiveBack(ctx, image);
+        TipcReplyWords(ctx, {~fence.id, 0, fence.value, 0});
     }
 
     void UnregisterBuffer(HLERequestContext& ctx) {
         Log(ctx, "unregister output");
         std::erase(m_free, ctx.CommandBuffer()[2]);
+        if (auto it = m_fences.find(ctx.CommandBuffer()[2]); it != m_fences.end()) {
+            m_nv_module->GetContainer().GetSyncpointManager().FreeSyncpoint(it->second.id);
+            m_fences.erase(it);
+        }
         TipcReplyWords(ctx, {});
     }
 
     // An output image is free again: a frame waiting for one completes into it.
-    void GiveBack(u32 image) {
-        if (!m_waiting.empty()) {
-            m_outputs.push_back({image, m_waiting.front().pts, m_waiting.front().end});
-            m_waiting.pop_front();
-            return;
-        }
+    void GiveBack(HLERequestContext& ctx, u32 image) {
+        RequireVideo(std::find(m_free.begin(), m_free.end(), image) == m_free.end(),
+                     "image returned twice");
         m_free.push_back(image);
+        CompleteFrames(ctx);
+    }
+
+    void CompleteFrames(HLERequestContext& ctx) {
+        while (!m_waiting.empty() && !m_free.empty()) {
+            const u32 image_id = m_free.front();
+            auto& frame = m_waiting.front();
+            Nx2ImageLayout layout;
+            u64 address;
+            {
+                std::scoped_lock lk{m_objects->mutex};
+                const auto image = m_objects->images.find(image_id);
+                RequireVideo(image != m_objects->images.end(), "unknown decoder image");
+                RequireVideo(image->second.preference[1] == 5 && image->second.count == 1,
+                             "unsupported decoder output layout");
+                layout = Nx2CalculateImageLayout(image->second.preference.data());
+                const auto memory = m_objects->memories.find(image->second.memory);
+                RequireVideo(memory != m_objects->memories.end() && memory->second.address != 0 &&
+                               memory->second.size >= layout.size,
+                             "decoder output has no backing");
+                address = memory->second.address;
+            }
+            RequireVideo(frame.width == layout.width && frame.height == layout.height &&
+                           layout.block_height_log2 >= 3 && layout.pitch == u64{frame.width} * 4,
+                         "decoder frame/layout mismatch");
+            std::vector<u8> tiled(layout.size);
+            Tegra::Texture::SwizzleTexture(tiled, frame.rgba, 4, frame.width, frame.height, 1,
+                                          layout.block_height_log2 - 3, 0, 1, true);
+            RequireVideo(ctx.GetMemory().WriteBlock(address, tiled.data(), tiled.size()),
+                         "decoder output write failed");
+            if (m_completed++ < 8) {
+                LOG_INFO(Service, "Native video decoded image={} {}x{} pts={} address={:#x}",
+                         image_id, frame.width, frame.height, frame.pts, address);
+            }
+            m_outputs.push_back({image_id, static_cast<u64>(frame.pts),
+                                 m_end_frame_pts && frame.pts == *m_end_frame_pts});
+            const auto& fence = m_fences.at(image_id);
+            system.Host1x().GetSyncpointManager().IncrementGuest(fence.id);
+            system.Host1x().GetSyncpointManager().IncrementHost(fence.id);
+            m_waiting.pop_front();
+            m_free.pop_front();
+        }
+        if (m_event && m_free.empty()) {
+            m_event->Clear(system.Kernel());
+        } else if (m_event) {
+            m_event->Signal(system.Kernel());
+        }
     }
 
     void SubmitInput(HLERequestContext& ctx) {
+        if (m_free.empty()) {
+            // main+0xab9e7c handles this retry result before general codec errors.
+            // Do not consume a packet or advance its submission ID without output capacity.
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw<u32>(0x1c266f);
+            return;
+        }
         const auto* w = ctx.CommandBuffer();
         // Words 2-4 are the A descriptor of the compressed frame.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
         const bool end = (w[7] & 0xFF) != 0;
         Log(ctx, "submit");
-        if (!m_free.empty()) {
-            m_outputs.push_back({m_free.front(), pts, end});
-            m_free.pop_front();
-        } else {
-            m_waiting.push_back({0, pts, end});
+        if (const char* directory = std::getenv("EDEN_NX2_VIDEO_DIAG");
+            directory && m_submitted < 8 && ctx.GetReadBufferSize() <= 1024 * 1024) {
+            const auto bytes = ctx.ReadBuffer();
+            const auto path = fmt::format("{}/video-packet-{}.bin", directory, m_submitted);
+            if (auto* file = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), file);
+                std::fclose(file);
+            }
         }
+        std::vector<Tegra::Host1x::NativeVideoFrame> frames;
+        RequireVideo(ctx.GetReadBufferSize() <= 16 * 1024 * 1024, "video packet too large");
+        RequireVideo(m_decoder.Decode(ctx.ReadBuffer(), static_cast<s64>(pts), end, frames),
+                     "H.264 decode failed");
+        if (end) {
+            if (!frames.empty()) {
+                m_end_frame_pts = frames.back().pts;
+            } else if (!m_waiting.empty()) {
+                m_end_frame_pts = m_waiting.back().pts;
+            } else if (!m_outputs.empty()) {
+                m_outputs.back().end = true;
+            } else {
+                RequireVideo(false, "end of stream without a pending output image");
+            }
+        }
+        if (m_waiting.size() + frames.size() > 8) {
+            RequireVideo(false, "decoder output queue exhausted; stopping instead of dropping frames");
+        }
+        for (auto& frame : frames) {
+            m_waiting.push_back(std::move(frame));
+        }
+        CompleteFrames(ctx);
         const u64 id = ++m_submitted;
-        if (m_event != nullptr) {
+        if (m_event != nullptr && !m_free.empty()) {
             m_event->Signal(system.Kernel());
         }
         TipcReplyWords(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
@@ -1302,6 +1505,10 @@ private:
 
     void GetOutputInfo(HLERequestContext& ctx) {
         Log(ctx, "output info");
+        if (std::getenv("EDEN_NX2_VIDEO_DIAG") && m_acquired++ < 8) {
+            LOG_INFO(Service, "Native video output request: queued={} waiting={} free={}",
+                     m_outputs.size(), m_waiting.size(), m_free.size());
+        }
         if (m_outputs.empty()) {
             // Nothing finished: the code the client's own Acquire uses for an empty ring.
             IPC::ResponseBuilder rb{ctx, 2};
@@ -1315,22 +1522,21 @@ private:
                              output.end ? 1U : 0U, 0, 0, 0, 0, 0, 0, 0});
     }
 
-    struct ReadyState {
-        std::mutex mutex;
-        Kernel::KEvent* event{};
-    };
-
     KernelHelpers::ServiceContext m_context;
     std::shared_ptr<Nx2NativeObjects> m_objects;
     Kernel::KEvent* m_event{};
-    std::shared_ptr<ReadyState> m_ready = std::make_shared<ReadyState>();
-    std::shared_ptr<Core::Timing::EventType> m_ready_timer;
     u32 m_width{};
     u32 m_height{};
     u64 m_submitted{};
     u32 m_logged{};
+    u32 m_acquired{};
+    u32 m_completed{};
+    Tegra::Host1x::NativeVideoDecoder m_decoder;
+    std::optional<s64> m_end_frame_pts;
+    std::shared_ptr<Nvidia::Module> m_nv_module;
+    std::map<u32, Nvidia::NvFence> m_fences;
     std::deque<u32> m_free;
-    std::deque<Output> m_waiting;
+    std::deque<Tegra::Host1x::NativeVideoFrame> m_waiting;
     std::deque<Output> m_outputs;
 };
 
@@ -1370,6 +1576,7 @@ public:
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
             {601, &INx2GraphicsSystemSession::Stub, "CameraInitialize (guessed)"},
             {602, &INx2GraphicsSystemSession::OpenCameraSession, "OpenCameraContext (guessed)"},
+            {1121, &INx2GraphicsSystemSession::OpenGpuTimeSession, "OpenGpuTimeSession"},
             {1201, &INx2GraphicsSystemSession::Stub, "ChatInitialize (guessed)"},
             {1202, &INx2GraphicsSystemSession::OpenChatSession, "OpenChatSession (guessed)"},
             // Same request as 429: nn::chat::gsv::CreateImagePool (GameChat camera images).
@@ -1414,6 +1621,10 @@ private:
     // nn::codec::video::detail::ipc::Initialize sends 901, 902, 1001, 1002. 902 and 1002 return
     // a session handle at word 3 and the result at word 4; left to the auto stub, the handle was 0
     // and InitializeVp9Decoder failed with 2001-0114 (title 1 aborts when a movie starts).
+    void OpenGpuTimeSession(HLERequestContext& ctx) {
+        ReturnRawSession(system, ctx, std::make_shared<INx2GpuTimeSession>(system));
+    }
+
     void OpenVideoSession(HLERequestContext& ctx) {
         const bool second = ctx.GetCommand() == 1002;
         LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC {}, returning a video decoder session",
@@ -1673,7 +1884,10 @@ private:
         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
         image.size = Nx2CalculateImageLayout(w + 2).size;
         LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
-                 w[19], w[18], image.size, id);
+                  w[19], w[18], image.size, id);
+        if (std::getenv("EDEN_NX2_VIDEO_DIAG")) {
+            LOG_INFO(Service, "Native image preference: {:08x}", fmt::join(image.preference, " "));
+        }
         TipcReplyWords(ctx, {id});
     }
 
@@ -1705,6 +1919,7 @@ private:
         std::array<u32, 16> preference{};
         u64 image_offset = 0;
         u64 memory_address = 0;
+        u64 memory_size = 0;
         {
             std::scoped_lock lk{m_objects->mutex};
             auto it = m_objects->images.upper_bound(handle);
@@ -1714,14 +1929,38 @@ private:
                     preference = it->second.preference;
                     image_offset = (handle - it->first) * it->second.size;
                     if (const auto memory = m_objects->memories.find(it->second.memory);
-                        memory != m_objects->memories.end()) {
+                         memory != m_objects->memories.end()) {
                         memory_address = memory->second.address;
+                        memory_size = memory->second.size;
                     }
                 }
             }
         }
         const auto layout = Nx2CalculateImageLayout(preference.data());
         const u64 gpu_address = ctx.GetCommand() == 426 ? memory_address + image_offset : 0;
+        if (ctx.GetCommand() == 426) {
+            if (!memory_address || image_offset > memory_size ||
+                layout.size > memory_size - image_offset || gpu_address < memory_address ||
+                !ctx.GetMemory().IsValidVirtualAddressRange(gpu_address, layout.size)) {
+                std::fprintf(stderr, "Native image mapping has invalid CPU backing\n");
+                std::abort();
+            }
+            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+            if (!registry.ContainsMappingRange(gpu_address, 0, layout.size)) {
+                // Decoder images bound through114 have CPU backing but no gpu101 import.
+                if (preference[1] != 5) {
+                    std::fprintf(stderr, "Unsupported native image GPU import layout\n");
+                    std::abort();
+                }
+                registry.MapAt(gpu_address, gpu_address, layout.size);
+                if (!registry.ModifyKind(gpu_address, layout.size, 6)) {
+                    std::fprintf(stderr, "Native image GPU import did not commit\n");
+                    std::abort();
+                }
+                LOG_INFO(Service, "Native decoder image {} imported at GPU {:#x}+{:#x}",
+                         handle, gpu_address, layout.size);
+            }
+        }
         std::array<u32, 37> words{};
         words[0] = static_cast<u32>(gpu_address);
         words[1] = static_cast<u32>(gpu_address >> 32);

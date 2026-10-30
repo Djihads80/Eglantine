@@ -63,13 +63,29 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
                         Nx2Map(gpu_address, cpu_address, size);
                     },
                     [this](u64 gpu_address, u64 size) { Nx2Unmap(gpu_address, size); },
-                    [this](u64 cpu_address, u64 size) { Nx2Release(cpu_address, size); });
+                    [this](u64 cpu_address, u64 size) { Nx2Release(cpu_address, size); },
+                    [this](u64 address, u64 size, u8 kind) {
+                        if (!gmmu) {
+                            return false;
+                        }
+                        bool modified{};
+                        static_cast<void>(system.GPU().RunOnGpuThread([&] {
+                            modified = gmmu->ModifyKind(address, size, static_cast<Tegra::PTEKind>(kind));
+                        }));
+                        system.GPU().WaitForIdle();
+                        return modified;
+                    });
             }
             return result;
         }
         case 0xb:
             if (g_nx2_driver) {
                 return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
+            }
+            break;
+        case 0xc:
+            if (g_nx2_driver) {
+                return WrapFixed(this, &nvhost_as_gpu::ModifyMappingKind, input, output);
             }
             break;
         case 0x14:
@@ -127,9 +143,41 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
     // reuse its SMMU mapping.
     DAddr device_address{};
     bool heap = false;
+    bool shared = false;
+    bool reused = false;
     if (const auto it = nx2_device_ranges.find({cpu_address, size}); it != nx2_device_ranges.end()) {
         device_address = it->second.address;
         heap = it->second.heap;
+        shared = it->second.shared;
+        reused = true;
+    } else {
+        // The same backing is registered under several CPU ranges (the range a memory object
+        // reports and the ranges each GPU mapping used). An existing mapping that covers this
+        // request must be reused, so a surface is reachable at one device address.
+        for (const auto& [range, mapped] : nx2_device_ranges) {
+            const u64 offset = cpu_address - range.first;
+            if (cpu_address >= range.first && offset <= range.second &&
+                size <= range.second - offset) {
+                device_address = mapped.address + offset;
+                heap = mapped.heap;
+                shared = true;
+                reused = true;
+                break;
+            }
+        }
+    }
+    if (!reused) {
+        // Another address space may already back this CPU range: reuse its SMMU identity so a
+        // surface written through one address space is the same memory in every other.
+        if (const auto existing =
+                Nx2GpuMemoryRegistry::Get().DeviceAddressOfRange(cpu_address, size)) {
+            device_address = *existing;
+            shared = true;
+            reused = true;
+        }
+    }
+    if (reused) {
+        // Already backed by an address space mapping.
     } else if (session->has_preallocated_area && session->mapper->IsInBounds(cpu_address, size)) {
         device_address = session->mapper->Map(cpu_address, size);
         heap = true;
@@ -143,11 +191,41 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
         }
         smmu.Map(device_address, cpu_address, size, session->asid, true);
     }
-    nx2_device_ranges[{cpu_address, size}] = {device_address, heap};
-    Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
+    nx2_device_ranges[{cpu_address, size}] = {device_address, heap, shared};
+    if (!shared) {
+        Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
+    }
+    LOG_INFO(Service_NVDRV, "Switch 2 GPU mapping {:#x}+{:#x} -> CPU {:#x}, device {:#x}{}",
+             gpu_address, size, cpu_address, device_address, reused ? " (reused)" : "");
     gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
     LOG_DEBUG(Service_NVDRV, "Switch 2 GPU mapping {:#x}+{:#x} -> CPU {:#x}", gpu_address, size,
               cpu_address);
+}
+
+NvResult nvhost_as_gpu::ModifyMappingKind(IoctlMappingModify& params) {
+    const u64 base = params.map_address;
+    const u64 offset = params.buffer_offset;
+    const u64 size = params.buffer_size;
+    const s16 kind = params.incompressible_kind;
+    LOG_INFO(Service_NVDRV, "Switch 2 mapping modify request base={:#x} offset={:#x} size={:#x} compressed={} fallback={}",
+             base, offset, size, static_cast<s16>(params.compression_kind), kind);
+    // No compression resources are allocated: use only the requested incompressible fallback.
+    if (kind != 0 && kind != 1 && kind != 3 && kind != 6 && kind != 8) {
+        return NvResult::NotSupported;
+    }
+    if (!gmmu || size == 0 || base + offset < base ||
+        ((base | offset | size) & 0xfff) != 0 ||
+        !Nx2GpuMemoryRegistry::Get().ContainsMappingRange(base, offset, size)) {
+        return NvResult::BadParameter;
+    }
+    bool modified = false;
+    static_cast<void>(system.GPU().RunOnGpuThread([&, address = base + offset] {
+        modified = gmmu->ModifyKind(address, size, static_cast<Tegra::PTEKind>(kind));
+    }));
+    system.GPU().WaitForIdle();
+    LOG_INFO(Service_NVDRV, "Switch 2 mapping modify base={:#x} offset={:#x} size={:#x} kind={} committed={}",
+             base, offset, size, kind, modified);
+    return modified ? NvResult::Success : NvResult::BadParameter;
 }
 
 void nvhost_as_gpu::Nx2Unmap(u64 gpu_address, u64 size) {
@@ -173,6 +251,9 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
     auto& smmu = system.Host1x().MemoryManager();
     // Queued after the GPU unmaps of the range, so the GPU thread is done with it.
     system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
+        if (range.shared) {
+            return; // another address space owns this SMMU range
+        }
         if (range.heap) {
             if (mapper != nullptr) {
                 mapper->Unmap(cpu_address, size);

@@ -188,6 +188,10 @@ std::optional<u64> GenericEnvironment::Analyze() {
     return Common::CityHash64(reinterpret_cast<const char*>(code.data()), *size);
 }
 
+bool GenericEnvironment::RequiresRasterizerClip() const {
+    return Shader::Ampere::HasNativeAddressMap(code) && sph.common0.reserved1 == 3;
+}
+
 void GenericEnvironment::SetCachedSize(size_t size_bytes) {
     if (native_source_size) {
         if (size_bytes != CachedSizeBytes()) {
@@ -354,7 +358,11 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
-    auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    auto lowered = Shader::Ampere::LowerToMaxwell(native, {
+        .code_address = program_base + native_header_size,
+        .single_invocation_geometry = source_header_size && sph.common0.shader_type == 4 &&
+                                       sph.common2.threads_per_input_primitive == 1,
+        .allow_rasterizer_clip = source_header_size && sph.common0.shader_type == 1});
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
     if (static const std::string reject_list = [] {
@@ -377,6 +385,20 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
             std::ofstream dump(path, std::ios::binary);
             dump.write(reinterpret_cast<const char*>(native.data()),
                        native.size() * sizeof(Shader::Ampere::Instruction));
+        }
+        if (!lowered && source_header_size && sph.common0.shader_type == 4) {
+            const auto mapped_path = folder / fmt::format("{:016x}-gfx-{:x}.mapped.bin",
+                Shader::Ampere::NativeProgramKey(native), program_base);
+            if (!std::filesystem::exists(mapped_path)) {
+                // Read-only evidence for ATEXIT handlers following the first EXIT.
+                std::ofstream mapped(mapped_path, std::ios::binary);
+                std::array<u8, 0x1000> bytes{};
+                for (u32 offset = 0; offset < 0x10000; offset += bytes.size()) {
+                    if (!gpu_memory->IsFullyMappedRange(program_base + offset, bytes.size())) break;
+                    gpu_memory->ReadBlock(program_base + offset, bytes.data(), bytes.size());
+                    mapped.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                }
+            }
         }
     }
     if (!lowered) {
@@ -445,6 +467,8 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     }
     native_source_size = native_header_size + lowered.source_size;
     code.resize(sizeof(sph) / sizeof(u64));
+    // Private converted-header metadata, retained by existing disk-cache serialization.
+    sph.common0.reserved1.Assign(lowered.requires_rasterizer_clip ? 3 : 0);
     std::memcpy(code.data(), &sph, sizeof(sph));
     for (const u64 instruction : lowered.instructions) {
         if ((code.size() * sizeof(u64)) % 32 == 0) {
@@ -471,11 +495,18 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     initial_offset = sizeof(sph);
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     if (maxwell3d->GetNativeMacroEngine().native_turing) {
-        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
+        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel &&
+            program != Maxwell::ShaderType::Geometry) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
+        if (program == Maxwell::ShaderType::Geometry &&
+            (sph.common0.shader_type != 4 || !sph.common4.max_output_vertices ||
+             sph.common0.stream_out_mask != 1 || sph.common2.threads_per_input_primitive != 1)) {
+            throw Shader::RuntimeError("Unsupported native geometry header");
+        }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
-            const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : 0;
+            const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 :
+                                     program == Maxwell::ShaderType::Geometry ? 3 : 0;
             const auto& table = maxwell3d->state.shader_stages[native_stage].const_buffers[1];
             if (table.enabled && table.size && table.size <= Tegra::Engines::Maxwell3D::Regs::MaxConstBufferSize) {
                 std::vector<u8> bytes(table.size);

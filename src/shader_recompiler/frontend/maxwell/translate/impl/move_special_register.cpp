@@ -138,10 +138,8 @@ enum class SpecialRegister : u64 {
     case SpecialRegister::SR_CTAID_Z:
         return ir.WorkgroupIdZ();
     case SpecialRegister::SR_WSCALEFACTOR_XY:
-        LOG_WARNING(Shader, "(STUBBED) SR_WSCALEFACTOR_XY");
         return ir.SR_WScaleFactorXY();
     case SpecialRegister::SR_WSCALEFACTOR_Z:
-        LOG_WARNING(Shader, "(STUBBED) SR_WSCALEFACTOR_Z");
         return ir.SR_WScaleFactorZ();
     case SpecialRegister::SR_LANEID:
         return ir.LaneId();

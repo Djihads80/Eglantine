@@ -387,6 +387,7 @@ private:
         LOG_DEBUG(Service_NIFM, "(STUBBED) called");
 
         if (state == RequestState::NotSubmitted) {
+            request_failed = false;
             UpdateState(RequestState::OnHold);
         }
 
@@ -434,13 +435,15 @@ private:
                                         !Settings::values.airplane_mode.GetValue();
             switch (state) {
             case RequestState::NotSubmitted:
+                // RequestState::Invalid shares this value on hardware, so a request that ended
+                // without a connection must be reported through its own flag.
+                if (request_failed) {
+                    return ResultNetworkCommunicationDisabled;
+                }
                 return has_connection ? ResultSuccess : ResultNetworkCommunicationDisabled;
             case RequestState::OnHold:
-                if (has_connection) {
-                    UpdateState(RequestState::Accepted);
-                } else {
-                    UpdateState(RequestState::Invalid);
-                }
+                request_failed = !has_connection;
+                CompleteState(has_connection ? RequestState::Accepted : RequestState::Invalid);
                 return ResultPendingConnection;
             case RequestState::Accepted:
             default:
@@ -461,7 +464,14 @@ private:
     }
 
     void Cancel(HLERequestContext& ctx) {
-        LOG_WARNING(Service_NIFM, "(STUBBED) called");
+        LOG_INFO(Service_NIFM, "called, state={}", static_cast<u32>(state));
+
+        if (state == RequestState::OnHold) {
+            // Cancelling an in-flight request terminates it, and the caller waits on the
+            // completion event before it reads the result.
+            request_failed = true;
+            CompleteState(RequestState::Invalid);
+        }
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
@@ -489,14 +499,22 @@ private:
     }
 
     void UpdateState(RequestState new_state) {
-        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
+        LOG_INFO(Service_NIFM, "request state {} -> {}", static_cast<u32>(state),
+                 static_cast<u32>(new_state));
         state = new_state;
         event1->Signal(system.Kernel());
+    }
+
+    /// A request that reached a terminal state also signals its completion event.
+    void CompleteState(RequestState new_state) {
+        UpdateState(new_state);
+        event2->Signal(system.Kernel());
     }
 
     KernelHelpers::ServiceContext service_context;
 
     RequestState state;
+    bool request_failed{};
 
     Kernel::KEvent* event1;
     Kernel::KEvent* event2;

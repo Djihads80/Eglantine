@@ -133,6 +133,8 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     attachment0_dual_source_blend.Assign(ComputeAttachment0DualSourceBlend(regs) ? 1 : 0);
 
     raw2 = 0;
+    geometry_guardband_xy.Assign(static_cast<u32>(regs.viewport_clip_control.geometry_guardband.Value()));
+    geometry_guardband_z.Assign(static_cast<u32>(regs.viewport_clip_control.geometry_guardband_z.Value()));
 
     const auto test_func =
         regs.alpha_test_enabled != 0 ? regs.alpha_test_func : Maxwell::ComparisonOp::Always_GL;

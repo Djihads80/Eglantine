@@ -353,20 +353,28 @@ public:
         Kernel::KProcess* process = context->GetProcess();
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
-        // Read NRR.
-        NrrHeader header{};
-        process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+        // Switch 2 uses 0x180-byte signature/key fields, moving the hash metadata.
+        const auto read_hashes = [&]<typename Header>() -> Result {
+            R_UNLESS(nrr_size >= sizeof(Header), RO::ResultInvalidNrr);
+            Header header{};
+            process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+            R_UNLESS(header.IsHashRangeValid(nrr_size), RO::ResultInvalidNrr);
 
-        // Set NRR info.
+            nrr_info->hashes.resize(header.GetNumHashes());
+            process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
+                                           nrr_info->hashes.data(),
+                                           sizeof(Sha256Hash) * header.GetNumHashes());
+            R_SUCCEED();
+        };
+        if (process->IsSwitch2()) {
+            R_TRY(read_hashes.template operator()<NrrHeaderNx2>());
+        } else {
+            R_TRY(read_hashes.template operator()<NrrHeader>());
+        }
+
         context->SetNrrInfoInUse(nrr_info, true);
         nrr_info->nrr_heap_address = nrr_address;
         nrr_info->nrr_heap_size = nrr_size;
-
-        // Read NRR hash list.
-        nrr_info->hashes.resize(header.GetNumHashes());
-        process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
-                                       nrr_info->hashes.data(),
-                                       sizeof(Sha256Hash) * header.GetNumHashes());
 
         R_SUCCEED();
     }

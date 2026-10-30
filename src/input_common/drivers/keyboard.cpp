@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+
 #include "common/param_package.h"
 #include "common/settings_input.h"
 #include "input_common/drivers/keyboard.h"
@@ -34,11 +36,22 @@ Keyboard::Keyboard(std::string input_engine_) : InputEngine(std::move(input_engi
     PreSetController(keyboard_modifier_identifier);
 }
 
+namespace {
+void TraceKey(const char* action, int key_code) {
+    static const bool enabled = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+    if (enabled) {
+        LOG_INFO(Input, "keyboard {} code={}", action, key_code);
+    }
+}
+} // Anonymous namespace
+
 void Keyboard::PressKey(int key_code) {
+    TraceKey("press", key_code);
     SetButton(key_identifier, key_code, true);
 }
 
 void Keyboard::ReleaseKey(int key_code) {
+    TraceKey("release", key_code);
     SetButton(key_identifier, key_code, false);
 }
 

@@ -91,8 +91,13 @@ void EmulatedController::ReloadFromSettings() {
     const auto player_index = Service::HID::NpadIdTypeToIndex(npad_id_type);
     const auto& player = Settings::values.players.GetValue()[player_index];
 
+    static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
     for (std::size_t index = 0; index < player.buttons.size(); ++index) {
         button_params[index] = Common::ParamPackage(player.buttons[index]);
+        if (input_trace && index == static_cast<std::size_t>(Settings::NativeButton::A)) {
+            LOG_INFO(Service_HID, "player {} A binding: {}", player_index,
+                     button_params[index].Serialize());
+        }
     }
     for (std::size_t index = 0; index < player.analogs.size(); ++index) {
         stick_params[index] = Common::ParamPackage(player.analogs[index]);
@@ -338,8 +343,12 @@ void EmulatedController::LoadVirtualGamepadParams() {
 void EmulatedController::ReloadInput() {
     // If you load any device here add the equivalent to the UnloadInput() function
     LoadDevices();
+    static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
     for (std::size_t index = 0; index < button_devices.size(); ++index) {
         if (!button_devices[index]) {
+            if (input_trace) {
+                LOG_INFO(Service_HID, "button device {} unresolved (empty binding)", index);
+            }
             continue;
         }
         const auto uuid = Common::UUID{button_params[index].Get("guid", "")};
@@ -767,6 +776,13 @@ void EmulatedController::SetButton(const Common::Input::CallbackStatus& callback
 
     bool value_changed = false;
     const auto new_status = TransformToButton(callback);
+    {
+        static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+        if (input_trace && new_status.value) {
+            LOG_INFO(Service_HID, "emulated button index={} value={} uuid={}", index,
+                     new_status.value, uuid.RawString());
+        }
+    }
     auto& current_status = controller.button_values[index];
 
     // Only read button values that have the same uuid or are pressed once
@@ -828,6 +844,14 @@ void EmulatedController::SetButton(const Common::Input::CallbackStatus& callback
     case Settings::NativeButton::A:
         controller.npad_button_state.a.Assign(current_status.value);
         controller.debug_pad_button_state.a.Assign(current_status.value);
+        {
+            static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+            if (input_trace) {
+                LOG_INFO(Service_HID, "apply A npad_id={} value={} raw={:#x}",
+                         static_cast<u32>(npad_id_type), current_status.value,
+                         static_cast<u64>(controller.npad_button_state.raw));
+            }
+        }
         break;
     case Settings::NativeButton::B:
         controller.npad_button_state.b.Assign(current_status.value);

@@ -17,8 +17,18 @@ add_executable(tests
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/core_timing.cpp
+    core/nx2_gpu_memory.cpp
+    core/nrr.cpp
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
+    video_core/guardband.cpp
+    video_core/ampere_gather.cpp
+    video_core/ampere_sample.cpp
+    video_core/ampere_geometry.cpp
+    video_core/native_clip.cpp
+    video_core/native_qmd.cpp
+    video_core/ampere_tensor.cpp
+    video_core/native_video.cpp
     input_common/calibration_configuration_job.cpp
 )
 

@@ -73,6 +73,18 @@ public:
     static_assert(sizeof(VaRegion) == 0x18);
 
 private:
+    struct IoctlMappingModify {
+        s16_le compression_kind;
+        s16_le incompressible_kind;
+        u32_le reserved;
+        u64_le buffer_offset;
+        u64_le buffer_size;
+        u64_le map_address;
+    };
+    static_assert(sizeof(IoctlMappingModify) == 0x20);
+
+    NvResult ModifyMappingKind(IoctlMappingModify& params);
+
     struct IoctlAllocAsEx {
         u32_le flags{}; // usually passes 1
         s32_le as_fd{}; // ignored; passes 0
@@ -237,7 +249,8 @@ private:
     NvCore::SessionId nx2_session{};
     struct Nx2DeviceRange {
         DAddr address;
-        bool heap; ///< Mapped through the session's heap mapper (else an SMMU allocation)
+        bool heap;   ///< Mapped through the session's heap mapper (else an SMMU allocation)
+        bool shared; ///< Borrows an existing backing range; this entry must not free it
     };
     std::map<std::pair<u64, u64>, Nx2DeviceRange> nx2_device_ranges;
     void Nx2Release(u64 cpu_address, u64 size);

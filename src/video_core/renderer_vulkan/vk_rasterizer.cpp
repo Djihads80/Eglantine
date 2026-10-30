@@ -300,8 +300,33 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         draw_func();
     }
     submitted = true;
+    static const bool draw_statistics = std::getenv("EDEN_NX2_SCANOUT_DIAG") != nullptr;
+    if (draw_statistics) {
+        static u64 submitted_draws{};
+        if (++submitted_draws == 1 || submitted_draws % 600 == 0) {
+            LOG_INFO(HW_GPU, "Native draw statistics: {} submitted draws", submitted_draws);
+        }
+    }
+    static const bool rt_trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr;
+    if (rt_trace) {
+        static std::set<u64> seen;
+        static u64 draws{};
+        const u64 rt_address = maxwell3d->regs.rt[0].Address();
+        ++draws;
+        if (seen.insert(rt_address).second) {
+            const auto cpu = gpu_memory->GpuToCpuAddress(rt_address, 0x1000);
+            LOG_INFO(HW_GPU, "Native draw target {:#x} device {} first seen on draw {}",
+                     rt_address, cpu ? fmt::format("{:#x}", *cpu) : "none", draws);
+        }
+    }
     static u32 native_capture_count{};
+    static u64 native_capture_draw{};
+    static const u64 native_capture_skip = [] {
+        const char* value = std::getenv("EDEN_NATIVE_DRAW_CAPTURE_SKIP");
+        return value ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
+        native_capture_draw++ >= native_capture_skip &&
         native_capture_count < 16 && [] {
             static const bool capture = std::getenv("EDEN_NATIVE_DRAW_CAPTURE") != nullptr;
             return capture;
@@ -321,7 +346,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         const auto& regs = maxwell3d->regs;
         const auto& rt = regs.rt[0];
         const size_t size = static_cast<size_t>(rt.array_pitch) * 4;
-        if (size && size <= 16 * 1024 * 1024) {
+        if (size && size <= 64 * 1024 * 1024) {
             if (const auto address = gpu_memory->GpuToCpuAddress(rt.Address(), size)) {
                 LOG_INFO(HW_GPU, "Native draw {} render target physical address={:#x}", capture, *address);
                 texture_cache.DownloadMemory(*address, size);
@@ -330,14 +355,24 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         }
         std::ofstream registers(prefix + "-registers.bin", std::ios::binary);
         registers.write(reinterpret_cast<const char*>(&regs), sizeof(regs));
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        LOG_INFO(HW_GPU, "Native draw capture {} indexed={} base_vertex={} first={} count={} index_address={:#x} index_format={}",
+                 capture, is_indexed, draw_state.base_index, draw_state.index_buffer.first,
+                 draw_state.index_buffer.count, draw_state.index_buffer.StartAddress(),
+                 static_cast<u32>(draw_state.index_buffer.format));
+        if (is_indexed) {
+            dump("-indices", draw_state.index_buffer.IndexStart(),
+                 std::min<size_t>(draw_state.index_buffer.count *
+                                  draw_state.index_buffer.FormatSizeInBytes(), 512));
+        }
         for (size_t stream = 0; stream < 4; ++stream) {
             if (regs.vertex_streams[stream].IsEnabled())
-                dump(fmt::format("-vertex-{}", stream), regs.vertex_streams[stream].Address(), 128);
+                dump(fmt::format("-vertex-{}", stream), regs.vertex_streams[stream].Address(), 512);
         }
         for (size_t stage : {0U, 4U}) {
-            for (size_t bank : {2U, 3U}) {
+            for (size_t bank : {2U, 3U, 6U, 7U, 8U, 9U, 10U, 11U}) {
                 const auto& cb = maxwell3d->state.shader_stages[stage].const_buffers[bank];
-                if (cb.enabled) dump(fmt::format("-cbuf-{}-{}", stage, bank), cb.address, std::min<size_t>(cb.size, 128));
+                if (cb.enabled) dump(fmt::format("-cbuf-{}-{}", stage, bank), cb.address, std::min<size_t>(cb.size, 0x10000));
             }
         }
     }

@@ -65,7 +65,7 @@ using VideoCommon::FileEnvironment;
 using VideoCommon::GenericEnvironment;
 using VideoCommon::GraphicsEnvironment;
 
-constexpr u32 CACHE_VERSION = 18;
+constexpr u32 CACHE_VERSION = 20;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
 constexpr std::array<char, 8> VULKAN_CACHE_MAGIC_NUMBER{'y', 'u', 'z', 'u', 'v', 'k', 'c', 'h'};
@@ -161,6 +161,8 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
                                     const Shader::IR::Program* previous_program,
                                     const Vulkan::Device& device) {
     Shader::RuntimeInfo info;
+    info.geometry_guardband_xy = key.state.geometry_guardband_xy;
+    info.geometry_guardband_z = key.state.geometry_guardband_z;
     if (previous_program) {
         info.previous_stage_stores = previous_program->info.stores;
         info.previous_stage_legacy_stores_mapping = previous_program->info.legacy_stores_mapping;

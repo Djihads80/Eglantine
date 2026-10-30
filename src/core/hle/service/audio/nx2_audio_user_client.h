@@ -22,6 +22,7 @@ public:
         : ServiceFramework{system_, "nx2:aud:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
+            {1, &INx2AudioUserClient::GetAudioOutManager, "GetAudioOutManager"},
             {2, &INx2AudioUserClient::GetAudioRendererManager, "GetAudioRendererManager (guessed)"},
         };
         // clang-format on
@@ -29,6 +30,13 @@ public:
     }
 
 private:
+    void GetAudioOutManager(HLERequestContext& ctx) {
+        LOG_INFO(Service_Audio, "Switch 2 aud:u 1 returning IAudioOutManager");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IAudioOutManager>(ctx, system);
+    }
+
     void GetAudioRendererManager(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
         const u32 arg = rp.Pop<u32>();

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <set>
 #include <vector>
 #include <optional>
 #include <bit>
@@ -922,6 +923,32 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
     // TODO: Properly implement this
     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
+    static const bool scanout_diagnostics = std::getenv("EDEN_NX2_SCANOUT_DIAG") != nullptr;
+    if (scanout_diagnostics) {
+        static std::set<DAddr> reported;
+        if (reported.insert(cpu_addr).second) {
+            size_t overlapping{};
+            for (const auto& [slot, image] : slot_images) {
+                const DAddr start = image->cpu_addr;
+                const DAddr end = start + image->unswizzled_size_bytes;
+                if (start < cpu_addr + Core::Memory::YUZU_PAGESIZE && cpu_addr < end) {
+                    ++overlapping;
+                    LOG_INFO(HW_GPU, "Scanout diag: request {:#x} overlaps image {:#x}+{:#x} {}x{} "
+                             "format={}", cpu_addr, start, image->unswizzled_size_bytes,
+                             image->info.size.width, image->info.size.height, image->info.format);
+                }
+            }
+            size_t pages{};
+            for (const auto& [page, ids] : page_table) {
+                if (page == (cpu_addr >> YUZU_PAGEBITS)) {
+                    pages = ids.size();
+                }
+            }
+            LOG_INFO(HW_GPU, "Scanout diag: request {:#x} page present={} mappings={} images={} "
+                     "total_images={}", cpu_addr, it != page_table.end(), pages, overlapping,
+                     slot_images.size());
+        }
+    }
     if (it == page_table.end()) {
         return {};
     }
@@ -1744,6 +1771,16 @@ std::optional<DAddr> TextureCache<P>::ImageCpuAddress(GPUVAddr gpu_addr, size_t 
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
+    if (gpu_memory->UsesNativeTiling() && std::getenv("EDEN_NX2_VIDEO_DIAG")) {
+        static u32 reported{};
+        if (reported++ < 128) {
+            LOG_INFO(HW_GPU, "Native image allocation address={:#x} {}x{}x{} levels={} layers={} format={} block={}x{}x{} bytes={:#x}",
+                     gpu_addr, info.size.width, info.size.height, info.size.depth,
+                     info.resources.levels, info.resources.layers, static_cast<u32>(info.format),
+                     info.block.width, info.block.height, info.block.depth,
+                     CalculateGuestSizeInBytes(info));
+        }
+    }
     std::optional<DAddr> cpu_addr = ImageCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
     if (!cpu_addr) {
         const DAddr fake_addr = ~(1ULL << 40ULL) + virtual_invalid_space;

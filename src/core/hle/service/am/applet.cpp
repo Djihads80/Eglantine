@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator
 // Project// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+
 #include "core/core.h"
 #include "core/hle/service/am/applet.h"
 #include "core/hle/service/am/applet_manager.h"
@@ -68,6 +70,11 @@ void Applet::SetInteractibleLocked(bool pad_interactible, bool touch_interactibl
     const bool pad_enabled = pad_interactible && !exit_requested;
     const bool touch_enabled = touch_interactible && !exit_requested;
 
+    static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+    if (input_trace) {
+        LOG_INFO(Service_AM, "interactible applet={} pad={} touch={} exit_requested={}",
+                 static_cast<u32>(applet_id), pad_enabled, touch_enabled, exit_requested);
+    }
     LOG_DEBUG(Service_AM, "applet={} pad={} touch={} exit_requested={}",
               static_cast<u32>(applet_id), pad_enabled, touch_enabled, exit_requested);
 

@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstdlib>
+
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -205,7 +207,13 @@ Result ResourceManager::CreateAppletResource(u64 aruid) {
 
 Result ResourceManager::CreateAppletResourceImpl(u64 aruid) {
     std::scoped_lock lock{shared_mutex};
-    return applet_resource->CreateAppletResource(aruid);
+    const auto result = applet_resource->CreateAppletResource(aruid);
+    static const bool trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+    if (trace) {
+        LOG_INFO(Service_HID, "CreateAppletResourceImpl aruid={} result={:#x}", aruid,
+                 result.raw);
+    }
+    return result;
 }
 
 void ResourceManager::InitializeHandheldConfig() {
@@ -341,6 +349,10 @@ void ResourceManager::EnableSixAxisSensor(u64 aruid, bool is_enabled) {
 }
 
 void ResourceManager::EnablePadInput(u64 aruid, bool is_enabled) {
+    static const bool trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+    if (trace) {
+        LOG_INFO(Service_HID, "EnablePadInput aruid={} enabled={}", aruid, is_enabled);
+    }
     std::scoped_lock lock{shared_mutex};
     applet_resource->EnablePadInput(aruid, is_enabled);
 }

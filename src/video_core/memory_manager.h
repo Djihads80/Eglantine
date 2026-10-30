@@ -159,6 +159,7 @@ public:
     }
 
     PTEKind GetPageKind(GPUVAddr gpu_addr) const;
+    bool ModifyKind(GPUVAddr gpu_addr, size_t size, PTEKind kind);
 
     size_t GetMemoryLayoutSize(GPUVAddr gpu_addr,
                                size_t max_size = (std::numeric_limits<size_t>::max)()) const;

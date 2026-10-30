@@ -100,6 +100,9 @@ struct RuntimeInfo {
     std::optional<CompareFunction> alpha_test_func;
     float alpha_test_reference{};
 
+    u32 geometry_guardband_xy{};
+    u32 geometry_guardband_z{};
+
     /// Static Y negate value
     bool y_negate{};
     /// Use storage buffers instead of global pointers on GLASM

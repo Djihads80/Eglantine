@@ -52,6 +52,7 @@ public:
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
+    [[nodiscard]] bool RequiresRasterizerClip() const;
 
     [[nodiscard]] size_t CachedSizeWords() const noexcept;
 

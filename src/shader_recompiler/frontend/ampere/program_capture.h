@@ -11,6 +11,10 @@ public:
     static constexpr u32 MaximumInstructions = 65536;
 
     Result Observe(const Instruction& instruction, u32 index) {
+        if (index < prefix.size()) {
+            prefix[index] = instruction;
+            if (index + 1 == prefix.size()) atexit_target = StaticAtexitTarget(prefix);
+        }
         const u32 opcode = instruction.Bits(0, 12);
         if (opcode == 0x944 || opcode == 0x947 || opcode == 0x945) {
             const u64 raw = instruction.words[1] | (u64{instruction.words[2] & 0x3ffff} << 32);
@@ -35,6 +39,8 @@ public:
         }
         if (opcode == 0x949 || opcode == 0x958) computed_branch = true;
         if (computed_branch) return Result::Continue;
+        if (opcode == 0x94d && atexit_target && index * 16 < *atexit_target)
+            return Result::Continue;
         if (opcode == 0x94d && instruction.Bits(12, 4) == 7 && index >= last_forward_target) {
             if (!last_call_target) return Result::Complete;
             main_exited = true;
@@ -46,6 +52,8 @@ public:
     }
 
 private:
+    std::array<Instruction, 5> prefix{};
+    std::optional<u32> atexit_target;
     u32 last_call_target{};
     u32 last_forward_target{};
     bool main_exited{};
