@@ -17,6 +17,8 @@
 
 namespace AudioCore {
 constexpr u32 CurrentRevision = 15;
+/// Newest revision accepted: Switch 2 SDKs ask for 16 ("REv@"), run with revision 15's features.
+constexpr u32 MaxAcceptedRevision = 16;
 
 enum class SupportTags {
     CommandProcessingTimeEstimatorVersion4,
@@ -112,7 +114,7 @@ constexpr bool CheckFeatureSupported(SupportTags tag, u32 user_revision) {
 }
 
 constexpr bool CheckValidRevision(u32 user_revision) {
-    return GetRevisionNum(user_revision) <= CurrentRevision;
+    return GetRevisionNum(user_revision) <= MaxAcceptedRevision;
 };
 
 } // namespace AudioCore
