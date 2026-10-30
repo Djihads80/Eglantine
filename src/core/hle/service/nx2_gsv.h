@@ -997,7 +997,19 @@ private:
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
                       ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
+            // Only run a frame ahead while the GPU keeps up. With the previous frame still on the
+            // GPU here, the GPU is the limit and running ahead gains nothing; and Splatoon Raiders,
+            // which reuses its command memory as if the GPU were at most a frame behind, rewrote
+            // command lists Eden had not read yet (misread commands, then crashes, with a slow
+            // GPU). Wait for this frame too then.
+            const bool gpu_behind =
+                m_previous_fence_id < 192 &&
+                !system.Host1x().GetSyncpointManager().IsReadyGuest(m_previous_fence_id,
+                                                                    m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
+            if (gpu_behind) {
+                WaitForFrame(~w[22], w[24]);
+            }
             m_previous_fence_id = ~w[22];
             m_previous_fence_value = w[24];
         } else {
