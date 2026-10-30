@@ -281,8 +281,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
-    if (mesh_draw && !device.IsExtMeshShaderSupported()) {
-        report_failure("no VK_EXT_mesh_shader");
+    // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
+    static const bool no_mesh{std::getenv("EDEN_NX2_NO_MESH") != nullptr};
+    if (mesh_draw && (no_mesh || !device.IsExtMeshShaderSupported())) {
+        report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
