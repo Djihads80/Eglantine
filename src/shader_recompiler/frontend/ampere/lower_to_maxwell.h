@@ -55,7 +55,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     bool uses_uniform_bank = false;
     for (const auto& instruction : code) {
         const u32 op = instruction.Bits(0, 12);
-        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || op == 0x292 || op == 0x892 || op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 || op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 || op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) || op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 || op == 0x299 || op == 0xc09 || (op == 0x81c && instruction.Bits(67, 1));
     }
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
@@ -1543,7 +1543,17 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             break;
         }
-        case 0xb60: { // TEX, scalar 2D implicit-LOD sample
+        case 0xb60: case 0xf60: case 0x361: { // TEX; 0xf60: handle in a uniform register; 0x361: TEX.B
+            // Bindless forms become Maxwell TEX.B, the handle first among the meta registers (the
+            // texture pass tracks it back to its constant buffer words). 0x361 keeps the
+            // coordinates together from Ra and the handle in Rb; only plain samples are taken.
+            const bool bindless = opcode != 0xb60;
+            const u32 handle = opcode == 0xf60 ? uniform_register(insn.Bits(40, 6)) : insn.Bits(32, 8);
+            if (bindless && (handle == ~0U || handle >= 246 ||
+                             (opcode == 0xf60 && insn.Bits(46, 13)) ||
+                             (opcode == 0x361 && (insn.Bits(40, 19) || insn.Bits(87, 3) || insn.Bits(76, 1) ||
+                                                  insn.Bits(78, 1)))))
+                return fail(index, "native bindless texture mode");
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
             constexpr std::array<u32, 8> rg_masks{1, 2, 4, 8, 3, 9, 10, 12};
@@ -1578,25 +1588,29 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
                 constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
                 const bool offsets = insn.Bits(76, 1) != 0;
-                if (dimension == 6 || insn.Bits(77, 1) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
-                    insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 || (lod > 3 && lod != 6 && lod != 7) ||
-                    (depth_compare && mask != 1) || mask == 0)
+                // Bit 59 is .B, set in 0x361's encoding.
+                if (dimension == 6 || insn.Bits(77, 1) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(59, 1) != (opcode == 0x361 ? 1U : 0U) ||
+                    (!bindless && (insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18)) ||
+                    (lod > 3 && lod != 6 && lod != 7) || (depth_compare && mask != 1) || mask == 0)
                     return false;
                 const u32 coordinates = coordinate_count[dimension];
                 const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
                 const u32 count = coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
                 const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
                 const auto value = [&](u32 i) -> u32 {
-                    if (i < in_a) return source_a == 255 ? 255U : source_a + i;
+                    if (opcode == 0x361 || i < in_a) return source_a == 255 ? 255U : source_a + i;
                     return source_b == 255 ? 255U : source_b + (i - in_a);
                 };
-                if ((source_a != 255 && source_a + in_a > 246) ||
-                    (count > in_a && source_b != 255 && source_b + (count - in_a) > 246))
+                if ((source_a != 255 && source_a + (opcode == 0x361 ? count : in_a) > 246) ||
+                    (opcode != 0x361 && count > in_a && source_b != 255 && source_b + (count - in_a) > 246))
                     return false;
-                const u32 binding = insn.Bits(54, 5);
-                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                    return false;
-                result.required_texture_buffer = binding;
+                if (!bindless) {
+                    const u32 binding = insn.Bits(54, 5);
+                    if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                        return false;
+                    result.required_texture_buffer = binding;
+                }
                 const auto copy = [&](u32 target, u32 source) {
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
                 };
@@ -1604,14 +1618,23 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
                 u32 meta = 246;
                 u32 next = coordinates;
+                if (bindless) copy(meta++, handle);
                 if (has_lod) copy(meta++, value(next++));
                 if (offsets) copy(meta++, value(next++));
                 if (depth_compare) copy(meta++, value(next++));
+                if (bindless) {
+                    // Maxwell TEX.B: AOFFI at 36 and the LOD mode at 37 instead of 54 and 55.
+                    emit(0xde80000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                         (u64{maxwell_type[dimension]} << 28) | (u64{mask} << 31) | (u64{offsets} << 36) |
+                         (u64{lod} << 37) | (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) |
+                         (u64{7} << 51));
+                } else {
                 emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
                      (u64{meta == 246 ? 255U : 246U} << 20) | (u64{maxwell_type[dimension]} << 28) |
                      (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51) |
                      (u64{offsets} << 54) | (u64{lod} << 55));
+                }
                 const u32 components = static_cast<u32>(std::popcount(mask));
                 if (insn.Bits(79, 1)) {
                     // FP16 results: (c0, c1) packed into the first destination, (c2, c3) into
@@ -1646,7 +1669,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             // SM70 scalar coordinates and split RG/BA destinations match TEXS.
             // Descriptor offsets are words in both encodings, but only native
             // explicitly encodes the constant-buffer binding.
-            if (!insn.Bits(60, 1) || (dimension != 1 && dimension != 5) ||
+            if (bindless || !insn.Bits(60, 1) || (dimension != 1 && dimension != 5) ||
                 swizzle == ~0U || insn.Bits(76, 2) ||
                 insn.Bits(81, 3) != 7 || (lod > 1 && (lod != 3 || dimension != 1 || depth_compare)) ||
                 (lod == 3 && ((source_a & 1) || source_a >= 249)) ||
