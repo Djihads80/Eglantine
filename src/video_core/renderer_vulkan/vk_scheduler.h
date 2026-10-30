@@ -18,6 +18,7 @@
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
+#include "video_core/gpu_split.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -103,6 +104,9 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer, vk::CommandBuffer>
     void RecordWithUploadBuffer(T&& command) {
+        if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
+            VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
+        }
         if (chunk->Record(command)) {
             return;
         }
@@ -119,6 +123,18 @@ public:
             });
     }
 
+    /// Whether the recording thread submitted `tick` within 20 ms.
+    [[nodiscard]] bool WaitForSubmission(u64 tick) const {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+        while (tick >= master_semaphore->CurrentTick()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds{100});
+        }
+        return true;
+    }
+
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return master_semaphore->CurrentTick();
@@ -129,9 +145,13 @@ public:
         return master_semaphore->IsFree(tick);
     }
 
-    /// Waits for the given GPU tick, optionally pacing frames.
-    void Wait(u64 tick, double target_fps = 0.0) {
-        if (tick > 0) {
+    /// Waits for the given GPU tick, optionally pacing frames. Threads other than the one that
+    /// records (the async present thread) pass may_flush = false: flushing from there records
+    /// into the current chunk while that thread does (corrupt command buffers, crashes). They
+    /// wait for the recording thread to submit the tick instead, and give up after 20 ms (it may
+    /// be waiting for them).
+    void Wait(u64 tick, double target_fps = 0.0, bool may_flush = true) {
+        if (tick > 0 && (may_flush || WaitForSubmission(tick))) {
             if (tick >= master_semaphore->CurrentTick()) {
                 Flush();
             }
@@ -323,6 +343,7 @@ private:
     std::mutex reserve_mutex;
     std::mutex queue_mutex;
     std::condition_variable_any event_cv;
+    bool worker_waiting{}; ///< The worker is waiting for work (guarded by queue_mutex)
     std::jthread worker_thread;
 
     std::chrono::steady_clock::duration frame_interval{};

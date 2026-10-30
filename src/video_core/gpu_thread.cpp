@@ -17,11 +17,27 @@
 #include "video_core/dma_pusher.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/gpu_split.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
 
 namespace VideoCommon::GPUThread {
+
+namespace {
+
+// Tells a CPU thread waiting in PushCommand that its command ran.
+void SignalCommand(SynchState& state, u64 fence, bool block) {
+    state.signaled_fence.store(fence);
+    if (block) {
+        // We have to lock the write_lock to ensure that the condition_variable wait not get a
+        // race between the check and the lock itself.
+        std::scoped_lock lk{state.write_lock};
+        state.cv.notify_all();
+    }
+}
+
+} // Anonymous namespace
 
 ThreadManager::ThreadManager(Core::System& system_)
     : system{system_}
@@ -42,8 +58,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         // When a pending channel last moved or a command arrived (see the polling below).
         auto last_progress = std::chrono::steady_clock::now();
         namespace Profile = VideoCommon::Nx2Profile;
+        auto& split = VideoCommon::GpuSplit::Get();
         while (!stop_token.stop_requested()) {
             Profile::Report();
+            split.MaybeStart(system);
             if (scheduler.HasPendingChannels()) {
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 {
@@ -71,6 +89,34 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 break;
             }
             last_progress = std::chrono::steady_clock::now();
+            if (split.Active()) {
+                // Only command lists are parsed here; everything else runs on the back thread
+                // in order, and so does the signal that the command ran.
+                auto* const rasterizer_ptr = renderer.ReadRasterizer();
+                if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                    Profile::Scope scope{Profile::Zone::Push};
+                    scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
+                } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+                    split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
+                } else if (auto* run = std::get_if<RunCommand>(&next.data)) {
+                    split.DeferFunction(std::move(run->func));
+                } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
+                    split.Defer([rasterizer_ptr, addr = flush->addr, size = flush->size] {
+                        rasterizer_ptr->FlushRegion(addr, size);
+                    });
+                } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
+                    split.Defer([rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
+                        rasterizer_ptr->OnCacheInvalidation(addr, size);
+                    });
+                } else {
+                    ASSERT(false);
+                }
+                split.Defer([state_ptr = &state, fence = next.fence, block = next.block] {
+                    SignalCommand(*state_ptr, fence, block);
+                });
+                split.Publish();
+                continue;
+            }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
@@ -89,13 +135,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             } else {
                 ASSERT(false);
             }
-            state.signaled_fence.store(next.fence);
-            if (next.block) {
-                // We have to lock the write_lock to ensure that the condition_variable wait not get a
-                // race between the check and the lock itself.
-                std::scoped_lock lk{state.write_lock};
-                state.cv.notify_all();
-            }
+            SignalCommand(state, next.fence, next.block);
         }
     });
 }
@@ -161,6 +201,7 @@ void ThreadManager::NotifyShutdown() {
         thread.request_stop();
         thread.join();
     }
+    VideoCommon::GpuSplit::Get().Stop();
 }
 
 } // namespace VideoCommon::GPUThread

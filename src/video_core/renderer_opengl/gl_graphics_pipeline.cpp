@@ -20,7 +20,9 @@
 #include "video_core/shader_notify.h"
 #include "video_core/texture_cache/texture_cache.h"
 
-#if defined(_MSC_VER) && defined(NDEBUG)
+#if defined(__clang__) && defined(NDEBUG)
+#define LAMBDA_FORCEINLINE __attribute__((always_inline))
+#elif defined(_MSC_VER) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE [[msvc::forceinline]]
 #else
 #define LAMBDA_FORCEINLINE

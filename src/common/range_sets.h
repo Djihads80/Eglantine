@@ -26,6 +26,9 @@ public:
     void Clear();
     bool Empty() const;
 
+    /// Whether any range overlaps [base_address, base_address + size): one lookup.
+    bool Intersects(AddressType base_address, size_t size) const;
+
     template <typename Func>
     void ForEach(Func&& func) const;
 

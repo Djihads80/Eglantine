@@ -432,8 +432,21 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if (WIN32 AND NOT YUZU_USE_BUNDLED_QT)
-    set(YUZU_EXE_DIR "$<TARGET_FILE_DIR:yuzu>")
-    add_custom_command(TARGET yuzu POST_BUILD COMMAND ${WINDEPLOYQT_EXECUTABLE} "${YUZU_EXE_DIR}/eglantine.exe" --dir "${YUZU_EXE_DIR}" --libdir "${YUZU_EXE_DIR}" --plugindir "${YUZU_EXE_DIR}/plugins" --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-translations --verbose 0)
+    # Copy the Qt DLLs and plugins next to the executable. WINDEPLOYQT_EXECUTABLE was never set, so
+    # this step ran the emulator itself with windeployqt's arguments and failed every build that
+    # uses an installed Qt (the Windows release workflow).
+    if (TARGET Qt6::windeployqt)
+        set(WINDEPLOYQT_EXECUTABLE "$<TARGET_FILE:Qt6::windeployqt>")
+    else()
+        find_program(WINDEPLOYQT_EXECUTABLE NAMES windeployqt6 windeployqt
+                     HINTS "${QT_HOST_PATH}/bin" "${QT_TARGET_PATH}/bin")
+    endif()
+    if (WINDEPLOYQT_EXECUTABLE)
+        set(YUZU_EXE_DIR "$<TARGET_FILE_DIR:yuzu>")
+        add_custom_command(TARGET yuzu POST_BUILD COMMAND ${WINDEPLOYQT_EXECUTABLE} "$<TARGET_FILE:yuzu>" --dir "${YUZU_EXE_DIR}" --libdir "${YUZU_EXE_DIR}" --plugindir "${YUZU_EXE_DIR}/plugins" --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-translations --verbose 0)
+    else()
+        message(WARNING "windeployqt not found: copy the Qt DLLs next to the executable yourself")
+    endif()
 endif()
 
 if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64)

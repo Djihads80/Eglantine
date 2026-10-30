@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <unordered_set>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -45,6 +46,11 @@ enum class Zone : u32 {
     DynamicState,
     DrawRecord,
     TextureUpload,
+    Fence,        ///< Fences made (SignalFence)
+    FenceSkipped, ///< Empty fences not made
+    Method,       ///< Engine method calls (what a split GPU thread's back half would run)
+    SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
+    SplitWait,    ///< Split GPU thread: the back waits for work
     Count,
 };
 
@@ -54,12 +60,15 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "clear",         "compute",       "flush work",     "pipeline lookup", "configure",
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
-    "configure draw", "dynamic state", "draw record", "texture upload",
+    "configure draw", "dynamic state", "draw record", "texture upload", "fence",
+    "fence skipped", "method", "split drain", "split wait",
 };
 
+// Read once at startup: Enabled() runs several times per method write (no guard to check).
+inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+
 inline bool Enabled() {
-    static const bool enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
-    return enabled;
+    return g_enabled;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
@@ -71,6 +80,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
+    std::array<u64, 8> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -110,8 +120,34 @@ private:
     u64 parent_child_ns{};
 };
 
-/// Called by the GPU thread between commands: logs and resets the totals every 10 s.
-inline void Report() {
+/// Amounts counted on the GPU thread, logged per second with the zones.
+enum class Counter : u32 {
+    DownloadBytes,  ///< Buffer data copied back from the host GPU at fences
+    DownloadCopies, ///< Buffer ranges copied back
+    DmaReadBytes,   ///< Guest memory the native MME read with DMA
+    DownloadBytesOnDmaPages, ///< Of DownloadBytes: on pages the MME has DMA-read
+    MethodWrites,   ///< 3D register writes (Maxwell3D::CallMethod below the macro range)
+    SameValueWrites, ///< Of MethodWrites: the register already held the value
+    AcquireChecks,  ///< Semaphore acquires evaluated
+    AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+};
+
+/// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
+/// while profiling): which buffer downloads anything on the GPU thread reads back.
+inline std::unordered_set<u64>& DmaReadPages() {
+    static std::unordered_set<u64> pages;
+    return pages;
+}
+
+inline void Add(Counter counter, u64 amount) {
+    if (Enabled()) {
+        t_data.counters[static_cast<size_t>(counter)] += amount;
+    }
+}
+
+/// Called by the GPU thread (and the split's back thread) between commands: logs and resets
+/// the totals every 10 s.
+inline void Report(const char* thread_name = "GPU thread") {
     if (!Enabled()) {
         return;
     }
@@ -142,7 +178,19 @@ inline void Report() {
         const double calls = static_cast<double>(data.count[i]) * 1e9 / window;
         line += fmt::format(" | {} {:.1f} ms ({:.0f}/s)", zone_names[i], ms, calls);
     }
-    LOG_INFO(HW_GPU, "GPU thread per second:{}", line);
+    line += fmt::format(" | buffer downloads {:.0f} KiB in {:.0f} copies ({:.0f} KiB on pages "
+                        "MME DMA reads) | MME DMA reads {:.0f} KiB",
+                        static_cast<double>(data.counters[0]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[1]) * 1e9 / window,
+                        static_cast<double>(data.counters[3]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[2]) * 1e9 / 1024.0 / window);
+    line += fmt::format(" | 3D register writes {:.0f} ({:.0f} same value)",
+                        static_cast<double>(data.counters[4]) * 1e9 / window,
+                        static_cast<double>(data.counters[5]) * 1e9 / window);
+    line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
+                        static_cast<double>(data.counters[6]) * 1e9 / window,
+                        static_cast<double>(data.counters[7]) * 1e9 / window);
+    LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;
 }

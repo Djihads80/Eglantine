@@ -434,7 +434,7 @@ static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
             }
             size_t start = 0;
             while (start < list.size()) {
-                const size_t end = std::min(list.find(',', start), list.size());
+                const size_t end = (std::min)(list.find(',', start), list.size());
                 const std::string item = list.substr(start, end - start);
                 if (const size_t colon = item.find(':'); colon != std::string::npos) {
                     const std::string when = item.substr(0, colon);

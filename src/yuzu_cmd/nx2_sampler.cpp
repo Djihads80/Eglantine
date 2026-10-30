@@ -240,9 +240,9 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
             }
             std::sort(sorted.rbegin(), sorted.rend());
             std::fprintf(file, "-- %s\n", title);
-            for (size_t i = 0; i < std::min(limit, sorted.size()); ++i) {
+            for (size_t i = 0; i < (std::min)(limit, sorted.size()); ++i) {
                 std::fprintf(file, "%6u %5.1f%% %s\n", sorted[i].first,
-                             100.0 * sorted[i].first / std::max(total, 1U),
+                             100.0 * sorted[i].first / (std::max)(total, 1U),
                              sorted[i].second.c_str());
             }
         };

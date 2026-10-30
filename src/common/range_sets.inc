@@ -116,28 +116,25 @@ struct OverlapRangeSet<AddressType>::OverlapRangeSetImpl {
         }
         AddressType end_address = base_address + static_cast<AddressType>(size);
         IntervalType interval{base_address, end_address};
-        bool any_removals = false;
         m_split_ranges_set += std::make_pair(interval, -amount);
-        do {
-            any_removals = false;
-            auto it = m_split_ranges_set.lower_bound(interval);
-            if (it == m_split_ranges_set.end()) {
-                return;
+        // One pass, erasing the segments that dropped to zero or below in address order (the
+        // search restarted after every erase: quadratic in the segments of the range, and the
+        // GPU fencing thread does this for each downloaded buffer range while holding the buffer
+        // cache's lock). Erasing a node leaves the other iterators valid.
+        auto it = m_split_ranges_set.lower_bound(interval);
+        const auto end_it = m_split_ranges_set.upper_bound(interval);
+        while (it != end_it) {
+            if (it->second > 0) {
+                ++it;
+                continue;
             }
-            auto end_it = m_split_ranges_set.upper_bound(interval);
-            for (; it != end_it; it++) {
-                if (it->second <= 0) {
-                    if constexpr (has_on_delete) {
-                        if (it->second == 0) {
-                            on_delete(it->first.lower(), it->first.upper());
-                        }
-                    }
-                    any_removals = true;
-                    m_split_ranges_set.erase(it);
-                    break;
+            if constexpr (has_on_delete) {
+                if (it->second == 0) {
+                    on_delete(it->first.lower(), it->first.upper());
                 }
             }
-        } while (any_removals);
+            m_split_ranges_set.erase(it++);
+        }
     }
 
     template <typename Func>
@@ -221,6 +218,18 @@ void RangeSet<AddressType>::Clear() {
 template <typename AddressType>
 bool RangeSet<AddressType>::Empty() const {
     return m_impl->m_ranges_set.empty();
+}
+
+template <typename AddressType>
+bool RangeSet<AddressType>::Intersects(AddressType base_address, size_t size) const {
+    const auto& set = m_impl->m_ranges_set;
+    if (set.empty() || size == 0) {
+        return false;
+    }
+    const AddressType end_address = base_address + static_cast<AddressType>(size);
+    // The first range not entirely below the query; it overlaps when it starts before its end.
+    const auto it = set.lower_bound(typename RangeSetImpl::IntervalType{base_address, end_address});
+    return it != set.end() && it->lower() < end_address;
 }
 
 template <typename AddressType>
