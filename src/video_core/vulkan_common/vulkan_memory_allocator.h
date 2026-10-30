@@ -107,6 +107,10 @@ namespace Vulkan {
         /// images would otherwise leave holes in the shared blocks).
         vk::Image CreateImage(const VkImageCreateInfo &ci, bool dedicated = false) const;
 
+        /// A sparse resident image with nothing bound (reads return zero, writes are dropped), or
+        /// a null image when the device can't make one.
+        vk::Image CreateUnbackedImage(const VkImageCreateInfo &ci) const;
+
         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const;
 
         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage,
