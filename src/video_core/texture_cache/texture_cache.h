@@ -2999,6 +2999,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             if (True(image.flags & ImageFlagBits::SparseLayers)) {
                 std::vector<u32> layers(static_cast<size_t>(image.info.resources.layers));
                 std::iota(layers.begin(), layers.end(), 0U);
+                // Layers over the image's memory cap stay unbacked (logged once).
                 image.BindLayers(layers);
             }
         }
