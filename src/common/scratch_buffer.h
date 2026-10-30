@@ -122,6 +122,13 @@ public:
         return buffer_capacity;
     }
 
+    /// Frees the buffer; the next resize allocates it again.
+    void release() noexcept {
+        buffer.reset();
+        buffer_capacity = 0;
+        last_requested_size = 0;
+    }
+
     void swap(ScratchBuffer& other) noexcept {
         std::swap(last_requested_size, other.last_requested_size);
         std::swap(buffer_capacity, other.buffer_capacity);

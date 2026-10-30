@@ -198,6 +198,13 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
+    // rather than kept for the rest of the session.
+    for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {
+        if (scratch->capacity() > LargeScratchCapacity) {
+            scratch->release();
+        }
+    }
     if constexpr (HAS_DEVICE_MEMORY_INFO) {
         // Switch 2 titles (native tiling) stream far more texture data than Eden's thresholds
         // were tuned for: title 1's attract loop alone keeps ~5.3 GB resident, so the collector
@@ -280,6 +287,9 @@ void TextureCache<P>::TickFrame() {
                  images_created, images_deleted, gc_deletes + gc_costly_deletes, gc_costly_deletes,
                  gc_download_deletes,
                  async_decodes_queued, astc_opaque_images, astc_alpha_images);
+        LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
+                 images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
+        images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
         std::vector<std::pair<u32, u64>> shapes;
         for (const auto& [key, value] : created_shapes) shapes.emplace_back(value.first, key);
@@ -707,6 +717,10 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
     ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+        if (UploadsByLayer(image)) {
+            MarkLayersWritten(image, cpu_addr, size);
+            return;
+        }
         if (MarkPartialWrite(image, cpu_addr, size)) {
             return;
         }
@@ -818,6 +832,7 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
                 UntrackImage(image, id);
             }
         }
+        image.dirty_layers.clear(); // all of it
         if (True(image.flags & ImageFlagBits::Remapped)) {
             continue;
         }
@@ -1299,7 +1314,16 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 
     image.flags &= ~ImageFlagBits::CpuModified;
 
-    TrackImage(image, image_id);
+    // Images uploaded by layer stay tracked while some of their layers are dirty.
+    if (False(image.flags & ImageFlagBits::Tracked)) {
+        TrackImage(image, image_id);
+    }
+
+    if (!image.dirty_layers.empty() && UploadWrittenLayers(image)) {
+        runtime.InsertUploadMemoryBarrier();
+        return;
+    }
+    image.dirty_layers.clear();
 
     if (True(image.flags & ImageFlagBits::Unbacked)) {
         // Nothing to upload into (and staging it could take tens of GB).
@@ -1330,10 +1354,90 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         QueueAsyncUnswizzle(image, image_id);
         return;
     }
+    ++images_uploaded;
+    uploaded_bytes += image.guest_size_bytes;
+    largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
     if (!UploadInChunks(image)) {
         auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
         UploadImageContents(image, staging);
         runtime.InsertUploadMemoryBarrier();
+    }
+}
+
+template <class P>
+bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
+    // Title 1's terrain arrays (8192x8192x68 ASTC, 1.45 GB each) get a few layers streamed in at a
+    // time; re-decoding all of them for each took a 2 GiB staging buffer and stalled the GPU.
+    if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
+        return True(image.flags & ImageFlagBits::AcceleratedUpload) &&
+               image.info.type == ImageType::e2D && image.info.resources.layers > 1 &&
+               image.guest_size_bytes >= LayerUploadMinSize &&
+               False(image.flags & (ImageFlagBits::Unbacked | ImageFlagBits::Sparse |
+                                    ImageFlagBits::Remapped));
+    } else {
+        return false;
+    }
+}
+
+template <class P>
+void TextureCache<P>::MarkLayersWritten(Image& image, DAddr cpu_addr, size_t size) {
+    if (True(image.flags & ImageFlagBits::CpuModified) && image.dirty_layers.empty()) {
+        return; // all of it is dirty already
+    }
+    const u32 layers = static_cast<u32>(image.info.resources.layers);
+    if (False(image.flags & ImageFlagBits::CpuModified)) {
+        image.flags |= ImageFlagBits::CpuModified;
+        image.dirty_layers.assign(Common::DivCeil(layers, 64U), 0);
+    }
+    const DAddr begin = (std::max<DAddr>)(cpu_addr, image.cpu_addr) - image.cpu_addr;
+    const DAddr end = (std::min<DAddr>)(cpu_addr + size, image.cpu_addr + image.guest_size_bytes) -
+                      image.cpu_addr;
+    const u32 stride = image.info.layer_stride;
+    if (end <= begin || stride == 0) {
+        return;
+    }
+    const u32 last = (std::min)(static_cast<u32>((end - 1) / stride), layers - 1);
+    for (u32 layer = static_cast<u32>(begin / stride); layer <= last; ++layer) {
+        image.dirty_layers[layer / 64] |= u64{1} << (layer % 64);
+    }
+}
+
+template <class P>
+bool TextureCache<P>::UploadWrittenLayers(Image& image) {
+    if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
+        const u32 num_layers = static_cast<u32>(image.info.resources.layers);
+        std::vector<u32> layers;
+        for (u32 layer = 0; layer < num_layers; ++layer) {
+            if ((image.dirty_layers[layer / 64] >> (layer % 64)) & 1) {
+                layers.push_back(layer);
+            }
+        }
+        image.dirty_layers.clear();
+        if (layers.empty() || layers.size() == num_layers) {
+            return false;
+        }
+        // Each layer's mip chain from the first level the host keeps on (as UploadImageContents).
+        auto uploads = FullUploadSwizzles(image.info);
+        const size_t level_offset = uploads[image.host_level_offset].buffer_offset;
+        const size_t tail = image.info.layer_stride - level_offset;
+        auto staging = runtime.UploadStagingBuffer(tail * layers.size());
+        for (size_t i = 0; i < layers.size(); ++i) {
+            gpu_memory->ReadBlock(image.gpu_addr + u64{layers[i]} * image.info.layer_stride +
+                                      level_offset,
+                                  staging.mapped_span.data() + i * tail, tail,
+                                  VideoCommon::CacheType::NoTextureCache);
+        }
+        uploads.erase(uploads.begin(), uploads.begin() + image.host_level_offset);
+        for (auto& upload : uploads) {
+            upload.buffer_offset -= level_offset;
+        }
+        runtime.AccelerateImageUploadLayers(image, staging, uploads, layers);
+        ++images_uploaded;
+        uploaded_bytes += tail * layers.size();
+        ++layer_uploads;
+        return true;
+    } else {
+        return false;
     }
 }
 
