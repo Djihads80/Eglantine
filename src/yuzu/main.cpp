@@ -126,7 +126,7 @@ int main(int argc, char* argv[]) {
     // Most sane systems should not hit the hard limit here.
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
-        rl.rlim_cur = std::min<rlim_t>(8192, rl.rlim_max);
+        rl.rlim_cur = std::min<rlim_t>(1048576, rl.rlim_max);
         setrlimit(RLIMIT_NOFILE, &rl);
     }
 #endif // _WIN32

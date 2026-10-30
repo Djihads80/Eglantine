@@ -2,6 +2,11 @@ name: release-binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the binaries as a GitHub release
+        type: boolean
+        default: true
   push:
     branches:
       - nx2
@@ -60,6 +65,17 @@ jobs:
         if: matrix.platform == 'windows-x86_64'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Install Qt on Windows
+        if: matrix.platform == 'windows-x86_64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
       - name: Install Vulkan SDK on Windows
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
@@ -90,6 +106,7 @@ jobs:
           -DYUZU_ROOM=OFF
           -DYUZU_ROOM_STANDALONE=OFF
           -DYUZU_USE_BUNDLED_QT=OFF
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DVulkanHeaders_FORCE_BUNDLED=ON
           -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
@@ -107,7 +124,7 @@ jobs:
           -DYUZU_CMD=ON
           -DYUZU_ROOM=OFF
           -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=ON
+          -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=OFF
           -DUSE_DISCORD_PRESENCE=OFF
@@ -130,13 +147,66 @@ jobs:
           if (-not (Test-Path build/release/bin/eglantine.exe)) {
             throw 'build/release/bin/eglantine.exe was not produced'
           }
-          Compress-Archive -Path build/release/bin/eglantine.exe -DestinationPath "eglantine-${env:GITHUB_SHA}-windows-x86_64.zip"
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
 
-      - name: Upload binary
+      # The Windows artifact is the bin folder itself: GitHub zips artifacts on download, and
+      # uploading a zip gave a zip inside a zip.
+      - name: Upload Windows binary
+        if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.*
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
+
+      # The tarball keeps the executable bit, which artifacts lose.
+      - name: Upload Linux binary
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2,
+  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' || inputs.publish_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eglantine-*-${{ github.sha }}
+          path: artifacts
+
+      - name: Package release files
+        shell: bash
+        run: |
+          mkdir dist
+          (cd "artifacts/eglantine-windows-x86_64-${GITHUB_SHA}" &&
+            zip -qr "${GITHUB_WORKSPACE}/dist/eglantine-${GITHUB_SHA}-windows-x86_64.zip" .)
+          cp "artifacts/eglantine-linux-x86_64-${GITHUB_SHA}/eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" dist/
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "build-${GITHUB_RUN_NUMBER}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
+
+          Windows: extract the zip and run eglantine.exe.
+          Linux: extract the tarball and run ./eglantine."

@@ -19,7 +19,7 @@ namespace Service::Audio {
 
 class IAudioRenderer final : public ServiceFramework<IAudioRenderer> {
 public:
-    explicit IAudioRenderer(Core::System& system_, AudioCore::Renderer::Manager& manager_,
+    explicit IAudioRenderer(Core::System& system_, std::shared_ptr<AudioCore::Renderer::Manager> manager_,
                             AudioCore::AudioRendererParameterInternal& params,
                             Kernel::KTransferMemory* transfer_memory, u64 transfer_memory_size,
                             Kernel::KProcess* process_handle_, u64 applet_resource_user_id,
@@ -47,7 +47,8 @@ private:
 
     KernelHelpers::ServiceContext service_context;
     Kernel::KEvent* rendered_event;
-    AudioCore::Renderer::Manager& manager;
+    // Keeps the manager alive for as long as this renderer session exists.
+    std::shared_ptr<AudioCore::Renderer::Manager> manager;
     std::unique_ptr<AudioCore::Renderer::Renderer> impl;
     Kernel::KProcess* process_handle;
     Common::ScratchBuffer<u8> output_buffer;

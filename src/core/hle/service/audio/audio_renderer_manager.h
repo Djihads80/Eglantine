@@ -33,7 +33,7 @@ private:
     Result GetAudioDeviceServiceWithRevisionInfo(Out<SharedPointer<IAudioDevice>> out_audio_device,
                                                  u32 revision, ClientAppletResourceUserId aruid);
 
-    std::optional<AudioCore::Renderer::Manager> impl;
+    std::shared_ptr<AudioCore::Renderer::Manager> impl;
     u32 num_audio_devices{0};
 };
 
