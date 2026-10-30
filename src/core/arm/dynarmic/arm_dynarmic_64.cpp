@@ -246,7 +246,8 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     config.tpidr_el0 = &m_cb->m_tpidr_el0;
     config.dczid_el0 = 4;
     config.ctr_el0 = 0x8444c004;
-    config.cntfrq_el0 = Hardware::CNTFREQ;
+    // 31.25 MHz for Switch 2 titles (Common::WallClock::SetGuestCNTFRQ, set at boot).
+    config.cntfrq_el0 = static_cast<u32>(Common::g_wall_clock.GetGuestCNTFRQ());
 
     // Unpredictable instructions
     config.define_unpredictable_behaviour = true;
