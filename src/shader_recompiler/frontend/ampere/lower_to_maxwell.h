@@ -731,27 +731,31 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
             const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
-            if (insn.words[2] == (0x08011400U | high) && low == 63 && high < 16 &&
-                dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{high + 216} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
+            const u32 dst_reg = uniform_register(dst), low_reg = uniform_register(low);
+            const u32 high_reg = uniform_register(high);
+            const bool dst_ok = dst != 63 && dst_reg != ~0U;
+            const bool low_ok = low != 63 && low_reg != ~0U, high_ok = high != 63 && high_reg != ~0U;
+            if (insn.words[2] == (0x08011400U | high) && low == 63 && high_ok &&
+                dst_ok && native_predicate == 7 && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{high_reg} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
                 break;
             }
             // Logical right shifts of one register (bit 76 right, bit 80 high word, bits 73-74
             // U32): USHF.R.U32 URd, URa, n, URZ and USHF.R.U32.HI URd, URZ, n, URb.
-            const bool right_low = insn.words[2] == 0x0800163f && low < 16;
-            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high < 16;
-            if ((right_low || right_high) && dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{(right_high ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            const bool right_low = insn.words[2] == 0x0800163f && low_ok;
+            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high_ok;
+            if ((right_low || right_high) && dst_ok && native_predicate == 7 && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{right_high ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
-            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high < 16;
-            const bool low_result = insn.words[2] == 0x0800063f && low < 16;
-            if (dst >= 16 || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
+            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high_ok;
+            const bool low_result = insn.words[2] == 0x0800063f && low_ok;
+            if (!dst_ok || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
                 return fail(index, "native uniform shift mode");
-            emit(0x3848000000000000ULL | predicate | (dst + 216) |
-                 (u64{(high_result ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            emit(0x3848000000000000ULL | predicate | dst_reg |
+                 (u64{high_result ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
             break;
         }
         case 0xb82: { // LDC.64 indexed byte offset; bits 78-79 the mode as Maxwell's (2 = IS)
