@@ -322,7 +322,23 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     return entry;
 }
 
-void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
+void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
+                                              u32 source_header_size) {
+    if (!lowered) {
+        lowered = LowerNativeCode(source_header_size);
+    }
+    if (lowered->texture_bound != ~0U) {
+        // Native TEX carries its cbuf index explicitly; TEXS obtains it from the environment.
+        texture_bound = lowered->texture_bound;
+    }
+    native_source_size = lowered->source_size;
+    code = lowered->code;
+    cached_lowest = 0;
+    cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
+    lowered_native = std::move(lowered);
+}
+
+std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32 source_header_size) {
     using Shader::Ampere::Instruction;
     const u32 native_header_size = source_header_size;
     constexpr u32 maximum_instructions = Shader::Ampere::ProgramCaptureState::MaximumInstructions;
@@ -439,33 +455,32 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
             program_base, lowered.error_offset, lowered.error, words[0] & 0xfff, words[0],
             words[1], words[2], words[3]);
     }
-    if (lowered.required_texture_buffer != ~0U) {
-        // Native TEX carries its cbuf index explicitly; TEXS obtains it from the environment.
-        texture_bound = lowered.required_texture_buffer;
-    }
-    native_source_size = native_header_size + lowered.source_size;
-    code.resize(sizeof(sph) / sizeof(u64));
-    std::memcpy(code.data(), &sph, sizeof(sph));
+    auto result = std::make_shared<LoweredNativeCode>();
+    result->texture_bound = lowered.required_texture_buffer;
+    result->source_size = native_header_size + lowered.source_size;
+    auto& lowered_code = result->code;
+    lowered_code.resize(sizeof(sph) / sizeof(u64));
+    std::memcpy(lowered_code.data(), &sph, sizeof(sph));
     for (const u64 instruction : lowered.instructions) {
-        if ((code.size() * sizeof(u64)) % 32 == 0) {
-            code.push_back(0); // Maxwell scheduling word, absent from native instructions.
+        if ((lowered_code.size() * sizeof(u64)) % 32 == 0) {
+            lowered_code.push_back(0); // Maxwell scheduling word, absent from native instructions.
         }
-        code.push_back(instruction);
+        lowered_code.push_back(instruction);
     }
     // Keep the original padding ABI, then retain the native address map as
     // unreachable data. Existing disk-cache serialization carries it with code.
-    code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
-    cached_lowest = 0;
-    cached_highest = static_cast<u32>((code.size() - 1) * sizeof(u64));
+    lowered_code.push_back(0);
+    Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
     LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
-             program_base, native_source_size, lowered.instructions.size());
+              program_base, result->source_size, lowered.instructions.size());
+    return result;
 }
 
 GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                                          Tegra::MemoryManager& gpu_memory_,
                                          Maxwell::ShaderType program, GPUVAddr program_base_,
-                                         u32 start_address_)
+                                         u32 start_address_,
+                                         std::shared_ptr<const LoweredNativeCode> lowered_native_)
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, maxwell3d{&maxwell3d_} {
     gpu_memory->ReadBlock(program_base + start_address, &sph, sizeof(sph));
     initial_offset = sizeof(sph);
@@ -485,7 +500,7 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                 dump.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
             }
         }
-        InitializeNativeCode();
+        InitializeNativeCode(std::move(lowered_native_));
     }
     gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
     switch (program) {
@@ -595,7 +610,8 @@ u32 GraphicsEnvironment::ReadViewportTransformState() {
 
 ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_compute_,
                                        Tegra::MemoryManager& gpu_memory_, GPUVAddr program_base_,
-                                       u32 start_address_)
+                                       u32 start_address_,
+                                       std::shared_ptr<const LoweredNativeCode> lowered_native_)
     : GenericEnvironment{gpu_memory_, program_base_, start_address_}, kepler_compute{
                                                                           &kepler_compute_} {
     const auto& qmd{kepler_compute->launch_description};
@@ -608,7 +624,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     if (kepler_compute->IsNativeMode()) {
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
-        InitializeNativeCode(0);
+        InitializeNativeCode(std::move(lowered_native_), 0);
         start_address = sizeof(sph);
     }
 }
