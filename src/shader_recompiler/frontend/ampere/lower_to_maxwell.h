@@ -1314,10 +1314,25 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (condition > 6 || target == ~0U || a == ~0U || b == ~0U ||
                 insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x07800000U) != 0x08000000U)
                 return fail(index, "native uniform select mode");
-            if (opcode == 0x887 && index > 0 && condition == 0 && insn.words[1] <= 0x7ffff &&
-                code[index - 1].Bits(0, 12) == 0x88c &&
-                code[index - 1].Bits(24, 8) == insn.Bits(24, 8) &&
-                code[index - 1].words[1] == insn.words[1] && code[index - 1].words[2] == 0x0bf01070 &&
+            // The clamp's UISETP may sit a few instructions back, with only instructions between
+            // that write no uniform state and do not branch (Nintendo Switch Sports' jump tables),
+            // and no branch seen so far landing between them.
+            u32 compare = index;
+            for (u32 back = 1; back <= 8 && back <= index; ++back) {
+                const u32 earlier = code[index - back].Bits(0, 12), datapath = earlier & 0x1ff;
+                if (earlier == 0x88c) {
+                    compare = index - back;
+                    break;
+                }
+                if ((datapath >= 0x080 && datapath <= 0x0bf) || (datapath >= 0x1c2 && datapath <= 0x1c4) ||
+                    (earlier >= 0x940 && earlier <= 0x95f))
+                    break;
+            }
+            const bool target_between = std::any_of(relocations.begin(), relocations.end(),
+                [&](const Relocation& relocation) { return relocation.target > compare && relocation.target <= index; });
+            if (opcode == 0x887 && compare < index && !target_between && condition == 0 && insn.words[1] <= 0x7ffff &&
+                code[compare].Bits(12, 4) == 7 && code[compare].Bits(24, 8) == insn.Bits(24, 8) &&
+                code[compare].words[1] == insn.words[1] && code[compare].words[2] == 0x0bf01070 &&
                 insn.words[2] == 0x08000000) {
                 // Preserve the unsigned clamp idiom for indirect-table analysis.
                 emit(0x3820000000070000ULL | target | (u64{a} << 8) |
