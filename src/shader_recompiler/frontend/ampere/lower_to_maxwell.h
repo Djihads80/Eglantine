@@ -1542,6 +1542,39 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{array ? 8U : volume ? 7U : dimension == 0 ? (level ? 1U : 0U) : (level ? 5U : 2U)} << 53));
             break;
         }
+        case 0x367: { // TLD.B at level zero (.LZ), the handle in a register.
+            // The values are the coordinates, then the handle, split over Ra and Rb as for TEX.B
+            // (ARRAY_2D: layer, x | y, handle); Maxwell TLD.B takes the handle first in Rb.
+            constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 0, 0, 3, 0, 0};
+            constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 0, 0, 3, 0, 0};
+            const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
+            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            const u32 dimension = insn.Bits(61, 3), coordinates = coordinate_count[dimension];
+            const u32 count = coordinates + 1, in_a = (count + 1) / 2;
+            if (coordinates == 0 || !insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(40, 19) ||
+                insn.Bits(76, 5) || insn.Bits(81, 3) != 7 || insn.Bits(87, 3) != 1 || insn.Bits(91, 1) ||
+                mask == 0 || source_a == 255 || source_a + in_a > 246 || source_b == 255 ||
+                source_b + (count - in_a) > 246)
+                return fail(index, "native bindless texel fetch mode");
+            const auto value = [&](u32 i) { return i < in_a ? source_a + i : source_b + (i - in_a); };
+            const auto copy = [&](u32 target, u32 source) {
+                emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+            };
+            for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
+            copy(246, value(coordinates));
+            emit(0xdd00000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                 (u64{maxwell_type[dimension]} << 28) | (u64{mask} << 31) | (u64{insn.Bits(90, 1)} << 49) |
+                 (u64{7} << 51));
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            const bool split = second_dest != 255;
+            for (u32 i = 0; i < components; ++i) {
+                u32 target = 255;
+                if (!split || i < 2) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
+                else target = second_dest + (i - 2);
+                if (target != 255) copy(target, 250 + i);
+            }
+            break;
+        }
         case 0x91a: // DEPBAR.LE SB5, 1: scoreboard wait, represented by IR data dependencies.
             if (insn.words[0] != 0x791a || (insn.words[1] & ~0xfc0U) != 0xd000 || insn.words[2]) {
                 return fail(index, "native dependency barrier mode");
