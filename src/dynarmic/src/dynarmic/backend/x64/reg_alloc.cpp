@@ -465,22 +465,24 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const noex
     return std::nullopt;
 }
 
+// The checks that scan every location for def_inst are debug-only: per IR instruction they cost as
+// much as the rest of register allocation.
 void RegAlloc::DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, HostLoc host_loc) noexcept {
-    ASSERT(!ValueLocation(def_inst) && "def_inst has already been defined");
+    DEBUG_ASSERT(!ValueLocation(def_inst) && "def_inst has already been defined");
     LocInfo(host_loc).AddValue(host_loc, def_inst);
-    ASSERT(*ValueLocation(def_inst) == host_loc);
+    DEBUG_ASSERT(*ValueLocation(def_inst) == host_loc);
 }
 
 void RegAlloc::DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, const IR::Value& use_inst) noexcept {
-    ASSERT(!ValueLocation(def_inst) && "def_inst has already been defined");
+    DEBUG_ASSERT(!ValueLocation(def_inst) && "def_inst has already been defined");
     if (use_inst.IsImmediate()) {
         const HostLoc location = ScratchImpl(code, gpr_order);
         DefineValueImpl(code, def_inst, location);
         LoadImmediate(code, use_inst, location);
     } else {
-        ASSERT(ValueLocation(use_inst.GetInst()) && "use_inst must already be defined");
-        const HostLoc location = *ValueLocation(use_inst.GetInst());
-        DefineValueImpl(code, def_inst, location);
+        const auto location = ValueLocation(use_inst.GetInst());
+        ASSERT(location && "use_inst must already be defined");
+        DefineValueImpl(code, def_inst, *location);
     }
 }
 
