@@ -2683,6 +2683,20 @@ std::vector<u32> Image::BindLayers(std::span<const u32> layers) {
     const VkDeviceSize cap = SparseLayersCap(device);
     std::vector<VkSparseImageMemoryBind> image_binds;
     std::vector<VkSparseMemoryBind> opaque_binds;
+    const bool tail_was_bound = s.tail_memory != VK_NULL_HANDLE;
+    std::vector<u32> fresh; // Layers given memory by this call
+    // A failed bind leaves the layers as they were, so the next call tries them again.
+    const auto roll_back = [&] {
+        for (const u32 layer : fresh) {
+            s.allocator->FreeSparseMemory(s.layer_memory[layer]);
+            s.layer_memory[layer] = VK_NULL_HANDLE;
+            s.bound_bytes -= s.layer_bytes;
+        }
+        if (s.tail_memory != VK_NULL_HANDLE && !tail_was_bound) {
+            s.allocator->FreeSparseMemory(s.tail_memory);
+            s.tail_memory = VK_NULL_HANDLE;
+        }
+    };
     for (const u32 layer : layers) {
         if (s.layer_memory[layer] != VK_NULL_HANDLE) {
             bound.push_back(layer);
@@ -2710,6 +2724,7 @@ std::vector<u32> Image::BindLayers(std::span<const u32> layers) {
         }
         s.layer_memory[layer] = allocation;
         s.bound_bytes += s.layer_bytes;
+        fresh.push_back(layer);
         for (u32 level = 0; level < tail_lod; ++level) {
             const u32 width = (std::max)(s.width >> level, 1U);
             const u32 height = (std::max)(s.height >> level, 1U);
@@ -2756,6 +2771,12 @@ std::vector<u32> Image::BindLayers(std::span<const u32> layers) {
                 .memoryOffset = offset,
                 .flags = 0,
             });
+        } else {
+            LOG_WARNING(Render_Vulkan, "Sparse layered image {:#x}: out of device memory for the "
+                                       "mip tail",
+                        gpu_addr);
+            roll_back();
+            return {};
         }
     }
     if (image_binds.empty() && opaque_binds.empty()) {
@@ -2800,6 +2821,7 @@ std::vector<u32> Image::BindLayers(std::span<const u32> layers) {
     if (result != VK_SUCCESS) {
         LOG_ERROR(Render_Vulkan, "Sparse layered image {:#x}: binding failed ({})", gpu_addr,
                   static_cast<int>(result));
+        roll_back();
         return {};
     }
     fence.Wait();
@@ -3199,6 +3221,16 @@ vk::ImageView ImageView::MakeView(VkFormat vk_format, VkImageAspectFlags aspect_
                                   std::optional<Shader::TextureType> texture_type) {
     VkImageViewType view_type = ImageViewType(type);
     VkImageSubresourceRange subresource_range = MakeSubresourceRange(aspect_mask, range);
+    const auto is_3d = [](VkImageViewType t) { return t == VK_IMAGE_VIEW_TYPE_3D; };
+    if (texture_type && is_3d(ImageViewType(*texture_type)) != is_3d(view_type)) {
+        // A 3D view of a 2D image (or the reverse) is invalid in Vulkan and aborts on Metal; keep
+        // the image's own type when the shader's declared dimension disagrees with it.
+        LOG_WARNING(Render_Vulkan,
+                    "Shader image type {} does not match view type {} at 0x{:x} (format={} "
+                    "size={}x{}x{}), using the view type",
+                    *texture_type, type, gpu_addr, format, size.width, size.height, size.depth);
+        texture_type.reset();
+    }
     if (texture_type) {
         view_type = ImageViewType(*texture_type);
         switch (view_type) {
