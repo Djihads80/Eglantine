@@ -960,7 +960,8 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
-        if (layout.width == 3840 && layout.height == 2160) {
+        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
+            layout.width == 3840 && layout.height == 2160) {
             crop_width = 2560;
             crop_height = 1440;
         }
