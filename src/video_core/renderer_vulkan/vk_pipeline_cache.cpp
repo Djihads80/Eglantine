@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -35,6 +36,7 @@
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
+#include "video_core/renderer_vulkan/pipeline_stats.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -692,6 +694,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
 
         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
+            const PipelineStats::ScopedRole stats_role{PipelineStats::Role::Boot};
             ShaderPools pools;
             auto pipeline{CreateComputePipeline(pools, key, env_, state.statistics.get(), false)};
             std::scoped_lock lock{state.mutex};
@@ -738,6 +741,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         }
 
         workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
+            const PipelineStats::ScopedRole stats_role{PipelineStats::Role::Boot};
             ShaderPools pools;
             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
             for (auto& env : envs_) {
@@ -933,6 +937,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     bool build_in_parallel) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
+    PipelineStats::NotePipeline(
+        PipelineStats::Kind::Graphics,
+        Common::CityHash64(reinterpret_cast<const char*>(key.unique_hashes.data()),
+                           sizeof(key.unique_hashes)));
     size_t env_index{0};
     std::array<Shader::IR::Program, Maxwell::MaxShaderProgram> programs;
     const bool uses_vertex_a{key.unique_hashes[0] != 0};
@@ -956,6 +964,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         Shader::Environment& env{*envs[env_index]};
         ++env_index;
 
+        // Control flow analysis, translation and the dual vertex merge are charged together.
+        std::optional<PipelineStats::ScopedTimer> translate_timer;
+        translate_timer.emplace(PipelineStats::Kind::Graphics, PipelineStats::Stage::Translate);
+        PipelineStats::NoteTranslation(PipelineStats::Kind::Graphics, static_cast<unsigned>(index),
+                                       key.unique_hashes[index]);
         const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
         if (!uses_vertex_a || index != 1) {
@@ -967,6 +980,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
         }
+        translate_timer.reset();
 
         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY && Shader::Optimization::HasBrokenPattern(programs[index])) {
             LOG_WARNING(Render_Vulkan, "0x{:016x}: Skipping shader with known issues", key.unique_hashes[index]);
@@ -1001,9 +1015,18 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
         ConvertLegacyToGeneric(program, runtime_info);
-        const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
+        std::vector<u32> code;
+        {
+            const PipelineStats::ScopedTimer emit_timer{PipelineStats::Kind::Graphics,
+                                                        PipelineStats::Stage::Emit};
+            code = EmitSPIRV(profile, runtime_info, program, binding);
+        }
         device.SaveShader(code);
-        modules[stage_index] = BuildShader(device, code);
+        {
+            const PipelineStats::ScopedTimer module_timer{PipelineStats::Kind::Graphics,
+                                                          PipelineStats::Stage::Module};
+            modules[stage_index] = BuildShader(device, code);
+        }
 
         // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
         // is independent and gated only by gpu_log_shader_dumps.
@@ -1258,6 +1281,7 @@ bool PipelineCache::WaitForGraphicsTranslation(std::future<void>& done) {
 void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
                                               GraphicsEnvironmentArray envs,
                                               std::promise<void> done) {
+    const PipelineStats::ScopedRole stats_role{PipelineStats::Role::Xlate};
     const auto begin = std::chrono::steady_clock::now();
     ShaderPools pools;
     boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> env_ptrs;
@@ -1343,7 +1367,11 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     }
 
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
+    PipelineStats::NotePipeline(PipelineStats::Kind::Compute, key.unique_hash);
 
+    std::optional<PipelineStats::ScopedTimer> translate_timer;
+    translate_timer.emplace(PipelineStats::Kind::Compute, PipelineStats::Stage::Translate);
+    PipelineStats::NoteTranslation(PipelineStats::Kind::Compute, 5, key.unique_hash);
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
 
     // Dump it before error.
@@ -1352,6 +1380,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     }
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    translate_timer.reset();
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -1365,9 +1394,19 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                     max_shared_memory / 1024);
         program.shared_memory_size = max_shared_memory;
     }
-    const std::vector<u32> code{EmitSPIRV(profile, program)};
+    std::vector<u32> code;
+    {
+        const PipelineStats::ScopedTimer emit_timer{PipelineStats::Kind::Compute,
+                                                    PipelineStats::Stage::Emit};
+        code = EmitSPIRV(profile, program);
+    }
     device.SaveShader(code);
-    vk::ShaderModule spv_module{BuildShader(device, code)};
+    vk::ShaderModule spv_module;
+    {
+        const PipelineStats::ScopedTimer module_timer{PipelineStats::Kind::Compute,
+                                                      PipelineStats::Stage::Module};
+        spv_module = BuildShader(device, code);
+    }
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();

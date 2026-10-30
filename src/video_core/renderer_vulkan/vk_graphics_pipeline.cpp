@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <span>
 
 #include <boost/container/small_vector.hpp>
@@ -18,6 +19,7 @@
 #include "common/bit_field.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
+#include "video_core/renderer_vulkan/pipeline_stats.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -312,10 +314,17 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
+    const bool on_parallel_worker{worker_thread != nullptr};
+    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics, on_parallel_worker] {
+        std::optional<PipelineStats::ScopedRole> stats_role;
+        if (on_parallel_worker) {
+            stats_role.emplace(PipelineStats::Role::Par);
+        }
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
+            const PipelineStats::ScopedTimer stats_timer{PipelineStats::Kind::Graphics,
+                                                         PipelineStats::Stage::Driver};
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());

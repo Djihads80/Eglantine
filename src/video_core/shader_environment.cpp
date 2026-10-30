@@ -34,6 +34,7 @@
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
+#include "video_core/renderer_vulkan/pipeline_stats.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -379,8 +380,12 @@ private:
 // A native program is captured and lowered once, when the shader cache first meets it. The
 // environments built later for its pipelines receive that result instead of lowering again.
 void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
-                                              u32 source_header_size) {
+                                              u32 source_header_size, bool is_compute) {
     if (!lowered) {
+        const Vulkan::PipelineStats::ScopedTimer timer{
+            is_compute ? Vulkan::PipelineStats::Kind::Compute
+                       : Vulkan::PipelineStats::Kind::Graphics,
+            Vulkan::PipelineStats::Stage::Lower};
         lowered = LowerNativeCode(source_header_size);
     }
     if (lowered->texture_bound != ~0U) {
@@ -768,7 +773,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     if (kepler_compute->IsNativeMode()) {
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
-        InitializeNativeCode(std::move(lowered_native_), 0);
+        InitializeNativeCode(std::move(lowered_native_), 0, true);
         start_address = sizeof(sph);
     }
 }
