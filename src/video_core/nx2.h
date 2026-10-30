@@ -96,7 +96,7 @@ inline void Nx2BackSparseWrite(u64 gpu_address, u64 size) {
 
 // Which blocks of each sparse region have been written (got memory), for the texture cache: an
 // image over blocks nobody wrote is all zeros and needs no device memory. Its own lock, taken last:
-// the texture cache asks with its lock held, and nx2:gpu updates it holding none of the GPU's.
+// the texture cache asks with its lock held, and nx2:gpu updates it holding only its region mutex.
 struct Nx2SparseRegionState {
     u64 size;
     u64 block_size;
