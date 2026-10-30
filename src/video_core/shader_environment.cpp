@@ -791,7 +791,8 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
             file.read(reinterpret_cast<char*>(&gp_passthrough_mask), sizeof(gp_passthrough_mask));
         }
     }
-    is_proprietary_driver = texture_bound == 2;
+    // Native programs fold bank 1 reads as they did when they were built.
+    is_proprietary_driver = texture_bound == 2 || Shader::Ampere::HasNativeAddressMap(code);
 }
 
 void FileEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
