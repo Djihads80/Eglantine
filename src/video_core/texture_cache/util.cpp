@@ -32,6 +32,7 @@
 #include "video_core/texture_cache/decode_bc.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/texture_cache/formatter.h"
+#include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/astc.h"
@@ -845,7 +846,7 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     if (gpu_memory.GpuToCpuAddress(address).has_value()) {
         return true;
     }
-    const ImageInfo info{config};
+    const ImageInfo info{TextureViewHeader(config, gpu_memory.UsesNativeTiling())};
     const size_t guest_size_bytes = CalculateGuestSizeInBytes(info);
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }
@@ -970,7 +971,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImageRows(
         const u32 band_bytes = level_sizes[level] / num_bands;
         const u32 blocks_per_band = band_bytes / block_bytes;
         for (s32 layer = 0; layer < info.resources.layers; ++layer) {
-            const u64 segment_begin = u64{layer} * layer_stride + level_offset;
+            const u64 segment_begin = static_cast<u64>(layer) * layer_stride + level_offset;
             const u64 segment_end = segment_begin + level_sizes[level];
             bool any = false;
             for (const auto& [begin, end] : dirty_ranges) {
