@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -322,6 +323,61 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     return entry;
 }
 
+namespace {
+
+// Reads a native program a 4 KiB page at a time instead of one 16-byte instruction at a time.
+// The reads do not flush the GPU caches first (ReadBlockUnsafe): the previous per-instruction
+// ReadBlock did, once per instruction. An instruction that is not inside a fully mapped page is
+// left to the caller.
+class NativeInstructionReader {
+public:
+    using Instruction = Shader::Ampere::Instruction;
+    static constexpr GPUVAddr PageSize = 0x1000;
+
+    explicit NativeInstructionReader(Tegra::MemoryManager& gpu_memory_)
+        : gpu_memory{gpu_memory_} {}
+
+    /// Copies the instruction at `address` into `out`, loading its page first if needed.
+    /// Returns false when the instruction is not inside a fully mapped page.
+    bool TryRead(GPUVAddr address, Instruction& out) {
+        if (!Holds(address)) {
+            LoadFrom(address);
+        }
+        if (!Holds(address)) {
+            return false;
+        }
+        out = page[(address - page_begin) / sizeof(Instruction)];
+        return true;
+    }
+
+private:
+    bool Holds(GPUVAddr address) const {
+        return address >= page_begin && address + sizeof(Instruction) <= page_end;
+    }
+
+    // Loads from `address` up to the next page boundary; loads nothing if that range is not
+    // fully mapped.
+    void LoadFrom(GPUVAddr address) {
+        const GPUVAddr next_page = (address | (PageSize - 1)) + 1;
+        const GPUVAddr length = next_page - address;
+        page_begin = address;
+        page_end = address;
+        if (length >= sizeof(Instruction) && gpu_memory.IsFullyMappedRange(address, length)) {
+            gpu_memory.ReadBlockUnsafe(address, page.data(), length);
+            page_end = next_page;
+        }
+    }
+
+    Tegra::MemoryManager& gpu_memory;
+    std::array<Instruction, PageSize / sizeof(Instruction)> page;
+    GPUVAddr page_begin{};
+    GPUVAddr page_end{};
+};
+
+} // Anonymous namespace
+
+// A native program is captured and lowered once, when the shader cache first meets it. The
+// environments built later for its pipelines receive that result instead of lowering again.
 void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
                                               u32 source_header_size) {
     if (!lowered) {
@@ -344,16 +400,22 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     constexpr u32 maximum_instructions = Shader::Ampere::ProgramCaptureState::MaximumInstructions;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
+    NativeInstructionReader reader{*gpu_memory};
     for (u32 index = 0; index < maximum_instructions; ++index) {
         const GPUVAddr address = program_base + native_header_size + index * sizeof(Instruction);
-        if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
-            // The program may end before a branch target past its last EXIT (the capture can't
-            // tell); stop at the mapping's end and let the lowering judge what was captured.
-            if (!native.empty()) break;
-            throw Shader::RuntimeError("Unmapped native shader instruction at {:#x}", address);
+        Instruction instruction;
+        if (!reader.TryRead(address, instruction)) {
+            // Not inside a fully mapped page: check and read this one instruction on its own.
+            if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
+                // The program may end before a branch target past its last EXIT (the capture
+                // can't tell); stop at the mapping's end and let the lowering judge what was
+                // captured.
+                if (!native.empty()) break;
+                throw Shader::RuntimeError("Unmapped native shader instruction at {:#x}", address);
+            }
+            gpu_memory->ReadBlockUnsafe(address, &instruction, sizeof(instruction));
         }
-        auto& instruction = native.emplace_back();
-        gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
+        native.push_back(instruction);
         const auto status = capture.Observe(instruction, index);
         if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
             if (const char* dir = std::getenv("EDEN_NX2_SHADER_DUMP")) {
