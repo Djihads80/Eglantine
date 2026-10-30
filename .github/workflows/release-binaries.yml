@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - nx2
+      - nx2-experimental
 
 permissions:
   contents: read
@@ -202,8 +203,9 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2,
-  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
+  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2
+  # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
+  # unticked.
   release:
     name: Publish release
     needs: build
