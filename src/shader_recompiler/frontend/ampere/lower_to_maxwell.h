@@ -860,6 +860,18 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             restore_predicate();
             break;
         }
+        case 0x80d: { // CSMTEST: a test of shading-mode state Eden does not model, taken as false.
+            // Kirby Air Riders' vertex-side shaders run "CSMTEST.A.FCSM_TR P0" then "@P0 EXIT":
+            // never leave early. Outputs of PT discard the result.
+            const u32 first = insn.Bits(81, 3), second = insn.Bits(84, 3);
+            if (insn.Bits(87, 4) != 7 || insn.Bits(16, 16))
+                return fail(index, "native CSM test mode");
+            for (const u32 target : {first, second})
+                if (target != 7)
+                    emit(0x5090000000000000ULL | predicate | (u64{target} << 3) | 7 | (u64{7} << 12) |
+                         (u64{1} << 15) | (u64{7} << 29) | (u64{7} << 39));
+            break;
+        }
         case 0x3c4: { // REDUX.SUM (modulo 2^32), .MAX (unsigned), .OR or .XOR over the actual active lanes.
             const u32 source = insn.Bits(24, 8), target = uniform_register(static_cast<u32>(dest));
             const bool maximum = insn.words[2] == 0x14000;
