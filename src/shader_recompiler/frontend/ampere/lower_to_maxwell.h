@@ -465,6 +465,16 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(64, 8)} << 20));
                 break;
             }
+            if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 && insn.Bits(74, 1) &&
+                (insn.words[2] & ~0x038004ffU) == 0x000e0000 && insn.Bits(64, 8) < 250) {
+                // IMAD.X RZ * RZ + c + carry: the high half of a 64-bit add with a zero addend.
+                const u32 carry_in = insn.Bits(87, 3);
+                mov_imm(250, 1);
+                emit(0x5ca0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
+                     (u64{carry_in} << 39) | (u64{insn.Bits(90, 1)} << 42));
+                emit(base(0x5c10000000000000ULL) | (u64{insn.Bits(64, 8)} << 8) | (u64{250} << 20));
+                break;
+            }
             if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (insn.words[1] & ~0xffU))
                 return fail(index, "native integer register multiply mode");
             multiply_low(insn.Bits(24, 8), insn.Bits(32, 8), insn.Bits(64, 8), false);
