@@ -140,6 +140,7 @@ class SettingsFragmentPresenter(
             context.getString(R.string.scaling_filter_fsr),
             context.getString(R.string.scaling_filter_sgsr),
             context.getString(R.string.scaling_filter_sgsr_edge),
+            context.getString(R.string.scaling_filter_fsr3),
         )
         return names.asSequence()
             .mapIndexedNotNull { index, name ->
