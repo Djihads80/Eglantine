@@ -2,6 +2,11 @@ name: release-binaries
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the binaries as a GitHub release
+        type: boolean
+        default: true
   push:
     branches:
       - nx2
@@ -165,3 +170,43 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2,
+  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' || inputs.publish_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eglantine-*-${{ github.sha }}
+          path: artifacts
+
+      - name: Package release files
+        shell: bash
+        run: |
+          mkdir dist
+          (cd "artifacts/eglantine-windows-x86_64-${GITHUB_SHA}" &&
+            zip -qr "${GITHUB_WORKSPACE}/dist/eglantine-${GITHUB_SHA}-windows-x86_64.zip" .)
+          cp "artifacts/eglantine-linux-x86_64-${GITHUB_SHA}/eglantine-${GITHUB_SHA}-linux-x86_64.tar.gz" dist/
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "build-${GITHUB_RUN_NUMBER}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --prerelease \
+            --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
+
+          Windows: extract the zip and run eglantine.exe.
+          Linux: extract the tarball and run ./eglantine."
