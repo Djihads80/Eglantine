@@ -225,19 +225,24 @@ void TextureCache<P>::TickFrame() {
         // VRAM (another game: 7.0 -> 6.4 GB), and collecting only past it means the driver pages
         // textures out. It is also the room to use: Eden's device memory figure is capped near
         // 7 GB, which on a 12 GB card (11.2 GB budget) kept title 1 evicting textures with 3 GB
-        // unused. EDEN_NX2_TC_*_MIB overrides still win.
+        // unused. Both thresholds stay under it with a margin (1/8 of it, at most 1 GiB): past it
+        // allocations fail and images end up unbacked (garbage textures), and Windows shrinks the
+        // budget as the card fills (16 GB card: 13.5 GB left mid-race), hence the re-read every 30
+        // frames. EDEN_NX2_TC_*_MIB overrides still win.
         if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-            if (native_thresholds_applied && budget_check_frames++ % 60 == 0) {
+            if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
-                    critical_memory = budget - 768_MiB;
-                    expected_memory = budget - 1536_MiB;
-                    // Log only real changes (the budget moves by a few MiB all the time).
+                    const u64 margin = (std::min)(budget / 8, 1_GiB);
+                    critical_memory = budget - margin;
+                    expected_memory = budget - 2 * margin;
+                    // Log the first values and real changes (the budget moves by a few MiB all
+                    // the time).
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
-                    ApplyThresholdOverrides(change >= 256_MiB);
+                    ApplyThresholdOverrides(budget_check_frames == 1 || change >= 256_MiB);
                 }
             }
         }
