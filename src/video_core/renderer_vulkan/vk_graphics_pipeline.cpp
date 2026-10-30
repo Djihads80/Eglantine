@@ -54,6 +54,17 @@ using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 
 constexpr size_t NUM_STAGES = Maxwell::MaxShaderStage;
 
+// The stage of a program: task and mesh programs sit in the vertex and tessellation slots.
+VkShaderStageFlagBits StageFlag(const Shader::Info& info, VkShaderStageFlagBits slot_stage) {
+    if (info.is_task) {
+        return VK_SHADER_STAGE_TASK_BIT_EXT;
+    }
+    if (info.is_mesh) {
+        return VK_SHADER_STAGE_MESH_BIT_EXT;
+    }
+    return slot_stage;
+}
+
 DescriptorLayoutBuilder MakeBuilder(const Device& device, std::span<const Shader::Info> infos) {
     DescriptorLayoutBuilder builder{device};
     for (size_t index = 0; index < infos.size(); ++index) {
@@ -64,7 +75,7 @@ DescriptorLayoutBuilder MakeBuilder(const Device& device, std::span<const Shader
             VK_SHADER_STAGE_GEOMETRY_BIT,
             VK_SHADER_STAGE_FRAGMENT_BIT,
         };
-        builder.Add(infos[index], stages.at(index));
+        builder.Add(infos[index], StageFlag(infos[index], stages.at(index)));
     }
     return builder;
 }
@@ -1073,6 +1084,19 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         }
     }
 
+    const bool is_mesh{IsMeshPipeline()};
+    if (is_mesh) {
+        // Mesh pipelines have no vertex input or input assembly.
+        dynamic_states.erase(std::remove_if(dynamic_states.begin(), dynamic_states.end(),
+                                            [](VkDynamicState state) {
+                                                return state == VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT ||
+                                                       state == VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT ||
+                                                       state == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT ||
+                                                       state == VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT ||
+                                                       state == VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT;
+                                            }),
+                             dynamic_states.end());
+    }
     const VkPipelineDynamicStateCreateInfo dynamic_state_ci{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .pNext = nullptr,
@@ -1095,7 +1119,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
-                .stage = MaxwellToVK::ShaderStage(Shader::StageFromIndex(stage)),
+                .stage = StageFlag(stage_infos[stage],
+                                   MaxwellToVK::ShaderStage(Shader::StageFromIndex(stage))),
                 .module = *spv_modules[stage],
                 .pName = "main",
                 .pSpecializationInfo = nullptr,
@@ -1115,9 +1140,9 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .flags = flags,
         .stageCount = static_cast<u32>(shader_stages.size()),
         .pStages = shader_stages.data(),
-        .pVertexInputState = &vertex_input_ci,
-        .pInputAssemblyState = &input_assembly_ci,
-        .pTessellationState = &tessellation_ci,
+        .pVertexInputState = is_mesh ? nullptr : &vertex_input_ci,
+        .pInputAssemblyState = is_mesh ? nullptr : &input_assembly_ci,
+        .pTessellationState = is_mesh ? nullptr : &tessellation_ci,
         .pViewportState = &viewport_ci,
         .pRasterizationState = &rasterization_ci,
         .pMultisampleState = &multisample_ci,

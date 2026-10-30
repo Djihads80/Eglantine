@@ -279,6 +279,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure("no pipeline");
         return;
     }
+    // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
+    mesh_draw = pipeline->IsMeshPipeline();
+    if (mesh_draw && !device.IsExtMeshShaderSupported()) {
+        report_failure("no VK_EXT_mesh_shader");
+        return;
+    }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
@@ -541,6 +547,12 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
+        if (mesh_draw) {
+            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+                cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
+            });
+            return;
+        }
         scheduler.Record([draw_params](vk::CommandBuffer cmdbuf) {
             if (draw_params.is_indexed) {
                 cmdbuf.DrawIndexed(draw_params.num_vertices, draw_params.num_instances,
@@ -573,6 +585,14 @@ void RasterizerVulkan::DrawIndirect() {
     const auto& params = maxwell3d->draw_manager.indirect_state;
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
+        if (mesh_draw) {
+            // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
+            static bool logged{};
+            if (!std::exchange(logged, true)) {
+                LOG_WARNING(Render_Vulkan, "Indirect task/mesh draw skipped");
+            }
+            return;
+        }
         const auto indirect_buffer = buffer_cache.GetDrawIndirectBuffer();
         const auto& buffer = indirect_buffer.first;
         const auto& offset = indirect_buffer.second;

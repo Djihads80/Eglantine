@@ -2541,6 +2541,19 @@ public:
             return IsShaderConfigEnabled(static_cast<std::size_t>(type));
         }
 
+        // Switch 2 (NVN) task and mesh pipelines (clc597.h): SET_MESH_CONTROL, SET_MESH_SHADER_A
+        // and _B, SET_MESH_INIT_SHADER. While mesh control is on, the vertex slot holds the task
+        // program (or the mesh program when there is no task), the tessellation slot the mesh
+        // program and the geometry slot a pass-through header naming the per-primitive outputs.
+        static constexpr std::size_t MeshControl = 0x114c / 4;
+        static constexpr std::size_t MeshShaderA = 0x1150 / 4;
+        static constexpr std::size_t MeshShaderB = 0x1154 / 4;
+        static constexpr std::size_t MeshInitShader = 0x1158 / 4;
+
+        bool IsMeshEnabled() const {
+            return (reg_array[MeshControl] & 1) != 0;
+        }
+
         struct ConstantBuffer {
             u32 size;
             u32 address_high;

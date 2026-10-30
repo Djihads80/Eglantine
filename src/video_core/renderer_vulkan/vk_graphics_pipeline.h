@@ -98,6 +98,11 @@ public:
     bool UsesExtendedDynamicState() const noexcept {
         return key.state.extended_dynamic_state != 0;
     }
+
+    /// Switch 2 task/mesh pipeline: drawn with vkCmdDrawMeshTasksEXT.
+    [[nodiscard]] bool IsMeshPipeline() const noexcept {
+        return stage_infos[0].is_task || stage_infos[0].is_mesh;
+    }
     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
 

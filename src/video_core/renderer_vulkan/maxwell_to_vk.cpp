@@ -333,6 +333,10 @@ VkShaderStageFlagBits ShaderStage(Shader::Stage stage) {
         return VK_SHADER_STAGE_FRAGMENT_BIT;
     case Shader::Stage::Compute:
         return VK_SHADER_STAGE_COMPUTE_BIT;
+    case Shader::Stage::Task:
+        return VK_SHADER_STAGE_TASK_BIT_EXT;
+    case Shader::Stage::Mesh:
+        return VK_SHADER_STAGE_MESH_BIT_EXT;
     }
     UNIMPLEMENTED_MSG("Unimplemented shader stage={}", stage);
     return {};
