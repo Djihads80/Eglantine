@@ -10,14 +10,14 @@
 namespace Service::Audio {
 using namespace AudioCore::Renderer;
 
-IAudioRenderer::IAudioRenderer(Core::System& system_, Manager& manager_,
+IAudioRenderer::IAudioRenderer(Core::System& system_, std::shared_ptr<Manager> manager_,
                                AudioCore::AudioRendererParameterInternal& params,
                                Kernel::KTransferMemory* transfer_memory, u64 transfer_memory_size,
                                Kernel::KProcess* process_handle_, u64 applet_resource_user_id,
                                s32 session_id)
     : ServiceFramework{system_, "IAudioRenderer"}, service_context{system_, "IAudioRenderer"},
-      rendered_event{service_context.CreateEvent("IAudioRendererEvent")}, manager{manager_},
-      impl{std::make_unique<Renderer>(system_, manager, rendered_event)}, process_handle{
+      rendered_event{service_context.CreateEvent("IAudioRendererEvent")}, manager{std::move(manager_)},
+      impl{std::make_unique<Renderer>(system_, *manager, rendered_event)}, process_handle{
                                                                               process_handle_} {
     // clang-format off
     static const FunctionInfo functions[] = {
