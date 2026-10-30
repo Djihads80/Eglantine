@@ -16,7 +16,7 @@
 </h1>
 
 <h4 align="center"><b>Eglantine</b> is a free and opensource (FOSS) Switch 2 emulator, derived from Eden, Yuzu and Sudachi - started by developer Camille LaVey.
-It's written in C++ with portability in mind, with builds for Windows, Linux, macOS, Android, FreeBSD and more.
+It's written in C++ with portability in mind, with builds for Windows, Linux and macOS
 </h4>
 
 <p align="center">
