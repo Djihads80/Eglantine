@@ -20,6 +20,7 @@
 #include "common/settings.h"
 
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
+#include "video_core/nx2.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 
 #include "video_core/engines/fermi_2d.h"
@@ -163,6 +164,16 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
                  (std::max)(info.size.height >> level, 1U) * 4;
     }
     return bytes * info.resources.layers > (u64{1} << 30);
+}
+
+// A large image over Switch 2 sparse blocks nobody has written (title 1's terrain layer pools, 2.9
+// GB of R8/RG16/R16 that stay empty in the attract demo) is all zeros: it gets no device memory
+// until a write makes the texture cache replace it.
+[[nodiscard]] bool IsUnwrittenSparse(const ImageInfo& info, GPUVAddr gpu_addr) {
+    constexpr u32 MinSize = 32U << 20;
+    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    return size >= MinSize && info.type != ImageType::e1D && info.type != ImageType::Buffer &&
+           info.type != ImageType::Linear && Tegra::Nx2SparseUnwritten(gpu_addr, size);
 }
 
 // The host format of a huge ASTC array: the GPU decoder's RGBA8 (sRGB kept for sampling).
@@ -330,7 +341,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 
 [[nodiscard]] vk::Image MakeImage(const Device& device, const MemoryAllocator& allocator,
                                   const ImageInfo& info, std::span<const VkFormat> view_formats,
-                                  std::optional<VkFormat> format_override = {}) {
+                                  std::optional<VkFormat> format_override = {},
+                                  bool unbacked = false) {
     if (info.type == ImageType::Buffer) {
         return vk::Image{};
     }
@@ -356,6 +368,11 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 
         if (device.IsKhrImageFormatListSupported()) {
             image_ci.pNext = &image_format_list;
+        }
+    }
+    if (unbacked) {
+        if (vk::Image image = allocator.CreateUnbackedImage(image_ci)) {
+            return image;
         }
     }
     return allocator.CreateImage(image_ci);
@@ -2039,10 +2056,19 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
                                : IsOpaqueBc1Astc(runtime_.device, info)
                                    ? std::span<const VkFormat>{OpaqueAstcViewFormats}
                                    : runtime->ViewFormats(info.format),
-                               AstcHostFormat(runtime_.device, info))),
+                               AstcHostFormat(runtime_.device, info),
+                               IsUnwrittenSparse(info, gpu_addr_))),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
+        // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing was
+        // written there yet, so the first write gets it replaced.
+        const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
+        const u64 texels = u64{host_info.size.width} * host_info.size.height *
+                           host_info.size.depth * static_cast<u64>(host_info.resources.layers);
+        if (texels <= (u64{1} << 28)) {
+            flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
+        }
     }
     if (host_level_offset != 0) {
         flags |= VideoCommon::ImageFlagBits::TrimmedLevels;

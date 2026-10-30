@@ -50,6 +50,9 @@ enum class ImageFlagBits : u32 {
     /// in VRAM); uploads skip the rest, downloads are never done.
     TrimmedLevels = 1 << 19,
     ZeroFilled = 1 << 20, ///< Cleared to zero blocks before its first asynchronous decode.
+    /// Over Switch 2 sparse blocks nobody wrote: all zeros, so the host image has no memory
+    /// (Unbacked) until the first write, which makes a backed image replace it.
+    UnwrittenSparse = 1 << 21,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 

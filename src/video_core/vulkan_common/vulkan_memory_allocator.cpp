@@ -248,21 +248,15 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
         // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
-        // 68 layers, ~23 GB): on the console only resident tiles have memory. Create a sparse
-        // resident image with nothing bound, so views and copies still work; reads of it return
-        // zero and writes are dropped, instead of aborting.
-        VkImageCreateInfo sparse_ci = ci;
-        sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
-        VkImage sparse{};
-        if (device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr,
-                                                     &sparse) == VK_SUCCESS) {
+        // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
+        // nothing bound, so views and copies still work, instead of aborting.
+        if (vk::Image sparse = CreateUnbackedImage(ci)) {
             LOG_WARNING(Render_Vulkan,
                         "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
                         "unbacked sparse image",
                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
                         ci.arrayLayers, static_cast<u32>(ci.format));
-            return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
-                             device.GetDispatchLoader());
+            return sparse;
         }
     }
     if (result != VK_SUCCESS) {
@@ -284,6 +278,21 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
 
     return vk::Image(handle, ci.usage, *device.GetLogical(), allocator, allocation,
                         device.GetDispatchLoader());
+}
+
+vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci) const {
+    if (ci.imageType == VK_IMAGE_TYPE_1D) {
+        return vk::Image{};
+    }
+    VkImageCreateInfo sparse_ci = ci;
+    sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+    VkImage sparse{};
+    if (device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr,
+                                                 &sparse) != VK_SUCCESS) {
+        return vk::Image{};
+    }
+    return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
+                     device.GetDispatchLoader());
 }
 
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {

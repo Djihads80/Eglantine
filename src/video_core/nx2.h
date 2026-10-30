@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -91,6 +92,81 @@ inline void Nx2BackSparseWrite(u64 gpu_address, u64 size) {
     if (g_nx2_sparse_backing) {
         g_nx2_sparse_backing(gpu_address, size);
     }
+}
+
+// Which blocks of each sparse region have been written (got memory), for the texture cache: an
+// image over blocks nobody wrote is all zeros and needs no device memory. Its own lock, taken last:
+// the texture cache asks with its lock held, and nx2:gpu updates it holding none of the GPU's.
+struct Nx2SparseRegionState {
+    u64 size;
+    u64 block_size;
+    std::vector<bool> written;
+};
+inline std::mutex g_nx2_sparse_state_mutex;
+inline std::map<u64, Nx2SparseRegionState> g_nx2_sparse_state;
+
+inline void Nx2SparseRegionCreated(u64 gpu_address, u64 size, u64 block_size) {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    g_nx2_sparse_state[gpu_address] = {size, block_size,
+                                       std::vector<bool>((size + block_size - 1) / block_size)};
+}
+
+inline void Nx2SparseRegionDestroyed(u64 gpu_address) {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    g_nx2_sparse_state.erase(gpu_address);
+}
+
+inline void Nx2SparseBlockWritten(u64 region_address, u64 block) {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    if (const auto it = g_nx2_sparse_state.find(region_address); it != g_nx2_sparse_state.end()) {
+        it->second.written[block] = true;
+    }
+}
+
+/// The GPU renders into [gpu_address, +size): count its blocks as written, so images made there
+/// later get memory (their contents live in the host image, not in guest memory).
+inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
+    if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        return;
+    }
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    for (auto& [start, region] : g_nx2_sparse_state) {
+        const u64 end = start + region.size;
+        if (gpu_address >= end || gpu_address + size <= start) {
+            continue;
+        }
+        const u64 first = ((std::max)(gpu_address, start) - start) / region.block_size;
+        const u64 last = ((std::min)(gpu_address + size, end) - 1 - start) / region.block_size;
+        for (u64 block = first; block <= last; ++block) {
+            region.written[block] = true;
+        }
+    }
+}
+
+/// True when [gpu_address, +size) lies in one sparse region and none of it has been written.
+inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
+    if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        return false;
+    }
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    auto it = g_nx2_sparse_state.upper_bound(gpu_address);
+    if (it == g_nx2_sparse_state.begin()) {
+        return false;
+    }
+    --it;
+    const auto& [start, region] = *it;
+    if (gpu_address + size > start + region.size) {
+        return false;
+    }
+    const u64 last = (gpu_address + size - 1 - start) / region.block_size;
+    for (u64 block = (gpu_address - start) / region.block_size; block <= last; ++block) {
+        if (region.written[block]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;

@@ -564,6 +564,7 @@ private:
                 // BackSparseWrite gives a block memory before the GPU writes into it.
                 m_sparse_regions[start] = {size, std::vector<u8>(Common::DivCeil(size, SparseBlockSize))};
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().CreateSparse(start, size);
+                Tegra::Nx2SparseRegionCreated(start, size, SparseBlockSize);
                 Tegra::Nx2AddSparseSpan(start, size);
                 LOG_INFO(Service, "nx2:gpu 214 sparse region [{:#x}, {:#x}] backed as the GPU writes it",
                          start, last);
@@ -595,6 +596,7 @@ private:
         FreeReleasedRegions();
         if (last > first) {
             if (m_sparse_regions.erase(first) != 0) {
+                Tegra::Nx2SparseRegionDestroyed(first);
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DestroySparse(first, last - first + 1);
             } else {
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
@@ -738,6 +740,7 @@ private:
                 region.blocks[block] = BlockBacked;
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().BackSparse(block_address, *address,
                                                                         block_size);
+                Tegra::Nx2SparseBlockWritten(start, block);
                 m_sparse_backed_bytes += block_size;
                 if (++m_sparse_blocks == 1 || (m_sparse_blocks % 64) == 0) {
                     LOG_INFO(Service, "nx2:gpu {} sparse blocks backed ({} MiB); {} MiB of GPU-only "
