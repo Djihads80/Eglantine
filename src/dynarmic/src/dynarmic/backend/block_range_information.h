@@ -8,11 +8,9 @@
 
 #pragma once
 
-#include <set>
+#include <vector>
 
-#include <boost/icl/interval_map.hpp>
 #include <boost/icl/interval_set.hpp>
-#include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
 
 #include "dynarmic/ir/location_descriptor.h"
@@ -24,8 +22,18 @@ class BlockRangeInformation {
 public:
     void AddRange(boost::icl::discrete_interval<P> range, IR::LocationDescriptor location);
     void ClearCache();
-    ::Common::unordered_set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<P>& ranges);
-    boost::icl::interval_map<P, ::Common::unordered_set<IR::LocationDescriptor>> block_ranges;
+    ::Common::unordered_set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<P>& invalidated);
+
+private:
+    /// The guest code [first, last] a block was translated from. Code is invalidated rarely (when
+    /// it is unmapped or reprotected), so a list scanned then costs least: an interval map of
+    /// block sets held ~300 bytes per block.
+    struct Range {
+        P first;
+        P last;
+        IR::LocationDescriptor location;
+    };
+    std::vector<Range> ranges;
 };
 
 }  // namespace Dynarmic::Backend
