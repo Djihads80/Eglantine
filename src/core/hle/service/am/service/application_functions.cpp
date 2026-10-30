@@ -14,6 +14,7 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/savedata_factory.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/result.h"
 #include "core/hle/service/am/am_results.h"
@@ -114,7 +115,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {181, nullptr, "UpgradeLaunchRequiredVersion"},
         {190, nullptr, "SendServerMaintenanceOverlayNotification"},
         {200, nullptr, "GetLastApplicationExitReason"},
-        {210, D<&IApplicationFunctions::GetUnknownEvent210>, "Unknown210"},
+        {210, D<&IApplicationFunctions::GetOperationModeRefreshEvent>, "GetOperationModeRefreshEvent (guessed)"},
         {220, nullptr, "Unknown220"}, // [20.0.0+]
         {300, nullptr, "CreateMovieWriter"}, // [19.0.0+]
         {310, nullptr, "Unknown310"}, // [20.0.0+]
@@ -539,10 +540,18 @@ Result IApplicationFunctions::GetHealthWarningDisappearedSystemEvent(
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::GetUnknownEvent210(
+// The Switch 2 nn::oe::GetOperationMode caches the mode and only asks ICommonStateGetter again
+// once this event is signaled, so it has to fire on every docked/handheld change. Switch 1 titles
+// keep the event that never fires, as its use there is unknown.
+Result IApplicationFunctions::GetOperationModeRefreshEvent(
     OutCopyHandle<Kernel::KReadableEvent> out_event) {
     LOG_DEBUG(Service_AM, "called");
-    *out_event = m_applet->unknown_event.GetHandle();
+    const auto* process = m_applet->process ? m_applet->process->GetHandle() : nullptr;
+    if (process != nullptr && process->IsSwitch2()) {
+        *out_event = m_applet->lifecycle_manager.GetOperationModeRefreshEvent().GetHandle();
+    } else {
+        *out_event = m_applet->unknown_event.GetHandle();
+    }
     R_SUCCEED();
 }
 

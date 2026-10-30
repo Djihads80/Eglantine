@@ -45,6 +45,7 @@ public:
 public:
     Event& GetSystemEvent();
     Event& GetOperationModeChangedSystemEvent();
+    Event& GetOperationModeRefreshEvent();
     Event& GetHDCPStateChangedEvent();
 
 public:
@@ -158,6 +159,7 @@ private:
 private:
     Event m_system_event;
     Event m_operation_mode_changed_system_event;
+    Event m_operation_mode_refresh_event;
     Event m_hdcp_state_changed_event;
 
     std::list<AppletMessage> m_unordered_messages{};

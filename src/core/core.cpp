@@ -1059,6 +1059,8 @@ void System::ApplySettings() {
 
     if (IsPoweredOn()) {
         Renderer().RefreshBaseSettings();
+        // Frontends switch docked/handheld through the settings; let the running game know.
+        GetAppletManager().OperationModeChanged();
     }
 }
 
