@@ -740,9 +740,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{(high_result ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
             break;
         }
-        case 0xb82: { // LDC.64 indexed byte offset
+        case 0xb82: { // LDC, 8 to 64 bits, indexed byte offset
             const u32 width = insn.Bits(73, 3);
-            if ((width != 4 && width != 5) || insn.Bits(78, 2) || insn.Bits(91, 1) ||
+            if (width > 5 || insn.Bits(78, 2) || insn.Bits(91, 1) ||
                 bank() >= 18 ||
                 (width == 5 && ((dest & 1) || dest >= 254))) return fail(index, "native indexed constant load mode");
             emit(base(0xef90000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
