@@ -105,6 +105,8 @@ protected:
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
 
+    Tegra::MaxwellDeviceMemoryManager& device_memory;
+
 private:
     friend struct ShaderCacheTestAccess;
 
@@ -159,8 +161,6 @@ private:
     void RememberRejection(VAddr addr);
     /// Hash of the state task and mesh programs are translated with.
     u64 MeshStateHash() const;
-
-    Tegra::MaxwellDeviceMemoryManager& device_memory;
 
     mutable std::mutex lookup_mutex;
     std::mutex invalidation_mutex;
