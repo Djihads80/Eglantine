@@ -241,6 +241,12 @@ private:
     };
     std::map<std::pair<u64, u64>, Nx2DeviceRange> nx2_device_ranges;
     void Nx2Release(u64 cpu_address, u64 size);
+
+    // Switch 2 sparse regions: a device range per region, mapped for the GPU when it's created;
+    // blocks get memory behind their device pages as the GPU writes them.
+    void Nx2Sparse(u64 gpu_address, u64 size, bool create);
+    void Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size);
+    std::map<u64, std::pair<u64, DAddr>> nx2_sparse_ranges; ///< GPU address -> (size, device)
 };
 
 } // namespace Service::Nvidia::Devices
