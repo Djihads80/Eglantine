@@ -257,6 +257,20 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
           info.size.depth == 1;
 }
 
+// The most a trimmed ASTC array keeps on the host: 512 MiB, 256 MiB on GPUs with less than 7 GiB
+// (title 1's two terrain arrays took 724 MiB of a 6 GB card next to ~1.2 GB of other sparse terrain
+// textures). EDEN_NX2_ASTC_ARRAY_MIB=<MiB> sets it.
+[[nodiscard]] u64 TrimmedAstcArrayLimit(const Device& device) {
+    static const u64 forced = [] {
+        const char* value = std::getenv("EDEN_NX2_ASTC_ARRAY_MIB");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : 0ULL;
+    }();
+    if (forced != 0) {
+        return forced;
+    }
+    return device.GetDeviceLocalMemory() < (u64{7} << 30) ? (u64{256} << 20) : (u64{512} << 20);
+}
+
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
@@ -301,7 +315,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if (decoded_bytes(level_offset) <= (u64{1} << 30)) {
         return level_offset != 0 ? host_info() : info;
     }
-    while (level_offset + 1 < levels && decoded_bytes(level_offset) > (u64{512} << 20)) {
+    const u64 limit = TrimmedAstcArrayLimit(device);
+    while (level_offset + 1 < levels && decoded_bytes(level_offset) > limit) {
         ++level_offset;
     }
     const ImageInfo host = host_info();
