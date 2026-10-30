@@ -902,11 +902,14 @@ private:
         }
     }
 
-    // EDEN_NX2_SPARSE_LAZY=0 backs sparse regions whole, as before.
+    // EDEN_NX2_SPARSE_LAZY=0 backs sparse regions whole, as before; =1 forces lazy backing. Without
+    // it, lazy backing is used unless the renderer found a driver that can't handle it.
     static bool LazySparseRegions() {
         static const bool lazy = [] {
-            const char* value = std::getenv("EDEN_NX2_SPARSE_LAZY");
-            return value == nullptr || value[0] != '0';
+            if (const char* value = std::getenv("EDEN_NX2_SPARSE_LAZY")) {
+                return value[0] != '0';
+            }
+            return Tegra::g_nx2_sparse_lazy_supported.load();
         }();
         return lazy;
     }
