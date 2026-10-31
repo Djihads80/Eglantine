@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string_view>
 #include "common/logging.h"
@@ -131,9 +132,16 @@ std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
 }
 
 // Loose ExeFS dumps carry no control data, but icon/nacp sidecars can be dropped next to the
-// ExeFS or in the game folder above it (<game>/exefs/main and
+// ExeFS or in the game folder above it (<game>/exefs/main, <game>/base/exefs/main and
 // <game>/updates/<title id>/exefs/main layouts).
 std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exefs_dir) {
+    const auto equals_ignore_case = [](const std::string& a, std::string_view b) {
+        return a.size() == b.size() &&
+               std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) ==
+                          std::tolower(static_cast<unsigned char>(y));
+               });
+    };
     std::vector<FileSys::VirtualDir> dirs;
     for (auto dir = exefs_dir; dir != nullptr;) {
         dirs.push_back(dir);
@@ -145,8 +153,13 @@ std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exef
             break;
         }
         const auto& name = dir->GetName();
-        const bool layout_directory = name == "exefs" || name == "base" || name == "updates";
-        const bool update_version = parent->GetName() == "updates";
+        const auto& parent_name = parent->GetName();
+        const bool layout_directory = equals_ignore_case(name, "exefs") ||
+                                      equals_ignore_case(name, "base") ||
+                                      equals_ignore_case(name, "update") ||
+                                      equals_ignore_case(name, "updates");
+        const bool update_version = equals_ignore_case(parent_name, "update") ||
+                                    equals_ignore_case(parent_name, "updates");
         if (!layout_directory && !update_version) {
             break;
         }

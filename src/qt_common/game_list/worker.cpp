@@ -175,15 +175,21 @@ QDir ExtractedGameDirectory(const std::string& physical_name) {
         !directory.cdUp()) {
         return QFileInfo(QString::fromStdString(physical_name)).dir();
     }
-    if (directory.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0 ||
-        directory.dirName().compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0) {
-        directory.cdUp();
-    } else {
+    const auto is_update = [](const QString& name) {
+        return name.compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
+               name.compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0;
+    };
+    while (true) {
         QDir parent = directory;
-        if (parent.cdUp() &&
-            parent.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0 &&
-            parent.cdUp()) {
+        if (!parent.cdUp()) {
+            break;
+        }
+        if (is_update(directory.dirName()) ||
+            directory.dirName().compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0 ||
+            is_update(parent.dirName())) {
             directory = parent;
+        } else {
+            break;
         }
     }
     return directory;
@@ -194,7 +200,7 @@ QString LooseExeFSName(const std::string& physical_name) {
 }
 
 std::size_t ExtractedGameSize(const std::string& physical_name,
-                              const std::atomic_bool& stop_requested) {
+                             const std::atomic_bool& stop_requested) {
     QDirIterator files{ExtractedGameDirectory(physical_name).absolutePath(),
                        QDir::Files | QDir::Hidden | QDir::System | QDir::NoSymLinks,
                        QDirIterator::Subdirectories};
@@ -280,12 +286,18 @@ GameListWorker::GameListWorker(FileSys::VirtualFilesystem vfs_,
 
 GameListWorker::~GameListWorker() {
     this->disconnect();
-    stop_requested.store(true);
-    processing_completed.Wait();
+    Stop();
+}
+
+void GameListWorker::Stop() {
+    if (!stop_requested.exchange(true)) {
+        processing_completed.Wait();
+    }
 }
 
 void GameListWorker::ProcessEvents(GameListModel* model) {
-    while (true) {
+    // An event may spin a nested event loop that replaces this worker, in which case stop.
+    while (model->current_worker.get() == this) {
         std::function<void(GameListModel*)> func;
         {
             // Lock queue to protect concurrent modification.
@@ -437,12 +449,15 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
                 const FileSys::PatchManager patch{id, system.GetFileSystemController(),
                                                   system.GetContentProvider()};
 
-                const auto size = app_loader->GetFileType() == Loader::FileType::DeconstructedRomDirectory
-                    ? ExtractedGameSize(physical_name, stop_requested)
-                    : Common::FS::GetSize(physical_name);
-                if (stop_requested) return;
-                auto entry = MakeGameListEntry(physical_name, name, size, icon, *app_loader,
-                                               id, play_time_manager, patch);
+                const auto size =
+                    app_loader->GetFileType() == Loader::FileType::DeconstructedRomDirectory
+                        ? ExtractedGameSize(physical_name, stop_requested)
+                        : Common::FS::GetSize(physical_name);
+                if (stop_requested) {
+                    return;
+                }
+                auto entry = MakeGameListEntry(physical_name, name, size, icon, *app_loader, id,
+                                               play_time_manager, patch);
 
                 RecordEvent([=](GameListModel* model) { model->AddEntry(entry, parent_dir); });
             };
@@ -470,12 +485,16 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
     };
 
     const auto callback = [this, &process_candidate](const std::filesystem::path& path) -> bool {
-        if (stop_requested) return false;
+        if (stop_requested) {
+            return false;
+        }
         if (Common::FS::IsDir(path)) {
             watch_list.append(QString::fromStdString(Common::FS::PathToUTF8String(path)));
         } else {
             const auto name = Common::FS::PathToUTF8String(path);
-            if (HasSupportedFileExtension(name) || IsExtractedNCAMain(name)) process_candidate(path);
+            if (HasSupportedFileExtension(name) || IsExtractedNCAMain(name)) {
+                process_candidate(path);
+            }
         }
         return true;
     };
@@ -491,19 +510,22 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
             watch_list.append(directory.absolutePath());
         };
         const auto scan_title = [&](const QDir& title) {
-            const QDir updates{title.filePath(QStringLiteral("updates"))};
-            auto versions = updates.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-            std::sort(versions.begin(), versions.end(), [](const QString& a, const QString& b) {
-                return a.toULongLong() > b.toULongLong();
-            });
-            for (const auto& version : versions) {
-                const QDir exefs{updates.filePath(version + QStringLiteral("/exefs"))};
-                if (QFileInfo::exists(exefs.filePath(QStringLiteral("main")))) {
-                    scan_exefs(exefs);
-                    return;
+            for (const auto* relative : {"updates", "update", "base/updates", "base/update"}) {
+                const QDir updates{title.filePath(QString::fromLatin1(relative))};
+                auto versions = updates.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+                std::sort(versions.begin(), versions.end(), [](const QString& a, const QString& b) {
+                    return a.toULongLong() > b.toULongLong();
+                });
+                for (const auto& version : versions) {
+                    const QDir exefs{updates.filePath(version + QStringLiteral("/exefs"))};
+                    if (QFileInfo::exists(exefs.filePath(QStringLiteral("main")))) {
+                        scan_exefs(exefs);
+                        return;
+                    }
                 }
             }
-            for (const auto* relative : {"updates/exefs", "exefs", "base/exefs"}) {
+            for (const auto* relative : {"updates/exefs", "update/exefs", "base/updates/exefs",
+                                         "base/update/exefs", "exefs", "base/exefs"}) {
                 const QDir exefs{title.filePath(QString::fromLatin1(relative))};
                 if (QFileInfo::exists(exefs.filePath(QStringLiteral("main")))) {
                     scan_exefs(exefs);

@@ -546,6 +546,9 @@ private:
 
     bool auto_paused = false;
     bool auto_muted = false;
+#ifdef __APPLE__
+    u32 sleep_assertion_id = 0;
+#endif
     QTimer mouse_hide_timer;
     QTimer update_input_timer;
 

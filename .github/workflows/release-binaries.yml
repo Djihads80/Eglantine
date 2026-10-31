@@ -11,9 +11,26 @@ on:
     branches:
       - nx2
       - nx2-experimental
+    # A binary only changes when build inputs change; docs-only pushes skip the build.
+    paths:
+      - "src/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "externals/**"
+      - "dist/**"
+      - "tools/**"
+      - ".patch/**"
+      - "cpmfile.json"
+      - ".github/workflows/release-binaries.yml"
 
 permissions:
   contents: read
+
+# Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
+# clang and an older reader refuses it, so this has to stay at or above whatever produced
+# eden.profdata; bump it when a refreshed profile needs a newer LLVM.
+env:
+  PGO_LLVM_VERSION: '23'
 
 concurrency:
   group: release-binaries-${{ github.ref }}
@@ -23,21 +40,35 @@ jobs:
   build:
     name: ${{ matrix.platform }} binary
     runs-on: ${{ matrix.runner }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1500M
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux-x86_64
             runner: ubuntu-24.04
+          # The two -pgo builds are the same programs compiled by clang against Eden's periodically
+          # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang like
+          # Eden does; MSVC cannot read an LLVM .profdata file.
+          - platform: linux-x86_64-pgo
+            runner: ubuntu-24.04
+            pgo: true
           - platform: windows-x86_64
             runner: windows-2022
+          - platform: windows-x86_64-pgo
+            runner: windows-2022
+            pgo: true
+            mingw: true
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux')
         shell: bash
         run: |
           sudo apt-get update
@@ -49,10 +80,10 @@ jobs:
             libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
             spirv-tools spirv-headers libusb-1.0-0-dev \
             libboost-dev libboost-fiber-dev libboost-context-dev \
-            libopus-dev libasound2-dev
+            libopus-dev libasound2-dev ccache
 
       - name: Install Qt on Linux
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux')
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
@@ -61,6 +92,35 @@ jobs:
           arch: linux_gcc_64
           modules: qtcharts
           cache: true
+
+      # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
+      # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
+      # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
+      # ships ld.lld under /usr/lib/llvm-23/bin, so -B points the linker search there.
+      - name: Install clang for PGO
+        if: startsWith(matrix.platform, 'linux') && matrix.pgo
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
+            sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
+          "clang-$PGO_LLVM_VERSION" --version
+
+      # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
+      # path their clang understands.
+      - name: Download PGO profile
+        if: matrix.pgo
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o eden.profdata \
+            https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata
+          test -s eden.profdata
 
       - name: Set up MSVC
         if: matrix.platform == 'windows-x86_64'
@@ -77,6 +137,18 @@ jobs:
           modules: qtcharts
           cache: true
 
+      # MSVC is not something ccache handles well, so that job uses sccache. The other jobs use
+      # ccache, which CMake enables through USE_CCACHE (externals/cmake-modules/UseCcache.cmake).
+      - name: Install sccache on Windows
+        if: matrix.platform == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
+          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
+          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Install Vulkan SDK on Windows
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
@@ -87,6 +159,24 @@ jobs:
         shell: pwsh
         run: glslangValidator --version
 
+      # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
+      # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
+      - name: Set up MSYS2
+        if: matrix.mingw
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
+
       - name: Cache CPM downloads
         uses: actions/cache@v4
         with:
@@ -95,24 +185,52 @@ jobs:
           restore-keys: |
             cpm-${{ runner.os }}-
 
+      # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
+      # exact hit), and restore-keys seeds it from the newest one of the same platform.
+      - name: Cache compiler objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: objects-${{ matrix.platform }}-${{ github.sha }}
+          restore-keys: |
+            objects-${{ matrix.platform }}-
+
       - name: Configure Linux
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux')
         shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=OFF
-          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DVulkanHeaders_FORCE_BUNDLED=ON
-          -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
+        run: |
+          set -euo pipefail
+          flags=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DBUILD_TESTING=OFF
+            -DYUZU_TESTS=OFF
+            -DYUZU_CMD=ON
+            -DYUZU_ROOM=OFF
+            -DYUZU_ROOM_STANDALONE=OFF
+            -DYUZU_USE_BUNDLED_QT=OFF
+            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
+            -DYUZU_USE_BUNDLED_SDL3=ON
+            -DVulkanHeaders_FORCE_BUNDLED=ON
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
+            -DENABLE_UPDATE_CHECKER=OFF
+            -DUSE_DISCORD_PRESENCE=OFF
+            -DUSE_CCACHE=ON
+          )
+          if [ '${{ matrix.pgo }}' = 'true' ]; then
+            # Same flags Eden's CI passes for its clang PGO build.
+            profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
+              -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+            flags+=(
+              "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
+              "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
+              "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
+              "-DCMAKE_C_FLAGS=$profile"
+              "-DCMAKE_CXX_FLAGS=$profile"
+            )
+          fi
+          cmake -S . -B build/release -G Ninja "${flags[@]}"
 
       - name: Configure Windows
         if: matrix.platform == 'windows-x86_64'
@@ -129,16 +247,58 @@ jobs:
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=OFF
           -DUSE_DISCORD_PRESENCE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
+      # path is converted to its Windows form because clang runs with the MSYS mount underneath.
+      - name: Configure MinGW PGO
+        if: matrix.mingw
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin \
+            -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_CCACHE=ON \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile" \
+            "-DCMAKE_CXX_FLAGS=$profile"
 
       - name: Build
+        if: ${{ ! matrix.mingw }}
         shell: bash
-        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
+
+      - name: Build MinGW PGO
+        if: matrix.mingw
+        shell: msys2 {0}
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          ccache --show-stats
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
       # and its Qt plugin adds the Qt libraries and platform plugins. Runs on glibc 2.39+ systems.
       - name: Package Linux AppImage
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux')
         shell: bash
         run: |
           set -euo pipefail
@@ -159,7 +319,7 @@ jobs:
           cp dist/Eglantine.png "$icon"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
-          export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-linux-x86_64.AppImage"
+          export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           "$tools/linuxdeploy-x86_64.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
@@ -182,6 +342,42 @@ jobs:
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
 
+      # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
+      # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
+      # them (docs/Caveats.md#msys2).
+      - name: Package MinGW binary
+        if: matrix.mingw
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          cd build/release/bin
+          test -f eglantine.exe
+          test -f eden-cli.exe
+          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
+            --no-system-dxc-compiler --no-system-d3d-compiler eglantine.exe
+          deps() {
+            objdump -p "$1" | awk '/DLL Name:/ {print $3}' | while read -r dll; do
+              [ -z "$dll" ] && continue
+              source=$(command -v "$dll" 2>/dev/null || true)
+              [ -z "$source" ] && continue
+              # The system DLLs ship with Windows, so they never need bundling.
+              case "$source" in
+                *System32* | *SysWOW64*) continue ;;
+              esac
+              if [ ! -f "$dll" ]; then
+                cp "$source" "$dll"
+                deps "$source"
+              fi
+            done
+          }
+          for exe in eglantine.exe eden-cli.exe; do
+            deps "$exe"
+          done
+          find . -name '*.dll' | while read -r dll; do
+            deps "$dll"
+          done
+
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
@@ -193,8 +389,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload MinGW binary
+        if: matrix.mingw
+        uses: actions/upload-artifact@v4
+        with:
+          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload Linux binary
-        if: matrix.platform == 'linux-x86_64'
+        if: startsWith(matrix.platform, 'linux')
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
@@ -203,7 +408,7 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Publishes both binaries as a GitHub pre-release once every platform built: on pushes to nx2
+  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
   release:
@@ -223,10 +428,16 @@ jobs:
       - name: Package release files
         shell: bash
         run: |
+          set -euo pipefail
           mkdir dist
-          (cd "artifacts/eglantine-windows-x86_64-${GITHUB_SHA}" &&
-            zip -qr "${GITHUB_WORKSPACE}/dist/eglantine-${GITHUB_SHA}-windows-x86_64.zip" .)
-          cp "artifacts/eglantine-linux-x86_64-${GITHUB_SHA}/eglantine-${GITHUB_SHA}-linux-x86_64.AppImage" dist/
+          for artifact in artifacts/*/; do
+            name=$(basename "$artifact")
+            if compgen -G "$artifact*.AppImage" > /dev/null; then
+              cp "$artifact"/*.AppImage dist/
+            else
+              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
+            fi
+          done
 
       - name: Create release
         shell: bash
@@ -242,4 +453,5 @@ jobs:
             --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
 
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
-          Linux: make the AppImage executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch)."
+          Linux: make the AppImage executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
+          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
