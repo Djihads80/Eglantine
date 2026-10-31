@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
@@ -503,6 +503,9 @@ public:
     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
 
     bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
+
+    /// Makes GPU-modified data in a rasterizer-cached region visible to the CPU before it reads.
+    void DownloadRasterizerRegion(Common::ProcessAddress vaddr, size_t size);
 
     bool InvalidateSeparateHeap(void* fault_address);
 
