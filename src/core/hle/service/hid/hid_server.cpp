@@ -132,7 +132,9 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
+        {213, C<&IHidServer::Unknown213>, "Unknown213"},
         {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
+        {220, C<&IHidServer::Unknown220>, "Unknown220"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
         {302, C<&IHidServer::StopConsoleSixAxisSensor>, "StopConsoleSixAxisSensor"},
@@ -1072,6 +1074,17 @@ Result IHidServer::IsVibrationDeviceMounted(
 
 Result IHidServer::SendNx2VibrationValues() {
     LOG_DEBUG(Service_HID, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result IHidServer::Unknown213() {
+    LOG_DEBUG(Service_HID, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result IHidServer::Unknown220(Out<u8> out) {
+    LOG_DEBUG(Service_HID, "(STUBBED) called");
+    *out = 0;
     R_SUCCEED();
 }
 
