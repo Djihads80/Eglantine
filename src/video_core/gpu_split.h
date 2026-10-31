@@ -167,6 +167,10 @@ private:
         }
     }
     void WaitForSpace(size_t words);
+    /// Sleeps a while on the back thread handing ring space back.
+    void SleepOnBack();
+    /// Back side: hands the ring up to `position` back, waking a sleeping front.
+    void HandBack(u64 position);
     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
         if (engine != front_engine) [[unlikely]] {
             SwitchEngine(engine);
@@ -209,6 +213,10 @@ private:
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<u32> wake{};
+    /// Set while the front sleeps on the back thread; the back bumps `drained` when it hands ring
+    /// space back then.
+    alignas(64) std::atomic<bool> front_waiting{};
+    std::atomic<u32> drained{};
     std::jthread back_thread;
 };
 
