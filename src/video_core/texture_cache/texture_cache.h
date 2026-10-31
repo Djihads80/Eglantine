@@ -48,6 +48,24 @@ using VideoCore::Surface::PixelFormat;
 using VideoCore::Surface::SurfaceType;
 using namespace Common::Literals;
 
+// A host image that keeps only mip levels >= host_level_offset (TrimmedLevels) takes the plain
+// upload copies of those levels, renumbered so host level 0 is guest level host_level_offset.
+template <typename Copies>
+void TrimHostLevels(u32 host_level_offset, Copies& copies) {
+    if (host_level_offset == 0) {
+        return;
+    }
+    const s32 skip = static_cast<s32>(host_level_offset);
+    copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                [skip](const auto& copy) {
+                                    return copy.image_subresource.base_level < skip;
+                                }),
+                 copies.end());
+    for (auto& copy : copies) {
+        copy.image_subresource.base_level -= skip;
+    }
+}
+
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
@@ -1948,7 +1966,14 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             // Plain formats: each layer unswizzled on its own into its layer of the image.
             ImageInfo layer_info = image.info;
             layer_info.resources.layers = 1;
-            const size_t layer_size = CalculateUnswizzledSizeBytes(layer_info);
+            // Only the levels the host keeps (TrimmedLevels): a dropped 8192x8192 level 0 alone
+            // would be 64 MB of staging per layer.
+            const s32 first_level = static_cast<s32>(image.host_level_offset);
+            ImageInfo host_layer_info = layer_info;
+            host_layer_info.size.width = (std::max)(layer_info.size.width >> first_level, 1U);
+            host_layer_info.size.height = (std::max)(layer_info.size.height >> first_level, 1U);
+            host_layer_info.resources.levels -= first_level;
+            const size_t layer_size = CalculateUnswizzledSizeBytes(host_layer_info);
             auto staging = runtime.UploadStagingBuffer(layer_size * layers.size());
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
@@ -1958,7 +1983,8 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
                                  &swizzle_data_buffer);
                 auto layer_copies =
                     UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
-                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                                   staging.mapped_span.subspan(i * layer_size, layer_size),
+                                   first_level);
                 for (BufferImageCopy copy : layer_copies) {
                     copy.buffer_offset += i * layer_size;
                     copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
@@ -2031,9 +2057,11 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+        TrimHostLevels(image.host_level_offset, copies);
         image.UploadMemory(staging, copies);
     } else {
-        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
+        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data,
+                                           mapped_span, static_cast<s32>(image.host_level_offset));
         image.UploadMemory(staging, copies);
     }
 }

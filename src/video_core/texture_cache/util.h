@@ -99,9 +99,11 @@ struct UnswizzlePlan {
 void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan& plan,
                          std::span<u8> output);
 
+/// first_level: unswizzle only the levels from it on, packed from the start of `output` and
+/// numbered from 0 (for a host image that keeps only those levels).
 [[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
-    std::span<const u8> input, std::span<u8> output);
+    std::span<const u8> input, std::span<u8> output, s32 first_level = 0);
 
 /// For a single-layer 2D block-linear image of 1x1-texel blocks: the host sparse blocks
 /// (tile_width x tile_height texels) that the guest byte ranges (offset, size) touch, merged into
