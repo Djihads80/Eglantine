@@ -1377,7 +1377,9 @@ inline bool Nx2FirstVideoCommand(std::string_view service, u32 command) {
 // The Switch 2 video decoder (nn::codec::video::detail::ipc). gsv 902/906/1002 hand out a session
 // whose TIPC 1 (CreateVideoDecoderService: handle at word 3, result at word 4) creates a decoder
 // service, another session of this class. Layouts read from the SDK's nn::codec VP9 decoder:
-// - 200(copy handle: work buffer transfer memory, u64 size, u32, u32, u32): initialize.
+// - 200(copy handle: work buffer transfer memory, u64 size, u32, u32, u32): initialize. 201 adds a
+//   fourth u32 (a flag that 200 leaves at 1) and 202 that and a u64: the same initialization.
+//   210(copy handle, u32 x4) replies only a result.
 // - 101(A: codec name, "video/vp9\0"; u32 width, u32 height, u32 rate, u32): configure.
 // - 3(): the submission-ready event (copy handle at word 3, result at word 4).
 // - 6 / 207 / 8: start / stop / flush; 115: finalize.
@@ -1388,6 +1390,8 @@ inline bool Nx2FirstVideoCommand(std::string_view service, u32 command) {
 //   rewritten once that handle (the client's reads) has passed. Reply the image's next handle.
 // - 212(u32 image id): unregister it.
 // - 109(A: one compressed frame, u64 pts in us, u8 end of stream): submit input; reply a u64.
+//   400 is the same with a second A buffer after the frame, a 0x838-byte block of frame
+//   information; the decoder here only needs the frame.
 // - 213(): the next finished frame (16 words): u32 image id, u32 width, u32 height, u32 width,
 //   u32 height, u32 colour space, TimeSpan pts (ns), u8 end of stream.
 // A NativeSyncHandle is {u32 SyncCounterId (~syncpoint), u32 mode, u64 value}; clients wait on it
@@ -1409,11 +1413,15 @@ public:
             {109, &INx2VideoSession::SubmitInput, "SubmitInputBuffer"},
             {115, &INx2VideoSession::Succeed, "Finalize"},
             {200, &INx2VideoSession::Succeed, "Initialize"},
+            {201, &INx2VideoSession::Succeed, "InitializeWithFlag"},
+            {202, &INx2VideoSession::Succeed, "InitializeWithFlagAndValue"},
             {207, &INx2VideoSession::Flush, "Stop"},
+            {210, &INx2VideoSession::Succeed, "Unknown210"},
             {212, &INx2VideoSession::UnregisterBuffer, "UnregisterBuffer"},
             {213, &INx2VideoSession::GetOutputInfo, "GetOutputInfo"},
             {311, &INx2VideoSession::RegisterBuffer, "RegisterBuffer"},
             {314, &INx2VideoSession::ReleaseBuffer, "ReleaseBuffer"},
+            {400, &INx2VideoSession::SubmitInput, "SubmitInputBufferWithInfo"},
         });
     }
 
@@ -1601,9 +1609,11 @@ private:
 
     void SubmitInput(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        // Words 2-4 are the A descriptor of the compressed frame.
-        const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
-        const bool end = (w[7] & 0xFF) != 0;
+        // Words 2-4 are the A descriptor of the compressed frame (400: 5-7 that of its information
+        // block), the data words follow.
+        const size_t words = 2 + 3 * ctx.BufferDescriptorA().size();
+        const u64 pts = u64{w[words]} | (u64{w[words + 1]} << 32);
+        const bool end = (w[words + 2] & 0xFF) != 0;
         Log(ctx, "submit");
         Input input{{}, pts, end};
         if (!ctx.BufferDescriptorA().empty()) {
@@ -1881,6 +1891,7 @@ public:
              "CalculateDecoderImagePoolBuffer"},
             {901, &INx2GraphicsSystemSession::Stub, "VideoInitialize (guessed)"},
             {902, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession (guessed)"},
+            {905, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithFlag"},
             {906, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithVersion"},
             {1001, &INx2GraphicsSystemSession::Stub, "VideoInitialize2 (guessed)"},
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
@@ -1932,7 +1943,9 @@ private:
     // and InitializeVp9Decoder failed with 2001-0114 (title 1 aborts when a movie starts).
     // Newer SDKs (nn::codec::video::detail::InitializeServerContext) send 906(u8, u64 decoder
     // library version) instead of 902; title 4 sends version 0x3'00030000 and aborted with
-    // InvalidHandle at its first movie while 906 was auto-stubbed.
+    // InvalidHandle at its first movie while 906 was auto-stubbed. The SDK of later titles
+    // (ipc::Initialize(bool)) sends 905(u8) instead of 902 when its flag is set; the reply is the
+    // same. 1001/1002 open the encoder's creator session (CreateVideoEncoderService uses it).
     void OpenVideoSession(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         const bool second = ctx.GetCommand() == 1002;
