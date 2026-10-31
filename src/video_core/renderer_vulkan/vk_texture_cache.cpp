@@ -18,6 +18,7 @@
 #include <numeric>
 #include "common/alignment.h"
 #include "common/bit_util.h"
+#include "common/memory_detect.h"
 #include "common/div_ceil.h"
 #include "common/literals.h"
 #include "common/settings.h"
@@ -196,10 +197,13 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
     }
+    // ASTC the host samples as it is (Adreno) uploads layer by layer like other plain formats:
+    // without this, Mario Kart World's ASTC 8x8 terrain arrays stayed unbacked (black) on phones.
     const bool layer_uploads =
         IsHugeAstcArray(device, info) ||
-        (!IsPixelFormatASTC(info.format) &&
-         (!IsPixelFormatBCn(info.format) || device.IsOptimalBcnSupported()));
+        (IsPixelFormatASTC(info.format)
+             ? device.IsOptimalAstcSupported()
+             : (!IsPixelFormatBCn(info.format) || device.IsOptimalBcnSupported()));
     const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
@@ -276,9 +280,30 @@ enum class SparseTilesMode {
     }
 }
 
+// Phone and tablet GPUs: device memory is the system's RAM, shared with everything else.
+[[nodiscard]] bool IsMobileGpu(const Device& device) {
+    switch (device.GetDriverID()) {
+    case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
+    case VK_DRIVER_ID_MESA_TURNIP:
+    case VK_DRIVER_ID_ARM_PROPRIETARY:
+    case VK_DRIVER_ID_MESA_PANVK:
+    case VK_DRIVER_ID_IMAGINATION_PROPRIETARY:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // The most device memory one SparseLayers image binds: 768 MiB, 384 MiB on GPUs with less than
-// 7 GiB (title 1's BC6H arrays are 85 MB a layer).
+// 7 GiB (title 1's BC6H arrays are 85 MB a layer). On a phone with 16 GiB of RAM or more, 1.5 GiB:
+// a whole trimmed array (68 layers of Mario Kart World's BC6H and ASTC 8x8 textures), whose
+// missing layers otherwise sample as black.
 [[nodiscard]] VkDeviceSize SparseLayersCap(const Device& device) {
+    if (IsMobileGpu(device)) {
+        return Common::GetMemInfo().TotalPhysicalMemory >= (u64{16} << 30)
+                   ? (VkDeviceSize{1536} << 20)
+                   : (VkDeviceSize{768} << 20);
+    }
     return device.GetDeviceLocalMemory() < (u64{7} << 30) ? (VkDeviceSize{384} << 20)
                                                            : (VkDeviceSize{768} << 20);
 }
@@ -390,12 +415,18 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if (!WillUseAcceleratedAstcDecode(device, info)) {
         // Too big for the host to create at all (Mario Kart World's 8192x8192x68 BC6H virtual
         // texture is 6 GB, the Adreno limit 4 GB): keep its lower levels, as for ASTC below.
-        const u64 limit = MaxHostImageBytes(device);
+        // On a phone, also no more than one sparse image may bind, so every layer gets memory.
+        const bool mobile = IsMobileGpu(device);
+        const u64 max_bytes = MaxHostImageBytes(device);
+        const u64 limit = mobile ? (std::min)(max_bytes == 0 ? ~u64{} : max_bytes,
+                                              u64{SparseLayersCap(device)})
+                                 : max_bytes;
+        const u64 target = mobile ? limit : limit / 2;
         if (limit == 0 || HostImageBytes(device, info, 0) <= limit) {
             return info;
         }
         while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
-               HostImageBytes(device, info, level_offset) > limit / 2) {
+               HostImageBytes(device, info, level_offset) > target) {
             ++level_offset;
         }
         ImageInfo host = info;
@@ -497,7 +528,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 [[nodiscard]] vk::Image MakeImage(const Device& device, const MemoryAllocator& allocator,
                                   const ImageInfo& info, std::span<const VkFormat> view_formats,
                                   std::optional<VkFormat> format_override = {},
-                                  bool unbacked = false, bool aliased = false) {
+                                  bool unbacked = false, bool aliased = false,
+                                  bool back_huge = false) {
     if (info.type == ImageType::Buffer) {
         return vk::Image{};
     }
@@ -530,7 +562,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
             return image;
         }
     }
-    return allocator.CreateImage(image_ci);
+    return allocator.CreateImage(image_ci, false, back_huge);
 }
 
 [[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
@@ -2700,14 +2732,36 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
         const u64 texels = u64{host_info.size.width} * host_info.size.height *
                            host_info.size.depth * static_cast<u64>(host_info.resources.layers);
+        // On a phone a large image can still be backed whole (it is RAM): when it fits one sparse
+        // image's share, rather than stay all zeros for want of sparse residency in its format.
+        const bool backable = IsMobileGpu(runtime_.device) &&
+                              HostImageBytes(runtime_.device, host_info, 0) <=
+                                  SparseLayersCap(runtime_.device);
         if (UsesSparseLayers(runtime_.device, info, gpu_addr_) && InitSparseLayers()) {
             flags |= VideoCommon::ImageFlagBits::SparseLayers;
         } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
             flags |= VideoCommon::ImageFlagBits::SparseTiles;
-        } else if (texels <= (u64{1} << 28)) {
+        } else if (texels <= (u64{1} << 28) ||
+                   (backable && IsUnwrittenSparse(runtime_.device, info, gpu_addr_))) {
             // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
             // was written there yet, so the first write gets it replaced.
             flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
+        } else if (backable) {
+            vk::Image backed = MakeImage(
+                runtime_.device, runtime_.memory_allocator, host_info,
+                IsHugeAstcArray(runtime_.device, info) ? std::span<const VkFormat>{HugeAstcViewFormats}
+                : IsOpaqueBc1Astc(runtime_.device, info)
+                    ? std::span<const VkFormat>{OpaqueAstcViewFormats}
+                    : runtime->ViewFormats(info.format),
+                AstcHostFormat(runtime_.device, info), false, false, true);
+            if (backed && !backed.IsUnbacked()) {
+                LOG_INFO(Render_Vulkan, "{}x{}x{} image at {:#x} has no sparse residency here; "
+                                        "backing it whole",
+                         host_info.size.width, host_info.size.height, host_info.resources.layers,
+                         gpu_addr_);
+                original_image = std::move(backed);
+                flags &= ~VideoCommon::ImageFlagBits::Unbacked;
+            }
         }
     }
     if (host_level_offset != 0) {

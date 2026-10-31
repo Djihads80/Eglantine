@@ -108,7 +108,9 @@ namespace Vulkan {
 
         /// `dedicated`: own device memory, returned to the driver on destruction (short-lived
         /// images would otherwise leave holes in the shared blocks).
-        vk::Image CreateImage(const VkImageCreateInfo &ci, bool dedicated = false) const;
+        /// back_huge: back an image even past the size this keeps unbacked (unified memory).
+        vk::Image CreateImage(const VkImageCreateInfo &ci, bool dedicated = false,
+                              bool back_huge = false) const;
 
         /// A sparse resident image with nothing bound (reads return zero, writes are dropped), or
         /// a null image when the device can't make one.
