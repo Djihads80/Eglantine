@@ -1419,7 +1419,8 @@ bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
                image.info.type == ImageType::e2D && image.info.resources.layers > 1 &&
                image.guest_size_bytes >= LayerUploadMinSize &&
                False(image.flags & (ImageFlagBits::Unbacked | ImageFlagBits::Sparse |
-                                    ImageFlagBits::Remapped));
+                                    ImageFlagBits::Remapped)) &&
+               runtime.CanUploadLayers(image.info);
     } else {
         return false;
     }

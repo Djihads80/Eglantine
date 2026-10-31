@@ -110,6 +110,10 @@ public:
                                u32 z_start, u32 z_count);
 
     /// Decodes only `layers` of an ASTC array; the staging buffer holds those layers in order.
+    /// True when AccelerateImageUploadLayers can refresh some layers of the image alone (ASTC the
+    /// GPU decodes to RGBA8, not the BCn transcode).
+    bool CanUploadLayers(const VideoCommon::ImageInfo& info) const noexcept;
+
     void AccelerateImageUploadLayers(Image&, const StagingBufferRef&,
                                      std::span<const VideoCommon::SwizzleParameters>,
                                      std::span<const u32> layers);

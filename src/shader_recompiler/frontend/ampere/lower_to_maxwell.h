@@ -10,6 +10,7 @@
 #include <bit>
 #include <span>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 #include "common/common_types.h"
@@ -47,6 +48,25 @@ struct LoweredProgram {
 // A constant clip batch needs no cross-invocation mapping: all seven outside
 // predicates are false in every invocation. Recognize only unconditional reads
 // of positive guardband factors and the corresponding zero > factor comparisons.
+// EDEN_NATIVE_LOWER_DISABLE=<group>[,<group>...] switches individual lowering fixes back to the
+// previous behaviour (rejecting the form) so a visual regression can be bisected.
+// Groups: cube3d_lod, array2d_bias.
+inline bool LowerGroupDisabled(std::string_view group) {
+    static const std::string list = [] {
+        const char* value = std::getenv("EDEN_NATIVE_LOWER_DISABLE");
+        return std::string{value ? value : ""};
+    }();
+    if (list.empty()) return false;
+    std::string_view rest = list;
+    while (!rest.empty()) {
+        const size_t comma = rest.find(',');
+        if (rest.substr(0, comma) == group) return true;
+        if (comma == std::string_view::npos) break;
+        rest.remove_prefix(comma + 1);
+    }
+    return false;
+}
+
 inline bool ConstantAcceptedClipPrefix(std::span<const Instruction> prefix) {
     std::array<bool, 28> positive_uniform{};
     std::array<bool, 7> false_predicates{};
@@ -1882,6 +1902,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             break;
         }
         case 0xb60: { // TEX, scalar 2D implicit-LOD sample
+            const bool half = insn.Bits(79, 1);
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
             constexpr std::array<u32, 8> rg_masks{1, 2, 4, 8, 3, 9, 10, 12};
@@ -1891,6 +1912,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            // Register numbers from here on are scratch (uniform registers live from 216 on).
+            const u32 reserved_register = uses_uniform_bank ? 216U : 246U;
             if (!insn.Bits(60, 1) && dimension == 7 && lod == 3) {
                 const u32 components = std::popcount(mask);
                 if (depth_compare || !components || split != (components > 2) ||
@@ -1913,12 +1936,16 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                          (u64{15} << 39) | (u64{250 + i} << 20));
                 break;
             }
-            if (dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
+            if (half && ((dimension != 1 && dimension != 5) || depth_compare || insn.Bits(76, 2)))
+                return fail(index, "native half texture sample mode");
+            if (dimension == 5 && depth_compare && lod <= 1 && !split && mask == 1) {
                 if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
-                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
                     (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
                     return fail(index, "native array depth comparison sample mode");
-                result.required_texture_buffer = 2;
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != insn.Bits(54, 5))
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = insn.Bits(54, 5);
                 for (u32 i = 0; i < 3; ++i) {
                     const u32 source = i < 2 ? source_a + i : source_b;
                     emit(0x5c98000000000000ULL | predicate | (250 + i) |
@@ -1927,7 +1954,224 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                 emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
                      (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
                      (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{1} << 50) | (u64{7} << 51) | (u64{lod} << 55));
+                break;
+            }
+            if (dimension == 5 && lod == 3 && !depth_compare && !split && insn.Bits(60, 1)) {
+                // Scalar 2D array with explicit LOD: {layer, x} and {y, lod}. TEXS has no
+                // ARRAY_2D.LL form, so emit TEX ARRAY_2D.LL with {layer, x, y} and {lod}.
+                const u32 components = static_cast<u32>(std::popcount(mask));
+                if (components == 0 || components > 2 || insn.Bits(76, 2) || insn.Bits(79, 1) ||
+                    insn.Bits(81, 3) != 7 || insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff ||
+                    insn.Bits(54, 5) >= 18 || source_a >= 249 || source_b >= 249 || dest + components > 255)
+                    return fail(index, "native array explicit-LOD sample mode");
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != insn.Bits(54, 5))
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = insn.Bits(54, 5);
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                copy(250, source_a);
+                copy(251, source_a + 1);
+                copy(252, source_b);
+                emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
+                     (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51) | (u64{lod} << 55));
+                break;
+            }
+            if (dimension == 1 && lod == 3 && insn.Bits(76, 2) == 1) {
+                const u32 count = static_cast<u32>(std::popcount(mask));
+                if (!insn.Bits(60, 1) || depth_compare || !count ||
+                    insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                    insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                    (source_a & 1) || source_a > 248 || (source_b & 1) || source_b > 248 ||
+                    dest >= 250 || (count > 1 && (dest & 1)) || (count <= 2 && split) ||
+                    (count > 2 && (second_dest >= 250 || (count == 4 && (second_dest & 1)))))
+                    return fail(index, "native explicit-LOD offset sample mode");
+                const u32 binding = insn.Bits(54, 5);
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target |
+                         (u64{15} << 39) | (u64{source} << 20));
+                };
+                // Coordinates and metadata are vector pairs. Snapshot them
+                // before packing the selected result channels over any aliases.
+                copy(250, source_a); copy(251, source_a + 1);
+                copy(252, source_b); copy(253, source_b + 1);
+                emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                     (u64{252} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51) | (u64{1} << 54) | (u64{3} << 55));
+                for (u32 component = 0; component < count; ++component)
+                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+                         250 + component);
+                break;
+            }
+            if (dimension == 7 && !depth_compare &&
+                ((insn.Bits(60, 1) && lod == 0) || (!insn.Bits(60, 1) && lod == 3))) {
+                const bool scalar = insn.Bits(60, 1);
+                if (!mask || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                    (source_a & (scalar ? 1 : 3)) || (scalar && (source_b & 1)) ||
+                    source_a >= (scalar ? 248U : 245U) || source_b >= 248 ||
+                    dest >= 248 || (std::popcount(mask) > 1 && (dest & 1)) ||
+                    (std::popcount(mask) > 2 && (!split || second_dest >= 248)) ||
+                    (std::popcount(mask) > 3 && (second_dest & 1)))
+                    return fail(index, "native scalar cube array sample mode");
+                const u32 binding = insn.Bits(54, 5);
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                copy(250, source_a);
+                copy(251, source_a + 1);
+                copy(252, scalar ? source_b : source_a + 2);
+                copy(253, scalar ? source_b + 1 : source_a + 3);
+                emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                     (u64{scalar ? 255U : source_b} << 20) | (u64{7} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51) | (u64{lod} << 55));
+                for (u32 component = 0; component < static_cast<u32>(std::popcount(mask)); ++component)
+                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+                         250 + component);
+                break;
+            }
+            if (dimension == 7 && depth_compare && lod == 0 && !split && mask == 1) {
+                if (insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                    (source_a & 3) || source_a > 244 || source_b >= 248 || dest >= 248)
+                    return fail(index, "native cube array depth comparison sample mode");
+                const u32 binding = insn.Bits(54, 5);
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                emit(0xc000000000000000ULL | predicate | dest | (u64{source_a} << 8) |
+                     (u64{source_b} << 20) | (u64{7} << 28) | (u64{1} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
                      (u64{1} << 50) | (u64{7} << 51));
+                break;
+            }
+            const bool aoffi = insn.Bits(76, 1);
+            if (dimension == 1 && (lod == 2 || (lod <= 1 && (mask == 5 || mask == 6 || aoffi)))) {
+                const u32 count = std::popcount(mask), binding = insn.Bits(54, 5);
+                if (half || depth_compare || !mask || !insn.Bits(60, 1) || insn.Bits(77, 1) || (aoffi && lod > 1) ||
+                    insn.Bits(81, 3) != 7 || insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff ||
+                    binding >= 18 || ((lod == 2 || aoffi) && (source_a & 1)) || source_a >= 248 || source_b >= 248 ||
+                    dest >= 248 || (count > 1 && ((dest & 1) || dest + 1 >= 248)) ||
+                    (count <= 2 ? split : !split || second_dest >= 248) ||
+                    (count == 4 && ((second_dest & 1) || second_dest + 1 >= 248)))
+                    return fail(index, "native biased texture sample mode");
+                const bool bindless = result.required_texture_buffer != ~0U && result.required_texture_buffer != binding;
+                if (!bindless) result.required_texture_buffer = binding;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                if (bindless) {
+                    emit(0x4c98000000070000ULL | 248 | (u64{15} << 39) |
+                         (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+                    if (lod == 2 || aoffi) copy(249, source_b);
+                }
+                if (lod != 2 && !aoffi) { copy(250, source_a); copy(251, source_b); }
+                emit((bindless ? 0xde80000000000000ULL : 0xc000000000000000ULL) | predicate | 250 |
+                     (u64{lod == 2 || aoffi ? source_a : 250U} << 8) | (u64{bindless ? 248U : lod == 2 || aoffi ? source_b : 255U} << 20) |
+                     (u64{2} << 28) | (u64{mask} << 31) | (u64{7} << 51) |
+                     (u64{insn.Bits(90, 1)} << 49) | (u64{lod} << (bindless ? 37 : 55)) |
+                     (u64{aoffi} << (bindless ? 36 : 54)) |
+                     (bindless ? 0 : u64{insn.Bits(40, 14)} << 36));
+                for (u32 component = 0; component < count; ++component)
+                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+                         250 + component);
+                break;
+            }
+            if (dimension == 5 && depth_compare && lod <= 1 && !split && mask == 1) {
+                if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                    (source_a & 1) || (source_b & 1) || source_a + 1 >= reserved_register || source_b + 1 >= reserved_register || dest >= reserved_register)
+                    return fail(index, "native array depth comparison sample mode");
+                const u32 binding = insn.Bits(54, 5);
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                return fail(index, "native texture descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+                for (u32 i = 0; i < 3; ++i) {
+                    const u32 source = i < 2 ? source_a + i : source_b;
+                    emit(0x5c98000000000000ULL | predicate | (250 + i) |
+                         (u64{15} << 39) | (u64{source} << 20));
+                }
+                emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
+                     (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{1} << 50) | (u64{7} << 51) | (u64{lod} << 55));
+                break;
+            }
+            if (dimension == 5 && lod == 2 && !LowerGroupDisabled("array2d_bias")) {
+                // Array2D bias samples split {array, x} and {y, bias} across the two sources.
+                if (half || !insn.Bits(60, 1) || depth_compare || mask != 15 || !split ||
+                    insn.Bits(76, 2) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                    insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
+                    (source_a & 1) || (source_b & 1) || source_a >= 249 || source_b >= 249 ||
+                    (dest & 1) || dest >= 254 || (second_dest & 1) || second_dest >= 254)
+                    return fail(index, "native Array2D bias texture mode");
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != 2)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = 2;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target |
+                         (u64{15} << 39) | (u64{source} << 20));
+                };
+                copy(250, source_a);
+                copy(251, source_a + 1);
+                copy(252, source_b);
+                copy(253, source_b + 1);
+                emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                     (u64{253} << 20) | (u64{3} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51) | (u64{2} << 55));
+                copy(static_cast<u32>(dest), 250);
+                copy(static_cast<u32>(dest) + 1, 251);
+                copy(second_dest, 252);
+                copy(second_dest + 1, 253);
+                break;
+            }
+            if ((dimension == 3 && (lod == 0 || lod == 1 || lod == 3)) || (dimension == 2 && (lod <= 1 || (lod == 2 && !LowerGroupDisabled("cube3d_lod"))))) {
+                // 3D bias (lod 2) takes the bias value from the register after Z, like cube explicit LOD.
+                const bool lod_register = (dimension == 3 && lod == 3) || (dimension == 2 && lod == 2);
+                const u32 components = static_cast<u32>(std::popcount(mask));
+                if (!insn.Bits(60, 1) || depth_compare || components == 0 ||
+                    insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                    (source_a & 1) || (lod_register && (source_b & 1)) || source_a >= 249 || source_b >= 249 ||
+                    dest == 255 || (components > 1 && ((dest & 1) || dest >= 254)) ||
+                    (components > 2 && (!split || second_dest >= 248)) ||
+                    (components == 4 && (second_dest & 1)))
+                    return fail(index, "native cube explicit-LOD sample mode");
+                const u32 binding = insn.Bits(54, 5);
+                const bool bindless = result.required_texture_buffer != ~0U && result.required_texture_buffer != binding;
+                if (!bindless) result.required_texture_buffer = binding;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                copy(bindless ? 252 : 250, source_a);
+                copy(bindless ? 253 : 251, source_a + 1);
+                copy(bindless ? 254 : 252, source_b);
+                if (bindless) {
+                    // Scratch descriptors must not merge with an unrelated value on the
+                    // skipped path; only the texture operation needs predication.
+                    emit(0x4c98000000070000ULL | 250 | (u64{15} << 39) |
+                         (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+                    if (lod_register) copy(251, source_b + 1);
+                }
+                emit((bindless ? 0xde80000000000000ULL : 0xc000000000000000ULL) | predicate | 250 | (u64{bindless ? 252U : 250U} << 8) |
+                     (u64{bindless ? 250U : lod_register ? source_b + 1 : 255U} << 20) | (u64{dimension == 3 ? 6U : 4U} << 28) | (u64{mask} << 31) |
+                     (bindless ? 0 : u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51) | (u64{lod} << (bindless ? 37 : 55)));
+                for (u32 component = 0; component < components; ++component)
+                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+                         250 + component);
                 break;
             }
             // General form: gather the native operand list (array index first, coordinates,
@@ -2011,16 +2255,36 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                 insn.Bits(81, 3) != 7 || (lod > 1 && (lod != 3 || dimension != 1 || depth_compare)) ||
                 (lod == 3 && ((source_a & 1) || source_a >= 249)) ||
                 insn.Bits(59, 1) ||
-                insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
-                dest == 255 || (mask & (mask - 1) && ((dest & 1) || dest >= 254)) ||
-                (split && mask == 15 && ((second_dest & 1) || second_dest >= 254)) ||
+                insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
+                dest == 255 || (!half && mask & (mask - 1) && ((dest & 1) || dest >= 254)) ||
+                (!half && split && mask == 15 && ((second_dest & 1) || second_dest >= 254)) ||
                 (depth_compare && (dimension != 1 || split || mask != 1 || (source_a & 1) || source_a >= 249)) ||
                 (dimension == 5 && ((source_a & 1) || source_a >= 249))) {
                 if (!general_tex()) return fail(index, "native texture mode or descriptor binding");
                 break;
             }
-            result.required_texture_buffer = 2;
-            emit((0xd800000000000000ULL & ~(u64{insn.Bits(79, 1)} << 59)) | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
+            const u32 binding = insn.Bits(54, 5);
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding) {
+                if (half || dimension != 1 || depth_compare || lod > 1)
+                    return fail(index, "native mixed-bank texture sample mode");
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                copy(250, source_a);
+                copy(251, source_b);
+                emit(0x4c98000000070000ULL | 253 | (u64{15} << 39) |
+                     (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+                emit(0xde80000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                     (u64{253} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                     (u64{lod} << 37) | (u64{7} << 51) | (u64{insn.Bits(90, 1)} << 49));
+                const u32 count = std::popcount(mask);
+                for (u32 component = 0; component < count; ++component)
+                    copy(component < 2 ? static_cast<u32>(dest) + component : second_dest + component - 2,
+                         250 + component);
+                break;
+            }
+            result.required_texture_buffer = binding;
+            emit((half ? 0xd000000000000000ULL : 0xd800000000000000ULL) | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(64, 8)} << 28) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{swizzle} << 50) | (u64{dimension == 5 ? (lod ? 8U : 7U) : depth_compare ? (lod ? 6U : 4U) : (lod == 3 ? 3U : lod ? 2U : 1U)} << 53));

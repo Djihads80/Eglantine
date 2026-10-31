@@ -3705,6 +3705,10 @@ void TextureCacheRuntime::AccelerateImageUpload(
     ASSERT(false);
 }
 
+bool TextureCacheRuntime::CanUploadLayers(const ImageInfo& info) const noexcept {
+    return WillUseAcceleratedAstcDecode(device, info);
+}
+
 void TextureCacheRuntime::AccelerateImageUploadLayers(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles, std::span<const u32> layers) {
