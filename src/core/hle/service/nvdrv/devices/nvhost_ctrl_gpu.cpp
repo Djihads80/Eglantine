@@ -113,12 +113,22 @@ NvResult nvhost_ctrl_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8>
         case 0x6:
             return WrapFixedInlOut(this, &nvhost_ctrl_gpu::GetTPCMasks3, input, output,
                                    inline_output);
-        case 0x13:
-            LOG_DEBUG(Service_NVDRV, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return NvResult::NotImplemented;
+        case 0x13: {
+            // NVGPU_GPU_IOCTL_VSMS_MAPPING: an 8-byte argument struct plus a buffer of
+            // {gpc_index, tpc_index} byte pairs, one per virtual SM. The SDK treats a pair left at
+            // its 0xc0c0 sentinel as failure, so fill every pair: one GPC, two SMs per TPC.
+            if (command.raw != 0xc0084713 || input.size() != 8 || output.size() != 8 ||
+                inline_output.size() < 2) {
+                return NvResult::BadParameter;
+            }
+            std::memcpy(output.data(), input.data(), output.size());
+            for (size_t i = 0; i + 1 < inline_output.size(); i += 2) {
+                inline_output[i] = 0;                         // gpc_index
+                inline_output[i + 1] = static_cast<u8>(i / 4); // tpc_index
+            }
+            LOG_DEBUG(Service_NVDRV, "VSMS mapping for {} SMs", inline_output.size() / 2);
+            return NvResult::Success;
+        }
         default:
             break;
         }
