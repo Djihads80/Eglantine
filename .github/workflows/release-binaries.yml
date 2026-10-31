@@ -338,7 +338,8 @@ jobs:
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
           export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
-          "$tools/linuxdeploy-x86_64.AppImage" --appdir AppDir \
+          export ARCH="$arch"
+          "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
             --executable build/release/bin/eden-cli \
             --desktop-file dist/dev.eden_emu.eden.desktop \
