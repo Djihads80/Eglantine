@@ -178,6 +178,13 @@ else()
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-parameter>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-field-initializers>)
 
+    if (ENABLE_WERROR AND (NOT MSVC))
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error=unused>
+            $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error=unused-function>
+        )
+        endif()
+
     if (CXX_CLANG OR CXX_ICC OR CXX_APPLE) # Clang, AppleClang, or Intel C++
         if (NOT MSVC)
             add_compile_options(
