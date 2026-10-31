@@ -30,6 +30,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/settings.h"
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "video_core/nx2_profile.h"
 
 #if defined(__clang__) && defined(NDEBUG)
@@ -259,6 +262,33 @@ ConfigureFuncPtr ConfigureFunc(const std::array<vk::ShaderModule, NUM_STAGES>& m
     return FindSpec<SimpleVertexSpec, SimpleVertexFragmentSpec, SimpleStorageSpec, SimpleImageSpec,
                     DefaultSpec>(modules, infos);
 }
+// Writes the stages of a pipeline the driver rejected to dump/failed_pipelines/<hash>_<stage>.spv.
+void DumpFailedPipeline(const GraphicsPipelineCacheKey& key,
+                        const std::array<std::vector<u32>, NUM_STAGES>& spirv) {
+    static constexpr std::array stage_names{"vertex", "tess_control", "tess_eval", "geometry",
+                                            "fragment"};
+    const auto dir =
+        Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir) / "failed_pipelines";
+    if (!Common::FS::CreateDirs(dir)) {
+        return;
+    }
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if (spirv[stage].empty()) {
+            continue;
+        }
+        const u64 hash = key.unique_hashes[stage + 1];
+        const auto path = dir / fmt::format("{:016x}_{}.spv", hash, stage_names[stage]);
+        Common::FS::IOFile file{path, Common::FS::FileAccessMode::Write,
+                                Common::FS::FileType::BinaryFile};
+        if (file.IsOpen()) {
+            void(file.WriteSpan(std::span<const u32>{spirv[stage]}));
+        }
+        LOG_CRITICAL(Render_Vulkan, "  {} stage {:016x}: {} bytes of SPIR-V dumped to {}",
+                     stage_names[stage], hash, spirv[stage].size() * sizeof(u32),
+                     Common::FS::PathToUTF8String(path));
+    }
+}
+
 } // Anonymous namespace
 
 // TODO(crueter): This is the worst-formatted code I have EVER seen
@@ -270,7 +300,8 @@ GraphicsPipeline::GraphicsPipeline(
     Common::ThreadWorker* worker_thread,
     PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
     const GraphicsPipelineCacheKey& key_, std::array<vk::ShaderModule, NUM_STAGES> stages,
-    const std::array<const Shader::Info*, NUM_STAGES>& infos)
+    const std::array<const Shader::Info*, NUM_STAGES>& infos,
+    std::array<std::vector<u32>, NUM_STAGES> spirv)
     : key{key_}, device{device_}, texture_cache{texture_cache_}, buffer_cache{buffer_cache_},
       pipeline_cache(pipeline_cache_), scheduler{scheduler_},
       guest_descriptor_queue{guest_descriptor_queue_},
@@ -324,13 +355,17 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
+    // The stages' SPIR-V is kept only while the pipeline builds: a driver that rejects it gets
+    // it written to dump/failed_pipelines for inspection (spirv-val, spirv-dis).
+    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
+                spirv = std::move(spirv)] {
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
+            DumpFailedPipeline(key, spirv);
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();

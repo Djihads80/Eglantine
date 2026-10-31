@@ -84,7 +84,8 @@ public:
         DescriptorBufferRing& descriptor_buffer_ring, Common::ThreadWorker* worker_thread,
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
         const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
-        const std::array<const Shader::Info*, NUM_STAGES>& infos);
+        const std::array<const Shader::Info*, NUM_STAGES>& infos,
+        std::array<std::vector<u32>, NUM_STAGES> spirv = {});
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
     bool SupportsAlphaToCoverage() const noexcept {
