@@ -552,6 +552,10 @@ private:
     static constexpr size_t TICKS_TO_DESTROY = 8;
 #endif
     DelayedDestructionRing<Image, TICKS_TO_DESTROY> sentenced_images;
+    /// Device memory of the images in each slot of sentenced_images (same index): deleted, but
+    /// counted in the driver's usage until the ring destroys them.
+    std::array<u64, TICKS_TO_DESTROY> sentenced_image_bytes{};
+    size_t sentenced_image_index = 0;
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 
