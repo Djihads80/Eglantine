@@ -299,6 +299,8 @@ private:
         }
 
         void Instruction(Word pc, Word count, const Decoded& d) {
+            // Keep the failing PC available for diagnostics; it used to stay zero.
+            mov(dword[st + offsetof(State, fail_pc)], pc);
             // FIFO loads, in lane order.
             for (Word i = 0; i < 2; ++i) {
                 const Xbyak::Reg32 load = i == 0 ? r12d : r13d;
