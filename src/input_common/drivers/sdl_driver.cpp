@@ -589,15 +589,6 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         }
         break;
     }
-    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-    case SDL_EVENT_GAMEPAD_BUTTON_UP: {
-        const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-        if (const auto joystick = GetSDLJoystickBySDLID(event.gbutton.which)) {
-            const PadIdentifier identifier = joystick->GetPadIdentifier();
-            SetButton(identifier, event.gbutton.button, down);
-        }
-        break;
-    }
     case SDL_EVENT_JOYSTICK_HAT_MOTION: {
         if (const auto joystick = GetSDLJoystickBySDLID(event.jhat.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
@@ -609,13 +600,6 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
         if (const auto joystick = GetSDLJoystickBySDLID(event.jaxis.which)) {
             const PadIdentifier identifier = joystick->GetPadIdentifier();
             SetAxis(identifier, event.jaxis.axis, event.jaxis.value / 32767.0f);
-        }
-        break;
-    }
-    case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
-        if (const auto joystick = GetSDLJoystickBySDLID(event.gaxis.which)) {
-            const PadIdentifier identifier = joystick->GetPadIdentifier();
-            SetAxis(identifier, event.gaxis.axis, event.gaxis.value / 32767.0f);
         }
         break;
     }
