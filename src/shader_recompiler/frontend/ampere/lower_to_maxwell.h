@@ -1519,6 +1519,32 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 binding = insn.Bits(54, 5);
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            // 2D gather with per-texel offsets (bits 76-77 = 2, .PTP): Rb:Rb+1 hold the four
+            // offset pairs, which Maxwell TLD4 takes the same way (offset type 2, bits 54-55).
+            if (insn.Bits(76, 2) == 2 && insn.Bits(61, 3) == 1 && !insn.Bits(59, 1) && insn.Bits(60, 1) &&
+                mask && !insn.Bits(78, 3) && insn.Bits(81, 3) == 7 && !insn.Bits(89, 1) &&
+                !insn.Bits(91, 1) && binding < 18 && insn.Bits(40, 14) <= 0x1fff &&
+                (second_dest != 255 ? components >= 3 : components <= 2) && dest + 1 < 246 &&
+                (components == 1 || !(dest & 1)) &&
+                (second_dest == 255 ||
+                 ((components < 4 || !(second_dest & 1)) && second_dest + 1 < 246)) &&
+                source_a + 1 < 246 && source_b + 1 < 246) {
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                // The components come back packed from R250 in mask order.
+                emit(0xc800000000000000ULL | (u64{insn.Bits(87, 2)} << 56) | (u64{2} << 54) |
+                     predicate | 250 | (u64{source_a} << 8) | (u64{source_b} << 20) | (u64{2} << 28) |
+                     (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{7} << 51));
+                for (u32 component = 0; component < components; ++component)
+                    emit(0x5c98000000000000ULL | predicate |
+                         (component < 2 ? static_cast<u32>(dest) + component
+                                        : second_dest + component - 2) |
+                         (u64{15} << 39) | (u64{250 + component} << 20));
+                break;
+            }
             if (insn.Bits(61, 3) != 1 || insn.Bits(76, 4) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
                 insn.Bits(40, 14) > 0x1fff || binding >= 18 || insn.Bits(89, 1) || mask == 0 ||
                 (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))
@@ -1531,7 +1557,6 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
                  (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
-            const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
             for (u32 i = 0; i < components; ++i) {
                 u32 target = 255;
