@@ -547,11 +547,28 @@ private:
                 // backed whole, they ran the pool dry and the later ones got no memory at all.
                 // The region gets a device range of its own, unbacked pages read zero, and
                 // BackSparseWrite gives a block memory before the GPU writes into it.
-                m_sparse_regions[start] = {size, std::vector<u8>(Common::DivCeil(size, SparseBlockSize))};
+                m_sparse_regions[start] = {
+                    .size = size,
+                    .blocks = std::vector<u8>(Common::DivCeil(size, SparseBlockSize)),
+                };
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().CreateSparse(start, size);
                 Tegra::Nx2SparseRegionCreated(start, size, SparseBlockSize);
                 Tegra::Nx2AddSparseSpan(start, size);
                 LOG_INFO(Service, "nx2:gpu 214 sparse region [{:#x}, {:#x}] backed as the GPU writes it",
+                         start, last);
+            } else if (LazyGpuOnlyRegions()) {
+                // The rest is written by the host GPU, not through guest memory (title 1's and
+                // title 4's render targets, 285-300 MB regions): like a sparse region it gets a
+                // device range of its own and memory per block only when something writes guest
+                // memory there (downloads, copies). The texture cache sees ordinary memory.
+                m_sparse_regions[start] = {
+                    .gpu_only = true,
+                    .size = size,
+                    .blocks = std::vector<u8>(Common::DivCeil(size, SparseBlockSize)),
+                };
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().CreateSparse(start, size);
+                Tegra::Nx2AddSparseSpan(start, size);
+                LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed as it is written",
                          start, last);
             } else if (const auto address = BackGpuOnlyRegion(start, size)) {
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(start, *address, size);
@@ -746,12 +763,22 @@ private:
         return lazy;
     }
 
+    // EDEN_NX2_GPU_ONLY_LAZY=0 backs GPU-only regions whole, as before.
+    static bool LazyGpuOnlyRegions() {
+        static const bool lazy = [] {
+            const char* value = std::getenv("EDEN_NX2_GPU_ONLY_LAZY");
+            return value == nullptr || value[0] != '0';
+        }();
+        return lazy;
+    }
+
     static constexpr u32 SparseRegionFlag = 0x200; ///< Word 7 of 214 (0x60c arrays, 0xa0c pools)
     static constexpr u64 SparseBlockSize = 4ULL << 20;
     static constexpr u8 BlockEmpty = 0;
     static constexpr u8 BlockBacked = 1;
     static constexpr u8 BlockFailed = 2;
     struct SparseRegion {
+        bool gpu_only{};        ///< A GPU-only region (no sparse flag), backed lazily as well
         u64 size;
         std::vector<u8> blocks; ///< BlockEmpty / BlockBacked / BlockFailed per SparseBlockSize
         bool warned{};          ///< Logged that the pool ran out for its blocks
