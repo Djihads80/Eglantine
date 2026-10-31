@@ -219,6 +219,7 @@
     <addaction name="action_Install_Keys"/>
     <addaction name="menuInstall_Firmware"/>
     <addaction name="action_Verify_installed_contents"/>
+    <addaction name="action_Pack_Nx2"/>
     <addaction name="action_Data_Manager"/>
     <addaction name="separator"/>
     <addaction name="menu_cabinet_applet"/>
@@ -288,6 +289,11 @@
   <action name="action_Verify_installed_contents">
    <property name="text">
     <string>&amp;Verify Installed Contents</string>
+   </property>
+  </action>
+  <action name="action_Pack_Nx2">
+   <property name="text">
+    <string>&amp;Pack Switch 2 Dump to .nx2...</string>
    </property>
   </action>
   <action name="action_About">

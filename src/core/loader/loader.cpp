@@ -115,6 +115,11 @@ bool HasApplicationProgramContent(const std::shared_ptr<FileSys::NSP>& nsp) {
         return false;
     }
 
+    // An extracted-type NSP (a packed dump, .nx2) holds its ExeFS directly, with no NCAs.
+    if (nsp->IsExtractedType()) {
+        return nsp->GetProgramStatus() == ResultStatus::Success;
+    }
+
     const auto& ncas = nsp->GetNCAs();
     return std::any_of(ncas.cbegin(), ncas.cend(), [](const auto& title_entry) {
         const auto& nca_map = title_entry.second;
@@ -215,6 +220,8 @@ FileType GuessFromFilename(const std::string& name) {
         return FileType::NUP;
     else if (extension == "nsz")
         return FileType::NSZ;
+    else if (extension == "nx2") // a packed Switch 2 dump: an extracted-type NSP
+        return FileType::NSP;
     else if (extension == "kip")
         return FileType::KIP;
     return FileType::Unknown;

@@ -113,7 +113,17 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
     }
 
     if (Common::FS::IsDir(path)) {
-        return vfs->OpenFile(path + "/main", FileSys::OpenMode::Read);
+        // A loose ExeFS: main in the directory, else in its exefs/ subdirectory. Looked up through
+        // the directory, since a content URI on Android cannot have "/main" appended.
+        const auto dir = vfs->OpenDirectory(path, FileSys::OpenMode::Read);
+        if (dir == nullptr) {
+            return nullptr;
+        }
+        if (auto main = dir->GetFile("main")) {
+            return main;
+        }
+        const auto exefs = dir->GetSubdirectory("exefs");
+        return exefs != nullptr ? exefs->GetFile("main") : nullptr;
     }
 
     return vfs->OpenFile(path, FileSys::OpenMode::Read);

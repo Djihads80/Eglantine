@@ -28,8 +28,11 @@ namespace Loader {
 class AppLoader_DeconstructedRomDirectory final : public AppLoader {
 public:
     explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile main_file, bool override_update_ = false);
-    // Overload to accept exefs directory. Must contain 'main' and 'main.npdm'
-    explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory, bool override_update_ = false);
+    // Overload to accept exefs directory. Must contain 'main' and 'main.npdm'. read_dump_metadata
+    // also takes the title, icon and version from the directory, as for a loose dump: set for a
+    // packed dump (.nx2), whose files have no containing directory to find them from.
+    explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory, bool override_update_ = false,
+                                                 bool read_dump_metadata = false);
 
     /**
      * Identifies whether or not the given file is a deconstructed ROM directory.
@@ -60,6 +63,8 @@ public:
 private:
     /// The loose RomFS next to the ExeFS, found (and built) on first use.
     const FileSys::VirtualFile& LooseRomFS();
+
+    void ReadDumpMetadata(const FileSys::VirtualDir& file_dir);
 
     FileSys::ProgramMetadata metadata;
     FileSys::VirtualFile romfs;
