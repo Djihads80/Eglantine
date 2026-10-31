@@ -571,15 +571,18 @@ Result IApplicationFunctions::GetOperationModeRefreshEvent(
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::Unknown320() {
-    // Called by Switch 2 titles during nn::oe::Initialize; arguments unknown.
+Result IApplicationFunctions::Unknown320(Out<u16> out) {
+    // Called by Switch 2 titles during nn::oe::Initialize. It returns two bytes of data (meaning
+    // unknown); a reply without them left the caller reading stale message words.
     LOG_WARNING(Service_AM, "(STUBBED) called");
+    *out = 0;
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::Unknown321() {
-    // Called by Switch 2 titles right after 320; arguments unknown.
+Result IApplicationFunctions::Unknown321(Out<u8> out) {
+    // Called by Switch 2 titles right after 320; returns one byte (meaning unknown).
     LOG_WARNING(Service_AM, "(STUBBED) called");
+    *out = 0;
     R_SUCCEED();
 }
 
