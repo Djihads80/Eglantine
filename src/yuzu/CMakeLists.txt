@@ -371,7 +371,7 @@ if (APPLE)
             XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED ON)
     # Otherwise, we'll use our own.
     else()
-        set(_icons "${_dist}/eglantine.icns" "${_dist}/Assets.car")
+        set(_icons "${_dist}/eden.icns" "${_dist}/Assets.car")
     endif()
 
     set_source_files_properties(${_icons} PROPERTIES
