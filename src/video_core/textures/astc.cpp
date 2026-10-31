@@ -2038,38 +2038,74 @@ void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, 
     }
 }
 
+// What IsOpaque needs from a block's 11 mode bits, which are all DecodeBlockInfo reads (a void
+// extent block also needs bits 10 and 11 set, checked per block).
+struct BlockModeInfo {
+    bool error;
+    bool void_extent;
+    bool void_extent_hdr;
+    bool dual_plane;
+    u16 weight_bits;
+};
+
+static std::array<BlockModeInfo, 2048> MakeBlockModeInfos() {
+    std::array<BlockModeInfo, 2048> infos{};
+    for (u32 mode = 0; mode < infos.size(); ++mode) {
+        // Bit 11 set, so a void extent mode decodes without its reserved-bit error.
+        const std::array<u8, 16> block{static_cast<u8>(mode), static_cast<u8>((mode >> 8) | 0x8)};
+        InputBitStream strm(block);
+        const TexelWeightParams params = DecodeBlockInfo(strm);
+        BlockModeInfo& info = infos[mode];
+        info.void_extent = params.m_bVoidExtentLDR || params.m_bVoidExtentHDR;
+        info.void_extent_hdr = params.m_bVoidExtentHDR;
+        info.error = params.m_bError && !info.void_extent;
+        info.dual_plane = params.m_bDualPlane;
+        info.weight_bits = info.error || info.void_extent
+                               ? u16{0}
+                               : static_cast<u16>(params.GetPackedBitSize());
+    }
+    return infos;
+}
+
 bool IsOpaque(std::span<const uint8_t> data) {
     // Endpoint modes with an alpha channel: LDR luminance+alpha (4, 5), RGB scale + two alpha
     // (10), LDR RGBA (12, 13) and HDR RGBA (14, 15).
     constexpr u32 AlphaModes = (1U << 4) | (1U << 5) | (1U << 10) | (1U << 12) | (1U << 13) |
                                (1U << 14) | (1U << 15);
+    // Decoding each block's mode bit by bit took ~12% of title 1's long frames, where every
+    // new ASTC texture is scanned (its title screen streams them in by the thousand).
+    static const std::array<BlockModeInfo, 2048> mode_infos = MakeBlockModeInfos();
     for (size_t offset = 0; offset + 16 <= data.size(); offset += 16) {
         const std::span<const u8> block = data.subspan(offset, 16);
-        InputBitStream strm(block);
-        const TexelWeightParams params = DecodeBlockInfo(strm);
-        if (params.m_bError) {
+        u32 low;
+        std::memcpy(&low, block.data(), sizeof(low));
+        const BlockModeInfo& info = mode_infos[low & 0x7FF];
+        if (info.error) {
             continue; // decodes to the opaque error colour
         }
-        if (params.m_bVoidExtentLDR || params.m_bVoidExtentHDR) {
+        if (info.void_extent) {
+            if ((low & 0xC00) != 0xC00) {
+                continue; // reserved bits clear: the error colour too
+            }
             // One RGBA16 colour in bits 64-127: UNORM16, or FP16 for HDR.
             const u32 alpha = block[14] | (u32{block[15]} << 8);
-            if (alpha != (params.m_bVoidExtentHDR ? 0x3C00U : 0xFFFFU)) {
+            if (alpha != (info.void_extent_hdr ? 0x3C00U : 0xFFFFU)) {
                 return false;
             }
             continue;
         }
-        const u32 partitions = strm.ReadBits<2>() + 1;
-        if (partitions == 4 && params.m_bDualPlane) {
+        const u32 partitions = ((low >> 11) & 3) + 1;
+        if (partitions == 4 && info.dual_plane) {
             continue;
         }
         if (partitions == 1) {
-            if ((AlphaModes >> strm.ReadBits<4>()) & 1) {
+            if ((AlphaModes >> ((low >> 13) & 0xF)) & 1) {
                 return false;
             }
             continue;
         }
-        strm.ReadBits<10>(); // partition index
-        const u32 base_cem = strm.ReadBits<6>();
+        // Bits 13-22 are the partition index.
+        const u32 base_cem = (low >> 23) & 0x3F;
         const u32 base_mode = base_cem & 3;
         if (base_mode == 0) {
             if ((AlphaModes >> (base_cem >> 2)) & 1) {
@@ -2078,7 +2114,7 @@ bool IsOpaque(std::span<const uint8_t> data) {
             continue;
         }
         // The rest of the per-partition modes sit just below the weights (DecompressBlock).
-        const u32 weight_bits = params.GetPackedBitSize();
+        const u32 weight_bits = info.weight_bits;
         if (weight_bits < 24 || weight_bits > 96) {
             continue;
         }
