@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "common/alignment.h"
+#include "common/literals.h"
 #include "common/scratch_buffer.h"
 #include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/engines/sw_blitter/converter.h"
@@ -24,6 +25,7 @@ using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 namespace Tegra::Engines::Blitter {
 
 using namespace Texture;
+using namespace Common::Literals;
 
 namespace {
 
@@ -174,6 +176,22 @@ struct SoftwareBlitEngine::BlitEngineImpl {
     Common::ScratchBuffer<u8> dst_buffer;
     Common::ScratchBuffer<f32> intermediate_src;
     Common::ScratchBuffer<f32> intermediate_dst;
+
+    // Buffers grown for one huge surface (64-256 MiB) are freed after the blit rather than kept
+    // for the rest of the session; the usual sizes stay.
+    void ReleaseLargeBuffers() {
+        constexpr size_t LargeCapacity = 16_MiB;
+        for (auto* const buffer : {&tmp_buffer, &src_buffer, &dst_buffer}) {
+            if (buffer->capacity() > LargeCapacity) {
+                buffer->release();
+            }
+        }
+        for (auto* const buffer : {&intermediate_src, &intermediate_dst}) {
+            if (buffer->capacity() * sizeof(f32) > LargeCapacity) {
+                buffer->release();
+            }
+        }
+    }
     ConverterFactory converter_factory;
 };
 
@@ -268,20 +286,23 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
     const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);
     const SubSurface dst_part = CoveredRows(dst, dst_bytes_per_pixel, config.dst_x0, config.dst_y0,
                                             dst_extent_x, dst_extent_y, dst_size);
-    Tegra::Memory::GpuGuestMemoryScoped<u8, Tegra::Memory::GuestMemoryFlags::SafeReadWrite>
-        tmp_buffer2(memory_manager, dst.Address() + dst_part.offset, dst_part.size,
-                    &impl->tmp_buffer);
+    {
+        Tegra::Memory::GpuGuestMemoryScoped<u8, Tegra::Memory::GuestMemoryFlags::SafeReadWrite>
+            tmp_buffer2(memory_manager, dst.Address() + dst_part.offset, dst_part.size,
+                        &impl->tmp_buffer);
 
-    if (dst.linear == Fermi2D::MemoryLayout::BlockLinear) {
-        SwizzleSubrect(tmp_buffer2, impl->dst_buffer, dst_bytes_per_pixel, dst.width,
-                       dst_part.height, dst.depth, config.dst_x0, dst_part.origin_y, dst_extent_x,
-                       dst_extent_y, dst.block_height, dst.block_depth,
-                       dst_extent_x * dst_bytes_per_pixel);
-    } else {
-        ProcessPitchLinear<true>(impl->dst_buffer, tmp_buffer2, dst_extent_x, dst_extent_y,
-                                 dst.pitch, config.dst_x0, dst_part.origin_y,
-                                 static_cast<size_t>(dst_bytes_per_pixel));
-    }
+        if (dst.linear == Fermi2D::MemoryLayout::BlockLinear) {
+            SwizzleSubrect(tmp_buffer2, impl->dst_buffer, dst_bytes_per_pixel, dst.width,
+                           dst_part.height, dst.depth, config.dst_x0, dst_part.origin_y,
+                           dst_extent_x, dst_extent_y, dst.block_height, dst.block_depth,
+                           dst_extent_x * dst_bytes_per_pixel);
+        } else {
+            ProcessPitchLinear<true>(impl->dst_buffer, tmp_buffer2, dst_extent_x, dst_extent_y,
+                                     dst.pitch, config.dst_x0, dst_part.origin_y,
+                                     static_cast<size_t>(dst_bytes_per_pixel));
+        }
+    } // tmp_buffer2 writes the destination back here
+    impl->ReleaseLargeBuffers();
     return true;
 }
 
