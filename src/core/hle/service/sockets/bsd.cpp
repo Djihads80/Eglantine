@@ -1089,10 +1089,10 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
         {1, &BSD_USA::StartMonitoring, "StartMonitoring"},
         {2, &BSD_USA::Socket, "Socket"},
         {3, &BSD_USA::SocketExempt, "SocketExempt"},
-        {4, nullptr, "Open"},
+        {4, &BSD_USA::StubReplyZeroed, "Open"},
         {5, &BSD_USA::Select, "Select"},
         {6, &BSD_USA::Poll, "Poll"},
-        {7, nullptr, "Sysctl"},
+        {7, &BSD_USA::StubReplyZeroed, "Sysctl"},
         {8, &BSD_USA::Recv, "Recv"},
         {9, &BSD_USA::RecvFrom, "RecvFrom"},
         {10, &BSD_USA::Send, "Send"},
@@ -1104,36 +1104,37 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
         {16, &BSD_USA::GetSockName, "GetSockName"},
         {17, &BSD_USA::GetSockOpt, "GetSockOpt"},
         {18, &BSD_USA::Listen, "Listen"},
-        {19, nullptr, "Ioctl"},
+        {19, &BSD_USA::StubReplyZeroed, "Ioctl"},
         {20, &BSD_USA::Fcntl, "Fcntl"},
         {21, &BSD_USA::SetSockOpt, "SetSockOpt"},
         {22, &BSD_USA::Shutdown, "Shutdown"},
-        {23, nullptr, "ShutdownAllSockets"},
+        {23, &BSD_USA::StubReplyZeroed, "ShutdownAllSockets"},
         {24, &BSD_USA::Write, "Write"},
         {25, &BSD_USA::Read, "Read"},
         {26, &BSD_USA::Close, "Close"},
         {27, &BSD_USA::DuplicateSocket, "DuplicateSocket"},
-        {28, nullptr, "GetResourceStatistics"},
-        {29, nullptr, "RecvMMsg"}, //3.0.0+
-        {30, nullptr, "SendMMsg"}, //3.0.0+
+        {28, &BSD_USA::StubReplyZeroed, "GetResourceStatistics"},
+        {29, &BSD_USA::StubReplyZeroed, "RecvMMsg"}, //3.0.0+
+        {30, &BSD_USA::StubReplyZeroed, "SendMMsg"}, //3.0.0+
         {31, &BSD_USA::EventFd, "EventFd"}, //7.0.0+
-        {32, nullptr, "RegisterResourceStatisticsName"}, //7.0.0+
-        {33, nullptr, "RegisterClientShared"}, //10.0.0+
-        {34, nullptr, "GetSocketStatistics"}, //15.0.0+
-        {35, nullptr, "NifIoctl"}, //17.0.0+
+        {32, &BSD_USA::StubReplyZeroed, "RegisterResourceStatisticsName"}, //7.0.0+
+        {33, &BSD_USA::StubReplyZeroed, "RegisterClientShared"}, //10.0.0+
+        {34, &BSD_USA::StubReplyZeroed, "GetSocketStatistics"}, //15.0.0+
+        {35, &BSD_USA::StubReplyZeroed, "NifIoctl"}, //17.0.0+
         // Switch 2 titles register with 36 (16 bytes and the pid; a bsd errno back) instead of
         // RegisterClient. The auto stub left the errno to the message buffer's leftovers, and
         // Minecraft's socket layer failed later in EventFd.
         {36, &BSD_USA::RegisterClient, "RegisterClientSwitch2"}, //18.0.0+
-        {37, nullptr, "Unknown37"}, //18.0.0+
-        {38, nullptr, "Unknown38"}, //18.0.0+
-        {39, nullptr, "Unknown39"}, //20.0.0+
-        {40, nullptr, "Unknown40"}, //20.0.0+
-        {41, nullptr, "Unknown41"}, //21.0.0+
-        {42, nullptr, "Unknown42"}, //21.0.0+
-        {43, nullptr, "Unknown43"}, //21.0.0+
-        {200, nullptr, "SetThreadCoreMask"}, //15.0.0+
-        {201, nullptr, "GetThreadCoreMask"}, //15.0.0+
+        {37, &BSD_USA::StubReplyZeroed, "Unknown37"}, //18.0.0+
+        {38, &BSD_USA::StubReplyZeroed, "Unknown38"}, //18.0.0+
+        {39, &BSD_USA::StubReplyZeroed, "Unknown39"}, //20.0.0+
+        {40, &BSD_USA::StubReplyZeroed, "Unknown40"}, //20.0.0+
+        {41, &BSD_USA::StubReplyEvent, "Unknown41"}, //21.0.0+
+        {42, &BSD_USA::StubReplyZeroed, "Unknown42"}, //21.0.0+
+        {43, &BSD_USA::StubReplyZeroed, "Unknown43"}, //21.0.0+
+        {200, &BSD_USA::StubReplyZeroed, "SetThreadCoreMask"}, //15.0.0+
+        {201, &BSD_USA::StubReplyZeroed, "GetThreadCoreMask"}, //15.0.0+
+        {44, &BSD_USA::StubReplyZeroed, "Unknown44"},
     };
     // clang-format on
 
@@ -1161,22 +1162,28 @@ BSDCFG::BSDCFG(Core::System& system_, const char *name)
     : ServiceFramework{system_, name} {
     // clang-format off
     static const FunctionInfo functions[] = {
-        {0, nullptr, "SetIfUp"},
-        {1, nullptr, "SetIfUpWithEvent"},
-        {2, nullptr, "CancelIf"},
-        {3, nullptr, "SetIfDown"},
-        {4, nullptr, "GetIfState"},
-        {5, nullptr, "DhcpRenew"},
-        {6, nullptr, "AddStaticArpEntry"},
-        {7, nullptr, "RemoveArpEntry"},
-        {8, nullptr, "LookupArpEntry"},
-        {9, nullptr, "LookupArpEntry2"},
-        {10, nullptr, "ClearArpEntries"},
-        {11, nullptr, "ClearArpEntries2"},
-        {12, nullptr, "PrintArpEntries"},
-        {13, nullptr, "Unknown13"},
-        {14, nullptr, "Unknown14"},
-        {15, nullptr, "Unknown15"},
+        {0, &BSDCFG::StubReplyZeroed, "SetIfUp"},
+        {1, &BSDCFG::StubReplyZeroed, "SetIfUpWithEvent"},
+        {2, &BSDCFG::StubReplyZeroed, "CancelIf"},
+        {3, &BSDCFG::StubReplyZeroed, "SetIfDown"},
+        {4, &BSDCFG::StubReplyZeroed, "GetIfState"},
+        {5, &BSDCFG::StubReplyZeroed, "DhcpRenew"},
+        {6, &BSDCFG::StubReplyZeroed, "AddStaticArpEntry"},
+        {7, &BSDCFG::StubReplyZeroed, "RemoveArpEntry"},
+        {8, &BSDCFG::StubReplyZeroed, "LookupArpEntry"},
+        {9, &BSDCFG::StubReplyZeroed, "LookupArpEntry2"},
+        {10, &BSDCFG::StubReplyZeroed, "ClearArpEntries"},
+        {11, &BSDCFG::StubReplyZeroed, "ClearArpEntries2"},
+        {12, &BSDCFG::StubReplyZeroed, "PrintArpEntries"},
+        {13, &BSDCFG::StubReplyZeroed, "Unknown13"},
+        {14, &BSDCFG::StubReplyZeroed, "Unknown14"},
+        {15, &BSDCFG::StubReplyZeroed, "Unknown15"},
+        {16, &BSDCFG::StubReplyZeroed, "Unknown16"},
+        {100, &BSDCFG::StubReplyZeroed, "Unknown100"},
+        {101, &BSDCFG::StubReplyZeroed, "Unknown101"},
+        {102, &BSDCFG::StubReplyZeroed, "Unknown102"},
+        {103, &BSDCFG::StubReplyZeroed, "Unknown103"},
+        {104, &BSDCFG::StubReplyZeroed, "Unknown104"},
     };
     // clang-format on
 
