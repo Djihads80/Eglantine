@@ -31,6 +31,9 @@
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
+#ifdef ARCHITECTURE_arm64
+#include "video_core/macro_turing_jit_arm64.h"
+#endif
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 
@@ -180,8 +183,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             CallMethod(system, address, value, true);
             return true;
         };
-#ifdef ARCHITECTURE_x86_64
-        // Compiled macro code, as for 3D macros (macro_turing_jit.h); EDEN_NX2_MME_JIT=0 off.
+#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+        // Compiled macro code, as for 3D macros (macro_turing_jit.h, macro_turing_jit_arm64.h);
+        // EDEN_NX2_MME_JIT=0 off.
         static const bool use_jit = [] {
             const char* value = std::getenv("EDEN_NX2_MME_JIT");
             return value == nullptr || value[0] != '0';
@@ -192,6 +196,8 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             }
             native_macro->native_jit->Prepare(native_macro->native_code,
                                               native_macro->native_code_generation);
+        }
+        if (use_jit && !watched && native_macro->native_jit->Usable()) {
             const auto result = native_macro->native_jit->Execute(
                 start, native_parameters,
                 std::span<u32>{*native_macro->native_interpreter.active_dram},
