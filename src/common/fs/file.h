@@ -285,7 +285,13 @@ public:
         if (!IsOpen()) {
             return 0;
         }
-        return std::fread(data.data(), sizeof(T), data.size(), file);
+        const auto actual = std::fread(data.data(), sizeof(T), data.size(), file);
+        if (actual != data.size() && std::ferror(file) != 0) {
+            LOG_ERROR(Common_Filesystem,
+                      "File read error: path={}, requested_elements={}, actual_elements={}",
+                      PathToUTF8String(file_path), data.size(), actual);
+        }
+        return actual;
     }
 
     /**
