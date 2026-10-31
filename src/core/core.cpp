@@ -367,6 +367,14 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetGlobal(false);
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
+        // Switch 2 titles build thousands of pipelines while they play: build them asynchronously
+        // (a hitch-free frame instead of a GPU thread stall), unless set for this game itself.
+        if (switch2_program && Settings::values.use_asynchronous_shaders.UsingGlobal() &&
+            !Settings::values.use_asynchronous_shaders.GetValue()) {
+            LOG_INFO(Core, "Switch 2 program: building shaders asynchronously");
+            Settings::values.use_asynchronous_shaders.SetGlobal(false);
+            Settings::values.use_asynchronous_shaders.SetValue(true);
+        }
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
