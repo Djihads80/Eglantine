@@ -2139,7 +2139,38 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0x20b: case 0x80b: case 0xa0b: case 0xc0b: // FSETP
         case 0x20c: case 0x80c: case 0xa0c: case 0xc0c: { // ISETP
             const bool floating = (opcode & 0x1ff) == 0xb;
-            if (!floating && insn.Bits(72, 1)) return fail(index, "native extended integer comparison");
+            if (!floating && insn.Bits(72, 1)) {
+                // ISETP.EX (bit 72): the high-word half of a 64-bit compare. The low words'
+                // result comes in as the predicate at bits 68-70 (negated by 71), e.g.
+                // ISETP.NE P0 = lo != 0, then ISETP.NE.EX P0 = (hi != 0) OR P0. EQ: high equal
+                // AND low; NE: high different OR low; the orderings: high strictly ordered OR
+                // (high equal AND low). One or two Maxwell ISETPs into the destination; only
+                // the plain form (no second destination, AND with PT) is handled.
+                const u32 compare = insn.Bits(76, 3);
+                const u32 destination = insn.Bits(81, 3);
+                const u32 low = insn.Bits(68, 4);
+                if (insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 || insn.Bits(74, 2) != 0 ||
+                    compare == 0 || compare == 7 ||
+                    (destination != 7 && insn.Bits(12, 3) == destination))
+                    return fail(index, "native extended integer comparison mode");
+                const u32 a = operand(0, false), b = operand(1, false);
+                const auto isetp = [&](u32 op, u32 input, u32 combine) {
+                    return 0x5b60000000000000ULL | predicate | 7 | (u64{destination} << 3) |
+                           (u64{a} << 8) | (u64{b} << 20) | (u64{input & 7} << 39) |
+                           (u64{input >> 3} << 42) | (u64{combine} << 45) |
+                           (u64{insn.Bits(73, 1)} << 48) | (u64{op} << 49);
+                };
+                constexpr u32 And = 0, Or = 1, Lt = 1, Eq = 2, Gt = 4, Ne = 5;
+                if (compare == Eq) {
+                    emit(isetp(Eq, low, And));
+                } else if (compare == Ne) {
+                    emit(isetp(Ne, low, Or));
+                } else {
+                    emit(isetp(Eq, low, And));
+                    emit(isetp(compare <= 3 ? Lt : Gt, destination, Or));
+                }
+                break;
+            }
             const u32 a = operand(0, floating), b = operand(1, floating);
             const u32 combine = insn.Bits(74, 2);
             if (combine > 2) return fail(index, "native predicate combination");
