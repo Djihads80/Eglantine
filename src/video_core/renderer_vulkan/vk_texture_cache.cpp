@@ -1098,11 +1098,11 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
     if (memory >= 20_GiB || (keep != nullptr && keep[0] == '1')) {
         return;
     }
-    LOG_INFO(Render_Vulkan,
-             "Switch 2 program with a {} MiB video memory budget: ASTC textures are "
-             "re-compressed to BC3 for this session (uncompressed ASTC requires >= 20 GiB VRAM). "
-             "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
-             memory >> 20);
+    LOG_WARNING(Render_Vulkan,
+                "Switch 2 program with a {} MiB video memory budget: ASTC textures are "
+                "re-compressed to BC3 for this session (uncompressed ASTC needs a 20 GiB budget). "
+                "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
+                memory >> 20);
     Settings::SetAstcRecompressionOverride(Settings::AstcRecompression::Bc3);
 }
 } // Anonymous namespace

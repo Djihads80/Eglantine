@@ -1,8 +1,9 @@
-# Switch NX2 - read at every start of Eglantine (GUI and CLI alike).
+# Switch NX2 - read when the Eglantine GUI starts.
 # One NAME=VALUE per line. Lines starting with # are ignored.
 # A variable already set in the environment wins over this file.
-# Between files, %APPDATA%\eden\nx2_switches.txt (yours) wins over this one, so editing
-# this file is never needed: copy the lines you want into your own and restart.
+# Between files, the user copy (%APPDATA%\eden\nx2_switches.txt, or
+# $XDG_CONFIG_HOME/eden/nx2_switches.txt) wins over this one, so editing this file is never
+# needed: copy the lines you want into your own and restart.
 #
 # Restart the emulator after editing.
 
@@ -13,6 +14,8 @@ EDEN_NX2_BUFFER_DOWNLOADS=1
 EDEN_NX2_FRAMES_AHEAD=2
 
 # --- Workarounds / Debug ---
+# Drop reactive-flushing read traps on Switch 2 programs (faster, CPU may read stale GPU data)
+#EDEN_NX2_NO_REACTIVE=1
 #EDEN_NX2_MME_JIT=0
 #EDEN_NX2_PBFLUSH=0
 #EDEN_NX2_RESETFIX=0

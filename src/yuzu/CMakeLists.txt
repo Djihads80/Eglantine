@@ -243,7 +243,7 @@ set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
 
 # Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
 # startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
-add_custom_command(TARGET yuzu PRE_BUILD
+add_custom_command(TARGET yuzu POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
     VERBATIM)

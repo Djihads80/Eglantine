@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -461,8 +462,15 @@ struct Memory::Impl {
 
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
-            const bool reactive_flushing = Settings::values.use_reactive_flushing.GetValue() &&
-                                           !Settings::CurrentProgramIsSwitch2();
+            // EDEN_NX2_NO_REACTIVE=1 drops the read traps on Switch 2 programs. Opt-in: without
+            // them a CPU read of GPU-written memory can see stale data.
+            static const bool nx2_no_reactive = [] {
+                const char* value = std::getenv("EDEN_NX2_NO_REACTIVE");
+                return value != nullptr && value[0] == '1';
+            }();
+            const bool reactive_flushing =
+                Settings::values.use_reactive_flushing.GetValue() &&
+                !(nx2_no_reactive && Settings::CurrentProgramIsSwitch2());
             if (!reactive_flushing || !cached) {
                 perm |= Common::MemoryPermission::Read;
             }

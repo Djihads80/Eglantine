@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <QApplication>
-
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
-#include <utility>
-#include <vector>
+
+#include <QApplication>
+
+#include "common/fs/fs_paths.h"
+#include "common/fs/path_util.h"
 #include "startup_checks.h"
 
 #if YUZU_ROOM
@@ -84,22 +86,22 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 #endif
 }
 
-
 // The NX2 switches are read from the environment (EDEN_NX2_*), which a GUI launch has no way to
 // set. nx2_switches.txt holds "NAME=VALUE" lines, one per line, '#' comments. A variable already
 // in the real environment always wins, so a launcher script can still override one run; between
 // files the later one wins, so the copy next to the executable (shipped with the build) can be
 // overridden by %APPDATA%\eden\nx2_switches.txt without editing the one that gets replaced.
 static void ParseSwitchFile(const std::filesystem::path& path,
-                            std::vector<std::pair<std::string, std::string>>& entries) {
+                            std::map<std::string, std::string>& entries) {
     std::ifstream file{path};
     if (!file) {
         return;
     }
+    constexpr const char* blank = " \t\r";
     std::string line;
     while (std::getline(file, line)) {
-        line.erase(0, line.find_first_not_of(" \t\r\""));
-        line.erase(line.find_last_not_of(" \t\r\"") + 1);
+        line.erase(0, line.find_first_not_of(blank));
+        line.erase(line.find_last_not_of(blank) + 1);
         if (line.empty() || line[0] == '#') {
             continue;
         }
@@ -109,27 +111,44 @@ static void ParseSwitchFile(const std::filesystem::path& path,
         }
         std::string name = line.substr(0, eq);
         std::string value = line.substr(eq + 1);
-        name.erase(name.find_last_not_of(" \t") + 1);
-        value.erase(0, value.find_first_not_of(" \t"));
+        name.erase(name.find_last_not_of(blank) + 1);
+        value.erase(0, value.find_first_not_of(blank));
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+            value = value.substr(1, value.size() - 2);
+        }
         if (!name.empty()) {
-            entries.emplace_back(std::move(name), std::move(value));
+            entries.insert_or_assign(std::move(name), std::move(value));
         }
     }
 }
 
-static void LoadNx2Switches(const char* argv0) {
-    std::vector<std::pair<std::string, std::string>> entries;
+static std::filesystem::path GetSwitchExeDirectory(const char* argv0) {
+#ifdef _WIN32
+    return Common::FS::GetExeDirectory();
+#else
     std::error_code ec;
-    const std::filesystem::path exe = std::filesystem::absolute(argv0, ec);
-    if (!ec) {
-        ParseSwitchFile(exe.parent_path() / "nx2_switches.txt", entries);
+#ifdef __linux__
+    if (auto exe = std::filesystem::read_symlink("/proc/self/exe", ec); !ec) {
+        return exe.parent_path();
     }
-    if (const char* appdata = std::getenv("APPDATA")) {
-        ParseSwitchFile(std::filesystem::path{appdata} / "eden" / "nx2_switches.txt", entries);
-    } else if (const char* home = std::getenv("HOME")) {
-        ParseSwitchFile(std::filesystem::path{home} / ".config" / "eden" / "nx2_switches.txt",
-                        entries);
+#endif
+    const auto exe = std::filesystem::absolute(argv0, ec);
+    return ec ? std::filesystem::path{} : exe.parent_path();
+#endif
+}
+
+static void LoadNx2Switches(const char* argv0) {
+    // Later files overwrite earlier entries; the real environment is checked only at the end.
+    std::map<std::string, std::string> entries;
+    if (const auto exe_dir = GetSwitchExeDirectory(argv0); !exe_dir.empty()) {
+        ParseSwitchFile(exe_dir / "nx2_switches.txt", entries);
     }
+#ifdef _WIN32
+    const auto config_dir = Common::FS::GetAppDataRoamingDirectory() / EDEN_DIR;
+#else
+    const auto config_dir = Common::FS::GetDataDirectory("XDG_CONFIG_HOME") / EDEN_DIR;
+#endif
+    ParseSwitchFile(config_dir / "nx2_switches.txt", entries);
     for (const auto& [name, value] : entries) {
         if (std::getenv(name.c_str()) != nullptr) {
             continue;
