@@ -153,6 +153,10 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-pipe>
             # Disable RTTI (C++ only)
             $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    else()
+        # clang-cl: like the MSVC branch, or windows.h (included by vulkan.h) defines min/max
+        # macros that break std::min/std::max calls
+        add_compile_definitions(NOMINMAX)
     endif()
 
     if (ENABLE_WERROR)
