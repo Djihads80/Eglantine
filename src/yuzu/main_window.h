@@ -393,6 +393,7 @@ private slots:
     void OnOpenModFolder();
     void OnOpenLogFolder();
     void OnVerifyInstalledContents();
+    void OnPackNx2();
     void OnInstallFirmware();
     void OnInstallFirmwareFromZIP();
     void OnInstallDecryptionKeys();

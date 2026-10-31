@@ -8,6 +8,11 @@
 #undef VMA_IMPLEMENTATION
 #endif
 
+#include <atomic>
+#include <chrono>
+#include <optional>
+#include <thread>
+
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
 #include "common/game_presets.h"
@@ -155,6 +160,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/nup_writer.h"
+#include "core/file_sys/nx2_package.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/savedata_factory.h"
 
@@ -1639,6 +1645,7 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Log_Folder, &MainWindow::OnOpenLogFolder);
 
     connect_menu(ui->action_Verify_installed_contents, &MainWindow::OnVerifyInstalledContents);
+    connect_menu(ui->action_Pack_Nx2, &MainWindow::OnPackNx2);
     connect_menu(ui->action_Firmware_From_Folder, &MainWindow::OnInstallFirmware);
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
@@ -4003,6 +4010,122 @@ void MainWindow::OnOpenLogFolder() {
 
 void MainWindow::OnVerifyInstalledContents() {
     QtCommon::Content::VerifyInstalledContents();
+}
+
+// Packs a loose Switch 2 dump (exefs/ + romfs/) into one .nx2 file, which loads like any other
+// game file on PC and Android.
+void MainWindow::OnPackNx2() {
+    const QString dump_path = QFileDialog::getExistingDirectory(
+        this, tr("Select a Switch 2 Dump (the folder holding exefs and romfs)"),
+        QString::fromStdString(UISettings::values.roms_path));
+    if (dump_path.isEmpty()) {
+        return;
+    }
+
+    // Name the package after the dump folder, next to it.
+    QDir title_dir{dump_path};
+    if (title_dir.dirName().compare(QStringLiteral("exefs"), Qt::CaseInsensitive) == 0) {
+        title_dir.cdUp();
+    }
+    const QString name = title_dir.dirName();
+    QDir parent_dir = title_dir;
+    parent_dir.cdUp();
+    const QString out_path = QFileDialog::getSaveFileName(
+        this, tr("Save Packed Dump"),
+        parent_dir.filePath(name + QStringLiteral(".") +
+                            QString::fromUtf8(FileSys::Nx2Extension.data(),
+                                              static_cast<qsizetype>(FileSys::Nx2Extension.size()))),
+        tr("Packed Switch 2 Dump (*.nx2)"));
+    if (out_path.isEmpty()) {
+        return;
+    }
+
+    const auto dump_dir =
+        QtCommon::vfs->OpenDirectory(dump_path.toStdString(), FileSys::OpenMode::Read);
+    const std::string out_path_string = out_path.toStdString();
+
+    QProgressDialog progress(tr("Packing %1...\nIndexing the RomFS").arg(name), tr("Cancel"), 0,
+                             1000, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.setValue(0);
+
+    // Packed on its own thread: this one keeps the window (and the game list, which reloads when
+    // the package appears in a game folder) responsive and shows progress.
+    std::atomic<u64> done{0};
+    std::atomic<u64> total{0};
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> finished{false};
+    std::string error;
+    std::thread packer([&] {
+        error = FileSys::PackNx2(dump_dir, out_path_string, [&](u64 done_bytes, u64 total_bytes) {
+            done = done_bytes;
+            total = total_bytes;
+            return !cancel;
+        });
+        finished = true;
+    });
+
+    const auto format_duration = [this](qint64 seconds) {
+        if (seconds >= 3600) {
+            return tr("%1 h %2 min").arg(seconds / 3600).arg((seconds % 3600) / 60);
+        }
+        if (seconds >= 60) {
+            return tr("%1 min").arg((seconds + 30) / 60);
+        }
+        return tr("%1 s").arg(seconds);
+    };
+    std::optional<std::chrono::steady_clock::time_point> copy_start;
+    QEventLoop loop;
+    QTimer timer;
+    connect(&timer, &QTimer::timeout, &loop, [&] {
+        if (progress.wasCanceled()) {
+            cancel = true;
+        }
+        const u64 done_bytes = done;
+        const u64 total_bytes = total;
+        if (total_bytes != 0) {
+            if (!copy_start) {
+                copy_start = std::chrono::steady_clock::now();
+            }
+            progress.setValue(static_cast<int>(done_bytes * 1000 / total_bytes));
+            const double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - *copy_start)
+                    .count();
+            QString speed_eta;
+            if (done_bytes != 0 && elapsed >= 3.0) {
+                const double rate = static_cast<double>(done_bytes) / elapsed;
+                speed_eta = tr(" · %1 MB/s · about %2 left")
+                                .arg(rate / 1048576.0, 0, 'f', 0)
+                                .arg(format_duration(static_cast<qint64>(
+                                    static_cast<double>(total_bytes - done_bytes) / rate)));
+            }
+            progress.setLabelText(tr("Packing %1...\n%2 of %3 GB%4")
+                                      .arg(name)
+                                      .arg(static_cast<double>(done_bytes) / 1073741824.0, 0, 'f', 1)
+                                      .arg(static_cast<double>(total_bytes) / 1073741824.0, 0, 'f', 1)
+                                      .arg(speed_eta));
+        }
+        if (finished) {
+            loop.quit();
+        }
+    });
+    timer.start(250);
+    loop.exec();
+    // Stopped before the result box: a tick during its event loop would show the dialog again.
+    timer.stop();
+    packer.join();
+    progress.close();
+
+    if (!error.empty()) {
+        QMessageBox::warning(this, tr("Packing Failed"), QString::fromStdString(error));
+        return;
+    }
+    QMessageBox::information(
+        this, tr("Packing Succeeded"),
+        tr("Saved %1.\nIt loads like any other game file, on PC and on Android.").arg(out_path));
 }
 
 void MainWindow::OnInstallFirmware() {
