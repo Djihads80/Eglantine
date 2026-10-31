@@ -10,6 +10,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -989,6 +990,11 @@ u64 GetCurrentProgramID();
 // Whether the program being loaded is a Switch 2 one (set by the core before the GPU starts).
 void SetCurrentProgramIsSwitch2(bool is_switch2);
 bool CurrentProgramIsSwitch2();
+
+// The ASTC recompression in effect: astc_recompression, unless the renderer picked another one
+// for the running program (the configuration is left as is). The core clears it on load.
+AstcRecompression GetAstcRecompression();
+void SetAstcRecompressionOverride(std::optional<AstcRecompression> recompression);
 
 bool IsOpenGL();
 

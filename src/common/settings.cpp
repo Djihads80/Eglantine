@@ -235,6 +235,16 @@ bool CurrentProgramIsSwitch2() {
     return current_program_is_switch2;
 }
 
+static std::optional<AstcRecompression> astc_recompression_override;
+
+AstcRecompression GetAstcRecompression() {
+    return astc_recompression_override.value_or(values.astc_recompression.GetValue());
+}
+
+void SetAstcRecompressionOverride(std::optional<AstcRecompression> recompression) {
+    astc_recompression_override = recompression;
+}
+
 bool IsDockedMode() {
     return values.use_docked_mode.GetValue() == Settings::ConsoleMode::Docked;
 }
