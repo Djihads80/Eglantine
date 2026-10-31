@@ -51,8 +51,11 @@ def _walk_game_tree(root: Path) -> list[tuple[str, Path, bool]]:
         if not (root / required).is_dir():
             raise EdenPackError(f"source must contain {required}/")
 
-    found: list[tuple[str, Path, bool]] = []
-    seen: set[str] = set()
+    found: list[tuple[str, Path, bool]] = [
+        ("ExeFS", root / "ExeFS", True),
+        ("RomFS", root / "RomFS", True),
+    ]
+    seen: set[str] = {"ExeFS", "RomFS"}
     for top in ("ExeFS", "RomFS"):
         base = root / top
         for current, dirs, files in os.walk(base, followlinks=False):
