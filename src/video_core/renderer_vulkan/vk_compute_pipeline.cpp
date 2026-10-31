@@ -288,15 +288,16 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
                          views_it);
     if (info.emulated_shared_memory_size != 0) {
-        // Emulated shared memory, a slice per workgroup. An indirect dispatch's size is only
-        // known on the GPU: it gets room for 4096 workgroups.
+        // Emulated shared memory, a slice per workgroup, as many as the shader may address (it
+        // clamps to them). An indirect dispatch's size is only known on the GPU: all of them.
         const auto& qmd{kepler_compute.launch_description};
+        const u64 slices = Shader::EmulatedSharedMemorySlices(info.emulated_shared_memory_size);
         u64 workgroups = static_cast<u64>(qmd.grid_dim_x.Value()) * qmd.grid_dim_y.Value() *
                          qmd.grid_dim_z.Value();
         if (workgroups == 0 || kepler_compute.GetIndirectComputeAddress()) {
-            workgroups = 4096;
+            workgroups = slices;
         }
-        const u64 size = (std::min)(workgroups * info.emulated_shared_memory_size, u64{512} << 20);
+        const u64 size = (std::min)(workgroups, slices) * info.emulated_shared_memory_size;
         const StagingBufferRef scratch{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
         guest_descriptor_queue.AddBuffer(scratch.buffer, scratch.offset, size);
     }
