@@ -614,8 +614,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0x5c30000000070000ULL | 250 | (u64{250} << 20));
             emit(0xef10000000070000ULL | 251 | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{250} << 20) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
-            emit(0x5ca0000000070000ULL | target | (u64{251} << 8) |
-                 (u64{target} << 20) | (u64{6} << 39));
+            if (native_predicate == 7) {
+                // Every lane executing it is in the ballot, so no lane-less fallback can be taken.
+                // Leaving the old value selectable would make it a source of the result for the
+                // texture and global memory tracking (a handle traced to the uniform's last load).
+                emit(0x5c98000000070000ULL | target | (u64{15} << 39) | (u64{251} << 20));
+            } else {
+                emit(0x5ca0000000070000ULL | target | (u64{251} << 8) |
+                     (u64{target} << 20) | (u64{6} << 39));
+            }
             restore_predicate();
             break;
         }
