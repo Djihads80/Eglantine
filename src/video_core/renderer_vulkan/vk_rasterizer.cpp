@@ -1545,8 +1545,10 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
 
 void RasterizerVulkan::FlushWork() {
 #ifdef __ANDROID__
+    // Dispatched every 32 draws (was 4): waking the worker cost 5.6% of the GPU back thread in
+    // Mario Kart World. Submitted every 512 still, to keep a phone GPU fed.
     static constexpr u32 DRAWS_TO_DISPATCH = 512;
-    static constexpr u32 CHECK_MASK = 3;
+    static constexpr u32 CHECK_MASK = 31;
 #else
     // Every 32 draws (was 8): each dispatch woke the worker thread, and Switch 2 titles make
     // ~55,000 draws a second. A full chunk is dispatched on its own (Scheduler::Record).
