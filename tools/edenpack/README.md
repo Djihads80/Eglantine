@@ -67,3 +67,27 @@ objects over a single seekable file descriptor. It must validate all index
 ranges before exposing entries, use bounded descriptor and metadata caches,
 and preserve the path and enumeration semantics expected by Eden's ExeFS and
 RomFS loaders. It should not extract the archive during mounting.
+
+## Benchmark loose folders vs EdenPack
+
+After creating an archive, run the benchmark against the **same extracted source
+folder and archive**, ideally both stored on the SD card you want to evaluate:
+
+    python tools/edenpack/benchmark_edenpack.py "/path/to/Game" "/path/to/Game.edenpack"
+
+It first measures loose-tree enumeration and EdenPack index-load time, then runs
+a deterministic set of random reads against both layouts. Defaults are 500 reads
+of up to 64 KiB each. Increase the workload for a more stable measurement:
+
+    python tools/edenpack/benchmark_edenpack.py "/path/to/Game" "/path/to/Game.edenpack" --operations 3000 --chunk-kib 64
+
+Run it several times and compare medians. The operating system's file cache can
+make later runs substantially faster, so do not interpret one run as a cold-SD
+measurement. Keep the source and archive on the same storage device. The output
+includes read latency (median and p95), throughput, tree-scan time, and index-load
+time.
+
+**Important:** this benchmark compares ordinary filesystem access with the
+EdenPack file layout. It does not measure Android SAF, Eden's native VFS, or
+time-to-first-frame. Those require the later Android/native mounting integration
+and an on-device benchmark.
