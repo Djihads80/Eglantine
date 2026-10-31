@@ -2081,7 +2081,18 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             break;
         }
         case 0xa11: { // LEA with constant base and carry predicate.
-            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
+            if (insn.Bits(80, 1)) {
+                // LEA.HI Rd, Ra, Cb, RZ, s: Cb + high word of (Ra << s), no register base.
+                if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(81, 3) != 7 ||
+                    insn.Bits(64, 8) != 255 || insn.Bits(62, 2))
+                    return fail(index, "native constant high effective address mode");
+                const u32 b = operand(1, false);
+                emit(0x3828000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{32 - insn.Bits(75, 5)} << 20));
+                emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{b} << 20));
+                break;
+            }
+            if (insn.Bits(72, 1) || insn.Bits(74, 1) ||
                 insn.Bits(81, 3) == 7 || insn.Bits(62, 2))
                 return fail(index, "native constant LEA carry mode");
             const u32 b = operand(1, false);
