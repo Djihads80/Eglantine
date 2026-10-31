@@ -3,6 +3,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <string_view>
 #include <type_traits>
@@ -32,14 +33,12 @@ public:
         pending[0] = {address, argument & 15, ((argument >> 14) & 0x3ff) + 1};
         for (std::size_t i = 0; i < count; ++i) {
             const auto request = pending[i];
-            if (states.size() >= 4096 && !states.contains(request.address)) {
-                // Finished QMDs with nothing deferred are only history, drop them instead of stalling.
-                std::erase_if(states, [](const auto& entry) {
-                    return entry.second.completed && entry.second.deferred == 0;
-                });
-                if (states.size() >= 4096) return "QMD cache limit";
+            if (!Reserve(request.address)) return "QMD cache limit";
+            const auto [slot, inserted] = states.try_emplace(request.address);
+            if (inserted) {
+                order.push_back(request.address);
             }
-            auto& state = states[request.address];
+            auto& state = slot->second;
             if (request.action == 3 || request.action == 2) {
                 if (request.action == 3 || !state.loaded) {
                     if (!read(request.address, state.descriptor)) return "unmapped QMD";
@@ -118,6 +117,13 @@ public:
         }
         return error;
     }
+public:
+    // Bound on the per-QMD dependency table. Reached by bump-allocated launches within seconds of
+    // gameplay, so it is a cache size, not a launch limit: finished entries are recycled.
+    static constexpr std::size_t StateLimit = 4096;
+    // Finished entries recycled since start; only used by diagnostics and tests.
+    static inline std::size_t recycled{};
+
 private:
     // Release slots (address low, flags | address high, payload). NVN2 patches a third one at
     // word 52 for queue syncs (e.g. a compute queue releasing a semaphore another queue waits on).
@@ -135,5 +141,35 @@ private:
     // title 1 schedules a QMD on one channel while another decrements it (a decrement that
     // arrived first was kept by the other channel's scheduler and the QMD never launched).
     static inline std::unordered_map<Address, State> states;
+    // Insertion order of `states`, oldest first, so finished entries can be recycled.
+    static inline std::deque<Address> order;
+
+    // Titles bump-allocate a fresh QMD for every compute launch, so the table reaches its bound
+    // within seconds of gameplay. Refusing a launch there is not an option: a QMD's releases are
+    // what other queues and the CPU wait on, and dropping them parked a queue on a semaphore that
+    // never advanced (Kirby Air Riders froze on its first dialog). Recycle the finished entries
+    // instead, which is what the console's own launch slots do. A recycled address that comes back
+    // simply starts unloaded, so a later decrement stays deferred exactly as it did before.
+    static bool Reserve(Address address) {
+        if (states.contains(address) || states.size() < StateLimit) {
+            return true;
+        }
+        std::size_t examined = order.size();
+        while (examined-- > 0 && states.size() >= StateLimit) {
+            const Address candidate = order.front();
+            order.pop_front();
+            const auto entry = states.find(candidate);
+            if (entry == states.end()) {
+                continue;
+            }
+            if (!entry->second.completed || entry->second.deferred != 0) {
+                order.push_back(candidate);
+                continue;
+            }
+            states.erase(entry);
+            ++recycled;
+        }
+        return states.size() < StateLimit;
+    }
 };
 } // namespace Tegra

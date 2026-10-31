@@ -444,12 +444,12 @@ void EmitIsHelperInvocation(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddU1("{}=gl_HelperInvocation;", inst);
 }
 
-void EmitSR_WScaleFactorXY(EmitContext& ctx, IR::Inst& inst) {
-    LOG_WARNING(Shader, "(STUBBED) called");
+void EmitSR_WScaleFactorXY(EmitContext&, IR::Inst&) {
+    throw NotImplementedException("W-scale runtime state requires the Vulkan backend");
 }
 
-void EmitSR_WScaleFactorZ(EmitContext& ctx, IR::Inst& inst) {
-    LOG_WARNING(Shader, "(STUBBED) called");
+void EmitSR_WScaleFactorZ(EmitContext&, IR::Inst&) {
+    throw NotImplementedException("W-scale runtime state requires the Vulkan backend");
 }
 
 void EmitYDirection(EmitContext& ctx, IR::Inst& inst) {

@@ -61,6 +61,8 @@ struct ShaderTranslationKey {
     Shader::CompareFunction alpha_test_func;
     u32 alpha_test_reference; ///< Float bits.
     u32 point_size;           ///< Float bits, only when a stage may write a fixed point size.
+    u32 geometry_guardband_xy; ///< Viewport clip control, for lowered native rasterizer clips.
+    u32 geometry_guardband_z;
 
     /// Settings read by the translation passes and the SPIR-V backend.
     u32 resolution_up_scale;

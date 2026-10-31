@@ -9,6 +9,7 @@
 #include <iostream>
 #include <optional>
 #include <span>
+#include <set>
 
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -472,6 +473,35 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
                                      Spec::has_images);
+    }
+    static const bool scanout_diagnostics = std::getenv("EDEN_NX2_SCANOUT_DIAG") != nullptr;
+    if (scanout_diagnostics && maxwell3d->GetNativeMacroEngine().native_turing) {
+        static std::set<std::pair<u64, u64>> reported;
+        const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) |
+                       regs.pipelines[5].reserved[1];
+        if (reported.size() < 64 && reported.emplace(ps, regs.rt[0].Address()).second) {
+            LOG_INFO(HW_GPU, "Native draw inputs: ps={:#x} rt={:#x} {}x{} textures={}",
+                     ps, regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height, views.size());
+            for (const auto& entry : views) {
+                const auto& view = texture_cache.GetImageView(entry.id);
+                LOG_INFO(HW_GPU, "  texture index={} address={:#x} {}x{} format={}",
+                         entry.index, view.GpuAddr(), view.size.width, view.size.height, view.format);
+            }
+            const auto describe_buffer = [&](u32 stage, u32 bank, u32 offset, u32 words) {
+                const auto& buffer = maxwell3d->state.shader_stages[stage].const_buffers[bank];
+                std::array<u32, 16> values{};
+                if (buffer.enabled && buffer.size >= offset + words * sizeof(u32) &&
+                    gpu_memory->IsFullyMappedRange(buffer.address + offset, words * sizeof(u32))) {
+                    gpu_memory->ReadBlockUnsafe(buffer.address + offset, values.data(), words * sizeof(u32));
+                }
+                LOG_INFO(HW_GPU, "  stage={} c[{}] address={:#x} enabled={} size={:#x} offset={:#x}: {:08x}",
+                         stage, bank, buffer.address, buffer.enabled, buffer.size, offset,
+                         fmt::join(std::span(values.data(), words), " "));
+            };
+            describe_buffer(0, 6, 0x70, 16);
+            describe_buffer(4, 11, 0x320, 4);
+            describe_buffer(4, 7, 0x20c, 1);
+        }
     }
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};

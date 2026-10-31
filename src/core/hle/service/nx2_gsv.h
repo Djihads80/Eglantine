@@ -20,6 +20,7 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <vector>
 
@@ -34,12 +35,15 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/native_video.h"
+#include "video_core/textures/decoders.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_system_resource.h"
+#include "core/hle/kernel/svc_results.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_resource_limit.h"
@@ -60,6 +64,8 @@
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/nvdrv/core/container.h"
+#include "core/hle/service/nvdrv/core/syncpoint_manager.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -110,6 +116,39 @@ inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::
     rb.Push(ResultSuccess);
     rb.PushCopyObjects(ctx, *client);
 }
+
+// nn::gs::sdk::QueryApplicationGpuTimeSpan opens this session with GSV 1121.
+// Keep the token handshake valid so callers can handle an unavailable measurement.
+class INx2GpuTimeSession final : public ServiceFramework<INx2GpuTimeSession> {
+public:
+    explicit INx2GpuTimeSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:gpu-time"} {
+        RegisterHandlersTipc({
+            {0, &INx2GpuTimeSession::Initialize, "Initialize"},
+            {11, &INx2GpuTimeSession::QueryApplicationGpuTimeSpan, "QueryApplicationGpuTimeSpan"},
+        });
+    }
+
+private:
+    void Initialize(HLERequestContext& ctx) {
+        const auto* words = ctx.CommandBuffer();
+        m_token = u64{words[2]} | (u64{words[3]} << 32);
+        TipcReplyWords(ctx, {static_cast<u32>(*m_token), static_cast<u32>(*m_token >> 32)});
+    }
+
+    void QueryApplicationGpuTimeSpan(HLERequestContext& ctx) {
+        if (!m_logged) {
+            LOG_WARNING(Service, "nx2:gpu-time: GPU execution-time measurement is unavailable");
+            m_logged = true;
+        }
+        // No GPU-duration accounting exists yet. Return an error, never a fabricated duration.
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.PushRaw<u32>((m_token ? Kernel::ResultNotImplemented : Kernel::ResultInvalidState).raw);
+    }
+
+    std::optional<u64> m_token;
+    bool m_logged{};
+};
 
 // Placeholder for the Switch 2 NVIDIA driver server (nn::nvsrv). It has no handlers, so every
 // command (CMIF or TIPC) gets an empty success and is logged through the nx2: prefix.
@@ -211,7 +250,7 @@ private:
         const u32 slot = cmd_buf[2];
         const u32 syncpoint = ~cmd_buf[3];
         const u64 value = u64{cmd_buf[4]} | (u64{cmd_buf[5]} << 32);
-        const u32 mode = cmd_buf[6];
+        const u32 mode = static_cast<u8>(cmd_buf[6]);
         LOG_DEBUG(Service, "nx2:syncpt TIPC 201 slot={:#x} syncpoint={} value={:#x} mode={}", slot,
                   syncpoint, value, mode);
         auto*& event = m_events[slot];
@@ -489,9 +528,13 @@ private:
         const auto* w = ctx.CommandBuffer();
         const u64 first = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
-        const u32 kind = w[7] & 0xff;
-        LOG_DEBUG(Service, "nx2:gpu 212 modify [{:#x}, {:#x}] kind={:#x} fallback={:#x} slot={}",
-                  first, last, kind, w[8] & 0xff, w[10]);
+        const u8 kind = static_cast<u8>(w[8]);
+        LOG_DEBUG(Service, "nx2:gpu 212 modify [{:#x}, {:#x}] compressed={} fallback={} slot={}",
+                 first, last, static_cast<u8>(w[7]), kind, w[10]);
+        if (last < first || last == UINT64_MAX ||
+            !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ModifyKind(first, last - first + 1, kind)) {
+            LOG_WARNING(Service, "nx2:gpu 212 mapping-kind modification could not commit");
+        }
         EventFor(w[10])->Signal(system.Kernel());
         TipcReplyWords(ctx, {kind});
     }
@@ -502,12 +545,13 @@ private:
         const u64 first = u64{w[3]} | (u64{w[4]} << 32);
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
         LOG_DEBUG(Service, "nx2:gpu 213 unmap [{:#x}, {:#x}] slot={}", first, last, w[8]);
+        u64 unmapped{};
         if (last > first) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
+            unmapped = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
         }
         SignalAfterGpu(w[8]);
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        // The SDK subtracts this u64 from its address space's mapped-byte count.
+        TipcReplyWords(ctx, {static_cast<u32>(unmapped), static_cast<u32>(unmapped >> 32)});
     }
 
     // Signals a job slot's event once the GPU thread has run everything queued so far, as the
@@ -1207,6 +1251,37 @@ private:
             crop_width = env_crop_w;
             crop_height = env_crop_h;
         }
+        static const bool linear_scanout = std::getenv("EDEN_NX2_LINEAR_SCANOUT") != nullptr;
+        static const std::set<u64> dump_presents = [] {
+            std::set<u64> values;
+            const char* v = std::getenv("EDEN_NX2_DUMP_PRESENT");
+            for (size_t pos = 0; v && v[pos] != '\0';) {
+                values.insert(std::strtoull(v + pos, nullptr, 10));
+                const char* comma = std::strchr(v + pos, ',');
+                if (comma == nullptr) {
+                    break;
+                }
+                pos = static_cast<size_t>(comma - v) + 1;
+            }
+            return values;
+        }();
+        if (dump_presents.contains(m_presents)) {
+            const u64 size = 0x1fe0000;
+            std::vector<u8> bytes(size);
+            system.GPU().Renderer().ReadRasterizer()->FlushRegion(*device, size);
+            system.Host1x().MemoryManager().ReadBlock(*device, bytes.data(), size);
+            const std::string path = fmt::format("{}/scanout-{}-device-{:x}.bin",
+                                                 std::getenv("EDEN_NX2_FRAME_CAPTURE"),
+                                                 m_presents, *device);
+            if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), file);
+                std::fclose(file);
+            }
+            const auto nonzero = std::count_if(bytes.begin(), bytes.end(),
+                                               [](u8 byte) { return byte != 0; });
+            LOG_INFO(Service, "nx2: vi2 scanout dump present {} image {} at {:#x} size {:#x} "
+                     "nonzero {}", m_presents, image_id, *device, size, nonzero);
+        }
         const u64 shown = (u64{layout.width} << 48) | (u64{layout.height} << 32) |
                           (u64{crop_width} << 16) | crop_height;
         if (shown != m_shown_layout) {
@@ -1224,7 +1299,7 @@ private:
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
-            .native_tiling = true,
+            .native_tiling = !linear_scanout,
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -1242,7 +1317,12 @@ private:
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        static const u64 interval = [] {
+            const char* value = std::getenv("EDEN_NX2_FRAME_CAPTURE_INTERVAL");
+            const u64 parsed = value ? std::strtoull(value, nullptr, 10) : 120;
+            return parsed ? parsed : 120;
+        }();
+        if (directory == nullptr || ((m_presents - 1) % interval) != 0 || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
@@ -1591,6 +1671,15 @@ private:
     static constexpr size_t MaxDecodedAhead = 2; // decoded frames held while no image is free
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
 
+    static void RequireVideo(bool condition, std::string_view message) {
+        if (!condition) {
+            LOG_CRITICAL(Service, "Native video unsupported/error: {}", message);
+            std::fprintf(stderr, "Native video unsupported/error: %.*s\n",
+                         static_cast<int>(message.size()), message.data());
+            std::abort();
+        }
+    }
+
     void Log(HLERequestContext& ctx, std::string_view what) {
         const auto* w = ctx.CommandBuffer();
         if (Nx2FirstVideoCommand(GetServiceName(), ctx.GetCommand())) {
@@ -1668,7 +1757,9 @@ private:
             constexpr std::chrono::nanoseconds ReadyInterval{std::chrono::milliseconds{4}};
             system.CoreTiming().ScheduleLoopingEvent(ReadyInterval, ReadyInterval, m_ready_timer);
         }
-        m_event->Signal(system.Kernel());
+        if (!m_free.empty()) {
+            m_event->Signal(system.Kernel());
+        }
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push(ResultSuccess);
         rb.PushCopyObjects(ctx, m_event->GetReadableEvent());
@@ -1733,6 +1824,13 @@ private:
     }
 
     void SubmitInput(HLERequestContext& ctx) {
+        if (m_free.empty()) {
+            // main+0xab9e7c handles this retry result before general codec errors.
+            // Do not consume a packet or advance its submission ID without output capacity.
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw<u32>(0x1c266f);
+            return;
+        }
         const auto* w = ctx.CommandBuffer();
         // Words 2-4 are the A descriptor of the compressed frame.
         const u64 pts = u64{w[5]} | (u64{w[6]} << 32);
@@ -2026,6 +2124,7 @@ public:
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
             {601, &INx2GraphicsSystemSession::Stub, "CameraInitialize (guessed)"},
             {602, &INx2GraphicsSystemSession::OpenCameraSession, "OpenCameraContext (guessed)"},
+            {1121, &INx2GraphicsSystemSession::OpenGpuTimeSession, "OpenGpuTimeSession"},
             {1201, &INx2GraphicsSystemSession::Stub, "ChatInitialize (guessed)"},
             {1202, &INx2GraphicsSystemSession::OpenChatSession, "OpenChatSession (guessed)"},
             // Same request as 429: nn::chat::gsv::CreateImagePool (GameChat camera images).
@@ -2070,6 +2169,10 @@ private:
     // nn::codec::video::detail::ipc::Initialize sends 901, 902, 1001, 1002. 902 and 1002 return
     // a session handle at word 3 and the result at word 4; left to the auto stub, the handle was 0
     // and InitializeVp9Decoder failed with 2001-0114 (title 1 aborts when a movie starts).
+    void OpenGpuTimeSession(HLERequestContext& ctx) {
+        ReturnRawSession(system, ctx, std::make_shared<INx2GpuTimeSession>(system));
+    }
+
     // Newer SDKs (nn::codec::video::detail::InitializeServerContext) send 906(u8, u64 decoder
     // library version) instead of 902; title 4 sends version 0x3'00030000 and aborted with
     // InvalidHandle at its first movie while 906 was auto-stubbed.
@@ -2330,7 +2433,10 @@ private:
         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
         image.size = Nx2CalculateImageLayout(w + 2).size;
         LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
-                 w[19], w[18], image.size, id);
+                  w[19], w[18], image.size, id);
+        if (std::getenv("EDEN_NX2_VIDEO_DIAG")) {
+            LOG_INFO(Service, "Native image preference: {:08x}", fmt::join(image.preference, " "));
+        }
         TipcReplyWords(ctx, {id});
     }
 
@@ -2362,6 +2468,7 @@ private:
         std::array<u32, 16> preference{};
         u64 image_offset = 0;
         u64 memory_address = 0;
+        u64 memory_size = 0;
         {
             std::scoped_lock lk{m_objects->mutex};
             auto it = m_objects->images.upper_bound(handle);
@@ -2371,14 +2478,38 @@ private:
                     preference = it->second.preference;
                     image_offset = (handle - it->first) * it->second.size;
                     if (const auto memory = m_objects->memories.find(it->second.memory);
-                        memory != m_objects->memories.end()) {
+                         memory != m_objects->memories.end()) {
                         memory_address = memory->second.address;
+                        memory_size = memory->second.size;
                     }
                 }
             }
         }
         const auto layout = Nx2CalculateImageLayout(preference.data());
         const u64 gpu_address = ctx.GetCommand() == 426 ? memory_address + image_offset : 0;
+        if (ctx.GetCommand() == 426) {
+            if (!memory_address || image_offset > memory_size ||
+                layout.size > memory_size - image_offset || gpu_address < memory_address ||
+                !ctx.GetMemory().IsValidVirtualAddressRange(gpu_address, layout.size)) {
+                std::fprintf(stderr, "Native image mapping has invalid CPU backing\n");
+                std::abort();
+            }
+            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+            if (!registry.ContainsMappingRange(gpu_address, 0, layout.size)) {
+                // Decoder images bound through114 have CPU backing but no gpu101 import.
+                if (preference[1] != 5) {
+                    std::fprintf(stderr, "Unsupported native image GPU import layout\n");
+                    std::abort();
+                }
+                registry.MapAt(gpu_address, gpu_address, layout.size);
+                if (!registry.ModifyKind(gpu_address, layout.size, 6)) {
+                    std::fprintf(stderr, "Native image GPU import did not commit\n");
+                    std::abort();
+                }
+                LOG_INFO(Service, "Native decoder image {} imported at GPU {:#x}+{:#x}",
+                         handle, gpu_address, layout.size);
+            }
+        }
         std::array<u32, 37> words{};
         words[0] = static_cast<u32>(gpu_address);
         words[1] = static_cast<u32>(gpu_address >> 32);

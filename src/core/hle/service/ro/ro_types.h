@@ -24,9 +24,10 @@ struct ModuleId {
 };
 static_assert(sizeof(ModuleId) == ModuleIdSize);
 
-struct NrrCertification {
-    static constexpr size_t RsaKeySize = 0x100;
-    static constexpr size_t SignedSize = 0x120;
+template <size_t KeySize>
+struct NrrCertificationLayout {
+    static constexpr size_t RsaKeySize = KeySize;
+    static constexpr size_t SignedSize = 0x20 + KeySize;
 
     u64 program_id_mask;
     u64 program_id_pattern;
@@ -34,10 +35,12 @@ struct NrrCertification {
     std::array<u8, RsaKeySize> modulus;
     std::array<u8, RsaKeySize> signature;
 };
+using NrrCertification = NrrCertificationLayout<0x100>;
 static_assert(sizeof(NrrCertification) ==
               NrrCertification::RsaKeySize + NrrCertification::SignedSize);
 
-class NrrHeader {
+template <size_t KeySize>
+class NrrHeaderLayout {
 public:
     static constexpr u32 Magic = Common::MakeMagic('N', 'R', 'R', '0');
 
@@ -73,6 +76,12 @@ public:
         return m_hashes_offset;
     }
 
+    bool IsHashRangeValid(u64 registered_size) const {
+        return IsMagicValid() && registered_size >= sizeof(*this) && m_size == registered_size &&
+               m_hashes_offset >= sizeof(*this) && m_hashes_offset <= m_size &&
+               m_num_hashes <= (m_size - m_hashes_offset) / 0x20;
+    }
+
     u32 GetKeyGeneration() const {
         return m_key_generation;
     }
@@ -98,15 +107,15 @@ public:
     }
 
     static constexpr size_t GetSignedAreaOffset() {
-        return offsetof(NrrHeader, m_program_id);
+        return offsetof(NrrHeaderLayout, m_program_id);
     }
 
 private:
     u32 m_magic;
     u32 m_key_generation;
     INSERT_PADDING_BYTES_NOINIT(8);
-    NrrCertification m_certification;
-    std::array<u8, 0x100> m_signature;
+    NrrCertificationLayout<KeySize> m_certification;
+    std::array<u8, KeySize> m_signature;
     u64 m_program_id;
     u32 m_size;
     u8 m_nrr_kind; // 7.0.0+
@@ -115,6 +124,10 @@ private:
     u32 m_num_hashes;
     INSERT_PADDING_BYTES_NOINIT(8);
 };
+using NrrHeader = NrrHeaderLayout<0x100>;
+using NrrHeaderNx2 = NrrHeaderLayout<0x180>;
+static_assert(sizeof(NrrHeaderNx2) == 0x4d0);
+static_assert(NrrHeaderNx2::GetSignedAreaOffset() == 0x4b0);
 static_assert(sizeof(NrrHeader) == 0x350, "NrrHeader has wrong size");
 
 static constexpr u32 NRO_HEADER_MAGIC = Common::MakeMagic('N', 'R', 'O', '0');

@@ -40,6 +40,7 @@ struct ShaderInfo {
     size_t size_bytes{};
     /// Lowered code of a native program, reused when its pipelines are built.
     std::shared_ptr<const LoweredNativeCode> lowered_native;
+    bool requires_rasterizer_clip{};
 };
 
 class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
