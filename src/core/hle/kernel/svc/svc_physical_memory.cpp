@@ -17,8 +17,14 @@ Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
     LOG_TRACE(Kernel_SVC, "called, heap_size={:#x}", size);
 
     // Validate size.
-    R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
-    R_UNLESS(size < MainMemorySizeMax, ResultInvalidSize);
+    if (!Common::IsAligned(size, HeapSizeAlignment) || size >= MainMemorySizeMax) {
+        LOG_ERROR(Kernel_SVC,
+                  "SetHeapSize rejected size={:#x}, alignment={:#x}, exclusive_limit={:#x}, "
+                  "pid={:#x}: ResultInvalidSize ({:#x})",
+                  size, HeapSizeAlignment, MainMemorySizeMax,
+                  GetCurrentProcess(system.Kernel()).GetProcessId(), ResultInvalidSize.raw);
+        R_THROW(ResultInvalidSize);
+    }
 
     // Set the heap size.
     KProcessAddress address{};
@@ -152,9 +158,12 @@ static bool MemTrace() {
 
 Result SetHeapSize64(Core::System& system, uint64_t* out_address, uint64_t size) {
     const Result result = SetHeapSize(system, out_address, size);
-    if (MemTrace()) {
+    if (MemTrace() && result.IsSuccess()) {
         LOG_INFO(Kernel_SVC, "mem trace: SetHeapSize {:#x} -> {:#x} at {:#x}", size, result.raw,
                  *out_address);
+    } else if (MemTrace()) {
+        LOG_INFO(Kernel_SVC, "mem trace: SetHeapSize {:#x} -> {:#x} (no output address)", size,
+                 result.raw);
     }
     R_RETURN(result);
 }

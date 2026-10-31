@@ -87,7 +87,13 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     if (Settings::values.use_auto_stub || env_auto_stub ||
         std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
         (caller != nullptr && caller->IsSwitch2())) {
-        LOG_WARNING(Service, "Using auto stub fallback!");
+        LOG_WARNING(Service,
+                    "Using auto stub fallback: {}::{} ({:#x}), pid={:#x}, tid={:#x}; "
+                    "returning empty success without output data or handles. "
+                    "This does not implement the command.",
+                    service_name, ctx.GetCommand(), static_cast<u32>(ctx.GetCommand()),
+                    caller != nullptr ? caller->GetProcessId() : 0,
+                    ctx.GetThread().GetThreadId());
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -100,25 +106,7 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
         return ReportUnimplementedFunction(ctx, info);
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
-    // EDEN_NX2_IPC_TRACE=1 logs every dispatched command and the result word it returned.
-    static const bool ipc_trace = std::getenv("EDEN_NX2_IPC_TRACE") != nullptr;
-    if (ipc_trace) {
-        LOG_INFO(Service, "ipc {}::{} ({})", service_name, ctx.GetCommand(), info->name);
-    }
     handler_invoker(this, info->handler_callback, ctx);
-    if (ipc_trace) {
-        // Response layout: [0..1] header, then 'SFCO', version, result.
-        const auto* cmd_buf = ctx.CommandBuffer();
-        for (int i = 0; i < 12; ++i) {
-            if (cmd_buf[i] == 0x4F434653) {  // "SFCO"
-                if (cmd_buf[i + 2] != 0) {
-                    LOG_INFO(Service, "ipc {}::{} -> result {:#x}", service_name, ctx.GetCommand(),
-                             cmd_buf[i + 2]);
-                }
-                break;
-            }
-        }
-    }
 }
 
 void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
@@ -128,12 +116,6 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
         return ReportUnimplementedFunction(ctx, info);
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
-    static const bool ipc_trace = std::getenv("EDEN_NX2_IPC_TRACE") != nullptr;
-    if (ipc_trace) {
-        const auto* w = ctx.CommandBuffer();
-        LOG_INFO(Service, "tipc {}::{} ({}) [2]={:#x} [3]={:#x} [4]={:#x}", service_name,
-                 ctx.GetCommand(), info->name, w[2], w[3], w[4]);
-    }
     handler_invoker(this, info->handler_callback, ctx);
 }
 
@@ -174,21 +156,32 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const auto guard = LockService();
+    static const bool ipc_trace = std::getenv("EDEN_NX2_IPC_TRACE") != nullptr;
+    const u32 command = ctx.GetCommand();
+    const u32 type = static_cast<u32>(ctx.GetCommandType());
+    const auto* caller = ctx.GetThread().GetOwnerProcess();
+    const u64 pid = caller != nullptr ? caller->GetProcessId() : 0;
+    const u64 tid = ctx.GetThread().GetThreadId();
+    if (ipc_trace) {
+        LOG_INFO(Service, "ipc request {}::{} type={} pid={:#x} tid={:#x}", service_name,
+                 command, type, pid, tid);
+    }
     SCOPE_EXIT {
-        const auto* cmd_buf = ctx.CommandBuffer();
-        u32 result_word = 0;
-        const u32 type = static_cast<u32>(ctx.GetCommandType());
-        if (type >= 16) {
-            result_word = cmd_buf[2];
-        } else {
-            for (int i = 0; i < 12; ++i) {
-                if (cmd_buf[i] == 0x4F434653) { // "SFCO"
-                    result_word = cmd_buf[i + 2];
-                    break;
-                }
+        const auto response_result = ctx.GetResponseResult();
+        if (response_result) {
+            CountRequest(service_name, command, type, *response_result);
+            if (ipc_trace) {
+                const Result response{*response_result};
+                LOG_INFO(Service,
+                         "ipc reply {}::{} type={} pid={:#x} tid={:#x} result={:#x} ({:04}-{:04})",
+                         service_name, command, type, pid, tid, *response_result,
+                         static_cast<u32>(response.GetModule()) + 2000,
+                         response.GetDescription());
             }
+        } else if (ipc_trace) {
+            LOG_INFO(Service, "ipc reply {}::{} type={} pid={:#x} tid={:#x}: no result payload",
+                     service_name, command, type, pid, tid);
         }
-        CountRequest(service_name, ctx.GetCommand(), type, result_word);
     };
 
     Result result = ResultSuccess;

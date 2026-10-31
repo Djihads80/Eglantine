@@ -23,6 +23,7 @@
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/k_handle_table.h"
 #include "core/hle/kernel/svc_common.h"
+#include "core/hle/service/ipc_response.h"
 
 union Result;
 
@@ -191,6 +192,13 @@ public:
     /// Returns a pointer to the IPC command buffer for this request.
     [[nodiscard]] u32* CommandBuffer() {
         return cmd_buf.data();
+    }
+
+    [[nodiscard]] std::optional<u32> GetResponseResult() const {
+        if (write_size > cmd_buf.size()) {
+            return std::nullopt;
+        }
+        return ReadResponseResult(std::span{cmd_buf}.first(write_size), data_payload_offset);
     }
 
     /**

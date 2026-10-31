@@ -207,7 +207,8 @@ Result IApplicationFunctions::GetDesiredLanguage(Out<u64> out_language_code) {
 }
 
 Result IApplicationFunctions::SetTerminateResult(Result terminate_result) {
-    LOG_INFO(Service_AM, "(STUBBED) called, result={:#x} ({:04}-{:04})",
+    LOG_INFO(Service_AM, "called, program_id={:016x}, result={:#x} ({:04}-{:04})",
+             m_applet->program_id,
              terminate_result.GetInnerValue(),
              static_cast<u32>(terminate_result.GetModule()) + 2000,
              terminate_result.GetDescription());
