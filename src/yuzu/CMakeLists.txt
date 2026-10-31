@@ -358,6 +358,8 @@ target_sources(yuzu
 
 # TODO(crueter): Move Assets.car/icon/icns handling to its own Module.
 if (APPLE)
+    target_sources(yuzu PRIVATE util/macos_sleep.cpp util/macos_sleep.h)
+
     # Xcode will automatically generate the Assets.car and icns file for us.
     set(_dist "${CMAKE_SOURCE_DIR}/dist")
     if (CMAKE_GENERATOR MATCHES "Xcode")
