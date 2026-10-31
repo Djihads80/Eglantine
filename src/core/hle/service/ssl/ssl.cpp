@@ -420,10 +420,14 @@ private:
         R_SUCCEED();
     }
 
-    Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> to_write) {
-        *to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + *to_write);
-        LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, size={}", *to_write);
+    // Replies with two words, the ALPN state and the size written to the buffer. It used to reply
+    // with one and copy the caller's (output) buffer over the protocols SetNextAlpnProto stored.
+    // No TLS negotiation happens here, so report that nothing was negotiated.
+    Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> out_state,
+                            Out<u32> out_size) {
+        LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, buffer size={}", data.size());
+        *out_state = 0;
+        *out_size = 0;
         R_SUCCEED();
     }
 
@@ -557,8 +561,10 @@ private:
         rb.Push(client_id);
     }
 
-    Result RegisterInternalPki() {
+    // Replies with a u64 (the registered certificate's id); the reply used to carry no data.
+    Result RegisterInternalPki(Out<u64> out_id) {
         LOG_WARNING(Service_SSL, "(STUBBED) called");
+        *out_id = 0;
         R_SUCCEED();
     }
 };
@@ -664,11 +670,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result GetContextCount() {
+        Result GetContextCount(Out<u32> out_count) {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
+            *out_count = 0;
             return ResultSuccess;
         };
 
@@ -704,11 +708,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result FlushSessionCache() {
+        Result FlushSessionCache(Out<u32> out_count) {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
+            *out_count = 0;
             return ResultSuccess;
         };
 
