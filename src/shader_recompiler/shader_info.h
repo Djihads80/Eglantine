@@ -274,6 +274,10 @@ struct Info {
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
+    /// Shared memory per workgroup kept in a storage buffer instead (the device has less than the
+    /// program needs), bound after every other descriptor. Zero when shared memory is native.
+    u32 emulated_shared_memory_size{};
+
     bool uses_workgroup_id{};
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};

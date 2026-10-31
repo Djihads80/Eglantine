@@ -1035,7 +1035,7 @@ void RasterizerVulkan::DispatchCompute() {
         buffer_cache.Nx2CollectListCopies(false);
     };
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
-                             texture_cache)) {
+                             texture_cache, staging_pool)) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
         return;
     }

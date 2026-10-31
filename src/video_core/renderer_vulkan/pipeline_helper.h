@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <optional>
 
@@ -140,7 +141,8 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
            Shader::NumDescriptors(info.texture_buffer_descriptors) +
            Shader::NumDescriptors(info.image_buffer_descriptors) +
            Shader::NumDescriptors(info.texture_descriptors) +
-           Shader::NumDescriptors(info.image_descriptors);
+           Shader::NumDescriptors(info.image_descriptors) +
+           (info.emulated_shared_memory_size != 0 ? 1U : 0U);
 }
 
 class DescriptorLayoutBuilder {
@@ -273,6 +275,13 @@ public:
         Add(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, stage, info.image_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stage, info.texture_descriptors);
         Add(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stage, info.image_descriptors);
+        if (info.emulated_shared_memory_size != 0) {
+            // Emulated shared memory's storage buffer: last, as in the SPIR-V
+            struct SharedMemoryBuffer {
+                u32 count{1};
+            };
+            Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, std::array<SharedMemoryBuffer, 1>{});
+        }
     }
 
 private:

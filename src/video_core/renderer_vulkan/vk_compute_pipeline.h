@@ -50,7 +50,8 @@ public:
 
     [[nodiscard]] bool Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                  Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
-                                 BufferCache& buffer_cache, TextureCache& texture_cache);
+                                 BufferCache& buffer_cache, TextureCache& texture_cache,
+                                 StagingBufferPool& staging_pool);
 
     bool IsBound() const noexcept {
         return static_cast<bool>(pipeline);

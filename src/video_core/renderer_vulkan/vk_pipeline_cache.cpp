@@ -1616,18 +1616,16 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     }
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
-    const VkDriverIdKHR driver_id = device.GetDriverID();
-    const bool needs_shared_mem_clamp =
-        driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
-        driver_id == VK_DRIVER_ID_ARM_PROPRIETARY || driver_id == VK_DRIVER_ID_MOLTENVK;
     const u32 max_shared_memory = device.GetMaxComputeSharedMemorySize();
-    if (needs_shared_mem_clamp && program.shared_memory_size > max_shared_memory) {
+    if (max_shared_memory != 0 && program.shared_memory_size > max_shared_memory) {
+        // More than the device has (48 KB Switch 2 programs on a 32 KB Adreno): keep it in a
+        // storage buffer, a slice per workgroup, rather than clamp it, which corrupted what those
+        // shaders computed. Slower, but correct.
         LOG_WARNING(Render_Vulkan,
-                    "Compute shader {:#016x} requests {}KB shared memory but device max is {}KB - clamping",
-                    key.unique_hash,
-                    program.shared_memory_size / 1024,
-                    max_shared_memory / 1024);
-        program.shared_memory_size = max_shared_memory;
+                    "Compute shader {:#016x} needs {} KB of shared memory, the device has {} KB; "
+                    "emulating it in a storage buffer",
+                    key.unique_hash, program.shared_memory_size / 1024, max_shared_memory / 1024);
+        program.info.emulated_shared_memory_size = program.shared_memory_size;
     }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
     device.SaveShader(code);

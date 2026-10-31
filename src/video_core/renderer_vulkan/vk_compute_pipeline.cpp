@@ -55,7 +55,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     builder.Add(info, VK_SHADER_STAGE_COMPUTE_BIT);
 
     uses_push_descriptor = builder.CanUsePushDescriptor();
-    uses_descriptor_buffer = builder.CanUseDescriptorBuffer() && descriptor_buffer_ring.IsValid();
+    // Emulated shared memory's scratch buffer has no device address for a descriptor buffer.
+    uses_descriptor_buffer = builder.CanUseDescriptorBuffer() && descriptor_buffer_ring.IsValid() &&
+                             info.emulated_shared_memory_size == 0;
     descriptor_set_layout =
         builder.CreateDescriptorSetLayout(uses_push_descriptor, uses_descriptor_buffer);
     if (uses_descriptor_buffer) {
@@ -160,7 +162,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
 
 bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
-                                BufferCache& buffer_cache, TextureCache& texture_cache) {
+                                BufferCache& buffer_cache, TextureCache& texture_cache,
+                                StagingBufferPool& staging_pool) {
     guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
 
     buffer_cache.SetComputeUniformBufferState(info.constant_buffer_mask, &uniform_buffer_sizes);
@@ -280,6 +283,19 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const VideoCommon::ImageViewInOut* views_it{views.data()};
     PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
                          views_it);
+    if (info.emulated_shared_memory_size != 0) {
+        // Emulated shared memory, a slice per workgroup. An indirect dispatch's size is only
+        // known on the GPU: it gets room for 4096 workgroups.
+        const auto& qmd{kepler_compute.launch_description};
+        u64 workgroups = static_cast<u64>(qmd.grid_dim_x.Value()) * qmd.grid_dim_y.Value() *
+                         qmd.grid_dim_z.Value();
+        if (workgroups == 0 || kepler_compute.GetIndirectComputeAddress()) {
+            workgroups = 4096;
+        }
+        const u64 size = (std::min)(workgroups * info.emulated_shared_memory_size, u64{512} << 20);
+        const StagingBufferRef scratch{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
+        guest_descriptor_queue.AddBuffer(scratch.buffer, scratch.offset, size);
+    }
 
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built

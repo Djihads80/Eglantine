@@ -18,8 +18,11 @@ void MemoryBarrier(EmitContext& ctx, spv::Scope scope) {
 void EmitBarrier(EmitContext& ctx) {
     const auto execution{spv::Scope::Workgroup};
     const auto memory{spv::Scope::Workgroup};
-    const auto memory_semantics{spv::MemorySemanticsMask::AcquireRelease |
-                                spv::MemorySemanticsMask::WorkgroupMemory};
+    // Emulated shared memory is a storage buffer: its writes need UniformMemory semantics.
+    const auto memory_semantics{
+        spv::MemorySemanticsMask::AcquireRelease | spv::MemorySemanticsMask::WorkgroupMemory |
+        (ctx.emulates_shared_memory ? spv::MemorySemanticsMask::UniformMemory
+                                    : spv::MemorySemanticsMask::MaskNone)};
     ctx.OpControlBarrier(ctx.Const(static_cast<u32>(execution)),
                          ctx.Const(static_cast<u32>(memory)),
                          ctx.Const(static_cast<u32>(memory_semantics)));
