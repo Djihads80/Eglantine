@@ -2468,6 +2468,9 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
+    if (!image_id) {
+        return ImageId{}; // Could not be created (see JoinImages)
+    }
     const Image& image = slot_images[image_id];
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
@@ -2589,7 +2592,21 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    ImageId new_image_id;
+    try {
+        new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    } catch (const std::exception& e) {
+        // The host cannot hold it at all: an 8192x8192x68 BC6H virtual texture is 6 GB on a
+        // driver with a 4 GB allocation limit and no real sparse images (Adreno). Sample it as
+        // the null image rather than aborting; nothing has been joined into it yet.
+        static u32 logged{};
+        if (logged++ < 16) {
+            LOG_ERROR(HW_GPU, "Image {}x{}x{} ({} levels) at {:#x} could not be created ({}); using the null image",
+                      new_info.size.width, new_info.size.height, new_info.resources.layers,
+                      new_info.resources.levels, gpu_addr, e.what());
+        }
+        return ImageId{};
+    }
     Image& new_image = slot_images[new_image_id];
 
     new_image.allocation_tick = frame_tick;
@@ -2776,6 +2793,9 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             dst_id = InsertImage(dst_info, dst_addr, RelaxedOptions{});
         }
     } while (has_deleted_images);
+    if (!src_id || !dst_id) {
+        return std::nullopt; // An image that could not be created (see JoinImages)
+    }
     const ImageBase& src_image = slot_images[src_id];
     const ImageBase& dst_image = slot_images[dst_id];
     const bool native_bgr = runtime.HasNativeBgr();
@@ -2791,6 +2811,9 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             src_id = FindOrInsertImage(src_info, src_addr, RelaxedOptions{});
             dst_id = FindOrInsertImage(dst_info, dst_addr, RelaxedOptions{});
         } while (has_deleted_images);
+        if (!src_id || !dst_id) {
+            return std::nullopt;
+        }
     }
     return {BlitImages{
         .dst_id = dst_id,
@@ -3516,6 +3539,9 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
+    if (image_id == NULL_IMAGE_ID) {
+        return; // See PrepareImageView
+    }
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
@@ -3570,7 +3596,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
 template <class P>
 void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modification,
                                        bool invalidate) {
-    if (!image_view_id) {
+    // The null view stands for textures that are unmapped or could not be created: it has no
+    // contents to upload (its image's format is invalid).
+    if (!image_view_id || image_view_id == NULL_IMAGE_VIEW_ID) {
         return;
     }
     const ImageViewBase& image_view = slot_image_views[image_view_id];
