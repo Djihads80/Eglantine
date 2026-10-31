@@ -1232,6 +1232,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
+    std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv; // For a pipeline the driver rejects
 
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
@@ -1253,6 +1254,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
         device.SaveShader(code);
         modules[stage_index] = BuildShader(device, code);
+        spirv[stage_index] = code;
 
         // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
         // is independent and gated only by gpu_log_shader_dumps.
@@ -1282,7 +1284,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
-        render_pass_cache, key, std::move(modules), infos);
+        render_pass_cache, key, std::move(modules), infos, std::move(spirv));
 
 } catch (const Shader::Exception& exception) {
     auto hash = key.Hash();
