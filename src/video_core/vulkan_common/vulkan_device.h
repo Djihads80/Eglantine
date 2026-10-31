@@ -1043,6 +1043,11 @@ FN_MAX_LIMIT_LIST
     /// yet the driver does: with the heap at its budget it is not available to new images.
     u64 GetDeviceMemorySlack() const;
 
+    /// Most bytes a sparse (unbacked) resource may span.
+    u64 GetSparseAddressSpaceSize() const {
+        return properties.properties.limits.sparseAddressSpaceSize;
+    }
+
     u32 GetSetsPerPool() const {
         return sets_per_pool;
     }

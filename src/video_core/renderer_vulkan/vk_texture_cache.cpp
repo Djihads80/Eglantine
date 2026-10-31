@@ -354,10 +354,64 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
+// Bytes of a 2D image's host copy from level `skip` on, for formats not decoded on the GPU.
+[[nodiscard]] u64 HostImageBytes(const Device& device, const ImageInfo& info, u32 skip) {
+    const bool decoded =
+        (IsPixelFormatASTC(info.format) && !device.IsOptimalAstcSupported()) ||
+        (VideoCore::Surface::IsPixelFormatBCn(info.format) && !device.IsOptimalBcnSupported());
+    const u32 block_width = decoded ? 1 : VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u32 block_height = decoded ? 1 : VideoCore::Surface::DefaultBlockHeight(info.format);
+    const u64 block_bytes = decoded ? 4 : BytesPerBlock(info.format);
+    u64 bytes = 0;
+    for (s32 level = static_cast<s32>(skip); level < info.resources.levels; ++level) {
+        const u32 width = (std::max)(info.size.width >> level, 1U);
+        const u32 height = (std::max)(info.size.height >> level, 1U);
+        bytes += u64{Common::DivCeil(width, block_width)} * Common::DivCeil(height, block_height) *
+                 block_bytes;
+    }
+    return bytes * static_cast<u64>(info.resources.layers);
+}
+
+// Most bytes a host image may span: past the sparse address space it cannot even be created
+// unbacked. The Qualcomm driver also refuses any allocation over 4 GiB, sparse ones included.
+[[nodiscard]] u64 MaxHostImageBytes(const Device& device) {
+    u64 limit = device.GetSparseAddressSpaceSize();
+    if (device.GetDriverID() == VK_DRIVER_ID_QUALCOMM_PROPRIETARY) {
+        limit = (std::min)(limit, u64{4} << 30);
+    }
+    return limit;
+}
+
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
-    if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
+    if (info.type != ImageType::e2D) {
         return info;
+    }
+    if (!WillUseAcceleratedAstcDecode(device, info)) {
+        // Too big for the host to create at all (Mario Kart World's 8192x8192x68 BC6H virtual
+        // texture is 6 GB, the Adreno limit 4 GB): keep its lower levels, as for ASTC below.
+        const u64 limit = MaxHostImageBytes(device);
+        if (limit == 0 || HostImageBytes(device, info, 0) <= limit) {
+            return info;
+        }
+        while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+               HostImageBytes(device, info, level_offset) > limit / 2) {
+            ++level_offset;
+        }
+        ImageInfo host = info;
+        host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+        host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+        host.resources.levels -= static_cast<s32>(level_offset);
+        static u32 logged{};
+        if (logged++ < 16) {
+            LOG_WARNING(Render_Vulkan,
+                        "{}x{}x{} image (format {}) is {} MiB, over the host's {} MiB; keeping mip "
+                        "levels {}+ ({}x{})",
+                        info.size.width, info.size.height, info.resources.layers,
+                        static_cast<u32>(info.format), HostImageBytes(device, info, 0) >> 20,
+                        limit >> 20, level_offset, host.size.width, host.size.height);
+        }
+        return host;
     }
     const auto decoded_bytes = [&](u32 skip) {
         u64 bytes = 0;

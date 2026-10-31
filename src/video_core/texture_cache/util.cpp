@@ -854,7 +854,8 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
                                                                    std::span<const u8> input,
-                                                                   std::span<u8> output) {
+                                                                   std::span<u8> output,
+                                                                   s32 first_level) {
     const size_t guest_size_bytes = input.size_bytes();
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
@@ -890,20 +891,25 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
                                             info.tile_width_spacing);
     size_t guest_offset = 0;
     u32 host_offset = 0;
-    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels);
+    first_level = std::clamp(first_level, 0, num_levels - 1);
+    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels - first_level);
 
     for (s32 level = 0; level < num_levels; ++level) {
+        if (level < first_level) {
+            guest_offset += level_sizes[level];
+            continue;
+        }
         const Extent3D level_size = AdjustMipSize(size, level);
         const u32 num_blocks_per_layer = NumBlocks(level_size, tile_size);
         const u32 host_bytes_per_layer = num_blocks_per_layer << bpp_log2;
-        copies[level] = BufferImageCopy{
+        copies[level - first_level] = BufferImageCopy{
             .buffer_offset = host_offset,
             .buffer_size = static_cast<size_t>(host_bytes_per_layer) * num_layers,
             .buffer_row_length = Common::AlignUp(level_size.width, tile_size.width),
             .buffer_image_height = Common::AlignUp(level_size.height, tile_size.height),
             .image_subresource =
                 {
-                    .base_level = level,
+                    .base_level = level - first_level,
                     .base_layer = 0,
                     .num_layers = info.resources.layers,
                 },
