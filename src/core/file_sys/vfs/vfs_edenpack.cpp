@@ -69,9 +69,39 @@ public:
     bool IsWritable() const override { return false; }
     bool IsReadable() const override { return true; }
     std::size_t Read(u8* data, std::size_t length, std::size_t position) const override {
-        if (position >= size) return 0;
-        const auto count = static_cast<std::size_t>(std::min<u64>(length, size - position));
-        return archive->Read(data, count, static_cast<std::size_t>(offset + position));
+        if (length == 0 || static_cast<u64>(position) >= size) {
+            return 0;
+        }
+        if (!data || !archive) {
+            LOG_ERROR(Loader, "EdenPack read rejected for {}: null buffer or archive", name);
+            return 0;
+        }
+
+        const u64 relative_position = static_cast<u64>(position);
+        if (relative_position > std::numeric_limits<u64>::max() - offset) {
+            LOG_ERROR(Loader, "EdenPack offset overflow for {}: base={}, position={}", name,
+                      offset, relative_position);
+            return 0;
+        }
+
+        const u64 archive_position = offset + relative_position;
+        const u64 requested = std::min<u64>(static_cast<u64>(length), size - relative_position);
+        if (archive_position > std::numeric_limits<std::size_t>::max() ||
+            requested > std::numeric_limits<std::size_t>::max()) {
+            LOG_ERROR(Loader, "EdenPack read exceeds addressable range for {}: offset={}, size={}",
+                      name, archive_position, requested);
+            return 0;
+        }
+
+        const auto count = static_cast<std::size_t>(requested);
+        const auto actual = archive->Read(data, count, static_cast<std::size_t>(archive_position));
+        if (actual != count) {
+            LOG_WARNING(Loader,
+                        "EdenPack short read: file={}, archive_offset={}, file_position={}, "
+                        "requested={}, actual={}",
+                        name, archive_position, relative_position, count, actual);
+        }
+        return actual;
     }
     std::size_t Write(const u8*, std::size_t, std::size_t) override { return 0; }
     bool Rename(std::string_view) override { return false; }
@@ -180,22 +210,44 @@ EdenPackVfsFilesystem::EdenPackVfsFilesystem(VirtualFile archive)
 
         std::vector<PendingFile> files;
         std::vector<std::string> directories;
+        std::vector<std::pair<u64, u64>> data_ranges;
+        std::map<std::string, std::string, std::less<>> seen_paths;
         files.reserve(entries.size());
         directories.reserve(entries.size());
+        data_ranges.reserve(entries.size());
         for (const auto& entry : entries) {
             const auto path = entry.at("path").get<std::string>();
             if (!SafePath(path)) return;
             const auto type = entry.at("type").get<std::string>();
+            if (type != "directory" && type != "file") return;
+            if (!seen_paths.emplace(path, type).second) {
+                LOG_ERROR(Loader, "Duplicate EdenPack path: {}", path);
+                return;
+            }
+
             if (type == "directory") {
                 directories.push_back(path);
-            } else if (type == "file") {
+            } else {
                 const u64 offset = entry.at("offset").get<u64>();
                 const u64 size = entry.at("size").get<u64>();
                 if (offset < HeaderSize || offset > index_offset || size > index_offset - offset) {
+                    LOG_ERROR(Loader, "EdenPack file range is outside the data area: {}", path);
                     return;
                 }
+                if (size != 0) {
+                    data_ranges.emplace_back(offset, offset + size);
+                }
                 files.push_back({path, offset, size});
-            } else {
+            }
+        }
+
+        std::sort(data_ranges.begin(), data_ranges.end());
+        for (std::size_t i = 1; i < data_ranges.size(); ++i) {
+            if (data_ranges[i].first < data_ranges[i - 1].second) {
+                LOG_ERROR(Loader,
+                          "Overlapping EdenPack file data ranges: [{}, {}) and [{}, {})",
+                          data_ranges[i - 1].first, data_ranges[i - 1].second,
+                          data_ranges[i].first, data_ranges[i].second);
                 return;
             }
         }
