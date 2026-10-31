@@ -145,7 +145,7 @@ jobs:
           pacboy: >-
             toolchain:p clang:p lld:p cmake:p python-pip:p
             qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
             vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
             lerc:p graphite2:p libwebp:p libtiff:p brotli:p
@@ -210,6 +210,9 @@ jobs:
 
       # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
+      # FFmpeg is bundled rather than found: CMake only defaults to that under YUZU_STATIC_BUILD, and
+      # the bundled prebuilt is static, so there are no extra DLLs to ship. Its CMakeLists looks up
+      # iconv, hence libiconv in the MSYS2 package list.
       - name: Configure MinGW PGO
         if: matrix.mingw
         shell: msys2 {0}
@@ -226,6 +229,7 @@ jobs:
             -DYUZU_ROOM_STANDALONE=OFF \
             -DYUZU_USE_BUNDLED_QT=OFF \
             -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_UPDATE_CHECKER=OFF \
