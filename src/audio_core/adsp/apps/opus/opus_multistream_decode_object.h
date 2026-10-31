@@ -18,6 +18,8 @@ class OpusMultiStreamDecodeObject {
 public:
     static u32 GetWorkBufferSize(u32 total_stream_count, u32 stereo_stream_count);
     static OpusMultiStreamDecodeObject& Initialize(u64 buffer, u64 buffer2);
+    /// Frees the host decoder state of every object.
+    static void ReleaseAll();
 
     s32 InitializeDecoder(u32 sample_rate, u32 total_stream_count, u32 channel_count,
                           u32 stereo_stream_count, u8* mappings);
@@ -30,12 +32,13 @@ public:
     }
 
 private:
+    LibOpusMSDecoder* GetDecoder() const;
+
     u32 magic;
     bool initialized;
     bool state_valid;
     OpusMultiStreamDecodeObject* self;
     u32 final_range;
-    LibOpusMSDecoder* decoder;
 };
 static_assert(std::is_trivially_constructible_v<OpusMultiStreamDecodeObject>);
 
