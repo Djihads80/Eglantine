@@ -187,6 +187,8 @@ private:
     void WalkBlock(const DAddr addr, const std::size_t size, auto on_unmapped, auto on_memory,
                    auto increment);
 
+    void CutContinuityAt(size_t page);
+
     void InnerGatherDeviceAddresses(Common::ScratchBuffer<u32>& buffer, PAddr address);
 
     std::unique_ptr<DeviceMemoryManagerAllocator<Traits>> impl;
