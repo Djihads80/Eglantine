@@ -41,6 +41,24 @@ fpsimd_context* GetFloatingPointState(mcontext_t& host_ctx) {
     return reinterpret_cast<fpsimd_context*>(header);
 }
 
+/// Whether a data abort was a write (ESR WnR), from the kernel's ESR record. Assumed when the
+/// record is missing.
+bool IsWriteFault(mcontext_t& host_ctx) {
+    _aarch64_ctx* header = reinterpret_cast<_aarch64_ctx*>(&host_ctx.__reserved);
+    while (header->magic != 0 && header->size != 0) {
+        if (header->magic == ESR_MAGIC) {
+            const u64 esr = reinterpret_cast<esr_context*>(header)->esr;
+            const u64 exception_class = esr >> 26;
+            if (exception_class != 0x24 && exception_class != 0x25) {
+                return true;
+            }
+            return ((esr >> 6) & 1) != 0;
+        }
+        header = reinterpret_cast<_aarch64_ctx*>(reinterpret_cast<char*>(header) + header->size);
+    }
+    return true;
+}
+
 using namespace Common::Literals;
 constexpr u32 StackSize = 128_KiB;
 
@@ -165,7 +183,8 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     const Common::ProcessAddress addr =
         (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
-    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
+    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
+    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, IsWriteFault(host_ctx))) {
         // We handled the access successfully and are returning to guest code.
         return true;
     }

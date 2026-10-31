@@ -536,16 +536,14 @@ struct Memory::Impl {
 
     /// Read traps replace reactive flushing's blanket read protection of every cached page: only
     /// pages the GPU writes are protected, and each one only until its first read
-    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE every fault is taken as a write, so they
-    /// are not used there.
+    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE the fault's ESR tells reads from writes.
     bool ReadTrapsEnabled() const {
         static const bool disabled = [] {
             const char* value = std::getenv("EDEN_NX2_READ_TRAPS");
             return value != nullptr && value[0] == '0';
         }();
         return !disabled && current_page_table->fastmem_arena &&
-               !Settings::values.use_reactive_flushing.GetValue() &&
-               Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce;
+               !Settings::values.use_reactive_flushing.GetValue();
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
@@ -580,6 +578,14 @@ struct Memory::Impl {
             ++run_pages;
         }
         protect_run();
+    }
+
+    bool IsReadTrapArmed(u64 vaddr) {
+        if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
+            return false;
+        }
+        std::scoped_lock lk{read_trap_mutex};
+        return armed_read_traps.contains(vaddr >> YUZU_PAGEBITS);
     }
 
     /// Takes read permission away again from armed pages that were just cached again.
@@ -1072,7 +1078,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_write) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -1084,7 +1090,17 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer) {
+    if (rasterizer && !is_write) {
+        // Flushes the GPU's writes and records the read (later GPU writes there are copied back
+        // at fences). A read trap is disarmed by this and leaves the page readable; a page read
+        // protected by reactive flushing is released as a write would release it.
+        const bool trapped = impl->IsReadTrapArmed(GetInteger(vaddr));
+        impl->HandleRasterizerDownload(GetInteger(vaddr), size);
+        impl->DisarmReadTraps(GetInteger(vaddr), size);
+        if (!trapped) {
+            impl->InvalidateGPUMemory(ptr, size);
+        }
+    } else if (rasterizer) {
         impl->InvalidateGPUMemory(ptr, size);
     }
 

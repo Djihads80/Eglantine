@@ -502,7 +502,8 @@ public:
 
     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
 
-    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
+    /// A native-code fault on a page; a read of GPU-written memory copies it back first.
+    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_write = true);
 
     bool InvalidateSeparateHeap(void* fault_address);
 
