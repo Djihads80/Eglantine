@@ -247,7 +247,8 @@ public:
 
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
-    void DownloadMemory(DAddr device_addr, u64 size);
+    /// around: also the GPU-written data of the same buffers in the 64 KiB around the range.
+    void DownloadMemory(DAddr device_addr, u64 size, bool around = false);
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 

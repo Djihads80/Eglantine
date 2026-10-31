@@ -14,6 +14,9 @@ enum class CacheType : u32 {
     QueryCache = 1 << 1,
     BufferCache = 1 << 2,
     ShaderCache = 1 << 3,
+    /// With BufferCache: a buffer download also takes the GPU-written data around the range in
+    /// the same buffer (it waits for the GPU either way), for reads of the neighbouring words.
+    BufferCacheAround = 1 << 4,
     NoTextureCache = QueryCache | BufferCache | ShaderCache,
     NoBufferCache = TextureCache | QueryCache | ShaderCache,
     NoQueryCache = TextureCache | BufferCache | ShaderCache,

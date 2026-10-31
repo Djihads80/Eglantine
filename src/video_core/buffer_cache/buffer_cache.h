@@ -262,9 +262,21 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 }
 
 template <class P>
-void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
+void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size, bool around) {
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
-        DownloadBufferMemory(buffer, device_addr, size);
+        if (!around) {
+            DownloadBufferMemory(buffer, device_addr, size);
+            return;
+        }
+        // Each download waits for the whole GPU. Mario Kart World's macros read the indirect
+        // draw arguments a culling dispatch wrote a few words at a time, and each new page waited
+        // again; one download of the window serves the reads after it.
+        constexpr u64 Window = u64{64} << 10;
+        const DAddr begin =
+            (std::max<DAddr>)(Common::AlignDown(device_addr, Window), buffer.CpuAddr());
+        const DAddr end = (std::min<DAddr>)(Common::AlignUp(device_addr + size, Window),
+                                            buffer.CpuAddr() + buffer.SizeBytes());
+        DownloadBufferMemory(buffer, begin, end - begin);
     });
 }
 
