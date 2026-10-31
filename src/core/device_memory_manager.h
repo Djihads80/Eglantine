@@ -126,6 +126,9 @@ public:
     // New batch API to update multiple ranges with a single lock acquisition.
     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
 
+    /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
+    void ArmReadTraps(DAddr addr, size_t size);
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};
