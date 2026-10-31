@@ -106,6 +106,9 @@ private:
     bool blit_supported;
     bool storage_supported;
     bool use_present_thread;
+    /// The surface was lost and could not be made again yet (no window while the app is in the
+    /// background on Android): later frames retry instead of the present thread throwing.
+    bool surface_recreation_pending{};
     std::atomic<std::size_t> image_count{};
     std::atomic<std::size_t> swapchain_image_count{};
     std::atomic<VkFormat> swapchain_image_format{};
