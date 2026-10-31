@@ -78,6 +78,13 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
                 return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
             }
             break;
+        case 0xc:
+            // NVGPU_AS_IOCTL_MAPPING_MODIFY: NVN changes a pool range to a compressed page kind
+            // before placing a texture there. ponytail: kinds are not emulated, so accept and ignore.
+            if (g_nx2_driver) {
+                return NvResult::Success;
+            }
+            break;
         case 0x14:
             return WrapVariable(this, &nvhost_as_gpu::Remap, input, output);
         default:

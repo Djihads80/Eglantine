@@ -1,0 +1,26 @@
+# Switch NX2 - read at every start of Eglantine (GUI and CLI alike).
+# One NAME=VALUE per line. Lines starting with # are ignored.
+# A variable already set in the environment wins over this file.
+# Between files, %APPDATA%\eden\nx2_switches.txt (yours) wins over this one, so editing
+# this file is never needed: copy the lines you want into your own and restart.
+#
+# Restart the emulator after editing.
+
+# --- workarounds / behaviour ---
+#EDEN_NX2_BUFFER_DOWNLOADS=1
+#EDEN_NX2_SPLIT=1
+#EDEN_NX2_MME_JIT=0
+#EDEN_NX2_PBFLUSH=0
+#EDEN_NX2_RESETFIX=0
+#EDEN_NX2_FENCE_BATCH=1
+#EDEN_NX2_SKIP_SAME=0
+#EDEN_NX2_INLINE_DEFER=0
+#EDEN_NX2_SPLIT_SKIP=1
+#EDEN_NX2_AUTO_STUB=1
+
+# --- limits / tuning ---
+#EDEN_NX2_VRAM_LIMIT_MIB=8192
+#EDEN_NX2_GPU_PROFILE=0
+#EDEN_NX2_FRAMES_AHEAD=2
+#EDEN_NX2_TC_EXPECTED_MIB=21322
+#EDEN_NX2_TC_CRITICAL_MIB=22346

@@ -23,10 +23,10 @@ public:
                       bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address,
                       size_t code_size, KSystemResource* system_resource,
                       KResourceLimit* resource_limit, Core::Memory::Memory& memory,
-                      KProcessAddress aslr_space_start) {
+                      KProcessAddress aslr_space_start, size_t extra_heap_region_size = 0) {
         R_RETURN(m_page_table.InitializeForProcess(
             as_type, enable_aslr, enable_das_merge, from_back, pool, code_address, code_size,
-            system_resource, resource_limit, memory, aslr_space_start));
+            system_resource, resource_limit, memory, aslr_space_start, extra_heap_region_size));
     }
 
     void Finalize() {

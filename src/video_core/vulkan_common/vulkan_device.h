@@ -968,7 +968,9 @@ FN_MAX_LIMIT_LIST
 
     u64 GetDeviceMemoryUsage() const;
 
-    /// The driver's current memory budget for this process (VK_EXT_memory_budget), 0 without it.
+    /// The driver's current memory budget for this process (VK_EXT_memory_budget), in
+    /// GetDeviceMemoryUsage() terms: the usage at which the main device-local heap reaches its
+    /// budget. 0 without the extension.
     u64 GetDeviceMemoryBudget() const;
 
     u32 GetSetsPerPool() const {
@@ -1257,6 +1259,8 @@ private:
     std::set<std::string, std::less<>> supported_extensions; ///< Reported Vulkan extensions.
     std::set<std::string, std::less<>> loaded_extensions;    ///< Loaded Vulkan extensions.
     std::vector<size_t> valid_heap_memory;                   ///< Heaps used.
+    size_t main_heap{};       ///< Largest device-local heap, where images live.
+    u64 heap_size_limit{};    ///< EDEN_NX2_VRAM_LIMIT_MIB for device-local heaps, 0 if unset.
 
     /// Format properties dictionary.
     ::Common::unordered_map<VkFormat, VkFormatProperties> format_properties;

@@ -225,19 +225,24 @@ void TextureCache<P>::TickFrame() {
         // VRAM (another game: 7.0 -> 6.4 GB), and collecting only past it means the driver pages
         // textures out. It is also the room to use: Eden's device memory figure is capped near
         // 7 GB, which on a 12 GB card (11.2 GB budget) kept title 1 evicting textures with 3 GB
-        // unused. EDEN_NX2_TC_*_MIB overrides still win.
+        // unused. Both thresholds stay under it with a margin (1/8 of it, at most 1 GiB): past it
+        // allocations fail and images end up unbacked (garbage textures), and Windows shrinks the
+        // budget as the card fills (16 GB card: 13.5 GB left mid-race), hence the re-read every 30
+        // frames. EDEN_NX2_TC_*_MIB overrides still win.
         if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-            if (native_thresholds_applied && budget_check_frames++ % 60 == 0) {
+            if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
-                    critical_memory = budget - 768_MiB;
-                    expected_memory = budget - 1536_MiB;
-                    // Log only real changes (the budget moves by a few MiB all the time).
+                    const u64 margin = (std::min)(budget / 8, 1_GiB);
+                    critical_memory = budget - margin;
+                    expected_memory = budget - 2 * margin;
+                    // Log the first values and real changes (the budget moves by a few MiB all
+                    // the time).
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
-                    ApplyThresholdOverrides(change >= 256_MiB);
+                    ApplyThresholdOverrides(budget_check_frames == 1 || change >= 256_MiB);
                 }
             }
         }
@@ -728,6 +733,9 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             MarkLayersWritten(image, cpu_addr, size);
             return;
         }
+        if (MarkPartialWrite(image, cpu_addr, size)) {
+            return;
+        }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
         }
@@ -827,6 +835,9 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
     for (const ImageId id : deleted_images) {
         Image& image = slot_images[id];
+        if (MarkPartialRemap(image, gpu_addr, size)) {
+            continue;
+        }
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
             if (True(image.flags & ImageFlagBits::Tracked)) {
@@ -1300,6 +1311,19 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
+    if (!image.partial_dirty_pages.empty() || !image.partial_remapped.empty()) {
+        // Only some pages changed and the rest of the image is still tracked.
+        const bool uploaded = RefreshPartialContents(image);
+        RestorePartialPages(image);
+        if (uploaded) {
+            image.flags &= ~ImageFlagBits::CpuModified;
+            return;
+        }
+        if (True(image.flags & ImageFlagBits::Tracked)) {
+            UntrackImage(image, image_id); // the layout is not handled: upload it whole below
+        }
+    }
+
     image.flags &= ~ImageFlagBits::CpuModified;
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
@@ -1349,9 +1373,11 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
-    auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
-    UploadImageContents(image, staging);
-    runtime.InsertUploadMemoryBarrier();
+    if (!UploadInChunks(image)) {
+        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+        UploadImageContents(image, staging);
+        runtime.InsertUploadMemoryBarrier();
+    }
 }
 
 template <class P>
@@ -2758,8 +2784,176 @@ void TextureCache<P>::TrackImage(ImageBase& image, ImageId image_id) {
 }
 
 template <class P>
+bool TextureCache<P>::MarkPartialWrite(ImageBase& image, DAddr cpu_addr, size_t size) {
+    // Games stream small updates into very large textures (lookup tables, virtual texture pages)
+    // every frame; re-uploading the whole image for each costs hundreds of milliseconds.
+    constexpr size_t min_size = 16_MiB;
+    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
+                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
+                                       ImageFlagBits::TrimmedLevels | ImageFlagBits::AsynchronousDecode;
+    if (False(image.flags & ImageFlagBits::Tracked) || True(image.flags & excluded) ||
+        image.info.type != ImageType::e2D || image.guest_size_bytes < min_size ||
+        image.cpu_addr >= ~(1ULL << 40) ||
+        (True(image.flags & ImageFlagBits::CpuModified) && image.partial_dirty_pages.empty() &&
+         image.partial_remapped.empty())) {
+        return false;
+    }
+    const DAddr image_begin = image.cpu_addr;
+    const DAddr image_end = image.cpu_addr + image.guest_size_bytes;
+    const DAddr begin = std::max<DAddr>(cpu_addr, image_begin);
+    const DAddr end = std::min<DAddr>(cpu_addr + size, image_end);
+    if (begin >= end) {
+        return true;
+    }
+    const DAddr base_page = image_begin >> Core::DEVICE_PAGEBITS;
+    const u32 first = static_cast<u32>((begin >> Core::DEVICE_PAGEBITS) - base_page);
+    const u32 last = static_cast<u32>(((end - 1) >> Core::DEVICE_PAGEBITS) - base_page);
+    const u32 total_pages =
+        static_cast<u32>(((image_end - 1) >> Core::DEVICE_PAGEBITS) - base_page + 1);
+    auto& pages = image.partial_dirty_pages;
+    for (u32 page = first; page <= last; ++page) {
+        const auto it = std::lower_bound(pages.begin(), pages.end(), page);
+        if (it != pages.end() && *it == page) {
+            continue;
+        }
+        pages.insert(it, page);
+        device_memory.UpdatePagesCachedCount((base_page + page) << Core::DEVICE_PAGEBITS,
+                                             Core::DEVICE_PAGESIZE, -1);
+    }
+    image.flags |= ImageFlagBits::CpuModified;
+    if (pages.size() > total_pages / 4) {
+        // Most of the image changed: untrack it whole and upload it whole.
+        UntrackImage(image, ImageId{});
+    }
+    return true;
+}
+
+template <class P>
+bool TextureCache<P>::UploadInChunks(Image& image) {
+    // A whole upload of a very large image needs a staging buffer of its full size (rounded up to
+    // a power of two: 1 GiB for 600 MiB of data), which can fail when memory is tight.
+    constexpr u64 min_size = 64_MiB;
+    constexpr u64 chunk_size = 32_MiB;
+    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
+                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
+                                       ImageFlagBits::TrimmedLevels;
+    if (True(image.flags & excluded) || image.info.type != ImageType::e2D ||
+        MapSizeBytes(image) < min_size) {
+        return false;
+    }
+    std::vector<u8> data;
+    for (u64 offset = 0; offset < image.guest_size_bytes; offset += chunk_size) {
+        const std::array range{
+            std::pair<u64, u64>{offset, std::min<u64>(offset + chunk_size, image.guest_size_bytes)}};
+        data.clear();
+        const auto copies = UnswizzleImageRows(*gpu_memory, image.gpu_addr, image.info, range, data);
+        if (copies.empty()) {
+            if (offset == 0) {
+                return false; // layout not handled: one staging buffer after all
+            }
+            continue; // padding between levels or layers
+        }
+        auto staging = runtime.UploadStagingBuffer(data.size());
+        std::memcpy(staging.mapped_span.data(), data.data(), data.size());
+        image.UploadMemory(staging, copies);
+    }
+    runtime.InsertUploadMemoryBarrier();
+    return true;
+}
+
+template <class P>
+bool TextureCache<P>::MarkPartialRemap(ImageBase& image, GPUVAddr gpu_addr, size_t size) {
+    // Virtual textures remap a few 64 KiB pages of a huge sparse texture every frame.
+    constexpr size_t min_size = 16_MiB;
+    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
+                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
+                                       ImageFlagBits::TrimmedLevels | ImageFlagBits::AsynchronousDecode |
+                                       ImageFlagBits::Remapped;
+    if (True(image.flags & excluded) || image.info.type != ImageType::e2D ||
+        image.guest_size_bytes < min_size) {
+        return false;
+    }
+    const GPUVAddr begin = std::max<GPUVAddr>(gpu_addr, image.gpu_addr);
+    const GPUVAddr end = std::min<GPUVAddr>(gpu_addr + size, image.gpu_addr + image.guest_size_bytes);
+    if (begin >= end) {
+        return true;
+    }
+    if (True(image.flags & ImageFlagBits::CpuModified) && image.partial_dirty_pages.empty() &&
+        image.partial_remapped.empty()) {
+        return true; // already due for a whole upload, which reads through the new mapping
+    }
+    image.partial_remapped.emplace_back(begin - image.gpu_addr, end - image.gpu_addr);
+    image.flags |= ImageFlagBits::CpuModified;
+    u64 remapped = 0;
+    for (const auto& [low, high] : image.partial_remapped) {
+        remapped += high - low;
+    }
+    if (remapped > image.guest_size_bytes / 4) {
+        // Most of the image moved: upload it whole.
+        if (True(image.flags & ImageFlagBits::Tracked)) {
+            UntrackImage(image, ImageId{});
+        } else {
+            RestorePartialPages(image);
+        }
+    }
+    return true;
+}
+
+template <class P>
+void TextureCache<P>::RestorePartialPages(ImageBase& image) {
+    const DAddr base_page = image.cpu_addr >> Core::DEVICE_PAGEBITS;
+    for (const u32 page : image.partial_dirty_pages) {
+        device_memory.UpdatePagesCachedCount((base_page + page) << Core::DEVICE_PAGEBITS,
+                                             Core::DEVICE_PAGESIZE, 1);
+    }
+    image.partial_dirty_pages.clear();
+    image.partial_remapped.clear();
+}
+
+template <class P>
+bool TextureCache<P>::RefreshPartialContents(Image& image) {
+    std::vector<std::pair<u64, u64>> ranges;
+    const u64 head = image.cpu_addr & Core::DEVICE_PAGEMASK; // the image starts inside its first page
+    for (const u32 page : image.partial_dirty_pages) {
+        const u64 page_begin = u64{page} << Core::DEVICE_PAGEBITS;
+        const u64 begin = page_begin > head ? page_begin - head : 0;
+        const u64 end =
+            (std::min<u64>)(page_begin + Core::DEVICE_PAGESIZE - head, image.guest_size_bytes);
+        if (!ranges.empty() && ranges.back().second >= begin) {
+            ranges.back().second = (std::max)(ranges.back().second, end);
+        } else {
+            ranges.emplace_back(begin, end);
+        }
+    }
+    if (!image.partial_remapped.empty()) {
+        ranges.insert(ranges.end(), image.partial_remapped.begin(), image.partial_remapped.end());
+        std::ranges::sort(ranges);
+        std::vector<std::pair<u64, u64>> merged;
+        for (const auto& range : ranges) {
+            if (!merged.empty() && merged.back().second >= range.first) {
+                merged.back().second = (std::max)(merged.back().second, range.second);
+            } else {
+                merged.push_back(range);
+            }
+        }
+        ranges = std::move(merged);
+    }
+    std::vector<u8> data;
+    auto copies = UnswizzleImageRows(*gpu_memory, image.gpu_addr, image.info, ranges, data);
+    if (copies.empty()) {
+        return false;
+    }
+    auto staging = runtime.UploadStagingBuffer(data.size());
+    std::memcpy(staging.mapped_span.data(), data.data(), data.size());
+    image.UploadMemory(staging, copies);
+    runtime.InsertUploadMemoryBarrier();
+    return true;
+}
+
+template <class P>
 void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
     ASSERT(True(image.flags & ImageFlagBits::Tracked));
+    RestorePartialPages(image);
     image.flags &= ~ImageFlagBits::Tracked;
     if (False(image.flags & ImageFlagBits::Sparse)) {
         if (image.cpu_addr < ~(1ULL << 40)) {
@@ -2984,6 +3178,7 @@ template <class P>
 void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
     Image& image = slot_images[image_id];
     if (invalidate) {
+        RestorePartialPages(image);
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
         if (False(image.flags & ImageFlagBits::Tracked)) {
             TrackImage(image, image_id);

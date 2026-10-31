@@ -31,11 +31,10 @@ public:
     }
 
 private:
+    // nn::audio::OpenAudioOut keeps the command 1 object as a singleton and calls its method 3
+    // (OpenAudioOutAuto: 48 kHz stereo parameters, device name in/out buffers).
     void GetAudioOutManager(HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const u32 arg = rp.Pop<u32>();
-        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 1 arg={}, returning IAudioOutManager",
-                    arg);
+        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 1, returning IAudioOutManager");
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
         rb.PushIpcInterface<IAudioOutManager>(ctx, system);
