@@ -1461,13 +1461,11 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
             UpdateVertexBuffers();
         }
         UpdateTransformFeedbackBuffers();
-        {
-            Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateUniform};
-            for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            {
+                Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateUniform};
                 UpdateUniformBuffers(stage);
             }
-        }
-        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
             UpdateStorageBuffers(stage);
             UpdateTextureBuffers(stage);
         }
