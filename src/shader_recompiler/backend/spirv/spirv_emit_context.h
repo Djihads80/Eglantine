@@ -280,6 +280,14 @@ public:
     std::vector<ImageDefinition> images;
 
     Id workgroup_id{};
+    Id num_workgroups{};
+
+    /// Shared memory lives in a storage buffer, a slice of shared_memory_words per workgroup.
+    bool emulates_shared_memory{};
+    u32 shared_memory_words{};
+
+    /// Pointer to a 32-bit word of shared memory, native or emulated.
+    Id SharedWordPointer(Id word_index);
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};
