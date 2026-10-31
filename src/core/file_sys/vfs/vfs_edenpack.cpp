@@ -242,6 +242,30 @@ EdenPackVfsFilesystem::EdenPackVfsFilesystem(VirtualFile archive)
             }
         }
 
+        // A file cannot also be an ancestor directory. Reject this before building the
+        // VectorVfsDirectory tree, otherwise the same component could appear as both a
+        // file and a directory depending on lookup order.
+        for (const auto& [path, type] : seen_paths) {
+            std::size_t parent_end = path.find('/');
+            while (parent_end != std::string::npos) {
+                const auto parent = seen_paths.find(path.substr(0, parent_end));
+                if (parent != seen_paths.end() && parent->second != "directory") {
+                    LOG_ERROR(Loader, "EdenPack path {} has non-directory parent {}", path,
+                              path.substr(0, parent_end));
+                    return;
+                }
+                parent_end = path.find('/', parent_end + 1);
+            }
+        }
+
+        const auto exefs = seen_paths.find("ExeFS");
+        const auto romfs = seen_paths.find("RomFS");
+        if (exefs == seen_paths.end() || exefs->second != "directory" ||
+            romfs == seen_paths.end() || romfs->second != "directory") {
+            LOG_ERROR(Loader, "EdenPack must contain ExeFS and RomFS root directories");
+            return;
+        }
+
         std::sort(data_ranges.begin(), data_ranges.end());
         for (std::size_t i = 1; i < data_ranges.size(); ++i) {
             if (data_ranges[i].first < data_ranges[i - 1].second) {
