@@ -323,7 +323,13 @@ GraphicsPipeline::GraphicsPipeline(
         num_image_elements += Shader::NumDescriptors(info->texture_descriptors);
         num_image_elements += Shader::NumDescriptors(info->image_descriptors);
         num_descriptor_entries += NumDescriptorEntries(*info);
+        const auto written = [](const auto& descriptor) { return descriptor.is_written; };
+        writes_memory = writes_memory || info->stores_global_memory ||
+                        std::ranges::any_of(info->storage_buffers_descriptors, written) ||
+                        std::ranges::any_of(info->image_buffer_descriptors, written) ||
+                        std::ranges::any_of(info->image_descriptors, written);
     }
+    writes_memory = writes_memory || key.state.xfb_enabled != 0;
     fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];
 
     DescriptorLayoutBuilder builder{MakeBuilder(device, stage_infos)};
