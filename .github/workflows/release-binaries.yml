@@ -67,6 +67,8 @@ jobs:
           - platform: linux-aarch64-pgo
             runner: ubuntu-24.04-arm
             pgo: true
+          - platform: macos-arm64
+            runner: macos-15
 
     steps:
       - name: Check out source
@@ -86,6 +88,17 @@ jobs:
             spirv-tools spirv-headers libusb-1.0-0-dev \
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache
+
+      # The packages docs/Deps.md lists for macOS, plus ccache.
+      - name: Install macOS dependencies
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          brew install autoconf automake boost ffmpeg fmt glslang hidapi libtool libusb lz4 ninja \
+            nlohmann-json openssl pkg-config qt@6 sdl3 speexdsp zlib zstd cmake catch2 molten-vk \
+            vulkan-loader spirv-tools vulkan-utility-libraries ccache
 
       - name: Install Qt on Linux x86_64
         if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
@@ -266,6 +279,27 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
+      - name: Configure macOS
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF \
+            "-DCMAKE_PREFIX_PATH=$(brew --prefix qt@6);$(brew --prefix zlib)" \
+            "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_CCACHE=ON
+
       # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
       - name: Configure MinGW PGO
@@ -411,6 +445,58 @@ jobs:
             deps "$dll"
           done
 
+      # A self-contained app bundle: macdeployqt copies Qt and every other Homebrew library both
+      # programs load into the bundle, then the leftover Homebrew search paths are removed so a
+      # machine with Homebrew still uses the bundled copies. Ad-hoc signed, not notarized.
+      - name: Package macOS app
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=build/release/bin/eglantine.app
+          test -x "$app/Contents/MacOS/eglantine"
+          test -x build/release/bin/eden-cli
+          cp build/release/bin/eden-cli "$app/Contents/MacOS/eden-cli"
+          "$(brew --prefix qt@6)/bin/macdeployqt" "$app" \
+            -executable="$app/Contents/MacOS/eden-cli" -libpath="$(brew --prefix)/lib" \
+            -always-overwrite -verbose=1
+          # Qt's virtual keyboard input plugin pulls in the QML stack, which the emulator doesn't use.
+          rm -f "$app/Contents/PlugIns/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
+          binaries=$(find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) \
+            -exec sh -c 'file -b "$1" | grep -q Mach-O' _ {} \; -print)
+          for binary in $binaries; do
+            otool -l "$binary" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' |
+              { grep -E '^/(opt/homebrew|usr/local)/' || true; } | while read -r rpath; do
+                install_name_tool -delete_rpath "$rpath" "$binary" 2> /dev/null
+              done
+          done
+          # Libraries that load their dependencies through @rpath find them in the bundle.
+          for program in eglantine eden-cli; do
+            install_name_tool -add_rpath @executable_path/../Frameworks \
+              "$app/Contents/MacOS/$program" 2> /dev/null
+          done
+          leaks=$(for binary in $binaries; do
+            otool -L "$binary" | grep -E '^\s+/(opt/homebrew|usr/local)/'
+            otool -l "$binary" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' |
+              grep -E '^/(opt/homebrew|usr/local)/'
+          done || true)
+          if [ -n "$leaks" ]; then
+            echo "References still pointing outside the bundle:"
+            echo "$leaks" | sort -u
+            exit 1
+          fi
+          # macdeployqt invalidates the signatures. The programs get the entitlements when the
+          # tree has them (the Hypervisor CPU backend needs com.apple.security.hypervisor).
+          codesign --force --deep --sign - "$app"
+          if [ -f dist/eglantine.entitlements ]; then
+            codesign --force --sign - --entitlements dist/eglantine.entitlements \
+              "$app/Contents/MacOS/eden-cli"
+            codesign --force --sign - --entitlements dist/eglantine.entitlements "$app"
+          fi
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --keepParent "$app" "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
@@ -444,6 +530,17 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+      # Zipped with ditto beforehand: the bundle's framework symlinks don't survive artifact zipping.
+      - name: Upload macOS app
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/upload-artifact@v4
+        with:
+          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
@@ -471,6 +568,8 @@ jobs:
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
               cp "$artifact"/*.AppImage "$artifact"/*.tar.gz dist/
+            elif compgen -G "$artifact*.zip" > /dev/null; then
+              cp "$artifact"/*.zip dist/
             else
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
             fi
@@ -492,6 +591,7 @@ jobs:
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
+          macOS: Apple Silicon and macOS 15 or newer. Unzip and move eglantine.app to Applications; eden-cli is inside it, in Contents/MacOS. The app is not notarized, so the first time right-click it and choose Open (or run xattr -dr com.apple.quarantine eglantine.app).
           The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
 
       - name: Ping Discord
