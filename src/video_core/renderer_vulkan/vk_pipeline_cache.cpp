@@ -1632,6 +1632,9 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const std::vector<u32> code{EmitSPIRV(profile, program)};
     device.SaveShader(code);
     vk::ShaderModule spv_module{BuildShader(device, code)};
+    if (program.info.emulated_shared_memory_size != 0) {
+        DumpSpirv("emulated_shared_memory", fmt::format("{:016x}", key.unique_hash), code);
+    }
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();
@@ -1658,7 +1661,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                                              guest_descriptor_queue, descriptor_buffer_ring,
                                              thread_worker, statistics,
                                              &shader_notify, program.info, std::move(spv_module),
-                                             key.unique_hash);
+                                             key.unique_hash, code);
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "{}", exception.what());
