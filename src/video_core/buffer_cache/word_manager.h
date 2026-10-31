@@ -51,6 +51,10 @@ struct WordManager {
     }
     explicit WordManager() = default;
 
+    [[nodiscard]] u64 CpuGeneration() const noexcept {
+        return cpu_generation;
+    }
+
     static u64 ExtractBits(u64 word, size_t page_start, size_t page_end) {
         constexpr size_t number_bits = sizeof(u64) * 8;
         const size_t limit_page_end = number_bits - (std::min)(page_end, number_bits);
@@ -116,6 +120,9 @@ struct WordManager {
     /// @param dirty_addr    Base address to mark or unmark as modified
     /// @param size          Size in bytes to mark or unmark as modified
     void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
+        if (enable && type == Type::CPU) {
+            ++cpu_generation;
+        }
         std::span<u64> state_words = Span(type);
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
@@ -253,6 +260,7 @@ struct WordManager {
             CollectChangedRanges(false, word_index, untracked_words[word_index], cached_bits, ranges);
             untracked_words[word_index] |= cached_bits;
             cpu_words[word_index] |= cached_bits;
+            cpu_generation += cached_bits != 0 ? 1 : 0;
             cached_words[word_index] = 0;
         }
         if (!ranges.empty()) {
@@ -322,6 +330,8 @@ struct WordManager {
     std::array<u64, size_t(Type::Max) * num_words> heap = {};
     DeviceTracker* tracker = nullptr;
     VAddr cpu_addr = 0;
+    /// Counts the times pages were marked CPU modified (MemoryTrackerBase::RangeGeneration).
+    u64 cpu_generation = 1;
 };
 
 } // namespace VideoCommon

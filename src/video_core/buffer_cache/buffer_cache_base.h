@@ -563,6 +563,16 @@ private:
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 
+    /// Ranges SynchronizeBuffer left with nothing to upload, at their region's CPU write
+    /// generation (direct mapped by address and size).
+    struct SyncedRange {
+        const Buffer* buffer;
+        DAddr device_addr;
+        u32 size;
+        u64 generation;
+    };
+    std::array<SyncedRange, 256> synced_ranges{};
+
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
 
