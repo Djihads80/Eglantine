@@ -90,9 +90,14 @@ void Fiber::YieldTo(std::weak_ptr<Fiber> weak_from, Fiber& to) {
     to.impl->guard.lock();
     to.impl->previous_fiber = weak_from.lock();
 
+    // Don't keep a reference on this stack across the switch: a fiber whose thread exits is never
+    // switched back to, so this frame never unwinds and a weak_ptr here would leak its control
+    // block. Code after the jump only runs once something switches back, so "from" is alive then.
+    Fiber* const from = to.impl->previous_fiber.get();
+    weak_from.reset();
+
     auto transfer = boost::context::detail::jump_fcontext(to.impl->context, &to);
-    // "from" might no longer be valid if the thread was killed
-    if (auto from = weak_from.lock()) {
+    if (from != nullptr) {
         if (from->impl->previous_fiber == nullptr) {
             ASSERT(false && "previous_fiber is nullptr!");
         } else {
