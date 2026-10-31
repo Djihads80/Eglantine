@@ -397,7 +397,7 @@ void PresentManager::DiscardFrame(Frame* frame) {
 }
 
 void PresentManager::CopyToSwapchain(Frame* frame) {
-    bool requires_recreation = false;
+    bool requires_recreation = surface_recreation_pending;
 
     for (u32 attempt = 0; attempt < MAX_PRESENT_ATTEMPTS; ++attempt) {
         try {
@@ -407,11 +407,23 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
                 surface = CreateSurface(instance, render_window.GetWindowInfo());
 #endif
                 RecreateSwapchain(frame);
+                surface_recreation_pending = false;
             }
 
             // Draw to swapchain.
             return CopyToSwapchainImpl(frame);
         } catch (const vk::Exception& except) {
+            if (requires_recreation) {
+                // The window is gone (the app went to the background on Android): drop this
+                // frame and try again with the next one rather than end the process.
+                static u32 logged{};
+                if (logged++ < 8) {
+                    LOG_WARNING(Render_Vulkan, "Surface could not be recreated ({}); retrying",
+                                except.what());
+                }
+                surface_recreation_pending = true;
+                break;
+            }
             if (except.GetResult() != VK_ERROR_SURFACE_LOST_KHR) {
                 throw;
             }
