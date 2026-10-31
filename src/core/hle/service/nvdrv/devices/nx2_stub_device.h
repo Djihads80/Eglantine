@@ -54,6 +54,14 @@ public:
         MapAt(address, address, size);
     }
 
+    void MapAt(u32 handle, u64 offset, u64 gpu_address, u64 cpu_address, u64 size) {
+        {
+            std::scoped_lock lk{handle_mutex};
+            handle_mappings[handle].push_back({offset, gpu_address, size});
+        }
+        MapAt(gpu_address, cpu_address, size);
+    }
+
     void MapAt(u64 gpu_address, u64 cpu_address, u64 size) {
         std::scoped_lock lk{mutex};
         TrimMappings(gpu_address, size);
@@ -65,6 +73,16 @@ public:
 
     // NormalUnmapGpuMemory4K, or destroying the memory: the GPU range stops reaching it.
     void Unmap(u64 gpu_address, u64 size) {
+        {
+            std::scoped_lock lk{handle_mutex};
+            const u64 end = gpu_address + size;
+            for (auto& [handle, ranges] : handle_mappings) {
+                std::erase_if(ranges, [gpu_address, end](const HandleRange& r) {
+                    const u64 r_end = r.gpu_address + r.size;
+                    return r_end > gpu_address && r.gpu_address < end;
+                });
+            }
+        }
         std::scoped_lock lk{mutex};
         TrimMappings(gpu_address, size);
         for (auto& [owner, listener] : listeners) {
@@ -150,6 +168,10 @@ public:
             std::scoped_lock lk{device_mutex};
             device_ranges.clear();
         }
+        {
+            std::scoped_lock lk{handle_mutex};
+            handle_mappings.clear();
+        }
         std::scoped_lock lk{mutex};
         mappings.clear();
         sparse_regions.clear();
@@ -175,10 +197,32 @@ public:
         return range.second + (cpu_address - start);
     }
 
+    std::optional<u64> GpuAddressOf(u32 handle, u64 offset) {
+        std::scoped_lock lk{handle_mutex};
+        const auto it = handle_mappings.find(handle);
+        if (it == handle_mappings.end()) {
+            return std::nullopt;
+        }
+        for (auto rit = it->second.rbegin(); rit != it->second.rend(); ++rit) {
+            if (offset >= rit->offset && offset < rit->offset + rit->size) {
+                return rit->gpu_address + (offset - rit->offset);
+            }
+        }
+        return std::nullopt;
+    }
+
 private:
     // Separate lock: ranges are recorded from listeners that run under `mutex`.
     std::mutex device_mutex;
     std::map<u64, std::pair<u64, u64>> device_ranges; // cpu start -> (size, device address)
+
+    struct HandleRange {
+        u64 offset;
+        u64 gpu_address;
+        u64 size;
+    };
+    std::mutex handle_mutex;
+    std::map<u32, std::vector<HandleRange>> handle_mappings;
 
     struct Mapping {
         u64 gpu_address;
