@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 #ifdef _MSC_VER
@@ -18,7 +20,10 @@
 #elif defined(__linux__)
 #include <climits>
 #include <ctime>
+#include <dlfcn.h>
 #include <linux/futex.h>
+#include <pthread.h>
+#include <unwind.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
@@ -117,6 +122,48 @@ void GpuSplit::CheckOwner(const char* where) {
                                                      reinterpret_cast<uintptr_t>(module)));
     }
     std::fflush(stderr);
+#elif defined(__linux__)
+    if (!g_back_busy.load(std::memory_order_acquire)) {
+        return;
+    }
+    const u32 thread = static_cast<u32>(gettid());
+    if (thread == g_back_thread_id.load(std::memory_order_relaxed)) {
+        return;
+    }
+    static std::atomic<u32> reports{};
+    if (reports.fetch_add(1) >= 12) {
+        return;
+    }
+    char name[16] = "?";
+    pthread_getname_np(pthread_self(), name, sizeof(name));
+    struct Frames {
+        std::array<void*, 32> pcs{};
+        size_t count{};
+    } frames;
+    _Unwind_Backtrace(
+        [](_Unwind_Context* context, void* arg) {
+            auto& f = *static_cast<Frames*>(arg);
+            if (f.count == f.pcs.size()) {
+                return _URC_END_OF_STACK;
+            }
+            f.pcs[f.count++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
+            return _URC_NO_REASON;
+        },
+        &frames);
+    std::string stack;
+    for (size_t i = 1; i < frames.count; ++i) {
+        Dl_info info{};
+        const auto pc = reinterpret_cast<uintptr_t>(frames.pcs[i]);
+        if (dladdr(frames.pcs[i], &info) != 0 && info.dli_fname != nullptr) {
+            const char* base = std::strrchr(info.dli_fname, '/');
+            stack += fmt::format(" {}+{:#x}", base ? base + 1 : info.dli_fname,
+                                 pc - reinterpret_cast<uintptr_t>(info.dli_fbase));
+        } else {
+            stack += fmt::format(" {:#x}", pc);
+        }
+    }
+    LOG_ERROR(HW_GPU, "GPU split owner check: {} on thread {} ({}) while the back runs:{}", where,
+              thread, name, stack);
 #else
     (void)where;
 #endif
@@ -427,6 +474,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
+#elif defined(__linux__)
+    g_back_thread_id.store(static_cast<u32>(gettid()), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
     while (!stop_token.stop_requested()) {
