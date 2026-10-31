@@ -170,7 +170,7 @@ void GpuSplit::Stop() {
     }
     back_thread.request_stop();
     wake.fetch_add(1, std::memory_order_seq_cst);
-    wake.notify_all();
+    WakeWord(wake);
     back_thread.join();
     active = false;
     // The split is static and outlives the emulation session. The next session's back thread
@@ -225,12 +225,19 @@ void GpuSplit::WaitForSpace(size_t words) {
     }
 }
 
+void GpuSplit::RequestIdleHook() {
+    hook_requested.store(true, std::memory_order_seq_cst);
+    wake.fetch_add(1, std::memory_order_seq_cst);
+    // The back parks on a raw futex (BackLoop): a std::atomic notify may not reach it.
+    WakeWord(wake);
+}
+
 void GpuSplit::SleepOnBack() {
     // Re-wake a back thread whose wake-up was lost (it froze Mario Kart World on Android with the
     // front waiting here and the back parked).
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
-        wake.notify_all();
+        WakeWord(wake);
     }
     // The back bumps `drained` after storing `consumed` when it sees front_waiting: read it
     // before the last look at `consumed`, so a store in between ends the wait at once.
@@ -251,9 +258,7 @@ void GpuSplit::Publish() {
     published.store(write_position, std::memory_order_seq_cst);
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
-        // All: libc++ (Android) parks atomic waiters in a shared hash table, where notify_one
-        // can wake an unrelated waiter on the same slot and leave the back thread asleep.
-        wake.notify_all();
+        WakeWord(wake);
     }
 }
 
@@ -450,7 +455,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // A request made after the hook ran (RequestIdleHook) runs it before sleeping.
                 if (available == read_position && !stop_token.stop_requested() &&
                     !hook_requested.load(std::memory_order_seq_cst)) {
-                    wake.wait(seen, std::memory_order_seq_cst);
+                    // A futex, not std::atomic::wait: libc++ spins with sched_yield first,
+                    // and parks waiters in a shared table where a notify could miss this one.
+                    WaitWord(wake, seen, std::chrono::milliseconds{2});
                 }
                 back_waiting.store(false, std::memory_order_relaxed);
                 continue;
