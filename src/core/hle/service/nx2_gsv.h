@@ -444,23 +444,6 @@ private:
         TipcReplyWords(ctx, {1});
     }
 
-    // Some titles (e.g. the Yoshi demo) create the NVN device with 41(u64 name "NvRmGpu", u64
-    // flags, u64 debug label) and need a nonzero device id back. Auto-stubbed, the id was 0 and NVN
-    // gave up on the device (2162-0001 from NVN2Manager::CreateDevice).
-    void CreateGraphicsDevice(HLERequestContext& ctx) {
-        const auto* w = ctx.CommandBuffer();
-        const u64 name = u64{w[2]} | (u64{w[3]} << 32);
-        const u64 flags = u64{w[4]} | (u64{w[5]} << 32);
-        const u32 id = m_next_device_id++;
-        LOG_INFO(Service, "nx2:gpu TIPC 41 name={:#x} flags={:#x}, device id {}", name, flags, id);
-        TipcReplyWords(ctx, {id});
-    }
-
-    void DestroyGraphicsDevice(HLERequestContext& ctx) {
-        LOG_INFO(Service, "nx2:gpu TIPC 42 device id {}", ctx.CommandBuffer()[2]);
-        TipcReplyWords(ctx, {});
-    }
-
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
     // none) and the GPU VA range of the in-process VirtualMachine that serves AllocSpace
     // (nn::gpu::sdk::util::ExecuteVirtualMachineAllocSpace). NVN reserves fixed VA from 0x8000000
@@ -971,9 +954,6 @@ private:
     u32 m_next_memory_handle{1};
 
     u32 m_next_device{1};
-
-
-    u32 m_next_device_id{1};
 
 };
 
@@ -2132,10 +2112,6 @@ private:
             if (!m_stream_ended) {
                 m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
             }
-            const std::string codec = m_codec;
-
-
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
             std::string codec = m_codec;
             if (codec.empty() && Tegra::Host1x::IsH264Stream(input.data)) {
                 codec = "video/avc";
