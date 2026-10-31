@@ -167,10 +167,12 @@ private:
 
     static GpuSplit instance;
 
-    alignas(64) std::atomic<u64> published{};
-    alignas(64) std::atomic<u64> consumed{};
-    alignas(64) std::atomic<bool> back_waiting{};
-    std::atomic<u32> wake{};
+    // Aligned to 128 bytes to prevent both false sharing and spatial prefetcher interference
+    // between front and back threads on modern x86-64 multi-core architectures.
+    alignas(128) std::atomic<u64> published{};
+    alignas(128) std::atomic<u64> consumed{};
+    alignas(128) std::atomic<bool> back_waiting{};
+    alignas(128) std::atomic<u32> wake{};
     std::jthread back_thread;
 };
 
