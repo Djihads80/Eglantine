@@ -22,6 +22,8 @@
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/memory.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/nx2_stub_interface.h"
@@ -236,6 +238,42 @@ void LogInFlightRequests() {
     for (const auto& [thread_id, what] : in_flight) {
         LOG_INFO(Service, "  in-flight request from thread {}: {}", thread_id, what);
     }
+}
+
+// Diagnostic: logs every thread of the application with its state, wait reason, PC, LR and a
+// frame-pointer backtrace, to find what a stalled game waits on. Addresses are guest virtual (see
+// the LoadModule lines).
+void DumpGuestThreads(Core::System& system, std::string_view reason) {
+    auto* process = system.ApplicationProcess();
+    if (!process) {
+        return;
+    }
+    auto& memory = process->GetMemory();
+    LOG_INFO(Service, "Thread dump at {}", reason);
+    for (auto& thread : process->GetThreadList()) {
+        const auto& context = thread.GetContext();
+        std::string frames;
+        u64 fp = context.fp;
+        for (int depth = 0; depth < 16 && fp != 0 && (fp & 0xf) == 0 &&
+                            memory.IsValidVirtualAddressRange(fp, 16);
+             ++depth) {
+            const u64 next = memory.Read64(fp);
+            const u64 lr = memory.Read64(fp + 8);
+            frames += fmt::format(" {:#x}", lr);
+            if (next <= fp) {
+                break;
+            }
+            fp = next;
+        }
+        LOG_INFO(Service,
+                 "  thread {} prio {} core {} state {:#x} wait {} pc {:#x} lr {:#x} sp {:#x} "
+                 "x0 {:#x} x1 {:#x} x2 {:#x} |{}",
+                 thread.GetThreadId(), thread.GetPriority(), thread.GetActiveCore(),
+                 static_cast<u32>(thread.GetRawState()),
+                 static_cast<u32>(thread.GetWaitReasonForDebugging()), context.pc, context.lr,
+                 context.sp, context.r[0], context.r[1], context.r[2], frames);
+    }
+    LogInFlightRequests();
 }
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,

@@ -95,12 +95,8 @@ inline Kernel::KClientSession* CreateRawSession(Core::System& system, HLERequest
     return &session->GetClientSession();
 }
 
-// Replies to a TIPC request with success and raw u32 data words. ResponseBuilder::Push(Result)
-// writes the CMIF two-word result, which shifts TIPC data one word past where the client reads
-// it (and past the copied size); TIPC has a one-word result followed directly by the data.
-// EDEN_NX2_THREAD_DUMP=<present>[,<present>...] (diagnostic): at those presents, log every thread
-// of the application with its state, wait reason, PC, LR and a frame-pointer backtrace, to find
-// what a stalled game waits on. Addresses are guest virtual (see the LoadModule lines).
+// EDEN_NX2_THREAD_DUMP=<present>[,<present>...] (diagnostic): dump the guest threads at those
+// presents (see DumpGuestThreads).
 inline void Nx2DumpGuestThreads(Core::System& system, u64 present) {
     static const std::vector<u64> presents = [] {
         std::vector<u64> values;
@@ -111,41 +107,14 @@ inline void Nx2DumpGuestThreads(Core::System& system, u64 present) {
         }
         return values;
     }();
-    if (std::find(presents.begin(), presents.end(), present) == presents.end()) {
-        return;
+    if (std::find(presents.begin(), presents.end(), present) != presents.end()) {
+        DumpGuestThreads(system, fmt::format("present {}", present));
     }
-    auto* process = system.ApplicationProcess();
-    if (!process) {
-        return;
-    }
-    auto& memory = process->GetMemory();
-    LOG_INFO(Service, "Thread dump at present {}", present);
-    for (auto& thread : process->GetThreadList()) {
-        const auto& context = thread.GetContext();
-        std::string frames;
-        u64 fp = context.fp;
-        for (int depth = 0; depth < 16 && fp != 0 && (fp & 0xf) == 0 &&
-                            memory.IsValidVirtualAddressRange(fp, 16);
-             ++depth) {
-            const u64 next = memory.Read64(fp);
-            const u64 lr = memory.Read64(fp + 8);
-            frames += fmt::format(" {:#x}", lr);
-            if (next <= fp) {
-                break;
-            }
-            fp = next;
-        }
-        LOG_INFO(Service,
-                 "  thread {} prio {} core {} state {:#x} wait {} pc {:#x} lr {:#x} sp {:#x} "
-                 "x0 {:#x} x1 {:#x} x2 {:#x} |{}",
-                 thread.GetThreadId(), thread.GetPriority(), thread.GetActiveCore(),
-                 static_cast<u32>(thread.GetRawState()),
-                 static_cast<u32>(thread.GetWaitReasonForDebugging()), context.pc, context.lr,
-                 context.sp, context.r[0], context.r[1], context.r[2], frames);
-    }
-    LogInFlightRequests();
 }
 
+// Replies to a TIPC request with success and raw u32 data words. ResponseBuilder::Push(Result)
+// writes the CMIF two-word result, which shifts TIPC data one word past where the client reads
+// it (and past the copied size); TIPC has a one-word result followed directly by the data.
 inline void TipcReplyWords(HLERequestContext& ctx, std::span<const u32> words) {
     IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + words.size())};
     rb.PushRaw<u32>(ResultSuccess.raw);

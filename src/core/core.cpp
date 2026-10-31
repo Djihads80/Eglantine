@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <thread>
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -381,6 +382,22 @@ struct System::Impl {
 
         // Expose program id to dump sites and other global readers.
         Settings::SetCurrentProgramID(params.program_id);
+
+        // EDEN_NX2_THREAD_DUMP_AFTER=<seconds>[,...] (diagnostic): dump the guest threads that long
+        // after loading, for hangs before the first present.
+        if (const char* after = std::getenv("EDEN_NX2_THREAD_DUMP_AFTER")) {
+            std::thread([&system, times = std::string{after},
+                         start = std::chrono::steady_clock::now()] {
+                for (const char* v = times.c_str(); v && *v;) {
+                    std::this_thread::sleep_until(start +
+                                                  std::chrono::seconds(std::strtoull(v, nullptr, 10)));
+                    Service::DumpGuestThreads(
+                        system, fmt::format("{} s after loading", std::strtoull(v, nullptr, 10)));
+                    v = std::strchr(v, ',');
+                    if (v) ++v;
+                }
+            }).detach();
+        }
 
         // Track launch time for frontend launches
         LaunchTimestampCache::SaveLaunchTimestamp(params.program_id);
