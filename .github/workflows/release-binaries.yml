@@ -74,13 +74,22 @@ jobs:
             libopus-dev libasound2-dev ccache
 
       - name: Install Qt on Linux
-        if: startsWith(matrix.platform, 'linux')
+        if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           host: linux
           target: desktop
           arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+       if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
+       uses: jurplel/install-qt-action@v4
+       with:
+          version: '6.8.3'
+          host: linux_arm64
+          target: desktop
+          arch: linux_gcc_arm64
           modules: qtcharts
           cache: true
 
