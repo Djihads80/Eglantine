@@ -7,6 +7,9 @@
 #pragma once
 
 #include <array>
+#include <optional>
+#include <span>
+#include <vector>
 #include <bitset>
 #include <map>
 
@@ -219,6 +222,9 @@ struct TextureDescriptor {
     u32 secondary_shift_left;
     u32 count;
     u32 size_shift;
+    /// Index in Info::handle_programs when the handle is computed at draw time (read from a
+    /// storage buffer), ~0 when it is the constant buffer word above.
+    u32 handle_program{~0U};
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
@@ -337,6 +343,9 @@ struct Info {
     TextureBufferDescriptors texture_buffer_descriptors;
     ImageBufferDescriptors image_buffer_descriptors;
     TextureDescriptors texture_descriptors;
+    /// Texture handles the shader reads from storage buffers, as programs over constant buffer
+    /// and storage buffer words (see EvaluateHandleProgram), evaluated for each draw.
+    std::vector<std::vector<u32>> handle_programs;
     ImageDescriptors image_descriptors;
 };
 
@@ -347,6 +356,113 @@ u32 NumDescriptors(const Descriptors& descriptors) {
         num += desc.count;
     }
     return num;
+}
+
+
+/// Operations of a handle program, a stack machine over 32-bit words. Operands follow the
+/// operation code in the program; values are popped right operand first.
+enum class HandleOp : u32 {
+    Immediate,     ///< value
+    Cbuf,          ///< index, offset: the constant buffer word
+    CbufDynamic,   ///< index: the word at the popped byte offset
+    Storage,       ///< binding: the storage buffer word at the popped byte offset
+    Add, Sub, Mul, And, Or, Xor, Shl, Shr, Sar, Neg, Not,
+    UMin, UMax, SMin, SMax,
+    SLt, SLe, SGt, SGe, ULt, ULe, UGt, UGe, Eq, Ne,
+    LAnd, LOr, LXor, LNot,
+    Select, ///< condition, true value, false value
+    Tee,    ///< slot: keeps the top value in the slot (shared subexpressions)
+    Load,   ///< slot: the value kept there
+};
+
+/// Runs a handle program; read_cbuf(index, offset) and read_storage(binding, offset) return the
+/// words it reads. Returns nothing for a malformed program.
+template <typename ReadCbuf, typename ReadStorage>
+std::optional<u32> EvaluateHandleProgram(std::span<const u32> code, ReadCbuf&& read_cbuf,
+                                         ReadStorage&& read_storage) {
+    std::array<u32, 64> stack{};
+    std::array<u32, 256> slots{};
+    size_t size = 0;
+    const auto pop = [&]() -> u32 { return size > 0 ? stack[--size] : 0; };
+    const auto push = [&](u32 value) {
+        if (size < stack.size()) stack[size++] = value;
+    };
+    for (size_t pc = 0; pc < code.size();) {
+        const HandleOp op = static_cast<HandleOp>(code[pc++]);
+        const auto operand = [&]() -> u32 { return pc < code.size() ? code[pc++] : 0; };
+        if (op == HandleOp::Immediate) {
+            push(operand());
+            continue;
+        }
+        if (op == HandleOp::Cbuf) {
+            const u32 index = operand();
+            push(read_cbuf(index, operand()));
+            continue;
+        }
+        if (op == HandleOp::CbufDynamic) {
+            const u32 index = operand();
+            push(read_cbuf(index, pop()));
+            continue;
+        }
+        if (op == HandleOp::Storage) {
+            const u32 binding = operand();
+            push(read_storage(binding, pop()));
+            continue;
+        }
+        if (op == HandleOp::Neg || op == HandleOp::Not || op == HandleOp::LNot) {
+            const u32 a = pop();
+            push(op == HandleOp::Neg ? 0U - a : op == HandleOp::Not ? ~a : (a == 0 ? 1U : 0U));
+            continue;
+        }
+        if (op == HandleOp::Tee) {
+            const u32 slot = operand();
+            if (slot < slots.size() && size > 0) slots[slot] = stack[size - 1];
+            continue;
+        }
+        if (op == HandleOp::Load) {
+            const u32 slot = operand();
+            push(slot < slots.size() ? slots[slot] : 0U);
+            continue;
+        }
+        if (op == HandleOp::Select) {
+            const u32 false_value = pop(), true_value = pop(), condition = pop();
+            push(condition != 0 ? true_value : false_value);
+            continue;
+        }
+        const u32 b = pop(), a = pop();
+        const s32 sa = static_cast<s32>(a), sb = static_cast<s32>(b);
+        switch (op) {
+        case HandleOp::Add: push(a + b); break;
+        case HandleOp::Sub: push(a - b); break;
+        case HandleOp::Mul: push(a * b); break;
+        case HandleOp::And: push(a & b); break;
+        case HandleOp::Or: push(a | b); break;
+        case HandleOp::Xor: push(a ^ b); break;
+        case HandleOp::Shl: push(b >= 32 ? 0U : a << b); break;
+        case HandleOp::Shr: push(b >= 32 ? 0U : a >> b); break;
+        case HandleOp::Sar: push(static_cast<u32>(sa >> (b >= 32 ? 31 : b))); break;
+        case HandleOp::UMin: push(a < b ? a : b); break;
+        case HandleOp::UMax: push(a > b ? a : b); break;
+        case HandleOp::SMin: push(static_cast<u32>(sa < sb ? sa : sb)); break;
+        case HandleOp::SMax: push(static_cast<u32>(sa > sb ? sa : sb)); break;
+        case HandleOp::SLt: push(sa < sb); break;
+        case HandleOp::SLe: push(sa <= sb); break;
+        case HandleOp::SGt: push(sa > sb); break;
+        case HandleOp::SGe: push(sa >= sb); break;
+        case HandleOp::ULt: push(a < b); break;
+        case HandleOp::ULe: push(a <= b); break;
+        case HandleOp::UGt: push(a > b); break;
+        case HandleOp::UGe: push(a >= b); break;
+        case HandleOp::Eq: push(a == b); break;
+        case HandleOp::Ne: push(a != b); break;
+        case HandleOp::LAnd: push(a != 0 && b != 0); break;
+        case HandleOp::LOr: push(a != 0 || b != 0); break;
+        case HandleOp::LXor: push((a != 0) != (b != 0)); break;
+        default: return std::nullopt;
+        }
+    }
+    if (size != 1) return std::nullopt;
+    return stack[0];
 }
 
 } // namespace Shader

@@ -66,6 +66,7 @@ struct ConstBufferAddr {
     IR::U32 dynamic_offset;
     u32 count;
     bool has_secondary;
+    u32 handle_program{~0U}; ///< index in Info::handle_programs for a handle computed per draw
 };
 
 class Environment {
