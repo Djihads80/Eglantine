@@ -1658,6 +1658,11 @@ u64 Device::GetDeviceMemoryBudget() const {
     if (heap_size_limit != 0) {
         result = (std::min)(result, heap_size_limit);
     }
+    // The usage leaves out the empty space in VMA's blocks, which still counts against the
+    // driver's budget: without it here the collector let the heap run past its budget by that
+    // much (~0.8 GB on a 24 GB card), and Windows moved the excess into system memory.
+    const VmaStatistics& main_statistics = heap_budgets[main_heap].statistics;
+    result -= (std::min)(result, main_statistics.blockBytes - main_statistics.allocationBytes);
     for (const size_t heap : valid_heap_memory) {
         if (heap != main_heap) {
             result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);

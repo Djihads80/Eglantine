@@ -181,6 +181,35 @@ void TextureCache<P>::RunGarbageCollector() {
         Configure(true);
         lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
     }
+    // Switch 2 titles: textures of earlier courses otherwise stay until video memory is at the
+    // driver's budget (title 1 on a 24 GB card: +2-3 GB per course, 21 GB after ~10 minutes), and
+    // the collector then evicts textures still in use and decodes them again (frames of 0.3-1 s).
+    // Drop the ones nobody used for a few minutes, a few per frame, long before that. GPU-written
+    // images stay (dropping them needs a download with a full GPU wait).
+    if (native_thresholds_applied && frame_tick > STALE_IMAGE_FRAMES) {
+        size_t stale_deletes = STALE_DELETES_PER_FRAME;
+        size_t stale_visits = STALE_DELETES_PER_FRAME * 8;
+        lru_cache.ForEachItemBelow(frame_tick - STALE_IMAGE_FRAMES, [&](ImageId image_id) {
+            if (stale_deletes == 0 || stale_visits-- == 0) {
+                return true;
+            }
+            auto& image = slot_images[image_id];
+            if (True(image.flags & ImageFlagBits::IsDecoding) ||
+                (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap))) {
+                // Out of the way of the next frames' passes.
+                lru_cache.Touch(image.lru_index, frame_tick);
+                return false;
+            }
+            --stale_deletes;
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, image_id);
+            }
+            ++(True(image.flags & ImageFlagBits::CostlyLoad) ? gc_costly_deletes : gc_deletes);
+            UnregisterImage(image_id);
+            DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+            return false;
+        });
+    }
 }
 
 template <class P>
