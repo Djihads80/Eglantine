@@ -62,6 +62,11 @@ jobs:
             runner: windows-2022
             pgo: true
             mingw: true
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: linux-aarch64-pgo
+            runner: ubuntu-24.04-arm
+            pgo: true
 
     steps:
       - name: Check out source
@@ -82,14 +87,25 @@ jobs:
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache
 
-      - name: Install Qt on Linux
-        if: startsWith(matrix.platform, 'linux')
+      - name: Install Qt on Linux x86_64
+        if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           host: linux
           target: desktop
           arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Qt on Linux ARM64
+        if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: linux_arm64
+          target: desktop
+          arch: linux_gcc_arm64
           modules: qtcharts
           cache: true
 
@@ -324,10 +340,11 @@ jobs:
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
           tools="$RUNNER_TEMP/linuxdeploy"
           mkdir -p "$tools"
-          curl -fsSL -o "$tools/linuxdeploy-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          arch=$(uname -m)   # aarch64 or x86_64
+          curl -fsSL -o "$tools/linuxdeploy-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage
           chmod +x "$tools"/*.AppImage
           # The desktop file names its icon dev.eglantine.eglantine.
           icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
@@ -336,7 +353,8 @@ jobs:
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
           export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
-          "$tools/linuxdeploy-x86_64.AppImage" --appdir AppDir \
+          export ARCH="$arch"
+          "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
             --executable build/release/bin/eden-cli \
             --desktop-file dist/dev.eden_emu.eden.desktop \
