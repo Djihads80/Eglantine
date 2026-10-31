@@ -9,6 +9,7 @@
 #include "common/assert.h"
 #include "common/literals.h"
 #include "core/hle/kernel/k_address_space_info.h"
+#include "core/hle/kernel/k_memory_layout.h"
 
 namespace Kernel {
 
@@ -57,7 +58,11 @@ std::size_t KAddressSpaceInfo::GetAddressSpaceStart(size_t width, KAddressSpaceI
     return GetAddressSpaceInfo(width, type).address;
 }
 
-std::size_t KAddressSpaceInfo::GetAddressSpaceSize(size_t width, KAddressSpaceInfo::Type type) {
+std::size_t KAddressSpaceInfo::GetAddressSpaceSize(size_t width, KAddressSpaceInfo::Type type,
+                                               bool is_switch2) {
+    if (is_switch2 && width == 39 && type == Type::Heap) {
+        return MainMemorySizeMaxSwitch2;
+    }
     return GetAddressSpaceInfo(width, type).size;
 }
 

@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: 0BSD
  */
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <initializer_list>
 #include <tuple>
 #include <utility>

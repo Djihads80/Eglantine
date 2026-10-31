@@ -104,6 +104,9 @@ public:
                       const NcaCompressionConfiguration& compression_cfg);
 
     VirtualFile GetSharedBodyStorage();
+    VirtualFile GetDecryptedBodyStorage() const {
+        return m_body_storage ? m_body_storage->GetDecryptedView() : nullptr;
+    }
     u32 GetMagic() const;
     NcaHeader::DistributionType GetDistributionType() const;
     NcaHeader::ContentType GetContentType() const;

@@ -189,6 +189,7 @@ private:
     Result SendVibrationValueInBool(bool is_vibrating,
                                     Core::HID::VibrationDeviceHandle vibration_device_handle,
                                     ClientAppletResourceUserId aruid);
+    void SendNx2VibrationValue(HLERequestContext& ctx);
     // Switch 2 sends vibration every frame with 214 (pointer buffers of device handles and
     // values, like 206); Eden doesn't emulate vibration, so accept and drop it.
     Result SendNx2VibrationValues();

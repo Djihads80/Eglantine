@@ -315,7 +315,11 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
     // CallMethod does.
     const bool skip_same = SkipSameValueWrites();
-    const auto process = [&](u32 method, u32 value) {
+    const auto process = [&](u32 method, u32 raw, u32 value) {
+#ifdef ARCHITECTURE_x86_64
+        TuringMacroJit::RtDump::Record(this, method, raw, value, static_cast<u32>(control),
+                                     regs.reg_array[method], std::span{regs.reg_array}.subspan(0x200, 0x80));
+#endif
         if (!skip_same || regs.reg_array[method] != value) {
             ProcessDirtyRegisters(method, value);
         }
@@ -323,19 +327,25 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
             shadow_state.reg_array[method] = value;
-            process(method, value);
+            process(method, value, value);
         }
     } else if (control == Regs::ShadowRamControl::Replay) {
         for (auto [method, value] : method_sink)
-            process(method, shadow_state.reg_array[method]);
+            process(method, value, shadow_state.reg_array[method]);
     } else {
         for (auto [method, value] : method_sink)
-            process(method, value);
+            process(method, value, value);
     }
     method_sink.clear();
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
+    // The instances after the first are drawn together once their loop ends, and they must see
+    // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
+    // c[0][0x644]) right after the loop, before the macro returns.
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+        draw_manager.DrawDeferred(*this);
+    }
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
         dirty.flags[table[method]] = true;
@@ -476,6 +486,11 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
             method_argument, static_cast<u32>(shadow_state.shadow_ram_control), is_last_call ? 1U : 0U};
     }
     const u32 argument = ProcessShadowRam(method, method_argument);
+#ifdef ARCHITECTURE_x86_64
+    TuringMacroJit::RtDump::Record(this, method, method_argument, argument,
+                                 static_cast<u32>(shadow_state.shadow_ram_control), regs.reg_array[method],
+                                 std::span{regs.reg_array}.subspan(0x200, 0x80));
+#endif
     // A state register written with the value it holds changes nothing: no dirty flags (they
     // would make the next draw re-check that state), no method processing. Title 1 makes ~6
     // million 3D register writes a second, ~60% of them same-value, most from macro replays.
@@ -515,6 +530,10 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     if (method >= MacroRegistersStart) {
         ProcessMacro(system, method, base_start, amount, amount == methods_pending);
         return;
+    }
+    // As in ProcessDirtyRegisters: the paths below write without it.
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+        draw_manager.DrawDeferred(*this);
     }
     switch (method) {
     case MAXWELL3D_REG_INDEX(const_buffer.buffer):

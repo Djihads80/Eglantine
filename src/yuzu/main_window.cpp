@@ -450,7 +450,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     QtCommon::SetupContentProviders();
 
     // Gen keys if necessary
-    OnCheckFirmwareDecryption();
+    OnCheckFirmwareDecryption(false);
 
 #ifdef __unix__
     OnCheckGraphicsBackend();
@@ -4392,8 +4392,10 @@ void MainWindow::OnMouseActivity() {
     }
 }
 
-void MainWindow::OnCheckFirmwareDecryption() {
-    if (!ContentManager::AreKeysPresent()) {
+void MainWindow::OnCheckFirmwareDecryption(bool prompt) {
+    if (!ContentManager::AreKeysPresent() && !prompt) {
+        LOG_WARNING(Frontend, "Decryption keys are missing: NCA, NSP and XCI games need them");
+    } else if (!ContentManager::AreKeysPresent()) {
         const auto res = QtCommon::Frontend::Warning(
             tr("Derivation Components Missing"),
             tr("Decryption keys are missing. Install them now?"),

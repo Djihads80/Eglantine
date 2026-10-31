@@ -26,6 +26,7 @@ constexpr std::size_t GetMaximumOverheadSize(std::size_t size) {
 
 constexpr std::size_t MainMemorySize = 4_GiB;
 constexpr std::size_t MainMemorySizeMax = 8_GiB;
+constexpr std::size_t MainMemorySizeMaxSwitch2 = 12_GiB;
 
 constexpr std::size_t ReservedEarlyDramSize = 384_KiB;
 constexpr std::size_t DramPhysicalAddress = 0x80000000;
@@ -53,7 +54,7 @@ constexpr std::size_t KernelPhysicalAddressSpaceSize =
     KernelPhysicalAddressSpaceEnd - KernelPhysicalAddressSpaceBase;
 constexpr std::size_t KernelPhysicalAddressCodeBase = DramPhysicalAddress + ReservedEarlyDramSize;
 
-constexpr std::size_t KernelPageTableHeapSize = GetMaximumOverheadSize(MainMemorySizeMax);
+constexpr std::size_t KernelPageTableHeapSize = GetMaximumOverheadSize(MainMemorySizeMaxSwitch2);
 constexpr std::size_t KernelInitialPageHeapSize = 128_KiB;
 
 constexpr std::size_t KernelSlabHeapDataSize = 5_MiB;

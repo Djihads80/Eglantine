@@ -28,6 +28,7 @@
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "video_core/vulkan_common/nsight_aftermath_tracker.h"
+#include "video_core/vulkan_common/memory_budget.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -1663,6 +1664,15 @@ u64 Device::GetDeviceMemoryBudget() const {
             result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
         }
     }
+#ifdef _WIN32
+    MEMORYSTATUSEX memory_status{};
+    memory_status.dwLength = sizeof(memory_status);
+    if (GlobalMemoryStatusEx(&memory_status)) {
+        result = LimitBudgetForHostCommit(result, GetDeviceMemoryUsage(),
+                                           memory_status.ullAvailPageFile, 4_GiB);
+        result = (std::max)(result, 1_MiB);
+    }
+#endif
     return result;
 }
 

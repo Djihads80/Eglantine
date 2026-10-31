@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -94,48 +95,59 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         return 0;
     }();
 
-    auto const last_segment_it = &nso_header.segments[nso_header.segments.size() - 1];
+    const auto& last_segment = nso_header.segments.back();
+    const u64 segment_end = u64{last_segment.location} + last_segment.size;
+    if (segment_end + last_segment.bss_size + module_start >
+        std::numeric_limits<u32>::max() - Core::Memory::YUZU_PAGEMASK) {
+        LOG_ERROR(Loader, "NSO {} has an invalid image size", nso_file.GetName());
+        return std::nullopt;
+    }
+
+    size_t compressed_buffer_size = 0;
+    for (size_t i = 0; i < nso_header.segments.size(); ++i) {
+        const auto& segment = nso_header.segments[i];
+        const bool compressed = nso_header.IsSegmentCompressed(i);
+        const u64 stored_size = compressed ? nso_header.segments_compressed_size[i] : segment.size;
+        if (u64{segment.location} + segment.size > segment_end ||
+            u64{segment.offset} + stored_size > nso_file.GetSize() ||
+            (compressed && (stored_size > static_cast<u64>(std::numeric_limits<int>::max()) ||
+                            segment.size > static_cast<u32>(std::numeric_limits<int>::max())))) {
+            LOG_ERROR(Loader, "NSO {} segment {} has an invalid range", nso_file.GetName(), i);
+            return std::nullopt;
+        }
+        if (compressed) {
+            compressed_buffer_size = std::max(compressed_buffer_size, static_cast<size_t>(stored_size));
+        }
+    }
+
     // Build program image directly in codeset memory :)
     Kernel::CodeSet codeset;
-    codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
+    codeset.memory.resize(module_start + segment_end);
     {
-        std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
-        std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
-            return a.size < b.size;
-        })->size);
+        std::vector<u8> compressed_data(compressed_buffer_size);
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
+            const auto& segment = nso_header.segments[i];
+            auto destination = std::span{codeset.memory}.subspan(module_start + segment.location,
+                                                              segment.size);
             if (nso_header.IsSegmentCompressed(i)) {
-                if (nso_header.IsZBICCompressed()) {
-                    // ZBIC compression
-                    const int r = Common::Compression::DecompressDataZBIC(
-                        std::span<u8>{decompressed_size}.first(nso_header.segments[i].size),
-                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i])
-                    );
-                    ASSERT(r > 0);
-                } else {
-                    // LZ4 compression
-                    int r = Common::Compression::DecompressDataLZ4(
-                        decompressed_size.data(),
-                        nso_header.segments[i].size,
-                        compressed_data.data(),
-                        nso_header.segments_compressed_size[i]
-                    );
-                    ASSERT(r == int(nso_header.segments[i].size));
+                const auto source = std::span{compressed_data}.first(nso_header.segments_compressed_size[i]);
+                if (nso_file.Read(source.data(), source.size(), segment.offset) != source.size()) {
+                    LOG_ERROR(Loader, "NSO {} segment {} could not be read", nso_file.GetName(), i);
+                    return std::nullopt;
                 }
-
-                std::memcpy(
-                    codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    decompressed_size.data(),
-                    nso_header.segments[i].size
-                );
-            } else {
-                // Not compressed
-                std::memcpy(
-                    codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    compressed_data.data(),
-                    nso_header.segments[i].size
-                );
+                const int result = nso_header.IsZBICCompressed()
+                    ? Common::Compression::DecompressDataZBIC(destination, source)
+                    : Common::Compression::DecompressDataLZ4(destination.data(), destination.size(),
+                                                             source.data(), source.size());
+                if (result < 0 || static_cast<size_t>(result) != destination.size()) {
+                    LOG_ERROR(Loader, "NSO {} segment {} decompression failed: expected {} bytes, got {}",
+                              nso_file.GetName(), i, destination.size(), result);
+                    return std::nullopt;
+                }
+            } else if (!destination.empty() &&
+                       nso_file.Read(destination.data(), destination.size(), segment.offset) != destination.size()) {
+                LOG_ERROR(Loader, "NSO {} segment {} could not be read", nso_file.GetName(), i);
+                return std::nullopt;
             }
             codeset.segments[i].addr = module_start + nso_header.segments[i].location;
             codeset.segments[i].offset = module_start + nso_header.segments[i].location;

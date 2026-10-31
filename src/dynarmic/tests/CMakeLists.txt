@@ -55,6 +55,10 @@ if ("x86_64" IN_LIST ARCHITECTURE)
         native/preserve_xmm.cpp
     )
 
+    if (WIN32)
+        target_sources(dynarmic_tests PRIVATE A64/test_fastmem_fault.cpp A64/test_code_commit.cpp)
+    endif()
+
     if (NOT MSVC AND NOT MULTIARCH_BUILD)
         target_sources(dynarmic_tests PRIVATE
             rsqrt_test.cpp

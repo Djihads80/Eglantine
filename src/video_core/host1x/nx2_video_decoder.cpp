@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <optional>
 #include <set>
+#include <string_view>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -43,8 +45,57 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
 
 } // namespace
 
+std::optional<Nx2VideoConfiguration> ParseNx2VideoConfiguration(std::span<const u8> configuration) {
+    if (configuration.empty()) {
+        return std::nullopt;
+    }
+    const auto name_end = std::find(configuration.begin(), configuration.end(), u8{});
+    const std::string_view mime{reinterpret_cast<const char*>(configuration.data()),
+                               static_cast<size_t>(name_end - configuration.begin())};
+    if (const auto codec = CodecFromMime(mime)) {
+        return Nx2VideoConfiguration{*codec, {}};
+    }
+    const auto prefix_size = [&](size_t offset) -> size_t {
+        const auto remaining = configuration.subspan(offset);
+        if (remaining.size() >= 4 && remaining[0] == 0 && remaining[1] == 0 &&
+            remaining[2] == 0 && remaining[3] == 1) {
+            return 4;
+        }
+        if (remaining.size() >= 3 && remaining[0] == 0 && remaining[1] == 0 && remaining[2] == 1) {
+            return 3;
+        }
+        return 0;
+    };
+    bool has_sps{};
+    bool has_pps{};
+    for (size_t offset = 0; offset < configuration.size();) {
+        const size_t prefix = prefix_size(offset);
+        if (prefix == 0 || offset + prefix == configuration.size()) {
+            return std::nullopt;
+        }
+        const size_t start = offset + prefix;
+        size_t end = start + 1;
+        while (end < configuration.size() && prefix_size(end) == 0) {
+            ++end;
+        }
+        const u8 header = configuration[start];
+        const u8 type = header & 0x1f;
+        if ((header & 0x80) != 0 || (type != 7 && type != 8) ||
+            end - start < (type == 7 ? 4U : 2U)) {
+            return std::nullopt;
+        }
+        has_sps |= type == 7;
+        has_pps |= type == 8;
+        offset = end;
+    }
+    if (!has_sps || !has_pps) {
+        return std::nullopt;
+    }
+    return Nx2VideoConfiguration{NvdecCommon::VideoCodec::H264, configuration};
+}
+
 struct Nx2VideoDecoder::Impl {
-    std::string name;
+    std::vector<u8> configuration;
     std::optional<FFmpeg::Decoder> decoder;
     std::optional<FFmpeg::HardwareContext> hardware;
     std::optional<FFmpeg::DecoderContext> context;
@@ -82,16 +133,18 @@ struct Nx2VideoDecoder::Impl {
     }
 };
 
-Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<Impl>()} {
-    impl->name = std::string{mime};
-    const auto codec = CodecFromMime(mime);
-    if (!codec) {
-        LOG_ERROR(HW_GPU, "nx2 video: no decoder for codec \"{}\"", mime);
+Nx2VideoDecoder::Nx2VideoDecoder(std::span<const u8> configuration)
+    : impl{std::make_unique<Impl>()} {
+    impl->configuration.assign(configuration.begin(), configuration.end());
+    const auto parsed = ParseNx2VideoConfiguration(impl->configuration);
+    if (!parsed) {
+        LOG_ERROR(HW_GPU, "nx2 video: unsupported {}-byte codec configuration", configuration.size());
         return;
     }
-    impl->decoder.emplace(*codec);
+    impl->decoder.emplace(parsed->codec);
     if (impl->decoder->GetCodec() == nullptr) {
-        LOG_ERROR(HW_GPU, "nx2 video: FFmpeg has no decoder for \"{}\"", mime);
+        LOG_ERROR(HW_GPU, "nx2 video: FFmpeg has no decoder for codec {}",
+                  static_cast<u64>(parsed->codec));
         return;
     }
     impl->context.emplace(*impl->decoder);
@@ -99,8 +152,10 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
         impl->hardware.emplace();
         impl->hardware->InitializeForDecoder(*impl->context, *impl->decoder);
     }
-    impl->open = impl->context->OpenContext(*impl->decoder);
-    LOG_INFO(HW_GPU, "nx2 video: decoder for \"{}\" {}", mime, impl->open ? "open" : "failed to open");
+    impl->open = impl->context->OpenContext(*impl->decoder, parsed->extradata);
+    LOG_INFO(HW_GPU, "nx2 video: decoder for codec {} ({} configuration bytes) {}",
+             static_cast<u64>(parsed->codec), parsed->extradata.size(),
+             impl->open ? "open" : "failed to open");
 }
 
 Nx2VideoDecoder::~Nx2VideoDecoder() = default;
@@ -109,8 +164,8 @@ bool Nx2VideoDecoder::IsOpen() const {
     return impl->open;
 }
 
-const std::string& Nx2VideoDecoder::Name() const {
-    return impl->name;
+std::span<const u8> Nx2VideoDecoder::Configuration() const {
+    return impl->configuration;
 }
 
 void Nx2VideoDecoder::Decode(std::span<const u8> data, u64 pts, std::vector<Nx2Picture>& pictures) {
