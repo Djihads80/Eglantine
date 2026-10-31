@@ -88,8 +88,15 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
         std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
         (caller != nullptr && caller->IsSwitch2())) {
         LOG_WARNING(Service, "Using auto stub fallback!");
-        IPC::ResponseBuilder rb{ctx, 2};
+        // Callers read the reply words they expect without checking how many were written, so an
+        // empty reply hands them the request's leftover words as data (an HDR output format, a
+        // refresh rate, a device id). Reply with zeroed words instead.
+        constexpr u32 ZeroedWords = 32;
+        IPC::ResponseBuilder rb{ctx, 2 + ZeroedWords};
         rb.Push(ResultSuccess);
+        for (u32 i = 0; i < ZeroedWords; ++i) {
+            rb.Push<u32>(0);
+        }
     }
 }
 
