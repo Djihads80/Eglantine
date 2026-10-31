@@ -17,7 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <key>CFBundleGetInfoString</key>
     <string></string>
     <key>CFBundleIconFile</key>
-    <string>eden.icns</string>
+    <string>eglantine.icns</string>
     <key>CFBundleIconName</key>
     <string>eglantine</string>
     <key>CFBundleIdentifier</key>
