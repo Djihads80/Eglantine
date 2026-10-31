@@ -223,7 +223,13 @@ void EmulationSession::ConfigureFilesystemProvider(const std::string& filepath) 
         return;
     }
 
-    if (m_manual_provider->AddEntriesFromContainer(file)) {
+    // EdenPack is a deconstructed ExeFS/RomFS archive, not an NSP/XCI/NCA
+    // content container. Do not send it through AddEntriesFromContainer(): that
+    // probes generic container types (including encrypted NCA headers) before
+    // Loader::GetLoader() handles the EdenPack-specific virtual filesystem.
+    const auto extension =
+        Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName())));
+    if (extension != "edenpack" && m_manual_provider->AddEntriesFromContainer(file)) {
         return;
     }
 
