@@ -73,6 +73,13 @@ endif()
 
 create_target_directory_groups(yuzu-cmd)
 
+# The Hypervisor CPU backend needs the hypervisor entitlement; an ad-hoc signature is enough.
+if (HAS_HYPERVISOR)
+    add_custom_command(TARGET yuzu-cmd POST_BUILD
+        COMMAND codesign --force --sign - --entitlements
+                "${CMAKE_SOURCE_DIR}/dist/eglantine.entitlements" "$<TARGET_FILE:yuzu-cmd>")
+endif()
+
 # needed for vma
 if (NOT MSVC)
     target_compile_options(yuzu-cmd PRIVATE
