@@ -1425,6 +1425,7 @@ public:
             {103, &INx2Vi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
             {104, &INx2Vi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
             {105, &INx2Vi2Session::QueryDisplayHdrPaperWhite, "QueryDisplayHdrPaperWhite"},
+            {212, &INx2Vi2Session::GetLayerBufferBits, "GetLayerBufferBits"},
             {228, &INx2Vi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {229, &INx2Vi2Session::PresentClientBuffer, "PresentClientBuffer"},
         });
@@ -1781,6 +1782,14 @@ private:
     // window images every few frames, which showed black. Report SDR output.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
         TipcReplyWords(ctx, {0, 0, 0});
+    }
+
+    // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
+    // a second until some are set; it only got going because the auto stub's reply happened to
+    // hold non-zero leftovers. Report the same slots 228/229 hand back.
+    void GetLayerBufferBits(HLERequestContext& ctx) {
+        constexpr u64 AvailableSlots = 0x7fff;
+        TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots), static_cast<u32>(AvailableSlots >> 32)});
     }
 
     void ReturnOne(HLERequestContext& ctx) {
