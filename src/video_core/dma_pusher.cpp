@@ -211,6 +211,16 @@ bool DmaPusher::Step() {
 
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     for (size_t index = 0; index < commands.size();) {
+        // Discard the rest of a command block that was rejected (illegal method). The block's
+        // declared count still tells where the next header starts, so the stream stays aligned
+        // instead of running thousands of bogus methods.
+        if (dma_state.skip_words != 0) {
+            const u32 skip =
+                static_cast<u32>(std::min<std::size_t>(dma_state.skip_words, commands.size() - index));
+            index += skip;
+            dma_state.skip_words -= skip;
+            continue;
+        }
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {
             auto const& command_header = commands[index]; //must ref (MUltiMethod re)
@@ -347,6 +357,23 @@ bool DmaPusher::WantsSegment() const {
 }
 
 void DmaPusher::CallMethod(u32 argument) {
+    // Method 0x1 is illegal in the host class: a stream that reaches it has been misparsed (for
+    // example, a split method continued into a different command buffer). Discard the rest of
+    // the block using its declared count instead of running thousands of bogus methods against
+    // the engines; the next header then parses from an aligned position.
+    if (dma_state.method == static_cast<u32>(BufferMethods::Illegal)) {
+        const u32 remaining = dma_state.method_count > 0 ? dma_state.method_count - 1 : 0;
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU,
+                      "Illegal host method on subchannel {}: discarding {} words of the block",
+                      dma_state.subchannel, remaining);
+        }
+        dma_state.skip_words = remaining;
+        dma_state.method_count = remaining != 0 ? 1 : 0;
+        dma_state.non_incrementing = false;
+        return;
+    }
     if (g_semaphore_watch != 0) [[unlikely]] {
         WatchArgument(dma_state.method, argument);
     }
