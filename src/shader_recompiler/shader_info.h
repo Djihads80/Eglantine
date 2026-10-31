@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <span>
@@ -266,6 +267,16 @@ struct MeshInfo {
     boost::container::static_vector<u32, 136> vertex_lines;
     boost::container::static_vector<u32, 136> primitive_lines;
 };
+
+/// Most bytes an emulated shared memory buffer spans: shaders clamp their workgroup slice to it
+/// and the host binds at least min(workgroups, slices that fit) slices.
+constexpr u32 EMULATED_SHARED_MEMORY_MAX_BYTES = 256U << 20;
+
+[[nodiscard]] constexpr u32 EmulatedSharedMemorySlices(u32 bytes_per_workgroup) {
+    return bytes_per_workgroup == 0
+               ? 1U
+               : (std::max)(EMULATED_SHARED_MEMORY_MAX_BYTES / bytes_per_workgroup, 1U);
+}
 
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};

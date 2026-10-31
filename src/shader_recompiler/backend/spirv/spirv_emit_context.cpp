@@ -525,9 +525,15 @@ Id EmitContext::SharedWordPointer(Id word_index) {
         const Id nx{OpCompositeExtract(U32[1], count, 0U)};
         const Id ny{OpCompositeExtract(U32[1], count, 1U)};
         const Id linear{OpIAdd(U32[1], x, OpIMul(U32[1], nx, OpIAdd(U32[1], y, OpIMul(U32[1], ny, z))))};
-        const Id base{OpIMul(U32[1], linear, Const(shared_memory_words))};
+        // Never past the buffer, which a write there can turn into a GPU fault (device lost): an
+        // indirect dispatch can have more workgroups than slices, and a program can address past
+        // its shared memory size. The host binds at least this many slices.
+        const u32 slices{EmulatedSharedMemorySlices(shared_memory_words * 4)};
+        const Id slice{OpUMin(U32[1], linear, Const(slices - 1))};
+        const Id word{OpUMin(U32[1], word_index, Const(shared_memory_words - 1))};
+        const Id base{OpIMul(U32[1], slice, Const(shared_memory_words))};
         return OpAccessChain(shared_u32, shared_memory_u32, u32_zero_value,
-                             OpIAdd(U32[1], base, word_index));
+                             OpIAdd(U32[1], base, word));
     }
     return uses_explicit_workgroup_layout
                ? OpAccessChain(shared_u32, shared_memory_u32, u32_zero_value, word_index)
