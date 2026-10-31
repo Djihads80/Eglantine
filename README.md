@@ -6,7 +6,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 <!-- lang: en-GB -->
-PokeDinner is a fork that unites commits and creates fixes, it is assisted by AI and requires expensive subscriptions, please consider donating if you can.
+<h4 align="center"><b>PokeDinner is a fork that unites commits and creates fixes, it is assisted by AI and requires expensive subscriptions, please consider donating if you can. Authors of main are below, i'm not affiliated</b>
+</h4>
 <p align="center">
     <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
         <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
