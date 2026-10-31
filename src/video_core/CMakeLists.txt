@@ -500,6 +500,12 @@ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64)
     target_link_libraries(video_core PRIVATE dynarmic::dynarmic)
 endif()
 
+if (ARCHITECTURE_arm64)
+    # The Turing macro JIT's ARM64 emitter (macro_turing_jit_arm64.h).
+    target_sources(video_core PRIVATE macro_turing_jit_arm64.cpp macro_turing_jit_arm64.h)
+    target_link_libraries(video_core PRIVATE merry::oaknut)
+endif()
+
 if (ANDROID AND ARCHITECTURE_arm64)
     target_link_libraries(video_core PRIVATE adrenotools)
 endif()

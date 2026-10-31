@@ -99,6 +99,11 @@ public:
         compiled_generation = generation;
     }
 
+    /// Always true here; the ARM64 port (macro_turing_jit_arm64.h) can give up on a program.
+    bool Usable() const {
+        return true;
+    }
+
     template <typename Read, typename Emit>
     Result Execute(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read read,
                    Emit emit) {
