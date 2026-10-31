@@ -64,7 +64,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "dev.eden.eden_emulator"
+        applicationId = providers.gradleProperty("appId").orNull ?: "dev.eden.eden_emulator"
         minSdk = 24
         targetSdk = 36
         versionName = getGitVersion()
