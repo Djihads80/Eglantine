@@ -127,9 +127,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             const PipelineStats::ScopedTimer stats_timer{PipelineStats::Kind::Compute,
                                                          PipelineStats::Stage::Driver};
             pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+            // Only needed to create the pipeline.
+            spv_module = {};
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
                          exception.what());
+            spv_module = {};
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();

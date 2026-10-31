@@ -7,6 +7,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <bit>
+#include <memory>
 #include <tuple>
 
 #include "common/common_funcs.h"
@@ -62,6 +65,10 @@ public:
     Result AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 option);
     Result AllocateForProcess(KPageGroup* out, size_t num_pages, u32 option, u64 process_id,
                               u8 fill_pattern);
+
+    /// Fills newly allocated pages. Zero fills skip pages that were never freed since boot: the
+    /// host backing starts zeroed, and writing them would commit host memory for nothing.
+    void FillAllocatedPages(KPhysicalAddress address, size_t num_pages, u8 fill_pattern);
 
     Pool GetPool(KPhysicalAddress address) const {
         return this->GetManager(address).GetPool();
@@ -311,6 +318,7 @@ private:
                     }
                 } else {
                     if (free_count > 0) {
+                        this->MarkFreed(free_start, free_count);
                         this->Free(m_heap.GetAddress() + free_start * PageSize, free_count);
                         free_count = 0;
                     }
@@ -320,15 +328,75 @@ private:
             }
 
             if (free_count > 0) {
+                this->MarkFreed(free_start, free_count);
                 this->Free(m_heap.GetAddress() + free_start * PageSize, free_count);
+            }
+        }
+
+        void MarkAllFreed() {
+            this->MarkFreed(0, this->GetSize() / PageSize);
+        }
+
+        /// Takes the freed mark off a page; true when it had one.
+        bool TakeFreed(size_t index) {
+            const u64 mask = u64{1} << (index % 64);
+            return (m_freed_pages[index / 64].fetch_and(~mask, std::memory_order_relaxed) & mask) != 0;
+        }
+
+        /// Calls fn(first page, count) for each run of freed pages in [index, +num_pages) and takes
+        /// their freed marks off.
+        template <typename F>
+        void TakeFreedRuns(size_t index, size_t num_pages, F&& fn) {
+            size_t run_start = 0;
+            size_t run_count = 0;
+            ForEachWord(index, num_pages, [&](size_t word, u64 mask) {
+                u64 freed = m_freed_pages[word].fetch_and(~mask, std::memory_order_relaxed) & mask;
+                while (freed != 0) {
+                    const size_t page = word * 64 + std::countr_zero(freed);
+                    freed &= freed - 1;
+                    if (run_count > 0 && run_start + run_count == page) {
+                        ++run_count;
+                        continue;
+                    }
+                    if (run_count > 0) {
+                        fn(run_start, run_count);
+                    }
+                    run_start = page;
+                    run_count = 1;
+                }
+            });
+            if (run_count > 0) {
+                fn(run_start, run_count);
             }
         }
 
     private:
         using RefCount = u16;
 
+        void MarkFreed(size_t index, size_t num_pages) {
+            ForEachWord(index, num_pages, [&](size_t word, u64 mask) {
+                m_freed_pages[word].fetch_or(mask, std::memory_order_relaxed);
+            });
+        }
+
+        /// Calls fn(word, mask) for the bits of [index, +num_pages) in each 64-page word.
+        template <typename F>
+        static void ForEachWord(size_t index, size_t num_pages, F&& fn) {
+            const size_t end = index + num_pages;
+            while (index < end) {
+                const size_t bit = index % 64;
+                const size_t count = (std::min)(64 - bit, end - index);
+                const u64 mask = (count == 64 ? ~u64{0} : (u64{1} << count) - 1) << bit;
+                fn(index / 64, mask);
+                index += count;
+            }
+        }
+
         KPageHeap m_heap;
         std::vector<RefCount> m_page_reference_counts;
+        /// Pages that were in use and freed again, so they may hold data. Pages never handed out
+        /// are still zero in the host backing. Atomic: fills run outside the pool lock.
+        std::unique_ptr<std::atomic<u64>[]> m_freed_pages;
         KVirtualAddress m_management_region{};
         Pool m_pool{};
         Impl* m_next{};
