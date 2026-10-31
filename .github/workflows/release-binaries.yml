@@ -48,6 +48,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          # The two -pgo builds are the same programs compiled by clang against Eden's periodically
+          # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang like
+          # Eden does; MSVC cannot read an LLVM .profdata file.
+          - platform: linux-x86_64-pgo
+            runner: ubuntu-24.04
+            pgo: true
+          - platform: windows-x86_64
+            runner: windows-2022
+          - platform: windows-x86_64-pgo
+            runner: windows-2022
+            pgo: true
+            mingw: true
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
           - platform: linux-aarch64-pgo
@@ -311,10 +325,11 @@ jobs:
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
           tools="$RUNNER_TEMP/linuxdeploy"
           mkdir -p "$tools"
-          curl -fsSL -o "$tools/linuxdeploy-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          arch=$(uname -m)   # aarch64 or x86_64
+          curl -fsSL -o "$tools/linuxdeploy-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage
           chmod +x "$tools"/*.AppImage
           # The desktop file names its icon dev.eglantine.eglantine.
           icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
