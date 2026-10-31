@@ -1499,7 +1499,7 @@ private:
             WaitForFrame(~w[22], w[24]);
         }
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24]);
+        Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank();
         const auto paced = std::chrono::steady_clock::now();
@@ -1621,9 +1621,12 @@ private:
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value) {
+    // present_size: word 7 of the present, (height - 1) << 16 | (width - 1) of the frame drawn
+    // into the image's top-left corner (Fire Emblem: Fortune's Weave: 1280x720 in 3840x2160).
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 present_size = 0) {
         u64 address{};
         Nx2ImageLayout layout{};
+        u32 image_format{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -1636,6 +1639,7 @@ private:
             }
             address = memory->second.address;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
+            image_format = image->second.preference[6];
         }
         const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
         if (!device) {
@@ -1645,6 +1649,11 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
+        // Present word 7 holds the size of the frame drawn into the image's top-left corner.
+        if (present_size != 0) {
+            crop_width = (std::min)(crop_width, (present_size & 0xffffU) + 1);
+            crop_height = (std::min)(crop_height, (present_size >> 16) + 1);
+        }
         // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
         // into the top-left 1920x1080, the handheld panel's resolution; the console's display
         // scans out only that region. Showing whole images put the frame in a corner inside black
@@ -1683,7 +1692,9 @@ private:
             .width = layout.width,
             .height = layout.height,
             .stride = static_cast<u32>(layout.pitch / 4),
-            .pixel_format = android::PixelFormat::Rgba8888,
+            // Preference word 6: 1 = RGBA8, 4 = RGB10A2.
+            .pixel_format = image_format == 4 ? android::PixelFormat::Rgba1010102
+                                              : android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
