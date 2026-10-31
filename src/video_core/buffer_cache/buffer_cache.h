@@ -2193,6 +2193,18 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // Most binds come back to a range nothing was written to since it was synchronized: skip
+    // walking its pages while its region saw no CPU writes (they took 5% of Mario Kart World's
+    // GPU back thread).
+    const u64 generation = memory_tracker.RangeGeneration(device_addr, size);
+    SyncedRange& synced = synced_ranges[((device_addr >> 8) ^ size) % synced_ranges.size()];
+    if (generation != 0 && synced.generation == generation && synced.device_addr == device_addr &&
+        synced.size == size && synced.buffer == &buffer) {
+        return true;
+    }
+    if (generation != 0) {
+        synced = SyncedRange{&buffer, device_addr, size, generation};
+    }
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2514,6 +2526,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
 
+    synced_ranges.fill({});
     // Mark the whole buffer as CPU written to stop tracking CPU writes
     if (!do_not_mark) {
         Buffer& buffer = slot_buffers[buffer_id];

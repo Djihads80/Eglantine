@@ -77,6 +77,18 @@ public:
         });
     }
 
+    /// The CPU write generation of the region holding the range (see WordManager), or 0 when
+    /// the range spans regions or has none yet. A range synchronized at one generation has
+    /// nothing new to upload while its region's generation stays the same.
+    [[nodiscard]] u64 RangeGeneration(VAddr query_cpu_addr, u64 query_size) const noexcept {
+        const u64 page = query_cpu_addr >> HIGHER_PAGE_BITS;
+        if (query_size == 0 || page != (query_cpu_addr + query_size - 1) >> HIGHER_PAGE_BITS ||
+            page >= NUM_HIGH_PAGES || top_tier[page] == nullptr) {
+            return 0;
+        }
+        return top_tier[page]->CpuGeneration();
+    }
+
     /// Unmark region as CPU modified, notifying the device_tracker about this change
     void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
