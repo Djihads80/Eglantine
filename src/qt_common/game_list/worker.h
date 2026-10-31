@@ -52,6 +52,9 @@ public:
     /// Starts the processing of directory tree information.
     void run() override;
 
+    /// Requests the worker to stop and blocks until processing has finished.
+    void Stop();
+
 public:
     /**
      * Synchronously processes any events queued by the worker.
