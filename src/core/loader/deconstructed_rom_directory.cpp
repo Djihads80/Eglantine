@@ -134,18 +134,20 @@ std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
 // ExeFS or in the game folder above it (<game>/exefs/main and
 // <game>/updates/<title id>/exefs/main layouts).
 std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exefs_dir) {
-    std::vector<FileSys::VirtualDir> dirs{exefs_dir};
-    for (auto dir = exefs_dir; dirs.size() < 4;) {
+    std::vector<FileSys::VirtualDir> dirs;
+    for (auto dir = exefs_dir; dir != nullptr;) {
+        dirs.push_back(dir);
+        if (const auto control_dir = dir->GetSubdirectory("control")) {
+            dirs.push_back(control_dir);
+        }
         const auto parent = dir->GetParentDirectory();
         if (parent == nullptr) {
             break;
         }
-        const auto& name = parent->GetName();
-        dirs.push_back(parent);
-        const bool title_id_like =
-            name == "updates" ||
-            (!name.empty() && name.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos);
-        if (!title_id_like) {
+        const auto& name = dir->GetName();
+        const bool layout_directory = name == "exefs" || name == "base" || name == "updates";
+        const bool update_version = parent->GetName() == "updates";
+        if (!layout_directory && !update_version) {
             break;
         }
         dir = parent;
@@ -221,6 +223,24 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     if (nacp_file != nullptr) {
         control.emplace(nacp_file);
         name = control->GetApplicationName();
+    }
+
+    if (name.empty()) {
+        for (const auto& sidecar_dir : sidecar_dirs) {
+            const auto title = sidecar_dir->GetFile("title.txt");
+            if (title == nullptr || title->GetSize() > 4096) {
+                continue;
+            }
+            const auto bytes = title->ReadAllBytes();
+            name.assign(bytes.begin(), bytes.end());
+            const auto end = name.find_first_of("\r\n\0", 0, 3);
+            if (end != std::string::npos) {
+                name.resize(end);
+            }
+            if (!name.empty()) {
+                break;
+            }
+        }
     }
 
     romfs = FindLooseRomFS(file_dir);

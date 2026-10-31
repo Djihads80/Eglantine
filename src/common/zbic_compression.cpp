@@ -5,6 +5,11 @@
 
 #include "common/zbic_compression.h"
 
+#ifdef _MSC_VER
+// This private copy exposes more static functions than the wrapper uses.
+#pragma warning(disable : 4505 5245)
+#endif
+
 #define ZSTD_ZBIC_SUPPORT 1
 #define ZSTDLIB_VISIBLE static
 #define ZSTDLIB_HIDDEN static
