@@ -150,6 +150,18 @@ void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTri
         return;
     }
 
+    // Only connection and battery changes are handled here. Motion and button updates arrive many
+    // times a second, a phone's gyro from the first frame: before the applet resource is set,
+    // which this callback (registered by the constructor) used to dereference.
+    if (type != Core::HID::ControllerTriggerType::Connected &&
+        type != Core::HID::ControllerTriggerType::Disconnected &&
+        type != Core::HID::ControllerTriggerType::Battery) {
+        return;
+    }
+    if (applet_resource_holder.applet_resource == nullptr) {
+        return;
+    }
+
     for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
         if (controller_idx >= controller_data[aruid_index].size()) {
             return;
