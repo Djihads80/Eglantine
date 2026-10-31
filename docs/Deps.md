@@ -242,7 +242,7 @@ If you're going for a pure build (i.e no downloaded deps), use `-DYUZU_USE_CPM=O
 Install dependencies from **[Homebrew](https://brew.sh/)**
 
 ```sh
-brew install autoconf automake boost ffmpeg fmt glslang hidapi libtool libusb lz4 ninja nlohmann-json openssl pkg-config qt@6 sdl3 speexdsp zlib zstd cmake Catch2 molten-vk vulkan-loader spirv-tools
+brew install autoconf automake boost ffmpeg fmt glslang hidapi libtool libusb lz4 ninja nlohmann-json openssl pkg-config qt@6 sdl3 speexdsp zlib zstd cmake Catch2 molten-vk vulkan-loader spirv-tools vulkan-utility-libraries
 ```
 
 If you are compiling on Intel Mac, or are using a Rosetta Homebrew installation, you must replace all references of `/opt/homebrew` with `/usr/local`.
