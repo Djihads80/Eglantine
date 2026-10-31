@@ -106,8 +106,16 @@ object NativeLibrary {
         if (DocumentsTree.isNativePath(path)) {
             YuzuApplication.documentsTree!!.getParentDirectory(path)
         } else {
-            path
+            FileUtil.getParentUri(path) ?: path
         }
+
+    /**
+     * Children of a content URI directory, four strings each: "d" or "f", size (-1 if unknown),
+     * display name and document URI. Native code finds files next to a loose ExeFS with it.
+     */
+    @Keep
+    @JvmStatic
+    fun listChildren(path: String): Array<String> = FileUtil.listChildren(path)
 
     @Keep
     @JvmStatic
