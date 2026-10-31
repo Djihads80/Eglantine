@@ -11,6 +11,17 @@ on:
     branches:
       - nx2
       - nx2-experimental
+    # A binary only changes when build inputs change; docs-only pushes skip the build.
+    paths:
+      - "src/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "externals/**"
+      - "dist/**"
+      - "tools/**"
+      - ".patch/**"
+      - "cpmfile.json"
+      - ".github/workflows/release-binaries.yml"
 
 permissions:
   contents: read
