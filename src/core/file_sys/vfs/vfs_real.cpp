@@ -68,6 +68,53 @@ bool IsWithinRoot(std::string_view root, std::string_view full_path) {
     return full_path.size() == root.size() || full_path[root.size()] == '/' || full_path[root.size()] == '\\';
 }
 
+bool IsContentPath(const std::string& path) {
+#ifdef __ANDROID__
+    return FS::Android::IsContentUri(path);
+#else
+    return false;
+#endif
+}
+
+#ifdef __ANDROID__
+// A child of a content URI directory. Document URIs cannot be joined with '/', so children are
+// found by name in the provider's listing, one path component at a time.
+struct ContentChild {
+    FS::Android::ContentEntry entry;
+};
+
+std::optional<ContentChild> FindContentChild(const std::string& dir,
+                                             std::string_view relative_path) {
+    std::optional<ContentChild> found;
+    std::string current = dir;
+    size_t start = 0;
+    while (start <= relative_path.size()) {
+        const size_t end = (std::min)(relative_path.find_first_of("/\\", start), relative_path.size());
+        const std::string_view component = relative_path.substr(start, end - start);
+        start = end + 1;
+        if (component.empty() || component == ".") {
+            continue;
+        }
+        if (found && !found->entry.is_directory) {
+            return std::nullopt;
+        }
+        const auto children = FS::Android::ListChildren(current);
+        const auto it = std::find_if(children.begin(), children.end(),
+                                     [&](const auto& child) { return child.name == component; });
+        if (it == children.end()) {
+            return std::nullopt;
+        }
+        found = ContentChild{*it};
+        current = it->uri;
+    }
+    return found;
+}
+
+std::optional<u64> ContentEntrySize(const FS::Android::ContentEntry& entry) {
+    return entry.size >= 0 ? std::optional<u64>{static_cast<u64>(entry.size)} : std::nullopt;
+}
+#endif
+
 constexpr FS::FileAccessMode ModeFlagsToFileAccessMode(OpenMode mode) {
     switch (mode) {
     case OpenMode::Read:
@@ -395,6 +442,18 @@ std::vector<VirtualFile> RealVfsDirectory::IterateEntries<RealVfsFile, VfsFile>(
 
     std::vector<VirtualFile> out;
 
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        for (const auto& entry : FS::Android::ListChildren(path)) {
+            if (!entry.is_directory) {
+                out.emplace_back(
+                    base.OpenFileFromEntry(entry.uri, ContentEntrySize(entry), perms));
+            }
+        }
+        return out;
+    }
+#endif
+
     const FS::DirEntryCallable callback = [this,
                                            &out](const std::filesystem::directory_entry& entry) {
         const auto full_path_string = FS::PathToUTF8String(entry.path());
@@ -417,6 +476,17 @@ std::vector<VirtualDir> RealVfsDirectory::IterateEntries<RealVfsDirectory, VfsDi
 
     std::vector<VirtualDir> out;
 
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        for (const auto& entry : FS::Android::ListChildren(path)) {
+            if (entry.is_directory) {
+                out.emplace_back(base.OpenDirectory(entry.uri, perms));
+            }
+        }
+        return out;
+    }
+#endif
+
     const FS::DirEntryCallable callback = [this,
                                            &out](const std::filesystem::directory_entry& entry) {
         const auto full_path_string = FS::PathToUTF8String(entry.path());
@@ -433,9 +503,11 @@ std::vector<VirtualDir> RealVfsDirectory::IterateEntries<RealVfsDirectory, VfsDi
 
 RealVfsDirectory::RealVfsDirectory(RealVfsFilesystem& base_, const std::string& path_,
                                    OpenMode perms_)
-    : base(base_), path(FS::RemoveTrailingSlash(path_)), parent_path(FS::GetParentPath(path)),
+    : base(base_), path(FS::RemoveTrailingSlash(path_)),
+      // A content URI's parent costs a provider query: it is looked up when asked for.
+      parent_path(IsContentPath(path) ? std::string{} : FS::GetParentPath(path)),
       path_components(FS::SplitPathComponentsCopy(path)), perms(perms_) {
-    if (!FS::Exists(path) && True(perms & OpenMode::Write)) {
+    if (True(perms & OpenMode::Write) && !FS::Exists(path)) {
         void(FS::CreateDirs(path));
     }
 }
@@ -443,6 +515,15 @@ RealVfsDirectory::RealVfsDirectory(RealVfsFilesystem& base_, const std::string& 
 RealVfsDirectory::~RealVfsDirectory() = default;
 
 VirtualFile RealVfsDirectory::GetFileRelative(std::string_view relative_path) const {
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        const auto child = FindContentChild(path, relative_path);
+        if (!child || child->entry.is_directory) {
+            return nullptr;
+        }
+        return base.OpenFileFromEntry(child->entry.uri, ContentEntrySize(child->entry), perms);
+    }
+#endif
     const auto full_path = FS::SanitizePath(path + '/' + std::string(relative_path));
     if (!FS::Exists(full_path) || FS::IsDir(full_path)
         || !IsWithinRoot(FS::SanitizePath(path), full_path)) {
@@ -452,6 +533,15 @@ VirtualFile RealVfsDirectory::GetFileRelative(std::string_view relative_path) co
 }
 
 VirtualDir RealVfsDirectory::GetDirectoryRelative(std::string_view relative_path) const {
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        const auto child = FindContentChild(path, relative_path);
+        if (!child || !child->entry.is_directory) {
+            return nullptr;
+        }
+        return base.OpenDirectory(child->entry.uri, perms);
+    }
+#endif
     const auto full_path = FS::SanitizePath(path + '/' + std::string(relative_path));
     if (!FS::Exists(full_path) || !FS::IsDir(full_path)
         || !IsWithinRoot(FS::SanitizePath(path), full_path)) {
@@ -526,10 +616,25 @@ bool RealVfsDirectory::IsReadable() const {
 }
 
 std::string RealVfsDirectory::GetName() const {
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        return FS::Android::GetFilename(path);
+    }
+#endif
     return path_components.empty() ? "" : std::string(path_components.back());
 }
 
 VirtualDir RealVfsDirectory::GetParentDirectory() const {
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        // The provider answers with the same URI at the root of the granted tree.
+        const auto parent = FS::GetParentPath(path);
+        if (parent.empty() || parent == path) {
+            return nullptr;
+        }
+        return base.OpenDirectory(parent, perms);
+    }
+#endif
     if (path_components.size() <= 1) {
         return nullptr;
     }
@@ -574,6 +679,16 @@ std::map<std::string, VfsEntryType, std::less<>> RealVfsDirectory::GetEntries() 
     }
 
     std::map<std::string, VfsEntryType, std::less<>> out;
+
+#ifdef __ANDROID__
+    if (FS::Android::IsContentUri(path)) {
+        for (const auto& entry : FS::Android::ListChildren(path)) {
+            out.insert_or_assign(entry.name, entry.is_directory ? VfsEntryType::Directory
+                                                                : VfsEntryType::File);
+        }
+        return out;
+    }
+#endif
 
     const FS::DirEntryCallable callback = [&out](const std::filesystem::directory_entry& entry) {
         const auto filename = FS::PathToUTF8String(entry.path().filename());

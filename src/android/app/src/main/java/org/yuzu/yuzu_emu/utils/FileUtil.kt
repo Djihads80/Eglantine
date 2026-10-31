@@ -8,6 +8,7 @@ package org.yuzu.yuzu_emu.utils
 
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import java.io.BufferedInputStream
@@ -144,6 +145,123 @@ object FileUtil {
             closeQuietly(c)
         }
         return results.toTypedArray()
+    }
+
+    /**
+     * Children of a directory in a granted tree, flattened for native code: four strings per
+     * child, "d" or "f", size in bytes (-1 if the provider does not report it), display name and
+     * document URI.
+     * @param path Native content uri path of a tree or a directory inside one
+     */
+    fun listChildren(path: String): Array<String> {
+        val uri = path.toUri()
+        if (!DocumentsContract.isTreeUri(uri)) {
+            return emptyArray()
+        }
+        val columns = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE
+        )
+        var c: Cursor? = null
+        val results = mutableListOf<String>()
+        try {
+            val docId = if (isRootTreeUri(uri)) {
+                DocumentsContract.getTreeDocumentId(uri)
+            } else {
+                DocumentsContract.getDocumentId(uri)
+            }
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, docId)
+            c = context.contentResolver.query(childrenUri, columns, null, null, null)
+            while (c!!.moveToNext()) {
+                val isDirectory = c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR
+                results.add(if (isDirectory) "d" else "f")
+                results.add(if (c.isNull(3)) "-1" else c.getLong(3).toString())
+                results.add(c.getString(1))
+                results.add(
+                    DocumentsContract.buildDocumentUriUsingTree(uri, c.getString(0)).toString()
+                )
+            }
+        } catch (e: Exception) {
+            Log.error("[FileUtil]: Cannot list children of $path: " + e.message)
+        } finally {
+            closeQuietly(c)
+        }
+        return results.toTypedArray()
+    }
+
+    /**
+     * Parent directory of a document inside a granted tree, or null at the tree's root and for
+     * documents outside a tree.
+     * @param path Native content uri path
+     */
+    fun getParentUri(path: String): String? {
+        val uri = path.toUri()
+        if (!DocumentsContract.isTreeUri(uri) || isRootTreeUri(uri)) {
+            return null
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                // The tree root's ID first, the document's own ID last.
+                val documentIds =
+                    DocumentsContract.findDocumentPath(context.contentResolver, uri)?.path
+                if (documentIds != null && documentIds.size >= 2) {
+                    return DocumentsContract.buildDocumentUriUsingTree(
+                        uri,
+                        documentIds[documentIds.size - 2]
+                    ).toString()
+                }
+            } catch (e: Exception) {
+                Log.warning("[FileUtil]: findDocumentPath failed for $path: " + e.message)
+            }
+        }
+
+        // Providers that do not implement findDocumentPath: path-like IDs (external storage)
+        val treeId = DocumentsContract.getTreeDocumentId(uri)
+        val docId = DocumentsContract.getDocumentId(uri)
+        if (docId != treeId && docId.startsWith(treeId) && docId.contains('/')) {
+            val parentId = docId.substringBeforeLast('/')
+            if (parentId.length >= treeId.length) {
+                return DocumentsContract.buildDocumentUriUsingTree(uri, parentId).toString()
+            }
+        }
+        return null
+    }
+
+    /**
+     * The same document addressed through a tree the app holds a persisted grant for, so its
+     * neighbours can be read too (a loose ExeFS needs main.npdm, sdk, subsdk* and romfs/ next
+     * to main). Null when no granted tree contains it.
+     * @param documentUri Document picked with ACTION_OPEN_DOCUMENT
+     */
+    fun getTreeDocumentUri(documentUri: Uri): Uri? {
+        if (DocumentsContract.isTreeUri(documentUri)) {
+            return documentUri
+        }
+        val docId = try {
+            DocumentsContract.getDocumentId(documentUri)
+        } catch (e: Exception) {
+            return null
+        }
+        for (permission in context.contentResolver.persistedUriPermissions) {
+            val treeUri = permission.uri
+            if (!permission.isReadPermission || treeUri.authority != documentUri.authority ||
+                !DocumentsContract.isTreeUri(treeUri)
+            ) {
+                continue
+            }
+            val treeId = try {
+                DocumentsContract.getTreeDocumentId(treeUri)
+            } catch (e: Exception) {
+                continue
+            }
+            val prefix = if (treeId.endsWith('/') || treeId.endsWith(':')) treeId else "$treeId/"
+            if (docId == treeId || docId.startsWith(prefix)) {
+                return DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            }
+        }
+        return null
     }
 
     /**
