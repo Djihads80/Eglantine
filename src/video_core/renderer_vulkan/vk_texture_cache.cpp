@@ -240,7 +240,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         return false;
     }
     return Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
-           Settings::values.astc_recompression.GetValue() != Settings::AstcRecompression::Uncompressed;
+           Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed;
 }
 
 [[nodiscard]] bool WillUseAcceleratedAstcDecode(const Device& device, const ImageInfo& info) {
@@ -253,9 +253,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if (Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu) {
         return false;
     }
-    return Settings::values.astc_recompression.GetValue() ==
-              Settings::AstcRecompression::Uncompressed &&
-          info.size.depth == 1;
+    return Settings::GetAstcRecompression() == Settings::AstcRecompression::Uncompressed &&
+           info.size.depth == 1;
 }
 
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
@@ -1084,13 +1083,13 @@ void BlitScale(Scheduler& scheduler, VkImage src_image, VkImage dst_image, const
     });
 }
 
-// Uncompressed ASTC needs more video memory than a Switch 2 title leaves on cards under 12 GiB
-// (Mario Kart World filled a 16 GB card's 13.5 GB budget): there the textures went unbacked
-// (garbage) and the game crashed. Use BC3 for this session; the configuration is left as is.
+// Uncompressed ASTC needs more video memory than a Switch 2 title leaves under a 12 GiB budget
+// (Mario Kart World filled a 16 GB card's 13.5 GB budget; a 12 GB card has ~11.2 GB): there the
+// textures went unbacked (garbage) and the game crashed. Use BC3 for this session.
 void UseBc3ForSwitch2OnSmallCards(const Device& device) {
     using namespace Common::Literals;
     if (!Settings::CurrentProgramIsSwitch2() || device.IsOptimalAstcSupported() ||
-        Settings::values.astc_recompression.GetValue() != Settings::AstcRecompression::Uncompressed) {
+        Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
         return;
     }
     const u64 budget = device.GetDeviceMemoryBudget();
@@ -1100,13 +1099,11 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
         return;
     }
     LOG_WARNING(Render_Vulkan,
-                "Switch 2 program with {} MiB of video memory: ASTC textures are re-compressed to "
-                "BC3 for this session (uncompressed ASTC needs 12 GiB or more). Set "
-                "EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
+                "Switch 2 program with a {} MiB video memory budget: ASTC textures are "
+                "re-compressed to BC3 for this session (uncompressed ASTC needs a 12 GiB budget). "
+                "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
                 memory >> 20);
-    // Per-game value, like the Switch 2 memory layout: RestoreGlobalState undoes it.
-    Settings::values.astc_recompression.SetGlobal(false);
-    Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);
+    Settings::SetAstcRecompressionOverride(Settings::AstcRecompression::Bc3);
 }
 } // Anonymous namespace
 
@@ -1127,8 +1124,7 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
         !device.IsOptimalAstcSupported()) {
         astc_decoder_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
                                   compute_pass_descriptor_queue, memory_allocator);
-        if (Settings::values.astc_recompression.GetValue() !=
-            Settings::AstcRecompression::Uncompressed) {
+        if (Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
             bc_encoder_pass.emplace(device, scheduler, descriptor_pool,
                                     compute_pass_descriptor_queue);
         }
@@ -2016,7 +2012,7 @@ bool TextureCacheRuntime::UseOpaqueAstcFormat() const {
         return value == nullptr || value[0] != '0';
     }();
     return enabled && !device.IsOptimalAstcSupported() &&
-           Settings::values.astc_recompression.GetValue() == Settings::AstcRecompression::Bc3;
+           Settings::GetAstcRecompression() == Settings::AstcRecompression::Bc3;
 }
 
 void TextureCacheRuntime::FlushDeferredClear() {
@@ -3702,8 +3698,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
 
     // Encode every level into one buffer, then copy it into the image.
     const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
-                     Settings::values.astc_recompression.GetValue() !=
-                         Settings::AstcRecompression::Bc1;
+                     Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
     const u64 block_bytes = bc3 ? 16 : 8;
     boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
     u64 total = 0;
