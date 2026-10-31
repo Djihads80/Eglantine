@@ -82,6 +82,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         if (!shader_info && native && IsRejected(*cpu_shader_addr)) {
             // A rejected program fails the same way every time it is bound: skip its draws
             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
             last_shaders_valid = false;
             return false;

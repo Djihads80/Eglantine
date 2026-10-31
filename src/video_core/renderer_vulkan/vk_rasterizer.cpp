@@ -279,7 +279,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure("no pipeline");
         return;
     }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    {
+        Profile::Scope scope{Profile::Zone::CacheLockWait};
+        std::lock(buffer_cache.mutex, texture_cache.mutex);
+    }
+    std::scoped_lock lock{std::adopt_lock, buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {

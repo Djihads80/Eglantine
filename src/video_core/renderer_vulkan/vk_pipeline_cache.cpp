@@ -29,6 +29,7 @@
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
@@ -601,6 +602,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     if (!is_new) {
         return pipeline.get();
     }
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::PipelineMisses, 1);
     pipeline = CreateComputePipeline(key, shader);
     return pipeline.get();
 }
@@ -827,6 +829,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::PipelineMisses, 1);
         ReportNewPipelineKey(graphics_key);
         pipeline = CreateGraphicsPipeline();
     }
