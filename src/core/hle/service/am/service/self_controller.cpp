@@ -75,6 +75,12 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, nullptr, "GetDebugStorageChannel"},
         {2000, &ISelfController::GetNx2GraphicsSystemSession, "GetGraphicsSystemSession (Switch 2, guessed)"},
+        {2100, D<&ISelfController::SetRecordingLayerEnabled>, "SetRecordingLayerEnabled (Switch 2)"},
+        {2200, D<&ISelfController::SetSharingLayerEnabled>, "SetSharingLayerEnabled (Switch 2)"},
+        {2300, D<&ISelfController::SetCopyrightLayerEnabled>, "SetCopyrightLayerEnabled (Switch 2)"},
+        {2400, D<&ISelfController::SetRtcScreenSharingAudioEnabled>, "SetRtcScreenSharingAudioEnabled (Switch 2)"},
+        {2401, D<&ISelfController::SetStreamPlayMirroringAudioEnabled>, "SetStreamPlayMirroringAudioEnabled (Switch 2)"},
+        {2402, D<&ISelfController::Unknown2402>, "Unknown2402 (Switch 2)"},
     };
     // clang-format on
 
@@ -433,6 +439,42 @@ Result ISelfController::Unknown230(u32 in_val, Out<u16> out_val) {
 
 Result ISelfController::Unknown240(u32 in_val) {
     LOG_WARNING(Service_AM, "(STUBBED) called, in_val={}", in_val);
+
+    R_SUCCEED();
+}
+
+Result ISelfController::SetRecordingLayerEnabled() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    R_SUCCEED();
+}
+
+Result ISelfController::SetSharingLayerEnabled() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    R_SUCCEED();
+}
+
+Result ISelfController::SetCopyrightLayerEnabled() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    R_SUCCEED();
+}
+
+Result ISelfController::SetRtcScreenSharingAudioEnabled() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    R_SUCCEED();
+}
+
+Result ISelfController::SetStreamPlayMirroringAudioEnabled() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    R_SUCCEED();
+}
+
+Result ISelfController::Unknown2402() {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
 
     R_SUCCEED();
 }
