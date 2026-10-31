@@ -1433,7 +1433,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                         }
                     }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+                        memory.FlushRegion(source, read_bytes,
+                                           VideoCommon::CacheType::BufferCache |
+                                               VideoCommon::CacheType::BufferCacheAround);
                         static u64 flushes{};
                         if (++flushes % 2000 == 1) {
                             LOG_INFO(HW_GPU, "Native MME DMA read flushed GPU-written memory ({} times)", flushes);

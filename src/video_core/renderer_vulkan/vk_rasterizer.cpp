@@ -1154,7 +1154,8 @@ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType 
     }
     if ((True(which & VideoCommon::CacheType::BufferCache))) {
         std::scoped_lock lock{buffer_cache.mutex};
-        buffer_cache.DownloadMemory(addr, size);
+        buffer_cache.DownloadMemory(addr, size,
+                                    True(which & VideoCommon::CacheType::BufferCacheAround));
     }
     if ((True(which & VideoCommon::CacheType::QueryCache))) {
         query_cache.FlushRegion(addr, size);
