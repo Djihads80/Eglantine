@@ -20,6 +20,7 @@
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/registered_cache.h"
+#include "core/file_sys/vfs/vfs_edenpack.h"
 #include "core/file_sys/submission_package.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/loader/deconstructed_rom_directory.h"
@@ -393,6 +394,20 @@ std::unique_ptr<AppLoader> GetLoader(Core::System& system, FileSys::VirtualFile 
                                      u64 program_id, std::size_t program_index) {
     if (!file) {
         return nullptr;
+    }
+
+    // EdenPack is a read-only archive of a deconstructed ExeFS/RomFS tree. Keep the archive
+    // VirtualFile alive through the virtual entries so Android SAF uses the same open descriptor.
+    if (Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName()))) ==
+        "edenpack") {
+        auto root = FileSys::EdenPackVfsFilesystem::Open(file);
+        const auto exefs = root ? root->GetSubdirectory("ExeFS") : nullptr;
+        const auto main = exefs ? exefs->GetFile("main") : nullptr;
+        if (!main || !exefs->GetFile("main.npdm")) {
+            LOG_ERROR(Loader, "EdenPack archive is missing ExeFS/main or ExeFS/main.npdm");
+            return nullptr;
+        }
+        return std::make_unique<AppLoader_DeconstructedRomDirectory>(main);
     }
 
     if (const auto indexed = ResolveIndexedProgram(system, program_id, program_index)) {
