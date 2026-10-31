@@ -493,3 +493,13 @@ jobs:
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
           The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
+
+      - name: Ping Discord
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          jq -n \
+            --arg content "## <@&1566184315178713190> Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' \
+          | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"
