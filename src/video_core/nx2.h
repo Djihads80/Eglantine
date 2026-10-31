@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -22,6 +23,21 @@ inline std::atomic<bool> g_nx2_ampere{false};
 
 // The running title, for the few places that must behave differently per game.
 inline std::atomic<u64> g_nx2_program_id{0};
+
+// EDEN_NX2_HELD_WRITES=0 turns off, for Switch 2 programs: applying the guest CPU writes held
+// back from GPU-written memory before each submitted command list, and applying them byte for
+// byte (OnCachedWrite) instead of re-uploading whole pages over GPU data never copied back.
+inline bool Nx2HeldWritesEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_HELD_WRITES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+inline bool Nx2HeldWrites() {
+    return g_nx2_ampere.load(std::memory_order_relaxed) && Nx2HeldWritesEnabled();
+}
 
 // Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
 // see, so their buffers must be copied back to guest memory at every fence
