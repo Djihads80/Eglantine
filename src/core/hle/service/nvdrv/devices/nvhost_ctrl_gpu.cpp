@@ -207,6 +207,10 @@ void ApplyNx2Characteristics(GC& gc) {
     // Without the flag NvRm fails that call and the texture stays at GPU address 0 (title 1's
     // movie and the passes rendered into compressible pools never showed).
     gc.flags |= 1ULL << 34;
+    // Bits 40..43: some NVN2 drivers (e.g. the Yoshi demo's) filter the 2D/3D/compute/inline
+    // engine classes with these before picking their contexts. Without them NVN2Manager::
+    // CreateDevice fails (2162-0001) right after GetEngineInfo. Values from the NS2 patch.
+    gc.flags |= 0xfULL << 40;
 
     // The Switch 2 layout keeps nine s16 interface versions at 0x70..0x80 (like nvgpu's
     // *_ioctl_nr_last); its NvRm requires e.g. [0x78] >= 6 and enables features above 0xa, 0x1f

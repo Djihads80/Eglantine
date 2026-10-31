@@ -304,6 +304,8 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            {42, &INx2GpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -367,6 +369,23 @@ private:
     void GetCount33(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gpu TIPC 33 [2]={:#x}, returning 1", ctx.CommandBuffer()[2]);
         TipcReplyWords(ctx, {1});
+    }
+
+    // Some titles (e.g. the Yoshi demo) create the NVN device with 41(u64 name "NvRmGpu", u64
+    // flags, u64 debug label) and need a nonzero device id back. Auto-stubbed, the id was 0 and NVN
+    // gave up on the device (2162-0001 from NVN2Manager::CreateDevice).
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 name = u64{w[2]} | (u64{w[3]} << 32);
+        const u64 flags = u64{w[4]} | (u64{w[5]} << 32);
+        const u32 id = m_next_device_id++;
+        LOG_INFO(Service, "nx2:gpu TIPC 41 name={:#x} flags={:#x}, device id {}", name, flags, id);
+        TipcReplyWords(ctx, {id});
+    }
+
+    void DestroyGraphicsDevice(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gpu TIPC 42 device id {}", ctx.CommandBuffer()[2]);
+        TipcReplyWords(ctx, {});
     }
 
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
@@ -872,6 +891,7 @@ private:
     std::array<Kernel::KEvent*, NumIds> m_events{};
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
+    u32 m_next_device_id{1};
 };
 
 // Native memory and images handed out by the Switch 2 graphics server (gsv 111/114/423/429/315),
