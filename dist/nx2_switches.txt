@@ -10,7 +10,9 @@
 # --- Performance tuning defaults for Switch 2 ---
 EDEN_NX2_SPLIT=2
 EDEN_NX2_FENCE_BATCH=1
-EDEN_NX2_BUFFER_DOWNLOADS=1
+# Leave buffer downloads disabled on Switch 2 (default): forcing downloads (=1) copies back
+# 90-220 MB/s of buffers CPU never touches, causing mutex contention and dropping FPS by ~38%.
+#EDEN_NX2_BUFFER_DOWNLOADS=1
 EDEN_NX2_FRAMES_AHEAD=2
 
 # --- Workarounds / Debug ---
