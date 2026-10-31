@@ -11,6 +11,7 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -31,6 +32,7 @@
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/file_sys/vfs/vfs_concat.h"
+#include "core/file_sys/vfs/vfs_edenpack.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/gpu_dirty_memory_manager.h"
 #include "core/hle/kernel/k_memory_manager.h"
@@ -114,10 +116,27 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 
 namespace {
 
-// Switch 2 titles boot as a loose ExeFS, with main.npdm next to main.
+// Switch 2 titles boot as a loose ExeFS, with main.npdm next to main. EdenPack
+// stores that ExeFS inside its own VFS, so the archive's host directory is not the
+// metadata directory.
 bool IsSwitch2Program(const FileSys::VirtualFile& file) {
-    const auto dir = file != nullptr ? file->GetContainingDirectory() : nullptr;
-    const auto npdm = dir != nullptr ? dir->GetFile("main.npdm") : nullptr;
+    if (!file) {
+        return false;
+    }
+
+    FileSys::VirtualFile npdm;
+    const auto extension =
+        Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName())));
+
+    if (extension == "edenpack") {
+        const auto root = FileSys::EdenPackVfsFilesystem::Open(file);
+        const auto exefs = root ? root->GetSubdirectory("ExeFS") : nullptr;
+        npdm = exefs ? exefs->GetFile("main.npdm") : nullptr;
+    } else {
+        const auto dir = file->GetContainingDirectory();
+        npdm = dir ? dir->GetFile("main.npdm") : nullptr;
+    }
+
     FileSys::ProgramMetadata metadata;
     return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
            metadata.IsSwitch2();
