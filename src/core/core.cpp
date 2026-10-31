@@ -11,6 +11,7 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -69,6 +70,7 @@
 #include "hid_core/hid_core.h"
 #include "network/network.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/renderer_base.h"
 #include "video_core/video_core.h"
 
@@ -366,6 +368,13 @@ struct System::Impl {
             LOG_INFO(Core, "Switch 2 program: using the 12 GiB memory layout");
             Settings::values.memory_layout_mode.SetGlobal(false);
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
+        }
+        // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
+        // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE, for Android).
+        if (Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
+                               "gpu_profile")) {
+            VideoCommon::Nx2Profile::g_enabled.store(true, std::memory_order_relaxed);
+            LOG_INFO(Core, "GPU thread profile on (gpu_profile file)");
         }
         // Switch 2 titles build thousands of pipelines while they play: build them asynchronously
         // (a hitch-free frame instead of a GPU thread stall), unless set for this game itself.
