@@ -271,12 +271,18 @@ GameListWorker::GameListWorker(FileSys::VirtualFilesystem vfs_,
 
 GameListWorker::~GameListWorker() {
     this->disconnect();
-    stop_requested.store(true);
-    processing_completed.Wait();
+    Stop();
+}
+
+void GameListWorker::Stop() {
+    if (!stop_requested.exchange(true)) {
+        processing_completed.Wait();
+    }
 }
 
 void GameListWorker::ProcessEvents(GameListModel* model) {
-    while (true) {
+    // An event may spin a nested event loop that replaces this worker, in which case stop.
+    while (model->current_worker.get() == this) {
         std::function<void(GameListModel*)> func;
         {
             // Lock queue to protect concurrent modification.
