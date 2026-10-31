@@ -1236,18 +1236,18 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
-        // Mario Kart World draws into the top-left corner of its present images: 2560x1440 docked
-        // (in 3840x2160 images), 1920x1080 handheld. It keeps its docked images after a switch to
-        // handheld, and showing all of them put the frame in a corner with stale docked frames
-        // around it.
-        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL) {
-            if (!Settings::IsDockedMode()) {
-                crop_width = (std::min)(crop_width, 1920U);
-                crop_height = (std::min)(crop_height, 1080U);
-            } else if (layout.width == 3840 && layout.height == 2160) {
-                crop_width = 2560;
-                crop_height = 1440;
-            }
+        // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
+        // into the top-left 1920x1080, the handheld panel's resolution; the console's display
+        // scans out only that region. Showing whole images put the frame in a corner inside black
+        // margins that scaled with the window (seen on Mario Kart World and Splatoon Raiders).
+        if (!Settings::IsDockedMode()) {
+            crop_width = (std::min)(crop_width, 1920U);
+            crop_height = (std::min)(crop_height, 1080U);
+        } else if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
+                   layout.width == 3840 && layout.height == 2160) {
+            // Mario Kart World docked draws 2560x1440 into the top-left of its 4K images.
+            crop_width = 2560;
+            crop_height = 1440;
         }
         static const u32 env_crop_w = [] {
             const char* v = std::getenv("EDEN_NX2_CROP_WIDTH");
