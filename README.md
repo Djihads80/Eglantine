@@ -7,6 +7,14 @@
 -->
 <!-- lang: en-GB -->
 
+<p align="center">
+    <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
+        <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
+            alt="Donate with PayPal">
+    </a>
+</p>
+
+
 <h1 align="center">
   <br>
   <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
@@ -31,12 +39,7 @@ It's written in C++ with portability in mind, with builds for Windows, Linux, ma
     </a>
 </p>
 
-<p align="center">
-    <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
-        <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
-            alt="Donate with PayPal">
-    </a>
-</p>
+
 
 <p align="center">
   <a href="#compatibility">Compatibility</a> |
