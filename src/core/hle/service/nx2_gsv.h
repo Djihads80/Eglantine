@@ -857,10 +857,9 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     }
     const u64 block_rows = u64{1} << layout.block_height_log2;
     layout.size = layout.pitch * Common::AlignUp(u64{layout.height}, block_rows);
-    // Words 6 and 7 are unconfirmed (layers or mip levels); scaling by both never under-allocates.
-    if (preference[6] >= 1 && preference[6] <= 64 && preference[7] >= 1 && preference[7] <= 64) {
-        layout.size *= u64{preference[6]} * preference[7];
-    }
+    // ponytail: words 6/7 are unconfirmed and must not scale the size: multiplying by them made
+    // Mario Kart World abort at boot (0x3200F3 right after its first draws, bisect a0fae9746a).
+    // Scaling again needs a title that under-allocates without it.
     layout.alignment = std::max<u64>(64 * block_rows, 0x1000);
     return layout;
 }
