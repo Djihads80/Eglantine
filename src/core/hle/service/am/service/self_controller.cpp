@@ -75,6 +75,7 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, nullptr, "GetDebugStorageChannel"},
         {2000, &ISelfController::GetNx2GraphicsSystemSession, "GetGraphicsSystemSession (Switch 2, guessed)"},
+        {2400, D<&ISelfController::Unknown240>, "Unknown2400"}, // NS2: u32 in, no out
     };
     // clang-format on
 

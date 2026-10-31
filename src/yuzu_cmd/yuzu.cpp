@@ -63,6 +63,9 @@
 
 #ifdef _WIN32
 // windows.h needs to be included before shellapi.h
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <shellapi.h>
 #include "common/windows/timer_resolution.h"

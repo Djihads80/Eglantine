@@ -114,7 +114,7 @@ struct GPU::Impl {
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
         std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
-            renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
+            renderer->ReadRasterizer()->OnCachedWrite(address, size);
         });
         system.GatherGPUDirtyMemory(callback_writes);
     }

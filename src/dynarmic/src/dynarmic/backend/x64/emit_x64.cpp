@@ -102,7 +102,7 @@ void EmitX64::PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, I
 
     code.mov(index_reg.cvt32(), dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_rsb_ptr]);
     code.mov(loc_desc_reg, target.Value());
-    patch_information[target].mov_rcx.push_back(code.getCurr());
+    AddPatchLocation(target, PatchKind::MovRcx);
     EmitPatchMovRcx(target_code_ptr);
     code.mov(qword[code.ABI_JIT_PTR + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_location_descriptors], loc_desc_reg);
     code.mov(qword[code.ABI_JIT_PTR + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_codeptrs], rcx);
@@ -357,37 +357,61 @@ EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& de
     return block_desc;
 }
 
+void EmitX64::AddPatchLocation(const IR::LocationDescriptor& target_desc, PatchKind kind) {
+    const size_t offset = code.getCurr<const u8*>() - static_cast<const u8*>(code.getCode());
+    ASSERT(offset > 0 && offset < (size_t(1) << 30));
+    const u32 entry = u32(offset << 2) | u32(kind);
+    PatchInformation& patch_info = patch_information[target_desc];
+    for (u32& slot : patch_info.first) {
+        if (slot == 0) {
+            slot = entry;
+            return;
+        }
+    }
+    if (!patch_info.rest) {
+        patch_info.rest = std::make_unique<std::vector<u32>>();
+    }
+    patch_info.rest->push_back(entry);
+}
+
 void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    const auto it = patch_information.find(target_desc);
+    if (it == patch_information.end()) {
+        return;
+    }
     const CodePtr save_code_ptr = code.getCurr();
-    const PatchInformation& patch_info = patch_information[target_desc];
-
-    for (CodePtr location : patch_info.jg) {
-        code.SetCodePtr(location);
-        EmitPatchJg(target_desc, target_code_ptr);
+    const auto patch = [&](u32 entry) {
+        code.SetCodePtr(static_cast<const u8*>(code.getCode()) + (entry >> 2));
+        switch (PatchKind(entry & 3)) {
+        case PatchKind::Jg:
+            EmitPatchJg(target_desc, target_code_ptr);
+            break;
+        case PatchKind::Jz:
+            EmitPatchJz(target_desc, target_code_ptr);
+            break;
+        case PatchKind::Jmp:
+            EmitPatchJmp(target_desc, target_code_ptr);
+            break;
+        case PatchKind::MovRcx:
+            EmitPatchMovRcx(target_code_ptr);
+            break;
+        }
+    };
+    for (const u32 entry : it->second.first) {
+        if (entry != 0) {
+            patch(entry);
+        }
     }
-
-    for (CodePtr location : patch_info.jz) {
-        code.SetCodePtr(location);
-        EmitPatchJz(target_desc, target_code_ptr);
+    if (it->second.rest) {
+        for (const u32 entry : *it->second.rest) {
+            patch(entry);
+        }
     }
-
-    for (CodePtr location : patch_info.jmp) {
-        code.SetCodePtr(location);
-        EmitPatchJmp(target_desc, target_code_ptr);
-    }
-
-    for (CodePtr location : patch_info.mov_rcx) {
-        code.SetCodePtr(location);
-        EmitPatchMovRcx(target_code_ptr);
-    }
-
     code.SetCodePtr(save_code_ptr);
 }
 
 void EmitX64::Unpatch(const IR::LocationDescriptor& target_desc) {
-    if (patch_information.count(target_desc)) {
-        Patch(target_desc, nullptr);
-    }
+    Patch(target_desc, nullptr);
 }
 
 void EmitX64::ClearCache() {
