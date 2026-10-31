@@ -56,6 +56,23 @@ class EdenPackTests(unittest.TestCase):
         with self.assertRaises(edenpack.EdenPackError):
             edenpack.pack(self.game, self.archive)
 
+    def test_rejects_file_used_as_parent_directory(self):
+        edenpack.pack(self.game, self.archive)
+        index, _ = edenpack.read_index(self.archive)
+        entry = next(e for e in index["entries"] if e["path"] == "ExeFS/empty")
+        entry["path"] = "ExeFS/main/child"
+        payload = json.dumps(index, separators=(",", ":"), sort_keys=True).encode()
+        with self.archive.open("r+b") as stream:
+            stream.seek(0, 2)
+            index_offset = stream.tell()
+            stream.write(payload)
+            stream.seek(0)
+            stream.write(edenpack.HEADER.pack(
+                edenpack.MAGIC, edenpack.VERSION, 0, index_offset,
+                len(payload), len(index["entries"])))
+        with self.assertRaisesRegex(edenpack.EdenPackError, "used as a directory"):
+            edenpack.read_index(self.archive)
+
     def test_rejects_path_traversal_in_index(self):
         edenpack.pack(self.game, self.archive)
         index, _ = edenpack.read_index(self.archive)
