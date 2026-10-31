@@ -92,13 +92,13 @@ struct PendingFile {
 
 bool BuildDirectoryTree(const VirtualFile& archive, const std::vector<PendingFile>& files,
                         const std::vector<std::string>& directories,
-                        const VirtualDir& root) {
-    std::map<std::string, VirtualDir, std::less<>> nodes;
+                        const std::shared_ptr<VectorVfsDirectory>& root) {
+    std::map<std::string, std::shared_ptr<VectorVfsDirectory>, std::less<>> nodes;
     nodes.emplace("", root);
 
-    auto ensure_directory = [&](std::string_view path) -> VirtualDir {
+    auto ensure_directory = [&](std::string_view path) -> std::shared_ptr<VectorVfsDirectory> {
         std::string current;
-        VirtualDir parent = root;
+        auto parent = root;
         std::size_t start{};
         while (start < path.size()) {
             const auto end = path.find('/', start);
