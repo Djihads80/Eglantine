@@ -317,7 +317,7 @@ Result KProcess::Initialize(KernelCore& kernel, const Svc::CreateProcessParamete
             False(params.flags & Svc::CreateProcessFlag::DisableDeviceAddressSpaceMerge);
         R_TRY(m_page_table.Initialize(as_type, enable_aslr, enable_das_merge, !enable_aslr, pool,
                                       params.code_address, params.code_num_pages * PageSize,
-                                      m_system_resource, res_limit, m_memory, 0));
+                                      m_system_resource, res_limit, m_memory, 0, m_is_switch2));
     }
     ON_RESULT_FAILURE_2 {
         m_page_table.Finalize();
@@ -419,7 +419,7 @@ Result KProcess::Initialize(KernelCore& kernel, const Svc::CreateProcessParamete
             False(params.flags & Svc::CreateProcessFlag::DisableDeviceAddressSpaceMerge);
         R_TRY(m_page_table.Initialize(as_type, enable_aslr, enable_das_merge, !enable_aslr, pool,
                                       params.code_address, code_size, m_system_resource, res_limit,
-                                      m_memory, aslr_space_start));
+                                      m_memory, aslr_space_start, m_is_switch2));
     }
     ON_RESULT_FAILURE_2 {
         m_page_table.Finalize();
@@ -1256,18 +1256,11 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     std::memcpy(params.name.data(), name.data(), sizeof(params.name));
 
     // Initialize for application process.
+    m_is_switch2 = metadata.IsSwitch2();
     R_TRY(this->Initialize(kernel, params, metadata.GetKernelCapabilities(), res_limit, pool, aslr_space_start));
 
     // Assign remaining properties.
     m_ideal_core_id = metadata.GetMainThreadCore();
-
-    // Switch 2 applications get more memory than a 64-bit heap region holds (nninitStartup sizes
-    // its heap as total memory minus ~6.3 GiB), so count the alias region as well, bounded by the
-    // pool through the resource limit.
-    if (metadata.IsSwitch2()) {
-        m_is_switch2 = true;
-        m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
-    }
 
     // Set up emulation context.
     this->InitializeInterfaces(kernel);

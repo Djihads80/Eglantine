@@ -54,8 +54,29 @@ struct IndirectBranchVariable {
 };
 
 using Variant = std::variant<IR::Reg, IR::Pred, ZeroFlagTag, SignFlagTag, CarryFlagTag, OverflowFlagTag, GotoVariable, IndirectBranchVariable>;
-// TODO: majority of these require stable iterators, test with XC beforehand
-using ValueMap = std::unordered_map<IR::Block*, IR::Value>;
+// Definitions are copied out as soon as they are read, so the tables need no stable references.
+// Fixed-count variables live in the blocks, like registers: every read walks back through
+// blocks and looks up or writes a definition in each, and node-based maps per variable made
+// those lookups and their allocations a large part of the pass.
+constexpr size_t SSA_ZERO_FLAG = IR::NUM_USER_PREDS;
+constexpr size_t SSA_SIGN_FLAG = IR::NUM_USER_PREDS + 1;
+constexpr size_t SSA_CARRY_FLAG = IR::NUM_USER_PREDS + 2;
+constexpr size_t SSA_OVERFLOW_FLAG = IR::NUM_USER_PREDS + 3;
+constexpr size_t SSA_INDIRECT_BRANCH = IR::NUM_USER_PREDS + 4;
+static_assert(SSA_INDIRECT_BRANCH < IR::Block::NUM_SSA_VALUES);
+
+struct GotoKey {
+    bool operator==(const GotoKey&) const noexcept = default;
+
+    IR::Block* block;
+    u32 index;
+};
+
+struct GotoKeyHash {
+    size_t operator()(const GotoKey& key) const noexcept {
+        return std::hash<IR::Block*>{}(key.block) ^ (static_cast<size_t>(key.index) << 32);
+    }
+};
 
 struct DefTable {
     const IR::Value& Def(IR::Block* block, IR::Reg variable) {
@@ -66,62 +87,57 @@ struct DefTable {
     }
 
     const IR::Value& Def(IR::Block* block, IR::Pred variable) {
-        return preds[IR::PredIndex(variable)][block];
+        return block->SsaValue(IR::PredIndex(variable));
     }
     void SetDef(IR::Block* block, IR::Pred variable, const IR::Value& value) {
-        preds[IR::PredIndex(variable)].insert_or_assign(block, value);
+        block->SetSsaValue(IR::PredIndex(variable), value);
     }
 
     const IR::Value& Def(IR::Block* block, GotoVariable variable) {
-        return goto_vars[variable.index][block];
+        const auto it{goto_vars.find(GotoKey{block, variable.index})};
+        return it != goto_vars.end() ? it->second : empty;
     }
     void SetDef(IR::Block* block, GotoVariable variable, const IR::Value& value) {
-        goto_vars[variable.index].insert_or_assign(block, value);
+        goto_vars.insert_or_assign(GotoKey{block, variable.index}, value);
     }
 
     const IR::Value& Def(IR::Block* block, IndirectBranchVariable) {
-        return indirect_branch_var[block];
+        return block->SsaValue(SSA_INDIRECT_BRANCH);
     }
     void SetDef(IR::Block* block, IndirectBranchVariable, const IR::Value& value) {
-        indirect_branch_var.insert_or_assign(block, value);
+        block->SetSsaValue(SSA_INDIRECT_BRANCH, value);
     }
 
     const IR::Value& Def(IR::Block* block, ZeroFlagTag) {
-        return zero_flag[block];
+        return block->SsaValue(SSA_ZERO_FLAG);
     }
     void SetDef(IR::Block* block, ZeroFlagTag, const IR::Value& value) {
-        zero_flag.insert_or_assign(block, value);
+        block->SetSsaValue(SSA_ZERO_FLAG, value);
     }
 
     const IR::Value& Def(IR::Block* block, SignFlagTag) {
-        return sign_flag[block];
+        return block->SsaValue(SSA_SIGN_FLAG);
     }
     void SetDef(IR::Block* block, SignFlagTag, const IR::Value& value) {
-        sign_flag.insert_or_assign(block, value);
+        block->SetSsaValue(SSA_SIGN_FLAG, value);
     }
 
     const IR::Value& Def(IR::Block* block, CarryFlagTag) {
-        return carry_flag[block];
+        return block->SsaValue(SSA_CARRY_FLAG);
     }
     void SetDef(IR::Block* block, CarryFlagTag, const IR::Value& value) {
-        carry_flag.insert_or_assign(block, value);
+        block->SetSsaValue(SSA_CARRY_FLAG, value);
     }
 
     const IR::Value& Def(IR::Block* block, OverflowFlagTag) {
-        return overflow_flag[block];
+        return block->SsaValue(SSA_OVERFLOW_FLAG);
     }
     void SetDef(IR::Block* block, OverflowFlagTag, const IR::Value& value) {
-        overflow_flag.insert_or_assign(block, value);
+        block->SetSsaValue(SSA_OVERFLOW_FLAG, value);
     }
 
-    std::array<ValueMap, IR::NUM_USER_PREDS> preds;
-    // TODO: Requires stable iterators
-    std::unordered_map<u32, ValueMap> goto_vars;
-    ValueMap indirect_branch_var;
-    ValueMap zero_flag;
-    ValueMap sign_flag;
-    ValueMap carry_flag;
-    ValueMap overflow_flag;
+    Common::unordered_map<GotoKey, IR::Value, GotoKeyHash> goto_vars;
+    const IR::Value empty{};
 };
 
 IR::Opcode UndefOpcode(IR::Reg) noexcept {
@@ -147,16 +163,19 @@ enum class Status {
     PushPhiArgument,
 };
 
-template <typename Type>
 struct ReadState {
     ReadState(IR::Block* block_) : block{block_} {}
     ReadState() = default;
 
     IR::Block* block{};
     IR::Value result{};
+    /// Phi of a sealed block with several predecessors, null while it is only pending
     IR::Inst* phi{};
     IR::Block* const* pred_it{};
     IR::Block* const* pred_end{};
+    /// Operands of a pending phi, in Pass::pending_operands
+    size_t operands_begin{};
+    size_t num_operands{};
     Status pc{Status::Start};
 };
 
@@ -169,16 +188,21 @@ public:
 
     template <typename Type>
     IR::Value ReadVariable(Type variable, IR::Block* root_block) {
-        // TODO: Windows commits sodoku if you use small_vector
-        std::vector<ReadState<Type>> stack{
-            ReadState<Type>(nullptr),
-            ReadState<Type>(root_block),
-        };
+        // Reads walk back through every block until they find a definition, often dozens deep:
+        // reuse one stack instead of growing a new vector on every read.
+        auto& stack{read_stack};
+        stack.clear();
+        stack.emplace_back(nullptr);
+        stack.emplace_back(root_block);
+        const IR::Opcode undef_opcode{UndefOpcode(variable)};
         const auto prepare_phi_operand{[&] {
-            if (stack.back().pred_it == stack.back().pred_end) {
-                IR::Inst* const phi{stack.back().phi};
-                IR::Block* const block{stack.back().block};
-                const IR::Value result{TryRemoveTrivialPhi(*phi, block, UndefOpcode(variable))};
+            ReadState& state{stack.back()};
+            if (state.pred_it == state.pred_end) {
+                IR::Block* const block{state.block};
+                const IR::Value result{state.phi
+                                           ? TryRemoveTrivialPhi(*state.phi, block, undef_opcode)
+                                           : ResolvePendingPhi(state, undef_opcode)};
+                pending_operands.resize(state.operands_begin);
                 stack.pop_back();
                 stack.back().result = result;
                 WriteVariable(variable, block, result);
@@ -192,7 +216,12 @@ public:
             IR::Block* const block{stack.back().block};
             switch (stack.back().pc) {
             case Status::Start: {
-                if (const IR::Value& def = current_def.Def(block, variable); !def.IsEmpty()) {
+                if (IR::Value def{current_def.Def(block, variable)}; !def.IsEmpty()) {
+                    if (def == pending_phi) {
+                        // A cycle reached a pending phi: it needs to exist now
+                        def = IR::Value{MaterializePhi(PendingFrame(block), undef_opcode)};
+                        WriteVariable(variable, block, def);
+                    }
                     stack.back().result = def;
                 } else if (!block->IsSsaSealed()) {
                     // Incomplete CFG
@@ -208,13 +237,16 @@ public:
                     stack.emplace_back(imm_preds.front());
                     break;
                 } else {
-                    // Break potential cycles with operandless phi
-                    IR::Inst* const phi{&*block->PrependNewInst(block->begin(), IR::Opcode::Phi)};
-                    phi->SetFlags(IR::TypeOf(UndefOpcode(variable)));
+                    // Break potential cycles with an operandless phi. Most of these phis turn out
+                    // trivial, so it stays pending (pending_phi marks the block) and is only
+                    // created when a cycle reads it or when it merges different values. Nothing
+                    // is inserted at the front of this block until then, so it is created where
+                    // it would have been created right away.
+                    WriteVariable(variable, block, pending_phi);
 
-                    WriteVariable(variable, block, IR::Value{phi});
-
-                    stack.back().phi = phi;
+                    stack.back().phi = nullptr;
+                    stack.back().operands_begin = pending_operands.size();
+                    stack.back().num_operands = 0;
                     stack.back().pred_it = imm_preds.data();
                     stack.back().pred_end = imm_preds.data() + imm_preds.size();
                     prepare_phi_operand();
@@ -230,9 +262,14 @@ public:
                 break;
             }
             case Status::PushPhiArgument: {
-                IR::Inst* const phi{stack.back().phi};
-                phi->AddPhiOperand(*stack.back().pred_it, stack.back().result);
-                ++stack.back().pred_it;
+                ReadState& state{stack.back()};
+                if (state.phi) {
+                    state.phi->AddPhiOperand(*state.pred_it, state.result);
+                } else {
+                    pending_operands.emplace_back(*state.pred_it, state.result);
+                    ++state.num_operands;
+                }
+                ++state.pred_it;
             }
                 [[fallthrough]];
             case Status::PreparePhiArgument:
@@ -256,6 +293,51 @@ public:
     }
 
 private:
+    ReadState& PendingFrame(IR::Block* block) {
+        for (auto it = read_stack.rbegin(); it != read_stack.rend(); ++it) {
+            if (it->block == block && it->pc == Status::PushPhiArgument && !it->phi) {
+                return *it;
+            }
+        }
+        throw LogicError("Pending phi without a frame");
+    }
+
+    /// Creates the phi of a pending frame with the operands it collected so far
+    IR::Inst* MaterializePhi(ReadState& state, IR::Opcode undef_opcode) {
+        IR::Block* const block{state.block};
+        IR::Inst* const phi{&*block->PrependNewInst(block->begin(), IR::Opcode::Phi)};
+        phi->SetFlags(IR::TypeOf(undef_opcode));
+        for (size_t i = 0; i < state.num_operands; ++i) {
+            const auto& [pred, value]{pending_operands[state.operands_begin + i]};
+            phi->AddPhiOperand(pred, value);
+        }
+        state.phi = phi;
+        return phi;
+    }
+
+    /// TryRemoveTrivialPhi for a phi nothing has seen yet: no self-references, and nothing to
+    /// remove or reroute when it is trivial
+    IR::Value ResolvePendingPhi(ReadState& state, IR::Opcode undef_opcode) {
+        IR::Value same;
+        for (size_t i = 0; i < state.num_operands; ++i) {
+            const IR::Value& op{pending_operands[state.operands_begin + i].second};
+            if (op.Resolve() == same.Resolve()) {
+                continue;
+            }
+            if (!same.IsEmpty()) {
+                return IR::Value{MaterializePhi(state, undef_opcode)};
+            }
+            same = op;
+        }
+        if (same.IsEmpty()) {
+            // Unreachable, or the start block: same insertion point as in TryRemoveTrivialPhi
+            IR::Block* const block{state.block};
+            const auto insert_point{std::ranges::find_if_not(block->Instructions(), IR::IsPhi)};
+            same = IR::Value{&*block->PrependNewInst(insert_point, undef_opcode)};
+        }
+        return same;
+    }
+
     template <typename Type>
     IR::Value AddPhiOperands(Type variable, IR::Inst& phi, IR::Block* block) {
         for (IR::Block* const imm_pred : block->ImmPredecessors()) {
@@ -303,6 +385,12 @@ private:
     // TODO: Windows dies with stack exhaustion?
     std::unordered_map<IR::Block*, std::map<Variant, IR::Inst*>> incomplete_phis;
     DefTable current_def;
+    // ReadVariable never nests, so its walk stack can be shared
+    std::vector<ReadState> read_stack;
+    std::vector<std::pair<IR::Block*, IR::Value>> pending_operands;
+    // Definition of blocks whose phi is pending
+    IR::Inst pending_phi_inst{IR::Opcode::Void, 0};
+    const IR::Value pending_phi{&pending_phi_inst};
 };
 
 void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
@@ -409,6 +497,20 @@ void SsaRewritePass(IR::Program& program) {
                     inst.SetFlags(GetConcreteType(&inst));
                 }
                 inst.OrderPhiArgs();
+            }
+        }
+    }
+    // Trivial phis and replaced reads stay in their blocks as Identity instructions, often more
+    // of them than real instructions. Those without uses cannot gain any now that the definition
+    // tables are gone: drop them here, as dead code elimination would later (same order), instead
+    // of letting every pass until then walk them.
+    for (IR::Block* const block : program.post_order_blocks) {
+        auto it{block->end()};
+        while (it != block->begin()) {
+            --it;
+            if (it->GetOpcode() == IR::Opcode::Identity && !it->HasUses()) {
+                it->Invalidate();
+                it = block->Instructions().erase(it);
             }
         }
     }

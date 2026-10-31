@@ -16,15 +16,16 @@ namespace Kernel::Svc {
 Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
     LOG_TRACE(Kernel_SVC, "called, heap_size={:#x}", size);
 
+    auto& process = GetCurrentProcess(system.Kernel());
+    const auto memory_size_max = process.IsSwitch2() ? MainMemorySizeMaxSwitch2 : MainMemorySizeMax;
+
     // Validate size.
     R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
-    R_UNLESS(size < MainMemorySizeMax, ResultInvalidSize);
+    R_UNLESS(size < memory_size_max, ResultInvalidSize);
 
     // Set the heap size.
     KProcessAddress address{};
-    R_TRY(GetCurrentProcess(system.Kernel())
-              .GetPageTable()
-              .SetHeapSize(std::addressof(address), size));
+    R_TRY(process.GetPageTable().SetHeapSize(std::addressof(address), size));
 
     // We succeeded.
     *out_address = GetInteger(address);

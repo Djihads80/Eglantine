@@ -61,6 +61,25 @@ namespace {
 constexpr size_t CONSTANT_POOL_SIZE = 2 * 1024 * 1024;
 constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 
+#ifdef _WIN32
+class CodeMemoryAllocator final : public Xbyak::Allocator {
+public:
+    u8* alloc(size_t size) override {
+        return static_cast<u8*>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS));
+    }
+
+    void free(u8* memory) override {
+        VirtualFree(memory, 0, MEM_RELEASE);
+    }
+
+    bool useProtect() const override {
+        return false;
+    }
+};
+
+CodeMemoryAllocator code_memory_allocator;
+#endif
+
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 void ProtectMemory(const void* base, size_t size, bool is_executable) {
 #    ifdef _WIN32
@@ -149,7 +168,11 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
 #else
         , nullptr //Allow RWE
 #endif
+#ifdef _WIN32
+        , &code_memory_allocator)
+#else
         , nullptr)
+#endif
     , constant_pool(*this, CONSTANT_POOL_SIZE)
     , jsi(jsi)
     , cb(std::move(cb))
@@ -206,12 +229,17 @@ size_t BlockOfCode::SpaceRemaining() const {
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
 #ifdef _WIN32
     if (committed_size < size_ + codesize) {
-        committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
+        const size_t new_committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
 #    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_READWRITE);
+        void* const memory = VirtualAlloc(top_, new_committed_size, MEM_COMMIT, PAGE_READWRITE);
 #    else
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        void* const memory = VirtualAlloc(top_, new_committed_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 #    endif
+        if (!memory) {
+            using Xbyak::Error;
+            XBYAK_THROW(Xbyak::ERR_CANT_ALLOC);
+        }
+        committed_size = new_committed_size;
     }
 #endif
 }

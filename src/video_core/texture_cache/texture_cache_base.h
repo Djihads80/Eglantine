@@ -170,6 +170,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     /// Gives the written layers of a SparseLayers image memory and uploads them.
     void RefreshSparseLayers(Image& image);
 
+    /// Image::BindLayers, with the memory it binds counted in total_used_memory.
+    std::vector<u32> BindSparseLayers(Image& image, std::span<const u32> layers);
+
     /// Uploads `layers` of the image from guest memory.
     void UploadLayers(Image& image, std::span<const u32> layers);
 
@@ -424,6 +427,26 @@ private:
     /// Stop tracking CPU reads and writes for image
     void UntrackImage(ImageBase& image, ImageId image_id);
 
+    /// Records a CPU write into a large 2D image page by page instead of untracking it whole.
+    /// Returns false when the image does not qualify (the caller marks it modified as usual).
+    bool MarkPartialWrite(ImageBase& image, DAddr cpu_addr, size_t size);
+
+    /// Uploads a large plain 2D image in chunks; false if it does not qualify.
+    bool UploadInChunks(Image& image);
+
+    /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
+    /// marking the whole image remapped (which replaces it). False if the image does not qualify.
+    bool MarkPartialRemap(ImageBase& image, Tegra::MemoryManager& memory, GPUVAddr gpu_addr,
+                          size_t size);
+
+    /// Tracks the pages of a partial write again and forgets them.
+    void RestorePartialPages(ImageBase& image);
+
+    /// Uploads the block rows the recorded pages cover. Returns false if the layout is not handled.
+    bool RefreshPartialContents(Image& image);
+
+    bool ReplaceUnwrittenSparse(ImageId image_id);
+
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 
@@ -463,6 +486,11 @@ private:
     bool ScaleUp(Image& image);
     bool ScaleDown(Image& image);
     u64 GetScaledImageSizeBytes(const ImageBase& image);
+
+    /// The device memory an image counts for in total_used_memory between two driver readings:
+    /// none for an unbacked image (too large to back, or over unwritten sparse blocks), what is
+    /// bound to its layers for a SparseLayers one.
+    u64 ImageMemoryBytes(const Image& image) const;
 
     void QueueAsyncDecode(Image& image, ImageId image_id);
     void TickAsyncDecode();

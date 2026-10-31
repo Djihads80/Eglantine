@@ -8,10 +8,12 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <span>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/assert.h"
@@ -30,6 +32,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
+#include "core/memory/read_traps.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
@@ -68,6 +71,9 @@ struct Memory::Impl {
 #else
         host_buffer = std::addressof(system.DeviceMemory().buffer);
 #endif
+
+        std::scoped_lock lk{read_trap_mutex};
+        read_traps.Clear();
     }
 
     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
@@ -77,6 +83,13 @@ struct Memory::Impl {
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
         ASSERT_MSG(target >= DramMemoryMap::Base, "Out of bounds target: {:016X}",
                    GetInteger(target));
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
+        if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
+            read_traps.Drop(GetInteger(base) >> YUZU_PAGEBITS,
+                            (GetInteger(base) + size) >> YUZU_PAGEBITS);
+        }
+
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, target,
                  Common::PageType::Memory);
 
@@ -89,6 +102,13 @@ struct Memory::Impl {
                      bool separate_heap) {
         ASSERT_MSG((size & YUZU_PAGEMASK) == 0, "non-page aligned size: {:016X}", size);
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
+        if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
+            read_traps.Drop(GetInteger(base) >> YUZU_PAGEBITS,
+                            (GetInteger(base) + size) >> YUZU_PAGEBITS);
+        }
+
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, 0,
                  Common::PageType::Unmapped);
 
@@ -459,7 +479,11 @@ struct Memory::Impl {
             return;
         }
 
+        // Page types change under the read trap lock, so arming and disarming never act on a page
+        // whose cached state changed after they looked at it.
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
         if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
             Common::MemoryPermission perm{};
             if (!Settings::values.use_reactive_flushing.GetValue() || !cached) {
                 perm |= Common::MemoryPermission::Read;
@@ -468,6 +492,18 @@ struct Memory::Impl {
                 perm |= Common::MemoryPermission::Write;
             }
             host_buffer->Protect(vaddr, size, perm);
+            const u64 page_begin = vaddr >> YUZU_PAGEBITS;
+            const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+            if (!cached) {
+                // Nothing is left to flush on pages the GPU no longer caches.
+                read_traps.Drop(page_begin, page_end);
+            } else if (perm != Common::MemoryPermission{}) {
+                // Armed pages that were just cached again lose read permission again.
+                read_traps.ForEach(page_begin, page_end, [&](u64 page) {
+                    host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                         Common::MemoryPermission{});
+                });
+            }
         }
 
         // Iterate over a contiguous CPU address space, which corresponds to the specified GPU
@@ -526,6 +562,75 @@ struct Memory::Impl {
                 }
             }
         }
+    }
+
+    /// Read traps replace reactive flushing's blanket read protection of every cached page: only
+    /// pages the GPU writes are protected, and each one only until its first read
+    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE every fault is taken as a write, so they
+    /// are not used there.
+    bool ReadTrapsEnabled() const {
+        static const bool disabled = [] {
+            const char* value = std::getenv("EDEN_NX2_READ_TRAPS");
+            return value != nullptr && value[0] == '0';
+        }();
+        return !disabled && current_page_table->fastmem_arena &&
+               !Settings::values.use_reactive_flushing.GetValue() &&
+               Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce;
+    }
+
+    void RasterizerArmReadTraps(u64 vaddr, u64 size) {
+        if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
+            !ReadTrapsEnabled()) {
+            return;
+        }
+        const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+        std::scoped_lock lk{read_trap_mutex};
+        // A new generation makes reads that hit a cached read area flush again, and keeps a read
+        // that is already flushing from disarming what is armed after it started.
+        u64 generation = 0;
+        u64 run_begin = 0;
+        u64 run_pages = 0;
+        const auto protect_run = [&] {
+            if (run_pages > 0) {
+                host_buffer->Protect(run_begin << YUZU_PAGEBITS, run_pages << YUZU_PAGEBITS,
+                                     Common::MemoryPermission{});
+                run_pages = 0;
+            }
+        };
+        for (u64 page = vaddr >> YUZU_PAGEBITS; page != page_end; ++page) {
+            if (std::as_const(current_page_table->entries)[page].Type() !=
+                Common::PageType::RasterizerCachedMemory) {
+                protect_run();
+                continue;
+            }
+            if (generation == 0) {
+                generation = read_traps.NewGeneration();
+            }
+            read_traps.Arm(page, generation);
+            if (run_pages == 0) {
+                run_begin = page;
+            }
+            ++run_pages;
+        }
+        protect_run();
+    }
+
+    /// A slow-path read of a cached page has been flushed: traps armed up to flushed_generation
+    /// have done their job. Later ones belong to GPU writes the flush may have missed.
+    void DisarmReadTraps(u64 vaddr, size_t size, u64 flushed_generation) {
+        if (read_traps.Empty()) {
+            return;
+        }
+        std::scoped_lock lk{read_trap_mutex};
+        const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+        read_traps.Disarm(vaddr >> YUZU_PAGEBITS, page_end, flushed_generation, [&](u64 page) {
+            // Still cached (this read came through the rasterizer path): writes stay trapped.
+            if (std::as_const(current_page_table->entries)[page].Type() ==
+                Common::PageType::RasterizerCachedMemory) {
+                host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                     Common::MemoryPermission::Read);
+            }
+        });
     }
 
     /**
@@ -693,12 +798,25 @@ struct Memory::Impl {
     void HandleRasterizerDownload(VAddr v_address, size_t size) {
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
+        auto& gpu_device_memory = system.Host1x().MemoryManager();
         const size_t core = system.GetCurrentHostThreadID();
+        const u64 generation = read_traps.Generation();
+        if (core >= Core::Hardware::NUM_CPU_CORES) {
+            // Other host threads (HLE services, the GPU and host1x threads) have no slot in the
+            // per-core arrays, so they keep no read area and flush on every read.
+            thread_local Common::ScratchBuffer<u32> host_thread_scratch;
+            gpu_device_memory.ApplyOpOnPointer(p, host_thread_scratch, [&](DAddr address) {
+                system.GPU().OnCPURead(address, size);
+            });
+            DisarmReadTraps(v_address, size, generation);
+            return;
+        }
         auto& current_area = rasterizer_read_areas[core];
-        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+        if (read_area_generations[core] != generation) {
+            current_area = {};
+            read_area_generations[core] = generation;
+        }
+        gpu_device_memory.ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             const DAddr end_address = address + size;
             if (current_area.start_address <= address && end_address <= current_area.end_address)
                 [[likely]] {
@@ -706,6 +824,9 @@ struct Memory::Impl {
             }
             current_area = system.GPU().OnCPURead(address, size);
         });
+        // Only once every device alias is flushed (or inside an area flushed after this
+        // generation's traps were armed): a disarmed page is read through fastmem without trapping.
+        DisarmReadTraps(v_address, size, generation);
     }
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
@@ -714,9 +835,6 @@ struct Memory::Impl {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
                                      sys_core); // any other calls threads go to syscore.
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
             sys_core_guard.lock();
@@ -726,7 +844,7 @@ struct Memory::Impl {
                 sys_core_guard.unlock();
             }
         };
-        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+        system.Host1x().MemoryManager().ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;
             // Performance note:
@@ -755,9 +873,6 @@ struct Memory::Impl {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
                                      sys_core); // any other calls threads go to syscore.
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
             sys_core_guard.lock();
@@ -768,15 +883,17 @@ struct Memory::Impl {
             }
         };
         auto& gpu = system.GPU();
-        gpu_device_memory->ApplyOpOnPointer(
+        system.Host1x().MemoryManager().ApplyOpOnPointer(
             p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size, true); });
     }
 
     Core::System& system;
-    Tegra::MaxwellDeviceMemoryManager* gpu_device_memory{};
     Common::PageTable* current_page_table = nullptr;
 
     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES> rasterizer_read_areas{};
+    std::array<u64, Core::Hardware::NUM_CPU_CORES> read_area_generations{};
+    ReadTraps read_traps;
+    std::mutex read_trap_mutex;
     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
@@ -967,6 +1084,10 @@ Result Memory::FlushDataCache(Common::ProcessAddress dest_addr, const std::size_
 
 void Memory::RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, bool cached) {
     impl->RasterizerMarkRegionCached(GetInteger(vaddr), size, cached);
+}
+
+void Memory::RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size) {
+    impl->RasterizerArmReadTraps(GetInteger(vaddr), size);
 }
 
 void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug) {

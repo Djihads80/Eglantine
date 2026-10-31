@@ -283,11 +283,10 @@ void LoopProcess(Core::System& system) {
     server_manager->RegisterNamedService("ngct:s", std::make_shared<IServiceWithManagementApi>(system), 4);
     server_manager->RegisterNamedService("ngc:u", std::make_shared<NgcServiceImpl>(system), 4);
 
-    // +23.0.0
-    if (FirmwareManager::GetFirmwareVersion(system).first.major >= 23) {
-        server_manager->RegisterNamedService("stpl:u", std::make_shared<IUserService>(system), 4);
-        server_manager->RegisterNamedService("stpl:sys", std::make_shared<ISystemService>(system), 4);
-    }
+    // +23.0.0. Switch 2 titles (DK Bananza, Pokopia) ask for stpl:u before the emulated firmware
+    // reports 23, so serve them regardless. ponytail: drop the version gate when 23 is emulated.
+    server_manager->RegisterNamedService("stpl:u", std::make_shared<IUserService>(system), 4);
+    server_manager->RegisterNamedService("stpl:sys", std::make_shared<ISystemService>(system), 4);
 
     ServerManager::RunServer(std::move(server_manager));
 }

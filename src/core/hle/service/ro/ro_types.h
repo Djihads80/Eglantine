@@ -24,9 +24,10 @@ struct ModuleId {
 };
 static_assert(sizeof(ModuleId) == ModuleIdSize);
 
-struct NrrCertification {
-    static constexpr size_t RsaKeySize = 0x100;
-    static constexpr size_t SignedSize = 0x120;
+template <size_t KeySize>
+struct NrrCertificationBase {
+    static constexpr size_t RsaKeySize = KeySize;
+    static constexpr size_t SignedSize = 0x20 + RsaKeySize;
 
     u64 program_id_mask;
     u64 program_id_pattern;
@@ -34,16 +35,27 @@ struct NrrCertification {
     std::array<u8, RsaKeySize> modulus;
     std::array<u8, RsaKeySize> signature;
 };
+using NrrCertification = NrrCertificationBase<0x100>;
+using NrrCertificationNx2 = NrrCertificationBase<0x180>;
 static_assert(sizeof(NrrCertification) ==
               NrrCertification::RsaKeySize + NrrCertification::SignedSize);
+static_assert(sizeof(NrrCertificationNx2) ==
+              NrrCertificationNx2::RsaKeySize + NrrCertificationNx2::SignedSize);
 
-class NrrHeader {
+template <size_t KeySize>
+class NrrHeaderBase {
 public:
     static constexpr u32 Magic = Common::MakeMagic('N', 'R', 'R', '0');
 
 public:
     bool IsMagicValid() const {
         return m_magic == Magic;
+    }
+
+    bool IsValid(u64 size) const {
+        return IsMagicValid() && size >= sizeof(*this) && m_size == size &&
+               m_hashes_offset >= sizeof(*this) && m_hashes_offset <= size &&
+               m_num_hashes <= (size - m_hashes_offset) / ModuleIdSize;
     }
 
     bool IsProgramIdValid() const {
@@ -98,15 +110,15 @@ public:
     }
 
     static constexpr size_t GetSignedAreaOffset() {
-        return offsetof(NrrHeader, m_program_id);
+        return offsetof(NrrHeaderBase, m_program_id);
     }
 
 private:
     u32 m_magic;
     u32 m_key_generation;
     INSERT_PADDING_BYTES_NOINIT(8);
-    NrrCertification m_certification;
-    std::array<u8, 0x100> m_signature;
+    NrrCertificationBase<KeySize> m_certification;
+    std::array<u8, KeySize> m_signature;
     u64 m_program_id;
     u32 m_size;
     u8 m_nrr_kind; // 7.0.0+
@@ -115,7 +127,10 @@ private:
     u32 m_num_hashes;
     INSERT_PADDING_BYTES_NOINIT(8);
 };
+using NrrHeader = NrrHeaderBase<0x100>;
+using NrrHeaderNx2 = NrrHeaderBase<0x180>;
 static_assert(sizeof(NrrHeader) == 0x350, "NrrHeader has wrong size");
+static_assert(sizeof(NrrHeaderNx2) == 0x4d0, "NrrHeaderNx2 has wrong size");
 
 static constexpr u32 NRO_HEADER_MAGIC = Common::MakeMagic('N', 'R', 'O', '0');
 struct NroHeader {

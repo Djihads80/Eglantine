@@ -353,22 +353,31 @@ public:
         Kernel::KProcess* process = context->GetProcess();
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
-        // Read NRR.
-        NrrHeader header{};
-        process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+        const auto register_nrr = [&]<typename Header>() -> Result {
+            Header header{};
+            R_UNLESS(nrr_size >= sizeof(header), RO::ResultInvalidNrr);
+            R_UNLESS(process->GetMemory().ReadBlock(nrr_address, std::addressof(header),
+                                                    sizeof(header)), RO::ResultInvalidNrr);
+            R_UNLESS(header.IsValid(nrr_size), RO::ResultInvalidNrr);
 
-        // Set NRR info.
-        context->SetNrrInfoInUse(nrr_info, true);
-        nrr_info->nrr_heap_address = nrr_address;
-        nrr_info->nrr_heap_size = nrr_size;
+            std::vector<Sha256Hash> hashes(header.GetNumHashes());
+            if (!hashes.empty()) {
+                R_UNLESS(process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
+                                                        hashes.data(), hashes.size() * sizeof(Sha256Hash)),
+                         RO::ResultInvalidNrr);
+            }
 
-        // Read NRR hash list.
-        nrr_info->hashes.resize(header.GetNumHashes());
-        process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
-                                       nrr_info->hashes.data(),
-                                       sizeof(Sha256Hash) * header.GetNumHashes());
+            nrr_info->nrr_heap_address = nrr_address;
+            nrr_info->nrr_heap_size = nrr_size;
+            nrr_info->hashes = std::move(hashes);
+            context->SetNrrInfoInUse(nrr_info, true);
+            R_SUCCEED();
+        };
 
-        R_SUCCEED();
+        if (process->IsSwitch2()) {
+            R_RETURN(register_nrr.operator()<NrrHeaderNx2>());
+        }
+        R_RETURN(register_nrr.operator()<NrrHeader>());
     }
 
     Result UnregisterModuleInfo(size_t context_id, u64 nrr_address) {

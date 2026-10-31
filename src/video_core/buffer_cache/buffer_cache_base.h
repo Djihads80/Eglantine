@@ -30,9 +30,11 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "shader_recompiler/shader_info.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/nx2.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -57,11 +59,13 @@ constexpr u32 NUM_VERTEX_BUFFERS = 32;
 constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
-constexpr u32 NUM_STORAGE_BUFFERS = 16;
+constexpr u32 NUM_STORAGE_BUFFERS = Shader::Info::MAX_SSBOS;
+constexpr u32 NUM_COMPUTE_STORAGE_BUFFERS = Shader::Info::MAX_SSBOS;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
 static_assert(NUM_GRAPHICS_UNIFORM_BUFFERS <= 32, "fast bitmask must fit u32");
+static_assert(NUM_COMPUTE_STORAGE_BUFFERS <= 32, "storage buffer bitmask must fit u32");
 
 using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
 using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
@@ -134,7 +138,7 @@ public:
     Binding indirect_buffer_binding;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
-    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    std::array<Binding, NUM_COMPUTE_STORAGE_BUFFERS> compute_storage_buffers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -245,6 +249,12 @@ public:
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
+    /// Without downloads at every fence, a guest CPU read is the only way GPU-written buffer
+    /// data reaches guest memory, so reads must ask the buffer cache (GetFlushArea).
+    bool FlushesOnCpuRead() const {
+        return !AsyncBufferDownloads();
+    }
+
     bool InlineMemory(DAddr dest_address, size_t copy_size, std::span<const u8> inlined_buffer);
 
     void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size);
@@ -317,6 +327,10 @@ public:
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
+
+    /// The guest CPU reads [addr, addr + size) (pages its reads are tracked on): without
+    /// AsyncBufferDownloads, GPU writes there are still copied back at fences from now on.
+    void NoteCpuRead(DAddr addr, size_t size);
 
     /// Return true when a region is registered on the cache
     [[nodiscard]] bool IsRegionRegistered(DAddr addr, size_t size);
@@ -525,7 +539,8 @@ private:
     /// dispatch, the fencing thread holding the buffer cache while it wrote them), while its CPU
     /// read GPU-written memory at most 64 times in 200 s (counted with reactive flushing) and
     /// the native MME's DMA reads never touched those pages. Without them a fence costs ~1 us
-    /// instead of ~5 and draw setup ~7% less. EDEN_NX2_BUFFER_DOWNLOADS=0/1 forces it.
+    /// instead of ~5 and draw setup ~7% less. The titles that do read those pages back are listed
+    /// in Nx2NeedsBufferDownloads (nx2.h). EDEN_NX2_BUFFER_DOWNLOADS=0/1 overrides both.
     bool AsyncBufferDownloads() const {
         static const int forced = [] {
             const char* value = std::getenv("EDEN_NX2_BUFFER_DOWNLOADS");
@@ -534,10 +549,55 @@ private:
         if (forced >= 0) {
             return forced == 1;
         }
-        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
+        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling() ||
+               Tegra::Nx2NeedsBufferDownloads();
     }
+
+    /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
+    /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
+    /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
+    bool DownloadsAtFence(DAddr device_addr, u64 size) noexcept {
+        return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
+    }
+
+    /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
+    /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
+    void ArmReadTraps(DAddr device_addr, u64 size) {
+        const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+        const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
+        u64 armed_bytes = 0;
+        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
+            armed_bytes += upper - lower;
+        });
+        if (armed_bytes == end - begin) {
+            return;
+        }
+        read_trapped_ranges.Add(begin, end - begin);
+        device_memory.ArmReadTraps(begin, end - begin);
+    }
+
+    Common::RangeSet<DAddr> read_trapped_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
+    /// Buffer pages the guest CPU reads (NoteCpuRead). Without AsyncBufferDownloads, GPU writes
+    /// to them are still copied back at fences: Pokemon Pokopia builds its sky, fog and exposure
+    /// constants from values the GPU computes, and drew a black, flickering sky without them.
+    /// Copying every GPU-written range back instead (each written native storage binding is an
+    /// 8 MiB window) dropped it from 60 to about 42 frames a second.
+    Common::RangeSet<DAddr> cpu_read_ranges;
+
+    /// Queues the parts of a GPU write to [addr, addr + size) that are copied back at the next
+    /// fence.
+    void QueueDownload(DAddr addr, u64 size) {
+        if (DownloadsAtFence(addr, size)) {
+            uncommitted_gpu_modified_ranges.Add(addr, size);
+            return;
+        }
+        cpu_read_ranges.ForEachInRange(addr, size, [this](DAddr start, DAddr end) {
+            uncommitted_gpu_modified_ranges.Add(start, end - start);
+        });
+        ArmReadTraps(addr, size);
+    }
 
     // Async Buffers
     Common::OverlapRangeSet<DAddr> async_downloads;
