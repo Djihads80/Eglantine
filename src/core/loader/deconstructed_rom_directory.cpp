@@ -134,18 +134,20 @@ std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
 // ExeFS or in the game folder above it (<game>/exefs/main and
 // <game>/updates/<title id>/exefs/main layouts).
 std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exefs_dir) {
-    std::vector<FileSys::VirtualDir> dirs{exefs_dir};
-    for (auto dir = exefs_dir; dirs.size() < 4;) {
+    std::vector<FileSys::VirtualDir> dirs;
+    for (auto dir = exefs_dir; dir != nullptr;) {
+        dirs.push_back(dir);
+        if (const auto control_dir = dir->GetSubdirectory("control")) {
+            dirs.push_back(control_dir);
+        }
         const auto parent = dir->GetParentDirectory();
         if (parent == nullptr) {
             break;
         }
-        const auto& name = parent->GetName();
-        dirs.push_back(parent);
-        const bool title_id_like =
-            name == "updates" ||
-            (!name.empty() && name.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos);
-        if (!title_id_like) {
+        const auto& name = dir->GetName();
+        const bool layout_directory = name == "exefs" || name == "base" || name == "updates";
+        const bool update_version = parent->GetName() == "updates";
+        if (!layout_directory && !update_version) {
             break;
         }
         dir = parent;
@@ -223,61 +225,22 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         name = control->GetApplicationName();
     }
 
-    // Extracted titles may keep display metadata beside ExeFS or in control/.
-    auto display_dir = file_dir;
-    for (int level = 0; level < 5 && display_dir != nullptr; ++level) {
-        const std::array candidates{display_dir, display_dir->GetSubdirectory("control")};
-        for (const auto& candidate : candidates) {
-            if (candidate == nullptr) {
+    if (name.empty()) {
+        for (const auto& sidecar_dir : sidecar_dirs) {
+            const auto title = sidecar_dir->GetFile("title.txt");
+            if (title == nullptr || title->GetSize() > 4096) {
                 continue;
             }
-            if (name.empty()) {
-                if (const auto nacp = candidate->GetFile("control.nacp")) {
-                    control.emplace(nacp);
-                    name = control->GetApplicationName();
-                }
-                if (name.empty()) {
-                    if (const auto title = candidate->GetFile("title.txt");
-                        title != nullptr && title->GetSize() <= 4096) {
-                        const auto bytes = title->ReadAllBytes();
-                        name.assign(bytes.begin(), bytes.end());
-                        const auto end = name.find_first_of("\r\n\0", 0, 3);
-                        if (end != std::string::npos) {
-                            name.resize(end);
-                        }
-                    }
-                }
+            const auto bytes = title->ReadAllBytes();
+            name.assign(bytes.begin(), bytes.end());
+            const auto end = name.find_first_of("\r\n\0", 0, 3);
+            if (end != std::string::npos) {
+                name.resize(end);
             }
-            if (icon_data.empty()) {
-                for (const auto& language : FileSys::LANGUAGE_NAMES) {
-                    const auto icon = candidate->GetFile("icon_" + std::string(language) + ".dat");
-                    if (icon != nullptr && icon->GetSize() <= 4 * 1024 * 1024) {
-                        icon_data = icon->ReadAllBytes();
-                        break;
-                    }
-                }
-                for (const auto* filename : {"icon.png", "icon.jpg", "icon.jpeg", "icon.bmp"}) {
-                    if (!icon_data.empty()) {
-                        break;
-                    }
-                    const auto icon = candidate->GetFile(filename);
-                    if (icon != nullptr && icon->GetSize() <= 4 * 1024 * 1024) {
-                        icon_data = icon->ReadAllBytes();
-                    }
-                }
+            if (!name.empty()) {
+                break;
             }
         }
-        if (!name.empty() && !icon_data.empty()) {
-            break;
-        }
-        // Do not borrow metadata from a different game in the library's parent folder.
-        if (display_dir->GetName() != "exefs" && display_dir->GetName() != "base" &&
-            display_dir->GetName() != "updates" &&
-            (display_dir->GetParentDirectory() == nullptr ||
-             display_dir->GetParentDirectory()->GetName() != "updates")) {
-            break;
-        }
-        display_dir = display_dir->GetParentDirectory();
     }
 
     romfs = FindLooseRomFS(file_dir);
