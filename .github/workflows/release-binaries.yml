@@ -73,7 +73,7 @@ jobs:
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache
 
-      - name: Install Qt on Linux
+      - name: Install Qt on Linux x86_64
         if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
         uses: jurplel/install-qt-action@v4
         with:
@@ -83,9 +83,11 @@ jobs:
           arch: linux_gcc_64
           modules: qtcharts
           cache: true
-       if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
-       uses: jurplel/install-qt-action@v4
-       with:
+
+      - name: Install Qt on Linux ARM64
+        if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
+        uses: jurplel/install-qt-action@v4
+        with:
           version: '6.8.3'
           host: linux_arm64
           target: desktop
