@@ -20,6 +20,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/service.h"
@@ -226,11 +227,34 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
     LOG_INFO(Service, "ipc summary ({} kinds){}", lines.size(), text);
     counts.clear();
 }
+std::mutex in_flight_mutex;
+std::map<u64, std::string> in_flight;
 } // Anonymous namespace
+
+void LogInFlightRequests() {
+    std::scoped_lock lk{in_flight_mutex};
+    for (const auto& [thread_id, what] : in_flight) {
+        LOG_INFO(Service, "  in-flight request from thread {}: {}", thread_id, what);
+    }
+}
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
+    const u64 requester = ctx.GetThread().GetThreadId();
+    {
+        std::scoped_lock lk{in_flight_mutex};
+        in_flight[requester] = fmt::format("{} cmd {} (waiting for service lock)", service_name,
+                                           ctx.GetCommand());
+    }
+    SCOPE_EXIT {
+        std::scoped_lock lk{in_flight_mutex};
+        in_flight.erase(requester);
+    };
     const auto guard = LockService();
+    {
+        std::scoped_lock lk{in_flight_mutex};
+        in_flight[requester] = fmt::format("{} cmd {}", service_name, ctx.GetCommand());
+    }
     SCOPE_EXIT {
         const auto* cmd_buf = ctx.CommandBuffer();
         u32 result_word = 0;

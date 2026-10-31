@@ -41,6 +41,8 @@
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/memory.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_system_resource.h"
 #include "core/hle/kernel/svc_results.h"
@@ -96,6 +98,54 @@ inline Kernel::KClientSession* CreateRawSession(Core::System& system, HLERequest
 // Replies to a TIPC request with success and raw u32 data words. ResponseBuilder::Push(Result)
 // writes the CMIF two-word result, which shifts TIPC data one word past where the client reads
 // it (and past the copied size); TIPC has a one-word result followed directly by the data.
+// EDEN_NX2_THREAD_DUMP=<present>[,<present>...] (diagnostic): at those presents, log every thread
+// of the application with its state, wait reason, PC, LR and a frame-pointer backtrace, to find
+// what a stalled game waits on. Addresses are guest virtual (see the LoadModule lines).
+inline void Nx2DumpGuestThreads(Core::System& system, u64 present) {
+    static const std::vector<u64> presents = [] {
+        std::vector<u64> values;
+        for (const char* v = std::getenv("EDEN_NX2_THREAD_DUMP"); v && *v;) {
+            values.push_back(std::strtoull(v, nullptr, 10));
+            v = std::strchr(v, ',');
+            if (v) ++v;
+        }
+        return values;
+    }();
+    if (std::find(presents.begin(), presents.end(), present) == presents.end()) {
+        return;
+    }
+    auto* process = system.ApplicationProcess();
+    if (!process) {
+        return;
+    }
+    auto& memory = process->GetMemory();
+    LOG_INFO(Service, "Thread dump at present {}", present);
+    for (auto& thread : process->GetThreadList()) {
+        const auto& context = thread.GetContext();
+        std::string frames;
+        u64 fp = context.fp;
+        for (int depth = 0; depth < 16 && fp != 0 && (fp & 0xf) == 0 &&
+                            memory.IsValidVirtualAddressRange(fp, 16);
+             ++depth) {
+            const u64 next = memory.Read64(fp);
+            const u64 lr = memory.Read64(fp + 8);
+            frames += fmt::format(" {:#x}", lr);
+            if (next <= fp) {
+                break;
+            }
+            fp = next;
+        }
+        LOG_INFO(Service,
+                 "  thread {} prio {} core {} state {:#x} wait {} pc {:#x} lr {:#x} sp {:#x} "
+                 "x0 {:#x} x1 {:#x} x2 {:#x} |{}",
+                 thread.GetThreadId(), thread.GetPriority(), thread.GetActiveCore(),
+                 static_cast<u32>(thread.GetRawState()),
+                 static_cast<u32>(thread.GetWaitReasonForDebugging()), context.pc, context.lr,
+                 context.sp, context.r[0], context.r[1], context.r[2], frames);
+    }
+    LogInFlightRequests();
+}
+
 inline void TipcReplyWords(HLERequestContext& ctx, std::span<const u32> words) {
     IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + words.size())};
     rb.PushRaw<u32>(ResultSuccess.raw);
@@ -1056,6 +1106,7 @@ private:
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
         Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed);
+        Nx2DumpGuestThreads(system, m_presents);
         if (m_presents <= 4 || (m_presents % 600) == 0) {
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
                      u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);

@@ -217,4 +217,7 @@ private:
     }
 };
 
+/// Diagnostic: logs the HLE requests currently being handled, with the requesting thread.
+void LogInFlightRequests();
+
 } // namespace Service

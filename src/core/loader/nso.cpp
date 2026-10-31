@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <vector>
@@ -23,6 +25,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/svc.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
 
@@ -243,6 +246,42 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         const auto cheats = pm->CreateCheatList(nso_header.build_id);
         if (!cheats.empty()) {
             system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);
+        }
+    }
+
+    // EDEN_GUEST_LOG_HOOK=<hex offset>[,...] (diagnostic): replace the first instruction of the
+    // main module's compiled-out printf-style log functions at those offsets with svc 0x7e; ret.
+    // The kernel formats and logs the call (see svc.cpp).
+    if (nso_file.GetName() == "main") {
+        for (const char* v = std::getenv("EDEN_GUEST_LOG_HOOK"); v && *v;) {
+            const size_t offset = module_start + std::strtoull(v, nullptr, 16);
+            if (offset + 8 <= codeset.memory.size()) {
+                constexpr std::array<u32, 2> Hook{0xD4000001 | (0x7e << 5), 0xD65F03C0}; // svc, ret
+                std::memcpy(codeset.memory.data() + offset, Hook.data(), sizeof(Hook));
+                LOG_INFO(Loader, "Hooked guest log function at main+{:#x}", offset - module_start);
+            }
+            v = std::strchr(v, ',');
+            if (v) ++v;
+        }
+    }
+
+    // EDEN_GUEST_PROBE=<hex offset>[,...] (diagnostic): replace main-module instructions with
+    // svc 0x7d, which logs the registers and emulates the replaced instruction (svc.cpp; only
+    // register moves and 64-bit immediate-offset loads are supported).
+    if (nso_file.GetName() == "main") {
+        for (const char* v = std::getenv("EDEN_GUEST_PROBE"); v && *v;) {
+            const size_t offset = module_start + std::strtoull(v, nullptr, 16);
+            if (offset + 4 <= codeset.memory.size()) {
+                u32 original;
+                std::memcpy(&original, codeset.memory.data() + offset, sizeof(original));
+                Kernel::Svc::g_guest_probes[load_base + offset - module_start] = original;
+                constexpr u32 SvcProbe = 0xD4000001 | (0x7d << 5);
+                std::memcpy(codeset.memory.data() + offset, &SvcProbe, sizeof(SvcProbe));
+                LOG_INFO(Loader, "Probe at main+{:#x} (instruction {:08x})", offset - module_start,
+                         original);
+            }
+            v = std::strchr(v, ',');
+            if (v) ++v;
         }
     }
 

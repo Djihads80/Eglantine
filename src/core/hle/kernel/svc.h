@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <map>
+
 namespace Core {
 class System;
 }
@@ -532,6 +534,9 @@ void SvcWrap_CallSecureMonitor64From32(Core::System& system, std::span<uint64_t,
 void SvcWrap_CallSecureMonitor64(Core::System& system, std::span<uint64_t, 8> args);
 
 // Perform a supervisor call by index.
+/// Diagnostic guest probes (EDEN_GUEST_PROBE): guest address -> replaced instruction.
+inline std::map<u64, u32> g_guest_probes;
+
 void Call(Core::System& system, u32 imm);
 
 } // namespace Kernel::Svc

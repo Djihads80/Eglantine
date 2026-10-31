@@ -14,6 +14,7 @@
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc.h"
+#include "core/memory.h"
 
 namespace Kernel::Svc {
 
@@ -2522,6 +2523,118 @@ void Call(Core::System& system, u32 imm) {
         LOG_INFO(Kernel_SVC, "svc {:#04x} in  t{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x}", imm,
                  GetCurrentThread(kernel).GetThreadId(),
                  GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2), GetArg64(args, 3));
+    }
+    if (imm == 0x7d) {
+        auto* const arm = process.GetArmInterface(kernel.CurrentPhysicalCoreIndex());
+        Svc::ThreadContext ctx{};
+        arm->GetContext(ctx);
+        auto it = g_guest_probes.find(ctx.pc - 4);
+        if (it == g_guest_probes.end()) it = g_guest_probes.find(ctx.pc);
+        if (it == g_guest_probes.end()) {
+            LOG_ERROR(Debug_Emulated, "probe svc at unknown pc {:#x}", ctx.pc);
+            return;
+        }
+        auto& memory = process.GetMemory();
+        static const u64 voff = [] {
+            const char* t = std::getenv("EDEN_GUEST_PROBE_VOFF");
+            return t ? std::strtoull(t, nullptr, 16) : 0;
+        }();
+        std::string regs;
+        for (int i = 0; i < 31; ++i) {
+            const u64 value = i < 29 ? ctx.r[i] : (i == 29 ? ctx.fp : ctx.lr);
+            regs += fmt::format(" x{}={:#x}", i, value);
+            if (value >= 0x10000 && memory.IsValidVirtualAddressRange(value, 8)) {
+                const u64 deref = memory.Read64(value);
+                regs += fmt::format("[{:#x}", deref);
+                if (voff && deref >= 0x10000 && memory.IsValidVirtualAddressRange(deref + voff, 8)) {
+                    regs += fmt::format(" v{:#x}", memory.Read64(deref + voff));
+                }
+                regs += "]";
+            }
+        }
+        static const u64 stack_bytes = [] {
+            const char* t = std::getenv("EDEN_GUEST_PROBE_STACK");
+            return t ? std::strtoull(t, nullptr, 16) : 0;
+        }();
+        if (stack_bytes && memory.IsValidVirtualAddressRange(ctx.sp, stack_bytes)) {
+            regs += " stack";
+            for (u64 off = 0; off < stack_bytes; off += 8) {
+                regs += fmt::format(" +{:x}={:x}", off, memory.Read64(ctx.sp + off));
+            }
+        }
+        LOG_INFO(Debug_Emulated, "[probe {:#x} t{}] sp={:#x}{}", it->first,
+                 GetCurrentThread(kernel).GetThreadId(), ctx.sp, regs);
+        const u32 insn = it->second;
+        const auto reg = [&](u32 n) -> u64& { return n < 29 ? ctx.r[n] : (n == 29 ? ctx.fp : ctx.lr); };
+        if ((insn & 0xFFE0FFE0) == 0xAA0003E0) { // mov xd, xm
+            const u32 rm = (insn >> 16) & 31;
+            reg(insn & 31) = rm == 31 ? 0 : reg(rm);
+        } else if ((insn & 0xFFE0FFE0) == 0x2A0003E0) { // mov wd, wm
+            const u32 rm = (insn >> 16) & 31;
+            reg(insn & 31) = rm == 31 ? 0 : static_cast<u32>(reg(rm));
+        } else if ((insn & 0xFFC00000) == 0xB9400000) { // ldr wt, [xn, #imm]
+            const u32 rn = (insn >> 5) & 31;
+            const u64 base = rn == 31 ? ctx.sp : reg(rn);
+            reg(insn & 31) = memory.Read32(base + ((insn >> 10) & 0xfff) * 4);
+        } else if ((insn & 0xFFC00000) == 0xF9400000) { // ldr xt, [xn, #imm]
+            const u32 rn = (insn >> 5) & 31;
+            const u64 base = rn == 31 ? ctx.sp : reg(rn);
+            reg(insn & 31) = memory.Read64(base + ((insn >> 10) & 0xfff) * 8);
+        } else if ((insn & 0xFF800000) == 0x91000000) { // add xd|sp, xn|sp, #imm{, lsl 12}
+            const u32 rn = (insn >> 5) & 31, rd = insn & 31;
+            const u64 imm12 = ((insn >> 10) & 0xfff) << ((insn >> 22) & 1 ? 12 : 0);
+            const u64 result = (rn == 31 ? ctx.sp : reg(rn)) + imm12;
+            (rd == 31 ? ctx.sp : reg(rd)) = result;
+        } else if ((insn & 0xFF800000) == 0x12800000) { // movn wd, #imm{, lsl 16}
+            reg(insn & 31) = static_cast<u32>(~(((insn >> 5) & 0xffff) << ((insn >> 21) & 3) * 16));
+        } else if ((insn & 0xFF800000) == 0x52800000) { // movz wd, #imm{, lsl 16}
+            reg(insn & 31) = static_cast<u64>((insn >> 5) & 0xffff) << ((insn >> 21) & 3) * 16;
+        } else {
+            LOG_ERROR(Debug_Emulated, "probe cannot emulate instruction {:08x}", insn);
+        }
+        arm->SetContext(ctx);
+        return;
+    }
+    if (imm == 0x7e) {
+        // Diagnostic guest log hook (EDEN_GUEST_LOG_HOOK in nso.cpp): format the printf-style
+        // call in x0..x7. Floating-point and stack arguments are not available.
+        auto& memory = process.GetMemory();
+        const std::string format = memory.ReadCString(GetArg64(args, 0), 512);
+        std::string out;
+        int next = 1;
+        const auto arg = [&]() -> u64 { return next < 8 ? GetArg64(args, next++) : 0; };
+        for (size_t i = 0; i < format.size(); ++i) {
+            if (format[i] != '%') {
+                out += format[i];
+                continue;
+            }
+            size_t j = i + 1;
+            while (j < format.size() && std::strchr("-+ #0123456789.*", format[j])) ++j;
+            int longs = 0;
+            while (j < format.size() && std::strchr("hlzjtqL", format[j])) {
+                if (format[j] == 'l' || format[j] == 'z' || format[j] == 'j' || format[j] == 't' ||
+                    format[j] == 'q') ++longs;
+                ++j;
+            }
+            if (j >= format.size()) break;
+            const char conv = format[j];
+            const u64 raw = (conv == '%' || conv == 'f' || conv == 'g' || conv == 'e') ? 0 : arg();
+            const u64 v = longs ? raw : static_cast<u32>(raw);
+            switch (conv) {
+            case '%': out += '%'; break;
+            case 'd': case 'i': out += longs ? fmt::format("{}", static_cast<s64>(v)) : fmt::format("{}", static_cast<s32>(v)); break;
+            case 'u': out += fmt::format("{}", v); break;
+            case 'x': case 'X': out += fmt::format("{:x}", v); break;
+            case 'p': out += fmt::format("{:#x}", raw); break;
+            case 'c': out += static_cast<char>(v); break;
+            case 's': out += raw ? memory.ReadCString(raw, 256) : "(null)"; break;
+            default: out += "<?>"; break;
+            }
+            i = j;
+        }
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+        LOG_INFO(Debug_Emulated, "[guest t{}] {}", GetCurrentThread(kernel).GetThreadId(), out);
+        return;
     }
     if (imm == 0x80) {
         // Switch 2 only: svcSetGpuMemoryAttribute(address, size, mask, attr). nn::gpu::sdk and
