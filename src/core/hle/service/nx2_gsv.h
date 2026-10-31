@@ -304,6 +304,8 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            {42, &INx2GpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -362,6 +364,34 @@ private:
         EventFor(id)->Signal(system.Kernel());
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
+    }
+
+    // nn::gpu::sdk::CreateGraphicsDevice(name, e.g. "NvRmGpu" in six words): the reply's first
+    // byte is the device id, the first free of 8 slots. The auto stub's reply left the request's
+    // name bytes there, so Fire Emblem's CUDA driver got device 0x47.
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        u32 id = 0;
+        while (id < m_graphics_devices.size() && m_graphics_devices[id]) {
+            ++id;
+        }
+        if (id == m_graphics_devices.size()) {
+            LOG_ERROR(Service, "nx2:gpu TIPC 41: no free graphics device slot");
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
+        m_graphics_devices[id] = true;
+        LOG_INFO(Service, "nx2:gpu TIPC 41 graphics device {}", id);
+        TipcReplyWords(ctx, {id});
+    }
+
+    void DestroyGraphicsDevice(HLERequestContext& ctx) {
+        const u32 id = ctx.CommandBuffer()[2];
+        LOG_INFO(Service, "nx2:gpu TIPC 42 graphics device {}", id);
+        if (id < m_graphics_devices.size()) {
+            m_graphics_devices[id] = false;
+        }
+        TipcReplyWords(ctx, {});
     }
 
     void GetCount33(HLERequestContext& ctx) {
@@ -784,6 +814,7 @@ private:
 
     KernelHelpers::ServiceContext m_context;
     std::array<Kernel::KEvent*, NumIds> m_events{};
+    std::array<bool, 8> m_graphics_devices{}; ///< Ids handed out by CreateGraphicsDevice
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
 };
