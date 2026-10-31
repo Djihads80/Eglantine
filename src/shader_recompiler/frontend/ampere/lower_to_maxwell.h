@@ -117,8 +117,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
         if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x092 || opcode == 0x892 || opcode == 0x291) {
-            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x092 && opcode != 0x892)
-                return fail(index, "native uniform arithmetic predication");
+            // Any UPn/!UPn execution predicate, including the inverted ones (0xd = !UP5): the
+            // guard machinery below swaps UPn into P(6-n). Only !UPT has no slot.
+            if (opcode != 0x292 && opcode != 0x092 && opcode != 0x892 &&
+                (insn.Bits(12, 4) & 7) == 7 && insn.Bits(12, 4) != 7)
+                return fail(index, "native inverted uniform true predicate");
             uniform_guard = insn.Bits(12, 4) != 7;
             rewritten_uniform = true;
             const u32 dst = uniform_register(insn.Bits(16, 8));
