@@ -9,6 +9,14 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <span>
+#include <string_view>
+
+#include <fmt/format.h>
+
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 
 #include <boost/container/small_vector.hpp>
 
@@ -132,6 +140,19 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
             dev.GetDescriptorEXT(get_info, binding.stride,
                                  host + binding.offset + index * binding.stride);
         }
+    }
+}
+
+/// Writes SPIR-V to dump/<subdir>/<name>.spv, for spirv-val and spirv-dis.
+inline void DumpSpirv(std::string_view subdir, std::string_view name, std::span<const u32> code) {
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir) / subdir;
+    if (code.empty() || !Common::FS::CreateDirs(dir)) {
+        return;
+    }
+    Common::FS::IOFile file{dir / fmt::format("{}.spv", name), Common::FS::FileAccessMode::Write,
+                            Common::FS::FileType::BinaryFile};
+    if (file.IsOpen()) {
+        void(file.WriteSpan(code));
     }
 }
 
