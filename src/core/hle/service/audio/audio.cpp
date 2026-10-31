@@ -196,16 +196,21 @@ void LoopProcess(Core::System& system) {
 
     server_manager->RegisterNamedService("audin:u", std::make_shared<IAudioInManager>(system), 30);
     server_manager->RegisterNamedService("audin:a", std::make_shared<IAudioInManagerForApplet>(system), 30);
-    server_manager->RegisterNamedService("audout:u", std::make_shared<IAudioOutManager>(system), 30);
+    auto audio_out_manager = std::make_shared<IAudioOutManager>(system);
+    server_manager->RegisterNamedService("audout:u", audio_out_manager, 30);
     server_manager->RegisterNamedService("audout:a", std::make_shared<IAudioOutManagerForApplet>(system), 30);
     server_manager->RegisterNamedService("auddev", std::make_shared<IAudioSnoopManager>(system), 30);
     // Depends on audout:u and audin:u on ctor!
     server_manager->RegisterNamedService("audctl", std::make_shared<IAudioController>(system), 30);
     server_manager->RegisterNamedService("audrec:a", std::make_shared<IFinalOutputRecorderManagerForApplet>(system), 30);
     server_manager->RegisterNamedService("audrec:u", std::make_shared<IFinalOutputRecorderManager>(system), 30);
-    server_manager->RegisterNamedService("audren:u", std::make_shared<IAudioRendererManager>(system), 30);
+    auto audio_renderer_manager = std::make_shared<IAudioRendererManager>(system);
+    server_manager->RegisterNamedService("audren:u", audio_renderer_manager, 30);
     // Switch 2 audio entry point (nn::audio::CreateUserClientSessionByHipc).
-    server_manager->RegisterNamedService("aud:u", std::make_shared<INx2AudioUserClient>(system), 30);
+    server_manager->RegisterNamedService(
+        "aud:u",
+        std::make_shared<INx2AudioUserClient>(system, audio_out_manager, audio_renderer_manager),
+        30);
     server_manager->RegisterNamedService("audren:a", std::make_shared<IAudioRendererManagerForApplet>(system), 30);
     server_manager->RegisterNamedService("hwopus", std::make_shared<IHardwareOpusDecoderManager>(system), 25);
     ServerManager::RunServer(std::move(server_manager));
