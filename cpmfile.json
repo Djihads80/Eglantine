@@ -208,6 +208,7 @@
         "version": "3.6.2"
     },
     "opus": {
+        "bundled": true,
         "find_args": "MODULE",
         "hash": "9506147b0de35befda8633ff272981cc2575c860874791bd455b752f797fd7dbd1079f0ba42ccdd7bb1fe6773fa5e84b3d75667c2883dd1fb2d0e4a5fa4f8387",
         "min_version": "1.3",

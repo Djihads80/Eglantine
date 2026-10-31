@@ -461,7 +461,9 @@ if (NOT YUZU_STATIC_ROOM)
         add_library(ZLIB::ZLIB ALIAS zlibstatic)
     endif()
 
-    # Opus
+    # Opus, always bundled: hwopus hands the game libopus's decoder state size, and distribution
+    # builds with the deep PLC/OSCE features (opus 1.5+) report ~6x the console's size. Pokopia's
+    # fixed sound heap then cannot fit its decoders and its sound system fails to start.
     AddJsonPackage(opus)
 
     if (Opus_ADDED)
