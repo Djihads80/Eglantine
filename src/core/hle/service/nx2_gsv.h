@@ -1639,10 +1639,31 @@ private:
     void Configure(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         std::string codec;
+        std::span<const u8> name_buf;
         if (!ctx.BufferDescriptorA().empty()) {
-            const auto name = ctx.ReadBufferA(0);
-            codec.assign(reinterpret_cast<const char*>(name.data()),
-                         strnlen(reinterpret_cast<const char*>(name.data()), name.size()));
+            name_buf = ctx.ReadBufferA(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (name_buf.empty() && !ctx.BufferDescriptorX().empty()) {
+            name_buf = ctx.ReadBufferX(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (!name_buf.empty()) {
+            if (codec.empty()) {
+                const std::string_view sv{reinterpret_cast<const char*>(name_buf.data()), name_buf.size()};
+                for (const auto& candidate : {"video/avc", "video/vp9", "video/vp8", "video/hevc"}) {
+                    if (sv.find(candidate) != std::string_view::npos) {
+                        codec = candidate;
+                        break;
+                    }
+                }
+            }
+            if (codec.empty()) {
+                LOG_INFO(Service, "{} configure: no codec name in {:02x}", GetServiceName(),
+                         fmt::join(name_buf, " "));
+            }
         }
         Log(ctx, "configure");
         LOG_INFO(Service, "{} configure codec \"{}\" {}x{} rate {}", GetServiceName(), codec, w[5],
@@ -1849,7 +1870,13 @@ private:
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
             m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
-            const std::string codec = m_codec;
+            std::string codec = m_codec;
+            if (codec.empty() && Tegra::Host1x::IsH264Stream(input.data)) {
+                codec = "video/avc";
+                m_codec = codec;
+                LOG_INFO(Service, "{} empty codec, detected H.264 stream: using \"{}\"",
+                         GetServiceName(), codec);
+            }
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
                 decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);

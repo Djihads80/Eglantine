@@ -32,6 +32,9 @@ enum class Nx2PictureFormat : u32 {
     Bgra8,
 };
 
+/// Checks if stream data begins with an H.264 Annex-B start code or avcC/MP4 length-prefixed NALUs.
+bool IsH264Stream(std::span<const u8> data);
+
 /// The decoder behind the Switch 2 video decoder service (nn::codec::video): FFmpeg decodes the
 /// elementary stream the game demuxed, in software or on the host GPU (NVDEC emulation setting).
 /// Used from one thread at a time.

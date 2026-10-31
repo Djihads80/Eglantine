@@ -43,6 +43,45 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
 
 } // namespace
 
+bool IsH264Stream(std::span<const u8> data) {
+    if (data.size() >= 4) {
+        // Annex-B 3-byte start code: 00 00 01 <nal_header>
+        if (data[0] == 0 && data[1] == 0 && data[2] == 1) {
+            const u8 nal_type = data[3] & 0x1F;
+            if ((data[3] & 0x80) == 0 && nal_type >= 1 && nal_type <= 23) {
+                return true;
+            }
+        }
+    }
+    if (data.size() >= 5) {
+        // Annex-B 4-byte start code: 00 00 00 01 <nal_header>
+        if (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
+            const u8 nal_type = data[4] & 0x1F;
+            if ((data[4] & 0x80) == 0 && nal_type >= 1 && nal_type <= 23) {
+                return true;
+            }
+        }
+        // avcC / MP4 length-prefixed NAL unit: [u32 be length] <nal_header>
+        const u32 nalu_len = (static_cast<u32>(data[0]) << 24) |
+                             (static_cast<u32>(data[1]) << 16) |
+                             (static_cast<u32>(data[2]) << 8) |
+                             static_cast<u32>(data[3]);
+        if (nalu_len > 0 && nalu_len <= data.size() - 4) {
+            const u8 nal_type = data[4] & 0x1F;
+            if ((data[4] & 0x80) == 0 && nal_type >= 1 && nal_type <= 23) {
+                return true;
+            }
+        }
+    }
+    if (data.size() >= 7) {
+        // avcC configuration record: version=1, profile, compat, level, lengthSizeMinusOne | 0xFC, numSPS | 0xE0
+        if (data[0] == 1 && (data[4] & 0xFC) == 0xFC && (data[5] & 0xE0) == 0xE0 && (data[5] & 0x1F) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct Nx2VideoDecoder::Impl {
     std::string name;
     std::optional<FFmpeg::Decoder> decoder;
@@ -119,6 +158,31 @@ void Nx2VideoDecoder::Decode(std::span<const u8> data, u64 pts, std::vector<Nx2P
     }
     impl->packet.assign(data.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
     std::memcpy(impl->packet.data(), data.data(), data.size());
+
+    // Convert MP4/avcC length-prefixed NALUs to Annex-B start codes for FFmpeg if needed.
+    if (impl->name.find("avc") != std::string::npos || impl->name.find("264") != std::string::npos) {
+        const bool is_annex_b = data.size() >= 4 &&
+            ((data[0] == 0 && data[1] == 0 && data[2] == 1) ||
+             (data.size() >= 5 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1));
+        if (!is_annex_b && data.size() >= 5) {
+            size_t offset = 0;
+            while (offset + 4 < data.size()) {
+                const u32 nalu_len = (static_cast<u32>(impl->packet[offset]) << 24) |
+                                     (static_cast<u32>(impl->packet[offset + 1]) << 16) |
+                                     (static_cast<u32>(impl->packet[offset + 2]) << 8) |
+                                     static_cast<u32>(impl->packet[offset + 3]);
+                if (nalu_len == 0 || offset + 4 + nalu_len > data.size()) {
+                    break;
+                }
+                impl->packet[offset] = 0;
+                impl->packet[offset + 1] = 0;
+                impl->packet[offset + 2] = 0;
+                impl->packet[offset + 3] = 1;
+                offset += 4 + nalu_len;
+            }
+        }
+    }
+
     FFmpeg::Packet packet{std::span<const u8>{impl->packet.data(), data.size()}};
     packet.GetPacket()->pts = static_cast<s64>(pts);
     // Hidden VP9 frames never come out: keep the set from growing over a long movie.
