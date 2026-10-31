@@ -953,7 +953,77 @@ void FoldDriverConstBuffer(Environment& env, IR::Block& block, IR::Inst& inst, u
     }
 }
 
+/// Values a predicate mask can take, as bits for -1 (1), 0 (2) and 1 (4); 0 when it can take any
+/// other value. Follows the selects, negations, +/-1 and phis guest compilers build masks from.
+u32 MaskValues(const IR::Value& value, u32 depth = 0) {
+    constexpr u32 minus_one{1}, zero{2}, one{4};
+    const IR::Value resolved{value.Resolve()};
+    if (resolved.IsImmediate()) {
+        if (resolved.Type() != IR::Type::U32) {
+            return 0;
+        }
+        switch (resolved.U32()) {
+        case 0xffffffffU:
+            return minus_one;
+        case 0:
+            return zero;
+        case 1:
+            return one;
+        default:
+            return 0;
+        }
+    }
+    if (depth >= 8) {
+        return 0;
+    }
+    const IR::Inst* const inst{resolved.InstRecursive()};
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::SelectU32: {
+        const u32 true_values{MaskValues(inst->Arg(1), depth + 1)};
+        const u32 false_values{MaskValues(inst->Arg(2), depth + 1)};
+        return true_values != 0 && false_values != 0 ? true_values | false_values : 0;
+    }
+    case IR::Opcode::INeg32: {
+        const u32 values{MaskValues(inst->Arg(0), depth + 1)};
+        return (values & zero) | ((values & minus_one) << 2) | ((values & one) >> 2);
+    }
+    case IR::Opcode::IAdd32:
+        for (size_t index = 0; index < 2; ++index) {
+            const IR::Value step{inst->Arg(1 - index).Resolve()};
+            if (!step.IsImmediate()) {
+                continue;
+            }
+            const u32 values{MaskValues(inst->Arg(index), depth + 1)};
+            if (step.U32() == 1 && (values & one) == 0) {
+                return values << 1;
+            }
+            if (step.U32() == 0xffffffffU && (values & minus_one) == 0) {
+                return values >> 1;
+            }
+            return 0;
+        }
+        return 0;
+    case IR::Opcode::Phi: {
+        u32 values{};
+        for (size_t index = 0; index < inst->NumArgs(); ++index) {
+            const u32 arg_values{MaskValues(inst->Arg(index), depth + 1)};
+            if (arg_values == 0) {
+                return 0;
+            }
+            values |= arg_values;
+        }
+        return values;
+    }
+    default:
+        return 0;
+    }
+}
+
 void FoldSMax32(IR::Block& block, IR::Inst& inst) {
+    const auto is_mask = [](const IR::Value& candidate) {
+        return candidate.IsImmediate() &&
+               (candidate.U32() == 0 || candidate.U32() == 1 || candidate.U32() == 0xffffffffU);
+    };
     for (size_t index = 0; index < 2; ++index) {
         const IR::Value value{inst.Arg(index).Resolve()};
         const IR::Inst* const negation{inst.Arg(1 - index).TryInstRecursive()};
@@ -961,26 +1031,24 @@ void FoldSMax32(IR::Block& block, IR::Inst& inst) {
             negation->Arg(0).Resolve() != value) {
             continue;
         }
-        const IR::Inst* const select{value.TryInstRecursive()};
-        if (!select || select->GetOpcode() != IR::Opcode::SelectU32) {
-            continue;
-        }
-        const IR::Value true_value{select->Arg(1).Resolve()};
-        const IR::Value false_value{select->Arg(2).Resolve()};
-        const auto is_mask = [](const IR::Value& candidate) {
-            return candidate.IsImmediate() &&
-                   (candidate.U32() == 0 || candidate.U32() == 1 ||
-                    candidate.U32() == 0xffffffffU);
-        };
-        if (!is_mask(true_value) || !is_mask(false_value)) {
-            continue;
-        }
-        // max(x, -x) is 0 or 1 for boolean and predicate-mask constants.
         IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
-        inst.ReplaceUsesWith(ir.Select(IR::U1{select->Arg(0)},
-                                      ir.Imm32(true_value.U32() != 0 ? 1U : 0U),
-                                      ir.Imm32(false_value.U32() != 0 ? 1U : 0U)));
-        return;
+        const IR::Inst* const select{value.TryInstRecursive()};
+        if (select && select->GetOpcode() == IR::Opcode::SelectU32 &&
+            is_mask(select->Arg(1).Resolve()) && is_mask(select->Arg(2).Resolve())) {
+            // max(x, -x) is 0 or 1 for boolean and predicate-mask constants.
+            const IR::Value true_value{select->Arg(1).Resolve()};
+            const IR::Value false_value{select->Arg(2).Resolve()};
+            inst.ReplaceUsesWith(ir.Select(IR::U1{select->Arg(0)},
+                                           ir.Imm32(true_value.U32() != 0 ? 1U : 0U),
+                                           ir.Imm32(false_value.U32() != 0 ? 1U : 0U)));
+            return;
+        }
+        // Masks merged by predicated moves (-mask, 1 - mask) are still -1, 0 or 1, so max(x, -x)
+        // is x & 1. NVIDIA's compiler loses the device on the max form (Mario Kart World).
+        if (MaskValues(value) != 0) {
+            inst.ReplaceUsesWith(ir.BitwiseAnd(IR::U32{value}, ir.Imm32(1)));
+            return;
+        }
     }
 }
 void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
