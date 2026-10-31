@@ -2547,39 +2547,39 @@ public:
             {911, &INx2GraphicsSystemSession::CreateDecoderImage, "CreateDecoderImage"},
             {961, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetCpuUserImageDescriptor"},
             // Firmware commands without a known meaning: zeroed replies.
-            {11, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown11"},
+            {11, &INx2GraphicsSystemSession::RegisterClientHandle, "RegisterClientHandle"},
             {113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown113"},
-            {115, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown115"},
+            {115, &INx2GraphicsSystemSession::QueryGrantedFeatures, "QueryGrantedFeatures"},
             {120, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown120"},
             {121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown121"},
             {122, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown122"},
             {123, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown123"},
             {124, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown124"},
             {125, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown125"},
-            {126, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown126"},
+            {126, &INx2GraphicsSystemSession::GetSessionFlag, "GetSessionFlag"},
             {131, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown131"},
             {133, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown133"},
             {187, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown187"},
-            {201, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown201"},
+            {201, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission201"},
             {211, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown211"},
             {212, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown212"},
             {213, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown213"},
             {214, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown214"},
             {215, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown215"},
-            {301, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown301"},
+            {301, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission301"},
             {303, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown303"},
             {311, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown311"},
             {312, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown312"},
             {321, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown321"},
             {361, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown361"},
             {391, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown391"},
-            {401, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown401"},
-            {402, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown402"},
-            {403, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown403"},
+            {401, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission401"},
+            {402, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission402"},
+            {403, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission403"},
             {424, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown424"},
             {425, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown425"},
             {427, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown427"},
-            {434, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown434"},
+            {434, &INx2GraphicsSystemSession::AttachGpuAddressSpace, "AttachGpuAddressSpace"},
             {436, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown436"},
             {461, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown461"},
             {462, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown462"},
@@ -2610,17 +2610,17 @@ public:
             {1011, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1011"},
             {1012, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1012"},
             {1091, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1091"},
-            {1101, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1101"},
-            {1102, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1102"},
-            {1111, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1111"},
+            {1101, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1101"},
+            {1102, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1102"},
+            {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetFeatureVersion"},
             {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1112"},
             {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1113"},
             {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
             {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1203"},
             {1212, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1212"},
-            {1501, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1501"},
-            {1502, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1502"},
-            {1503, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1503"},
+            {1501, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1501"},
+            {1502, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1502"},
+            {1503, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1503"},
             {1601, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1601"},
             {1602, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1602"},
             {1603, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1603"},
@@ -2642,6 +2642,56 @@ public:
     }
 
 private:
+    // Feature permission checks (201, 301, 401-403, 1101, 1102, 1501-1503): each tests one bit of
+    // the permissions the session was opened with and fails when it is clear. Games only ask for
+    // features they are granted.
+    void CheckPermission(HLERequestContext& ctx) {
+        LOG_DEBUG(Service, "nx2:gsv TIPC {} permission check", ctx.GetCommand());
+        TipcReplyWords(ctx, {});
+    }
+
+    // 115(u64 requested feature flags): the subset that is granted, which is all of them here.
+    // A zeroed reply would deny every feature.
+    void QueryGrantedFeatures(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_INFO(Service, "nx2:gsv TIPC 115 features {:#x}", u64{w[2]} | (u64{w[3]} << 32));
+        TipcReplyWords(ctx, {w[2], w[3]});
+    }
+
+    // 126: one bit of the session's state (meaning unknown); clear.
+    void GetSessionFlag(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {0});
+    }
+
+    // 434(u32 id from nx2:gpu 33): the session takes a reference on that GPU address space.
+    void AttachGpuAddressSpace(HLERequestContext& ctx) {
+        const u32 id = ctx.CommandBuffer()[2];
+        LOG_INFO(Service, "nx2:gsv TIPC 434 address space {:#x}", id);
+        m_address_spaces.insert(id);
+        TipcReplyWords(ctx, {});
+    }
+
+    // 11(copy handle): handed over once per session and kept; a second call fails.
+    void RegisterClientHandle(HLERequestContext& ctx) {
+        if (m_client_handle_registered) {
+            LOG_WARNING(Service, "nx2:gsv TIPC 11 called twice");
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
+        m_client_handle_registered = true;
+        TipcReplyWords(ctx, {});
+    }
+
+    // 1111(u32): a version or mode number the server checks and records.
+    void SetFeatureVersion(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gsv TIPC 1111 value {:#x}", ctx.CommandBuffer()[2]);
+        TipcReplyWords(ctx, {});
+    }
+
+    std::set<u32> m_address_spaces;        ///< Ids attached with 434
+    bool m_client_handle_registered = false; ///< Set by 11
+
     // Index of the first raw data word of a TIPC request: header (2 words), then an optional
     // special header with pid and copy/move handle words.
     static size_t TipcDataOffset(const u32* cmd_buf) {
