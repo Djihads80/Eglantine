@@ -69,7 +69,7 @@ public:
     }
 
 private:
-    void Increment(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv,
+    void Increment(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32& waiters,
                    std::list<RegisteredAction>& action_storage);
 
     ActionHandle RegisterAction(std::atomic<u32>& syncpoint,
@@ -78,7 +78,8 @@ private:
 
     void DeregisterAction(std::list<RegisteredAction>& action_storage, const ActionHandle& handle);
 
-    void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32 expected_value);
+    void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32& waiters,
+              u32 expected_value);
 
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_host{};
@@ -89,6 +90,8 @@ private:
     std::mutex guard;
     std::condition_variable wait_guest_cv;
     std::condition_variable wait_host_cv;
+    u32 guest_waiters{}; ///< Threads in Wait on wait_guest_cv, under guard
+    u32 host_waiters{};  ///< Threads in Wait on wait_host_cv, under guard
 };
 
 } // namespace Host1x
