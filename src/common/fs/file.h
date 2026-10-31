@@ -14,6 +14,7 @@
 #include "common/concepts.h"
 #include "common/fs/fs_types.h"
 #include "common/fs/fs_util.h"
+#include "common/logging.h"
 
 namespace Common::FS {
 
