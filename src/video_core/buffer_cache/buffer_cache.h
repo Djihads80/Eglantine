@@ -262,15 +262,13 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 }
 
 template <class P>
-void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size, bool around) {
+void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
-        if (!around) {
-            DownloadBufferMemory(buffer, device_addr, size);
-            return;
-        }
         // Each download waits for the whole GPU. Mario Kart World's macros read the indirect
-        // draw arguments a culling dispatch wrote a few words at a time, and each new page waited
-        // again; one download of the window serves the reads after it.
+        // draw arguments a culling dispatch wrote a few words at a time, and its CPU reads back
+        // GPU-written data, each new page waiting again: one download of the window serves the
+        // reads after it. Early is safe: a CPU write ends the GPU-written state of its range
+        // (WriteMemory), so newer CPU data is never downloaded over.
         constexpr u64 Window = u64{64} << 10;
         const DAddr begin =
             (std::max<DAddr>)(Common::AlignDown(device_addr, Window), buffer.CpuAddr());
