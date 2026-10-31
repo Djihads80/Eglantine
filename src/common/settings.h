@@ -986,6 +986,10 @@ bool IsNceEnabled();
 void SetCurrentProgramID(u64 program_id);
 u64 GetCurrentProgramID();
 
+// Whether the program being loaded is a Switch 2 one (set by the core before the GPU starts).
+void SetCurrentProgramIsSwitch2(bool is_switch2);
+bool CurrentProgramIsSwitch2();
+
 bool IsOpenGL();
 
 bool IsDockedMode();
