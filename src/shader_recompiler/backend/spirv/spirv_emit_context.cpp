@@ -493,6 +493,15 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineTextures(program.info, texture_binding, bindings.texture_scaling_index);
     DefineImages(program.info, image_binding, bindings.image_scaling_index);
     if (emulates_shared_memory && Sirit::ValidId(shared_memory_u32)) {
+        // SPIR-V types are unique, so the emulated buffer's are the u32 storage buffers' ones:
+        // decorate them only when DefineStorageBuffers did not (twice is invalid).
+        if (!Sirit::ValidId(storage_types.U32.array)) {
+            const Id array_type{TypeRuntimeArray(U32[1])};
+            Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+            const Id struct_type{TypeStruct(array_type)};
+            Decorate(struct_type, spv::Decoration::Block);
+            MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+        }
         // After every other descriptor: the host appends the buffer in the same place.
         Decorate(shared_memory_u32, spv::Decoration::Binding, storage_binding++);
     }
@@ -684,11 +693,8 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         // storage buffer holds a slice per workgroup (SharedWordPointer). Its binding comes last,
         // see the constructor.
         shared_memory_words = Common::DivCeil(program.info.emulated_shared_memory_size, 4U);
-        const Id array_type{TypeRuntimeArray(U32[1])};
-        Decorate(array_type, spv::Decoration::ArrayStride, 4U);
-        const Id struct_type{TypeStruct(array_type)};
-        Decorate(struct_type, spv::Decoration::Block);
-        MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+        // Decorated in the constructor: these are the u32 storage buffers' types too.
+        const Id struct_type{TypeStruct(TypeRuntimeArray(U32[1]))};
         shared_memory_u32_type = TypePointer(spv::StorageClass::StorageBuffer, struct_type);
         shared_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
         shared_memory_u32 =
