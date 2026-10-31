@@ -35,6 +35,7 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -114,7 +115,11 @@ struct GPU::Impl {
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
         std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
-            renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
+            if (Tegra::Nx2HeldWrites()) {
+                renderer->ReadRasterizer()->OnCachedWrite(address, size);
+            } else {
+                renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
+            }
         });
         system.GatherGPUDirtyMemory(callback_writes);
     }

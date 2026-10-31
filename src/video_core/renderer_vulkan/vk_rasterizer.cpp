@@ -1275,6 +1275,23 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     pipeline_cache.InvalidateRegion(addr, size);
 }
 
+void RasterizerVulkan::OnCachedWrite(DAddr addr, u64 size) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(addr, size);
+    }
+    {
+        // Copies just these bytes in: marking the pages CPU-modified instead re-uploads them
+        // whole from guest memory, over what the GPU wrote there and never copied back.
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.CachedWriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+}
+
 bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) return true;
     {
