@@ -590,8 +590,10 @@ std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
 // Title 4's upscaler reads the tonemapped frame through the texture handle at cbuf0+0x90 and
 // writes the output resolution image through the surface handle at cbuf0+0xa0 (from its
-// TLD/SUST operands). Blit one to the other with bilinear filtering when both are plain 2D images
-// of the same format and the output is larger.
+// TLD/SUST operands); Kirby Air Riders' reads a 2048x1152 image at cbuf0+0x80 and writes a
+// 2560x1440 one at +0x90. Blit one to the other with bilinear filtering when both are plain 2D
+// images of the same format and the output is larger: title 4's slots first, else the first two
+// handles in cbuf0+0x80..0x11c that form such a pair.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -600,10 +602,31 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto input = image(0x90), output = image(0xa0);
-    if (!input || !output || input->format != output->format || input->Address() == 0 ||
-        output->Address() == 0 || output->Width() <= input->Width() || !input->IsBlockLinear() ||
-        !output->IsBlockLinear())
+    const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
+                                 const std::optional<Texture::TICEntry>& to) {
+        return from && to && from->format == to->format && from->Address() != 0 &&
+               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
+               to->IsBlockLinear();
+    };
+    std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
+    if (!upscale_pair(input, output)) {
+        input.reset();
+        output.reset();
+        for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
+            const auto from = memory_manager.Read<u32>(cbuf_address + first) != 0 ? image(first)
+                                                                                    : std::nullopt;
+            for (u32 second = first + 4; from && second < 0x120; second += 4) {
+                if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
+                const auto to = image(second);
+                if (upscale_pair(from, to)) {
+                    input = from;
+                    output = to;
+                    break;
+                }
+            }
+        }
+    }
+    if (!input || !output)
         return false;
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
