@@ -271,10 +271,12 @@ void TextureCache<P>::TickFrame() {
             const u64 bytes = GetScaledImageSizeBytes(*image);
             image_bytes += bytes;
             ++images;
-            largest.emplace_back(bytes, image);
-            auto& format = by_format[static_cast<u32>(image->info.format)];
-            format.first += bytes;
-            ++format.second;
+            if (debug_stats) {
+                largest.emplace_back(bytes, image);
+                auto& format = by_format[static_cast<u32>(image->info.format)];
+                format.first += bytes;
+                ++format.second;
+            }
         }
         LOG_INFO(HW_GPU, "Texture cache: device memory {} MiB (expected {} MiB, critical {} MiB), {} images {} MiB",
                  total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20, images,
@@ -318,6 +320,8 @@ void TextureCache<P>::TickFrame() {
                      created_shapes[key].second);
         }
         created_shapes.clear();
+        // The per-image and per-shape tallies only feed debug lines: skip them while those are off.
+        debug_stats = Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
         gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
         images_created = images_deleted = 0;
     }
@@ -2217,9 +2221,11 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                         (u64{static_cast<u32>(new_info.resources.levels) & 0xF} << 48) |
                         (u64{static_cast<u32>(new_info.resources.layers) & 0xFFF} << 36) |
                         (u64{new_info.size.width & 0x3FFFF} << 18) | (new_info.size.height & 0x3FFFF);
-        auto& shape = created_shapes[key];
-        ++shape.first;
-        shape.second = gpu_addr;
+        if (debug_stats) {
+            auto& shape = created_shapes[key];
+            ++shape.first;
+            shape.second = gpu_addr;
+        }
         ++images_created;
     }
 
