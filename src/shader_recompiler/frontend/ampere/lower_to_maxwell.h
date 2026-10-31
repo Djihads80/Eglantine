@@ -1658,6 +1658,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{swizzle} << 50) | (u64{dimension == 5 ? (lod ? 8U : 7U) : depth_compare ? (lod ? 6U : 4U) : (lod == 3 ? 3U : lod ? 2U : 1U)} << 53));
             break;
         }
+        case 0x361: // TEX.B: the bindless handle is the first value of the operand list (Ra)
         case 0xf60: { // TEX with uniform texture handle in URn
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
@@ -1667,19 +1668,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const bool offsets = insn.Bits(76, 1) != 0;
             const u32 handle_ureg = insn.Bits(40, 6);
-            const u32 handle_reg = opcode == 0x361 ? insn.Bits(40, 8) : uniform_register(handle_ureg);
+            const bool bindless = opcode == 0x361;
+            const u32 handle_reg = bindless ? source_a : uniform_register(handle_ureg);
             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
             constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
             const u32 reg_limit = uses_uniform_bank ? 216U : 246U;
-            if (handle_reg == ~0U || handle_reg == 255 || (opcode == 0x361 && handle_reg >= reg_limit) ||
-                (opcode == 0x361 ? (insn.Bits(48, 11) != 0 || !insn.Bits(59, 1)) : insn.Bits(46, 14) != 0) ||
+            if (handle_reg == ~0U || handle_reg == 255 || (bindless && handle_reg >= reg_limit) ||
+                (bindless ? (insn.Bits(40, 19) != 0 || !insn.Bits(59, 1)) : insn.Bits(46, 14) != 0) ||
                 dimension == 6 || insn.Bits(77, 1) || insn.Bits(81, 3) != 7 ||
                 (lod > 3 && lod != 6 && lod != 7) || (depth_compare && mask != 1) || mask == 0 ||
                 insn.Bits(79, 1) || !insn.Bits(60, 1))
                 return fail(index, opcode == 0x361 ? "native texture mode or descriptor binding" : "native uniform texture mode");
             const u32 coordinates = coordinate_count[dimension];
             const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
-            const u32 count = coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
+            const u32 first = bindless ? 1U : 0U;
+            const u32 count = first + coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
             const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
             const auto value = [&](u32 i) -> u32 {
                 if (i < in_a) return source_a == 255 ? 255U : source_a + i;
@@ -1693,10 +1696,10 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
             };
-            for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
+            for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(first + i));
             u32 meta = 246;
             copy(meta++, handle_reg);
-            u32 next = coordinates;
+            u32 next = first + coordinates;
             if (has_lod) copy(meta++, value(next++));
             if (offsets) copy(meta++, value(next++));
             if (depth_compare) copy(meta++, value(next++));
