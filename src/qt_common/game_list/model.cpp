@@ -170,6 +170,13 @@ void GameListModel::StopWorker() {
 }
 
 void GameListModel::Repopulate() {
+    // CreateFactories replaces the content providers a running game reads from. Stopping
+    // emulation repopulates the list anyway, so skip watcher-driven reloads until then.
+    if (QtCommon::system->IsPoweredOn()) {
+        LOG_INFO(Frontend, "Emulation is running, deferring game list reload.");
+        return;
+    }
+
     StopWorker();
     QtCommon::system->GetFileSystemController().CreateFactories(*QtCommon::vfs);
     PopulateAsync(UISettings::values.game_dirs);
