@@ -69,6 +69,9 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
                     },
                     [this](u64 gpu_address, u64 cpu_address, u64 size) {
                         Nx2BackSparse(gpu_address, cpu_address, size);
+                    },
+                    [this](u64 gpu_address, u64 cpu_address, u64 size) {
+                        Nx2SparseTile(gpu_address, cpu_address, size);
                     });
             }
             return result;
@@ -241,6 +244,33 @@ void nvhost_as_gpu::Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
     }
     system.Host1x().MemoryManager().Map(device_address + (gpu_address - start), cpu_address, size,
                                         session->asid, true);
+}
+
+void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
+    std::scoped_lock lock(mutex);
+    auto it = nx2_sparse_ranges.upper_bound(gpu_address);
+    auto* session = container.GetSession(nx2_session);
+    if (it == nx2_sparse_ranges.begin() || session == nullptr) {
+        return;
+    }
+    --it;
+    const auto& [start, range] = *it;
+    const auto& [region_size, device_address] = range;
+    if (gpu_address + size > start + region_size) {
+        return;
+    }
+    // In GPU-thread order: command lists submitted before the request still see the old tile.
+    // Unmapping first keeps the SMMU's reverse map right. The caches over the tile stay: the game
+    // writes a tile after mapping it, and an invalidation here would make the texture cache give
+    // memory to (and re-upload) every array layer the game only mapped.
+    const DAddr device = device_address + (gpu_address - start);
+    auto& smmu = system.Host1x().MemoryManager();
+    system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {
+        smmu.Unmap(device, size, false);
+        if (cpu_address != 0) {
+            smmu.Map(device, cpu_address, size, asid, true);
+        }
+    });
 }
 
 void nvhost_as_gpu::OnClose(DeviceFD fd) {}
