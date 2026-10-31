@@ -85,6 +85,11 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .pNext = nullptr,
             .requiredSubgroupSize = GuestWarpSize,
         };
+        // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
+        // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
+        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd;
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -98,8 +103,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .flags = flags,
             .stage{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext =
-                    device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr,
+                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops
+                             ? &subgroup_size_ci
+                             : nullptr,
                 .flags = 0,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .module = *spv_module,
