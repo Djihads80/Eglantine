@@ -320,6 +320,10 @@ public:
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
+    /// The guest CPU reads [addr, addr + size) (pages its reads are tracked on): without
+    /// AsyncBufferDownloads, GPU writes there are still copied back at fences from now on.
+    void NoteCpuRead(DAddr addr, size_t size);
+
     /// Return true when a region is registered on the cache
     [[nodiscard]] bool IsRegionRegistered(DAddr addr, size_t size);
 
@@ -542,6 +546,24 @@ private:
     }
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
+    /// Buffer pages the guest CPU reads (NoteCpuRead). Without AsyncBufferDownloads, GPU writes
+    /// to them are still copied back at fences: Pokemon Pokopia builds its sky, fog and exposure
+    /// constants from values the GPU computes, and drew a black, flickering sky without them.
+    /// Copying every GPU-written range back instead (each written native storage binding is an
+    /// 8 MiB window) dropped it from 60 to about 42 frames a second.
+    Common::RangeSet<DAddr> cpu_read_ranges;
+
+    /// Queues the parts of a GPU write to [addr, addr + size) that are copied back at the next
+    /// fence.
+    void QueueDownload(DAddr addr, u64 size) {
+        if (AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(addr, size);
+            return;
+        }
+        cpu_read_ranges.ForEachInRange(addr, size, [this](DAddr start, DAddr end) {
+            uncommitted_gpu_modified_ranges.Add(start, end - start);
+        });
+    }
 
     // Async Buffers
     Common::OverlapRangeSet<DAddr> async_downloads;

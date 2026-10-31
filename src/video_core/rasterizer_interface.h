@@ -114,6 +114,12 @@ public:
     /// Notify rasterizer that any caches of the specified region are desync with guest
     virtual void OnCacheInvalidation(PAddr addr, u64 size) = 0;
 
+    /// A guest CPU write to GPU-written memory, held back until now (InvalidateGPUCache, on the
+    /// GPU thread): only those bytes changed.
+    virtual void OnCachedWrite(DAddr addr, u64 size) {
+        OnCacheInvalidation(addr, size);
+    }
+
     virtual bool TryCacheInvalidation(DAddr addr, u64 size) {
         if (MustFlushRegion(addr, size, VideoCommon::CacheType::BufferCache)) return false;
         OnCacheInvalidation(addr, size);

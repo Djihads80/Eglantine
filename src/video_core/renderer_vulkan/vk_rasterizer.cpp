@@ -1029,6 +1029,10 @@ void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 
+std::optional<u32> RasterizerVulkan::PendingSemaphoreRelease(DAddr addr) {
+    return query_cache.PendingRelease(addr);
+}
+
 void RasterizerVulkan::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                  u32 size) {
     buffer_cache.BindGraphicsUniformBuffer(stage, index, gpu_addr, size);
@@ -1075,6 +1079,13 @@ bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheT
 }
 
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
+    {
+        // Guest CPU reads of buffer memory decide which GPU-written buffer data is copied back.
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.NoteCpuRead(Common::AlignDown(addr, Core::DEVICE_PAGESIZE),
+                                 Common::AlignUp(addr + size, Core::DEVICE_PAGESIZE) -
+                                     Common::AlignDown(addr, Core::DEVICE_PAGESIZE));
+    }
     {
         std::scoped_lock lock{texture_cache.mutex};
         auto area = texture_cache.GetFlushArea(addr, size);
@@ -1159,6 +1170,23 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+}
+
+void RasterizerVulkan::OnCachedWrite(DAddr addr, u64 size) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(addr, size);
+    }
+    {
+        // Copies just these bytes in: marking the pages CPU-modified instead re-uploads them
+        // whole from guest memory, over what the GPU wrote there and never copied back.
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.CachedWriteMemory(addr, size);
     }
     pipeline_cache.InvalidateRegion(addr, size);
 }
