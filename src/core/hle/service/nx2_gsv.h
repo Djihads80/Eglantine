@@ -1893,6 +1893,10 @@ public:
             {1291, &INx2GraphicsSystemSession::CalculateChatImagePoolSize,
              "CalculateChatImagePoolSize (guessed)"},
             {911, &INx2GraphicsSystemSession::CreateDecoderImage, "CreateDecoderImage"},
+            // 912(u32 image id): the video group's x12, freeing one decoder output image (Switch
+            // Sports frees its four when its movie ends). Unlisting it stops the decode thread
+            // writing frames into memory the game reuses.
+            {912, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyDecoderImage"},
             {961, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetCpuUserImageDescriptor"},
         });
     }
