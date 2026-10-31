@@ -19,6 +19,7 @@
 #include "common/alignment.h"
 #include "common/bit_util.h"
 #include "common/div_ceil.h"
+#include "common/literals.h"
 #include "common/settings.h"
 
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -1082,6 +1083,31 @@ void BlitScale(Scheduler& scheduler, VkImage src_image, VkImage dst_image, const
                        0, nullptr, nullptr, write_barriers);
     });
 }
+
+// Uncompressed ASTC needs more video memory than a Switch 2 title leaves on cards under 12 GiB
+// (Mario Kart World filled a 16 GB card's 13.5 GB budget): there the textures went unbacked
+// (garbage) and the game crashed. Use BC3 for this session; the configuration is left as is.
+void UseBc3ForSwitch2OnSmallCards(const Device& device) {
+    using namespace Common::Literals;
+    if (!Settings::CurrentProgramIsSwitch2() || device.IsOptimalAstcSupported() ||
+        Settings::values.astc_recompression.GetValue() != Settings::AstcRecompression::Uncompressed) {
+        return;
+    }
+    const u64 budget = device.GetDeviceMemoryBudget();
+    const u64 memory = budget != 0 ? budget : device.GetDeviceLocalMemory();
+    const char* keep = std::getenv("EDEN_NX2_KEEP_ASTC");
+    if (memory >= 12_GiB || (keep != nullptr && keep[0] == '1')) {
+        return;
+    }
+    LOG_WARNING(Render_Vulkan,
+                "Switch 2 program with {} MiB of video memory: ASTC textures are re-compressed to "
+                "BC3 for this session (uncompressed ASTC needs 12 GiB or more). Set "
+                "EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
+                memory >> 20);
+    // Per-game value, like the Switch 2 memory layout: RestoreGlobalState undoes it.
+    Settings::values.astc_recompression.SetGlobal(false);
+    Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);
+}
 } // Anonymous namespace
 
 TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& scheduler_,
@@ -1094,6 +1120,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, memory_allocator{memory_allocator_},
       staging_buffer_pool{staging_buffer_pool_}, blit_image_helper{blit_image_helper_},
       render_pass_cache{render_pass_cache_}, resolution{Settings::values.resolution_info} {
+    // Before anything below reads astc_recompression (passes, view formats).
+    UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
     if (Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu ||
         !device.IsOptimalAstcSupported()) {
