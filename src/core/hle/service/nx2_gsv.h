@@ -38,6 +38,8 @@
 #include "video_core/host1x/native_video.h"
 #include "video_core/textures/decoders.h"
 #include "video_core/framebuffer_config.h"
+#include "video_core/engines/maxwell_3d.h"
+#include "video_core/memory_manager.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
 #include "core/hle/kernel/k_process.h"
@@ -442,6 +444,23 @@ private:
         TipcReplyWords(ctx, {1});
     }
 
+    // Some titles (e.g. the Yoshi demo) create the NVN device with 41(u64 name "NvRmGpu", u64
+    // flags, u64 debug label) and need a nonzero device id back. Auto-stubbed, the id was 0 and NVN
+    // gave up on the device (2162-0001 from NVN2Manager::CreateDevice).
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 name = u64{w[2]} | (u64{w[3]} << 32);
+        const u64 flags = u64{w[4]} | (u64{w[5]} << 32);
+        const u32 id = m_next_device_id++;
+        LOG_INFO(Service, "nx2:gpu TIPC 41 name={:#x} flags={:#x}, device id {}", name, flags, id);
+        TipcReplyWords(ctx, {id});
+    }
+
+    void DestroyGraphicsDevice(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gpu TIPC 42 device id {}", ctx.CommandBuffer()[2]);
+        TipcReplyWords(ctx, {});
+    }
+
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
     // none) and the GPU VA range of the in-process VirtualMachine that serves AllocSpace
     // (nn::gpu::sdk::util::ExecuteVirtualMachineAllocSpace). NVN reserves fixed VA from 0x8000000
@@ -530,7 +549,7 @@ private:
             // Also at the memory's own address: an earlier 213 may have unmapped the mapping 101
             // made there.
             const u64 cpu = it->second.address + c;
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(a, cpu, b - a + 1);
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(handle, c, a, cpu, b - a + 1);
         } else {
             LOG_WARNING(Service, "nx2:gpu 211 map of unknown handle {}", handle);
         }
@@ -950,7 +969,12 @@ private:
     std::array<Kernel::KEvent*, NumIds> m_events{};
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
+
     u32 m_next_device{1};
+
+
+    u32 m_next_device_id{1};
+
 };
 
 // Native memory and images handed out by the Switch 2 graphics server (gsv 111/114/423/429/315),
@@ -960,6 +984,8 @@ struct Nx2NativeObjects {
     struct Memory {
         u64 size{};
         u64 address{}; // CPU (== GPU) address once bound by 114/423
+        u32 parent{};
+        u64 parent_offset{};
     };
     struct Image {
         u32 memory{};
@@ -1310,6 +1336,9 @@ private:
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
     void Composite(u32 image_id, u32 fence_id, u32 fence_value) {
         u64 address{};
+        u32 parent{};
+        u64 parent_offset{};
+        u64 image_offset{};
         Nx2ImageLayout layout{};
         {
             std::scoped_lock lk{m_objects->mutex};
@@ -1322,9 +1351,31 @@ private:
                 return;
             }
             address = memory->second.address;
+            parent = memory->second.parent;
+            parent_offset = memory->second.parent_offset;
+            image_offset = image->second.offset;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
         }
-        const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
+        std::optional<u64> device;
+        if (parent != 0) {
+            if (const auto gpu = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().GpuAddressOf(
+                    parent, parent_offset + image_offset)) {
+                device = system.GPU().Maxwell3D().GetMemoryManager().GpuToCpuAddress(*gpu);
+            }
+        }
+        const auto fallback_device =
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
+        if (device && fallback_device && *device != *fallback_device) {
+            static std::atomic<u32> logged{0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
+                LOG_INFO(Service,
+                         "nx2:vi2 composite device address mismatch: gpu={:#x} fallback={:#x}",
+                         *device, *fallback_device);
+            }
+        }
+        if (!device) {
+            device = fallback_device;
+        }
         if (!device) {
             LOG_WARNING(Service, "nx2:vi2 present: image {} at {:#x} has no device mapping",
                         image_id, address);
@@ -1716,6 +1767,7 @@ public:
             {109, &INx2VideoSession::SubmitInput, "SubmitInputBuffer"},
             {115, &INx2VideoSession::Succeed, "Finalize"},
             {200, &INx2VideoSession::Succeed, "Initialize"},
+            {201, &INx2VideoSession::Succeed, "Unknown201"}, // Yoshi demo, before Configure
             {207, &INx2VideoSession::Flush, "Stop"},
             {212, &INx2VideoSession::UnregisterBuffer, "UnregisterBuffer"},
             {213, &INx2VideoSession::GetOutputInfo, "GetOutputInfo"},
@@ -1819,10 +1871,31 @@ private:
     void Configure(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         std::string codec;
+        std::span<const u8> name_buf;
         if (!ctx.BufferDescriptorA().empty()) {
-            const auto name = ctx.ReadBufferA(0);
-            codec.assign(reinterpret_cast<const char*>(name.data()),
-                         strnlen(reinterpret_cast<const char*>(name.data()), name.size()));
+            name_buf = ctx.ReadBufferA(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (name_buf.empty() && !ctx.BufferDescriptorX().empty()) {
+            name_buf = ctx.ReadBufferX(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (!name_buf.empty()) {
+            if (codec.empty()) {
+                const std::string_view sv{reinterpret_cast<const char*>(name_buf.data()), name_buf.size()};
+                for (const auto& candidate : {"video/avc", "video/vp9", "video/vp8", "video/hevc"}) {
+                    if (sv.find(candidate) != std::string_view::npos) {
+                        codec = candidate;
+                        break;
+                    }
+                }
+            }
+            if (codec.empty()) {
+                LOG_INFO(Service, "{} configure: no codec name in {:02x}", GetServiceName(),
+                         fmt::join(name_buf, " "));
+            }
         }
         Log(ctx, "configure");
         LOG_INFO(Service, "{} configure codec \"{}\" {}x{} rate {}", GetServiceName(), codec, w[5],
@@ -2055,10 +2128,22 @@ private:
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
+
             if (!m_stream_ended) {
                 m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
             }
             const std::string codec = m_codec;
+
+
+            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            std::string codec = m_codec;
+            if (codec.empty() && Tegra::Host1x::IsH264Stream(input.data)) {
+                codec = "video/avc";
+                m_codec = codec;
+                LOG_INFO(Service, "{} empty codec, detected H.264 stream: using \"{}\"",
+                         GetServiceName(), codec);
+            }
+
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
                 decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
@@ -2134,6 +2219,10 @@ private:
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
                               layout.pitch * ((height + 1) / 2));
+        }
+        // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
+        if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+            system.GPU().InvalidateRegion(*device, layout.size);
         }
         return {width, height};
     }
@@ -2514,14 +2603,17 @@ private:
     void BindNativeGpuMemory(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         LOG_DEBUG(Service, "nx2:gsv 423 parent={} offset={:#x}", w[7], Pair(w, 8));
-        BindMemory(w[2], Pair(w, 3), Pair(w, 5), "423");
+        BindMemory(w[2], Pair(w, 3), Pair(w, 5), "423", w[7], Pair(w, 8));
         TipcReplyWords(ctx, {});
     }
 
-    void BindMemory(u32 id, u64 address, u64 size, const char* command) {
+    void BindMemory(u32 id, u64 address, u64 size, const char* command, u32 parent = 0,
+                    u64 parent_offset = 0) {
         std::scoped_lock lk{m_objects->mutex};
         auto& memory = m_objects->memories[id];
         memory.address = address;
+        memory.parent = parent;
+        memory.parent_offset = parent_offset;
         if (memory.size == 0) {
             memory.size = size;
         }

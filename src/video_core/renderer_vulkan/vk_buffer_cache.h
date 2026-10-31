@@ -224,6 +224,7 @@ public:
             const VkFormat vk_format = address == 0 ? VK_FORMAT_UNDEFINED : TexelBufferFormat(format);
             guest_descriptor_queue.AddTexelBuffer(VK_NULL_HANDLE, address, offset, size, vk_format);
         } else {
+            if (format == VideoCore::Surface::PixelFormat::Invalid) format = VideoCore::Surface::PixelFormat::R8_UNORM;
             guest_descriptor_queue.AddTexelBuffer(buffer.View(offset, size, format));
         }
     }
