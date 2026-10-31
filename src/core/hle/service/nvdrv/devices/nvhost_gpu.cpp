@@ -24,6 +24,7 @@
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/memory_manager.h"
 
 namespace Service::Nvidia::Devices {
 namespace {
@@ -441,6 +442,30 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                 system.ApplicationMemory().ReadBlock(entry.addr.Value(), words.data(),
                                                      words.size() * sizeof(u32));
                 entries.submit_hashes.push_back(Tegra::HashPushbufferWords(words));
+            }
+        }
+        // The present returns before the GPU thread reaches this frame's work (nx2_gsv.h,
+        // frames ahead), and Mario Kart World then refills command memory it already
+        // submitted: the end of a frame ran with the next frame's present image as its render
+        // target, leaving an image three frames old to be shown. Keep the words as submitted.
+        // EDEN_NX2_PB_SNAPSHOT=0: execute from memory.
+        static const bool snapshot = [] {
+            const char* value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (snapshot && channel_state->memory_manager) {
+            size_t words = 0;
+            for (const auto& entry : entries.command_lists) {
+                words += entry.size;
+            }
+            entries.submitted_words.resize(words);
+            entries.submitted_offsets.reserve(entries.command_lists.size());
+            size_t offset = 0;
+            for (const auto& entry : entries.command_lists) {
+                entries.submitted_offsets.push_back(static_cast<u32>(offset));
+                channel_state->memory_manager->ReadBlockUnsafe(
+                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                offset += entry.size;
             }
         }
     }
