@@ -93,6 +93,9 @@ protected:
     /// Periodic changer of titlebar (independent of event loop)
     SDL_TimerID titlebar_timer;
 
+    /// User event type handled on the main thread to refresh the titlebar
+    Uint32 titlebar_event = 0;
+
     // Mouse resetter once it
     SDL_TimerID mouse_timer;
 
