@@ -263,7 +263,16 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 
 template <class P>
 void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
+    // EDEN_NX2_DOWNLOAD_WINDOW=0 downloads only the range asked for.
+    static const bool window = [] {
+        const char* value = std::getenv("EDEN_NX2_DOWNLOAD_WINDOW");
+        return value == nullptr || value[0] != '0';
+    }();
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
+        if (!window) {
+            DownloadBufferMemory(buffer, device_addr, size);
+            return;
+        }
         // Each download waits for the whole GPU. Mario Kart World's macros read the indirect
         // draw arguments a culling dispatch wrote a few words at a time, and its CPU reads back
         // GPU-written data, each new page waiting again: one download of the window serves the
@@ -2194,7 +2203,12 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     // Most binds come back to a range nothing was written to since it was synchronized: skip
     // walking its pages while its region saw no CPU writes (they took 5% of Mario Kart World's
     // GPU back thread).
-    const u64 generation = memory_tracker.RangeGeneration(device_addr, size);
+    // EDEN_NX2_SYNC_CACHE=0 synchronizes every range every time.
+    static const bool sync_cache = [] {
+        const char* value = std::getenv("EDEN_NX2_SYNC_CACHE");
+        return value == nullptr || value[0] != '0';
+    }();
+    const u64 generation = sync_cache ? memory_tracker.RangeGeneration(device_addr, size) : 0;
     SyncedRange& synced = synced_ranges[((device_addr >> 8) ^ size) % synced_ranges.size()];
     if (generation != 0 && synced.generation == generation && synced.device_addr == device_addr &&
         synced.size == size && synced.buffer == &buffer) {
