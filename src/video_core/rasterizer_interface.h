@@ -120,6 +120,11 @@ public:
         OnCacheInvalidation(addr, size);
     }
 
+    /// Value of a release the GPU already processed whose write may still be in flight on the host.
+    virtual std::optional<u32> PendingSemaphoreRelease(DAddr addr) {
+        return std::nullopt;
+    }
+
     virtual bool TryCacheInvalidation(DAddr addr, u64 size) {
         if (MustFlushRegion(addr, size, VideoCommon::CacheType::BufferCache)) return false;
         OnCacheInvalidation(addr, size);
