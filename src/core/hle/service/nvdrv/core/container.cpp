@@ -11,6 +11,7 @@
 #include "core/hle/service/nvdrv/core/heap_mapper.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+#include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/memory.h"
 #include "video_core/host1x/host1x.h"
 
@@ -130,6 +131,7 @@ void Container::CloseSession(SessionId session_id) {
         session.has_preallocated_area = false;
     }
     session.is_active = false;
+    Devices::Nx2GpuMemoryRegistry::Get().ForgetDeviceRanges(session.asid.id);
     smmu.UnregisterProcess(impl->sessions[session_id.id].asid);
     impl->id_pool.emplace_front(session_id.id);
 }
