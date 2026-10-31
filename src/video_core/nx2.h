@@ -171,6 +171,12 @@ inline void Nx2SparseRegionDestroyed(u64 gpu_address) {
     g_nx2_sparse_state.erase(gpu_address);
 }
 
+/// A new emulation session: the previous game's regions are gone (nvdrv's Module clears them).
+inline void Nx2ClearSparseRegions() {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    g_nx2_sparse_state.clear();
+}
+
 inline void Nx2SparseBlockWritten(u64 region_address, u64 block) {
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
     if (const auto it = g_nx2_sparse_state.find(region_address); it != g_nx2_sparse_state.end()) {
