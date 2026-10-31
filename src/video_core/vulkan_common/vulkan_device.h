@@ -326,6 +326,14 @@ public:
         return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
     }
 
+    /// Whether images with no memory bound may be sampled and used as attachments. AMD's drivers
+    /// fault on it (the GPU hangs shortly after the first such draw), so large images there are
+    /// backed normally.
+    bool CanUseUnbackedSparseImages() const {
+        const VkDriverIdKHR id = GetDriverID();
+        return id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE;
+    }
+
     /// Returns true for tile-based deferred renderers.
     bool IsTiler() const {
         switch (GetDriverID()) {

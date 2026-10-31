@@ -171,7 +171,10 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // A large image over Switch 2 sparse blocks nobody has written (title 1's terrain layer pools, 2.9
 // GB of R8/RG16/R16 that stay empty in the attract demo) is all zeros: it gets no device memory
 // until a write makes the texture cache replace it.
-[[nodiscard]] bool IsUnwrittenSparse(const ImageInfo& info, GPUVAddr gpu_addr) {
+[[nodiscard]] bool IsUnwrittenSparse(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
+    if (!device.CanUseUnbackedSparseImages()) {
+        return false;
+    }
     constexpr u32 MinSize = 32U << 20;
     const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= MinSize && info.type != ImageType::e1D && info.type != ImageType::Buffer &&
@@ -183,7 +186,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // Image::BindLayers. Only formats uploaded layer by layer: huge ASTC arrays (GPU decode) and
 // formats the host samples as they are.
 [[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (!device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
+    if (!device.CanUseUnbackedSparseImages() || !device.IsSparseResidencyImage2DSupported() ||
+        info.type != ImageType::e2D ||
         info.resources.layers <= 1 || info.num_samples != 1 ||
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
@@ -2065,7 +2069,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
                                    : runtime->ViewFormats(info.format),
                                AstcHostFormat(runtime_.device, info),
                                UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
-                                   IsUnwrittenSparse(info, gpu_addr_))),
+                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_))),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
