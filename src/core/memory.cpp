@@ -461,7 +461,9 @@ struct Memory::Impl {
 
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
-            if (!Settings::values.use_reactive_flushing.GetValue() || !cached) {
+            const bool reactive_flushing = Settings::values.use_reactive_flushing.GetValue() &&
+                                           !Settings::CurrentProgramIsSwitch2();
+            if (!reactive_flushing || !cached) {
                 perm |= Common::MemoryPermission::Read;
             }
             if (!cached) {
