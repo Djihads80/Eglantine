@@ -1833,6 +1833,7 @@ private:
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
             m_stream_ended = false;
+            m_end_queued = end;
             m_ready->room.store(!end && m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
         }
         m_cv.notify_one();
@@ -1849,6 +1850,7 @@ private:
             m_inputs.clear();
             m_flush = true;
             m_stream_ended = false;
+            m_end_queued = false;
             m_ready->room.store(true, std::memory_order_relaxed);
         }
         m_cv.notify_one();
@@ -1924,6 +1926,7 @@ private:
                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
                 if (frame.end) {
                     m_stream_ended = true;
+                    m_end_queued = false;
                     m_ready->room.store(false, std::memory_order_relaxed);
                 }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
@@ -1937,7 +1940,9 @@ private:
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
-            if (!m_stream_ended) {
+            // Not while the end-of-stream input is still being decoded either: re-arming here
+            // would bring back the spurious wakeups before its frame is out.
+            if (!m_stream_ended && !m_end_queued) {
                 m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
             }
             const std::string codec = m_codec;
@@ -2072,6 +2077,7 @@ private:
     std::map<u32, Fence> m_release_fences;
     std::deque<Output> m_outputs;      ///< Finished, for 213
     bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
+    bool m_end_queued{};               ///< End-of-stream input submitted, its frame not out yet
     bool m_flush{};
     bool m_quit{};
     std::thread m_worker;
