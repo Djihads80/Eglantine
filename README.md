@@ -6,6 +6,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 -->
 <!-- lang: en-GB -->
+<h4 align="center"><b>PokeDinner is a fork that unites commits and creates fixes, it is assisted by AI and requires expensive subscriptions, please consider donating if you can. 
+  Authors of main are below, i'm not affiliated</b>
+</h4>
+<p align="center">
+    <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
+        <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
+            alt="Donate with PayPal">
+    </a>
+</p>
 
 <h1 align="center">
   <br>
@@ -16,26 +25,16 @@
 </h1>
 
 <h4 align="center"><b>Eglantine</b> is a free and opensource (FOSS) Switch 2 emulator, derived from Eden, Yuzu and Sudachi - started by developer Camille LaVey.
-It's written in C++ with portability in mind, with builds for Windows, Linux, macOS, Android, FreeBSD and more.
+It's written in C++ with portability in mind, with builds for Windows, Linux and macOS
 </h4>
 
 <p align="center">
     </a>
-    <a href="https://discord.gg/HstXbPch7X">
-        <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eden&logo=discord&logoColor=white"
+    <a href="https://discord.gg/jCCZ58VExk">
+        <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white"
             alt="Discord">
     </a>
-    <a href="https://stt.gg/qKgFEAbH">
-        <img src="https://img.shields.io/revolt/invite/qKgFEAbH?color=d61f3a&label=Stoat"
-            alt="Stoat">
-    </a>
-</p>
-
-<p align="center">
-    <a href="https://www.paypal.com/donate/?hosted_button_id=R3XXSG8WC3T98">
-        <img src="https://img.shields.io/badge/Donate-PayPal-00457C?logo=paypal&logoColor=white"
-            alt="Donate with PayPal">
-    </a>
+  
 </p>
 
 <p align="center">
@@ -49,22 +48,14 @@ It's written in C++ with portability in mind, with builds for Windows, Linux, ma
 
 ## Compatibility
 
-The emulator is capable of running most commercial games at full speed, provided you meet the necessary hardware requirements.
+The emulator is capable of running Mario Kart World at decent/full speed depending on specs and configurations, and Splatoon Raiders at variable performances
 
 A list of supported games will be available in future. Please be patient.
 
-Check out our [website](https://eden-emu.dev) for the latest news on exciting features, monthly progress reports, and more!
-
 ## Development
-
-Most of the development happens on our Git server. It is also where [our central repository](https://git.eden-emu.dev/eden-emu/eden) is hosted. For development discussions, please join us on [Discord](https://discord.gg/HstXbPch7X) or [Stoat](https://stt.gg/qKgFEAbH).
-You can also follow us on [X (Twitter)](https://nitter.poast.org/edenemuofficial) for updates and announcements.
+For development discussions, please join us on [Discord](https://discord.gg/jCCZ58VExk)
 
 If you would like to contribute, we are open to new developers and pull requests. Please ensure that your work is of a high standard and properly documented. You can also contact any of the developers on Discord or Stoat to learn more about the current state of the emulator.
-
-See the [sign-up instructions](docs/SIGNUP.md) for information on registration.
-
-Alternatively, if you wish to add translations, go to the [Eden project on Transifex](https://app.transifex.com/edenemu/eden-emulator) and review [the translations README](./dist/languages).
 
 ## Documentation
 
@@ -78,23 +69,14 @@ For information on provided development tooling, see the [Tools directory](./too
 
 ## Download
 
-You can download the latest releases from [here](https://git.eden-emu.dev/eden-emu/eden/releases).
-
-Save us some bandwidth! We have [mirrors available](./docs/user/ThirdParty.md#mirrors) as well.
+You can download the latest releases from [here](https://github.com/Djihads80/Eglantine/releases).
 
 ## Support
 
-If you enjoy the project and would like to support us financially, please check out our developers' [donation pages](https://eden-emu.dev/donations)!
+We currently do not take in any donations for the time being
 
-Any donations received will go towards things such as:
-* Switch consoles to explore and reverse-engineer the hardware
-* Switch games for testing, reverse-engineering, and implementing new features
-* Web hosting and infrastructure setup
-* Additional hardware (e.g. GPUs as needed to improve rendering support, other peripherals to add support for, etc.)
-* CI Infrastructure
-
-If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/HstXbPch7X) and talk to Camille or any of our other developers.
+If you would prefer to support us in a different way, please join our [Discord](https://discord.gg/jCCZ58VExk)
 
 ## License
 
-Eden is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/LICENSE.txt) file.
+Eglantine is licensed under the GPLv3 (or any later version). Refer to the [LICENSE.txt](https://github.com/Djihads80/Eglantine/blob/nx2/LICENSE.txt) file.
