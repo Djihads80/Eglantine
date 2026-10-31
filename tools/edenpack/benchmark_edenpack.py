@@ -51,7 +51,8 @@ def percentile(values, fraction):
 
 
 def random_workload(files, operations, chunk_size, seed):
-    candidates = [item for item in files if item[2] > 0]
+    # Input entries are (relative_path, size) pairs.
+    candidates = [item for item in files if item[1] > 0]
     if not candidates:
         raise EdenPackError("no non-empty files to benchmark")
     rng = random.Random(seed)
