@@ -30,6 +30,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/memory_manager.h"
+#include "video_core/gpu_split.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
 
@@ -1420,6 +1421,19 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                                             maxwell3d.GetRegisterValue(MemAddressB);
                     auto& memory = maxwell3d.GetMemoryManager();
                     const u32 ram = maxwell3d.GetRegisterValue(DataRamAddress);
+                    const u64 dma_bytes = u64{std::min<u32>(value, 0x1000)} * 4;
+                    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active() && split.FrontMacros()) {
+                        split.AwaitReleases(source, dma_bytes);
+                    }
+                    const auto read_word = [&](GPUVAddr address) {
+                        if (const auto device = dma_bytes <= 256 ? memory.GpuToCpuAddress(address)
+                                                                 : std::nullopt) {
+                            if (const auto pending = maxwell3d.Rasterizer().PendingSemaphoreRelease(*device)) {
+                                return *pending;
+                            }
+                        }
+                        return memory.Read<u32>(address);
+                    };
                     // The words may have just been written by the GPU (e.g. indirect draw arguments
                     // from a culling dispatch) and still be only in host buffers: flush them first,
                     // or the macro draws with an older frame's arguments (objects pop in and out).
@@ -1443,15 +1457,17 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     if (dma_logs < 400) {
                         ++dma_logs;
                         std::array<u32, 8> words{};
-                        for (u32 i = 0; i < std::min<u32>(value, 8); ++i) words[i] = memory.Read<u32>(source + u64{i} * 4);
+                        for (u32 i = 0; i < std::min<u32>(value, 8); ++i) words[i] = read_word(source + u64{i} * 4);
                         LOG_INFO(HW_GPU, "Native MME DMA read{} start={:#x} source={:#x} count={} words={:08x}",
                                  address == DmaReadFifoed ? " fifoed" : "", method, source, value, fmt::join(words, ","));
                     }
                     const u32 word_count = std::min<u32>(value, 0x1000);
                     std::array<u32, 0x1000> dma_words;
-                    memory.ReadWordsUnsafe(source, dma_words.data(), word_count);
+                    if (dma_bytes > 256) {
+                        memory.ReadWordsUnsafe(source, dma_words.data(), word_count);
+                    }
                     for (u32 i = 0; i < word_count; ++i) {
-                        const u32 word = dma_words[i];
+                        const u32 word = dma_bytes <= 256 ? read_word(source + u64{i} * 4) : dma_words[i];
                         if (address == DmaReadFifoed) {
                             fifo.push_back(word);
                         } else if (ram + i < native_interpreter.active_dram->size()) {

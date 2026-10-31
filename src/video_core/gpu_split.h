@@ -9,6 +9,7 @@
 #include <memory>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 
 #include "common/common_types.h"
 
@@ -95,6 +96,13 @@ public:
     static inline bool check_owner{};
     static void CheckOwner(const char* where);
 
+    /// A semaphore release sent to the back at `address` (front thread only).
+    void NoteRelease(GPUVAddr address) {
+        sent_releases.insert_or_assign(address, write_position);
+    }
+    /// Waits for releases sent to the requested range to finish (front thread only).
+    void AwaitReleases(GPUVAddr address, u64 size);
+
     /// Makes what was sent visible to the back.
     void Publish();
     /// Waits until the back executed everything sent so far.
@@ -161,6 +169,8 @@ private:
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// Semaphore releases sent to the back: address, write position after them.
+    std::unordered_map<GPUVAddr, u64> sent_releases;
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};

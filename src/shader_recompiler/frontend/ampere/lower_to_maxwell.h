@@ -597,6 +597,20 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                  (u64{a.absolute} << 44) | (u64{a.swizzle} << 47));
             break;
         }
+        case 0x234: { // HSETP2, packed half comparison of two registers into two predicates.
+            const u32 combine = insn.Bits(69, 2);
+            if (insn.Bits(16, 8) || insn.Bits(64, 5) || combine > 2 || insn.Bits(91, 1) ||
+                (insn.words[1] & 0x0fffff00U))
+                return fail(index, "native packed half predicate mode");
+            const auto a = half_source(0), b = half_source(1);
+            emit(0x5d20000000000000ULL | predicate | (u64{insn.Bits(81, 3)} << 3) | insn.Bits(84, 3) |
+                 (u64{insn.Bits(80, 1)} << 6) | (u64{a.reg} << 8) | (u64{b.reg} << 20) |
+                 (u64{b.swizzle} << 28) | (u64{b.absolute} << 30) | (u64{b.negate} << 31) |
+                 (u64{insn.Bits(76, 4)} << 35) | (u64{insn.Bits(87, 4)} << 39) |
+                 (u64{a.negate} << 43) | (u64{a.absolute} << 44) | (u64{combine} << 45) |
+                 (u64{a.swizzle} << 47) | (u64{insn.Bits(71, 1)} << 49));
+            break;
+        }
         case 0x230: case 0x430: case 0x630: { // HADD2
             if (insn.Bits(76, 1) || insn.Bits(79, 1) || insn.Bits(81, 10) || insn.Bits(91, 1))
                 return fail(index, "native half add mode");

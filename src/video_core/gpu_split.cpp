@@ -195,6 +195,26 @@ void GpuSplit::Publish() {
     }
 }
 
+void GpuSplit::AwaitReleases(GPUVAddr address, u64 size) {
+    if (sent_releases.empty()) {
+        return;
+    }
+    const u64 done = consumed.load(std::memory_order_acquire);
+    bool wait = false;
+    for (auto it = sent_releases.begin(); it != sent_releases.end();) {
+        if (it->second <= done) {
+            it = sent_releases.erase(it);
+            continue;
+        }
+        wait |= it->first >= address && it->first < address + size;
+        ++it;
+    }
+    if (wait) {
+        Drain();
+        sent_releases.clear();
+    }
+}
+
 void GpuSplit::Drain() {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
