@@ -14,6 +14,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#pragma comment(lib, "Synchronization.lib")
+#elif defined(__linux__)
+#include <climits>
+#include <ctime>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 #include <cstdio>
 
@@ -39,6 +46,38 @@ void Pause() {
     asm volatile("yield");
 #else
     std::this_thread::yield();
+#endif
+}
+
+// Sleeps until `word` moves on from `seen`, for at most `timeout`: a lost wake-up costs one
+// timeout instead of a hang. Raw futexes: libc++ skips the wake syscall when its own waiter count
+// for the address is zero, so its notify can't pair with these waits.
+void WaitWord(std::atomic<u32>& word, u32 seen, std::chrono::microseconds timeout) {
+    static_assert(sizeof(std::atomic<u32>) == sizeof(u32));
+#if defined(_WIN32)
+    WaitOnAddress(&word, &seen, sizeof(seen),
+                  static_cast<DWORD>(std::max<s64>(timeout.count() / 1000, 1)));
+#elif defined(__linux__)
+    timespec ts{};
+    ts.tv_sec = static_cast<time_t>(timeout.count() / 1'000'000);
+    ts.tv_nsec = static_cast<long>(timeout.count() % 1'000'000) * 1000;
+    syscall(SYS_futex, reinterpret_cast<u32*>(&word), FUTEX_WAIT_PRIVATE, seen, &ts, nullptr, 0);
+#else
+    (void)word;
+    (void)seen;
+    (void)timeout;
+    std::this_thread::yield();
+#endif
+}
+
+void WakeWord(std::atomic<u32>& word) {
+#if defined(_WIN32)
+    WakeByAddressAll(&word);
+#elif defined(__linux__)
+    syscall(SYS_futex, reinterpret_cast<u32*>(&word), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr,
+            0);
+#else
+    (void)word;
 #endif
 }
 
@@ -149,6 +188,7 @@ void GpuSplit::Stop() {
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
+    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -179,14 +219,26 @@ void GpuSplit::WaitForSpace(size_t words) {
         if (spins < 4096) {
             Pause();
         } else {
-            std::this_thread::yield();
-            // As in Drain: re-wake a back thread whose wake-up was lost.
-            if ((spins & 1023) == 0 && back_waiting.load(std::memory_order_seq_cst)) {
-                wake.fetch_add(1, std::memory_order_seq_cst);
-                wake.notify_all();
-            }
+            SleepOnBack();
         }
     }
+}
+
+void GpuSplit::SleepOnBack() {
+    // Re-wake a back thread whose wake-up was lost (it froze Mario Kart World on Android with the
+    // front waiting here and the back parked).
+    if (back_waiting.load(std::memory_order_seq_cst)) {
+        wake.fetch_add(1, std::memory_order_seq_cst);
+        wake.notify_all();
+    }
+    // The back bumps `drained` after storing `consumed` when it sees front_waiting: read it
+    // before the last look at `consumed`, so a store in between ends the wait at once.
+    front_waiting.store(true, std::memory_order_seq_cst);
+    const u32 seen = drained.load(std::memory_order_seq_cst);
+    if (consumed.load(std::memory_order_seq_cst) == consumed_cache) {
+        WaitWord(drained, seen, std::chrono::milliseconds{2});
+    }
+    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 void GpuSplit::Publish() {
@@ -218,17 +270,13 @@ void GpuSplit::Drain() {
             publish_every = 8;
             return;
         }
-        if (spins < 16384) {
+        if (spins < 8192) {
             Pause();
         } else {
-            std::this_thread::yield();
-            // Still waiting on an asleep back thread: its wake-up was lost (it froze Mario Kart
-            // World on Android with the front here and the back parked). Wake it again.
-            if ((spins & 1023) == 0 && back_waiting.load(std::memory_order_seq_cst)) {
-                wake.fetch_add(1, std::memory_order_seq_cst);
-                wake.notify_all();
-            }
-            if ((spins & 1023) == 0 && std::chrono::steady_clock::now() >= next_report) {
+            // Sleep instead of spinning on: the front spent most of each frame here, keeping a big
+            // core busy and the phone hot.
+            SleepOnBack();
+            if (std::chrono::steady_clock::now() >= next_report) {
                 next_report += std::chrono::seconds{5};
                 LOG_WARNING(HW_GPU,
                             "GPU split drain waiting on the back thread: {} of {} words consumed, "
@@ -258,8 +306,17 @@ bool GpuSplit::WaitForWriters() {
         if (spins < 16384) {
             Pause();
         } else {
-            std::this_thread::yield();
+            SleepOnBack();
         }
+    }
+}
+
+void GpuSplit::HandBack(u64 position) {
+    // Seq_cst store and load against SleepOnBack's: one of the two sides sees the other.
+    consumed.store(position, std::memory_order_seq_cst);
+    if (front_waiting.load(std::memory_order_seq_cst)) {
+        drained.fetch_add(1, std::memory_order_seq_cst);
+        WakeWord(drained);
     }
 }
 
@@ -414,12 +471,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if ((read_position - last_store >= 4096 ||
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
-                consumed.store(read_position, std::memory_order_release);
+                HandBack(read_position);
                 last_store = read_position;
             }
         }
         g_back_busy.store(false, std::memory_order_release);
-        consumed.store(read_position, std::memory_order_release);
+        HandBack(read_position);
     }
     back_running.store(false, std::memory_order_release);
 }
