@@ -85,6 +85,10 @@
 #include <QStatusBar>
 #include <QtConcurrentRun>
 
+#ifdef __APPLE__
+#include "util/macos_sleep.h"
+#endif
+
 // Qt Common //
 #include "qt_common/config/shared_translation.h"
 #include "qt_common/config/uisettings.h"
@@ -493,7 +497,8 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         VkDeviceInfo::PopulateRecords(vk_device_records, this->window()->windowHandle());
     }
 
-#if !defined(_WIN32)
+    // On macOS, SDL video would pump AppKit events alongside Qt and disrupt native menus.
+#if !defined(_WIN32) && !defined(__APPLE__)
     SDL_InitSubSystem(SDL_INIT_VIDEO);
 
     // Set a screensaver inhibition reason string. Currently passed to DBus by SDL and visible to
@@ -549,6 +554,10 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 }
 
 MainWindow::~MainWindow() {
+#ifdef __APPLE__
+    AllowOSSleep();
+#endif
+
     // will get automatically deleted otherwise
     if (render_window->parent() == nullptr) {
         delete render_window;
@@ -1758,6 +1767,10 @@ void MainWindow::OnSigInterruptNotifierActivated() {
 void MainWindow::PreventOSSleep() {
 #ifdef _WIN32
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+#elif defined(__APPLE__)
+    if (sleep_assertion_id == 0) {
+        sleep_assertion_id = MacOS::PreventSleep();
+    }
 #else
     SDL_DisableScreenSaver();
 #endif
@@ -1766,6 +1779,11 @@ void MainWindow::PreventOSSleep() {
 void MainWindow::AllowOSSleep() {
 #ifdef _WIN32
     SetThreadExecutionState(ES_CONTINUOUS);
+#elif defined(__APPLE__)
+    if (sleep_assertion_id != 0) {
+        MacOS::AllowSleep(sleep_assertion_id);
+        sleep_assertion_id = 0;
+    }
 #else
     SDL_EnableScreenSaver();
 #endif
