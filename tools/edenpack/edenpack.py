@@ -192,6 +192,7 @@ def read_index(archive: Path) -> tuple[dict, int]:
         raise EdenPackError("index entry count does not match header")
 
     seen: set[str] = set()
+    entry_types: dict[str, str] = {}
     ranges: list[tuple[int, int, str]] = []
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type") not in ("file", "directory"):
@@ -209,6 +210,7 @@ def read_index(archive: Path) -> tuple[dict, int]:
         if path in seen:
             raise EdenPackError(f"duplicate archive path: {path}")
         seen.add(path)
+        entry_types[path] = entry["type"]
         if entry["type"] == "file":
             offset, length = entry.get("offset"), entry.get("size")
             digest = entry.get("sha256")
@@ -220,6 +222,17 @@ def read_index(archive: Path) -> tuple[dict, int]:
             if not isinstance(digest, str) or len(digest) != 64:
                 raise EdenPackError(f"invalid SHA-256 for {path}")
             ranges.append((offset, offset + length, path))
+
+    # A path component declared as a file cannot also contain descendants.
+    for path in seen:
+        parts = path.split("/")
+        for end in range(1, len(parts)):
+            parent = "/".join(parts[:end])
+            if entry_types.get(parent) == "file":
+                raise EdenPackError(f"file path is also used as a directory: {parent}")
+
+    if entry_types.get("ExeFS") != "directory" or entry_types.get("RomFS") != "directory":
+        raise EdenPackError("ExeFS and RomFS must be directory entries")
 
     ranges.sort()
     previous_end = HEADER_SIZE
