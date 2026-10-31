@@ -613,10 +613,10 @@ u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept {
         return info.size.width * BytesPerBlock(info.format);
     }
     static constexpr Extent2D TILE_SIZE{1, 1};
-    if (IsPixelFormatASTC(info.format) && Settings::values.astc_recompression.GetValue() !=
-                                              Settings::AstcRecompression::Uncompressed) {
+    if (IsPixelFormatASTC(info.format) &&
+        Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
         const u32 bpp_div =
-            Settings::values.astc_recompression.GetValue() == Settings::AstcRecompression::Bc1 ||
+            Settings::GetAstcRecompression() == Settings::AstcRecompression::Bc1 ||
                     info.astc_opaque
                 ? 2
                 : 1;
@@ -931,7 +931,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 
 void ConvertedLayout(const ImageInfo& info, std::span<BufferImageCopy> copies) {
     // Same offsets and sizes as ConvertImage below.
-    const auto recompression = Settings::values.astc_recompression.GetValue();
+    const auto recompression = Settings::GetAstcRecompression();
     const bool astc = IsPixelFormatASTC(info.format);
     u64 output_offset = 0;
     for (BufferImageCopy& copy : copies) {
@@ -976,7 +976,7 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
         const auto input_offset = input.subspan(copy.buffer_offset);
         copy.buffer_offset = output_offset;
 
-        const auto recompression_setting = Settings::values.astc_recompression.GetValue();
+        const auto recompression_setting = Settings::GetAstcRecompression();
         const bool astc = IsPixelFormatASTC(info.format);
 
         if (astc && recompression_setting == Settings::AstcRecompression::Uncompressed) {

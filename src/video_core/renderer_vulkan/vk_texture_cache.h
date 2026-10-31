@@ -389,6 +389,11 @@ public:
     /// layers that have memory afterwards (a cap per image can leave some out).
     std::vector<u32> BindLayers(std::span<const u32> layers);
 
+    /// Device memory BindLayers has bound to the image's layers (an unbacked image has no other).
+    u64 SparseBoundBytes() const noexcept {
+        return sparse_layers.bound_bytes;
+    }
+
     bool IsRescaled() const noexcept;
 
     bool ScaleUp(bool ignore = false);
