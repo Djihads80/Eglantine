@@ -89,7 +89,11 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
         }
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
-        if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
+        auto romfs_dir = parent->GetSubdirectory("romfs");
+        if (!romfs_dir) {
+            romfs_dir = parent->GetSubdirectory("RomFS");
+        }
+        if (romfs_dir) {
             LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
             return FileSys::CreateRomFS(romfs_dir);
         }
@@ -235,7 +239,11 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     romfs = FindLooseRomFS(file_dir);
     if (const auto title_dir = file_dir->GetParentDirectory()) {
-        romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
+        auto romfs_dir = title_dir->GetSubdirectory("romfs");
+        if (!romfs_dir) {
+            romfs_dir = title_dir->GetSubdirectory("RomFS");
+        }
+        romfs_version = RomFSProductVersion(romfs_dir);
     }
 }
 
