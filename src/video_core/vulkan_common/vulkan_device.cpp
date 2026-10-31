@@ -1663,6 +1663,12 @@ u64 Device::GetDeviceMemoryBudget() const {
             result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
         }
     }
+    // Integrated GPUs report system RAM as DEVICE_LOCAL. CollectPhysicalMemoryInfo already
+    // caps that to 4/6 GiB; the raw budget (~12 GiB on a 32 GB machine) would raise the
+    // texture cache above the iGPU and skip ASTC recompression on Switch 2 titles.
+    if (is_integrated && device_access_memory != 0) {
+        result = (std::min)(result, device_access_memory);
+    }
     return result;
 }
 
