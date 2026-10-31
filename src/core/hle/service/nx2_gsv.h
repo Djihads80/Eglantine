@@ -1833,7 +1833,7 @@ private:
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
             m_stream_ended = false;
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            m_ready->room.store(!end && m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
         }
         m_cv.notify_one();
         const u64 id = ++m_submitted;
@@ -1924,6 +1924,7 @@ private:
                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
                 if (frame.end) {
                     m_stream_ended = true;
+                    m_ready->room.store(false, std::memory_order_relaxed);
                 }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
                 ++m_frames_out;
@@ -1936,7 +1937,9 @@ private:
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            if (!m_stream_ended) {
+                m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            }
             const std::string codec = m_codec;
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
