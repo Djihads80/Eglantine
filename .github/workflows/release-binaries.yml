@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
+# clang and an older reader refuses it, so this has to stay at or above whatever produced
+# eden.profdata; bump it when a refreshed profile needs a newer LLVM.
+env:
+  PGO_LLVM_VERSION: '23'
+
 concurrency:
   group: release-binaries-${{ github.ref }}
   cancel-in-progress: true
@@ -72,8 +78,10 @@ jobs:
           modules: qtcharts
           cache: true
 
-      # The profile is written by a current clang, so use the newest clang from the LLVM apt repo
-      # rather than Ubuntu's; an older reader rejects a newer profile.
+      # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
+      # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
+      # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
+      # ships ld.lld under /usr/lib/llvm-23/bin, so -B points the linker search there.
       - name: Install clang for PGO
         if: startsWith(matrix.platform, 'linux') && matrix.pgo
         shell: bash
@@ -81,11 +89,12 @@ jobs:
           set -euo pipefail
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
             sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo 'deb http://apt.llvm.org/noble/ llvm-toolchain-noble main' |
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
             sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld
-          clang --version
+          sudo apt-get install -y --no-install-recommends \
+            "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
+          "clang-$PGO_LLVM_VERSION" --version
 
       # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
       # path their clang understands.
@@ -174,9 +183,9 @@ jobs:
             profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
               -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
             flags+=(
-              -DCMAKE_C_COMPILER=clang
-              -DCMAKE_CXX_COMPILER=clang++
-              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+              "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
+              "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
+              "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
               "-DCMAKE_C_FLAGS=$profile"
               "-DCMAKE_CXX_FLAGS=$profile"
             )
