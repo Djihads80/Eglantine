@@ -790,6 +790,27 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #endif
 }
 
+void HostMemory::HintCold(size_t physical_offset, size_t length,
+                          std::optional<size_t> virtual_offset) {
+    if (length == 0 || backing_base == nullptr) {
+        return;
+    }
+    const auto hint = [length](u8* address) {
+#ifdef _WIN32
+        // Unlocking pages that are not locked takes them out of the working set.
+        VirtualUnlock(address, length);
+#elif defined(__linux__) && defined(MADV_PAGEOUT)
+        madvise(address, length, MADV_PAGEOUT);
+#else
+        static_cast<void>(address);
+#endif
+    };
+    hint(backing_base + physical_offset);
+    if (virtual_offset && virtual_base != nullptr && *virtual_offset + length <= virtual_size) {
+        hint(virtual_base + *virtual_offset);
+    }
+}
+
 void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
     std::memset(backing_base + physical_offset, fill_value, length);
 }

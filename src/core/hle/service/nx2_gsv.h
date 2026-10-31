@@ -786,6 +786,46 @@ private:
     std::array<Kernel::KEvent*, NumIds> m_events{};
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
+
+    // Every 30 s: the backing of sparse blocks and GPU-only regions is marked cold. The game
+    // writes it once (texture uploads by 2D blits: title 1 fills 2-4 GB of texture pools) and it
+    // is read again only when the texture cache builds an image over it, so the OS may compress or
+    // page it out before anything else. Last member: stops before the regions are destroyed.
+    void HintColdBacking() {
+        struct Range {
+            u64 physical_offset;
+            u64 virtual_address;
+            u64 size;
+        };
+        std::vector<Range> ranges;
+        {
+            std::scoped_lock lk{m_region_mutex};
+            for (const auto& [gpu_address, region] : m_gpu_only_regions) {
+                u64 virtual_address = region.cpu_address;
+                for (const auto& block : *region.pages) {
+                    ranges.push_back({GetInteger(block.GetAddress()) - Core::DramMemoryMap::Base,
+                                      virtual_address, block.GetSize()});
+                    virtual_address += block.GetSize();
+                }
+            }
+        }
+        auto& buffer = system.DeviceMemory().buffer;
+        for (const Range& range : ranges) {
+            buffer.HintCold(range.physical_offset, range.size, range.virtual_address);
+        }
+    }
+    std::jthread m_cold_hint_thread{[this](std::stop_token stop) {
+        Common::SetCurrentThreadName("nx2:ColdHint");
+        Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+        while (!stop.stop_requested()) {
+            for (int i = 0; i < 30 && !stop.stop_requested(); ++i) {
+                std::this_thread::sleep_for(std::chrono::seconds{1});
+            }
+            if (!stop.stop_requested()) {
+                HintColdBacking();
+            }
+        }
+    }};
 };
 
 // Native memory and images handed out by the Switch 2 graphics server (gsv 111/114/423/429/315),
