@@ -3063,6 +3063,10 @@ template <class P>
 void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<ImageCopy> copies) {
     Image& dst = slot_images[dst_id];
     Image& src = slot_images[src_id];
+    if (True(dst.flags & ImageFlagBits::UnwrittenSparse) ||
+        True(src.flags & ImageFlagBits::UnwrittenSparse)) {
+        return;
+    }
     if (dst.info.astc_opaque != src.info.astc_opaque) {
         // BC1 and BC3 blocks differ in size, so the host can't copy between them; both hold the
         // same guest data, which is uploaded from guest memory instead.
