@@ -11,6 +11,16 @@ on:
     branches:
       - nx2
       - nx2-experimental
+    # A binary only changes when build inputs change; docs/README-only pushes skip the build.
+    paths:
+      - "src/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "externals/**"
+      - "dist/**"
+      - "tools/**"
+      - "cpmfile.json"
+      - ".github/workflows/release-binaries.yml"
 
 permissions:
   contents: read
@@ -23,6 +33,9 @@ jobs:
   build:
     name: ${{ matrix.platform }} binary
     runs-on: ${{ matrix.runner }}
+    # Repo-local sccache dir so the actions/cache step below can persist it between runs.
+    env:
+      SCCACHE_DIR: .sccache
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +90,27 @@ jobs:
           modules: qtcharts
           cache: true
 
+      # One pinned sccache binary per platform (Mozilla's ccache successor, with MSVC support).
+      # Linux uses the statically linked musl build, so no glibc concerns on the runner.
+      - name: Install sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -p sccache-dl bin
+          if [ "${{ matrix.platform }}" = "windows-x86_64" ]; then
+            curl -fsSL -o sccache-dl/sccache.zip \
+              https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+            7z x -y -o"sccache-dl" "sccache-dl/sccache.zip" >/dev/null
+            find sccache-dl -name "sccache.exe" -type f -print -quit | xargs -I{} install -m755 {} bin/sccache.exe
+          else
+            curl -fsSL -o sccache-dl/sccache.tar.gz \
+              https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz
+            tar xzf sccache-dl/sccache.tar.gz -C sccache-dl
+            find sccache-dl -type f -name "sccache" -print -quit | xargs -I{} install -m755 {} bin/sccache
+          fi
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Install Vulkan SDK on Windows
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
@@ -94,6 +128,17 @@ jobs:
           key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
           restore-keys: |
             cpm-${{ runner.os }}-
+
+      # Persistent compilation cache, keyed on the same build-system files as the CPM cache
+      # so both miss together when the build system changes. Caches object files of the
+      # codebase and its bundled dependencies (e.g. SDL3) between runs.
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: .sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          restore-keys: |
+            sccache-${{ runner.os }}-
 
       - name: Configure Linux
         if: matrix.platform == 'linux-x86_64'
@@ -113,6 +158,8 @@ jobs:
           -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
           -DENABLE_UPDATE_CHECKER=OFF
           -DUSE_DISCORD_PRESENCE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Configure Windows
         if: matrix.platform == 'windows-x86_64'
@@ -129,10 +176,16 @@ jobs:
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=OFF
           -DUSE_DISCORD_PRESENCE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
+      # --show-stats prints the cache hit/miss ratio into the CI log, so it is visible
+      # at a glance whether the sccache cache is warming up as expected.
       - name: Build
         shell: bash
-        run: cmake --build build/release --target yuzu yuzu-cmd --parallel
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          sccache --show-stats
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
