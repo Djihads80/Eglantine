@@ -34,7 +34,7 @@ ConfigureCpu::ConfigureCpu(const Core::System& system_,
     connect(backend_combobox, qOverload<int>(&QComboBox::currentIndexChanged), this,
             &ConfigureCpu::UpdateGroup);
 
-#ifdef HAS_NCE
+#if defined(HAS_NCE) || defined(HAS_HYPERVISOR)
     ui->backend_group->setVisible(true);
 #endif
 }
