@@ -144,6 +144,12 @@ public:
         return is_built.load(std::memory_order::relaxed);
     }
 
+    /// Whether its shaders write memory other than render targets: storage buffers, images,
+    /// global memory or transform feedback buffers.
+    [[nodiscard]] bool WritesMemory() const noexcept {
+        return writes_memory;
+    }
+
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
         return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };
@@ -191,6 +197,7 @@ private:
     size_t num_image_elements{};
     u32 num_textures{};
     bool fragment_has_color0_output{};
+    bool writes_memory{};
 
     vk::DescriptorSetLayout descriptor_set_layout;
     DescriptorAllocator descriptor_allocator;
