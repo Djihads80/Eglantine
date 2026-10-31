@@ -130,6 +130,29 @@ std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
     return fmt::format("{}.{}.{}", best[0], best[1], best[2]);
 }
 
+// Loose ExeFS dumps carry no control data, but icon/nacp sidecars can be dropped next to the
+// ExeFS or in the game folder above it (<game>/exefs/main and
+// <game>/updates/<title id>/exefs/main layouts).
+std::vector<FileSys::VirtualDir> FindSidecarDirs(const FileSys::VirtualDir& exefs_dir) {
+    std::vector<FileSys::VirtualDir> dirs{exefs_dir};
+    for (auto dir = exefs_dir; dirs.size() < 4;) {
+        const auto parent = dir->GetParentDirectory();
+        if (parent == nullptr) {
+            break;
+        }
+        const auto& name = parent->GetName();
+        dirs.push_back(parent);
+        const bool title_id_like =
+            name == "updates" ||
+            (!name.empty() && name.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos);
+        if (!title_id_like) {
+            break;
+        }
+        dir = parent;
+    }
+    return dirs;
+}
+
 } // namespace
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_)
@@ -137,6 +160,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     , override_update(override_update_)
 {
     const auto file_dir = file->GetContainingDirectory();
+    const auto sidecar_dirs = FindSidecarDirs(file_dir);
 
     // Title ID
     const auto npdm = file_dir->GetFile("main.npdm");
@@ -148,8 +172,13 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     // Icon
     FileSys::VirtualFile icon_file = nullptr;
-    for (const auto& language : FileSys::LANGUAGE_NAMES) {
-        icon_file = file_dir->GetFile("icon_" + std::string(language) + ".dat");
+    for (const auto& sidecar_dir : sidecar_dirs) {
+        for (const auto& language : FileSys::LANGUAGE_NAMES) {
+            icon_file = sidecar_dir->GetFile("icon_" + std::string(language) + ".dat");
+            if (icon_file != nullptr) {
+                break;
+            }
+        }
         if (icon_file != nullptr) {
             icon_data = icon_file->ReadAllBytes();
             break;
@@ -158,31 +187,35 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     if (icon_data.empty()) {
         // Any png, jpeg, or bmp file
-        const auto& files = file_dir->GetFiles();
-        const auto icon_iter =
-            std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& f) {
-                return f->GetExtension() == "png" || f->GetExtension() == "jpg" ||
-                       f->GetExtension() == "bmp" || f->GetExtension() == "jpeg";
-            });
-        if (icon_iter != files.end())
-            icon_data = (*icon_iter)->ReadAllBytes();
+        for (const auto& sidecar_dir : sidecar_dirs) {
+            const auto& files = sidecar_dir->GetFiles();
+            const auto icon_iter =
+                std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& f) {
+                    return f->GetExtension() == "png" || f->GetExtension() == "jpg" ||
+                           f->GetExtension() == "bmp" || f->GetExtension() == "jpeg";
+                });
+            if (icon_iter != files.end()) {
+                icon_data = (*icon_iter)->ReadAllBytes();
+                break;
+            }
+        }
     }
 
-    // Metadata: control.nacp (or any .nacp) next to main, else a control.nacp in the folders above
-    // it (dumps keep the title's or the update's control data at their root).
-    FileSys::VirtualFile nacp_file = file_dir->GetFile("control.nacp");
-    if (nacp_file == nullptr) {
-        const auto& files = file_dir->GetFiles();
+    // Metadata
+    FileSys::VirtualFile nacp_file = nullptr;
+    for (const auto& sidecar_dir : sidecar_dirs) {
+        nacp_file = sidecar_dir->GetFile("control.nacp");
+        if (nacp_file != nullptr) {
+            break;
+        }
+        const auto& files = sidecar_dir->GetFiles();
         const auto nacp_iter =
             std::find_if(files.begin(), files.end(),
                          [](const FileSys::VirtualFile& f) { return f->GetExtension() == "nacp"; });
-        if (nacp_iter != files.end())
+        if (nacp_iter != files.end()) {
             nacp_file = *nacp_iter;
-    }
-    auto parent = file_dir->GetParentDirectory();
-    for (int level = 0; level < 3 && nacp_file == nullptr && parent != nullptr; ++level) {
-        nacp_file = parent->GetFile("control.nacp");
-        parent = parent->GetParentDirectory();
+            break;
+        }
     }
 
     if (nacp_file != nullptr) {
