@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <utility>
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/div_ceil.h"
 #include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/device_memory.h"
@@ -168,6 +170,13 @@ void KMemoryManager::Initialize(KVirtualAddress management_region, size_t manage
     // Update the used size for all managers.
     for (size_t i = 0; i < m_num_managers; ++i) {
         m_managers[i].SetInitialUsedHeapSize(reserved_sizes[i]);
+    }
+
+    // The host backing outlives emulation sessions: after an earlier one, no page is known zero.
+    if (std::exchange(m_system.DeviceMemory().used_by_kernel, true)) {
+        for (size_t i = 0; i < m_num_managers; ++i) {
+            m_managers[i].MarkAllFreed();
+        }
     }
 }
 
@@ -424,13 +433,33 @@ Result KMemoryManager::AllocateForProcess(KPageGroup* out, size_t num_pages, u32
     } else {
         // Set all the allocated memory.
         for (const auto& block : *out) {
-            m_system.DeviceMemory().buffer.ClearBackingRegion(GetInteger(block.GetAddress()) -
-                                                                  Core::DramMemoryMap::Base,
-                                                              block.GetSize(), fill_pattern);
+            this->FillAllocatedPages(block.GetAddress(), block.GetNumPages(), fill_pattern);
         }
     }
 
     R_SUCCEED();
+}
+
+void KMemoryManager::FillAllocatedPages(KPhysicalAddress address, size_t num_pages,
+                                        u8 fill_pattern) {
+    auto& backing = m_system.DeviceMemory().buffer;
+    while (num_pages > 0) {
+        auto& manager = this->GetManager(address);
+        const size_t cur_pages = (std::min)(num_pages, manager.GetPageOffsetToEnd(address));
+        if (fill_pattern != 0) {
+            backing.ClearBackingRegion(GetInteger(address) - Core::DramMemoryMap::Base,
+                                       cur_pages * PageSize, fill_pattern);
+        } else {
+            const size_t first = manager.GetPageOffset(address);
+            manager.TakeFreedRuns(first, cur_pages, [&](size_t index, size_t count) {
+                const KPhysicalAddress run = address + (index - first) * PageSize;
+                backing.ClearBackingRegion(GetInteger(run) - Core::DramMemoryMap::Base,
+                                           count * PageSize, 0);
+            });
+        }
+        address += cur_pages * PageSize;
+        num_pages -= cur_pages;
+    }
 }
 
 size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
@@ -449,8 +478,10 @@ size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
     // Setup region.
     m_pool = p;
     m_management_region = management;
-    m_page_reference_counts.resize(
-        Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() / PageSize);
+    // Indexed by page offset into this manager's region, so its own size is enough (sized for
+    // all of DRAM, each of the managers held ~10 MiB with the 20 GiB Switch 2 layout).
+    m_page_reference_counts.resize(size / PageSize);
+    m_freed_pages = std::make_unique<std::atomic<u64>[]>(Common::DivCeil(size / PageSize, size_t{64}));
     ASSERT(Common::IsAligned(GetInteger(m_management_region), PageSize));
 
     // Initialize the manager's KPageHeap.
@@ -525,9 +556,11 @@ bool KMemoryManager::Impl::ProcessOptimizedAllocation(KernelCore& kernel, KPhysi
             // If not, it's new.
             any_new = true;
 
-            // Fill the page.
-            auto* ptr = device_memory.GetPointer<u8>(m_heap.GetAddress());
-            std::memset(ptr + offset * PageSize, fill_pattern, PageSize);
+            // Fill the page (never-freed pages are still zero).
+            if (this->TakeFreed(offset) || fill_pattern != 0) {
+                auto* ptr = device_memory.GetPointer<u8>(m_heap.GetAddress());
+                std::memset(ptr + offset * PageSize, fill_pattern, PageSize);
+            }
         }
 
         offset++;

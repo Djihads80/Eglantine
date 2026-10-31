@@ -663,10 +663,11 @@ private:
             return std::nullopt;
         }
         if (clear) {
-            // Cheap for memory that's still zero (most of it): only reused pages get cleared.
+            // Only pages freed earlier get cleared: the rest is still zero and stays uncommitted on
+            // the host until the GPU really writes there.
             for (const auto& block : *pg) {
-                system.DeviceMemory().buffer.ClearBackingRegion(
-                    GetInteger(block.GetAddress()) - Core::DramMemoryMap::Base, block.GetSize(), 0);
+                kernel_core.MemoryManager().FillAllocatedPages(block.GetAddress(),
+                                                               block.GetNumPages(), 0);
             }
         }
         auto& page_table = process->GetPageTable();
