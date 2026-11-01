@@ -1529,10 +1529,14 @@ void BufferCache<P>::UpdateIndexBuffer() {
         auto inline_index_size = static_cast<u32>(draw_state.inline_index_draw_indexes.size());
         u32 buffer_size = Common::AlignUp(inline_index_size, CACHING_PAGESIZE);
         if (inline_buffer_id == NULL_BUFFER_ID) [[unlikely]] {
+            LOG_INFO(HW_GPU, "Creating inline index buffer of {:#x} bytes", buffer_size);
             inline_buffer_id = CreateBuffer(0, buffer_size, false);
         }
         if (slot_buffers[inline_buffer_id].SizeBytes() < buffer_size) [[unlikely]] {
-            slot_buffers.erase(inline_buffer_id);
+            LOG_INFO(HW_GPU, "Growing inline index buffer to {:#x} bytes", buffer_size);
+            // Erasing the slot directly left its page table entries and LRU item behind, so a
+            // later CreateBuffer could reuse the slot and join the new buffer with itself.
+            DeleteBuffer(inline_buffer_id, true);
             inline_buffer_id = CreateBuffer(0, buffer_size, false);
         }
         channel_state->index_buffer = Binding{
@@ -2036,6 +2040,18 @@ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(DAddr dev
         if (!overlap_id) {
             continue;
         }
+        if (!slot_buffers.contains(overlap_id)) [[unlikely]] {
+            // A deleted buffer is still in the page table. Joining it would delete whichever
+            // buffer reuses the slot next, possibly the one being created here.
+            static u32 stale_logs = 0;
+            if (stale_logs < 16) {
+                ++stale_logs;
+                LOG_ERROR(HW_GPU, "Stale buffer page: device_addr={:#x} buffer_id={}",
+                          device_addr, overlap_id.index);
+            }
+            page_table[device_addr >> CACHING_PAGEBITS] = BufferId{};
+            continue;
+        }
         Buffer& overlap = slot_buffers[overlap_id];
         if (overlap.IsPicked()) {
             continue;
@@ -2447,6 +2463,10 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    if (buffer_id == inline_buffer_id) {
+        // The garbage collector can delete the inline index buffer; recreate it on next use.
+        inline_buffer_id = NULL_BUFFER_ID;
+    }
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }
