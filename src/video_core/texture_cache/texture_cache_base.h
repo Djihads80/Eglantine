@@ -556,6 +556,17 @@ private:
     /// counted in the driver's usage until the ring destroys them.
     std::array<u64, TICKS_TO_DESTROY> sentenced_image_bytes{};
     size_t sentenced_image_index = 0;
+    /// Deleted images on runtimes that report GPU progress (CurrentTick, IsFree): destroyed, with
+    /// their device memory, as soon as the GPU is past them rather than TICKS_TO_DESTROY frames
+    /// later. While the collector deletes dozens a frame, eight frames of them held 1-1.5 GB of
+    /// VRAM above its threshold (title 1 on an 8 GB card: 6.6-7.0 GB in use against 5 GiB).
+    struct GpuSentencedImage {
+        u64 tick;
+        u64 bytes;
+        Image image;
+    };
+    std::deque<GpuSentencedImage> gpu_sentenced_images;
+    u64 gpu_sentenced_bytes{};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 
