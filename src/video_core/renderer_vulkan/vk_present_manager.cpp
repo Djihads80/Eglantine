@@ -412,7 +412,12 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
             // Draw to swapchain.
             return CopyToSwapchainImpl(frame);
         } catch (const vk::Exception& except) {
-            if (except.GetResult() != VK_ERROR_SURFACE_LOST_KHR) {
+            // The window can change while the swapchain is recreated: the counts it reads can
+            // change between calls (VK_INCOMPLETE), and the surface can go out of date or stay in
+            // use. Only worth another try, not the abort an uncaught exception ends in here.
+            const VkResult result = except.GetResult();
+            if (result != VK_ERROR_SURFACE_LOST_KHR && result != VK_INCOMPLETE &&
+                result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
                 throw;
             }
 

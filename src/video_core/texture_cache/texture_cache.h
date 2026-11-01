@@ -2757,6 +2757,16 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
 
 template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
+    // Render target registers filled by garbage commands (sizes like 2147487260x2147485323, or
+    // 0x0 with 36232 layers): creating the image would abort.
+    static constexpr u32 MaxRenderTargetSize = 32768;
+    static constexpr s32 MaxRenderTargetLayers = 2048;
+    if (info.size.width == 0 || info.size.height == 0 || info.size.width > MaxRenderTargetSize ||
+        info.size.height > MaxRenderTargetSize || info.resources.layers > MaxRenderTargetLayers) {
+        LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}", info.size.width,
+                  info.size.height, info.resources.layers, gpu_addr);
+        return ImageViewId{}; // No render target: the null view has no format to size
+    }
     ImageId image_id{};
     bool delete_state = has_deleted_images;
     do {
