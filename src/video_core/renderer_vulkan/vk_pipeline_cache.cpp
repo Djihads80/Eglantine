@@ -577,6 +577,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         current_pipeline = nullptr;
         if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
             VideoCommon::Nx2DrawLog::Get().rejected_stage++;
+            VideoCommon::Nx2DrawLog::LastSkipReason() = 1;
         }
         return nullptr;
     }
@@ -860,6 +861,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (maxwell3d->regs.zeta_enable) {
         if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
             VideoCommon::Nx2DrawLog::Get().async_pending++;
+            VideoCommon::Nx2DrawLog::LastSkipReason() = 2;
         }
         return nullptr;
     }
@@ -872,6 +874,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     }
     if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
         VideoCommon::Nx2DrawLog::Get().async_pending++;
+            VideoCommon::Nx2DrawLog::LastSkipReason() = 2;
     }
     return nullptr;
 }
