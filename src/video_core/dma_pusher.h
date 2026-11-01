@@ -117,6 +117,10 @@ struct CommandList final {
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
     /// EDEN_NX2_PB_CHECK: hash of each entry's words when it was submitted.
     std::vector<u64> submit_hashes;
+    /// The entries' words when they were submitted (NX2), each entry's at submitted_offsets[i]:
+    /// executed instead of the memory, which the game may already be refilling for a later frame.
+    std::vector<CommandHeader> submitted_words;
+    std::vector<u32> submitted_offsets;
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
