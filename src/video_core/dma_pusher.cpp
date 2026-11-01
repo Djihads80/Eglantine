@@ -162,8 +162,24 @@ bool DmaPusher::Step() {
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::optional<Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> headers;
+            std::span<const CommandHeader> commands;
+            const size_t req_bytes = size_t{header.size} * sizeof(CommandHeader);
+            if (pb_cached_ptr && dma_state.dma_get >= pb_cached_gpu_addr &&
+                (dma_state.dma_get + req_bytes) <= (pb_cached_gpu_addr + pb_cached_size)) {
+                const size_t offset_bytes = static_cast<size_t>(dma_state.dma_get - pb_cached_gpu_addr);
+                const auto* base = reinterpret_cast<const u8*>(pb_cached_ptr) + offset_bytes;
+                commands = std::span<const CommandHeader>{reinterpret_cast<const CommandHeader*>(base), header.size};
+            } else if (u8* span_ptr = memory_manager.GetSpan(dma_state.dma_get, req_bytes); span_ptr != nullptr) {
+                pb_cached_gpu_addr = dma_state.dma_get;
+                pb_cached_size = req_bytes;
+                pb_cached_ptr = reinterpret_cast<const CommandHeader*>(span_ptr);
+                commands = std::span<const CommandHeader>{pb_cached_ptr, header.size};
+            } else {
+                pb_cached_ptr = nullptr;
+                headers.emplace(memory_manager, dma_state.dma_get, header.size, &command_headers);
+                commands = std::span<const CommandHeader>{headers->data(), headers->size()};
+            }
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -227,11 +243,16 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;
+            const u32 curr_method = dma_state.method;
             CallMethod(command_header.argument);
-            dma_state.method += !dma_state.non_incrementing ? 1 : 0;
+            dma_state.method += static_cast<u32>(!dma_state.non_incrementing);
             dma_state.non_incrementing |= dma_increment_once;
             dma_state.method_count--;
             index++;
+            if (curr_method < non_puller_methods && puller.HasPendingAcquire()) {
+                return index;
+            }
+            continue;
         } else {
             auto const command_header = commands[index]; //can copy
             // No command active - this is the first word of a new one
@@ -264,7 +285,7 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             }
             index++;
         }
-        if (puller.HasPendingAcquire()) {
+        if (dma_state.method < non_puller_methods && puller.HasPendingAcquire()) {
             return index;
         }
     }
