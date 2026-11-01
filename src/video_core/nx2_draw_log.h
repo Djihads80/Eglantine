@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#include <map>
 #include <set>
+#include <tuple>
 
 #include "common/common_types.h"
 
@@ -44,6 +46,13 @@ inline u32& LastInstanceCount() {
     return count;
 }
 
+// Why the pipeline lookup of the draw being recorded returned nothing: 1 a bound program was
+// rejected, 2 the pipeline is still building (async shaders).
+inline u32& LastSkipReason() {
+    static thread_local u32 reason{};
+    return reason;
+}
+
 inline std::mutex& Mutex() {
     static std::mutex mutex;
     return mutex;
@@ -52,6 +61,17 @@ inline std::mutex& Mutex() {
 inline std::set<u64>& DroppedPrograms() {
     static std::set<u64> programs;
     return programs;
+}
+
+// Skipped draws by (vertex program, pixel program, reason), for the summary's top list.
+inline std::map<std::tuple<u64, u64, u32>, u64>& SkipCounts() {
+    static std::map<std::tuple<u64, u64, u32>, u64> counts;
+    return counts;
+}
+
+inline void NoteSkip(u64 vs, u64 ps, u32 reason) {
+    std::scoped_lock lock{Mutex()};
+    ++SkipCounts()[{vs, ps, reason}];
 }
 
 inline void NoteDroppedProgram(u64 program_base) {
