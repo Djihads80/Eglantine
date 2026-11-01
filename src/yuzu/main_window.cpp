@@ -4254,6 +4254,12 @@ void MainWindow::UpdateStatusBar() {
     }
 
     QString fpsText = tr("Game: %1 FPS").arg(std::round(results.average_game_fps), 0, 'f', 0);
+    if (Settings::values.frame_gen.GetValue()) {
+        // With frame generation on, show the game's own frame rate and the frames actually shown
+        fpsText = tr("Real FPS: %1 | FPS (with frame gen): %2")
+                      .arg(std::round(results.average_game_fps), 0, 'f', 0)
+                      .arg(std::round(results.output_fps), 0, 'f', 0);
+    }
     if (!m_fpsSuffix.isEmpty())
         fpsText = fpsText % QStringLiteral(" (%1)").arg(m_fpsSuffix);
 

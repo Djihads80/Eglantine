@@ -32,6 +32,9 @@ public:
     void GenerateInto(const Device& device, Frame* destination, size_t generation);
 
 private:
+    /// FSR3 is used when it is selected, and also when Lossless Scaling frame generation was
+    /// selected but its shaders are not available (no Lossless.dll installed).
+    [[nodiscard]] bool UseFsr3() const;
     void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
     void DumpDebugImages(u64 count);
 
@@ -55,6 +58,7 @@ private:
     bool unavailable{};
     bool dumped{};
     bool logged_no_storage{};
+    bool logged_lsfg_fallback{};
     u64 log_counter{};
 };
 
