@@ -558,6 +558,8 @@ private:
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
     std::vector<std::unique_ptr<AsyncDecodeContext>> async_decodes;
+    /// Guest memory images were uploaded from since the last cold hint (device address, size).
+    std::vector<std::pair<DAddr, u64>> uploaded_ranges;
 
     std::deque<PendingUnswizzle> unswizzle_queue;
     u8 current_unswizzle_frame;

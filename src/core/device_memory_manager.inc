@@ -171,6 +171,7 @@ struct DeviceMemoryManagerAllocator {
 template <typename Traits>
 DeviceMemoryManager<Traits>::DeviceMemoryManager(const DeviceMemory& device_memory_)
     : physical_base{uintptr_t(device_memory_.buffer.BackingBasePointer())}
+    , device_memory_ptr{&device_memory_}
     , device_inter{nullptr}
     , compressed_device_addr(1ULL << ((Settings::values.memory_layout_mode.GetValue() == Settings::MemoryLayout::Memory_4Gb ? physical_min_bits : physical_max_bits) - Memory::YUZU_PAGEBITS))
     , tracked_entries(device_as_size >> Memory::YUZU_PAGEBITS)
@@ -181,6 +182,49 @@ DeviceMemoryManager<Traits>::DeviceMemoryManager(const DeviceMemory& device_memo
 
 template <typename Traits>
 DeviceMemoryManager<Traits>::~DeviceMemoryManager() = default;
+
+template <typename Traits>
+void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
+    struct Run {
+        u64 physical_offset;
+        VAddr virtual_address; ///< 0: no CPU mapping known
+        u64 size;
+    };
+    std::vector<Run> runs;
+    const size_t page_end = Common::DivCeil(address + size, Memory::YUZU_PAGESIZE);
+    for (size_t page = address >> Memory::YUZU_PAGEBITS; page < page_end; ++page) {
+        const u32 compressed = tracked_entries[page].compressed_physical_ptr;
+        if (compressed == 0) {
+            continue;
+        }
+        const u64 physical = u64{compressed - 1} << Memory::YUZU_PAGEBITS;
+        const VAddr vaddr = ExtractCPUBacking(page).second;
+        if (!runs.empty()) {
+            Run& last = runs.back();
+            const bool contiguous_view =
+                last.virtual_address == 0 ? vaddr == 0 : last.virtual_address + last.size == vaddr;
+            if (last.physical_offset + last.size == physical && contiguous_view) {
+                last.size += Memory::YUZU_PAGESIZE;
+                continue;
+            }
+        }
+        runs.push_back({physical, vaddr, Memory::YUZU_PAGESIZE});
+    }
+    if (runs.empty()) {
+        return;
+    }
+    if (!cold_hint_worker) {
+        cold_hint_worker = std::make_unique<Common::ThreadWorker>(1, "DeviceMemory:ColdHint");
+    }
+    cold_hint_worker->QueueWork([this, runs = std::move(runs)] {
+        for (const Run& run : runs) {
+            device_memory_ptr->buffer.HintCold(
+                run.physical_offset, run.size,
+                run.virtual_address != 0 ? std::optional<size_t>{run.virtual_address}
+                                         : std::nullopt);
+        }
+    });
+}
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::BindInterface(DeviceInterface* device_inter_) {

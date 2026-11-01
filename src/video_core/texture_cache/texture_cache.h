@@ -315,6 +315,12 @@ void TextureCache<P>::TickFrame() {
     sentenced_image_view.Tick();
     TickAsyncDecode();
     TickAsyncUnswizzle();
+    if (frame_tick % 600 == 0 && !uploaded_ranges.empty()) {
+        for (const auto& [address, size] : uploaded_ranges) {
+            device_memory.HintCold(address, size);
+        }
+        uploaded_ranges.clear();
+    }
 
     runtime.TickFrame();
     ++frame_tick;
@@ -1352,6 +1358,14 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
+    // The host GPU has its own copy now and the guest rarely reads this memory again: TickFrame
+    // marks it cold, so the OS pages it out before anything else when it needs RAM (title 1
+    // streams several GB of textures through it).
+    constexpr u64 ColdHintMinBytes = 64_KiB;
+    if (image.guest_size_bytes >= ColdHintMinBytes &&
+        False(image.flags & (ImageFlagBits::GpuModified | ImageFlagBits::Sparse))) {
+        uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
+    }
 }
 
 template <class P>
