@@ -807,7 +807,35 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 Device::~Device() {
     SaveStaticPipelineCache();
     ShutdownGPULogging();
+    for (auto& pools : separate_pools) {
+        for (VmaPool pool : pools) {
+            if (pool != VK_NULL_HANDLE) {
+                vmaDestroyPool(allocator, pool);
+            }
+        }
+    }
     vmaDestroyAllocator(allocator);
+}
+
+VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type) const {
+    std::scoped_lock lk{separate_pools_mutex};
+    VmaPool& pool = separate_pools[static_cast<u32>(kind)][memory_type];
+    if (pool == VK_NULL_HANDLE) {
+        const VmaPoolCreateInfo ci{
+            .memoryTypeIndex = memory_type,
+            .flags = 0,
+            .blockSize = SeparatePoolBlockSize,
+            .minBlockCount = 0,
+            .maxBlockCount = 0,
+            .priority = 0.f,
+            .minAllocationAlignment = 0,
+            .pMemoryAllocateNext = nullptr,
+        };
+        if (vmaCreatePool(allocator, &ci, &pool) != VK_SUCCESS) {
+            pool = VK_NULL_HANDLE;
+        }
+    }
+    return pool;
 }
 
 void Device::LoadStaticPipelineCache() {
