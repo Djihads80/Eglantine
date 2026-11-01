@@ -243,6 +243,12 @@ public:
 
     void DownloadMemory(DAddr device_addr, u64 size);
 
+    /// Between BeginDownloadBatch and EndDownloadBatch the downloads of DownloadMemory are only
+    /// queued; the outermost EndDownloadBatch waits for the GPU once and writes all of them to
+    /// guest memory. The buffer cache mutex stays locked in between (it is recursive).
+    void BeginDownloadBatch();
+    void EndDownloadBatch();
+
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
     /// Without downloads at every fence, a guest CPU read is the only way GPU-written buffer
@@ -477,6 +483,13 @@ private:
     /// Downloads the GPU-written data of several buffers with one wait for the GPU.
     void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
 
+    /// Waits once for the downloads queued by a download batch and writes them to guest memory.
+    void FinishDownloadBatch();
+
+    [[nodiscard]] bool DownloadBatchEnabled() const noexcept {
+        return true;
+    }
+
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
@@ -577,6 +590,16 @@ private:
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
+
+    // Download batch (BeginDownloadBatch). Each entry is one deferred staging buffer; in `copies`
+    // src_offset holds the guest (device) address the data goes to and dst_offset the position in
+    // the staging buffer, staging offset included.
+    struct BatchedDownload {
+        Async_Buffer staging;
+        boost::container::small_vector<BufferCopy, 4> copies;
+    };
+    u32 download_batch_depth{0};
+    boost::container::small_vector<BatchedDownload, 4> batched_downloads;
 
     size_t immediate_buffer_capacity = 0;
     Common::ScratchBuffer<u8> immediate_buffer_alloc;

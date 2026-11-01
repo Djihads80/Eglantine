@@ -93,6 +93,12 @@ public:
     virtual void FlushRegion(DAddr addr, u64 size,
                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
+    /// Groups the buffer cache downloads of the FlushRegion calls made between BeginFlushBatch and
+    /// EndFlushBatch into one wait for the GPU. The data is in guest memory once EndFlushBatch
+    /// returns. Calls nest; only the outermost EndFlushBatch waits.
+    virtual void BeginFlushBatch() {}
+    virtual void EndFlushBatch() {}
+
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
                                  VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;

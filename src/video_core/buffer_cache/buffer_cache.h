@@ -233,6 +233,27 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
 }
 
 template <class P>
+void BufferCache<P>::BeginDownloadBatch() {
+    if (!DownloadBatchEnabled()) {
+        return;
+    }
+    mutex.lock();
+    ++download_batch_depth;
+}
+
+template <class P>
+void BufferCache<P>::EndDownloadBatch() {
+    if (!DownloadBatchEnabled()) {
+        return;
+    }
+    ASSERT(download_batch_depth > 0);
+    if (--download_batch_depth == 0 && !batched_downloads.empty()) {
+        FinishDownloadBatch();
+    }
+    mutex.unlock();
+}
+
+template <class P>
 void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
     async_downloads.DeleteAll(device_addr, size);
     uncommitted_gpu_modified_ranges.Subtract(device_addr, size);
@@ -2031,7 +2052,34 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
 }
 
 template <class P>
+void BufferCache<P>::FinishDownloadBatch() {
+    boost::container::small_vector<BatchedDownload, 4> downloads;
+    downloads.swap(batched_downloads);
+    runtime.Finish();
+    for (BatchedDownload& download : downloads) {
+        const u8* const mapped_memory = download.staging.mapped_span.data();
+        for (const BufferCopy& copy : download.copies) {
+            const u64 staging_position = copy.dst_offset - download.staging.offset;
+            device_memory.WriteBlockUnsafe(static_cast<DAddr>(copy.src_offset),
+                                           mapped_memory + staging_position, copy.size);
+        }
+        runtime.FreeDeferredStagingBuffer(download.staging);
+    }
+}
+
+template <class P>
 void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64 size) {
+    // Only the part of the range inside this buffer is this buffer's to download: the caller
+    // passes the whole range to every buffer it touches, and the tracker clears what it visits.
+    const DAddr buffer_begin = buffer.CpuAddr();
+    const DAddr range_begin = (std::max)(buffer_begin, device_addr);
+    const DAddr range_end =
+        (std::min)(static_cast<DAddr>(buffer_begin + buffer.SizeBytes()), device_addr + size);
+    if (range_begin >= range_end) {
+        return;
+    }
+    device_addr = range_begin;
+    size = range_end - range_begin;
     boost::container::small_vector<BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -2062,6 +2110,27 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
     }
 
     if constexpr (USE_MEMORY_MAPS) {
+        if (download_batch_depth > 0) {
+            // Inside a download batch: record the copies, the wait and the write to guest memory
+            // happen once in FinishDownloadBatch. The staging buffer is deferred so that the pool
+            // keeps it until then.
+            auto batch_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
+            const std::span<BufferCopy> batch_span(copies.data(), copies.data() + copies.size());
+            for (BufferCopy& copy : copies) {
+                copy.dst_offset += batch_staging.offset;
+                buffer.MarkUsage(copy.src_offset, copy.size);
+            }
+            runtime.CopyBuffer(batch_staging.buffer, buffer, batch_span, true);
+            BatchedDownload& batched = batched_downloads.emplace_back();
+            batched.staging = batch_staging;
+            for (const BufferCopy& copy : copies) {
+                BufferCopy queued{copy};
+                // From here on src_offset is the guest address the data is written to.
+                queued.src_offset = static_cast<u64>(buffer.CpuAddr()) + copy.src_offset;
+                batched.copies.push_back(queued);
+            }
+            return;
+        }
         auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
         const u8* const mapped_memory = download_staging.mapped_span.data();
         const std::span<BufferCopy> copies_span(copies.data(), copies.data() + copies.size());

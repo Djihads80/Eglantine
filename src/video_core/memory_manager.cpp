@@ -531,6 +531,22 @@ void MemoryManager::FlushRegion(GPUVAddr gpu_addr, size_t size,
         GPUVAddr base = (page_index << big_page_bits) + offset;
         MemoryOperation(base, copy_amount, false, mapped_normal, do_nothing, do_nothing);
     };
+    // A range spanning several buffers (or several pages of one) would wait for the GPU once per
+    // piece. When only the buffer cache is asked, queue every piece and wait once at the end.
+    const bool is_buffer_only = which == VideoCommon::CacheType::BufferCache;
+    struct FlushBatchGuard {
+        VideoCore::RasterizerInterface* batched;
+        ~FlushBatchGuard() {
+            if (batched != nullptr) {
+                batched->EndFlushBatch();
+            }
+        }
+    };
+    VideoCore::RasterizerInterface* const batched = is_buffer_only ? rasterizer : nullptr;
+    if (batched != nullptr) {
+        batched->BeginFlushBatch();
+    }
+    const FlushBatchGuard batch_guard{batched};
     MemoryOperation(gpu_addr, size, true, mapped_big, do_nothing, flush_short_pages);
 }
 
