@@ -119,6 +119,21 @@ public:
                                            : nullptr;
     }
 
+    /// The frame the pipeline cache last handed this pipeline out (evicts long unused ones).
+    void MarkUsed(u64 frame) noexcept {
+        last_use_frame = frame;
+    }
+
+    [[nodiscard]] u64 LastUse() const noexcept {
+        return last_use_frame;
+    }
+
+    /// Forgets the transitions, which may point to pipelines the cache evicted.
+    void ClearTransitions() noexcept {
+        transition_keys.clear();
+        transitions.clear();
+    }
+
     [[nodiscard]] bool IsBuilt() const noexcept {
         return is_built.load(std::memory_order::relaxed);
     }
@@ -159,6 +174,7 @@ private:
 
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;
+    u64 last_use_frame{};
 
     std::array<vk::ShaderModule, NUM_STAGES> spv_modules;
 
