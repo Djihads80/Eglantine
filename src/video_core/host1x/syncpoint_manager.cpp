@@ -4,11 +4,24 @@
 // SPDX-FileCopyrightText: 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "common/logging.h"
 #include "video_core/host1x/syncpoint_manager.h"
 
 namespace Tegra {
 
 namespace Host1x {
+
+bool SyncpointManager::IsValid(u32 id) {
+    if (id < NUM_MAX_SYNCPOINTS) [[likely]] {
+        return true;
+    }
+    // Reported a few times: a bad id is usually a misread register, and it repeats every frame.
+    static std::atomic<u32> reports{};
+    if (reports.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_ERROR(HW_GPU, "Syncpoint id {} out of range (max {}), ignored", id, NUM_MAX_SYNCPOINTS);
+    }
+    return false;
+}
 
 SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
     std::atomic<u32>& syncpoint, std::list<RegisteredAction>& action_storage, u32 expected_value,
@@ -50,28 +63,46 @@ void SyncpointManager::DeregisterAction(std::list<RegisteredAction>& action_stor
 }
 
 void SyncpointManager::DeregisterGuestAction(u32 syncpoint_id, const ActionHandle& handle) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     DeregisterAction(guest_action_storage[syncpoint_id], handle);
 }
 
 void SyncpointManager::DeregisterHostAction(u32 syncpoint_id, const ActionHandle& handle) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     DeregisterAction(host_action_storage[syncpoint_id], handle);
 }
 
 void SyncpointManager::IncrementGuest(u32 syncpoint_id) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     Increment(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_waiters,
               guest_action_storage[syncpoint_id]);
 }
 
 void SyncpointManager::IncrementHost(u32 syncpoint_id) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     Increment(syncpoints_host[syncpoint_id], wait_host_cv, host_waiters,
               host_action_storage[syncpoint_id]);
 }
 
 void SyncpointManager::WaitGuest(u32 syncpoint_id, u32 expected_value) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     Wait(syncpoints_guest[syncpoint_id], wait_guest_cv, guest_waiters, expected_value);
 }
 
 void SyncpointManager::WaitHost(u32 syncpoint_id, u32 expected_value) {
+    if (!IsValid(syncpoint_id)) {
+        return;
+    }
     Wait(syncpoints_host[syncpoint_id], wait_host_cv, host_waiters, expected_value);
 }
 
