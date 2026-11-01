@@ -263,10 +263,12 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 
 template <class P>
 void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
-    // EDEN_NX2_DOWNLOAD_WINDOW=0 downloads only the range asked for.
+    // EDEN_NX2_DOWNLOAD_WINDOW=1 also takes the pages around the range, below. Off: even with
+    // only whole, protected pages of the buffer, Mario Kart World faulted the GPU within two
+    // minutes (CP opcode errors), and raced 12 minutes without one with it off. Why is not found.
     static const bool window = [] {
         const char* value = std::getenv("EDEN_NX2_DOWNLOAD_WINDOW");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] != '0';
     }();
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
         if (!window) {
