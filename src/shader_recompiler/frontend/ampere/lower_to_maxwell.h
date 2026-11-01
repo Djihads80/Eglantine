@@ -766,7 +766,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             // (x, y[, layer]) and the four gradients sit in the same registers for both.
             const u32 dimension = insn.Bits(61, 3);
             const u32 high = insn.Bits(64, 8); // destination of the third and fourth channels
-            if ((insn.words[2] & ~0xffU) != 0x001e0f00 || insn.Bits(59, 2) ||
+            // Bit 90 is forwarded below (Maxwell's NODEP); Splatoon Raiders sets it.
+            if ((insn.words[2] & ~(0xffU | (1U << 26))) != 0x001e0f00 || insn.Bits(59, 2) ||
                 (dimension != 1 && dimension != 5) || binding >= 18 || offset > 0x1fff ||
                 (dest & 1) || dest >= 248 || (high & 1) || (high >= 248 && high != 255) ||
                 coordinates >= 248 || derivatives >= 247)
@@ -1364,9 +1365,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             break;
         }
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
-            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
+            // Mask bits are Maxwell's (1 width, 2 height, 4 depth): 3 writes a pair, the rest one.
+            const u32 query_mask = insn.Bits(72, 4);
+            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || query_mask == 0 || query_mask > 4 ||
                 insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) != 2 ||
-                insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
+                insn.Bits(40, 14) > 0x1fff || (query_mask == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
             result.required_texture_buffer = 2;
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
