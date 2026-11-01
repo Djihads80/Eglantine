@@ -1758,12 +1758,13 @@ u64 Device::GetDeviceMemorySlack() const {
 u64 Device::GetDeviceMemoryBudget() const {
 #ifdef ANDROID
     // A phone GPU shares the system's RAM with the guest (12 GiB for a Switch 2 program): a
-    // quarter of it (at least 4 GiB), ~6 GiB on a 24 GiB phone. Without VK_EXT_memory_budget
+    // fifth of it (at least 4 GiB), ~4.7 GiB on a 24 GiB phone. Without VK_EXT_memory_budget
     // (Qualcomm) the integrated default of 4 GiB was under what Mario Kart World keeps in use;
     // with it, a Turnip build reported ~9 GiB, and the textures it let in got the game killed
-    // for want of memory 20 minutes in.
+    // for want of memory. Even with a quarter, loading a race (16-17 GB for the process, the
+    // guest's own peak) left the phone without memory.
     const u64 integrated_budget =
-        (std::max<u64>)(Common::GetMemInfo().TotalPhysicalMemory / 4, u64{4} << 30);
+        (std::max<u64>)(Common::GetMemInfo().TotalPhysicalMemory / 5, u64{4} << 30);
     if (!extensions.memory_budget) {
         return is_integrated ? integrated_budget : 0;
     }
