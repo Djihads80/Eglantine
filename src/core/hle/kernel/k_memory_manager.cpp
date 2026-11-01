@@ -450,6 +450,18 @@ Result KMemoryManager::AllocateForProcess(KPageGroup* out, size_t num_pages, u32
     R_SUCCEED();
 }
 
+void KMemoryManager::ReleaseFreedPages(KPhysicalAddress address, size_t num_pages) {
+    // Freed guest memory stayed resident until reused: Mario Kart World's memory grew with every
+    // course it loaded (the last ones' regions freed but resident) until a phone killed it on the
+    // third. Small runs (thread stacks and the like) are left, not worth the system call.
+    constexpr size_t MinPages = 16;
+    if (num_pages < MinPages) {
+        return;
+    }
+    m_system.DeviceMemory().buffer.ReleaseBackingRegion(
+        GetInteger(address) - Core::DramMemoryMap::Base, num_pages * PageSize);
+}
+
 size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
                                         KVirtualAddress management, KVirtualAddress management_end,
                                         Pool p) {
