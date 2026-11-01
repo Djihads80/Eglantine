@@ -199,8 +199,19 @@ object FileUtil {
      * @param uri content uri
      * @return String display name
      */
+    /**
+     * Whether a game's path still points at something: a document URI, or a plain file path for
+     * loose dumps read through All files access.
+     */
+    fun gameFileExists(path: String): Boolean =
+        if (path.startsWith("/")) {
+            File(path).exists()
+        } else {
+            DocumentFile.fromSingleUri(context, Uri.parse(path))?.exists() == true
+        }
+
     fun getFilename(uri: Uri): String {
-        if (uri.scheme == "file") {
+        if (uri.scheme == "file" || uri.scheme == null) {
             return uri.lastPathSegment?.takeIf { it.isNotEmpty() } ?: throw IOException(
                 "Invalid file URI: $uri"
             )

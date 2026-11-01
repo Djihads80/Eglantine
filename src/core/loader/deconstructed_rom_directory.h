@@ -58,8 +58,14 @@ public:
     ResultStatus ReadNSOModules(Modules& out_modules) override;
 
 private:
+    /// The RomFS, built from the ExeFS's surroundings on first use: building it walks the whole
+    /// tree, which the game list's metadata reads don't need.
+    const FileSys::VirtualFile& GetRomFS();
+
     FileSys::ProgramMetadata metadata;
     FileSys::VirtualFile romfs;
+    FileSys::VirtualDir romfs_exefs_dir;
+    bool romfs_found{};
     FileSys::VirtualDir dir;
 
     std::vector<u8> icon_data;

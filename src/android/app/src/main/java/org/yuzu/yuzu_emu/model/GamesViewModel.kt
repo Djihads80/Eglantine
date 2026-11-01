@@ -3,9 +3,7 @@
 
 package org.yuzu.yuzu_emu.model
 
-import android.net.Uri
 import android.widget.Toast
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.preference.PreferenceManager
@@ -20,6 +18,7 @@ import kotlinx.serialization.json.Json
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.YuzuApplication
+import org.yuzu.yuzu_emu.utils.FileUtil
 import org.yuzu.yuzu_emu.utils.GameHelper
 import org.yuzu.yuzu_emu.utils.NativeConfig
 import java.util.concurrent.atomic.AtomicBoolean
@@ -117,12 +116,7 @@ class GamesViewModel : ViewModel() {
                                     return@forEach
                                 }
 
-                                val gameExists =
-                                    DocumentFile.fromSingleUri(
-                                        YuzuApplication.appContext,
-                                        Uri.parse(game.path)
-                                    )?.exists()
-                                if (gameExists == true) {
+                                if (FileUtil.gameFileExists(game.path)) {
                                     deserializedGames.add(game)
                                 }
                             }

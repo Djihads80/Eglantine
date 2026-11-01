@@ -11,6 +11,7 @@
 #include "common/logging.h"
 #include "common/random.h"
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
@@ -77,8 +78,33 @@ struct PatchCollection {
 
 namespace {
 
+FileSys::VirtualDir GetRomFSDirectory(const FileSys::VirtualDir& dir) {
+    auto romfs_dir = dir->GetSubdirectory("romfs");
+    return romfs_dir ? romfs_dir : dir->GetSubdirectory("RomFS");
+}
+
+// The base title's romfs/ for an ExeFS in <game>/updates/<version>/exefs (also update/<version>).
+FileSys::VirtualDir FindBaseRomFSDirectory(const FileSys::VirtualDir& version_dir) {
+    const auto updates_dir = version_dir->GetParentDirectory();
+    const auto game_dir = updates_dir ? updates_dir->GetParentDirectory() : nullptr;
+    if (game_dir == nullptr) {
+        return nullptr;
+    }
+    const auto updates_name = Common::ToLower(updates_dir->GetName());
+    if (updates_name != "updates" && updates_name != "update") {
+        return nullptr;
+    }
+    auto base_dir = game_dir->GetSubdirectory("base");
+    if (!base_dir) {
+        base_dir = game_dir->GetSubdirectory("Base");
+    }
+    return base_dir ? GetRomFSDirectory(base_dir) : nullptr;
+}
+
 // RomFS for a loose ExeFS: the first .romfs file next to main, else a romfs/ directory next to
-// the exefs/ directory (the usual layout of an extracted title).
+// the exefs/ directory (the usual layout of an extracted title). An update in the <game>/base +
+// <game>/updates/<version> layout without a RomFS of its own uses the base title's. Extracted
+// updates carry the whole RomFS, so the two are not layered (that triples the time to build it).
 FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     if (exefs_dir == nullptr) {
         return nullptr;
@@ -88,15 +114,17 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
             return f;
         }
     }
-    if (const auto parent = exefs_dir->GetParentDirectory()) {
-        auto romfs_dir = parent->GetSubdirectory("romfs");
-        if (!romfs_dir) {
-            romfs_dir = parent->GetSubdirectory("RomFS");
-        }
-        if (romfs_dir) {
-            LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            return FileSys::CreateRomFS(romfs_dir);
-        }
+    const auto parent = exefs_dir->GetParentDirectory();
+    if (parent == nullptr) {
+        return nullptr;
+    }
+    if (const auto romfs_dir = GetRomFSDirectory(parent)) {
+        LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
+        return FileSys::CreateRomFS(romfs_dir);
+    }
+    if (const auto base_romfs_dir = FindBaseRomFSDirectory(parent)) {
+        LOG_INFO(Loader, "Using the base title's RomFS directory");
+        return FileSys::CreateRomFS(base_romfs_dir);
     }
     return nullptr;
 }
@@ -237,7 +265,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         name = control->GetApplicationName();
     }
 
-    romfs = FindLooseRomFS(file_dir);
+    romfs_exefs_dir = file_dir;
     if (const auto title_dir = file_dir->GetParentDirectory()) {
         auto romfs_dir = title_dir->GetSubdirectory("romfs");
         if (!romfs_dir) {
@@ -253,7 +281,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     , dir(std::move(directory))
     , override_update(override_update_)
 {
-    romfs = FindLooseRomFS(dir);
+    romfs_exefs_dir = dir;
 }
 
 FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
@@ -312,7 +340,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that normally apply
     // LayeredFS to the RomFS; apply it here so mods in user/load/<titleid>/ work too.
-    if (romfs != nullptr) {
+    if (GetRomFS() != nullptr) {
         const FileSys::PatchManager patch_manager(metadata.GetTitleID(),
                                                   system.GetFileSystemController(),
                                                   system.GetContentProvider());
@@ -421,8 +449,16 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
             LoadParameters{metadata.GetMainThreadPriority(), metadata.GetMainThreadStackSize()}};
 }
 
+const FileSys::VirtualFile& AppLoader_DeconstructedRomDirectory::GetRomFS() {
+    if (!romfs_found) {
+        romfs_found = true;
+        romfs = FindLooseRomFS(romfs_exefs_dir);
+    }
+    return romfs;
+}
+
 ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& out_dir) {
-    if (romfs == nullptr) {
+    if (GetRomFS() == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
 
