@@ -66,6 +66,29 @@ void TrimHostLevels(u32 host_level_offset, Copies& copies) {
     }
 }
 
+// Image to image copies by guest level, either side possibly keeping only levels >= its
+// host_level_offset: levels renumbered to each side's host levels (same extents), and copies of
+// levels a side doesn't keep dropped. Copying a level a host image lacks is invalid Vulkan, and
+// Turnip crashed on it once reduce_texture_resolution trimmed most compressed textures.
+template <typename Copies>
+void TrimImageCopies(u32 dst_level_offset, u32 src_level_offset, Copies& copies) {
+    if (dst_level_offset == 0 && src_level_offset == 0) {
+        return;
+    }
+    const s32 dst_skip = static_cast<s32>(dst_level_offset);
+    const s32 src_skip = static_cast<s32>(src_level_offset);
+    copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                [dst_skip, src_skip](const auto& copy) {
+                                    return copy.dst_subresource.base_level < dst_skip ||
+                                           copy.src_subresource.base_level < src_skip;
+                                }),
+                 copies.end());
+    for (auto& copy : copies) {
+        copy.dst_subresource.base_level -= dst_skip;
+        copy.src_subresource.base_level -= src_skip;
+    }
+}
+
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
@@ -2766,10 +2789,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             const u32 up_scale = can_rescale ? resolution.up_scale : 1;
             const u32 down_shift = can_rescale ? resolution.down_shift : 0;
             auto copies = MakeShrinkImageCopies(new_info, overlap.info, base, up_scale, down_shift);
-            if (overlap.info.num_samples != new_image.info.num_samples) {
-                runtime.CopyImageMSAA(new_image, overlap, copies);
-            } else {
-                runtime.CopyImage(new_image, overlap, copies);
+            TrimImageCopies(new_image.host_level_offset, overlap.host_level_offset, copies);
+            if (!copies.empty()) {
+                if (overlap.info.num_samples != new_image.info.num_samples) {
+                    runtime.CopyImageMSAA(new_image, overlap, copies);
+                } else {
+                    runtime.CopyImage(new_image, overlap, copies);
+                }
             }
             new_image.modification_tick = overlap.modification_tick;
         }
@@ -3670,6 +3696,10 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
     if (dst.info.astc_opaque != src.info.astc_opaque) {
         // BC1 and BC3 blocks differ in size, so the host can't copy between them; both hold the
         // same guest data, which is uploaded from guest memory instead.
+        return;
+    }
+    TrimImageCopies(dst.host_level_offset, src.host_level_offset, copies);
+    if (copies.empty()) {
         return;
     }
     const bool is_rescaled = True(src.flags & ImageFlagBits::Rescaled);
