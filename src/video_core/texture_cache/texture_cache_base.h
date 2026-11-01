@@ -433,6 +433,12 @@ private:
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
 
+    /// Per image view, the (channel, descriptor) entries of the channels' image_views maps that
+    /// point to it. Deleting an image erased them by scanning every map (title 1: ~5,000 entries,
+    /// 50-130 us for each deleted image, dozens a frame while the collector runs).
+    std::unordered_map<ImageViewId, boost::container::small_vector<std::pair<size_t, TICEntry>, 2>>
+        image_view_descriptors;
+
     /// Remove framebuffers using the given image views from the cache
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
 

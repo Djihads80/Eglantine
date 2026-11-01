@@ -689,8 +689,13 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         if (IsValidEntry(*gpu_memory, descriptor)) {
             // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
-            if (is_new_tc)
+            if (is_new_tc) {
                 pair->second = CreateImageView(descriptor);
+                if (pair->second != NULL_IMAGE_VIEW_ID) {
+                    image_view_descriptors[pair->second].emplace_back(current_channel_id,
+                                                                      descriptor);
+                }
+            }
             PrepareImageView(pair->second, false, false);
             channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
             return pair->second;
@@ -2917,17 +2922,23 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
 
 template <class P>
 void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> removed_views) {
-    for (size_t c : active_channel_ids) {
-        auto& channel_info = channel_storage[c];
-        auto it = channel_info.image_views.begin();
-        while (it != channel_info.image_views.end()) {
-            const auto found = std::ranges::find(removed_views, it->second);
-            if (found != removed_views.end()) {
-                it = channel_info.image_views.erase(it);
-            } else {
-                ++it;
+    for (const ImageViewId removed : removed_views) {
+        const auto refs = image_view_descriptors.find(removed);
+        if (refs == image_view_descriptors.end()) {
+            continue;
+        }
+        for (const auto& [channel, descriptor] : refs->second) {
+            // The channel may be gone, or its entry point to another view since.
+            if (std::ranges::find(active_channel_ids, channel) == active_channel_ids.end()) {
+                continue;
+            }
+            auto& image_views = channel_storage[channel].image_views;
+            if (const auto it = image_views.find(descriptor);
+                it != image_views.end() && it->second == removed) {
+                image_views.erase(it);
             }
         }
+        image_view_descriptors.erase(refs);
     }
 }
 
