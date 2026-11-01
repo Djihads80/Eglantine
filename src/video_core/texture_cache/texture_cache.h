@@ -175,11 +175,62 @@ void TextureCache<P>::RunGarbageCollector() {
         }
         return false;
     };
+    // Deleting by age alone left every device memory block partly used: the collector deletes
+    // thousands of images a minute and new ones land in the holes, so blocks seldom empty (title
+    // 1: ~0.8 GB of holes in ~190 32 MiB blocks after ten minutes, which the driver counts as
+    // used). Among the oldest candidates (8 per image this pass may delete), those in the
+    // emptiest blocks go first, so blocks drain and go back to the driver; placement already
+    // prefers the fullest blocks (best fit). Images with memory of their own sit in the middle.
+    const auto Collect = [&] {
+        if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
+            std::vector<ImageId> candidates;
+            const size_t limit = num_iterations * 8;
+            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, [&](ImageId image_id) {
+                candidates.push_back(image_id);
+                return candidates.size() >= limit;
+            });
+            if (candidates.empty()) {
+                return;
+            }
+            if (block_image_bytes_frame == ~0ULL || frame_tick - block_image_bytes_frame >= 60) {
+                block_image_bytes_frame = frame_tick;
+                block_image_bytes.clear();
+                for (const auto [image_id, image] : slot_images) {
+                    const auto block = image->MemoryBlock();
+                    if (block.block != 0) {
+                        block_image_bytes[block.block] += block.size;
+                    }
+                }
+            }
+            std::vector<std::pair<double, ImageId>> ordered;
+            ordered.reserve(candidates.size());
+            for (const ImageId image_id : candidates) {
+                const auto block = slot_images[image_id].MemoryBlock();
+                double fill = 0.5;
+                if (block.block != 0 && block.block_size != 0) {
+                    const auto it = block_image_bytes.find(block.block);
+                    fill = it != block_image_bytes.end()
+                               ? static_cast<double>(it->second) / static_cast<double>(block.block_size)
+                               : 0.0;
+                }
+                ordered.emplace_back(fill, image_id);
+            }
+            std::stable_sort(ordered.begin(), ordered.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [fill, image_id] : ordered) {
+                if (Cleanup(image_id)) {
+                    break;
+                }
+            }
+        } else {
+            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+        }
+    };
     Configure(false);
-    lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+    Collect();
     if (total_used_memory >= critical_memory) {
         Configure(true);
-        lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+        Collect();
     }
 }
 

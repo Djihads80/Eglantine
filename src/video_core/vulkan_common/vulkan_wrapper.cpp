@@ -526,6 +526,19 @@ void Image::Release() const noexcept {
     }
 }
 
+Image::MemoryBlock Image::GetMemoryBlock() const noexcept {
+    if (allocation == nullptr) {
+        return {};
+    }
+    VmaAllocationInfo2 info{};
+    vmaGetAllocationInfo2(allocator, allocation, &info);
+    if (info.dedicatedMemory) {
+        return {0, info.blockSize, info.allocationInfo.size};
+    }
+    return {reinterpret_cast<u64>(info.allocationInfo.deviceMemory), info.blockSize,
+            info.allocationInfo.size};
+}
+
 void Buffer::Flush() const {
     if (!is_coherent) {
         vmaFlushAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);

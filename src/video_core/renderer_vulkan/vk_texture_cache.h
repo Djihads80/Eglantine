@@ -387,6 +387,11 @@ public:
         return (this->*current_image).UsageFlags();
     }
 
+    /// Where the image's memory lies, for the collector (TextureCache::RunGarbageCollector).
+    [[nodiscard]] vk::Image::MemoryBlock MemoryBlock() const noexcept {
+        return original_image.GetMemoryBlock();
+    }
+
     /// Returns true when the image is already initialized and mark it as initialized
     [[nodiscard]] bool ExchangeInitialization() noexcept {
         return std::exchange(initialized, true);

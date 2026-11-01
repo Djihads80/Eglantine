@@ -588,6 +588,10 @@ private:
     };
     std::deque<GpuSentencedImage> gpu_sentenced_images;
     u64 gpu_sentenced_bytes{};
+
+    /// Bytes of images per device memory block, for the collector (refreshed every 60 frames).
+    std::unordered_map<u64, u64> block_image_bytes;
+    u64 block_image_bytes_frame{~0ULL};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 

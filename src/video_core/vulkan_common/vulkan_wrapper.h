@@ -737,6 +737,15 @@ public:
         return usage;
     }
 
+    /// Where the image's memory lies: the block (0 when the image has no memory or a block of
+    /// its own), the block's size and the image's part of it.
+    struct MemoryBlock {
+        u64 block;
+        u64 block_size;
+        u64 size;
+    };
+    [[nodiscard]] MemoryBlock GetMemoryBlock() const noexcept;
+
 private:
     void Release() const noexcept;
 
