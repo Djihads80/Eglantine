@@ -7,6 +7,10 @@ on:
         description: Publish the binaries as a GitHub release
         type: boolean
         default: true
+      all_platforms:
+        description: Also build Linux, ARM and macOS (slow; by default only Windows is built)
+        type: boolean
+        default: false
   push:
     branches:
       - nx2
@@ -26,49 +30,47 @@ on:
 permissions:
   contents: read
 
-# Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
-# clang and an older reader refuses it, so this has to stay at or above whatever produced
-# eden.profdata; bump it when a refreshed profile needs a newer LLVM.
-env:
-  PGO_LLVM_VERSION: '23'
-
 concurrency:
   group: release-binaries-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Every platform builds in parallel and the release waits for the slowest one, so the platforms
+  # nobody downloads are left out unless a manual run ticks "all_platforms".
+  plan:
+    name: Pick platforms
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          windows='{"platform":"windows-x86_64","runner":"windows-2022"}'
+          others='{"platform":"linux-x86_64","runner":"ubuntu-24.04"},{"platform":"linux-aarch64","runner":"ubuntu-24.04-arm"},{"platform":"macos-arm64","runner":"macos-15"}'
+          if [ '${{ inputs.all_platforms }}' = 'true' ]; then
+            echo "matrix={\"include\":[$windows,$others]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$windows]}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: ${{ matrix.platform }} binary
+    needs: plan
     runs-on: ${{ matrix.runner }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 1500M
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: '1'
+      # Runner images install the compiler fresh with a new mtime every run, and ccache's default
+      # compiler check is the mtime, so without this every run misses the whole cache.
+      CCACHE_COMPILERCHECK: content
+      CCACHE_BASEDIR: ${{ github.workspace }}
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          # The two -pgo builds are the same programs compiled by clang against Eden's periodically
-          # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang like
-          # Eden does; MSVC cannot read an LLVM .profdata file.
-          - platform: linux-x86_64-pgo
-            runner: ubuntu-24.04
-            pgo: true
-          - platform: windows-x86_64
-            runner: windows-2022
-          - platform: windows-x86_64-pgo
-            runner: windows-2022
-            pgo: true
-            mingw: true
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
-          - platform: macos-arm64
-            runner: macos-15
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Check out source
@@ -122,35 +124,6 @@ jobs:
           modules: qtcharts
           cache: true
 
-      # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
-      # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
-      # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
-      # ships ld.lld under /usr/lib/llvm-23/bin, so -B points the linker search there.
-      - name: Install clang for PGO
-        if: startsWith(matrix.platform, 'linux') && matrix.pgo
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
-            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
-            sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
-          "clang-$PGO_LLVM_VERSION" --version
-
-      # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
-      # path their clang understands.
-      - name: Download PGO profile
-        if: matrix.pgo
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL -o eden.profdata \
-            https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata
-          test -s eden.profdata
-
       - name: Set up MSVC
         if: matrix.platform == 'windows-x86_64'
         uses: ilammy/msvc-dev-cmd@v1
@@ -188,24 +161,6 @@ jobs:
         shell: pwsh
         run: glslangValidator --version
 
-      # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
-      # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
-      - name: Set up MSYS2
-        if: matrix.mingw
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            git make autoconf libtool automake-wrapper patch jq pactoys ninja
-          pacboy: >-
-            toolchain:p clang:p lld:p cmake:p python-pip:p
-            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
-            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
-            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
-            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
-            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
-
       - name: Cache CPM downloads
         uses: actions/cache@v4
         with:
@@ -215,9 +170,12 @@ jobs:
             cpm-${{ runner.os }}-
 
       # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
-      # exact hit), and restore-keys seeds it from the newest one of the same platform.
-      - name: Cache compiler objects
-        uses: actions/cache@v4
+      # exact hit), and restore-keys seeds it from the newest one of the same platform. Restore and
+      # save are separate steps so the save can run even when the build is cancelled or fails: the
+      # combined action only saves after a fully successful job, so a run cancelled by the next
+      # push (see concurrency below) used to throw away everything it compiled.
+      - name: Restore compiler objects
+        uses: actions/cache/restore@v4
         with:
           path: |
             .ccache
@@ -247,18 +205,6 @@ jobs:
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
           )
-          if [ '${{ matrix.pgo }}' = 'true' ]; then
-            # Same flags Eden's CI passes for its clang PGO build.
-            profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
-              -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
-            flags+=(
-              "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
-              "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
-              "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
-              "-DCMAKE_C_FLAGS=$profile"
-              "-DCMAKE_CXX_FLAGS=$profile"
-            )
-          fi
           cmake -S . -B build/release -G Ninja "${flags[@]}"
 
       - name: Configure Windows
@@ -300,49 +246,21 @@ jobs:
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON
 
-      # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
-      # path is converted to its Windows form because clang runs with the MSYS mount underneath.
-      - name: Configure MinGW PGO
-        if: matrix.mingw
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          profile="-fprofile-use=$(cygpath -m "$PWD/eden.profdata") -Wno-backend-plugin \
-            -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
-          cmake -S . -B build/release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DYUZU_TESTS=OFF \
-            -DYUZU_CMD=ON \
-            -DYUZU_ROOM=OFF \
-            -DYUZU_ROOM_STANDALONE=OFF \
-            -DYUZU_USE_BUNDLED_QT=OFF \
-            -DYUZU_USE_BUNDLED_SDL3=ON \
-            -DYUZU_USE_BUNDLED_FFMPEG=ON \
-            -DVulkanHeaders_FORCE_BUNDLED=ON \
-            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
-            -DENABLE_UPDATE_CHECKER=OFF \
-            -DUSE_DISCORD_PRESENCE=OFF \
-            -DUSE_CCACHE=ON \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
-            "-DCMAKE_C_FLAGS=$profile" \
-            "-DCMAKE_CXX_FLAGS=$profile"
-
       - name: Build
-        if: ${{ ! matrix.mingw }}
         shell: bash
         run: |
+          if command -v ccache > /dev/null; then ccache --zero-stats; fi
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
 
-      - name: Build MinGW PGO
-        if: matrix.mingw
-        shell: msys2 {0}
-        run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
-          ccache --show-stats
+      - name: Save compiler objects
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: objects-${{ matrix.platform }}-${{ github.sha }}
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
@@ -409,42 +327,6 @@ jobs:
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
 
-      # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
-      # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
-      # them (docs/Caveats.md#msys2).
-      - name: Package MinGW binary
-        if: matrix.mingw
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          export PATH="/ucrt64/bin:$PATH"
-          cd build/release/bin
-          test -f eglantine.exe
-          test -f eden-cli.exe
-          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
-            --no-system-dxc-compiler --no-system-d3d-compiler eglantine.exe
-          deps() {
-            objdump -p "$1" | awk '/DLL Name:/ {print $3}' | while read -r dll; do
-              [ -z "$dll" ] && continue
-              source=$(command -v "$dll" 2>/dev/null || true)
-              [ -z "$source" ] && continue
-              # The system DLLs ship with Windows, so they never need bundling.
-              case "$source" in
-                *System32* | *SysWOW64*) continue ;;
-              esac
-              if [ ! -f "$dll" ]; then
-                cp "$source" "$dll"
-                deps "$source"
-              fi
-            done
-          }
-          for exe in eglantine.exe eden-cli.exe; do
-            deps "$exe"
-          done
-          find . -name '*.dll' | while read -r dll; do
-            deps "$dll"
-          done
-
       # A self-contained app bundle: macdeployqt copies Qt and every other Homebrew library both
       # programs load into the bundle, then the leftover Homebrew search paths are removed so a
       # machine with Homebrew still uses the bundled copies. Ad-hoc signed, not notarized.
@@ -501,15 +383,6 @@ jobs:
       # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
         if: matrix.platform == 'windows-x86_64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: build/release/bin/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload MinGW binary
-        if: matrix.mingw
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
@@ -591,14 +464,15 @@ jobs:
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
-          macOS: Apple Silicon and macOS 15 or newer. Unzip and move eglantine.app to Applications; eden-cli is inside it, in Contents/MacOS. The app is not notarized, so the first time right-click it and choose Open (or run xattr -dr com.apple.quarantine eglantine.app).
-          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
+          macOS: Apple Silicon and macOS 15 or newer. Unzip and move eglantine.app to Applications; eden-cli is inside it, in Contents/MacOS. The app is not notarized, so the first time right-click it and choose Open (or run xattr -dr com.apple.quarantine eglantine.app)."
 
       - name: Ping Discord
         shell: bash
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          # A fork without the DISCORD_WEBHOOK_URL secret has nothing to ping; don't fail the release.
+          if [ -z "$WEBHOOK" ]; then echo "No DISCORD_WEBHOOK_URL secret set, skipping"; exit 0; fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
           MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
             "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" "${GITHUB_SHA::7}" "$URL")
