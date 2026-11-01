@@ -1128,10 +1128,15 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
-    // Draws that write memory wait for their pipeline (in the Vulkan worker) instead of being
-    // skipped: a skipped one left buffers later passes read (culling results, indirect arguments,
-    // counters) stale, and Mario Kart World then faulted the GPU (CP opcode errors on Turnip and
-    // Qualcomm's driver alike, never with asynchronous shaders off).
+    // Switch 2 programs render once what they then reuse for a long time: Mario Kart World raced
+    // in another scene's lighting after draws were skipped while their pipelines built. Their
+    // draws wait for the pipeline instead (in the Vulkan worker), which still builds on the
+    // workers alongside the others.
+    if (Settings::CurrentProgramIsSwitch2()) {
+        return pipeline;
+    }
+    // Draws that write memory wait too: skipping one leaves what later passes read (culling
+    // results, indirect arguments, counters) stale.
     if (pipeline->WritesMemory()) {
         return pipeline;
     }
