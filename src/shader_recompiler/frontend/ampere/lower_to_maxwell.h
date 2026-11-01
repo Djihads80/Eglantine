@@ -809,7 +809,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // (x, y[, layer]) and the four gradients sit in the same registers for both.
             const u32 dimension = insn.Bits(61, 3);
             const u32 high = insn.Bits(64, 8); // destination of the third and fourth channels
-            if ((insn.words[2] & ~0xffU) != 0x001e0f00 || insn.Bits(59, 2) ||
+            // Bit 90 is forwarded below (Maxwell's NODEP); Splatoon Raiders sets it.
+            if ((insn.words[2] & ~(0xffU | (1U << 26))) != 0x001e0f00 || insn.Bits(59, 2) ||
                 (dimension != 1 && dimension != 5) || binding >= 18 || offset > 0x1fff ||
                 (dest & 1) || dest >= 248 || (high & 1) || (high >= 248 && high != 255) ||
                 coordinates >= 248 || derivatives >= 247)
