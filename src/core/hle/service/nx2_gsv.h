@@ -102,6 +102,14 @@ inline void TipcReplyWords(HLERequestContext& ctx, std::initializer_list<u32> wo
     TipcReplyWords(ctx, std::span<const u32>{words.begin(), words.size()});
 }
 
+// TIPC 0(u64 token) on the Switch 2 sessions: a handshake newer SDKs send first; the reply echoes
+// the token. (The auto stub's reply only echoed it by leaving the request's words in place.)
+inline void TipcHandshake(HLERequestContext& ctx, std::string_view session) {
+    const auto* w = ctx.CommandBuffer();
+    LOG_INFO(Service, "{} TIPC 0 handshake {:#x}", session, u64{w[2]} | (u64{w[3]} << 32));
+    TipcReplyWords(ctx, {w[2], w[3]});
+}
+
 // Replies with success and a copied handle to a new session served by `iface`.
 template <class T>
 inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::shared_ptr<T> iface) {
@@ -139,6 +147,8 @@ public:
             {103, &INx2SyncptSession::QueryCounter, "QueryCounter"},
             {201, &INx2SyncptSession::RequestSlotEvent, "RequestSlotEvent (guessed)"},
             {202, &INx2SyncptSession::CancelSlotEvent, "CancelSlotEvent (guessed)"},
+            // Firmware commands without a known meaning: zeroed replies.
+            {21, &INx2SyncptSession::StubReplyZeroed, "Unknown21"},
         });
     }
 
@@ -160,9 +170,7 @@ public:
 private:
     // Newer SDKs (title 1) open with TIPC 0(u64 token) and abort unless the reply echoes it.
     void Handshake(HLERequestContext& ctx) {
-        const auto* w = ctx.CommandBuffer();
-        LOG_INFO(Service, "nx2:syncpt TIPC 0 handshake {:#x}", u64{w[2]} | (u64{w[3]} << 32));
-        TipcReplyWords(ctx, {w[2], w[3]});
+        TipcHandshake(ctx, "nx2:syncpt");
     }
 
     void GetCount(HLERequestContext& ctx) {
@@ -299,6 +307,7 @@ public:
     explicit INx2GpuSession(Core::System& system_)
         : ServiceFramework{system_, "nx2:gpu"}, m_context{system_, "nx2:gpu"} {
         RegisterHandlersTipc({
+            {0, &INx2GpuSession::Handshake, "Handshake"},
             {11, &INx2GpuSession::GetIdRange, "GetIdRange (guessed)"},
             {12, &INx2GpuSession::GetIdEvent, "GetIdEvent (guessed)"},
             {21, &INx2GpuSession::Start, "Start (guessed)"},
@@ -318,6 +327,16 @@ public:
             {214, &INx2GpuSession::SubCreateGpuOnlyRegion, "CreateSparseRegion"},
             {215, &INx2GpuSession::SubDestroySparseRegion, "DestroySparseRegion"},
             {216, &INx2GpuSession::SubSparseMap, "ExecuteSparseMapRequests"},
+            // Firmware commands without a known meaning: zeroed replies.
+            {23, &INx2GpuSession::StubReplyZeroed, "Unknown23"},
+            {24, &INx2GpuSession::StubReplyZeroed, "Unknown24"},
+            {25, &INx2GpuSession::StubReplyZeroed, "Unknown25"},
+            {34, &INx2GpuSession::StubReplyZeroed, "Unknown34"},
+            {51, &INx2GpuSession::StubReplyZeroed, "Unknown51"},
+            {8001, &INx2GpuSession::StubReplyZeroed, "Unknown8001"},
+            {8002, &INx2GpuSession::StubReplyZeroed, "Unknown8002"},
+            {8003, &INx2GpuSession::StubReplyZeroed, "Unknown8003"},
+            {8004, &INx2GpuSession::StubReplyZeroed, "Unknown8004"},
         });
         if (LazySparseRegions()) {
             Tegra::Nx2SetSparseBacking(
@@ -336,6 +355,10 @@ public:
     }
 
 private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:gpu");
+    }
+
     static constexpr u32 NumIds = 32;
 
     Kernel::KEvent* EventFor(u32 id) {
@@ -1499,19 +1522,73 @@ public:
         : ServiceFramework{system_, "nx2:vi2"}, m_context{system_, "nx2:vi2"},
           m_objects{std::move(objects_)} {
         RegisterHandlersTipc({
+            {0, &INx2Vi2Session::Handshake, "Handshake"},
             {1, &INx2Vi2Session::ReturnOne, "Unknown1"},
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
             {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
-            {31, &INx2Vi2Session::GetVsyncEvent, "GetVsyncEvent (guessed)"},
-            {32, &INx2Vi2Session::GetVsyncEvent, "GetDisplayVsyncEvent (guessed)"},
-            // Title 1 calls these ~75 times a second with the display name "default"; the
-            // auto stub's empty success reply works, but logged two lines per call (a 50 MB log
-            // in an 18 minute session).
-            {104, &INx2Vi2Session::SucceedQuietly, "Unknown104 (display \"default\")"},
-            {105, &INx2Vi2Session::SucceedQuietly, "Unknown105 (display \"default\")"},
+            {31, &INx2Vi2Session::AcquireNativeEvent, "AcquireNativeEvent"},
+            {32, &INx2Vi2Session::DuplicateNativeEvent, "DuplicateNativeEvent"},
+            {261, &INx2Vi2Session::BindVsync, "BindDisplayVsyncEvent"},
+            {262, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayVsyncEvent"},
+            {263, &INx2Vi2Session::BindChange, "BindDisplayRefreshRateEvent"},
+            {264, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayRefreshRateEvent"},
+            {265, &INx2Vi2Session::BindChange, "BindDisplayHdrStatusEvent"},
+            {266, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayHdrStatusEvent"},
+            {267, &INx2Vi2Session::BindChange, "BindDisplayHdrPaperWhiteEvent"},
+            {268, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayHdrPaperWhiteEvent"},
+            {269, &INx2Vi2Session::BindChange, "BindDisplayBufferMaxResolutionEvent"},
+            {270, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayBufferMaxResolutionEvent"},
+            {271, &INx2Vi2Session::BindChange, "BindDisplayModeCapabilityEvent"},
+            {272, &INx2Vi2Session::UnbindNativeEvent, "UnbindDisplayModeCapabilityEvent"},
+            // Title 1 calls these ~75 times a second with the display name "default"; quiet
+            // handlers (the auto stub logged two lines per call: a 50 MB log in an 18 minute
+            // session).
+            {103, &INx2Vi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
+            {104, &INx2Vi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
+            {105, &INx2Vi2Session::QueryDisplayHdrPaperWhite, "QueryDisplayHdrPaperWhite"},
+            {212, &INx2Vi2Session::GetLayerBufferBits, "GetLayerBufferBits"},
             {228, &INx2Vi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {229, &INx2Vi2Session::PresentClientBuffer, "PresentClientBuffer"},
+            // Firmware commands without a known meaning: zeroed replies.
+            {13, &INx2Vi2Session::StubReplyZeroed, "Unknown13"},
+            {51, &INx2Vi2Session::StubReplyZeroed, "Unknown51"},
+            {101, &INx2Vi2Session::StubReplyZeroed, "Unknown101"},
+            {102, &INx2Vi2Session::StubReplyZeroed, "Unknown102"},
+            {106, &INx2Vi2Session::StubReplyZeroed, "Unknown106"},
+            {107, &INx2Vi2Session::StubReplyZeroed, "Unknown107"},
+            {108, &INx2Vi2Session::StubReplyZeroed, "Unknown108"},
+            {111, &INx2Vi2Session::StubReplyZeroed, "Unknown111"},
+            {112, &INx2Vi2Session::StubReplyZeroed, "Unknown112"},
+            {113, &INx2Vi2Session::StubReplyZeroed, "Unknown113"},
+            {202, &INx2Vi2Session::StubReplyZeroed, "Unknown202"},
+            {230, &INx2Vi2Session::StubReplyZeroed, "Unknown230"},
+            {231, &INx2Vi2Session::StubReplyZeroed, "Unknown231"},
+            {232, &INx2Vi2Session::StubReplyZeroed, "Unknown232"},
+            {251, &INx2Vi2Session::StubReplyZeroed, "Unknown251"},
+            {252, &INx2Vi2Session::StubReplyZeroed, "Unknown252"},
+            {261, &INx2Vi2Session::StubReplyZeroed, "Unknown261"},
+            {262, &INx2Vi2Session::StubReplyZeroed, "Unknown262"},
+            {263, &INx2Vi2Session::StubReplyZeroed, "Unknown263"},
+            {264, &INx2Vi2Session::StubReplyZeroed, "Unknown264"},
+            {265, &INx2Vi2Session::StubReplyZeroed, "Unknown265"},
+            {266, &INx2Vi2Session::StubReplyZeroed, "Unknown266"},
+            {267, &INx2Vi2Session::StubReplyZeroed, "Unknown267"},
+            {268, &INx2Vi2Session::StubReplyZeroed, "Unknown268"},
+            {269, &INx2Vi2Session::StubReplyZeroed, "Unknown269"},
+            {270, &INx2Vi2Session::StubReplyZeroed, "Unknown270"},
+            {271, &INx2Vi2Session::StubReplyZeroed, "Unknown271"},
+            {272, &INx2Vi2Session::StubReplyZeroed, "Unknown272"},
+            {301, &INx2Vi2Session::StubReplyZeroed, "Unknown301"},
+            {302, &INx2Vi2Session::StubReplyZeroed, "Unknown302"},
+            {351, &INx2Vi2Session::StubReplyZeroed, "Unknown351"},
+            {352, &INx2Vi2Session::StubReplyZeroed, "Unknown352"},
+            {353, &INx2Vi2Session::StubReplyZeroed, "Unknown353"},
+            {354, &INx2Vi2Session::StubReplyZeroed, "Unknown354"},
+            {355, &INx2Vi2Session::StubReplyZeroed, "Unknown355"},
+            {356, &INx2Vi2Session::StubReplyZeroed, "Unknown356"},
+            {358, &INx2Vi2Session::StubReplyZeroed, "Unknown358"},
+            {359, &INx2Vi2Session::StubReplyZeroed, "Unknown359"},
         });
     }
 
@@ -1531,6 +1608,10 @@ public:
     }
 
 private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:vi2");
+    }
+
     // 229(u64 client token, u32 slot, u32 image, ...fences): result, u64 mask of buffer slots the
     // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
     // at once (changes.patch's default mask is 0x7fff).
@@ -1857,15 +1938,43 @@ private:
                              static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
     }
 
+    // nn::vi2::QueryDisplayRefreshRate(display name): u32 refresh rate in Hz, then a bool (a u64
+    // in all). nn::vi::detail::DefaultDisplay::QueryRefreshRate takes only -1, 60 or 120 and fails
+    // on anything else; Minecraft polls it and never draws while it fails. A one-word reply left
+    // the bool to whatever the message buffer held.
+    void QueryDisplayRefreshRate(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {60, 0});
+    }
+
+    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits. The empty reply
+    // left it to the message buffer's leftovers; answer the BT.2408 reference white.
+    void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {203});
+    }
+
+    // nn::vi2::QueryDisplayHdrStatus(display name): u64 HdrOutputFormat, u16. The sdk's
+    // DefaultDisplay::QueryHdrStatus takes format 1 as HDR output and fails with 0x272 on
+    // anything above 1. With the empty auto stub reply it read the request's leftover words as
+    // the format; Kirby Air Riders re-queries whenever its HDR status event fires and rebuilt its
+    // window images every few frames, which showed black. Report SDR output.
+    // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format, u16 peak luminance in
+    // nits. The sdk takes format 1 as SDR and 2 as HDR and fails the query on any other value.
+    // Report SDR output with a typical SDR panel's peak.
+    void QueryDisplayHdrStatus(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {1, 0, 400});
+    }
+
+    // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
+    // a second until some are set; it only got going because the auto stub's reply happened to
+    // hold non-zero leftovers. Report the same slots 228/229 hand back.
+    void GetLayerBufferBits(HLERequestContext& ctx) {
+        constexpr u64 AvailableSlots = 0x7fff;
+        TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots), static_cast<u32>(AvailableSlots >> 32)});
+    }
+
     void ReturnOne(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:vi2 TIPC {}, returning 1", ctx.GetCommand());
         TipcReplyWords(ctx, {1});
-    }
-
-    // The same reply as the auto stub (success, no data), without its log lines.
-    void SucceedQuietly(HLERequestContext& ctx) {
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
     }
 
     // Must be < 8; nn::vi::detail::LayerHistory creates 7 timestamp recorders per layer.
@@ -1884,17 +1993,105 @@ private:
         rb.PushCopyObjects(ctx, event->GetReadableEvent());
     }
 
-    // 31(u32 kind) and 32(u32 display): events signalled on every vblank. Title 1's main thread
-    // waits on the 32 event until it has fired twice before it submits any GPU work, and hung
-    // there while it never fired.
-    void GetVsyncEvent(HLERequestContext& ctx) {
-        LOG_INFO(Service, "nx2:vi2 {} vsync event, [2]={:#x}", ctx.GetCommand(), ctx.CommandBuffer()[2]);
-        auto* event = m_context.CreateEvent(fmt::format("nx2:vi2:Vsync{}", m_events.size()));
-        m_events.push_back(event);
-        {
-            std::scoped_lock lk{m_vsync->mutex};
-            m_vsync->events.push_back(event);
+    // 31(u32 index < 8): the session's event for that slot (the sdk picks a free index). The
+    // 261..272 commands bind a slot to a display event source and unbind it again. Until a slot
+    // is bound it fires on every vblank, as all of them used to.
+    void AcquireNativeEvent(HLERequestContext& ctx) {
+        const u32 index = ctx.CommandBuffer()[2];
+        if (index >= m_native_events.size()) {
+            LOG_ERROR(Service, "nx2:vi2 31 index {} out of range", index);
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
         }
+        LOG_INFO(Service, "nx2:vi2 31 native event {}", index);
+        ReplyNativeEvent(ctx, index);
+    }
+
+    // 32(u32 index, copy handle): the client hands back its handle for an acquired slot and gets
+    // the slot's event again; the handle descriptor and handle come before the index. Games call
+    // it for slot 0 right after binding it to vsync. Title 1's main thread waits on this event
+    // until it has fired twice before it submits any GPU work, and hung there while it never
+    // fired.
+    void DuplicateNativeEvent(HLERequestContext& ctx) {
+        const u32* words = ctx.CommandBuffer();
+        u32 data = 2;
+        if (words[1] >> 31) {
+            const u32 descriptor = words[2];
+            data = 3 + ((descriptor >> 1) & 0xf) + ((descriptor >> 5) & 0xf) + (descriptor & 1 ? 2 : 0);
+        }
+        const u32 index = words[data];
+        if (index >= m_native_events.size()) {
+            LOG_ERROR(Service, "nx2:vi2 32 index {} out of range", index);
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
+        LOG_INFO(Service, "nx2:vi2 32 native event {}", index);
+        ReplyNativeEvent(ctx, index);
+    }
+
+    // 261(u64 display name, u32 index): fire the slot on every vblank.
+    void BindVsync(HLERequestContext& ctx) {
+        const u32 index = ctx.CommandBuffer()[4];
+        LOG_INFO(Service, "nx2:vi2 261 native event {} -> vsync", index);
+        if (index < m_native_events.size() && m_native_events[index]) {
+            SetVsyncSlot(index, true);
+        }
+        TipcReplyWords(ctx, {});
+    }
+
+    // 263/265/267/269/271(u64 display name, u32 index): fire the slot when the display's refresh
+    // rate, HDR status, HDR paper white, buffer max resolution or mode capability changes, so the
+    // game re-queries it. None of them change here: fire once so the game reads the current
+    // state, then leave the slot quiet. Kirby Air Riders re-queried its HDR status on every
+    // present while this slot fired with vsync.
+    void BindChange(HLERequestContext& ctx) {
+        const u32 index = ctx.CommandBuffer()[4];
+        LOG_INFO(Service, "nx2:vi2 {} native event {} -> change notification", ctx.GetCommand(), index);
+        if (index < m_native_events.size() && m_native_events[index]) {
+            SetVsyncSlot(index, false);
+            m_native_events[index]->Signal(system.Kernel());
+        }
+        TipcReplyWords(ctx, {});
+    }
+
+    // 262..272 even (u64 display name, u32 index): detach the slot from its source.
+    void UnbindNativeEvent(HLERequestContext& ctx) {
+        const u32 index = ctx.CommandBuffer()[4];
+        LOG_INFO(Service, "nx2:vi2 {} native event {} unbound", ctx.GetCommand(), index);
+        if (index < m_native_events.size() && m_native_events[index]) {
+            SetVsyncSlot(index, false);
+        }
+        TipcReplyWords(ctx, {});
+    }
+
+    void ReplyNativeEvent(HLERequestContext& ctx, u32 index) {
+        auto*& event = m_native_events[index];
+        if (!event) {
+            event = m_context.CreateEvent(fmt::format("nx2:vi2:Native{}", index));
+            m_events.push_back(event);
+            SetVsyncSlot(index, true);
+            StartVsyncTimer();
+        }
+        IPC::ResponseBuilder rb{ctx, 2, 1, 0};
+        rb.Push(ResultSuccess);
+        rb.PushCopyObjects(ctx, event->GetReadableEvent());
+    }
+
+    void SetVsyncSlot(u32 index, bool on) {
+        auto* event = m_native_events[index];
+        std::scoped_lock lk{m_vsync->mutex};
+        auto& list = m_vsync->events;
+        const auto it = std::find(list.begin(), list.end(), event);
+        if (on && it == list.end()) {
+            list.push_back(event);
+        } else if (!on && it != list.end()) {
+            list.erase(it);
+        }
+    }
+
+    void StartVsyncTimer() {
         if (!m_vsync_timer) {
             m_vsync_timer = Core::Timing::CreateEvent(
                 "nx2:vi2 vsync",
@@ -1915,14 +2112,12 @@ private:
             }()};
             system.CoreTiming().ScheduleLoopingEvent(VblankInterval, VblankInterval, m_vsync_timer);
         }
-        IPC::ResponseBuilder rb{ctx, 2, 1, 0};
-        rb.Push(ResultSuccess);
-        rb.PushCopyObjects(ctx, event->GetReadableEvent());
     }
 
     KernelHelpers::ServiceContext m_context;
     std::shared_ptr<Nx2NativeObjects> m_objects;
     std::vector<Kernel::KEvent*> m_events;
+    std::array<Kernel::KEvent*, 8> m_native_events{}; ///< 31's slots, also listed in m_events
     // Shared with the vsync timer callback, which can outlive the session by one call.
     struct VsyncState {
         std::mutex mutex;
@@ -2468,6 +2663,87 @@ public:
             // writing frames into memory the game reuses.
             {912, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyDecoderImage"},
             {961, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetCpuUserImageDescriptor"},
+            // Firmware commands without a known meaning: zeroed replies.
+            {11, &INx2GraphicsSystemSession::RegisterClientHandle, "RegisterClientHandle"},
+            {113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown113"},
+            {115, &INx2GraphicsSystemSession::QueryGrantedFeatures, "QueryGrantedFeatures"},
+            {120, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown120"},
+            {121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown121"},
+            {122, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown122"},
+            {123, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown123"},
+            {124, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown124"},
+            {125, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown125"},
+            {126, &INx2GraphicsSystemSession::GetSessionFlag, "GetSessionFlag"},
+            {131, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown131"},
+            {133, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown133"},
+            {187, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown187"},
+            {201, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission201"},
+            {211, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown211"},
+            {212, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown212"},
+            {213, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown213"},
+            {214, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown214"},
+            {215, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown215"},
+            {301, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission301"},
+            {303, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown303"},
+            {311, &INx2GraphicsSystemSession::CreateNativeImage, "CreateFeatureImagePool311"},
+            {312, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool312"},
+            {321, &INx2GraphicsSystemSession::CreateNativeImage, "CreateFeatureImagePool321"},
+            {361, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetFeatureCpuImageDescriptor361"},
+            {391, &INx2GraphicsSystemSession::CalculateChatImagePoolSize, "CalculateFeatureImagePoolSize391"},
+            {401, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission401"},
+            {402, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission402"},
+            {403, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission403"},
+            {424, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown424"},
+            {425, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown425"},
+            {427, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown427"},
+            {434, &INx2GraphicsSystemSession::AttachGpuAddressSpace, "AttachGpuAddressSpace"},
+            {436, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown436"},
+            {461, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown461"},
+            {462, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown462"},
+            {463, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown463"},
+            {464, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown464"},
+            {465, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown465"},
+            {466, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown466"},
+            {467, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown467"},
+            {468, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown468"},
+            {493, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown493"},
+            {494, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission494"},
+            {603, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown603"},
+            {612, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool612"},
+            {613, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown613"},
+            {614, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown614"},
+            {615, &INx2GraphicsSystemSession::CreateNativeImage, "CreateFeatureImagePool615"},
+            {691, &INx2GraphicsSystemSession::CalculateChatImagePoolSize, "CalculateFeatureImagePoolSize691"},
+            {801, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission801"},
+            {802, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown802"},
+            {803, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown803"},
+            {811, &INx2GraphicsSystemSession::CreateNativeImage, "CreateFeatureImagePool811"},
+            {812, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool812"},
+            {813, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown813"},
+            {814, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown814"},
+            {861, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetFeatureCpuImageDescriptor861"},
+            {891, &INx2GraphicsSystemSession::CalculateChatImagePoolSize, "CalculateFeatureImagePoolSize891"},
+            {1003, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1003"},
+            {1011, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1011"},
+            {1012, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1012"},
+            {1091, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1091"},
+            {1101, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1101"},
+            {1102, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1102"},
+            {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetFeatureVersion"},
+            {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1112"},
+            {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1113"},
+            {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
+            {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1203"},
+            {1212, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool1212"},
+            {1501, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1501"},
+            {1502, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1502"},
+            {1503, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1503"},
+            {1601, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1601"},
+            {1602, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1602"},
+            {1603, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1603"},
+            {1611, &INx2GraphicsSystemSession::CreateNativeImage, "CreateFeatureImagePool1611"},
+            {1612, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool1612"},
+            {1691, &INx2GraphicsSystemSession::CalculateChatImagePoolSize, "CalculateFeatureImagePoolSize1691"},
         });
     }
 
@@ -2483,6 +2759,56 @@ public:
     }
 
 private:
+    // Feature permission checks (201, 301, 401-403, 1101, 1102, 1501-1503): each tests one bit of
+    // the permissions the session was opened with and fails when it is clear. Games only ask for
+    // features they are granted.
+    void CheckPermission(HLERequestContext& ctx) {
+        LOG_DEBUG(Service, "nx2:gsv TIPC {} permission check", ctx.GetCommand());
+        TipcReplyWords(ctx, {});
+    }
+
+    // 115(u64 requested feature flags): the subset that is granted, which is all of them here.
+    // A zeroed reply would deny every feature.
+    void QueryGrantedFeatures(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_INFO(Service, "nx2:gsv TIPC 115 features {:#x}", u64{w[2]} | (u64{w[3]} << 32));
+        TipcReplyWords(ctx, {w[2], w[3]});
+    }
+
+    // 126: one bit of the session's state (meaning unknown); clear.
+    void GetSessionFlag(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {0});
+    }
+
+    // 434(u32 id from nx2:gpu 33): the session takes a reference on that GPU address space.
+    void AttachGpuAddressSpace(HLERequestContext& ctx) {
+        const u32 id = ctx.CommandBuffer()[2];
+        LOG_INFO(Service, "nx2:gsv TIPC 434 address space {:#x}", id);
+        m_address_spaces.insert(id);
+        TipcReplyWords(ctx, {});
+    }
+
+    // 11(copy handle): handed over once per session and kept; a second call fails.
+    void RegisterClientHandle(HLERequestContext& ctx) {
+        if (m_client_handle_registered) {
+            LOG_WARNING(Service, "nx2:gsv TIPC 11 called twice");
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultUnknown);
+            return;
+        }
+        m_client_handle_registered = true;
+        TipcReplyWords(ctx, {});
+    }
+
+    // 1111(u32): a version or mode number the server checks and records.
+    void SetFeatureVersion(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gsv TIPC 1111 value {:#x}", ctx.CommandBuffer()[2]);
+        TipcReplyWords(ctx, {});
+    }
+
+    std::set<u32> m_address_spaces;        ///< Ids attached with 434
+    bool m_client_handle_registered = false; ///< Set by 11
+
     // Index of the first raw data word of a TIPC request: header (2 words), then an optional
     // special header with pid and copy/move handle words.
     static size_t TipcDataOffset(const u32* cmd_buf) {
@@ -2762,6 +3088,8 @@ private:
         TipcReplyWords(ctx, {id});
     }
 
+    // Pool size of a feature's images (1291 here; 391, 691, 891 and 1691 for the other feature
+    // groups, which share the server template).
     // nn::chat::gsv::CalculateRequiredBufferMemory: 1291(preference[16], u32 count), the request
     // of 1510, replies result, u64 size, u64 alignment. Auto-stubbed, the size became 0x1000 and
     // the camera pool (1211) got memory for none of its images.

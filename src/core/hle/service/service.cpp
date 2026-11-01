@@ -9,6 +9,9 @@
 #include <tuple>
 #include <mutex>
 #include <map>
+#include <memory>
+#include <set>
+#include <string_view>
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
@@ -18,8 +21,10 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
+#include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
@@ -49,6 +54,75 @@ ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* se
 ServiceFrameworkBase::~ServiceFrameworkBase() {
     // Wait for other threads to release access before destroying
     const auto guard = ServiceFrameworkBase::LockService();
+    if (stub_event) {
+        stub_context->CloseEvent(stub_event);
+    }
+}
+
+namespace {
+
+// Callers read the reply words they expect without checking how many were written, so an empty
+// reply hands them the request's leftover words as data (an HDR output format, a refresh rate, a
+// device id). Stub replies carry this many zeroed words.
+constexpr u32 StubZeroedWords = 32;
+
+void PushStubZeroes(IPC::ResponseBuilder& rb) {
+    for (u32 i = 0; i < StubZeroedWords; ++i) {
+        rb.Push<u32>(0);
+    }
+}
+
+} // namespace
+
+bool ServiceFrameworkBase::StubAllowed(HLERequestContext& ctx) {
+    static const bool env_auto_stub = std::getenv("EDEN_NX2_AUTO_STUB") != nullptr;
+    const auto* const caller = ctx.GetThread().GetOwnerProcess();
+    if (Settings::values.use_auto_stub || env_auto_stub ||
+        std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
+        (caller != nullptr && caller->IsSwitch2())) {
+        // Logged once per command: these are still unimplemented.
+        static std::mutex mutex;
+        static std::set<std::pair<std::string_view, u32>> logged;
+        std::scoped_lock lk{mutex};
+        if (logged.emplace(service_name, ctx.GetCommand()).second) {
+            LOG_WARNING(Service, "(STUBBED) {}::{} (placeholder reply)", service_name, ctx.GetCommand());
+        }
+        return true;
+    }
+    const auto& table = ctx.IsTipc() ? handlers_tipc : handlers;
+    const auto it = table.find(ctx.GetCommand());
+    ReportUnimplementedFunction(ctx, it == table.end() ? nullptr : &it->second);
+    return false;
+}
+
+void ServiceFrameworkBase::StubReplyZeroed(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
+    rb.Push(ResultSuccess);
+    PushStubZeroes(rb);
+}
+
+void ServiceFrameworkBase::StubReplyEvent(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    if (!stub_event) {
+        stub_context = std::make_unique<KernelHelpers::ServiceContext>(system, service_name);
+        stub_event = stub_context->CreateEvent(fmt::format("{}:StubEvent", service_name));
+    }
+    IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords, 1, 0};
+    rb.Push(ResultSuccess);
+    PushStubZeroes(rb);
+    rb.PushCopyObjects(ctx, stub_event->GetReadableEvent());
+}
+
+void ServiceFrameworkBase::StubReplyInterface(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    ReturnNx2StubInterface(system, ctx, service_name);
 }
 
 void ServiceFrameworkBase::RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n) {
@@ -88,8 +162,9 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
         std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
         (caller != nullptr && caller->IsSwitch2())) {
         LOG_WARNING(Service, "Using auto stub fallback!");
-        IPC::ResponseBuilder rb{ctx, 2};
+        IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
         rb.Push(ResultSuccess);
+        PushStubZeroes(rb);
     }
 }
 

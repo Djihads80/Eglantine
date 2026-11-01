@@ -204,8 +204,8 @@ ILibraryAppletCreator::ILibraryAppletCreator(Core::System& system_, std::shared_
       m_window_system{window_system}, m_applet{std::move(applet)} {
     static const FunctionInfo functions[] = {
         {0, D<&ILibraryAppletCreator::CreateLibraryApplet>, "CreateLibraryApplet"},
-        {1, nullptr, "TerminateAllLibraryApplets"},
-        {2, nullptr, "AreAnyLibraryAppletsLeft"},
+        {1, &ILibraryAppletCreator::StubReplyZeroed, "TerminateAllLibraryApplets"},
+        {2, &ILibraryAppletCreator::StubReplyZeroed, "AreAnyLibraryAppletsLeft"},
         {3, D<&ILibraryAppletCreator::CreateLibraryAppletEx>, "CreateLibraryAppletEx"},
         {10, D<&ILibraryAppletCreator::CreateStorage>, "CreateStorage"},
         {11, D<&ILibraryAppletCreator::CreateTransferMemoryStorage>, "CreateTransferMemoryStorage"},
