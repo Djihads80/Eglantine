@@ -1173,6 +1173,7 @@ private:
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
                      u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);
         }
+
         // Wait for the previous frame's fence instead of this one, so the game prepares frame N+1
         // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
         // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
@@ -1193,7 +1194,7 @@ private:
             WaitForFrame(~w[22], w[24]);
         }
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24]);
+        Composite(w[5], ~w[22], w[24], w[6], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank();
         const auto paced = std::chrono::steady_clock::now();
@@ -1315,7 +1316,9 @@ private:
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value) {
+    // crop_min/crop_max: the client's source rectangle, (top << 16 | left) and inclusive
+    // (bottom << 16 | right); e.g. 1280x720 drawn into the top-left of a 3840x2160 image.
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 crop_min, u32 crop_max) {
         u64 address{};
         u32 parent{};
         u64 parent_offset{};
@@ -1362,13 +1365,24 @@ private:
                         image_id, address);
             return;
         }
+        u32 crop_left = 0;
+        u32 crop_top = 0;
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
+        const bool client_crop = crop_max != 0;
+        if (client_crop) {
+            crop_left = (std::min)(crop_min & 0xffff, layout.width);
+            crop_top = (std::min)(crop_min >> 16, layout.height);
+            crop_width = (std::min)((crop_max & 0xffff) + 1, layout.width);
+            crop_height = (std::min)((crop_max >> 16) + 1, layout.height);
+        }
         // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
         // into the top-left 1920x1080, the handheld panel's resolution; the console's display
         // scans out only that region. Showing whole images put the frame in a corner inside black
         // margins that scaled with the window (seen on Mario Kart World and Splatoon Raiders).
-        if (!Settings::IsDockedMode()) {
+        if (client_crop) {
+            // The client's rectangle replaces the guesses below.
+        } else if (!Settings::IsDockedMode()) {
             crop_width = (std::min)(crop_width, 1920U);
             crop_height = (std::min)(crop_height, 1080U);
         } else if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
@@ -1435,7 +1449,8 @@ private:
             .stride = static_cast<u32>(layout.pitch / 4),
             .pixel_format = android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
-            .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
+            .crop_rect = {static_cast<int>(crop_left), static_cast<int>(crop_top),
+                          static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = !linear_scanout,
         }};
