@@ -1038,6 +1038,8 @@ public:
             // in an 18 minute session).
             {104, &INx2Vi2Session::SucceedQuietly, "Unknown104 (display \"default\")"},
             {105, &INx2Vi2Session::SucceedQuietly, "Unknown105 (display \"default\")"},
+            // Same shape, ~50 times a second.
+            {107, &INx2Vi2Session::SucceedQuietly, "Unknown107 (display \"default\")"},
             {228, &INx2Vi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {229, &INx2Vi2Session::PresentClientBuffer, "PresentClientBuffer"},
         });
