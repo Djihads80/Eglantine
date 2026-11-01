@@ -1823,6 +1823,7 @@ private:
 
     static constexpr u32 NoSyncpoint = ~0U;
     static constexpr size_t MaxQueuedInputs = 8;
+    static constexpr size_t MaxBufferedInputs = 64; // SubmitInput refuses input past this
     static constexpr size_t MaxDecodedAhead = 2; // decoded frames held while no image is free
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
 
@@ -2000,12 +2001,16 @@ private:
     }
 
     void SubmitInput(HLERequestContext& ctx) {
-        if (m_free.empty()) {
-            // main+0xab9e7c handles this retry result before general codec errors.
-            // Do not consume a packet or advance its submission ID without output capacity.
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.PushRaw<u32>(0x1c266f);
-            return;
+        {
+            // main+0xab9e7c handles this retry result before general codec errors, but Yoshi's
+            // player skips the packet it was refused: the frames after it lose their references.
+            // Queue input while every output image is out; refuse only a runaway queue.
+            std::scoped_lock lk{m_mutex};
+            if (m_free.empty() && m_inputs.size() >= MaxBufferedInputs) {
+                IPC::ResponseBuilder rb{ctx, 2};
+                rb.PushRaw<u32>(0x1c266f);
+                return;
+            }
         }
         const auto* w = ctx.CommandBuffer();
         // Words 2-4 are the A descriptor of the compressed frame.
