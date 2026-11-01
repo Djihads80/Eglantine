@@ -46,6 +46,9 @@ public:
 
     void TickFrame();
 
+    /// Bytes of the staging buffers kept for `usage` (in use or cached for reuse).
+    [[nodiscard]] u64 CachedBytes(MemoryUsage usage) const;
+
 private:
     struct StreamBufferCommit {
         size_t upper_bound;

@@ -2641,6 +2641,10 @@ bool TextureCacheRuntime::CanReportMemoryUsage() const {
 
 void TextureCacheRuntime::LogMemoryStatistics() const {
     Vulkan::LogMemoryStatistics(device);
+    LOG_INFO(Render_Vulkan, "Staging buffers: upload {} MiB, download {} MiB, device local {} MiB",
+             staging_buffer_pool.CachedBytes(MemoryUsage::Upload) >> 20,
+             staging_buffer_pool.CachedBytes(MemoryUsage::Download) >> 20,
+             staging_buffer_pool.CachedBytes(MemoryUsage::DeviceLocal) >> 20);
 }
 
 bool TextureCacheRuntime::UseOpaqueAstcFormat() const {

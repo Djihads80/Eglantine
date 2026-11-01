@@ -274,26 +274,49 @@ StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage 
 }
 
 void StagingBufferPool::ReleaseCache(MemoryUsage usage) {
-    ReleaseLevel(GetCache(usage), current_delete_level);
+    // Every size each frame: one of 64 per frame, 16 buffers at most, kept the buffers a burst of
+    // uploads made (Mario Kart World loading a course) for many seconds, on a phone whose GPU
+    // memory is its RAM.
+    auto& cache = GetCache(usage);
+    for (size_t log2 = 0; log2 < NUM_LEVELS; ++log2) {
+        if (!cache[log2].entries.empty()) {
+            ReleaseLevel(cache, log2);
+        }
+    }
+}
+
+u64 StagingBufferPool::CachedBytes(MemoryUsage usage) const {
+    const auto& cache = usage == MemoryUsage::DeviceLocal ? device_local_cache
+                        : usage == MemoryUsage::Upload    ? upload_cache
+                                                          : download_cache;
+    u64 bytes = 0;
+    for (size_t log2 = 0; log2 < NUM_LEVELS; ++log2) {
+        bytes += static_cast<u64>(cache[log2].entries.size()) << log2;
+    }
+    return bytes;
 }
 
 void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
-    constexpr size_t deletions_per_tick = 16;
+    // A few idle buffers of each size stay for reuse (one of the big ones); the rest go once the
+    // GPU is done with them and they sat unused for a while (so steady uploads don't recreate
+    // buffers every frame).
+    constexpr u64 idle_ticks = 64;
+    const size_t keep = log2 >= 24 ? 1 : 4;
     auto& staging = cache[log2];
     auto& entries = staging.entries;
-    const size_t old_size = entries.size();
-
-    const auto is_deletable = [this](const StagingBuffer& entry) {
-        return scheduler.IsFree(entry.tick);
-    };
-    const size_t begin_offset = staging.delete_index;
-    const size_t end_offset = (std::min)(begin_offset + deletions_per_tick, old_size);
-    const auto begin = entries.begin() + begin_offset;
-    const auto end = entries.begin() + end_offset;
-    entries.erase(std::remove_if(begin, end, is_deletable), end);
-
+    const u64 current_tick = scheduler.CurrentTick();
+    size_t kept = 0;
+    std::erase_if(entries, [&](const StagingBuffer& entry) {
+        if (entry.deferred || !scheduler.IsFree(entry.tick)) {
+            return false;
+        }
+        if (current_tick - entry.tick < idle_ticks || kept < keep) {
+            ++kept;
+            return false;
+        }
+        return true;
+    });
     const size_t new_size = entries.size();
-    staging.delete_index += deletions_per_tick;
     if (staging.delete_index >= new_size) {
         staging.delete_index = 0;
     }
