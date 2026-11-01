@@ -36,7 +36,8 @@ constexpr VkDeviceSize MAX_ALIGNMENT = 256;
 #if defined(__FreeBSD__)
 constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
 #else
-constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 256_MiB;
+// 128 MiB on Windows too: 256 MiB sat mostly unused in device memory on Switch 2 titles.
+constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
 #endif
 
 size_t GetStreamBufferSize(const Device& device) {
