@@ -273,7 +273,7 @@ public:
         SparsePages,
         DeviceBuffers,
     };
-    static constexpr VkDeviceSize SeparatePoolBlockSize = 32ULL << 20;
+    static constexpr VkDeviceSize SeparatePoolBlockSize = 16ULL << 20;
 
     /// The pool of that kind for a memory type, created on first use (null if that failed).
     VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type) const;
