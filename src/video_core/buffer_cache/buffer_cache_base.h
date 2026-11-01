@@ -506,6 +506,9 @@ private:
 
     void DownloadBufferMemory(Buffer& buffer_id, DAddr device_addr, u64 size);
 
+    /// Downloads the GPU-written data of `buffer` in `ranges`, waiting for the GPU once.
+    void DownloadBufferRanges(Buffer& buffer, std::span<const std::pair<DAddr, u64>> ranges);
+
     /// Downloads the GPU-written data of several buffers with one wait for the GPU.
     void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
 
