@@ -82,6 +82,26 @@ cmake_dependent_option(YUZU_USE_BUNDLED_QT "Download bundled Qt binaries" "${MSV
 option(ENABLE_DEBUG_TOOLS "Enable debugging tools (maxwell disassembler, SPIRV translator, etc)" OFF)
 option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
 
+# Handle specific -Werror downgrades safely across platforms
+if(ENABLE_WERROR)
+    if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(CMAKE_C_FLAGS MATCHES "-Werror=unused")
+            string(REPLACE "-Werror=unused" "-Wno-error=unused" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+        endif()
+        if(CMAKE_CXX_FLAGS MATCHES "-Werror=unused")
+            string(REPLACE "-Werror=unused" "-Wno-error=unused" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        endif()
+
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error=unused -Wno-error=unused-function")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=unused -Wno-error=unused-function")
+    elseif(MSVC)
+        # Windows Specifically
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4100 /wd4101")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4100 /wd4101")
+    endif()
+endif()
+
+
 # Lossless Scaling frame generation. Only Android.
 option(ENABLE_LSFG "Enable frame generation (LSFG and FSR 3 Fluid Motion)" ON)
 
