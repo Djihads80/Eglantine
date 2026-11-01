@@ -1515,6 +1515,15 @@ void Device::RemoveUnsuitableExtensions() {
                                VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     }
 
+    // VK_EXT_mesh_shader: Switch 2 titles draw some geometry with task and mesh programs. Only
+    // the two stages are used; the multiview, shading rate and query features need more.
+    features.mesh_shader.multiviewMeshShader = VK_FALSE;
+    features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
+    features.mesh_shader.meshShaderQueries = VK_FALSE;
+    extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
+    RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
+                                       VK_EXT_MESH_SHADER_EXTENSION_NAME);
+
     // VK_KHR_shader_quad_control
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,

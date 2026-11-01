@@ -239,11 +239,26 @@ struct ImageDescriptor {
 };
 using ImageDescriptors = boost::container::small_vector<ImageDescriptor, 4>;
 
+/// Switch 2 (NVN) task and mesh programs: the sizes their mesh registers set and, for mesh
+/// programs, the attribute (IR::Attribute index) held by each 128-byte line of a 32-element group
+/// in the emulated stage buffer: per-vertex lines from the program's output map, per-primitive
+/// lines from the pass-through geometry header bound with it, in attribute order.
+struct MeshInfo {
+    u32 payload_words{}; ///< Task output region / mesh input region, in 32-bit words
+    u32 max_vertices{};
+    u32 max_primitives{};
+    u32 topology{}; ///< SET_MESH_SHADER_A output topology (4 = triangles)
+    boost::container::static_vector<u32, 136> vertex_lines;
+    boost::container::static_vector<u32, 136> primitive_lines;
+};
+
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
     static constexpr size_t MAX_SSBOS{32};
 
+    bool is_task{}; ///< Switch 2 task program (Stage::Task)
+    bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
     bool uses_workgroup_id{};
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};

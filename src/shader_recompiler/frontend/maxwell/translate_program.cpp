@@ -101,10 +101,12 @@ void AddNVNStorageBuffers(IR::Program& program) {
         switch (program.stage) {
         case Stage::VertexA:
         case Stage::VertexB:
+        case Stage::Task: // bound in the vertex slot
             return 0x110u;
         case Stage::TessellationControl:
             return 0x210u;
         case Stage::TessellationEval:
+        case Stage::Mesh: // bound in the tessellation slot
             return 0x310u;
         case Stage::Geometry:
             return 0x410u;
@@ -304,6 +306,30 @@ void LowerGeometryPassthrough(const IR::Program& program, const HostTranslateInf
     }
 }
 
+// The lines of a 32-element group in a mesh program's stage buffer: one per attribute an output
+// map enables, in attribute order (system values, then generics).
+void AddMeshLines(const ProgramHeader& sph, boost::container::static_vector<u32, 136>& lines) {
+    const auto& c{sph.vtg.omap_systemc};
+    if (c.clip_distances != 0 || c.point_sprite_s != 0 || c.point_sprite_t != 0 ||
+        c.fog_coordinate != 0 || c.tessellation_eval_point_u != 0 ||
+        c.tessellation_eval_point_v != 0 || c.instance_id != 0 || c.vertex_id != 0) {
+        throw NotImplementedException("Mesh outputs past the generic attributes");
+    }
+    for (u32 bit = 0; bit < 8; ++bit) {
+        if (((sph.vtg.omap_systemb.raw >> bit) & 1) != 0) {
+            lines.push_back(static_cast<u32>(IR::Attribute::PrimitiveId) + bit);
+        }
+    }
+    for (u32 generic = 0; generic < 32; ++generic) {
+        const std::array<bool, 4> mask{sph.vtg.OutputGeneric(generic)};
+        for (u32 element = 0; element < 4; ++element) {
+            if (mask[element]) {
+                lines.push_back(static_cast<u32>(IR::Attribute::Generic0X) + generic * 4 + element);
+            }
+        }
+    }
+}
+
 void TightenOutputVertices(IR::Program& program) {
     if (program.stage != Stage::Geometry || program.is_geometry_passthrough) {
         return;
@@ -368,6 +394,30 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         program.workgroup_size = env.WorkgroupSize();
         program.shared_memory_size = env.SharedMemorySize();
         break;
+    case Stage::Task:
+    case Stage::Mesh: {
+        // SET_MESH_SHADER_A: topology 3:0, max vertex 12:4, max primitive 22:13;
+        // SET_MESH_SHADER_B: mesh threads 25:20; SET_MESH_INIT_SHADER: task threads 5:0, local
+        // buffer lines 20:12, lines passed to the mesh stage 30:22 (lines are 128 bytes).
+        const auto& registers{env.MeshRegisters()};
+        const u32 shader_a{registers[0]}, shader_b{registers[1]}, init{registers[2]};
+        const u32 lines{(std::max)((init >> 12) & 0x1ff, (init >> 22) & 0x1ff)};
+        program.mesh.payload_words = (std::max)(lines, 1U) * 32;
+        program.mesh.topology = shader_a & 0xf;
+        program.mesh.max_vertices = (shader_a >> 4) & 0x1ff;
+        program.mesh.max_primitives = (shader_a >> 13) & 0x3ff;
+        const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
+        program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
+        if (program.stage == Stage::Mesh) {
+            if (program.mesh.topology != 4) {
+                throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",
+                                              program.mesh.topology, shader_a);
+            }
+            AddMeshLines(env.SPH(), program.mesh.vertex_lines);
+            AddMeshLines(env.MeshPrimitiveHeader(), program.mesh.primitive_lines);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -406,6 +456,18 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         Optimization::VerificationPass(program);
     }
     Optimization::CollectShaderInfoPass(env, program);
+    program.info.is_task = program.stage == Stage::Task;
+    program.info.is_mesh = program.stage == Stage::Mesh;
+    if (program.stage == Stage::Mesh) {
+        // Its outputs come from the stage buffer lines, not attribute stores; the next stage
+        // reads what they name.
+        for (const u32 line : program.mesh.vertex_lines) {
+            program.info.stores.Set(static_cast<IR::Attribute>(line), true);
+        }
+        for (const u32 line : program.mesh.primitive_lines) {
+            program.info.stores.Set(static_cast<IR::Attribute>(line), true);
+        }
+    }
     Optimization::LayerPass(program, normalized_host_info);
     Optimization::VendorWorkaroundPass(program);
 
