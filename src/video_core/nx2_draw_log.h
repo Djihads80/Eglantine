@@ -22,8 +22,6 @@ inline bool Enabled() {
 struct Counters {
     std::atomic<u64> draws{};
     std::atomic<u64> no_pipeline{};
-    std::atomic<u64> rejected_stage{};  // no_pipeline: a bound program was rejected
-    std::atomic<u64> async_pending{};   // no_pipeline: pipeline still building (async shaders)
     std::atomic<u64> configure_failed{};
     std::atomic<u64> stage_buffer_draws{};
     std::atomic<u64> instanced_draws{};

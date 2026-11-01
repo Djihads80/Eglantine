@@ -37,7 +37,6 @@
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
-#include "video_core/nx2_draw_log.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -575,9 +574,6 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
-        if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-            VideoCommon::Nx2DrawLog::Get().rejected_stage++;
-        }
         return nullptr;
     }
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
@@ -858,9 +854,6 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
     if (maxwell3d->regs.zeta_enable) {
-        if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-            VideoCommon::Nx2DrawLog::Get().async_pending++;
-        }
         return nullptr;
     }
     // If games are using a small index count, we can assume these are full screen quads.
@@ -869,9 +862,6 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     if (draw_state.index_buffer.count <= 6 || draw_state.vertex_buffer.count <= 6) {
         return pipeline;
-    }
-    if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-        VideoCommon::Nx2DrawLog::Get().async_pending++;
     }
     return nullptr;
 }
