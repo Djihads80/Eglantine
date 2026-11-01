@@ -260,13 +260,12 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
         return;
     }
     // In GPU-thread order: command lists submitted before the request still see the old tile.
-    // Unmapping first keeps the SMMU's reverse map right. The caches over the tile stay: the game
-    // writes a tile after mapping it, and an invalidation here would make the texture cache give
-    // memory to (and re-upload) every array layer the game only mapped.
+    // Unmapping first keeps the SMMU's reverse map right and invalidates the caches over the tile,
+    // whose contents are now what the game's memory holds there.
     const DAddr device = device_address + (gpu_address - start);
     auto& smmu = system.Host1x().MemoryManager();
     system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {
-        smmu.Unmap(device, size, false);
+        smmu.Unmap(device, size);
         if (cpu_address != 0) {
             smmu.Map(device, cpu_address, size, asid, true);
         }

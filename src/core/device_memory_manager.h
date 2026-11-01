@@ -59,9 +59,7 @@ public:
 
     void Map(DAddr address, VAddr virtual_address, size_t size, Asid asid, bool track = false);
 
-    /// invalidate = false leaves the caches over the range as they are (a Switch 2 sparse tile the
-    /// game remaps and then writes itself).
-    void Unmap(DAddr address, size_t size, bool invalidate = true);
+    void Unmap(DAddr address, size_t size);
 
     void TrackContinuityImpl(DAddr address, VAddr virtual_address, size_t size, Asid asid);
     void TrackContinuity(DAddr address, VAddr virtual_address, size_t size, Asid asid) {

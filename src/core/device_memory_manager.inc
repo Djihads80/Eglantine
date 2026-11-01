@@ -245,12 +245,10 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
 }
 
 template <typename Traits>
-void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size, bool invalidate) {
+void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
-    if (invalidate) {
-        device_inter->InvalidateRegion(address, size);
-    }
+    device_inter->InvalidateRegion(address, size);
     std::scoped_lock lk(mapping_guard);
 
     tracked_entries.CommitRegion(start_page_d, start_page_d + num_pages); // should already be committed, but just in case
