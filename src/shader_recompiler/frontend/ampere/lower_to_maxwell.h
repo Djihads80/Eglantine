@@ -2514,6 +2514,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
         }
         case 0x324: case 0x924: { // OUT (geometry emit/cut), register or immediate stream
             const u32 type = insn.Bits(78, 2);
+            // Neither emit nor cut into RZ (Kirby Air Riders closes geometry shaders with one):
+            // nothing to do, the translated program ends its primitive itself.
+            if (!type && dest == 255 && !insn.words[2]) break;
             if (!type || insn.words[2] & ~0xc000U) return fail(index, "native geometry output mode");
             // Maxwell: output handle at 8, stream at 20, emit at 39, cut at 40.
             const u64 handle = u64{insn.Bits(24, 8)} << 8;
