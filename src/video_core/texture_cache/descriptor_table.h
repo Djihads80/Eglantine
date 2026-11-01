@@ -35,9 +35,10 @@ public:
         invalidated = true;
     }
 
-    [[nodiscard]] std::pair<T, bool> Read(Tegra::MemoryManager const& gpu_memory, u32 index) noexcept {
+    template <class MemoryManager>
+    [[nodiscard]] std::pair<T, bool> Read(const MemoryManager& gpu_memory, u32 index) noexcept {
         DEBUG_ASSERT(index <= current_limit);
-        if (invalidated) [[unlikely]] {
+        if (invalidated) {
             std::ranges::fill(read_descriptors, 0);
             invalidated = false;
         }
