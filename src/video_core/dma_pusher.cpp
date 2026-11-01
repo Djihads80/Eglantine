@@ -156,14 +156,22 @@ bool DmaPusher::Step() {
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
         if (use_safe) {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::optional<Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>> headers;
+            {
+                VideoCommon::Nx2Profile::Scope fetch_scope{VideoCommon::Nx2Profile::Zone::DmaFetch};
+                headers.emplace(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            }
+            const std::span<const CommandHeader> commands{headers->data(), headers->size()};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::optional<Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> headers;
+            {
+                VideoCommon::Nx2Profile::Scope fetch_scope{VideoCommon::Nx2Profile::Zone::DmaFetch};
+                headers.emplace(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            }
+            const std::span<const CommandHeader> commands{headers->data(), headers->size()};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -210,6 +218,7 @@ bool DmaPusher::Step() {
 }
 
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
+    VideoCommon::Nx2Profile::Scope dispatch_scope{VideoCommon::Nx2Profile::Zone::DmaDispatch};
     for (size_t index = 0; index < commands.size();) {
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {

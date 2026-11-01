@@ -14,6 +14,7 @@
 #include "video_core/control/scheduler.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_profile.h"
 
 namespace Tegra::Control {
 
@@ -34,12 +35,15 @@ void Scheduler::BindChannel(GPU& gpu, s32 bind_id) {
 void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
     std::shared_ptr<ChannelState> channel_state;
     {
-        std::unique_lock lk(scheduling_guard);
-        auto it = channels.find(channel);
-        ASSERT(it != channels.end());
-        channel_state = it->second;
+        VideoCommon::Nx2Profile::Scope switch_scope{VideoCommon::Nx2Profile::Zone::ChannelSwitch};
+        {
+            std::unique_lock lk(scheduling_guard);
+            auto it = channels.find(channel);
+            ASSERT(it != channels.end());
+            channel_state = it->second;
+        }
+        BindChannel(gpu, channel_state->bind_id);
     }
-    BindChannel(gpu, channel_state->bind_id);
     // Process commands outside the lock to reduce contention.
     // Multiple channels can prepare their commands in parallel.
     channel_state->payload->dma_pusher.Push(std::move(entries));
@@ -50,6 +54,7 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
         pending_channels.push_back(channel_state);
     }
     if (!pending_channels.empty()) {
+        VideoCommon::Nx2Profile::Scope switch_scope{VideoCommon::Nx2Profile::Zone::ChannelSwitch};
         ResumePending(gpu);
     }
 }
