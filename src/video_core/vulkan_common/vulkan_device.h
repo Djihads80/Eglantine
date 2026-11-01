@@ -1026,8 +1026,9 @@ FN_MAX_LIMIT_LIST
         return device_access_memory;
     }
 
+    /// With VK_EXT_memory_budget from the driver, or VMA's allocations without it.
     bool CanReportMemoryUsage() const {
-        return extensions.memory_budget;
+        return extensions.memory_budget || allocator != nullptr;
     }
 
     u64 GetDeviceMemoryUsage() const;
