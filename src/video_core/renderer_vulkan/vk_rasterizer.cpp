@@ -297,7 +297,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                      state.base_index, regs.rt[0].width, regs.rt[0].height);
         }
     };
-    VideoCommon::Nx2DrawLog::LastSkipReason() = 0;
     GraphicsPipeline* const pipeline{[&] {
         Profile::Scope scope{Profile::Zone::PipelineLookup};
         return pipeline_cache.CurrentGraphicsPipeline();
@@ -305,11 +304,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (!pipeline) {
         if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
             VideoCommon::Nx2DrawLog::Get().no_pipeline++;
-            const auto& regs = maxwell3d->regs;
-            VideoCommon::Nx2DrawLog::NoteSkip(
-                (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1],
-                (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1],
-                VideoCommon::Nx2DrawLog::LastSkipReason());
         }
         report_failure("no pipeline");
         return;
@@ -358,20 +352,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                          log_instances, state.base_instance, state.base_index,
                          static_cast<u32>(state.topology),
                          is_indexed ? state.index_buffer.count : state.vertex_buffer.count);
-            }
-        }
-        if (total % 1000000 == 0) {
-            // The programs behind most skipped draws (reason 1 rejected, 2 async build).
-            std::vector<std::pair<u64, std::tuple<u64, u64, u32>>> top;
-            {
-                std::scoped_lock lock{Log::Mutex()};
-                for (const auto& [key, count] : Log::SkipCounts()) top.emplace_back(count, key);
-            }
-            std::ranges::sort(top, std::greater<>{});
-            for (size_t i = 0; i < std::min<size_t>(top.size(), 10); ++i) {
-                const auto& [vs_key, ps_key, reason] = top[i].second;
-                LOG_INFO(HW_GPU, "DRAWLOG top skipped #{}: {} draws vs={:#x} ps={:#x} reason={}", i + 1,
-                         top[i].first, vs_key, ps_key, reason);
             }
         }
         if (total % 20000 == 0) {
