@@ -73,6 +73,9 @@ public:
     /// @brief Flushes delayed removal operations
     void SyncGuestHost();
 
+    /// @brief Check if shaders are known to be invalid without dirty recheck
+    [[nodiscard]] bool AreShadersValid() const noexcept;
+
 protected:
     struct GraphicsEnvironments {
         std::array<GraphicsEnvironment, NUM_PROGRAMS> envs;

@@ -242,6 +242,14 @@ RasterizerVulkan::~RasterizerVulkan() {
 
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+    if (!pipeline_cache.AreShadersValid()) {
+        auto& native = maxwell3d->GetNativeMacroEngine();
+        if (native.native_turing) {
+            native.native_execution_failed = true;
+        }
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
+        return;
+    }
 
     SCOPE_EXIT {
         gpu.TickWork();
