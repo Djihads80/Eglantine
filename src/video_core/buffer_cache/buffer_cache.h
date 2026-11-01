@@ -263,27 +263,8 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 
 template <class P>
 void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
-    // EDEN_NX2_DOWNLOAD_WINDOW=0 downloads only the range asked for.
-    static const bool window = [] {
-        const char* value = std::getenv("EDEN_NX2_DOWNLOAD_WINDOW");
-        return value == nullptr || value[0] != '0';
-    }();
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
-        if (!window) {
-            DownloadBufferMemory(buffer, device_addr, size);
-            return;
-        }
-        // Each download waits for the whole GPU. Mario Kart World's macros read the indirect
-        // draw arguments a culling dispatch wrote a few words at a time, and its CPU reads back
-        // GPU-written data, each new page waiting again: one download of the window serves the
-        // reads after it. Early is safe: a CPU write ends the GPU-written state of its range
-        // (WriteMemory), so newer CPU data is never downloaded over.
-        constexpr u64 Window = u64{64} << 10;
-        const DAddr begin =
-            (std::max<DAddr>)(Common::AlignDown(device_addr, Window), buffer.CpuAddr());
-        const DAddr end = (std::min<DAddr>)(Common::AlignUp(device_addr + size, Window),
-                                            buffer.CpuAddr() + buffer.SizeBytes());
-        DownloadBufferMemory(buffer, begin, end - begin);
+        DownloadBufferMemory(buffer, device_addr, size);
     });
 }
 
