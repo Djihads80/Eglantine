@@ -286,6 +286,13 @@ T MemoryManager::Read(GPUVAddr addr) const {
         return value;
     }
 
+    // Sparse GPU mappings can exist before their device pages have backing memory.
+    if (IsWithinGPUAddressRange(addr) &&
+        (GpuToCpuAddress(addr).has_value() || GetEntry(addr, true) == EntryType::Reserved ||
+         GetEntry(addr, false) == EntryType::Reserved)) {
+        return {};
+    }
+
     static std::atomic<u32> reported{};
     if (reported.fetch_add(1) < 16) {
         LOG_ERROR(HW_GPU, "Read{} of unmapped GPU address {:#x}", sizeof(T) * 8, addr);
@@ -432,7 +439,20 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
         if (!IsBigPageContinuous(page_index)) [[unlikely]] {
-            memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
+            // Walk device pages here: holes in a sparse GPU mapping read as zero, not
+            // as invalid device accesses. Keep the mapped pages on either side intact.
+            for (std::size_t copied = 0; copied < copy_amount;) {
+                const DAddr dev_addr = dev_addr_base + copied;
+                const std::size_t amount = std::min(
+                    Core::DEVICE_PAGESIZE - (dev_addr & Core::DEVICE_PAGEMASK), copy_amount - copied);
+                auto* dest = static_cast<u8*>(dest_buffer) + copied;
+                if (const u8* physical = memory.GetPointer<u8>(dev_addr)) {
+                    std::memcpy(dest, physical, amount);
+                } else {
+                    std::memset(dest, 0, amount);
+                }
+                copied += amount;
+            }
         } else {
             u8* physical = memory.GetPointer<u8>(dev_addr_base);
             std::memcpy(dest_buffer, physical, copy_amount);
