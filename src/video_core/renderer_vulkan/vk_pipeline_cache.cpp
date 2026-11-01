@@ -329,8 +329,10 @@ size_t GetTotalPipelineWorkers() {
     int configured = AndroidSettings::values.pipeline_worker_count.GetValue();
     // Switch 2 programs build pipelines dozens at a time, and their draws wait for them
     // (BuiltPipeline): with 2 workers a burst of 37 froze Mario Kart World for up to a second.
+    // 4, not more: each build holds the driver's compiler memory, and loading a race already
+    // takes the phone to its last gigabytes.
     if (Settings::CurrentProgramIsSwitch2()) {
-        configured = (std::max)(configured, 6);
+        configured = (std::max)(configured, 4);
     }
     const int clamped = std::clamp(configured, 2, 8);
     const size_t desired = static_cast<size_t>(clamped);
