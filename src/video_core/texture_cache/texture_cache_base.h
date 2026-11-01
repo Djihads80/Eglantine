@@ -173,6 +173,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     /// Image::BindTiles, counting what it binds in total_used_memory.
     bool BindSparseTiles(Image& image, std::span<const LevelRect> rects);
 
+    /// Image::BackTilesWhole, counting what it binds in total_used_memory.
+    bool BackSparseTilesWhole(Image& image);
+
     /// Uploads the image's dirty layers. False when it needs a full upload instead.
     bool UploadWrittenLayers(Image& image);
 

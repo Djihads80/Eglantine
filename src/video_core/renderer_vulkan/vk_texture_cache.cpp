@@ -201,13 +201,39 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
+// How SparseTiles images leave the blocks without data: unbound (reads give zero), or all bound to
+// one zeroed block where the driver can't sample unbound memory (AMD) but lets blocks share
+// memory. EDEN_NX2_SPARSE_ALIASED=1 takes the shared block wherever it is supported, =0 never.
+enum class SparseTilesMode {
+    None,
+    Unbound,
+    Aliased,
+};
+
+[[nodiscard]] SparseTilesMode SparseTilesModeOf(const Device& device) {
+    static const char force_aliased = [] {
+        const char* value = std::getenv("EDEN_NX2_SPARSE_ALIASED");
+        return value == nullptr ? '\0' : value[0];
+    }();
+    if (!device.IsSparseResidencyImage2DSupported()) {
+        return SparseTilesMode::None;
+    }
+    const bool aliased = device.IsSparseResidencyAliasedSupported() && force_aliased != '0';
+    if (aliased && force_aliased == '1') {
+        return SparseTilesMode::Aliased;
+    }
+    if (device.CanUseUnbackedSparseImages()) {
+        return SparseTilesMode::Unbound;
+    }
+    return aliased ? SparseTilesMode::Aliased : SparseTilesMode::None;
+}
+
 // A large single 2D image in a Switch 2 sparse region (title 1's world-sized R8/RG16/R16 masks,
 // 170-341 MB, of which the game maps a few MiB) gets memory by sparse block where the guest memory
 // under it can hold data: unbacked at first, then Image::BindTiles. Formats of one texel per
 // block that the host samples as they are.
 [[nodiscard]] bool UsesSparseTiles(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (!device.CanUseUnbackedSparseImages() || !device.IsSparseResidencyImage2DSupported() ||
-        info.type != ImageType::e2D || info.resources.layers != 1 || info.num_samples != 1 ||
+    if (SparseTilesModeOf(device) == SparseTilesMode::None || info.type != ImageType::e2D || info.resources.layers != 1 || info.num_samples != 1 ||
         info.size.depth != 1 || info.block.width != 0 ||
         VideoCore::Surface::DefaultBlockWidth(info.format) != 1 ||
         VideoCore::Surface::DefaultBlockHeight(info.format) != 1 ||
@@ -370,7 +396,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 [[nodiscard]] vk::Image MakeImage(const Device& device, const MemoryAllocator& allocator,
                                   const ImageInfo& info, std::span<const VkFormat> view_formats,
                                   std::optional<VkFormat> format_override = {},
-                                  bool unbacked = false) {
+                                  bool unbacked = false, bool aliased = false) {
     if (info.type == ImageType::Buffer) {
         return vk::Image{};
     }
@@ -399,7 +425,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         }
     }
     if (unbacked) {
-        if (vk::Image image = allocator.CreateUnbackedImage(image_ci)) {
+        if (vk::Image image = allocator.CreateUnbackedImage(image_ci, aliased)) {
             return image;
         }
     }
@@ -2111,7 +2137,9 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
                                AstcHostFormat(runtime_.device, info),
                                UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
                                    UsesSparseTiles(runtime_.device, info, gpu_addr_) ||
-                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_))),
+                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_),
+                               UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
+                                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased)),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
@@ -2688,8 +2716,193 @@ bool Image::InitSparseTiles() {
             size_t{Common::DivCeil(width, s.tile_width)} * Common::DivCeil(height, s.tile_height),
             VK_NULL_HANDLE);
     }
-    LOG_INFO(Render_Vulkan, "Sparse tiled image {:#x}: {}x{} {} levels, block {}x{}, mip tail from {}",
-             gpu_addr, s.width, s.height, s.levels, s.tile_width, s.tile_height, s.tail_level);
+    if (SparseTilesModeOf(device) == SparseTilesMode::Aliased && !BindZeroBlock()) {
+        LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: no zeroed block to share", gpu_addr);
+        s.Release();
+        s.allocator = nullptr;
+        s.bound_bytes = 0;
+        return false;
+    }
+    LOG_INFO(Render_Vulkan, "Sparse tiled image {:#x}: {}x{} {} levels, block {}x{}, mip tail from {}{}",
+             gpu_addr, s.width, s.height, s.levels, s.tile_width, s.tile_height, s.tail_level,
+             s.zero_block != VK_NULL_HANDLE ? ", empty blocks share a zeroed one" : "");
+    return true;
+}
+
+bool Image::BindZeroBlock() {
+    SparseLayerMemory& s = sparse_layers;
+    const Device& device = runtime->device;
+    const u64 tile = s.requirements.alignment;
+    VkDeviceMemory memory{};
+    VkDeviceSize offset{};
+    s.zero_block = s.allocator->AllocateSparseMemory(
+        VkMemoryRequirements{
+            .size = tile,
+            .alignment = tile,
+            .memoryTypeBits = s.requirements.memoryTypeBits,
+        },
+        memory, offset);
+    if (s.zero_block == VK_NULL_HANDLE) {
+        return false;
+    }
+    s.bound_bytes += tile;
+    std::vector<VkSparseImageMemoryBind> image_binds;
+    for (u32 level = 0; level < s.tail_level; ++level) {
+        const u32 width = (std::max)(s.width >> level, 1U);
+        const u32 height = (std::max)(s.height >> level, 1U);
+        for (u32 y = 0; y < height; y += s.tile_height) {
+            for (u32 x = 0; x < width; x += s.tile_width) {
+                image_binds.push_back(VkSparseImageMemoryBind{
+                    .subresource{
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .mipLevel = level,
+                        .arrayLayer = 0,
+                    },
+                    .offset{static_cast<s32>(x), static_cast<s32>(y), 0},
+                    .extent{(std::min)(s.tile_width, width - x), (std::min)(s.tile_height, height - y),
+                            1},
+                    .memory = memory,
+                    .memoryOffset = offset,
+                    .flags = 0,
+                });
+            }
+        }
+    }
+    // The mip tail gets memory of its own: it is small, and the clear below zeroes it too.
+    std::vector<VkSparseMemoryBind> opaque_binds;
+    if (s.tail_level < s.levels) {
+        const VkMemoryRequirements requirements{
+            .size = Common::AlignUp(s.sparse.imageMipTailSize, tile),
+            .alignment = tile,
+            .memoryTypeBits = s.requirements.memoryTypeBits,
+        };
+        VkDeviceMemory tail_memory{};
+        VkDeviceSize tail_offset{};
+        s.tail_memory = s.allocator->AllocateSparseMemory(requirements, tail_memory, tail_offset);
+        if (s.tail_memory == VK_NULL_HANDLE) {
+            return false;
+        }
+        s.bound_bytes += requirements.size;
+        opaque_binds.push_back(VkSparseMemoryBind{
+            .resourceOffset = s.sparse.imageMipTailOffset,
+            .size = s.sparse.imageMipTailSize,
+            .memory = tail_memory,
+            .memoryOffset = tail_offset,
+            .flags = 0,
+        });
+    }
+    const VkSparseImageMemoryBindInfo image_bind_info{
+        .image = *original_image,
+        .bindCount = static_cast<u32>(image_binds.size()),
+        .pBinds = image_binds.data(),
+    };
+    const VkSparseImageOpaqueMemoryBindInfo opaque_bind_info{
+        .image = *original_image,
+        .bindCount = static_cast<u32>(opaque_binds.size()),
+        .pBinds = opaque_binds.data(),
+    };
+    const VkBindSparseInfo bind_info{
+        .sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = nullptr,
+        .bufferBindCount = 0,
+        .pBufferBinds = nullptr,
+        .imageOpaqueBindCount = opaque_binds.empty() ? 0U : 1U,
+        .pImageOpaqueBinds = opaque_binds.empty() ? nullptr : &opaque_bind_info,
+        .imageBindCount = image_binds.empty() ? 0U : 1U,
+        .pImageBinds = image_binds.empty() ? nullptr : &image_bind_info,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = nullptr,
+    };
+    vk::Fence fence = device.GetLogical().CreateFence(VkFenceCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    });
+    VkResult result;
+    {
+        std::scoped_lock lock{scheduler->submit_mutex};
+        result = device.GetGraphicsQueue().BindSparse(bind_info, *fence);
+    }
+    if (result != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan, "Sparse tiled image {:#x}: binding the zeroed block failed ({})",
+                  gpu_addr, static_cast<int>(result));
+        return false;
+    }
+    fence.Wait();
+    // Every block now reads the shared block (and the tail its own memory): zero them all.
+    ClearTiles();
+    return true;
+}
+
+void Image::ClearTiles() {
+    scheduler->RequestOutsideRenderPassOperationContext();
+    const VkImage vk_image = *original_image;
+    const bool was_initialized = std::exchange(initialized, true);
+    scheduler->Record([vk_image, was_initialized](vk::CommandBuffer cmdbuf) {
+        static constexpr VkImageSubresourceRange range{
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount = VK_REMAINING_ARRAY_LAYERS,
+        };
+        const VkImageMemoryBarrier to_transfer{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = was_initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = vk_image,
+            .subresourceRange = range,
+        };
+        const VkImageMemoryBarrier to_general{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                             VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                             VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = vk_image,
+            .subresourceRange = range,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                               to_transfer);
+        cmdbuf.ClearColorImage(vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VkClearColorValue{},
+                               range);
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                               to_general);
+    });
+}
+
+bool Image::BackTilesWhole() {
+    SparseLayerMemory& s = sparse_layers;
+    if (s.zero_block == VK_NULL_HANDLE) {
+        return true;
+    }
+    std::vector<VideoCommon::LevelRect> rects;
+    for (u32 level = 0; level < s.levels; ++level) {
+        rects.push_back({static_cast<s32>(level), 0, 0, (std::max)(s.width >> level, 1U),
+                         (std::max)(s.height >> level, 1U)});
+    }
+    if (!BindTiles(rects)) {
+        return false;
+    }
+    // No block reads the shared one any more.
+    s.allocator->FreeSparseMemory(s.zero_block);
+    s.zero_block = VK_NULL_HANDLE;
+    s.bound_bytes -= s.requirements.alignment;
+    ClearTiles();
     return true;
 }
 

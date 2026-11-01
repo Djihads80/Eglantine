@@ -326,6 +326,11 @@ public:
         return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
     }
 
+    /// Whether a sparse image may bind the same memory to several of its blocks.
+    bool IsSparseResidencyAliasedSupported() const {
+        return IsSparseResidencyImage2DSupported() && features.features.sparseResidencyAliased;
+    }
+
     /// Whether images with no memory bound may be sampled and used as attachments. AMD's drivers
     /// fault on it (the GPU hangs shortly after the first such draw), so large images there are
     /// backed normally.
