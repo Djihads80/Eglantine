@@ -7,6 +7,10 @@ on:
         description: Publish the binaries as a GitHub release
         type: boolean
         default: true
+      android_app_id:
+        description: Android application id (its own id keeps it apart from Eden installs)
+        type: string
+        default: dev.eglantine.eglantine
 
 permissions:
   contents: read
@@ -529,9 +533,48 @@ jobs:
   # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
+  android:
+    name: android-arm64 apk
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image has the SDK; add the NDK, CMake and platform the Gradle build asks for.
+      - name: Install Android packages
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.31.5" > /dev/null
+
+      - name: Build APK
+        shell: bash
+        working-directory: src/android
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon "-PappId=${{ inputs.android_app_id || 'dev.eglantine.eglantine' }}" assembleMainlineRelease
+          apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
+          cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: eglantine-android-arm64-${{ github.sha }}
+          path: eglantine-${{ github.sha }}-android-arm64.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, android]
     if: github.event_name == 'push' || inputs.publish_release
     runs-on: ubuntu-24.04
     permissions:
@@ -553,6 +596,8 @@ jobs:
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
               cp "$artifact"/*.AppImage "$artifact"/*.tar.gz dist/
+            elif compgen -G "$artifact*.apk" > /dev/null; then
+              cp "$artifact"/*.apk dist/
             elif compgen -G "$artifact*.zip" > /dev/null; then
               cp "$artifact"/*.zip dist/
             else
@@ -573,6 +618,7 @@ jobs:
             --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
 
+          Android: arm64 phones; install the apk (allow installs from unknown sources).
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
@@ -584,6 +630,7 @@ jobs:
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          [ -n "$WEBHOOK" ] || exit 0
           jq -n \
             --arg content "## <@&1566184315178713190> Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' \
