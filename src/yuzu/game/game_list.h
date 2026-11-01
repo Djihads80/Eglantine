@@ -165,6 +165,7 @@ private:
     Core::System& system;
 
     bool m_isTreeMode = true;
+    bool m_populating = false;
     QAbstractItemView* m_currentView = nullptr;
 };
 
