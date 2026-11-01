@@ -13,6 +13,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdata.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
@@ -36,7 +37,10 @@ void NVDRV::Open(HLERequestContext& ctx) {
     const std::string device_name(Common::StringFromBuffer(buffer));
     LOG_DEBUG(Service_NVDRV, "device_name={}", device_name);
 
-    if (device_name == "/dev/nvhost-prof-gpu") {
+    // Switch 2 lists nvhost-prof-gpu with the other GPU nodes and the CUDA driver (Fire
+    // Emblem's subsdk1) opens it, so only refuse it to Switch 1 callers. Switch 2 opens get
+    // the logged stub device.
+    if (device_name == "/dev/nvhost-prof-gpu" && !Devices::g_nx2_driver) {
         rb.Push<DeviceFD>(0);
         rb.PushEnum(NvResult::NotSupported);
 
