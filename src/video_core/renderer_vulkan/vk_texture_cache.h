@@ -389,6 +389,21 @@ public:
     /// layers that have memory afterwards (a cap per image can leave some out).
     std::vector<u32> BindLayers(std::span<const u32> layers);
 
+    /// SparseTiles images: gives the host sparse blocks under `rects` (and the mip tail, for
+    /// levels in it) device memory where they have none yet. False if that failed.
+    bool BindTiles(std::span<const VideoCommon::LevelRect> rects);
+
+    /// SparseTiles images: the host sparse block, in texels, and the first level of the mip tail.
+    u32 SparseTileWidth() const noexcept {
+        return sparse_layers.tile_width;
+    }
+    u32 SparseTileHeight() const noexcept {
+        return sparse_layers.tile_height;
+    }
+    s32 SparseTailLevel() const noexcept {
+        return static_cast<s32>(sparse_layers.tail_level);
+    }
+
     /// Device memory BindLayers has bound to the image's layers (an unbacked image has no other).
     u64 SparseBoundBytes() const noexcept {
         return sparse_layers.bound_bytes;
@@ -434,6 +449,9 @@ private:
             layer_bytes = other.layer_bytes;
             layer_memory = std::move(other.layer_memory);
             other.layer_memory.clear();
+            level_tiles = std::move(other.level_tiles);
+            other.level_tiles.clear();
+            tail_level = other.tail_level;
             tail_memory = std::exchange(other.tail_memory, VK_NULL_HANDLE);
             bound_bytes = other.bound_bytes;
             warned = other.warned;
@@ -449,8 +467,14 @@ private:
             for (const VmaAllocation allocation : layer_memory) {
                 allocator->FreeSparseMemory(allocation);
             }
+            for (const auto& tiles : level_tiles) {
+                for (const VmaAllocation allocation : tiles) {
+                    allocator->FreeSparseMemory(allocation);
+                }
+            }
             allocator->FreeSparseMemory(tail_memory);
             layer_memory.clear();
+            level_tiles.clear();
             tail_memory = VK_NULL_HANDLE;
         }
 
@@ -464,6 +488,9 @@ private:
         u32 tile_height{};
         VkDeviceSize layer_bytes{}; ///< One layer's levels before the mip tail, and its own tail
         std::vector<VmaAllocation> layer_memory; ///< Per layer, null until bound
+        /// SparseTiles: per level before the mip tail, per sparse block (rows), null until bound
+        std::vector<std::vector<VmaAllocation>> level_tiles;
+        u32 tail_level{}; ///< SparseTiles: first level of the mip tail
         VmaAllocation tail_memory{};             ///< The mip tail all layers share, if one
         VkDeviceSize bound_bytes{};
         bool warned{};
@@ -472,6 +499,9 @@ private:
 
     /// Reads the image's sparse requirements; false when it can't be bound by layer.
     bool InitSparseLayers();
+
+    /// Reads the image's sparse requirements; false when it can't be bound by sparse block.
+    bool InitSparseTiles();
 
     vk::Image original_image;
     vk::Image scaled_image;
