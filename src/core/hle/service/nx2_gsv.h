@@ -986,6 +986,18 @@ private:
         if (!region->tiles) {
             StartTiles(start, *region);
         }
+        // The game's memory already holds what the tile shows (title 1 fills nine world-sized
+        // masks, R8/RG16/R16 at 8192-16384 texels, in its own memory before mapping them): the
+        // blocks count as written, so the texture cache gives the images over them memory and
+        // loads them. Left unwritten, those images read zero and the static world was unlit.
+        const u64 first_block = (gpu_address - start) / SparseBlockSize;
+        const u64 last_block = (gpu_address + size - 1 - start) / SparseBlockSize;
+        for (u64 block = first_block; block <= last_block; ++block) {
+            if (region->blocks[block] == BlockEmpty) {
+                region->blocks[block] = BlockWritten;
+            }
+            Tegra::Nx2SparseBlockWritten(start, block);
+        }
         registry.MapSparseTile(gpu_address, cpu_address, size);
         MarkTiles(*region, gpu_address - start, size, true);
     }
