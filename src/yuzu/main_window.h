@@ -10,6 +10,7 @@
 #include <optional>
 
 #include <filesystem>
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPushButton>
@@ -539,6 +540,8 @@ private:
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;
+    bool boot_in_progress = false;
+    bool close_pending = false;
     // The path to the game currently running
     QString current_game_path;
     // Whether a user was set on the command line (skips UserSelector if it's forced to show up)
