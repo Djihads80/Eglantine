@@ -49,7 +49,6 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
-#include "video_core/nx2_draw_log.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -277,9 +276,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
     if (!pipeline) {
-        if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-            VideoCommon::Nx2DrawLog::Get().no_pipeline++;
-        }
         report_failure("no pipeline");
         return;
     }
@@ -287,9 +283,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
-        if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-            VideoCommon::Nx2DrawLog::Get().configure_failed++;
-        }
         report_failure("configure failed");
         return;
     }
@@ -307,40 +300,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         draw_func();
     }
     submitted = true;
-    if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
-        namespace Log = VideoCommon::Nx2DrawLog;
-        auto& counters = Log::Get();
-        const auto& regs = maxwell3d->regs;
-        const auto& state = maxwell3d->draw_manager.draw_state;
-        const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-        const u64 total = ++counters.draws;
-        const u32 log_instances = VideoCommon::Nx2DrawLog::LastInstanceCount();
-        if (log_instances > 1) counters.instanced_draws++;
-        if (state.base_instance != 0) counters.base_instance_draws++;
-        if (Log::IsDroppedProgram(vs)) {
-            const u64 n = ++counters.stage_buffer_draws;
-            if (n <= 200 || (n & 1023) == 0) {
-                LOG_INFO(HW_GPU,
-                         "DRAWLOG stage-buffer program vs={:#x} #{} rt0={:#x} {}x{} instances={} "
-                         "base_instance={} base_vertex={} topology={} count={}",
-                         vs, n, regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
-                         log_instances, state.base_instance, state.base_index,
-                         static_cast<u32>(state.topology),
-                         is_indexed ? state.index_buffer.count : state.vertex_buffer.count);
-            }
-        }
-        if (total % 20000 == 0) {
-            LOG_INFO(HW_GPU,
-                     "DRAWLOG summary: gpu_high={} draws={} no_pipeline={} configure_failed={} "
-                     "stage_buffer_draws={} instanced={} base_instance!=0={} macro_calls={} "
-                     "gpu_dirty_macro_params={} of_which_stale={}",
-                     Settings::IsGPULevelHigh(), total, counters.no_pipeline.load(),
-                     counters.configure_failed.load(), counters.stage_buffer_draws.load(),
-                     counters.instanced_draws.load(), counters.base_instance_draws.load(),
-                     counters.macro_calls.load(), counters.dirty_macro_calls.load(),
-                     counters.dirty_macro_stale.load());
-        }
-    }
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
         native_capture_count < 16 && [] {
@@ -467,7 +426,6 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 } // Anonymous namespace
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
-    VideoCommon::Nx2DrawLog::LastInstanceCount() = instance_count;
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
                       is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
