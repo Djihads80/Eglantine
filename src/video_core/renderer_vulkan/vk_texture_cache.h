@@ -177,13 +177,20 @@ public:
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
                             std::span<const VideoCommon::SwizzleParameters> swizzles);
 
-    /// Temporary decode images, freed once the GPU is past `tick`.
+    /// Temporary decode images, reusable once the GPU is past `tick`.
     struct PendingTranscode {
         u64 tick;
         vk::Image image;
         std::vector<vk::ImageView> views;
+        u32 width;
+        u32 height;
+        u32 levels;
+        u32 layers;
+        u32 unused_frames;
     };
     std::deque<PendingTranscode> pending_transcodes;
+    /// Decode images the GPU is done with, for the next texture of the same shape.
+    std::vector<PendingTranscode> free_transcodes;
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
     const Settings::ResolutionScalingInfo& resolution;
