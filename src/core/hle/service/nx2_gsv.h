@@ -1545,7 +1545,7 @@ private:
             WaitForFrame(~w[22], w[24]);
         }
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24]);
+        Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank();
         const auto paced = std::chrono::steady_clock::now();
@@ -1667,7 +1667,9 @@ private:
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value) {
+    // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
+    // into from the image's top-left corner (0 when it gives none).
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
         u64 address{};
         Nx2ImageLayout layout{};
         {
@@ -1691,6 +1693,16 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
+        // The present says how much of the image the game drew: Kirby Air Riders draws 1920x1080
+        // into 2560x1440 images, Mario Kart World 2560x1440 into 3840x2160 ones. Showing the whole
+        // image put the frame in the top-left corner.
+        const u32 shown_width = (shown_size & 0xFFFF) + 1, shown_height = (shown_size >> 16) + 1;
+        const bool has_shown_size = shown_size != 0 && shown_width <= layout.width &&
+                                    shown_height <= layout.height;
+        if (has_shown_size) {
+            crop_width = shown_width;
+            crop_height = shown_height;
+        }
         // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
         // into the top-left 1920x1080, the handheld panel's resolution; the console's display
         // scans out only that region. Showing whole images put the frame in a corner inside black
@@ -1698,7 +1710,8 @@ private:
         if (!Settings::IsDockedMode()) {
             crop_width = (std::min)(crop_width, 1920U);
             crop_height = (std::min)(crop_height, 1080U);
-        } else if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
+        } else if (!has_shown_size &&
+                   system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
                    layout.width == 3840 && layout.height == 2160) {
             // Mario Kart World docked draws 2560x1440 into the top-left of its 4K images.
             crop_width = 2560;
@@ -1720,8 +1733,9 @@ private:
                           (u64{crop_width} << 16) | crop_height;
         if (shown != m_shown_layout) {
             m_shown_layout = shown;
-            LOG_INFO(Service, "nx2:vi2 composite image {} layout {}x{}, crop {}x{}",
-                     image_id, layout.width, layout.height, crop_width, crop_height);
+            LOG_INFO(Service,
+                     "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}",
+                     image_id, layout.width, layout.height, shown_size, crop_width, crop_height);
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
