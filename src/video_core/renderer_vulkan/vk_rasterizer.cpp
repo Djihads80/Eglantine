@@ -1115,6 +1115,9 @@ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::Cache
 }
 
 void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
+        return;
+    }
     {
         std::scoped_lock lock{texture_cache.mutex};
         for (const auto& [addr, size] : sequences) {
