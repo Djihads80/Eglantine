@@ -1731,6 +1731,8 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         UploadImageContents(image, staging);
         runtime.InsertUploadMemoryBarrier();
     }
+    // Before the cold hint: memory given back is not hinted (the image is GPU modified then).
+    ReleaseGpuOnlyMemory(image);
     // The host GPU has its own copy now and the guest rarely reads this memory again: TickFrame
     // marks it cold, so the OS pages it out before anything else when it needs RAM (title 1
     // streams several GB of textures through it).
@@ -1780,6 +1782,27 @@ bool TextureCache<P>::UploadInChunks(Image& image) {
     }
     runtime.InsertUploadMemoryBarrier();
     return true;
+}
+
+template <class P>
+void TextureCache<P>::ReleaseGpuOnlyMemory(Image& image) {
+    // release_gpu_only_memory: a Switch 2 texture in GPU-only memory is never read by the guest
+    // CPU, and once uploaded its host image holds the data. Marked GPU modified, so whatever
+    // reads that memory through the caches downloads it back first (flushes, eviction), its
+    // backing is given back: Mario Kart World kept textures there twice, in RAM and on the GPU.
+    // Only images the host keeps byte for byte as the guest does, so a download restores them.
+    if (!Settings::values.release_gpu_only_memory.GetValue() ||
+        !Settings::CurrentProgramIsSwitch2() || image.info.num_samples != 1 ||
+        True(image.flags & (ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
+                            ImageFlagBits::TrimmedLevels | ImageFlagBits::SparseLayers |
+                            ImageFlagBits::Unbacked | ImageFlagBits::Sparse |
+                            ImageFlagBits::Remapped | ImageFlagBits::Rescaled |
+                            ImageFlagBits::CpuModified)) ||
+        !Tegra::Nx2InSparseRegion(image.gpu_addr, image.guest_size_bytes)) {
+        return;
+    }
+    MarkModification(image);
+    device_memory.ReleaseMemory(image.cpu_addr, image.guest_size_bytes);
 }
 
 template <class P>

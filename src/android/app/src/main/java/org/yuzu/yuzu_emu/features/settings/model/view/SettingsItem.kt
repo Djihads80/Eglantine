@@ -779,6 +779,20 @@ abstract class SettingsItem(
                 )
             )
             put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_REDUCE_TEXTURE_RESOLUTION,
+                    titleId = R.string.renderer_reduce_texture_resolution,
+                    descriptionId = R.string.renderer_reduce_texture_resolution_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_RELEASE_GPU_ONLY_MEMORY,
+                    titleId = R.string.renderer_release_gpu_only_memory,
+                    descriptionId = R.string.renderer_release_gpu_only_memory_description
+                )
+            )
+            put(
                 SingleChoiceSetting(
                     IntSetting.FAST_GPU_TIME,
                     titleId = R.string.fast_gpu_time,

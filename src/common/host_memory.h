@@ -71,6 +71,10 @@ public:
     /// A new kernel on this memory: everything a previous one used may hold data.
     void ForgetContents();
 
+    /// Gives the backing pages of [physical_offset, +length) (whole pages inside it) back to the
+    /// system: they read as zeros until written again. Does nothing where unsupported.
+    void ReleaseBackingRegion(size_t physical_offset, size_t length) const;
+
     [[nodiscard]] u8* BackingBasePointer() noexcept {
         return backing_base;
     }
