@@ -552,12 +552,6 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         if (logged.insert(error.what()).second) {
             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
         }
-        if (std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos) {
-            DescribeNativeResources(qmd);
-            // A tensor-core pass that is not emulated (Android, or EDEN_NX2_TENSOR unset): stand in
-            // with a plain upscale of its input when its images fit (else nothing is written).
-            return UpscaleInsteadOfNativeProgram();
-        }
         return false;
     }
     return true;
