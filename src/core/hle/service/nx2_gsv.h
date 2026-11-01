@@ -54,6 +54,7 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
+#include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -1299,6 +1300,10 @@ struct Nx2NativeObjects {
         u64 offset{}; // into its memory (images of a decoder pool share one)
         bool window_pool{};
         bool decoder{}; // a video decoder output image (gsv 911)
+        // A decoder image the client reads on the GPU (gsv 428/426): written block-linear.
+        bool gpu_read{};
+        u32 gpu_maps{};     // outstanding 426 maps
+        bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
     };
     std::mutex mutex;
     std::map<u32, Memory> memories;
@@ -2304,6 +2309,7 @@ private:
                                    const Decoded& frame, std::vector<u8>& bytes) {
         u64 address{};
         Nx2DecoderImageLayout layout{};
+        bool block_linear{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -2311,6 +2317,8 @@ private:
                 return {m_width, m_height};
             }
             layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
+            block_linear = image->second.gpu_read &&
+                           layout.format != Tegra::Host1x::Nx2PictureFormat::Nv12;
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory != m_objects->memories.end() && memory->second.address != 0) {
                 address = memory->second.address + image->second.offset;
@@ -2324,10 +2332,25 @@ private:
         const u32 width = std::min(frame.picture->width, layout.width);
         const u32 height = std::min(frame.picture->height, layout.height);
         bytes.resize(layout.size);
+        auto& memory = system.ApplicationMemory();
+        if (block_linear) {
+            // Read on the GPU: RGBA (the blit's format 0xd5) in the native block-linear layout,
+            // 16-GOB blocks, as our Eden tree writes these images.
+            decoder->Render(*frame.picture, Tegra::Host1x::Nx2PictureFormat::Rgba8, width, height,
+                            layout.pitch, 0, bytes);
+            m_tiled.resize(layout.size);
+            Tegra::Texture::SwizzleTexture(m_tiled, bytes, 4, static_cast<u32>(layout.pitch / 4),
+                                           layout.height, 1, 4, 0, 1, true);
+            memory.WriteBlock(address, m_tiled.data(), m_tiled.size());
+            if (const auto device =
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+                system.GPU().InvalidateRegion(*device, m_tiled.size());
+            }
+            return {width, height};
+        }
         decoder->Render(*frame.picture, layout.format, width, height, layout.pitch,
                         layout.chroma_offset, bytes);
         DumpFrame(bytes, layout, width, height);
-        auto& memory = system.ApplicationMemory();
         memory.WriteBlock(address, bytes.data(), layout.pitch * height);
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
@@ -2373,6 +2396,7 @@ private:
     u64 m_submitted{};
     u32 m_syncpoint{NoSyncpoint}; ///< Counts finished frames (allocated at the first register)
     u32 m_sync_base{};            ///< Its value before the first frame
+    std::vector<u8> m_tiled;      ///< Decode thread: block-linear copy of a frame (WriteImage)
 
     // Shared with the decode thread.
     std::mutex m_mutex;
@@ -2416,6 +2440,7 @@ public:
             {429, &INx2GraphicsSystemSession::CreateNativeImage, "CreateNativeImage"},
             {430, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyNativeImage"},
             {426, &INx2GraphicsSystemSession::QueryNativeImage, "MapNativeImage"},
+            {427, &INx2GraphicsSystemSession::UnmapNativeImage, "UnmapNativeImage"},
             {428, &INx2GraphicsSystemSession::QueryNativeImage, "QueryNativeImage"},
             {435, &INx2GraphicsSystemSession::CalculateNativeImageSize, "CalculateNativeImageSize"},
             {1402, &INx2GraphicsSystemSession::OpenNvsrvSession, "OpenNvsrvSession (guessed)"},
@@ -2680,8 +2705,19 @@ private:
 
     void DestroyNativeMemory(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::scoped_lock lk{m_objects->mutex};
-        m_objects->memories.erase(id);
+        std::vector<std::optional<std::pair<u64, u64>>> unmaps;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            for (auto& [image_id, image] : m_objects->images) {
+                if (image.memory == id && image.mapped_here) {
+                    unmaps.push_back(TakeDecoderMapping(image));
+                }
+            }
+            m_objects->memories.erase(id);
+        }
+        for (const auto& range : unmaps) {
+            DropDecoderMapping(range);
+        }
         LOG_DEBUG(Service, "nx2:gsv 112 DestroyNativeMemory id {}", id);
         TipcReplyWords(ctx, {});
     }
@@ -2756,6 +2792,9 @@ private:
     // the 429 preference words (0x10, 0x14), a guess.
     void QueryNativeImage(HLERequestContext& ctx) {
         const u32 handle = ctx.CommandBuffer()[2];
+        if (QueryDecoderImage(ctx, handle)) {
+            return;
+        }
         std::array<u32, 16> preference{};
         u64 image_offset = 0;
         u64 memory_address = 0;
@@ -2797,6 +2836,108 @@ private:
         rb.PushRaw<u32>(ResultSuccess.raw);
         for (const u32 w : words) {
             rb.Push<u32>(w);
+        }
+    }
+
+    // 428/426 for a decoder output image (Fire Emblem: Fortune's Weave's movie player blits each
+    // one, block-linear RGBA, format 0xd5, block height 16 GOBs, into a texture of its own). The
+    // reply follows our Eden tree, where the movies play: words 3-4 the GPU address, 5-6 the last
+    // byte's address, then the descriptor {1, 0, dimensions, .., 0x01000001, 1, offset, size}
+    // (offset 0 once mapped). 426 maps the image at its own address for the GPU: decoder pool
+    // memory is process memory (114) that no GPU mapping covers, and the blit read zeros.
+    bool QueryDecoderImage(HLERequestContext& ctx, u32 handle) {
+        const bool map = ctx.GetCommand() == 426;
+        u64 address{};
+        u64 size{};
+        u64 offset{};
+        u32 dimensions{};
+        bool register_mapping = false;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            const auto image = m_objects->images.find(handle);
+            if (image == m_objects->images.end() || !image->second.decoder) {
+                return false;
+            }
+            const auto memory = m_objects->memories.find(image->second.memory);
+            if (memory == m_objects->memories.end() || memory->second.address == 0) {
+                return false;
+            }
+            image->second.gpu_read = true;
+            offset = image->second.offset;
+            size = image->second.size;
+            dimensions = image->second.preference[2];
+            if (map) {
+                address = memory->second.address + offset;
+                register_mapping = image->second.gpu_maps++ == 0 &&
+                                   !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
+                image->second.mapped_here |= register_mapping;
+            }
+        }
+        if (register_mapping) {
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(address, size);
+        }
+        LOG_INFO(Service, "nx2:gsv {} decoder image {} at {:#x}+{:#x}{}", ctx.GetCommand(), handle,
+                 address, size, register_mapping ? ", mapped for the GPU" : "");
+        std::array<u32, 37> words{};
+        if (map) {
+            const u64 last = address + size - 1;
+            words[0] = static_cast<u32>(address);
+            words[1] = static_cast<u32>(address >> 32);
+            words[2] = static_cast<u32>(last);
+            words[3] = static_cast<u32>(last >> 32);
+        }
+        u32* const desc = words.data() + 4;
+        desc[0] = 1;
+        desc[2] = dimensions;
+        desc[8] = 0x01000001;
+        desc[9] = 1;
+        desc[10] = map ? 0 : static_cast<u32>(offset);
+        desc[11] = static_cast<u32>(size);
+        IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + words.size())};
+        rb.PushRaw<u32>(ResultSuccess.raw);
+        for (const u32 w : words) {
+            rb.Push<u32>(w);
+        }
+        return true;
+    }
+
+    // 427(u32 handle, u32 address space, u64 address, u64 last address): undoes a 426. The last
+    // unmap of a decoder image drops the GPU mapping 426 made.
+    void UnmapNativeImage(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u32 handle = w[2];
+        std::optional<std::pair<u64, u64>> unmap;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(handle);
+                image != m_objects->images.end() && image->second.gpu_maps != 0 &&
+                --image->second.gpu_maps == 0) {
+                unmap = TakeDecoderMapping(image->second);
+            }
+        }
+        LOG_DEBUG(Service, "nx2:gsv 427 image {} [{:#x}, {:#x}]", handle, Pair(w, 4), Pair(w, 6));
+        DropDecoderMapping(unmap);
+        TipcReplyWords(ctx, {});
+    }
+
+    // The range 426 mapped for an image, if it did; called with m_objects->mutex held.
+    std::optional<std::pair<u64, u64>> TakeDecoderMapping(Nx2NativeObjects::Image& image) {
+        image.gpu_maps = 0;
+        if (!std::exchange(image.mapped_here, false)) {
+            return std::nullopt;
+        }
+        const auto memory = m_objects->memories.find(image.memory);
+        if (memory == m_objects->memories.end() || memory->second.address == 0) {
+            return std::nullopt;
+        }
+        return std::pair{memory->second.address + image.offset, image.size};
+    }
+
+    static void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
+        if (range) {
+            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+            registry.Unmap(range->first, range->second);
+            registry.ReleaseBacking(range->first, range->second);
         }
     }
 
@@ -2858,8 +2999,15 @@ private:
 
     void DestroyNativeImage(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::scoped_lock lk{m_objects->mutex};
-        m_objects->images.erase(id);
+        std::optional<std::pair<u64, u64>> unmap;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(id); image != m_objects->images.end()) {
+                unmap = TakeDecoderMapping(image->second);
+                m_objects->images.erase(image);
+            }
+        }
+        DropDecoderMapping(unmap);
         TipcReplyWords(ctx, {});
     }
 
