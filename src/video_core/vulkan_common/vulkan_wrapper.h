@@ -696,6 +696,13 @@ public:
         return handle != VK_NULL_HANDLE && allocation == VK_NULL_HANDLE;
     }
 
+    /// The memory the image needs, as the driver reports it.
+    [[nodiscard]] VkDeviceSize MemorySize() const noexcept {
+        VkMemoryRequirements requirements{};
+        dld->vkGetImageMemoryRequirements(owner, handle, &requirements);
+        return requirements.size;
+    }
+
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
 

@@ -431,7 +431,7 @@ void TextureCache<P>::TickFrame() {
         std::vector<std::pair<u64, const Image*>> largest;
         std::map<u32, std::pair<u64, u32>> by_format;
         for (const auto [image_id, image] : slot_images) {
-            const u64 bytes = GetScaledImageSizeBytes(*image);
+            const u64 bytes = ImageMemoryBytes(*image);
             image_bytes += bytes;
             ++images;
             if (debug_stats) {
@@ -2310,6 +2310,15 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
             return image.SparseBoundBytes();
         }
         return 0;
+    }
+    // What the host image really takes where the runtime knows it: a trimmed image
+    // (reduce_texture_resolution) takes a quarter of its guest size. Counted at guest size, Mario
+    // Kart World's trimmed terrain arrays kept the total over the critical limit for whole races,
+    // and the collector evicted (and re-uploaded) thousands of textures every few seconds.
+    if constexpr (requires { image.HostMemoryBytes(); }) {
+        if (const std::optional<u64> host_bytes = image.HostMemoryBytes()) {
+            return Common::AlignUp(*host_bytes, 1024);
+        }
     }
     u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
     if ((IsPixelFormatASTC(image.info.format) &&
