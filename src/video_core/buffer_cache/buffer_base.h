@@ -129,6 +129,16 @@ public:
         write_tick = write_tick_;
     }
 
+    /// The GPU tick of the last command recorded to modify this buffer (shader writes, copies,
+    /// clears): what a direct host read of its memory waits for.
+    [[nodiscard]] u64 GpuWriteTick() const noexcept {
+        return gpu_write_tick;
+    }
+
+    void SetGpuWriteTick(u64 tick) noexcept {
+        gpu_write_tick = tick;
+    }
+
 private:
     VAddr cpu_addr = 0;
     BufferFlagBits flags{};
@@ -136,6 +146,7 @@ private:
     size_t lru_id = SIZE_MAX;
     size_t size_bytes = 0;
     u64 write_tick = 0;
+    u64 gpu_write_tick = 0;
 };
 
 } // namespace VideoCommon

@@ -378,6 +378,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
+    NoteGpuWrite(dest_buffer);
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
@@ -411,6 +412,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
+    NoteGpuWrite(dest_buffer);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
     dest_buffer.MarkUsage(offset, size);
     return true;
@@ -934,6 +936,7 @@ void BufferCache<P>::BindHostIndexBuffer() {
             auto upload_staging = runtime.UploadStagingBuffer(size);
             std::array<BufferCopy, 1> copies{{BufferCopy{.src_offset = upload_staging.offset, .dst_offset = 0, .size = size}}};
             std::memcpy(upload_staging.mapped_span.data(), draw_state.inline_index_draw_indexes.data(), size);
+            NoteGpuWrite(buffer);
             runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true);
         } else {
             buffer.ImmediateUpload(0, draw_state.inline_index_draw_indexes);
@@ -1787,10 +1790,18 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 }
 
 template <class P>
+void BufferCache<P>::NoteGpuWrite(Buffer& buffer) {
+    if constexpr (!IS_OPENGL) {
+        buffer.SetGpuWriteTick(runtime.CurrentTick());
+    }
+}
+
+template <class P>
 void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync) {
     if constexpr (!IS_OPENGL) {
+        Buffer& buffer = slot_buffers[buffer_id];
+        NoteGpuWrite(buffer);
         if (needs_sync) {
-            Buffer& buffer = slot_buffers[buffer_id];
             buffer.setWriteTick(runtime.CurrentTick());
         }
     }
@@ -2145,6 +2156,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
         .size = overlap.SizeBytes(),
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
+    NoteGpuWrite(new_buffer);
     runtime.CopyBuffer(new_buffer, overlap, copies, true);
 #ifdef YUZU_LEGACY
     if (immediately_free)
@@ -2165,6 +2177,7 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
     const size_t size_bytes = new_buffer.SizeBytes();
+    NoteGpuWrite(new_buffer);
     runtime.ClearBuffer(new_buffer, 0, size_bytes, 0);
     new_buffer.MarkUsage(0, size_bytes);
     for (const BufferId overlap_id : overlap.ids) {
@@ -2359,6 +2372,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        NoteGpuWrite(buffer);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     }
 }
@@ -2402,6 +2416,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         u8* const src_pointer = upload_staging.mapped_span.data();
         std::memcpy(src_pointer, inlined_buffer.data(), copy_size);
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
+        NoteGpuWrite(buffer);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     } else {
         buffer.ImmediateUpload(buffer.Offset(dest_address), inlined_buffer.first(copy_size));
@@ -2497,6 +2512,25 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
     }
     if (total_size_bytes == 0) {
         return;
+    }
+    if constexpr (requires { runtime.CanReadBuffersDirectly(); buffer.HostView(); }) {
+        // An integrated GPU's buffers are in the memory the host reads: wait for the GPU to
+        // complete the last command that wrote this buffer (often done already) and read it,
+        // instead of copying it out and waiting for all the GPU's work. Mario Kart World's CPU
+        // reads GPU-written data all the time, each such wait 17% of the GPU back thread.
+        const u64 tick = buffer.GpuWriteTick();
+        if (tick != 0 && runtime.CanReadBuffersDirectly()) {
+            const std::span<const u8> host = buffer.HostView();
+            if (!host.empty()) {
+                runtime.WaitTick(tick);
+                buffer.InvalidateHostView();
+                for (const BufferCopy& copy : copies) {
+                    device_memory.WriteBlockUnsafe(buffer.CpuAddr() + copy.src_offset,
+                                                   host.data() + copy.src_offset, copy.size);
+                }
+                return;
+            }
+        }
     }
 
     if constexpr (USE_MEMORY_MAPS) {
