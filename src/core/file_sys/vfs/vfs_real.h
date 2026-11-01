@@ -62,7 +62,7 @@ private:
     friend class RealVfsFile;
     std::unique_lock<std::mutex> RefreshReference(const std::string& path, OpenMode perms,
                                                   FileReference& reference);
-    void DropReference(std::unique_ptr<FileReference>&& reference);
+    void DropReference(std::unique_ptr<FileReference>&& reference, const std::string& path);
 
 private:
     friend class RealVfsDirectory;
