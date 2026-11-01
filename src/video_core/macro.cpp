@@ -1484,8 +1484,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 emit);
             if (!result.success) {
                 native_execution_failed = true;
-                LOG_ERROR(HW_GPU, "Native MME (JIT) failed: start={:#x}, consumed={}/{}, error={}",
-                          method, result.consumed, parameters.size(), result.error);
+                LOG_ERROR(HW_GPU,
+                          "Native MME (JIT) failed: start={:#x}, pc={:#x}, consumed={}/{}, error={}",
+                          method, result.pc, result.consumed, parameters.size(), result.error);
             }
             return;
         }

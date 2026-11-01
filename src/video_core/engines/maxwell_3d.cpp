@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -561,7 +562,18 @@ void Maxwell3D::ProcessMacroUpload(u32 data) {
 }
 
 void Maxwell3D::ProcessMacroBind(u32 data) {
-    GetNativeMacroPositions()[regs.load_mme.start_address_ptr++] = data;
+    const auto positions = GetNativeMacroPositions();
+    const u32 index = regs.load_mme.start_address_ptr++;
+    if (index >= positions.size()) {
+        static std::atomic<u32> rejected{};
+        if (rejected.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU,
+                      "Rejecting out-of-range macro bind: index={:#x}, entries={}, data={:#x}",
+                      index, positions.size(), data);
+        }
+        return;
+    }
+    positions[index] = data;
 }
 
 void Maxwell3D::ProcessFirmwareCall4() {
