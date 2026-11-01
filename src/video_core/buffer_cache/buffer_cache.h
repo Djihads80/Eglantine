@@ -17,7 +17,6 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
-#include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
 
@@ -292,9 +291,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     const bool has_new_downloads = tmp_intervals.size() != 0;
     for (const auto& pair : tmp_intervals) {
         gpu_modified_ranges.Add(pair.first, pair.second);
-        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
-        }
     }
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
@@ -1613,9 +1609,6 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
     } else {
         ArmReadTraps(device_addr, size);
-    }
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
-        Tegra::Nx2MarkGpuWritten(device_addr, size);
     }
 }
 
