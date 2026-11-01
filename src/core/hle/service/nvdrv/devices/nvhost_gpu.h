@@ -199,19 +199,15 @@ private:
     s32_le GetObjectContextClassNumberIndex(CtxClasses class_number);
     NvResult AllocateObjectContext(IoctlAllocObjCtx& params);
 
-    NvResult SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandList&& entries,
-                             u64 capture_id);
-
-    u64 CaptureSubmission(DeviceFD fd, Ioctl command, u32 variant, std::span<const u8> input,
-                         std::size_t inline_size = 0) const noexcept;
+    NvResult SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandList&& entries);
 
     Core::Memory::Memory& GetSessionMemory(DeviceFD fd);
 
     NvResult SubmitGPFIFOBase1(IoctlSubmitGpfifo& params,
                                std::span<Tegra::CommandListHeader> commands, DeviceFD fd,
-                               bool kickoff, u64 capture_id);
+                               bool kickoff = false);
     NvResult SubmitGPFIFOBase2(IoctlSubmitGpfifo& params,
-                               std::span<const Tegra::CommandListHeader> commands, u64 capture_id);
+                               std::span<const Tegra::CommandListHeader> commands);
 
     NvResult GetWaitbase(IoctlGetWaitbase& params);
     NvResult ChannelSetTimeout(IoctlChannelSetTimeout& params);

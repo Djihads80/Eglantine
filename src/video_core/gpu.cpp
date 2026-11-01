@@ -31,7 +31,6 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
-#include "video_core/gpu_split.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
@@ -115,7 +114,7 @@ struct GPU::Impl {
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
         std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
-            renderer->ReadRasterizer()->OnCachedWrite(address, size);
+            renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
         });
         system.GatherGPUDirtyMemory(callback_writes);
     }
@@ -217,22 +216,11 @@ struct GPU::Impl {
     }
 
     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
-        if (gpu_thread.IsCurrentThread()) {
-            auto& split = VideoCommon::GpuSplit::Get();
-            if (split.Active()) {
-                VideoCore::RasterizerDownloadArea area{};
-                split.Defer([this, addr, size, &area] { area = OnCPURead(addr, size); });
-                split.Drain();
-                return area;
-            }
-        }
         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
-        raster_area.preemtive = true;
-        if (gpu_thread.IsCurrentThread() || VideoCommon::GpuSplit::IsBackThread()) {
-            renderer->ReadRasterizer()->FlushRegion(
-                raster_area.start_address, raster_area.end_address - raster_area.start_address);
+        if (raster_area.preemtive) {
             return raster_area;
         }
+        raster_area.preemtive = true;
         // A guest CPU read of GPU-written memory (reactive flushing): count them, they decide
         // whether buffer data must be copied back at every fence (EDEN_NX2_BUFFER_DOWNLOADS).
         if (static std::atomic<u64> reads{}; (reads.fetch_add(1, std::memory_order_relaxed) & 63) == 0) {

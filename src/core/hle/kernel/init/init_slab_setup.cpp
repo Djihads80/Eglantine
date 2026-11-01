@@ -126,11 +126,8 @@ KVirtualAddress InitializeSlabHeap(Core::System& system, KMemoryLayout& memory_l
     // TODO(bunnei): Fix this once we support the kernel virtual memory layout.
 
     if (size > 0) {
-        const auto physical_address = TranslateSlabAddrToPhysical(memory_layout, start);
-        system.DeviceMemory().buffer.MarkUsed(
-            GetInteger(physical_address) - Core::DramMemoryMap::Base, size);
         void* backing_kernel_memory{system.DeviceMemory().GetPointer<void>(
-            physical_address)};
+            TranslateSlabAddrToPhysical(memory_layout, start))};
 
         const KMemoryRegion* region = memory_layout.FindVirtual(start + size - 1);
         ASSERT(region != nullptr);

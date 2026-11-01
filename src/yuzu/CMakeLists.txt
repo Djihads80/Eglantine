@@ -241,11 +241,6 @@ add_executable(yuzu
 
 set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
 
-add_custom_command(TARGET yuzu PRE_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
-    VERBATIM)
-
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
         breakpad.cpp
@@ -398,11 +393,12 @@ if (APPLE)
     target_sources(yuzu PRIVATE ${MOLTENVK_LIBRARY})
 elseif(WIN32)
     # compile as a win32 gui application instead of a console application
-    set_target_properties(yuzu PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(yuzu PRIVATE Qt6::EntryPointPrivate)
     if(MSVC)
         target_link_libraries(yuzu PRIVATE version.lib)
+        set_target_properties(yuzu PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS")
     elseif(MINGW)
+        set_target_properties(yuzu PROPERTIES LINK_FLAGS_RELEASE "-Wl,--subsystem,windows")
         target_link_libraries(yuzu PRIVATE dwmapi)
     endif()
 endif()

@@ -14,7 +14,7 @@ constexpr size_t VirtualReserveSize = 1ULL << 39;
 
 DeviceMemory::DeviceMemory()
     : buffer{Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize(),
-             VirtualReserveSize, Common::HostMemory::BackingMode::Deferred} {}
+             VirtualReserveSize} {}
 
 DeviceMemory::~DeviceMemory() = default;
 

@@ -400,7 +400,6 @@ public:
     u32 process_revision;
     /// User version
     u32 user_revision{};
-    bool native_platform{};
     /// Behaviour flags
     Flags flags{};
     /// Errors generated and reported during Update

@@ -478,9 +478,9 @@ void RegAlloc::DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, const IR::
         DefineValueImpl(code, def_inst, location);
         LoadImmediate(code, use_inst, location);
     } else {
-        const auto location = ValueLocation(use_inst.GetInst());
-        ASSERT(location && "use_inst must already be defined");
-        DefineValueImpl(code, def_inst, *location);
+        ASSERT(ValueLocation(use_inst.GetInst()) && "use_inst must already be defined");
+        const HostLoc location = *ValueLocation(use_inst.GetInst());
+        DefineValueImpl(code, def_inst, location);
     }
 }
 

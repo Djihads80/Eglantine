@@ -4,10 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2025 lsfg-vk
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <algorithm>
 #include <cstring>
 

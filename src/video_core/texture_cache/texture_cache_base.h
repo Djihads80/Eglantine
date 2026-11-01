@@ -427,26 +427,6 @@ private:
     /// Stop tracking CPU reads and writes for image
     void UntrackImage(ImageBase& image, ImageId image_id);
 
-    /// Records a CPU write into a large 2D image page by page instead of untracking it whole.
-    /// Returns false when the image does not qualify (the caller marks it modified as usual).
-    bool MarkPartialWrite(ImageBase& image, DAddr cpu_addr, size_t size);
-
-    /// Uploads a large plain 2D image in chunks; false if it does not qualify.
-    bool UploadInChunks(Image& image);
-
-    /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
-    /// marking the whole image remapped (which replaces it). False if the image does not qualify.
-    bool MarkPartialRemap(ImageBase& image, Tegra::MemoryManager& memory, GPUVAddr gpu_addr,
-                          size_t size);
-
-    /// Tracks the pages of a partial write again and forgets them.
-    void RestorePartialPages(ImageBase& image);
-
-    /// Uploads the block rows the recorded pages cover. Returns false if the layout is not handled.
-    bool RefreshPartialContents(Image& image);
-
-    bool ReplaceUnwrittenSparse(ImageId image_id);
-
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 

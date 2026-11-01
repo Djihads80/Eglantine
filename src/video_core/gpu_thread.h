@@ -131,10 +131,6 @@ public:
 
     void TickGPU(bool is_async);
 
-    bool IsCurrentThread() const {
-        return thread.get_id() == std::this_thread::get_id();
-    }
-
     /// Runs func on the GPU thread once the commands queued before it have been processed.
     void Run(std::function<void()>&& func, bool is_async);
 

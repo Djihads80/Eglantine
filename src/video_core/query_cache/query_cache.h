@@ -304,21 +304,6 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             impl->pending_unregister.push_back(query_location);
         }
     });
-    if (counter_type == QueryType::Payload && (is_fence || Settings::IsGPULevelHigh())) {
-        // Written later, from the fence: remembered until then for GPU acquires (PendingRelease).
-        {
-            std::scoped_lock lock{pending_releases_mutex};
-            pending_releases.insert_or_assign(cpu_addr, payload);
-        }
-        operation = [this, cpu_addr, payload, write = std::move(operation)] {
-            write();
-            std::scoped_lock lock{pending_releases_mutex};
-            if (const auto it = pending_releases.find(cpu_addr);
-                it != pending_releases.end() && it->second == payload) {
-                pending_releases.erase(it);
-            }
-        };
-    }
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
@@ -355,15 +340,6 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         old_query->flags |= QueryFlagBits::IsRewritten;
         sub_container.insert_or_assign(base, query_location);
     }
-}
-
-template <typename Traits>
-std::optional<u32> QueryCacheBase<Traits>::PendingRelease(DAddr cpu_addr) {
-    std::scoped_lock lock{pending_releases_mutex};
-    if (const auto it = pending_releases.find(cpu_addr); it != pending_releases.end()) {
-        return it->second;
-    }
-    return std::nullopt;
 }
 
 template <typename Traits>

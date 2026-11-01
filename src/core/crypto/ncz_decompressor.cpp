@@ -120,13 +120,9 @@ std::optional<std::pair<std::vector<Section>, std::optional<BlockHeader>>> Parse
     return std::make_pair(std::move(sections), std::move(bh));
 }
 
-// Sequential reader over independently-compressed blocks. Uses a direct-mapped cache (like
-// NCZVirtualFile) instead of an LRU list: block_index % CacheSlots picks the slot, so a hit is
-// O(1). Reuses one ZSTD_DCtx for the lifetime of the reader.
+// Sequential reader over independently-compressed blocks, one block cached (like nsz_rs).
 class BlockReader {
 public:
-    static constexpr std::size_t CacheSlots = 32;
-
     BlockReader(FileSys::VirtualFile f, const BlockHeader& bh, u64 payload_start)
         : source{std::move(f)}, block_size{1ULL << bh.exponent}, sizes{bh.sizes},
           decompressed_size{bh.decompressed_size} {
@@ -135,31 +131,19 @@ public:
         u64 off = payload_start;
         offsets.reserve(sizes.size());
         for (u32 s : sizes) { offsets.push_back(off); off += s; }
-        dctx = ZSTD_createDCtx();
-        if (dctx == nullptr) throw std::runtime_error("ZSTD_createDCtx failed");
-        cache.resize(CacheSlots);
-        for (auto& slot : cache) slot.id = ~0ULL;
     }
 
-    ~BlockReader() {
-        if (dctx != nullptr) ZSTD_freeDCtx(dctx);
-    }
-
-    BlockReader(const BlockReader&) = delete;
-    BlockReader& operator=(const BlockReader&) = delete;
-
+    // Fills `out` from `position`; returns bytes written.
     std::size_t ReadAt(u64 position, std::span<u8> out) {
         std::size_t done = 0;
         while (done < out.size() && position < decompressed_size) {
             const u64 id = position / block_size;
             if (id >= sizes.size()) break;
-            const std::vector<u8>* block = GetBlock(id);
-            if (block == nullptr) break;
+            if (cache_id != id && !Load(id)) break;
             const u64 in = position - id * block_size;
-            if (in >= block->size()) break;
             const std::size_t n = static_cast<std::size_t>(
-                std::min<u64>(out.size() - done, block->size() - in));
-            std::memcpy(out.data() + done, block->data() + in, n);
+                std::min<u64>(out.size() - done, cache.size() - in));
+            std::memcpy(out.data() + done, cache.data() + in, n);
             done += n;
             position += n;
         }
@@ -167,49 +151,23 @@ public:
     }
 
 private:
-    struct Slot {
-        u64 id = ~0ULL;
-        std::vector<u8> data;
-    };
-
-    const std::vector<u8>* GetBlock(u64 id) {
-        Slot& slot = cache[id % CacheSlots];
-        if (slot.id == id) {
-            return &slot.data;  // O(1) hit
-        }
-        std::vector<u8> buffer;
-        buffer.swap(slot.data);  // reuse existing allocation
-        slot.id = ~0ULL;
-        if (!DecodeBlock(id, buffer)) {
-            return nullptr;
-        }
-        slot.data = std::move(buffer);
-        slot.id = id;
-        return &slot.data;
-    }
-
-    bool DecodeBlock(u64 id, std::vector<u8>& buffer) {
+    bool Load(u64 id) {
         u64 want = block_size;
         if (id + 1 == sizes.size()) {
             const u64 rem = decompressed_size % block_size;
-            if (rem > 0) want = rem;  // avoid the 0-size bug from the original nsz
+            if (rem > 0) want = rem; // avoid the 0-size bug from the original nsz
         }
-        try { buffer.resize(static_cast<std::size_t>(want)); }
+        try { cache.resize(static_cast<std::size_t>(want)); }
         catch (const std::bad_alloc&) { return false; }
         const u32 csize = sizes[id];
         if (csize < want) {
             const auto comp = source->ReadBytes(csize, offsets[id]);
-            if (comp.size() != csize) return false;
-            const std::size_t res = ZSTD_decompressDCtx(
-                dctx, buffer.data(), buffer.size(), comp.data(), comp.size());
-            if (ZSTD_isError(res) || res != want) {
-                LOG_ERROR(Crypto, "Failed to decompress NCZBLOCK block {}: {}", id,
-                          ZSTD_isError(res) ? ZSTD_getErrorName(res) : "size mismatch");
-                return false;
-            }
-        } else if (source->Read(buffer.data(), buffer.size(), offsets[id]) != buffer.size()) {
+            if (comp.size() != csize ||
+                Common::Compression::DecompressDataZSTD(comp, cache) != want) return false;
+        } else if (source->Read(cache.data(), cache.size(), offsets[id]) != cache.size()) {
             return false;
         }
+        cache_id = id;
         return true;
     }
 
@@ -218,67 +176,45 @@ private:
     std::vector<u64> offsets;
     std::vector<u32> sizes;
     u64 decompressed_size;
-    ZSTD_DCtx* dctx = nullptr;
-    std::vector<Slot> cache;  // direct-mapped, CacheSlots entries
-};
-
-struct BlockNczContents {
-    std::vector<u8> hdr;
-    std::vector<Section> sections;
-    std::unique_ptr<BlockReader> body;
-    std::mutex mutex;
-    u64 nca_size{};
-    bool has_plain_view{};
+    u64 cache_id = ~0ULL;
+    std::vector<u8> cache;
 };
 
 class BlockNczFile final : public FileSys::VfsFile {
 public:
-    BlockNczFile(std::string name_, std::shared_ptr<BlockNczContents> contents_, bool decrypted_)
-        : name{std::move(name_)}, contents{std::move(contents_)}, decrypted{decrypted_} {
-        if (!decrypted) {
-            ciphers.reserve(contents->sections.size());
-            for (const auto& s : contents->sections)
-                ciphers.push_back(s.Ctr() ? std::make_unique<AESCipher<Key128>>(s.key, Mode::CTR)
-                                          : nullptr);
-        }
+    BlockNczFile(std::string name_, std::vector<u8> hdr_, std::vector<Section> sections_,
+                 std::unique_ptr<BlockReader> body_)
+        : name{std::move(name_)}, hdr{std::move(hdr_)}, sections{std::move(sections_)},
+          body{std::move(body_)} {
+        nca_size = HeaderSize;
+        for (const auto& s : sections)
+            nca_size = std::max<u64>(nca_size, static_cast<u64>(s.offset + s.size));
+        ciphers.reserve(sections.size());
+        for (const auto& s : sections)
+            ciphers.push_back(s.Ctr() ? std::make_unique<AESCipher<Key128>>(s.key, Mode::CTR)
+                                      : nullptr);
     }
 
     std::string GetName() const override { return name; }
-    std::size_t GetSize() const override { return static_cast<std::size_t>(contents->nca_size); }
+    std::size_t GetSize() const override { return static_cast<std::size_t>(nca_size); }
     bool Resize(std::size_t) override { return false; }
     FileSys::VirtualDir GetContainingDirectory() const override { return nullptr; }
     bool IsWritable() const override { return false; }
     bool IsReadable() const override { return true; }
 
-    FileSys::VirtualFile GetDecryptedView() const override {
-        if (decrypted || !contents->has_plain_view) {
-            return nullptr;
-        }
-        return std::make_shared<BlockNczFile>(name, contents, true);
-    }
-
     std::size_t Read(u8* data, std::size_t len, std::size_t off) const override {
-        const u64 nca_size = contents->nca_size;
         if (off >= nca_size) return 0;
         len = static_cast<std::size_t>(std::min<u64>(len, nca_size - off));
         const u64 end = off + len;
         u64 pos = off;
         if (pos < HeaderSize) {
             const u64 n = std::min<u64>(end, HeaderSize) - pos;
-            std::memcpy(data, contents->hdr.data() + pos, static_cast<std::size_t>(n));
+            std::memcpy(data, hdr.data() + pos, static_cast<std::size_t>(n));
             pos += n;
         }
-        const auto& sections = contents->sections;
-        std::scoped_lock lock{contents->mutex};
-        // Sections are sorted by offset; find the first one whose stop > pos.
-        auto it = std::lower_bound(
-            sections.begin(), sections.end(), pos, [](const Section& s, u64 p) {
-                const u64 b = std::max<u64>(static_cast<u64>(s.offset), HeaderSize);
-                const u64 e = std::max<u64>(static_cast<u64>(s.offset) + static_cast<u64>(s.size), b);
-                return e <= p;
-            });
-        for (; it != sections.end() && pos < end; ++it) {
-            const auto& s = *it;
+        std::scoped_lock lock{mutex};
+        for (std::size_t i = 0; i < sections.size() && pos < end; ++i) {
+            const auto& s = sections[i];
             const u64 begin = std::max<u64>(static_cast<u64>(s.offset), HeaderSize);
             const u64 stop = std::max<u64>(static_cast<u64>(s.offset + s.size), begin);
             if (stop <= pos) continue;
@@ -290,30 +226,13 @@ public:
             }
             const u64 pe = std::min(end, stop);
             const std::span<u8> piece(data + (pos - off), static_cast<std::size_t>(pe - pos));
-            if (contents->body->ReadAt(pos - HeaderSize, piece) != piece.size())
+            if (body->ReadAt(pos - HeaderSize, piece) != piece.size())
                 return static_cast<std::size_t>(pos - off);
-            if (!decrypted) {
-                if (const auto& cipher = ciphers[static_cast<std::size_t>(it - sections.begin())]) {
-                    const std::size_t skip = static_cast<std::size_t>(pos & 0xF);
-                    const std::size_t head =
-                        skip == 0 ? 0 : std::min<std::size_t>(0x10 - skip, piece.size());
-                    Key128 iv{};
-                    if (head != 0) {
-                        std::array<u8, 0x10> partial{};
-                        std::memcpy(partial.data() + skip, piece.data(), head);
-                        SetIv(iv, s.counter, pos);
-                        cipher->SetIV(iv);
-                        cipher->Transcode(partial.data(), partial.size(), partial.data(),
-                                          Op::Encrypt);
-                        std::memcpy(piece.data(), partial.data() + skip, head);
-                    }
-                    if (head < piece.size()) {
-                        SetIv(iv, s.counter, pos + head);
-                        cipher->SetIV(iv);
-                        cipher->Transcode(piece.data() + head, piece.size() - head,
-                                          piece.data() + head, Op::Encrypt);
-                    }
-                }
+            if (ciphers[i]) {
+                Key128 iv{};
+                SetIv(iv, s.counter, pos);
+                ciphers[i]->SetIV(iv);
+                ciphers[i]->Transcode(piece.data(), piece.size(), piece.data(), Op::Encrypt);
             }
             pos = pe;
         }
@@ -325,9 +244,12 @@ public:
 
 private:
     const std::string name;
-    const std::shared_ptr<BlockNczContents> contents;
-    const bool decrypted;
+    const std::vector<u8> hdr;
+    const std::vector<Section> sections;
+    const std::unique_ptr<BlockReader> body;
     std::vector<std::unique_ptr<AESCipher<Key128>>> ciphers;
+    mutable std::mutex mutex;
+    u64 nca_size{};
 };
 
 // Solid NCZ: one zstd stream over the whole body. Decoded incrementally into memory, up to the
@@ -475,18 +397,8 @@ FileSys::VirtualFile OpenNcz(const FileSys::VirtualFile& f, std::string_view nam
             LOG_ERROR(Crypto, "Failed to open NCZBLOCK: {}", e.what());
             return nullptr;
         }
-        auto contents = std::make_shared<BlockNczContents>();
-        contents->nca_size = HeaderSize;
-        for (const auto& s : sections)
-            contents->nca_size = std::max<u64>(contents->nca_size, static_cast<u64>(s.offset + s.size));
-        contents->has_plain_view =
-            std::all_of(sections.begin(), sections.end(), [](const Section& section) {
-                return section.crypto_type <= 1 || section.Ctr();
-            });
-        contents->hdr = std::move(hdr);
-        contents->sections = std::move(sections);
-        contents->body = std::move(body);
-        return std::make_shared<BlockNczFile>(std::string{name}, std::move(contents), false);
+        return std::make_shared<BlockNczFile>(std::string{name}, std::move(hdr),
+                                              std::move(sections), std::move(body));
     }
 
     if (allow_solid) {

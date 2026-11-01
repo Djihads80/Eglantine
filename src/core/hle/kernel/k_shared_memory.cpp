@@ -59,10 +59,9 @@ Result KSharedMemory::Initialize(KernelCore& kernel, Core::DeviceMemory& device_
     // Mark initialized.
     m_is_initialized = true;
 
-    // Clear all pages in the memory (pages still zero are skipped).
+    // Clear all pages in the memory.
     for (const auto& block : *m_page_group) {
-        m_device_memory->buffer.ClearBackingRegion(
-            GetInteger(block.GetAddress()) - Core::DramMemoryMap::Base, block.GetSize(), 0);
+        std::memset(m_device_memory->GetPointer<void>(block.GetAddress()), 0, block.GetSize());
     }
 
     R_SUCCEED();

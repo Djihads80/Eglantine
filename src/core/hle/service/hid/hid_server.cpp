@@ -132,7 +132,6 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
-        {213, &IHidServer::SendNx2VibrationValue, "SendNx2VibrationValue"},
         {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
@@ -1069,22 +1068,6 @@ Result IHidServer::IsVibrationDeviceMounted(
     }
 
     R_SUCCEED();
-}
-
-void IHidServer::SendNx2VibrationValue(HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const u16 mode = rp.Pop<u16>();
-    if (mode != 2) {
-        LOG_WARNING(Service_HID, "Unsupported vibration mode {}", mode);
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultUnknown);
-        return;
-    }
-    const auto handle = rp.PopRaw<Core::HID::VibrationDeviceHandle>();
-    const auto value = rp.PopRaw<Core::HID::VibrationValue>();
-    const auto result = GetResourceManager()->SendVibrationValue(ctx.GetPID(), handle, value);
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(result);
 }
 
 Result IHidServer::SendNx2VibrationValues() {

@@ -88,15 +88,12 @@ public:
     // Fastmem information
     using DoNotFastmemMarker = std::tuple<IR::LocationDescriptor, unsigned>;
     struct FastmemPatchInfo {
-        u32 rip;
-        u32 resume_rip;
-        u32 callback;
-        u32 inst_name : 31;
-        u32 recompile : 1;
-        IR::LocationDescriptor location;
+        u64 resume_rip;
+        u64 callback;
+        DoNotFastmemMarker marker;
+        bool recompile;
     };
     std::optional<DoNotFastmemMarker> ShouldFastmem(A32EmitContext& ctx, IR::Inst* inst) const;
-    void AddFastmemPatch(CodePtr location, CodePtr resume_location, void (*callback)(), const DoNotFastmemMarker& marker, bool recompile);
     FakeCall FastmemCallback(u64 rip);
 
     // Memory access helpers
@@ -130,7 +127,7 @@ public:
     RegAlloc reg_alloc; //reusable reg alloc
     BlockRangeInformation<u32> block_ranges;
     std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
-    std::vector<FastmemPatchInfo> fastmem_patch_info;
+    ::Common::unordered_map<u64, FastmemPatchInfo> fastmem_patch_info;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;

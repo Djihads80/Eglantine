@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <optional>
 #include <span>
 #include <vector>
 
@@ -34,8 +33,6 @@ struct FramebufferConfig {
     u32 width{};
     u32 height{};
     u32 stride{};
-    u64 allocation_size{};
-    std::optional<u32> block_height_log2{};
     Service::android::PixelFormat pixel_format{};
     Service::android::BufferTransformFlags transform_flags{};
     Common::Rectangle<int> crop_rect{};

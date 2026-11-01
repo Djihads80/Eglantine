@@ -4,25 +4,18 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/common_types.h"
-#include "video_core/host1x/nvdec_common.h"
 
 namespace FFmpeg {
 class Frame;
 }
 
 namespace Tegra::Host1x {
-
-struct Nx2VideoConfiguration {
-    NvdecCommon::VideoCodec codec;
-    std::span<const u8> extradata;
-};
-
-std::optional<Nx2VideoConfiguration> ParseNx2VideoConfiguration(std::span<const u8> configuration);
 
 /// A picture decoded by Nx2VideoDecoder, in display order.
 struct Nx2Picture {
@@ -44,12 +37,13 @@ enum class Nx2PictureFormat : u32 {
 /// Used from one thread at a time.
 class Nx2VideoDecoder {
 public:
-    explicit Nx2VideoDecoder(std::span<const u8> configuration);
+    /// mime: the codec name nn::codec sends with Configure ("video/vp9", "video/vp8", ...).
+    explicit Nx2VideoDecoder(std::string_view mime);
     ~Nx2VideoDecoder();
 
     bool IsOpen() const;
 
-    std::span<const u8> Configuration() const;
+    const std::string& Name() const;
 
     /// Decodes one compressed frame and appends the pictures it completes.
     void Decode(std::span<const u8> data, u64 pts, std::vector<Nx2Picture>& pictures);

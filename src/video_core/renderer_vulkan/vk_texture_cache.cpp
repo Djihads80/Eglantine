@@ -257,52 +257,14 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
            info.size.depth == 1;
 }
 
-// The most a trimmed ASTC array keeps on the host: 512 MiB, 256 MiB on GPUs with less than 7 GiB
-// (title 1's two terrain arrays took 724 MiB of a 6 GB card next to ~1.2 GB of other sparse terrain
-// textures). EDEN_NX2_ASTC_ARRAY_MIB=<MiB> sets it.
-[[nodiscard]] u64 TrimmedAstcArrayLimit(const Device& device) {
-    static const u64 forced = [] {
-        const char* value = std::getenv("EDEN_NX2_ASTC_ARRAY_MIB");
-        return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : 0ULL;
-    }();
-    if (forced != 0) {
-        return forced;
-    }
-    return device.GetDeviceLocalMemory() < (u64{7} << 30) ? (u64{256} << 20) : (u64{512} << 20);
-}
-
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
-    const bool decoded = WillUseAcceleratedAstcDecode(device, info);
-    if (info.type != ImageType::e2D || !(decoded || WillUseGpuBcnTranscode(device, info))) {
+    if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
         return info;
-    }
-    const u32 levels = static_cast<u32>(info.resources.levels);
-    const auto host_info = [&] {
-        ImageInfo host = info;
-        host.size.width = (std::max)(info.size.width >> level_offset, 1U);
-        host.size.height = (std::max)(info.size.height >> level_offset, 1U);
-        host.resources.levels -= static_cast<s32>(level_offset);
-        return host;
-    };
-    // Switch 2 ASTC textures decoded on the GPU keep at most 2048 texels a side: a 4K texture is
-    // held from its next mip level on (a quarter of the video memory and decode work). The game's
-    // own mips are used, so nothing is resampled. EDEN_NS2_FULL_TEXTURES=1 keeps them whole.
-    constexpr u32 MaxNativeSize = 2048;
-    static const bool full_textures = std::getenv("EDEN_NS2_FULL_TEXTURES") != nullptr;
-    if (info.native_tiling && !full_textures) {
-        while (level_offset + 1 < levels &&
-               (std::max)(info.size.width >> level_offset, info.size.height >> level_offset) >
-                   MaxNativeSize) {
-            ++level_offset;
-        }
-    }
-    if (!decoded) {
-        return level_offset != 0 ? host_info() : info;
     }
     const auto decoded_bytes = [&](u32 skip) {
         u64 bytes = 0;
@@ -312,14 +274,17 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         }
         return bytes * info.resources.layers;
     };
-    if (decoded_bytes(level_offset) <= (u64{1} << 30)) {
-        return level_offset != 0 ? host_info() : info;
+    if (decoded_bytes(0) <= (u64{1} << 30)) {
+        return info;
     }
-    const u64 limit = TrimmedAstcArrayLimit(device);
-    while (level_offset + 1 < levels && decoded_bytes(level_offset) > limit) {
+    while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+           decoded_bytes(level_offset) > (u64{512} << 20)) {
         ++level_offset;
     }
-    const ImageInfo host = host_info();
+    ImageInfo host = info;
+    host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+    host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+    host.resources.levels -= static_cast<s32>(level_offset);
     LOG_WARNING(Render_Vulkan, "{}x{}x{} ASTC image would be {} MiB decoded; keeping mip levels {}+ ({}x{})",
                 info.size.width, info.size.height, info.resources.layers, decoded_bytes(0) >> 20,
                 level_offset, host.size.width, host.size.height);
@@ -3690,17 +3655,11 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles) {
     const ImageInfo& info = image.info;
-    // The host image may hold only the guest levels from host_level_offset on (TrimmedHostInfo):
-    // the staging data and swizzles then start at that level, and host level 0 is that level.
-    const u32 skip = image.host_level_offset;
-    const u32 width = (std::max)(info.size.width >> skip, 1U);
-    const u32 height = (std::max)(info.size.height >> skip, 1U);
-    const u32 levels = static_cast<u32>(info.resources.levels) - skip;
+    const u32 width = info.size.width;
+    const u32 height = info.size.height;
+    const u32 levels = static_cast<u32>(info.resources.levels);
     const u32 layers = static_cast<u32>(info.resources.layers);
     constexpr VkFormat DecodeFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
-    // The decode image lives only until the encode ran. Sub-allocated, not dedicated: streaming
-    // worlds transcode ~100 textures a second, and a vkAllocateMemory plus a vkFreeMemory for each
-    // took several percent of the GPU thread. VMA still gives large ones their own block.
     PendingTranscode pending{
         .tick = 0,
         .image = memory_allocator.CreateImage(VkImageCreateInfo{
@@ -3719,7 +3678,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        }),
+        }, true),
         .views = {},
     };
     for (u32 level = 0; level < levels; ++level) {
@@ -3727,7 +3686,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
     }
     astc_decoder_pass->AssembleInto(
-        info, skip, image.guest_size_bytes,
+        info, 0, image.guest_size_bytes,
         ASTCDecoderPass::Target{
             .image = *pending.image,
             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,

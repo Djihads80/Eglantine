@@ -3,16 +3,11 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <filesystem>
 #include <memory>
 #include <span>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 // Eden's Xbyak configuration (its hash maps): every translation unit must see the same one.
@@ -21,10 +16,6 @@
 #include "video_core/macro_turing.h"
 
 namespace Tegra {
-
-namespace GpfifoCapture {
-void Flush(const char* reason) noexcept;
-}
 
 // x86-64 code for the TU104/GA10x MME: every instruction of the uploaded macro memory compiled
 // once (each a block that falls through to the next one, branches and loops through a jump
@@ -62,153 +53,6 @@ public:
         bool (*emit)(State*, Word method, Word value);
         Word (*read)(State*, Word address);
         const std::vector<Word>* fifo;
-        Word diagnostic_pc;
-        Word diagnostic_lane;
-        std::array<Word, 3> diagnostic_words;
-        std::array<Word, 2> diagnostic_loads;
-        std::array<Word, 2> diagnostic_alu;
-        std::uint64_t diagnostic_generation;
-    };
-
-    struct RtDump {
-        struct Emission {
-            const State* state;
-            Word method;
-            Word value;
-        };
-
-        struct Scope {
-            explicit Scope(const Emission& emission) : previous{current} {
-                if (Enabled()) current = &emission;
-            }
-            Scope(const Scope&) = delete;
-            Scope& operator=(const Scope&) = delete;
-            ~Scope() { current = previous; }
-            const Emission* previous;
-        };
-
-        static const std::filesystem::path& Directory() {
-            static const std::filesystem::path directory = []() noexcept {
-                try {
-                    std::error_code error;
-#ifdef _WIN32
-                    const wchar_t* value = _wgetenv(L"EDEN_NX2_MME_RT_DUMP");
-                    const auto path = value != nullptr ? std::filesystem::path{value} : std::filesystem::path{};
-#else
-                    const char* value = std::getenv("EDEN_NX2_MME_RT_DUMP");
-                    const auto path = value != nullptr ? std::filesystem::u8path(value) : std::filesystem::path{};
-#endif
-                    return !path.empty() && std::filesystem::is_directory(path, error)
-                               ? path : std::filesystem::path{};
-                } catch (...) {
-                    return std::filesystem::path{};
-                }
-            }();
-            return directory;
-        }
-
-        static bool Enabled() {
-            return !Directory().empty() && !captured.load(std::memory_order_relaxed);
-        }
-
-        static void Record(const void* engine, Word method, Word raw, Word effective,
-                            Word shadow_mode, Word previous, std::span<const Word> rt_before) noexcept try {
-            if (method >= 0x200 && method < 0x280) {
-                const Word field = (method - 0x200) % 0x10;
-                if ((field == 3 && effective == 0x200120ad) ||
-                    (field == 4 && (effective & 0xffffff00U) != 0)) {
-                    GpfifoCapture::Flush("effective-render-target-anomaly");
-                }
-            }
-            if (!Enabled()) return;
-            Entry& entry = ring[count++ % ring.size()];
-            entry = {};
-            entry.engine = reinterpret_cast<std::uintptr_t>(engine);
-            entry.method = method;
-            entry.raw = raw;
-            entry.effective = effective;
-            entry.shadow_mode = shadow_mode;
-            entry.previous = previous;
-            entry.has_mme = current != nullptr;
-            if (current) {
-                const State& state = *current->state;
-                entry.start = state.start;
-                entry.pc = state.diagnostic_pc;
-                entry.lane = state.diagnostic_lane;
-                entry.words = state.diagnostic_words;
-                entry.loads = state.diagnostic_loads;
-                entry.alu = state.diagnostic_alu;
-                entry.regs = state.regs;
-                entry.generation = state.diagnostic_generation;
-                entry.macro_method = current->method;
-                entry.macro_value = current->value;
-                entry.consumed = state.consumed;
-                entry.fifo_size = state.fifo->size();
-                entry.fifo_first = state.consumed > 8 ? state.consumed - 8 : 0;
-                for (std::size_t i = entry.fifo_first;
-                     i < state.fifo->size() && entry.fifo_count < entry.fifo.size(); ++i) {
-                    entry.fifo[entry.fifo_count++] = (*state.fifo)[i];
-                }
-            }
-            if (method < 0x200 || method >= 0x280) return;
-            const Word field = (method - 0x200) % 0x10;
-            const bool packet_height = field == 3 && effective == 0x200120ad;
-            const bool wide_format = field == 4 && (effective & 0xffffff00U) != 0;
-            if ((!packet_height && !wide_format) || captured.exchange(true)) return;
-            const auto path = Directory() / "yoshi-mme-rt.txt";
-#ifdef _WIN32
-            std::FILE* file = _wfopen(path.c_str(), L"wx");
-#else
-            std::FILE* file = std::fopen(path.c_str(), "wx");
-#endif
-            if (!file) return;
-            std::fprintf(file, "trigger=%s target=%u ring_count=%zu\n",
-                         packet_height ? "observed-packet-height" : "format-outside-eight-bit-domain",
-                         (method - 0x200) / 0x10, count);
-            const auto words = [&](const char* name, const auto& values) {
-                std::fprintf(file, "%s", name);
-                for (const Word value : values) std::fprintf(file, " %08x", value);
-                std::fputc('\n', file);
-            };
-            words("rt_before", rt_before);
-            const std::size_t first = count > ring.size() ? count - ring.size() : 0;
-            for (std::size_t i = first; i < count; ++i) {
-                const Entry& item = ring[i % ring.size()];
-                std::fprintf(file, "write=%zu engine=%llx method=%x raw=%08x effective=%08x previous=%08x shadow=%u mme=%u\n",
-                             i, static_cast<unsigned long long>(item.engine), item.method, item.raw,
-                             item.effective, item.previous, item.shadow_mode, item.has_mme ? 1U : 0U);
-                if (!item.has_mme) continue;
-                std::fprintf(file, "start=%x pc=%x lane=%u generation=%llu output_method=%x output_value=%08x consumed=%u fifo_size=%zu fifo_first=%zu fifo_count=%zu\n",
-                             item.start, item.pc, item.lane, static_cast<unsigned long long>(item.generation),
-                             item.macro_method, item.macro_value, item.consumed, item.fifo_size,
-                             item.fifo_first, item.fifo_count);
-                words("words_native", item.words);
-                words("loads", item.loads);
-                words("alu", item.alu);
-                words("regs_after_alu", item.regs);
-                words("fifo", std::span{item.fifo}.first(item.fifo_count));
-            }
-            std::fclose(file);
-        } catch (...) {
-        }
-
-    private:
-        struct Entry {
-            std::uintptr_t engine;
-            Word method, raw, effective, previous, shadow_mode;
-            bool has_mme;
-            Word start, pc, lane, macro_method, macro_value, consumed;
-            std::uint64_t generation;
-            std::array<Word, 3> words;
-            std::array<Word, 2> loads, alu;
-            std::array<Word, 24> regs;
-            std::array<Word, 17> fifo;
-            std::size_t fifo_size, fifo_first, fifo_count;
-        };
-        inline static std::atomic<bool> captured{};
-        inline static thread_local const Emission* current{};
-        inline static thread_local std::array<Entry, 32> ring{};
-        inline static thread_local std::size_t count{};
     };
 
     enum Error : Word {
@@ -271,7 +115,6 @@ public:
         state.params_size = static_cast<Word>(parameters.size());
         state.dram = data_ram.data();
         state.fifo = &parameters;
-        state.diagnostic_generation = compiled_generation;
         Thunks<Read, Emit> thunks{read, emit};
         state.user = &thunks;
         state.emit = &Thunks<Read, Emit>::CallEmit;
@@ -289,8 +132,6 @@ private:
         Read& read;
         Emit& emit;
         static bool CallEmit(State* state, Word method, Word value) {
-            const RtDump::Emission emission{state, method, value};
-            const RtDump::Scope scope{emission};
             const bool ok = static_cast<Thunks*>(state->user)->emit(method, value);
             // MME_DMA_READ_FIFOED appends to the FIFO from inside the emit.
             state->params = state->fifo->data();
@@ -321,7 +162,6 @@ private:
 #endif
         // rbx: State*; r12d/r13d: the instruction's FIFO loads; r14d/r15d: its ALU results.
         const Xbyak::Reg64 st = rbx;
-        const bool trace_rt = RtDump::Enabled();
 
         static constexpr std::size_t RegOffset(Word reg) {
             return offsetof(State, regs) + reg * sizeof(Word);
@@ -550,17 +390,6 @@ private:
                     mov(dword[st + offsetof(State, increment)], eax);
                 }
                 if (d.out_emit[lane]) {
-                    if (trace_rt) {
-                        mov(dword[st + offsetof(State, diagnostic_pc)], pc);
-                        mov(dword[st + offsetof(State, diagnostic_lane)], lane);
-                        for (Word i = 0; i < 3; ++i) {
-                            mov(dword[st + offsetof(State, diagnostic_words) + i * sizeof(Word)], d.raw[2 - i]);
-                        }
-                        mov(dword[st + offsetof(State, diagnostic_loads)], r12d);
-                        mov(dword[st + offsetof(State, diagnostic_loads) + sizeof(Word)], r13d);
-                        mov(dword[st + offsetof(State, diagnostic_alu)], r14d);
-                        mov(dword[st + offsetof(State, diagnostic_alu) + sizeof(Word)], r15d);
-                    }
                     Output(eax, d, d.out_emit[lane]);
                     mov(arg2.cvt32(), eax);
                     mov(arg1.cvt32(), dword[st + offsetof(State, method)]);

@@ -201,7 +201,7 @@ Result KPageTableBase::InitializeForKernel(bool is_64_bit, KVirtualAddress start
                                                m_memory_block_slab_manager));
 }
 
-Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool enable_aslr, bool enable_das_merge, bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address, size_t code_size, KSystemResource* system_resource, KResourceLimit* resource_limit, Core::Memory::Memory& memory, KProcessAddress aslr_space_start, bool is_switch2) {
+Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool enable_aslr, bool enable_das_merge, bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address, size_t code_size, KSystemResource* system_resource, KResourceLimit* resource_limit, Core::Memory::Memory& memory, KProcessAddress aslr_space_start) {
     // Calculate region extents.
     const size_t as_width = GetAddressSpaceWidth(as_type);
     const KProcessAddress start = 0;
@@ -217,7 +217,7 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
         return KAddressSpaceInfo::GetAddressSpaceStart(m_address_space_width, type);
     };
     auto GetSpaceSize = [&](KAddressSpaceInfo::Type type) {
-        return KAddressSpaceInfo::GetAddressSpaceSize(m_address_space_width, type, is_switch2);
+        return KAddressSpaceInfo::GetAddressSpaceSize(m_address_space_width, type);
     };
 
     // Set our bit width and heap/alias sizes.

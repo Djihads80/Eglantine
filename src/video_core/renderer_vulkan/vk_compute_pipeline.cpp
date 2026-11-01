@@ -10,7 +10,6 @@
 #include <boost/container/small_vector.hpp>
 #include <fmt/format.h>
 
-#include "shader_recompiler/exception.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -44,15 +43,6 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
       shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
-    const u32 storage_buffers = Shader::NumDescriptors(info.storage_buffers_descriptors);
-    const u32 storage_buffer_limit =
-        std::min(device.GetMaxPerStageDescriptorStorageBuffers(),
-                 device.GetMaxDescriptorSetStorageBuffers());
-    if (storage_buffers > storage_buffer_limit) {
-        throw Shader::NotImplementedException(
-            "Compute shader {:016X} needs {} storage buffers, device supports {}",
-            shader_hash, storage_buffers, storage_buffer_limit);
-    }
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }

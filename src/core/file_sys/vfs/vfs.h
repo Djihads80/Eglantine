@@ -112,10 +112,6 @@ public:
     // Returns whether or not the file can be read from.
     virtual bool IsReadable() const = 0;
 
-    // Returns a view of this NCA that serves its encrypted sections already decrypted (e.g. NCZ),
-    // or nullptr when it has none.
-    virtual VirtualFile GetDecryptedView() const { return nullptr; }
-
     // The primary method of reading from the file. Reads length bytes into data starting at offset
     // into file. Returns number of bytes successfully read.
     virtual std::size_t Read(u8* data, std::size_t length, std::size_t offset = 0) const = 0;

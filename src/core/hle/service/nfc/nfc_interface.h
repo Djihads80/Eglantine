@@ -23,7 +23,6 @@ public:
     ~NfcInterface();
 
     void Initialize(HLERequestContext& ctx);
-    void InitializeEx(HLERequestContext& ctx);
     void Finalize(HLERequestContext& ctx);
     void GetState(HLERequestContext& ctx);
     void IsNfcEnabled(HLERequestContext& ctx);

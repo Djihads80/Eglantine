@@ -59,7 +59,7 @@ public:
     void FinalizeOptimizedMemory(u64 process_id, Pool pool);
 
     KPhysicalAddress AllocateAndOpenContinuous(size_t num_pages, size_t align_pages, u32 option);
-    Result AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 option, bool random = true);
+    Result AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 option);
     Result AllocateForProcess(KPageGroup* out, size_t num_pages, u32 option, u64 process_id,
                               u8 fill_pattern);
 
@@ -100,9 +100,6 @@ public:
     }
 
     void Close(KPhysicalAddress address, size_t num_pages) {
-        // Pages that may be freed here may hold data: the next allocation clears them.
-        this->MarkDirty(address, num_pages);
-
         // Repeatedly close references until we've done so for all pages.
         while (num_pages) {
             auto& manager = this->GetManager(address);
@@ -336,9 +333,6 @@ private:
     };
 
 private:
-    void MarkUsed(KPhysicalAddress address, size_t num_pages);
-    void MarkDirty(KPhysicalAddress address, size_t num_pages);
-
     Impl& GetManager(KPhysicalAddress address) {
         return m_managers[m_memory_layout.GetPhysicalLinearRegion(address).GetAttributes()];
     }

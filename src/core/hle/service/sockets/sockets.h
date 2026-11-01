@@ -23,7 +23,6 @@ enum class Errno : u32 {
     MFILE = 24,
     PIPE = 32,
     MSGSIZE = 90,
-    AFNOSUPPORT = 97,
     CONNABORTED = 103,
     CONNRESET = 104,
     NOTCONN = 107,

@@ -1,10 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include "video_core/renderer_vulkan/present/fsr3_frame_gen.h"
 #include "video_core/renderer_vulkan/present/util.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"

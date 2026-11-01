@@ -4,10 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2025 lsfg-vk
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <algorithm>
 
 #include "video_core/renderer_vulkan/present/lsfg_chain.h"

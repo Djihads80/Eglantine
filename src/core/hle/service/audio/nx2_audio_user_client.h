@@ -42,7 +42,10 @@ private:
     }
 
     void GetAudioRendererManager(HLERequestContext& ctx) {
-        LOG_WARNING(Service_Audio, "Switch 2 aud:u 2, returning IAudioRendererManager");
+        IPC::RequestParser rp{ctx};
+        const u32 arg = rp.Pop<u32>();
+        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 2 arg={}, returning IAudioRendererManager",
+                    arg);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
         rb.PushIpcInterface<IAudioRendererManager>(ctx, system);

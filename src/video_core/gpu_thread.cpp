@@ -95,8 +95,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                     Profile::Scope scope{Profile::Zone::Push};
-                    // Held-back guest CPU writes first (see the single-thread path below).
-                    split.Defer([gpu = &system.GPU()] { gpu->InvalidateGPUCache(); });
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                     split.Defer([gpu = &system.GPU()] { gpu->TickWork(); });
@@ -121,12 +119,6 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
                 Profile::Scope scope{Profile::Zone::Push};
-                // Guest CPU writes to GPU-written memory are held back until the GPU thread
-                // applies them, by default at the next fence. The guest made them before it
-                // submitted this list, which may read them: apply them first. Pokemon Pokopia
-                // keeps constants in pages its native storage bindings mark GPU-written, and some
-                // frames drew stale ones (flickering shadows, stretched geometry).
-                system.GPU().InvalidateGPUCache();
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
                 Profile::Scope scope{Profile::Zone::Tick};

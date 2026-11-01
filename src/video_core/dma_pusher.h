@@ -117,18 +117,7 @@ struct CommandList final {
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
     /// EDEN_NX2_PB_CHECK: hash of each entry's words when it was submitted.
     std::vector<u64> submit_hashes;
-    u64 capture_submit_id{};
-    u64 capture_enqueue_id{};
-    const char* capture_origin{"untracked"};
 };
-
-namespace GpfifoCapture {
-bool Enabled() noexcept;
-u64 BeginSubmission(s32 fd, u32 ioctl, u32 variant, u64 session,
-                    std::span<const u8> input, std::size_t inline_size) noexcept;
-void RecordEnqueue(u64 submit_id, s32 channel, const char* origin, CommandList& entries) noexcept;
-void Flush(const char* reason) noexcept;
-}
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
 inline u64 HashPushbufferWords(std::span<const u32> words) {
@@ -186,8 +175,6 @@ private:
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;
-    void RecordCapture(const char* phase, std::span<const CommandHeader> commands = {},
-                       std::size_t word_offset = 0) const noexcept;
 
 public:
     /// Logs the GPFIFO entry being processed (and the one before it), read through the GPU MMU
@@ -195,8 +182,6 @@ public:
     void DumpCurrentEntry(const char* reason);
     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
-    /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
-    void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
 
 private:
 

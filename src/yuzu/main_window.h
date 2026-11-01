@@ -421,7 +421,7 @@ private slots:
     void OnCreateHomeMenuDesktopShortcut();
     void OnCreateHomeMenuApplicationMenuShortcut();
     void OnCaptureScreenshot();
-    void OnCheckFirmwareDecryption(bool prompt = true);
+    void OnCheckFirmwareDecryption();
 #ifdef __unix__
     void OnCheckGraphicsBackend();
 #endif
