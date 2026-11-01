@@ -2134,7 +2134,10 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     for (const ImageId overlap_id : join_ignore_textures) {
         Image& overlap = slot_images[overlap_id];
-        if (True(overlap.flags & ImageFlagBits::GpuModified)) {
+        // Remapped images no longer describe the current guest memory. Discard their GPU
+        // contents rather than downloading them through the replacement mapping.
+        if (True(overlap.flags & ImageFlagBits::GpuModified) &&
+            False(overlap.flags & ImageFlagBits::Remapped)) {
             UNIMPLEMENTED();
         }
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
