@@ -1,22 +1,26 @@
-# Self-hosted GitHub Actions runner that builds Eglantine for Linux (tar.gz + AppImage) and
-# Android (APK). Ubuntu 24.04 keeps the Linux binaries on glibc 2.39, like the hosted CI.
+# Self-hosted GitHub Actions runner that builds Eglantine for Linux (tar.gz + AppImage, plain and
+# PGO), Windows (cross-compiled with llvm-mingw) and Android (APK). Ubuntu 24.04 keeps the Linux
+# binaries on glibc 2.39, like the hosted CI.
 FROM ubuntu:24.04
 
 ARG RUNNER_VERSION=2.338.2
 ARG QT_VERSION=6.8.3
 ARG NDK_VERSION=28.2.13676358
 ARG ANDROID_CMAKE_VERSION=3.31.5
+ARG LLVM_MINGW_VERSION=20261020
+ARG LLVM_VERSION=23
+ARG LIBICONV_VERSION=1.18
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        autoconf ca-certificates ccache curl file g++ gcc git glslang-tools jq \
+        autoconf automake ca-certificates ccache curl file g++ gcc git glslang-tools jq \
         libasound2-dev libavcodec-dev libavfilter-dev libboost-context-dev libboost-dev \
         libboost-fiber-dev libglu1-mesa-dev libopus-dev libpulse-dev libswscale-dev libtool \
         libudev-dev libusb-1.0-0-dev libva-dev liblz4-dev libssl-dev libzstd-dev libvdpau-dev libxkbcommon-x11-0 \
         libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
         libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libgl1 libegl1 make \
         mesa-common-dev nasm ninja-build openjdk-17-jdk-headless patch perl pkg-config python3-pip \
-        spirv-headers spirv-tools sudo unzip zlib1g-dev \
+        spirv-headers spirv-tools sudo unzip xz-utils zip zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # gh, for publishing releases from a job.
@@ -33,6 +37,30 @@ RUN pip3 install --break-system-packages --no-cache-dir aqtinstall cmake==3.31.6
     && aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 -m qtcharts -O /opt/qt \
     && rm -rf /root/.cache aqtinstall.log
 ENV QT_ROOT_DIR=/opt/qt/${QT_VERSION}/gcc_64
+
+# clang and lld for the Linux PGO build. Eden's profile is written by a current clang and an
+# older reader refuses it, so this follows PGO_LLVM_VERSION in release-binaries.yml.
+RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /usr/share/keyrings/llvm.asc \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-$LLVM_VERSION main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y --no-install-recommends "clang-$LLVM_VERSION" "lld-$LLVM_VERSION" \
+    && rm -rf /var/lib/apt/lists/*
+
+# Windows cross toolchain: llvm-mingw (clang, lld, libc++, UCRT), Qt for llvm-mingw, and a static
+# libiconv the bundled FFmpeg links against. OpenSSL's CMake wrapper looks for mingw32-make.
+RUN cd /opt \
+    && curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64.tar.xz" | tar -xJ \
+    && mv "llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64" llvm-mingw \
+    && ln -s /usr/bin/make /usr/local/bin/mingw32-make \
+    && aqt install-qt windows desktop "$QT_VERSION" win64_llvm_mingw -m qtcharts -O /opt/qt \
+    && cd /tmp && curl -fsSL "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-$LIBICONV_VERSION.tar.gz" | tar -xz \
+    && cd "libiconv-$LIBICONV_VERSION" \
+    && PATH=/opt/llvm-mingw/bin:$PATH ./configure --host=x86_64-w64-mingw32 \
+        --prefix=/opt/llvm-mingw/x86_64-w64-mingw32 --enable-static --disable-shared --disable-nls > /dev/null \
+    && PATH=/opt/llvm-mingw/bin:$PATH make -j"$(nproc)" install > /dev/null \
+    && cd / && rm -rf /tmp/libiconv-* /root/.cache aqtinstall.log
+ENV QT_WINDOWS_DIR=/opt/qt/${QT_VERSION}/llvm-mingw_64 LLVM_MINGW=/opt/llvm-mingw
+COPY mingw-x86_64.cmake package-windows.sh /opt/eglantine/
 
 # linuxdeploy and its Qt plugin for the AppImage.
 RUN mkdir -p /opt/linuxdeploy && cd /opt/linuxdeploy \

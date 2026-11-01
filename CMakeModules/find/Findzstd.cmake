@@ -27,6 +27,8 @@ if (zstd_FOUND AND NOT TARGET zstd::zstd)
     endif()
 endif()
 
+# Nothing found (a cross build with no system zstd): the bundled package provides the targets.
+if (TARGET zstd::zstd)
 get_target_property(ZSTD_TARGET zstd::zstd ALIASED_TARGET)
 
 if (NOT TARGET zstd::libzstd)
@@ -38,4 +40,5 @@ if (NOT TARGET zstd::libzstd)
 elseif(YUZU_STATIC_BUILD AND TARGET zstd::libzstd_static)
     # zstd::libzstd links to shared zstd by default
     set_target_properties(zstd::libzstd PROPERTIES INTERFACE_LINK_LIBRARIES zstd::libzstd_static)
+endif()
 endif()

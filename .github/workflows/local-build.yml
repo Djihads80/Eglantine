@@ -1,26 +1,36 @@
 name: local-build
 
 # Runs only when started by hand (Actions tab or `gh workflow run local-build.yml`), on the
-# self-hosted runner from tools/local-runner.
+# self-hosted runner from tools/local-runner. Each OS gets its own release for the commit
+# (<sha10>-linux, -windows, -android), published as soon as that OS is built; macOS and Linux
+# aarch64 come from release-binaries on GitHub's runners and land in the same releases.
 on:
   workflow_dispatch:
     inputs:
       linux:
-        description: Build Linux x86_64 (tar.gz and AppImage)
+        description: Linux x86_64 (tar.gz and AppImage)
+        type: boolean
+        default: true
+      linux_pgo:
+        description: Linux x86_64 with Eden's PGO profile
+        type: boolean
+        default: true
+      windows:
+        description: Windows x86_64 (llvm-mingw, PGO)
         type: boolean
         default: true
       android:
-        description: Build the Android APK
+        description: Android APK
         type: boolean
         default: true
       android_app_id:
         description: Android application id
         type: string
-        default: com.antutu.ABenchMark
+        default: dev.eglantine.eglantine
       release:
-        description: Publish the results as a pre-release
+        description: Publish the results as releases
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -30,84 +40,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  linux:
-    if: inputs.linux
+  build:
+    name: ${{ matrix.platform }}
     runs-on: [self-hosted, eglantine-local]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: linux
+            enabled: ${{ inputs.linux }}
+          - platform: linux-x86_64-pgo
+            os: linux
+            enabled: ${{ inputs.linux_pgo }}
+          - platform: windows-x86_64
+            os: windows
+            enabled: ${{ inputs.windows }}
+          - platform: android-arm64
+            os: android
+            enabled: ${{ inputs.android }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure
-        run: |
-          cmake -S . -B build/release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF -DYUZU_CMD=ON \
-            -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF -DYUZU_USE_BUNDLED_QT=OFF \
-            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR" -DYUZU_USE_BUNDLED_SDL3=ON \
-            -DVulkanHeaders_FORCE_BUNDLED=ON -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
-            -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF -DUSE_CCACHE=ON
+        if: matrix.enabled
 
       - name: Build
+        if: matrix.enabled
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
-          ccache --show-stats
-
-      - name: Package
-        run: |
-          set -euo pipefail
-          name="eglantine-${GITHUB_SHA::10}-linux-x86_64"
-          strip build/release/bin/eglantine build/release/bin/eden-cli
-          tar -czf "$name.tar.gz" -C build/release/bin eglantine eden-cli
-          rm -rf AppDir
-          cp dist/Eglantine.png "$RUNNER_TEMP/dev.eglantine.eglantine.png"
-          export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 ARCH=x86_64 QMAKE="$QT_ROOT_DIR/bin/qmake"
-          export LDAI_OUTPUT="$name.AppImage" OUTPUT="$name.AppImage"
-          /opt/linuxdeploy/linuxdeploy-x86_64.AppImage --appdir AppDir \
-            --executable build/release/bin/eglantine --executable build/release/bin/eden-cli \
-            --desktop-file dist/dev.eden_emu.eden.desktop \
-            --icon-file "$RUNNER_TEMP/dev.eglantine.eglantine.png" --plugin qt
-          # AppRun is a symlink at the AppDir root: Qt looks for qt.conf next to it.
-          printf '[Paths]\nPrefix = usr\nPlugins = plugins\n' > AppDir/qt.conf
-          /opt/linuxdeploy/linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
-          ls -la "$name".*
+          rm -rf out
+          tools/local-runner/build.sh "${{ matrix.platform }}" "${{ inputs.android_app_id }}"
+          ccache --show-stats || true
 
       - uses: actions/upload-artifact@v4
+        if: matrix.enabled
         with:
-          name: linux-x86_64
-          path: eglantine-*-linux-x86_64.*
+          name: ${{ matrix.platform }}
+          path: out/*
           compression-level: 0
 
-  android:
-    if: inputs.android
-    runs-on: [self-hosted, eglantine-local]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build APK
-        working-directory: src/android
-        run: |
-          ./gradlew --no-daemon "-PappId=${{ inputs.android_app_id }}" assembleMainlineRelease
-          apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
-          cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA::10}-android.apk"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android
-          path: eglantine-*-android.apk
-          compression-level: 0
-
-  release:
-    if: inputs.release && !cancelled() && !failure()
-    needs: [linux, android]
-    runs-on: [self-hosted, eglantine-local]
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: out
-          merge-multiple: true
-
-      - name: Publish pre-release
+      - name: Publish
+        if: matrix.enabled && inputs.release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="local-${GITHUB_SHA::10}-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --prerelease --title "Eglantine ${GITHUB_SHA::10}" --notes "Built locally from ${GITHUB_SHA}."
+        run: tools/local-runner/publish.sh "${{ matrix.os }}" out/*
