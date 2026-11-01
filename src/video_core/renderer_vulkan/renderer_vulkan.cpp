@@ -19,6 +19,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core_timing.h"
+#include "core/perf_stats.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
 #include "video_core/gpu.h"
@@ -234,6 +235,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         frame_gen.GenerateInto(device, generated, generation);
         scheduler.Flush(*generated->render_ready);
         present_manager.Present(generated);
+        Core::g_generated_frames.fetch_add(1, std::memory_order_relaxed);
     }
 #endif
 

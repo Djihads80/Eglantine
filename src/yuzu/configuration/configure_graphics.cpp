@@ -225,10 +225,6 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-        if (setting->Id() == Settings::values.frame_gen.Id()) {
-            continue;
-        }
-
         ConfigurationShared::Widget* widget = [&]() {
             if (setting->Id() == Settings::values.fsr_sharpening_slider.Id()) {
                 // FSR needs a reversed slider and a 0.5 multiplier
@@ -336,6 +332,56 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
     for (auto widget : hold_api) {
         api_grid_layout->addWidget(widget);
+    }
+
+    // The frame generation options are only editable while frame generation itself is enabled.
+    // They are plain widgets (not paired with the checkbox) so that only "Enable Frame
+    // Generation" ever writes the frame_gen setting.
+    {
+        const auto find_widget = [&](const Settings::BasicSetting& setting) -> QWidget* {
+            const auto it = hold_graphics.find(setting.Id());
+            return it != hold_graphics.end() ? it->second : nullptr;
+        };
+        QWidget* const frame_gen_widget = find_widget(Settings::values.frame_gen);
+        QWidget* const flow_auto_widget = find_widget(Settings::values.frame_gen_flow_scale_auto);
+        QWidget* const flow_scale_widget = find_widget(Settings::values.frame_gen_flow_scale);
+        const std::vector<QWidget*> frame_gen_children{
+            find_widget(Settings::values.frame_gen_type),
+            find_widget(Settings::values.frame_gen_multiplier),
+            find_widget(Settings::values.frame_gen_target_rate),
+            flow_auto_widget,
+            flow_scale_widget,
+            find_widget(Settings::values.frame_gen_queue_target),
+            find_widget(Settings::values.frame_gen_dump_flow),
+        };
+        auto* const frame_gen_box =
+            frame_gen_widget ? static_cast<ConfigurationShared::Widget*>(frame_gen_widget)->checkbox
+                             : nullptr;
+        auto* const flow_auto_box =
+            flow_auto_widget ? static_cast<ConfigurationShared::Widget*>(flow_auto_widget)->checkbox
+                             : nullptr;
+
+        const auto update_frame_gen_enabled = [frame_gen_children, frame_gen_box, flow_auto_box,
+                                               flow_scale_widget]() {
+            const bool enabled = frame_gen_box == nullptr || frame_gen_box->isChecked();
+            for (QWidget* child : frame_gen_children) {
+                if (child != nullptr) {
+                    child->setEnabled(enabled);
+                }
+            }
+            if (flow_scale_widget != nullptr && flow_auto_box != nullptr) {
+                flow_scale_widget->setEnabled(enabled && !flow_auto_box->isChecked());
+            }
+        };
+        if (frame_gen_box != nullptr) {
+            connect(frame_gen_box, &QCheckBox::toggled, this,
+                    [update_frame_gen_enabled](bool) { update_frame_gen_enabled(); });
+        }
+        if (flow_auto_box != nullptr) {
+            connect(flow_auto_box, &QCheckBox::toggled, this,
+                    [update_frame_gen_enabled](bool) { update_frame_gen_enabled(); });
+        }
+        update_frame_gen_enabled();
     }
 
     // Background color is too specific to build into the new system, so we manage it here

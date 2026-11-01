@@ -54,6 +54,8 @@ private:
     bool generated{};
     bool unavailable{};
     bool dumped{};
+    bool logged_no_storage{};
+    u64 log_counter{};
 };
 
 } // namespace Vulkan

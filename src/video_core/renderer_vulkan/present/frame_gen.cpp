@@ -8,6 +8,7 @@
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/renderer_vulkan/present/frame_gen.h"
 #include "video_core/renderer_vulkan/present/util.h"
@@ -213,11 +214,20 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     }
 
     if (!shaders->IsValid() && Settings::values.frame_gen_type.GetValue() != Settings::FrameGenType::Fsr3) {
+        LOG_ERROR(Render_Vulkan,
+                  "Frame generation (LSFG) disabled for this session: Lossless Scaling shaders "
+                  "were not found or could not be translated. Use FSR3 or install Lossless "
+                  "Scaling.");
         unavailable = true;
         return;
     }
 
     if (!frame->storage_view) {
+        if (!logged_no_storage) {
+            LOG_WARNING(Render_Vulkan,
+                        "Frame generation: presented frame has no storage view, cannot process");
+            logged_no_storage = true;
+        }
         warm_streak = 0;
         return;
     }
@@ -241,6 +251,14 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     generated = warm && warm_streak >= LSFG_RECURRENCE_FRAMES && plan.generations > 0;
 
     const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+
+    if (++log_counter % 300 == 1) {
+        LOG_INFO(Render_Vulkan,
+                 "Frame generation: backend={} frames={} planned_generations={} warm={} "
+                 "warm_streak={} generating={}",
+                 use_fsr3 ? "FSR3" : "LSFG", count, plan.generations, plan.warm, warm_streak,
+                 generated);
+    }
 
     if (use_fsr3 && fsr3_chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
@@ -309,6 +327,11 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     fsr3_chain.reset();
 
     built_flow_scale = flow_scale;
+
+    LOG_INFO(Render_Vulkan, "Frame generation: building {} chain at {}x{} (flow scale {:.2f})",
+             Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3 ? "FSR3"
+                                                                                       : "LSFG",
+             extent.width, extent.height, flow_scale);
 
     if (Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3) {
         fsr3_chain.emplace(device, memory_allocator, extent, format);

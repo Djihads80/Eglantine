@@ -12,6 +12,10 @@
 
 namespace Core {
 
+/// Number of extra frames the frame generation produced since the stats were last reset. The
+/// renderer adds to it and PerfStats::GetAndResetStats reads and clears it.
+inline std::atomic<u32> g_generated_frames{0};
+
 struct PerfStatsResults {
     /// System FPS (LCD VBlanks) in Hz
     double system_fps;
@@ -21,6 +25,8 @@ struct PerfStatsResults {
     double frametime;
     /// Ratio of walltime / emulated time elapsed
     double emulation_speed;
+    /// Frames shown per second: game frames plus the ones frame generation added, in Hz
+    double output_fps = 0.0;
 };
 
 /**
@@ -82,6 +88,8 @@ private:
     Clock::duration previous_frame_length = Clock::duration::zero();
     /// Previously computed fps
     double previous_fps = 0;
+    /// Previously computed output fps (game frames plus generated frames)
+    double previous_output_fps = 0;
 };
 
 class SpeedLimiter {

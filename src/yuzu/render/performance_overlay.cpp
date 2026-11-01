@@ -5,15 +5,23 @@
 #include "performance_overlay.h"
 #include "ui_performance_overlay.h"
 
+#include "common/settings.h"
 #include "main_window.h"
+
+#include <algorithm>
+#include <cmath>
+#include <numeric>
 
 #include <QChart>
 #include <QChartView>
 #include <QGraphicsLayout>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QLineSeries>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QValueAxis>
+#include <QVBoxLayout>
 
 // TODO(crueter): Reset samples when user changes turbo, slow, etc.
 PerformanceOverlay::PerformanceOverlay(MainWindow* parent)
@@ -71,6 +79,36 @@ PerformanceOverlay::PerformanceOverlay(MainWindow* parent)
 
     ui->verticalLayout->addWidget(m_fpsChartView, 1);
 
+    // "FPS (with frame generation)" block, shown between the real FPS stats and the chart only
+    // while frame generation is enabled
+    m_fgWidget = new QWidget(this);
+    auto* fgLayout = new QVBoxLayout(m_fgWidget);
+    fgLayout->setContentsMargins(0, 0, 0, 0);
+
+    auto* fgHeader = new QHBoxLayout;
+    auto* fgTitle = new QLabel(tr("FPS (with frame generation)"), m_fgWidget);
+    fgTitle->setFont(ui->label_4->font());
+    fgTitle->setStyleSheet(QStringLiteral("color: #00c000;"));
+    m_fgFps = new QLabel(tr("0 fps"), m_fgWidget);
+    m_fgFps->setFont(ui->fps->font());
+    fgHeader->addWidget(fgTitle);
+    fgHeader->addWidget(m_fgFps);
+    fgLayout->addLayout(fgHeader);
+
+    auto* fgStats = new QHBoxLayout;
+    m_fgMin = new QLabel(tr("Min: 0"), m_fgWidget);
+    m_fgMax = new QLabel(tr("Max: 0"), m_fgWidget);
+    m_fgAvg = new QLabel(tr("Avg: 0"), m_fgWidget);
+    for (QLabel* label : {m_fgMin, m_fgMax, m_fgAvg}) {
+        label->setFont(ui->fps_min->font());
+        fgStats->addWidget(label);
+    }
+    fgLayout->addLayout(fgStats);
+
+    // right below the real FPS min/max/avg row, above the chart
+    ui->verticalLayout->insertWidget(ui->verticalLayout->indexOf(m_fpsChartView), m_fgWidget);
+    m_fgWidget->setVisible(false);
+
     // thanks Debian.
     QFont font = ui->fps->font();
     font.setWeight(QFont::DemiBold);
@@ -95,6 +133,45 @@ void PerformanceOverlay::resetPosition(const QPoint& _) {
 
 void PerformanceOverlay::updateStats(const Core::PerfStatsResults& results,
                                      const VideoCore::ShaderNotify& shaders) {
+    // Real FPS is the game's own frame rate; with frame generation on, the frames shown on screen
+    // are counted separately below.
+    const bool frameGen = Settings::values.frame_gen.GetValue();
+    if (frameGen != m_fgShown) {
+        m_fgShown = frameGen;
+        m_fgWidget->setVisible(frameGen);
+        ui->label_4->setText(frameGen ? tr("Real FPS") : tr("FPS"));
+        m_fgSamples.clear();
+        adjustSize();
+    }
+
+    if (frameGen) {
+        const double outFps = results.output_fps;
+        if (!std::isnan(outFps)) {
+            static constexpr double FPS_SAMPLE_THRESHOLD = 3.0;
+
+            m_fgFps->setText(tr("%1 fps").arg(std::round(outFps), 0, 'f', 0));
+
+            if (outFps > FPS_SAMPLE_THRESHOLD) {
+                m_fgSamples.push_back(outFps);
+            }
+            if (m_fgSamples.size() > NUM_FPS_SAMPLES) {
+                m_fgSamples.pop_front();
+            }
+
+            if (!m_fgSamples.empty()) {
+                auto [min_it, max_it] = std::minmax_element(m_fgSamples.begin(), m_fgSamples.end());
+                m_fgMin->setText(tr("Min: %1").arg(*min_it, 0, 'f', 0));
+                m_fgMax->setText(tr("Max: %1").arg(*max_it, 0, 'f', 0));
+            }
+            if (m_fgSamples.size() >= 2) {
+                const int back_search = std::min(size_t(10), m_fgSamples.size() - 1);
+                const double sum =
+                    std::accumulate(m_fgSamples.end() - back_search, m_fgSamples.end(), 0.0);
+                m_fgAvg->setText(tr("Avg: %1").arg(sum / back_search, 0, 'f', 0));
+            }
+        }
+    }
+
     auto fps = results.average_game_fps;
     if (!std::isnan(fps)) {
         // don't sample measurements < 3 fps because they are probably outliers or freezes

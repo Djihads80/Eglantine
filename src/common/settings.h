@@ -427,8 +427,7 @@ struct Values {
                                                    Category::Renderer,
                                                    Specialization::Default,
                                                    true,
-                                                   false,
-                                                   &frame_gen};
+                                                   false};
 
     SwitchableSetting<u32, true> frame_gen_multiplier{linkage,
                                                       2,
@@ -438,8 +437,7 @@ struct Values {
                                                       Category::Renderer,
                                                       Specialization::Countable,
                                                       true,
-                                                      false,
-                                                      &frame_gen};
+                                                      false};
 
     SwitchableSetting<u32, true> frame_gen_target_rate{linkage,
                                                        0,
@@ -449,8 +447,7 @@ struct Values {
                                                        Category::Renderer,
                                                        Specialization::Countable,
                                                        true,
-                                                       true,
-                                                       &frame_gen};
+                                                       true};
 
     SwitchableSetting<bool> frame_gen_flow_scale_auto{linkage,
                                                       true,
@@ -458,8 +455,7 @@ struct Values {
                                                       Category::Renderer,
                                                       Specialization::Default,
                                                       true,
-                                                      false,
-                                                      &frame_gen};
+                                                      false};
 
     SwitchableSetting<u32, true> frame_gen_flow_scale{linkage,
                                                       75,
@@ -470,8 +466,7 @@ struct Values {
                                                       Specialization::Countable |
                                                           Specialization::Percentage,
                                                       true,
-                                                      true,
-                                                      &frame_gen};
+                                                      true};
 
     SwitchableSetting<u32, true> frame_gen_queue_target{linkage,
                                                         0,
@@ -481,8 +476,7 @@ struct Values {
                                                         Category::Renderer,
                                                         Specialization::Countable,
                                                         true,
-                                                        false,
-                                                        &frame_gen};
+                                                        false};
 
     SwitchableSetting<bool> frame_gen_dump_flow{linkage, false, "frame_gen_dump_flow",
                                                 Category::Renderer};
