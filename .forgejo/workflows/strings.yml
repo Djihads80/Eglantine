@@ -8,9 +8,6 @@ on:
 
 jobs:
   check-strings:
-    # The runner labelled "source" belongs to eden-emu/eden; on a fork every push would queue a run
-    # that nobody picks up, and the release page shows it as a failed check.
-    if: github.repository == 'eden-emu/eden'
     runs-on: source
     steps:
       - uses: actions/checkout@v4

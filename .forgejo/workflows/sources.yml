@@ -6,9 +6,6 @@ on:
 
 jobs:
   sources:
-    # Uploads the .ts sources to Eden's Transifex project; the runner labelled "source" belongs to
-    # eden-emu/eden. Skipped on forks instead of queueing a run that is never picked up.
-    if: github.repository == 'eden-emu/eden'
     runs-on: source
     steps:
       - uses: actions/checkout@v4
