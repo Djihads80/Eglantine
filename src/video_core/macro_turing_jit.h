@@ -29,6 +29,7 @@ public:
 
     struct State {
         std::array<Word, 24> regs;
+        Word initialized;
         Word carry;
         Word method;
         Word increment;
@@ -99,18 +100,21 @@ public:
         compiled_generation = generation;
     }
 
+    // Only StepLimit exports a resumable checkpoint: other errors can occur mid-instruction.
     template <typename Read, typename Emit>
     Result Execute(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read read,
-                   Emit emit) {
+                   Emit emit, TuringMacroInterpreter::ExecutionState* checkpoint = nullptr,
+                   Word step_limit = 1000000) {
         State state;
         state.regs.fill(0);
+        state.initialized = 0;
         state.carry = state.method = state.increment = 0;
         state.loop_count = state.loop_start = state.loop_end = 0;
         state.consumed = 0;
         state.fail_pc = 0;
         state.end_next = state.stopped = state.cancel_end = 0;
         state.start = start;
-        state.steps = 1000000;
+        state.steps = step_limit;
         state.params = parameters.data();
         state.params_size = static_cast<Word>(parameters.size());
         state.dram = data_ram.data();
@@ -122,6 +126,11 @@ public:
         const Word error = program->entry(&state);
         if (error == None) {
             return {true, state.fail_pc, state.consumed, {}};
+        }
+        if (error == StepLimit && checkpoint != nullptr) {
+            *checkpoint = {state.regs, state.initialized, state.carry, state.method, state.increment,
+                           state.fail_pc, state.loop_count, state.loop_start, state.loop_end,
+                           state.consumed, state.end_next != 0, state.stopped != 0};
         }
         return {false, state.fail_pc, state.consumed, ErrorText(error)};
     }
@@ -180,6 +189,7 @@ private:
             sub(rsp, 40);
             mov(st, arg0);
             mov(eax, dword[st + offsetof(State, start)]);
+            mov(dword[st + offsetof(State, fail_pc)], eax);
             cmp(eax, count);
             jae(fail_outside, T_NEAR);
             lea(rcx, ptr[rip + table]);
@@ -190,11 +200,9 @@ private:
                 Instruction(pc, count, decoded[pc]);
             }
 
-            // Dispatch on eax (the next pc). Every backward edge comes through here, so the
-            // instruction limit is counted here.
+            // Dispatch on eax (the next pc).
             L(dispatch);
-            sub(dword[st + offsetof(State, steps)], 1);
-            jz(fail_steps, T_NEAR);
+            mov(dword[st + offsetof(State, fail_pc)], eax);
             cmp(eax, count);
             jae(fail_outside, T_NEAR);
             lea(rcx, ptr[rip + table]);
@@ -299,6 +307,10 @@ private:
         }
 
         void Instruction(Word pc, Word count, const Decoded& d) {
+            mov(dword[st + offsetof(State, fail_pc)], pc);
+            cmp(dword[st + offsetof(State, steps)], 0);
+            je(fail_steps, T_NEAR);
+            sub(dword[st + offsetof(State, steps)], 1);
             // FIFO loads, in lane order.
             for (Word i = 0; i < 2; ++i) {
                 const Xbyak::Reg32 load = i == 0 ? r12d : r13d;
@@ -372,6 +384,7 @@ private:
                 mov(lane == 0 ? r14d : r15d, eax);
                 if (d.dst[lane] < 24) {
                     mov(dword[st + RegOffset(d.dst[lane])], eax);
+                    or_(dword[st + offsetof(State, initialized)], 1U << d.dst[lane]);
                 } else if (d.dst[lane] != 24) {
                     jmp(fail_destination, T_NEAR);
                 }
@@ -444,6 +457,7 @@ private:
             } else if (pc + 1 < count) {
                 jmp(labels[pc + 1], T_NEAR);
             } else {
+                mov(dword[st + offsetof(State, fail_pc)], pc + 1);
                 jmp(fail_outside, T_NEAR);
             }
         }

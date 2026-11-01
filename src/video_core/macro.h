@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include "video_core/macro_memo.h"
 #include "video_core/macro_turing.h"
@@ -238,7 +239,11 @@ struct MacroEngine {
     }
     // Clear the code associated with a method.
     inline void ClearCode(u32 method) noexcept {
-        if (native_turing) { native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size()); return; }
+        if (native_turing) {
+            native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size());
+            for (auto& failed : native_jit_failed) failed.store(false, std::memory_order_relaxed);
+            return;
+        }
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
     }
@@ -254,6 +259,7 @@ struct MacroEngine {
     bool is_interpreted;
     bool native_turing{};
     bool native_execution_failed{};
+    std::array<std::atomic<bool>, 0x1000> native_jit_failed{};
     u32 native_write_offset{};
     std::array<u32, 0x3000> native_code{};
     TuringMacroInterpreter native_interpreter;

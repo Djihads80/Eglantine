@@ -1470,22 +1470,43 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
             const char* value = std::getenv("EDEN_NX2_MME_JIT");
             return value == nullptr || value[0] != '0';
         }();
-        if (use_jit) {
+        if (use_jit && method < native_jit_failed.size() &&
+            !native_jit_failed[method].load(std::memory_order_relaxed)) {
             if (!native_jit) {
                 native_jit = std::make_shared<TuringMacroJit>();
             }
             native_jit->Prepare(native_code, native_code_generation);
             fifo.assign(parameters.begin(), parameters.end());
+            TuringMacroInterpreter::ExecutionState checkpoint;
             const auto result = native_jit->Execute(
                 method, fifo, std::span<u32>{*native_interpreter.active_dram},
                 [&](u32 address) {
                     return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U;
                 },
-                emit);
+                emit, &checkpoint);
             if (!result.success) {
-                native_execution_failed = true;
-                LOG_ERROR(HW_GPU, "Native MME (JIT) failed: start={:#x}, consumed={}/{}, error={}",
-                          method, result.consumed, parameters.size(), result.error);
+                native_jit_failed[method].store(true, std::memory_order_relaxed);
+                LOG_ERROR(HW_GPU,
+                          "Native MME (JIT) failed: start={:#x}, pc={:#x}, consumed={}/{}, error={}; "
+                          "using interpreter for future calls",
+                          method, result.pc, result.consumed, parameters.size(), result.error);
+                if (result.error == TuringMacroJit::ErrorText(TuringMacroJit::StepLimit)) {
+                    // The JIT stopped before the next instruction. Preserve its FIFO, data RAM
+                    // and registers rather than replaying methods that already reached the GPU.
+                    const auto resumed = native_interpreter.Resume(
+                        native_code, checkpoint, fifo,
+                        [&](u32 address) {
+                            return address < Maxwell3D::Regs::NUM_REGS
+                                       ? maxwell3d.GetRegisterValue(address) : 0U;
+                        },
+                        emit);
+                    if (!resumed.success) {
+                        LOG_ERROR(HW_GPU,
+                                  "Native MME interpreter fallback failed: start={:#x}, pc={:#x}, "
+                                  "consumed={}/{}, error={}",
+                                  method, resumed.pc, resumed.consumed, fifo.size(), resumed.error);
+                    }
+                }
             }
             return;
         }
