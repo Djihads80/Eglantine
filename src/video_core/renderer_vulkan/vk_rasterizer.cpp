@@ -9,6 +9,7 @@
 #include <memory>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <tuple>
 #include <set>
 #include <fstream>
@@ -279,6 +280,22 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure("no pipeline");
         return;
     }
+    // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
+    mesh_draw = pipeline->IsMeshPipeline();
+    // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
+    // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
+    // to compare the same scene with and without them in one run.
+    static const bool no_mesh_always{std::getenv("EDEN_NX2_NO_MESH") != nullptr};
+    static const char* const no_mesh_file{std::getenv("EDEN_NX2_NO_MESH_FILE")};
+    static bool no_mesh{no_mesh_always};
+    static u32 no_mesh_check{};
+    if (no_mesh_file && (no_mesh_check++ % 1024) == 0) {
+        no_mesh = std::filesystem::exists(no_mesh_file);
+    }
+    if (mesh_draw && (no_mesh || !device.IsExtMeshShaderSupported())) {
+        report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
+        return;
+    }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
@@ -541,6 +558,12 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
+        if (mesh_draw) {
+            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+                cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
+            });
+            return;
+        }
         scheduler.Record([draw_params](vk::CommandBuffer cmdbuf) {
             if (draw_params.is_indexed) {
                 cmdbuf.DrawIndexed(draw_params.num_vertices, draw_params.num_instances,
@@ -573,6 +596,14 @@ void RasterizerVulkan::DrawIndirect() {
     const auto& params = maxwell3d->draw_manager.indirect_state;
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
+        if (mesh_draw) {
+            // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
+            static bool logged{};
+            if (!std::exchange(logged, true)) {
+                LOG_WARNING(Render_Vulkan, "Indirect task/mesh draw skipped");
+            }
+            return;
+        }
         const auto indirect_buffer = buffer_cache.GetDrawIndirectBuffer();
         const auto& buffer = indirect_buffer.first;
         const auto& offset = indirect_buffer.second;
@@ -1200,6 +1231,7 @@ void RasterizerVulkan::FlushCommands() {
 
 void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
+    pipeline_cache.TickFrame();
     guest_descriptor_queue.TickFrame();
     compute_pass_descriptor_queue.TickFrame();
     descriptor_buffer_ring.TickFrame();

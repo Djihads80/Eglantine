@@ -80,6 +80,33 @@ void Maxwell3D::DrawManager::DrawDeferred(Maxwell3D& maxwell3d) {
     draw_state.instance_count = 0;
 }
 
+bool Maxwell3D::DrawManager::IsInstanceLoopMethod(u32 method) noexcept {
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(draw.begin):
+    case MAXWELL3D_REG_INDEX(draw.end):
+    case MAXWELL3D_REG_INDEX(vertex_buffer.first):
+    case MAXWELL3D_REG_INDEX(vertex_buffer.count):
+    case MAXWELL3D_REG_INDEX(index_buffer.first):
+    case MAXWELL3D_REG_INDEX(index_buffer.count):
+    case MAXWELL3D_REG_INDEX(index_buffer32_first):
+    case MAXWELL3D_REG_INDEX(index_buffer16_first):
+    case MAXWELL3D_REG_INDEX(index_buffer8_first):
+    case MAXWELL3D_REG_INDEX(index_buffer32_subsequent):
+    case MAXWELL3D_REG_INDEX(index_buffer16_subsequent):
+    case MAXWELL3D_REG_INDEX(index_buffer8_subsequent):
+    case MAXWELL3D_REG_INDEX(draw_inline_index):
+    case MAXWELL3D_REG_INDEX(inline_index_2x16.count):
+    case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
+    case MAXWELL3D_REG_INDEX(inline_index_4x8.count):
+    case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
+    case MAXWELL3D_REG_INDEX(vertex_array_instance_first):
+    case MAXWELL3D_REG_INDEX(vertex_array_instance_subsequent):
+        return true;
+    default:
+        return false;
+    }
+}
+
 void Maxwell3D::DrawManager::DrawArray(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, u32 base_instance, u32 num_instances) {
     draw_state.topology = topology;
     draw_state.vertex_buffer.first = vertex_first;

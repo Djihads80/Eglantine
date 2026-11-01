@@ -218,6 +218,10 @@ void ApplyNx2Characteristics(GC& gc) {
     if (remap) {
         gc.flags |= 1ULL << 35;
     }
+    // Engine support bits 40-44 (2D, 3D, compute, inline-to-memory, ZBC). NvRm's newer device
+    // path lists a class family in the device info only when its bit is set; without them a
+    // device opened that way has no compute class and Fire Emblem's CUDA driver reports no device.
+    gc.flags |= 0x1FULL << 40;
 
     // The Switch 2 layout keeps nine s16 interface versions at 0x70..0x80 (like nvgpu's
     // *_ioctl_nr_last); its NvRm requires e.g. [0x78] >= 6 and enables features above 0xa, 0x1f

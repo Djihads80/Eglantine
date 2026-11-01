@@ -137,9 +137,16 @@ void EmitPrologue(EmitContext& ctx) {
     if (ctx.stage == Stage::VertexB || ctx.stage == Stage::Geometry) {
         SetFixedPipelinePointSize(ctx);
     }
+    if (ctx.stage == Stage::Task || ctx.stage == Stage::Mesh) {
+        EmitMeshPrologue(ctx);
+    }
 }
 
 void EmitEpilogue(EmitContext& ctx) {
+    if (ctx.stage == Stage::Task || ctx.stage == Stage::Mesh) {
+        EmitMeshEpilogue(ctx);
+        return;
+    }
     if (ctx.stage == Stage::VertexB && ctx.runtime_info.convert_depth_mode &&
         !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);

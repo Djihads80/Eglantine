@@ -209,7 +209,10 @@ MemoryAllocator::~MemoryAllocator() = default;
 vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
 {
     const VmaAllocationCreateInfo alloc_ci = {
-            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) |
+            // Best fit: images freed by the thousand leave holes in the blocks, which new ones
+            // should fill before VMA takes another block.
+            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
+                                                           VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT) |
                      (dedicated ? VmaAllocationCreateFlags{VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT}
                                : VmaAllocationCreateFlags{0}),
             .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -313,6 +316,24 @@ VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &
     };
     VmaAllocation allocation{};
     VmaAllocationInfo info{};
+    // In a pool of their own (see Device::SeparatePool); anything over half a block, or a pool
+    // allocation that fails, takes the default blocks.
+    u32 memory_type{};
+    if (requirements.size <= Device::SeparatePoolBlockSize / 2 &&
+        vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &alloc_ci, &memory_type) ==
+            VK_SUCCESS) {
+        if (const VmaPool pool =
+                device.GetSeparatePool(Device::SeparatePool::SparsePages, memory_type)) {
+            VmaAllocationCreateInfo pool_ci = alloc_ci;
+            pool_ci.pool = pool;
+            if (vmaAllocateMemory(allocator, &requirements, &pool_ci, &allocation, &info) ==
+                VK_SUCCESS) {
+                memory = info.deviceMemory;
+                offset = info.offset;
+                return allocation;
+            }
+        }
+    }
     if (vmaAllocateMemory(allocator, &requirements, &alloc_ci, &allocation, &info) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
@@ -325,6 +346,39 @@ void MemoryAllocator::FreeSparseMemory(VmaAllocation allocation) const {
     if (allocation != VK_NULL_HANDLE) {
         vmaFreeMemory(allocator, allocation);
     }
+}
+
+bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, MemoryUsage usage,
+                                                 const VmaAllocationCreateInfo& alloc_ci,
+                                                 VkBuffer& handle, VmaAllocation& allocation,
+                                                 VmaAllocationInfo& alloc_info) const {
+    // The buffer cache's buffers, churned by its collector: in a pool of their own (see
+    // Device::SeparatePool). Anything over half a block takes the default blocks (dedicated).
+    if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize / 2) {
+        return false;
+    }
+    u32 memory_type{};
+    {
+        std::scoped_lock lk{buffer_type_mutex};
+        const auto key = (u64{ci.usage} << 32) | ci.flags;
+        if (const auto it = buffer_memory_types.find(key); it != buffer_memory_types.end()) {
+            memory_type = it->second;
+        } else if (vmaFindMemoryTypeIndexForBufferInfo(allocator, &ci, &alloc_ci, &memory_type) ==
+                   VK_SUCCESS) {
+            buffer_memory_types.emplace(key, memory_type);
+        } else {
+            return false;
+        }
+    }
+    const VmaPool pool = device.GetSeparatePool(Device::SeparatePool::DeviceBuffers, memory_type);
+    if (pool == VK_NULL_HANDLE) {
+        return false;
+    }
+    VmaAllocationCreateInfo pool_ci = alloc_ci;
+    pool_ci.pool = pool;
+    pool_ci.memoryTypeBits = 0;
+    return vmaCreateBuffer(allocator, &ci, &pool_ci, &handle, &allocation, &alloc_info) ==
+           VK_SUCCESS;
 }
 
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
@@ -348,7 +402,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    if (!CreateBufferInSeparatePool(ci, usage, alloc_ci, handle, allocation, alloc_info)) {
+        vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    }
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     // Log GPU memory allocation for buffers

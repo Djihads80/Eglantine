@@ -527,6 +527,7 @@ add_library(core STATIC
     hle/service/audio/audio_out.h
     hle/service/audio/audio_renderer_manager.cpp
     hle/service/audio/audio_renderer_manager.h
+    hle/service/audio/nx2_audio_device_manager.h
     hle/service/audio/nx2_audio_user_client.h
     hle/service/audio/audio_renderer.cpp
     hle/service/audio/audio_renderer.h
