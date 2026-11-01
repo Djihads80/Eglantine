@@ -204,7 +204,7 @@ struct Values {
     // Core
     SwitchableSetting<bool> use_multi_core{linkage, true, "use_multi_core", Category::Core};
     SwitchableSetting<MemoryLayout, true> memory_layout_mode{linkage,
-                                                             MemoryLayout::Memory_4Gb,
+                                                             MemoryLayout::Memory_Auto,
                                                              "memory_layout_mode",
                                                              Category::Core,
                                                              Specialization::Default,
@@ -763,7 +763,7 @@ struct Values {
                                     linkage, 0,    "rng_seed",       Category::System, Specialization::Hex,
                                     true,    true, &rng_seed_enabled};
     Setting<std::string> device_name{
-        linkage, "Eden", "device_name", Category::System, Specialization::Default, true, true};
+        linkage, "Eglantine", "device_name", Category::System, Specialization::Default, true, true};
 
     Setting<s32> current_user{linkage, 0, "current_user", Category::System};
 
@@ -944,7 +944,7 @@ struct Values {
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",
                                      Category::WebService};
-    Setting<std::string> eden_username{linkage, "Eden", "eden_username",
+    Setting<std::string> eden_username{linkage, "Eglantine", "eden_username",
                                        Category::WebService};
     Setting<std::string> eden_token{linkage, "",
                                     "eden_token", Category::WebService};

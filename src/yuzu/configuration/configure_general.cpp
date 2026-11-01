@@ -29,6 +29,10 @@ ConfigureGeneral::ConfigureGeneral(const Core::System& system_,
 
     SetConfiguration();
 
+#ifndef USE_DISCORD_PRESENCE
+    ui->discord_widget->setVisible(false);
+#endif
+
     connect(ui->button_reset_defaults, &QPushButton::clicked, this,
             &ConfigureGeneral::ResetDefaults);
 
@@ -50,6 +54,9 @@ ConfigureGeneral::~ConfigureGeneral() = default;
 
 void ConfigureGeneral::SetConfiguration() {
     UpdateExternalContentList();
+
+    ui->discord_combobox->setCurrentIndex(
+        static_cast<int>(UISettings::values.discord_presence.GetValue()));
 }
 
 void ConfigureGeneral::Setup(const ConfigurationShared::Builder& builder) {
@@ -115,6 +122,8 @@ void ConfigureGeneral::ApplyConfiguration() {
     for (const auto& func : apply_funcs) {
         func(powered_on);
     }
+
+    UISettings::values.discord_presence = static_cast<u32>(ui->discord_combobox->currentIndex());
 
     std::vector<std::string> new_dirs;
     new_dirs.reserve(ui->external_content_list->count());

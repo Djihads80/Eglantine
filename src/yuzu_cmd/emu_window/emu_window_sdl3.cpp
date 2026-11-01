@@ -267,7 +267,7 @@ void EmuWindow_SDL3::SetWindowIcon() {
 #else
     SDL_IOStream* const yuzu_icon_stream = SDL_IOFromConstMem((void*)yuzu_icon, yuzu_icon_size);
     if (yuzu_icon_stream == nullptr) {
-        LOG_WARNING(Frontend, "Failed to create Eden icon stream.");
+        LOG_WARNING(Frontend, "Failed to create Eglantine icon stream.");
         return;
     }
     SDL_Surface* const window_icon = SDL_LoadBMP_IO(yuzu_icon_stream, true);

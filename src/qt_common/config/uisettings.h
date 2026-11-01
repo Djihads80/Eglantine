@@ -41,6 +41,12 @@ namespace UISettings {
 
 bool IsDarkTheme();
 
+enum class DiscordPresence : u32 {
+    Off = 0,
+    OnlyInGame = 1,
+    On = 2,
+};
+
 struct ContextualShortcut {
     std::string keyseq;
     std::string controller_keyseq;
@@ -155,7 +161,8 @@ struct Values {
 #endif
 
     // Discord RPC
-    Setting<bool> enable_discord_presence{linkage, false, "enable_discord_presence", Category::Ui};
+    Setting<u32> discord_presence{linkage, static_cast<u32>(DiscordPresence::On), "discord_presence",
+                                  Category::Ui};
 
     // logging
     Setting<bool> show_console{linkage, false, "showConsole", Category::Ui};
@@ -237,6 +244,10 @@ struct Values {
 };
 
 extern Values values;
+
+[[nodiscard]] inline bool DiscordPresenceEnabled() {
+    return values.discord_presence.GetValue() != static_cast<u32>(DiscordPresence::Off);
+}
 
 u32 CalculateWidth(u32 height, Settings::AspectRatio ratio);
 

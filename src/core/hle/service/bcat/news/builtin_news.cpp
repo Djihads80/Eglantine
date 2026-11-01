@@ -311,7 +311,7 @@ void ImportReleases(const std::vector<Common::Net::Release> &releases) {
         const u64 pickup_limit = published + 600000000;
         const u32 priority = rel.prerelease ? 1500 : 2500;
 
-        std::string author = "Eden";
+        std::string author = "Eglantine";
 
         auto payload = BuildMsgpack(title, FormatBody(body, title), title, published,
                                     pickup_limit, priority, {"en"}, author, {},
@@ -411,7 +411,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
 
     // Topic name = who wrote it
     w.WriteKey("topic_name");
-    w.WriteString("Eden");
+    w.WriteString("Eglantine");
 
     w.WriteKey("list_image");
     w.WriteBinary(img_small);

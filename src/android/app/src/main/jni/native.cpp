@@ -1958,7 +1958,7 @@ JNIEXPORT jobjectArray JNICALL Java_org_yuzu_yuzu_1emu_NativeLibrary_getAllUsers
     manager.ResetUserSaveFile();
 
     if (manager.GetUserCount() == 0) {
-        manager.CreateNewUser(Common::UUID::MakeRandom(), "Eden");
+        manager.CreateNewUser(Common::UUID::MakeRandom(), "Eglantine");
         manager.WriteUserSaveFile();
     }
 
@@ -2175,7 +2175,7 @@ JNIEXPORT void JNICALL Java_org_yuzu_yuzu_1emu_NativeLibrary_reloadProfiles(
 
     // create a default user if non exist
     if (manager.GetUserCount() == 0) {
-        manager.CreateNewUser(Common::UUID::MakeRandom(), "Eden");
+        manager.CreateNewUser(Common::UUID::MakeRandom(), "Eglantine");
         manager.WriteUserSaveFile();
     }
 

@@ -132,11 +132,17 @@ struct System::Impl {
 
     u64 program_id;
 
+    // AUTO behaves like the 4 GB Switch 1 layout; Switch 2 programs force 12 GB at load time.
+    static bool IsExtendedMemoryLayout(Settings::MemoryLayout layout) {
+        return layout != Settings::MemoryLayout::Memory_4Gb &&
+               layout != Settings::MemoryLayout::Memory_Auto;
+    }
+
     void Initialize(System& system) {
         device_memory.emplace();
 
         is_multicore = Settings::values.use_multi_core.GetValue();
-        extended_memory_layout = Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
+        extended_memory_layout = IsExtendedMemoryLayout(Settings::values.memory_layout_mode.GetValue());
 
         core_timing.SetMulticore(is_multicore);
         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
@@ -163,8 +169,8 @@ struct System::Impl {
         const bool must_reinitialize =
             !device_memory.has_value() ||
             is_multicore != Settings::values.use_multi_core.GetValue() ||
-            extended_memory_layout != (Settings::values.memory_layout_mode.GetValue() !=
-                                       Settings::MemoryLayout::Memory_4Gb);
+            extended_memory_layout !=
+                IsExtendedMemoryLayout(Settings::values.memory_layout_mode.GetValue());
 
         if (!must_reinitialize) {
             return;
@@ -174,7 +180,7 @@ struct System::Impl {
 
         is_multicore = Settings::values.use_multi_core.GetValue();
         extended_memory_layout =
-            Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
+            IsExtendedMemoryLayout(Settings::values.memory_layout_mode.GetValue());
 
         Initialize(system);
     }
@@ -323,6 +329,8 @@ struct System::Impl {
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it
         // as a per-game value, so RestoreGlobalState brings back the configured layout afterwards.
+        // With the AUTO layout this is what gives Switch 2 titles 12 GiB while Switch 1 titles
+        // keep the 4 GiB default.
         if (switch2_program &&
             Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_12Gb) {
             LOG_INFO(Core, "Switch 2 program: using the 12 GiB memory layout");

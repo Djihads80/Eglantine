@@ -257,7 +257,7 @@ endif()
 
 if (YUZU_ROOM_STANDALONE)
     add_subdirectory(yuzu_room_standalone)
-    set_target_properties(yuzu-room PROPERTIES OUTPUT_NAME "eden-room")
+    set_target_properties(yuzu-room PROPERTIES OUTPUT_NAME "eglantine-room")
 endif()
 
 if (YUZU_STATIC_ROOM)
@@ -278,7 +278,7 @@ endif()
 
 if (YUZU_CMD)
     add_subdirectory(yuzu_cmd)
-    set_target_properties(yuzu-cmd PROPERTIES OUTPUT_NAME "eden-cli")
+    set_target_properties(yuzu-cmd PROPERTIES OUTPUT_NAME "eglantine-cli")
 endif()
 
 if (ENABLE_QT)
