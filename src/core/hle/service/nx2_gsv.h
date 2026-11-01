@@ -976,6 +976,7 @@ struct Nx2NativeObjects {
         u64 offset{}; // into its memory (images of a decoder pool share one)
         bool window_pool{};
         bool decoder{}; // a video decoder output image (gsv 911)
+        bool gpu_mapped{}; // mapped for the GPU with gsv 426: sampled block-linear, not read by the CPU
     };
     std::mutex mutex;
     std::map<u32, Memory> memories;
@@ -2183,6 +2184,7 @@ private:
                                    const Decoded& frame, std::vector<u8>& bytes) {
         u64 address{};
         Nx2DecoderImageLayout layout{};
+        std::optional<Nx2ImageLayout> tiled;
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -2190,6 +2192,12 @@ private:
                 return {m_width, m_height};
             }
             layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
+            if (image->second.gpu_mapped &&
+                layout.format != Tegra::Host1x::Nx2PictureFormat::Nv12) {
+                tiled = Nx2CalculateImageLayout(image->second.preference.data());
+                // NVN samples it as A8B8G8R8 (Welcome Tour's code 5 image).
+                layout.format = Tegra::Host1x::Nx2PictureFormat::Rgba8;
+            }
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory != m_objects->memories.end() && memory->second.address != 0) {
                 address = memory->second.address + image->second.offset;
@@ -2207,7 +2215,16 @@ private:
                         layout.chroma_offset, bytes);
         DumpFrame(bytes, layout, width, height);
         auto& memory = system.ApplicationMemory();
-        memory.WriteBlock(address, bytes.data(), layout.pitch * height);
+        if (tiled && tiled->block_height_log2 >= 3 && tiled->pitch == layout.pitch) {
+            // The texture NVN builds from gsv 426's descriptor is block-linear (blocks of
+            // 2^block_height_log2 rows) in the console's GOB layout.
+            m_tiled_bytes.resize(tiled->size);
+            Tegra::Texture::SwizzleTexture(m_tiled_bytes, bytes, 4, layout.width, layout.height, 1,
+                                           tiled->block_height_log2 - 3, 0, 1, true);
+            memory.WriteBlock(address, m_tiled_bytes.data(), tiled->size);
+        } else {
+            memory.WriteBlock(address, bytes.data(), layout.pitch * height);
+        }
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
                               layout.pitch * ((height + 1) / 2));
@@ -2265,6 +2282,7 @@ private:
     u32 m_height{};
     u32 m_handed{}; ///< Output images handed out (registered or released) so far
     u64 m_frames_out{};
+    std::vector<u8> m_tiled_bytes; ///< WriteImage's block-linear copy of a GPU-mapped frame
     std::deque<Input> m_inputs;
     std::deque<Decoded> m_decoded;     ///< Waiting for a free output image
     std::deque<u32> m_free;            ///< Output images, in the order the client acquires them
@@ -2701,6 +2719,10 @@ private:
                 }
                 LOG_INFO(Service, "Native decoder image {} imported at GPU {:#x}+{:#x}",
                          handle, gpu_address, layout.size);
+            }
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(handle); image != m_objects->images.end()) {
+                image->second.gpu_mapped = true;
             }
         }
         std::array<u32, 37> words{};
