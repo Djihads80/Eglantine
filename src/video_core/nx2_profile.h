@@ -86,6 +86,7 @@ struct ThreadData {
 };
 
 inline thread_local ThreadData t_data;
+inline thread_local u32 t_last_method; ///< Engine method being run, for the slow zone log
 
 class Scope {
 public:
@@ -103,6 +104,12 @@ public:
             return;
         }
         const u64 elapsed = Now() - start;
+        // Whole hitches stand out from the per-second shares this way.
+        if (elapsed > 10'000'000) {
+            LOG_INFO(HW_GPU, "Slow zone: {} took {:.1f} ms (last method {:#x})",
+                     zone_names[static_cast<size_t>(zone)], static_cast<double>(elapsed) / 1e6,
+                     t_last_method);
+        }
         auto& data = t_data;
         const auto index = static_cast<size_t>(zone);
         data.exclusive_ns[index] += elapsed - data.child_ns;

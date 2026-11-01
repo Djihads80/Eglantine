@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <atomic>
 #include <deque>
 #include <map>
@@ -1741,6 +1742,26 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
+        // EDEN_NX2_FRAME_LOG=<file>: one line per present (frame gap, fence wait and pacing in us,
+        // whether the GPU had already passed this frame's fence when the game presented it, and
+        // the present's steady clock time).
+        if (static std::FILE* const frame_log = [] {
+                const char* path = std::getenv("EDEN_NX2_FRAME_LOG");
+                return path != nullptr ? std::fopen(path, "w") : nullptr;
+            }();
+            frame_log != nullptr) {
+            const auto us = [](auto d) {
+                return static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(d).count());
+            };
+            const bool gpu_done = ~w[22] < 192 && system.Host1x().GetSyncpointManager().IsReadyGuest(
+                                                      ~w[22], w[24]);
+            std::fprintf(frame_log, "%llu %lld %lld %lld %d %lld\n",
+                         static_cast<unsigned long long>(m_presents),
+                         us(entered - m_stats.last_present), us(waited - entered),
+                         us(paced - composited), gpu_done ? 1 : 0,
+                         us(entered.time_since_epoch()));
+        }
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
         {
@@ -1758,14 +1779,33 @@ private:
                 m_stats.frame_us += frame;
                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
+                m_stats.frame_samples[m_stats.frame_count++] = static_cast<u32>(
+                    (std::min)(frame, static_cast<long long>(std::numeric_limits<u32>::max())));
+                // Lets a hitch be matched with what other threads logged around it.
+                if (frame > 50'000) {
+                    LOG_INFO(Service, "nx2:vi2 hitch: present #{} came {} us after the last one",
+                             m_presents, frame);
+                }
             }
             m_stats.last_present = entered;
             if (++m_stats.presents == 600) {
+                auto& samples = m_stats.frame_samples;
+                std::sort(samples.begin(), samples.begin() + m_stats.frame_count);
+                const auto percentile = [&](u32 percent) {
+                    return m_stats.frame_count == 0
+                               ? 0U
+                               : samples[(m_stats.frame_count - 1) * percent / 100];
+                };
+                // A frame that misses its 16.7 ms slot by more than a little is a visible stutter.
+                const auto missed = std::distance(
+                    std::upper_bound(samples.begin(), samples.begin() + m_stats.frame_count, 18'000U),
+                    samples.begin() + m_stats.frame_count);
                 LOG_INFO(Service,
-                         "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
-                         "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us",
-                         m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
+                         "nx2:vi2 last 600 presents: frame {} us (p50 {}, p95 {}, p99 {}, max {}, "
+                         "{} over 18 ms, {} over 100 ms), blocked on the GPU fence {} us (max {}), "
+                         "composite {} us, vblank pacing {} us",
+                         m_stats.frame_us / 599, percentile(50), percentile(95), percentile(99),
+                         m_stats.max_frame_us, missed, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600);
                 m_stats = {.last_present = entered};
@@ -1786,6 +1826,8 @@ private:
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
         u32 presents{};
+        u32 frame_count{};
+        std::array<u32, 600> frame_samples{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)

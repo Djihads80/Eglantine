@@ -379,20 +379,26 @@ void TextureCache<P>::TickFrame() {
     if (static u64 frames{}; ++frames % 600 == 0) {
         u64 image_bytes{};
         size_t images{};
+        size_t rescaled_images{};
+        u64 rescaled_bytes{};
         std::vector<std::pair<u64, const Image*>> largest;
         std::map<u32, std::pair<u64, u32>> by_format;
         for (const auto [image_id, image] : slot_images) {
             const u64 bytes = GetScaledImageSizeBytes(*image);
             image_bytes += bytes;
             ++images;
+            if (True(image->flags & ImageFlagBits::Rescaled)) {
+                ++rescaled_images;
+                rescaled_bytes += bytes;
+            }
             largest.emplace_back(bytes, image);
             auto& format = by_format[static_cast<u32>(image->info.format)];
             format.first += bytes;
             ++format.second;
         }
-        LOG_INFO(HW_GPU, "Texture cache: device memory {} MiB (expected {} MiB, critical {} MiB), {} images {} MiB",
+        LOG_INFO(HW_GPU, "Texture cache: device memory {} MiB (expected {} MiB, critical {} MiB), {} images {} MiB, {} rescaled {} MiB",
                  total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20, images,
-                 image_bytes >> 20);
+                 image_bytes >> 20, rescaled_images, rescaled_bytes >> 20);
         std::partial_sort(largest.begin(), largest.begin() + std::min<size_t>(12, largest.size()),
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
@@ -402,6 +408,28 @@ void TextureCache<P>::TickFrame() {
                      image.info.size.depth, image.info.resources.layers, image.info.resources.levels,
                      static_cast<u32>(image.info.format), static_cast<u32>(image.info.type),
                      static_cast<u32>(image.flags));
+        }
+        // EDEN_NX2_TC_DUMP: device memory by image width and by format (what fills the budget).
+        if (static const bool dump = std::getenv("EDEN_NX2_TC_DUMP") != nullptr; dump) {
+            std::map<std::pair<u32, u32>, std::pair<u64, u32>> by_size;
+            for (const auto [image_id, image] : slot_images) {
+                const u32 kind = VideoCore::Surface::IsPixelFormatASTC(image->info.format) ? 0
+                                 : True(image->flags & ImageFlagBits::Rescaled)            ? 1
+                                                                                           : 2;
+                auto& entry = by_size[{kind, image->info.size.width}];
+                entry.first += ImageMemoryBytes(*image);
+                ++entry.second;
+            }
+            std::string line;
+            for (const auto& [key, total] : by_size) {
+                if (total.first >= 32_MiB) {
+                    line += fmt::format(" {}:{}={}M/{}", key.first == 0   ? "astc"
+                                                         : key.first == 1 ? "rt"
+                                                                          : "other",
+                                        key.second, total.first >> 20, total.second);
+                }
+            }
+            LOG_INFO(HW_GPU, "Texture cache memory by kind:width:{}", line);
         }
         std::vector<std::pair<u64, u32>> formats;
         for (const auto& [format, total] : by_format) formats.emplace_back(total.first, format);
