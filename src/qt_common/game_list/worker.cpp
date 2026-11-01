@@ -343,7 +343,7 @@ void GameListWorker::RecordEvent(F&& func) {
     emit DataAvailable();
 }
 
-void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
+void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir, GameListItemType parent_type) {
     using namespace FileSys;
 
     const auto& cache = system.GetContentProviderUnion();
@@ -351,13 +351,13 @@ void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
     auto installed_games = cache.ListEntriesFilterOrigin(std::nullopt, TitleType::Application,
                                                          ContentRecordType::Program);
 
-    if (parent_dir->type() == static_cast<int>(GameListItemType::SdmcDir)) {
+    if (parent_type == GameListItemType::SdmcDir) {
         installed_games = cache.ListEntriesFilterOrigin(
             ContentProviderUnionSlot::SDMC, TitleType::Application, ContentRecordType::Program);
-    } else if (parent_dir->type() == static_cast<int>(GameListItemType::UserNandDir)) {
+    } else if (parent_type == GameListItemType::UserNandDir) {
         installed_games = cache.ListEntriesFilterOrigin(
             ContentProviderUnionSlot::UserNAND, TitleType::Application, ContentRecordType::Program);
-    } else if (parent_dir->type() == static_cast<int>(GameListItemType::SysNandDir)) {
+    } else if (parent_type == GameListItemType::SysNandDir) {
         installed_games = cache.ListEntriesFilterOrigin(
             ContentProviderUnionSlot::SysNAND, TitleType::Application, ContentRecordType::Program);
     }
@@ -547,6 +547,7 @@ void GameListWorker::run() {
             scan = true;
         }
 
+        const auto parent_type = static_cast<GameListItemType>(game_list_dir->type());
         DirEntryReady(game_list_dir);
         if (scan) {
             const auto discovery = GameListDiscovery::Discover(
@@ -566,7 +567,7 @@ void GameListWorker::run() {
             ScanFileSystem(ScanTarget::FillManualContentProvider, discovery.files, game_list_dir);
             ScanFileSystem(ScanTarget::PopulateGameList, discovery.files, game_list_dir);
         } else {
-            AddTitlesToGameList(game_list_dir);
+            AddTitlesToGameList(game_list_dir, parent_type);
         }
     }
 
