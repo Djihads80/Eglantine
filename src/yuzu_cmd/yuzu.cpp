@@ -495,13 +495,12 @@ extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         return;
     }
     state->system.DetachDebugger();
-    // SDL calls this even when SDL_AppInit never powered the system on (no ROM given, --help or
-    // --version): the kernel is uninitialised then, and Pause()/ShutdownMainProcess() would
-    // dereference it.
-    if (state->system.IsPoweredOn()) {
-        void(state->system.Pause());
-        state->system.ShutdownMainProcess();
+    // Failed loads can leave the kernel uninitialised; destroying the system is unsafe then.
+    if (!state->system.IsPoweredOn()) {
+        return;
     }
+    void(state->system.Pause());
+    state->system.ShutdownMainProcess();
     delete state;
 }
 
