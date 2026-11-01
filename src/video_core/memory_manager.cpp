@@ -431,11 +431,14 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         if (!unsafe) {
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
-        if (!IsBigPageContinuous(page_index)) [[unlikely]] {
-            memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
-        } else {
-            u8* physical = memory.GetPointer<u8>(dev_addr_base);
+        // A continuous big page may still have no host memory (a Switch 2 region backed as it is
+        // written, while its backing is pending): the per-page copy handles that.
+        u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
+                                                             : nullptr;
+        if (physical != nullptr) [[likely]] {
             std::memcpy(dest_buffer, physical, copy_amount);
+        } else {
+            memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
         }
         dest_buffer = static_cast<u8*>(dest_buffer) + copy_amount;
     };
@@ -485,11 +488,12 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->InvalidateRegion(dev_addr_base, copy_amount, which);
         }
-        if (!IsBigPageContinuous(page_index)) [[unlikely]] {
-            memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
-        } else {
-            u8* physical = memory.GetPointer<u8>(dev_addr_base);
+        u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
+                                                             : nullptr;
+        if (physical != nullptr) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
+        } else {
+            memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
         }
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
