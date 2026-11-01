@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -508,58 +509,68 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
         }
     };
 
-    const auto callback = [this, target, deep_scan,
-                           &process_candidate](const std::filesystem::path& path) -> bool {
-        if (stop_requested) {
-            // Breaks the callback loop.
-            return false;
-        }
-
-        if (Common::FS::IsDir(path)) {
-            watch_list.append(QString::fromStdString(Common::FS::PathToUTF8String(path)));
-
-            // Shallow scans stop at the first level, so probe the standard layouts of loose
-            // ExeFS dumps: <game>/exefs/main, <game>/base/exefs/main and their updates in
-            // <root>/updates/<title id>/exefs/main.
-            if (!deep_scan && target == ScanTarget::PopulateGameList) {
-                for (const auto& content_root : {path, path / "base"}) {
-                    const auto exefs_main = content_root / "exefs" / "main";
-                    if (Common::FS::IsFile(exefs_main)) {
-                        process_candidate(exefs_main);
-                    }
-
-                    const auto updates = content_root / "updates";
-                    if (Common::FS::IsDir(updates)) {
-                        Common::FS::IterateDirEntries(
-                            updates,
-                            [&process_candidate](const std::filesystem::path& entry) {
-                                const auto update_main = entry / "exefs" / "main";
-                                if (Common::FS::IsFile(update_main)) {
-                                    process_candidate(update_main);
-                                }
-                                return true;
-                            },
-                            Common::FS::DirEntryFilter::Directory);
-                    }
+    // Loose ExeFS dumps: <game>/exefs/main, <game>/base/exefs/main and their updates in
+    // <game>/updates/<version>/exefs/main. Returns whether the directory is such a dump.
+    const auto probe_dump = [this, target, &process_candidate](const std::filesystem::path& dir) {
+        bool found = false;
+        const auto take = [&](const std::filesystem::path& main) {
+            if (Common::FS::IsFile(main)) {
+                found = true;
+                if (target == ScanTarget::PopulateGameList) {
+                    process_candidate(main);
                 }
             }
-
-            return true;
+        };
+        for (const auto& content_root : {dir, dir / "base"}) {
+            take(content_root / "exefs" / "main");
+            const auto updates = content_root / "updates";
+            if (Common::FS::IsDir(updates)) {
+                Common::FS::IterateDirEntries(
+                    updates,
+                    [&](const std::filesystem::path& entry) {
+                        take(entry / "exefs" / "main");
+                        return !stop_requested;
+                    },
+                    Common::FS::DirEntryFilter::Directory);
+            }
         }
-
-        const auto physical_name = Common::FS::PathToUTF8String(path);
-        if (HasSupportedFileExtension(physical_name) || IsExtractedNCAMain(physical_name)) {
-            process_candidate(path);
-        }
-
-        return true;
+        return found;
     };
 
-    if (deep_scan) {
-        Common::FS::IterateDirEntriesRecursively(dir_path, callback,
-                                                 Common::FS::DirEntryFilter::All);
-    } else {
-        Common::FS::IterateDirEntries(dir_path, callback, Common::FS::DirEntryFilter::All);
+    // Deep scans stop at loose dumps and RomFS trees, which can hold hundreds of thousands of
+    // files that are never games themselves.
+    std::function<void(const std::filesystem::path&, bool)> scan_dir;
+    scan_dir = [&](const std::filesystem::path& dir, bool recurse) {
+        Common::FS::IterateDirEntries(dir, [&](const std::filesystem::path& path) -> bool {
+            if (stop_requested) {
+                return false;
+            }
+
+            if (Common::FS::IsDir(path)) {
+                if (probe_dump(path)) {
+                    return true;
+                }
+                const auto name = QString::fromStdString(Common::FS::PathToUTF8String(path.filename()));
+                if (name.compare(QStringLiteral("romfs"), Qt::CaseInsensitive) == 0) {
+                    return true;
+                }
+                watch_list.append(QString::fromStdString(Common::FS::PathToUTF8String(path)));
+                if (recurse) {
+                    scan_dir(path, true);
+                }
+                return true;
+            }
+
+            const auto physical_name = Common::FS::PathToUTF8String(path);
+            if (HasSupportedFileExtension(physical_name) || IsExtractedNCAMain(physical_name)) {
+                process_candidate(path);
+            }
+            return true;
+        });
+    };
+
+    if (!probe_dump(dir_path)) {
+        scan_dir(dir_path, deep_scan);
     }
 }
 

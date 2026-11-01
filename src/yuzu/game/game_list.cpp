@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
+#include <QSet>
 #include <QListView>
 #include <QMenu>
 #include <QScrollBar>
@@ -298,9 +299,12 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
         }
     };
 
+    const QSet<QString> new_set(watch_list.cbegin(), watch_list.cend());
+    const QSet<QString> current_set(current_watch_list.cbegin(), current_watch_list.cend());
+
     // remove any paths not in the new watch list
     for (const auto& path : std::as_const(current_watch_list)) {
-        if (!watch_list.contains(path)) {
+        if (!new_set.contains(path)) {
             to_remove.emplaceBack(path);
         }
     }
@@ -309,7 +313,7 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
 
     // add any paths not in the old watch list
     for (const auto& path : std::as_const(watch_list)) {
-        if (!current_watch_list.contains(path)) {
+        if (!current_set.contains(path)) {
             to_add.emplaceBack(path);
         }
     }
