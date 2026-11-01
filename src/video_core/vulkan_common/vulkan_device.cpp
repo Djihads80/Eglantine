@@ -1756,16 +1756,22 @@ u64 Device::GetDeviceMemorySlack() const {
 }
 
 u64 Device::GetDeviceMemoryBudget() const {
+#ifdef ANDROID
+    // A phone GPU shares the system's RAM with the guest (12 GiB for a Switch 2 program): a
+    // quarter of it (at least 4 GiB), ~6 GiB on a 24 GiB phone. Without VK_EXT_memory_budget
+    // (Qualcomm) the integrated default of 4 GiB was under what Mario Kart World keeps in use;
+    // with it, a Turnip build reported ~9 GiB, and the textures it let in got the game killed
+    // for want of memory 20 minutes in.
+    const u64 integrated_budget =
+        (std::max<u64>)(Common::GetMemInfo().TotalPhysicalMemory / 4, u64{4} << 30);
     if (!extensions.memory_budget) {
-        // A phone GPU without the extension shares the system's RAM: a quarter of it (at least
-        // 4 GiB), ~6 GiB on a 24 GiB phone, what Turnip's budget gives on the same one. The
-        // integrated default of 4 GiB was under what Mario Kart World keeps in use.
-        if (!is_integrated) {
-            return 0;
-        }
-        const u64 quarter = Common::GetMemInfo().TotalPhysicalMemory / 4;
-        return (std::max<u64>)(quarter, u64{4} << 30);
+        return is_integrated ? integrated_budget : 0;
     }
+#else
+    if (!extensions.memory_budget) {
+        return 0;
+    }
+#endif
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
@@ -1791,7 +1797,12 @@ u64 Device::GetDeviceMemoryBudget() const {
         // budget): following it let the texture cache fill that much RAM before collecting, and
         // kept ASTC uncompressed. Its budget is at most the share CollectPhysicalMemoryInfo
         // gives it (4 GiB, 6 GiB with aggressive VRAM use).
+#ifdef ANDROID
+        // On a phone: a quarter of the RAM (see above).
+        result = (std::min)(result, integrated_budget);
+#else
         result = (std::min)(result, device_access_memory);
+#endif
     }
     return result;
 }
