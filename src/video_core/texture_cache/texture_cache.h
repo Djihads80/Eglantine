@@ -255,9 +255,23 @@ void TextureCache<P>::TickFrame() {
             }
         }
     }
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        while (!gpu_sentenced_images.empty() &&
+               runtime.IsFree(gpu_sentenced_images.front().tick)) {
+            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+            gpu_sentenced_images.pop_front();
+        }
+    }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
+        // Images the collector deleted keep their memory for TICKS_TO_DESTROY frames: counting
+        // it kept the collector in aggressive mode, deleting 40+ images a frame for frames after
+        // it had freed enough (title 1: frames over 100 ms for seconds at a time).
+        for (const u64 bytes : sentenced_image_bytes) {
+            total_used_memory -= (std::min)(total_used_memory, bytes);
+        }
+        total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
     }
     // Every 600 frames: device memory in use against the collector's thresholds, and what the
     // images themselves account for (VRAM pressure makes the collector thrash).
@@ -324,6 +338,8 @@ void TextureCache<P>::TickFrame() {
         RunGarbageCollector();
     }
     sentenced_images.Tick();
+    sentenced_image_index = (sentenced_image_index + 1) % TICKS_TO_DESTROY;
+    sentenced_image_bytes[sentenced_image_index] = 0;
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();
     TickAsyncDecode();
@@ -2939,6 +2955,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     }
     // TickFrame sets the total from the driver, which can be under the sum of these estimates.
     total_used_memory -= (std::min)(total_used_memory, ImageMemoryBytes(slot_images[image_id]));
+    const u64 freed_bytes = (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0) +
+                            ImageMemoryBytes(slot_images[image_id]);
     const GPUVAddr gpu_addr = image.gpu_addr;
     const auto alloc_it = image_allocs_table.find(gpu_addr);
     if (alloc_it == image_allocs_table.end()) {
@@ -3003,7 +3021,14 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     if (retained) {
         LOG_INFO(Render_Vulkan, "Retained image for queued download: id={}", image_id.Value());
     } else if (!immediate_delete) {
-        sentenced_images.Push(std::move(slot_images[image_id]));
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            gpu_sentenced_images.push_back(
+                {runtime.CurrentTick(), freed_bytes, std::move(slot_images[image_id])});
+            gpu_sentenced_bytes += freed_bytes;
+        } else {
+            sentenced_images.Push(std::move(slot_images[image_id]));
+            sentenced_image_bytes[sentenced_image_index] += freed_bytes;
+        }
     }
     slot_images.erase(image_id);
 
