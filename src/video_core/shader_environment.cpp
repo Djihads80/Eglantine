@@ -355,6 +355,9 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    if (lowered.dropped_stage_buffer_writes) {
+        LOG_WARNING(Shader, "Native shader at {:#x}: stage buffer writes (ISBEWR) dropped", program_base);
+    }
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
     if (static const std::string reject_list = [] {
