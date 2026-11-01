@@ -151,7 +151,13 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         remaining_size -= page_size;
     }
     flush_modified();
-    kind_map.Map(gpu_addr, gpu_addr + size, kind);
+    {
+        // As BigPageTableOp: the GPU threads read the kinds (GetPageKind,
+        // GetMemoryLayoutSize) while service threads map. Unguarded, a map from
+        // nvhost_as_gpu crashed Mario Kart World inside RangeMap.
+        std::unique_lock<std::mutex> lock(guard);
+        kind_map.Map(gpu_addr, gpu_addr + size, kind);
+    }
     return gpu_addr;
 }
 
