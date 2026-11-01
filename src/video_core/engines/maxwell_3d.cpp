@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -732,10 +733,20 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     ASSERT(buffer_address != 0);
 
     // Don't allow writing past the end of the buffer.
-    ASSERT(regs.const_buffer.offset <= regs.const_buffer.size);
+    const size_t copy_size = amount * sizeof(u32);
+    if (regs.const_buffer.offset > regs.const_buffer.size ||
+        copy_size > regs.const_buffer.size - regs.const_buffer.offset) {
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_WARNING(HW_GPU,
+                        "Skipping out-of-bounds constant buffer upload: offset={:#x}, size={:#x}, "
+                        "bytes={:#x}",
+                        regs.const_buffer.offset, regs.const_buffer.size, copy_size);
+        }
+        return;
+    }
 
     const GPUVAddr address{buffer_address + regs.const_buffer.offset};
-    const size_t copy_size = amount * sizeof(u32);
     memory_manager.WriteBlockCached(address, start_base, copy_size);
 
     // Increment the current buffer position.
