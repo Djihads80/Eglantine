@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdlib>
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -40,6 +42,9 @@ public:
 
     /// Whether the window is still open, and a close request hasn't yet been sent
     bool IsOpen() const;
+
+    /// Sets the title the titlebar timer prepared; call from the main thread.
+    void ApplyPendingTitle();
 
     /// Returns if window is shown (not minimized)
     bool IsShown() const override;
@@ -92,6 +97,7 @@ protected:
 
     /// Periodic changer of titlebar (independent of event loop)
     SDL_TimerID titlebar_timer;
+    std::atomic<std::string*> pending_title{};
 
     // Mouse resetter once it
     SDL_TimerID mouse_timer;

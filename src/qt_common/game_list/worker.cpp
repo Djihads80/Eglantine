@@ -168,36 +168,78 @@ QString FormatGameName(const std::string& physical_name) {
     return physical_name_as_qstring;
 }
 
-// Loose ExeFS dumps (<game>/exefs/main, updates in <game>/updates[/]/exefs/main) have no control
-// data, so they are named after their game folder.
+// Loose ExeFS dumps (<game>/exefs/main, <game>/base/exefs/main, updates in
+// <game>/updates/<title id>/exefs/main) have no control data, so they are named after their
+// game folder.
 QString LooseExeFSName(const std::string& physical_name) {
     QDir dir = QFileInfo(QString::fromStdString(physical_name)).dir();
     if (dir.dirName().compare(QStringLiteral("exefs"), Qt::CaseInsensitive) != 0 || !dir.cdUp()) {
         return {};
     }
 
-    const auto is_updates_dir = [&dir] {
-        return dir.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0;
+    // Storage levels sit between the game folder and its content directories.
+    const auto is_storage_level = [](const QString& name) {
+        if (name.compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+        return !name.isEmpty() &&
+               std::all_of(name.cbegin(), name.cend(), [](QChar c) {
+                   return c.isDigit() || (c >= QLatin1Char('a') && c <= QLatin1Char('f')) ||
+                          (c >= QLatin1Char('A') && c <= QLatin1Char('F'));
+               });
     };
 
-    // An update may sit in a title-ID-named folder: <game>/updates/<title id>/exefs.
-    if (!is_updates_dir()) {
-        const QString tid = dir.dirName();
-        if (!std::all_of(tid.cbegin(), tid.cend(), [](QChar c) { return c.isDigit(); }) ||
-            !dir.cdUp() || !is_updates_dir()) {
-            return tid;
+    bool is_update = false;
+    while (is_storage_level(dir.dirName())) {
+        if (dir.dirName().compare(QStringLiteral("update"), Qt::CaseInsensitive) == 0 ||
+            dir.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0) {
+            is_update = true;
+        }
+        if (!dir.cdUp()) {
+            return {};
         }
     }
 
-    if (!dir.cdUp()) {
+    const QString name = dir.dirName();
+    if (name.isEmpty()) {
         return {};
     }
-
-    const QString name = dir.dirName();
-    if (name.contains(QStringLiteral("update"), Qt::CaseInsensitive)) {
-        return name;
+    if (is_update && !name.contains(QStringLiteral("update"), Qt::CaseInsensitive)) {
+        return QObject::tr("%1 (update)").arg(name);
     }
-    return QObject::tr("%1 (update)").arg(name);
+    return name;
+}
+
+// A loose dump's game list entry is its small main executable, so the size column would only
+// show a few dozen MB. Sum the dump's real contents instead: the ExeFS directory plus the
+// RomFS directory next to it, matching the loader's loose RomFS discovery.
+u64 LooseDumpSize(const std::filesystem::path& main_path) {
+    const auto exefs_dir = main_path.parent_path();
+
+    u64 total{};
+    std::error_code ec;
+    const auto accumulate = [&total, &ec](const std::filesystem::path& dir) {
+        for (std::filesystem::recursive_directory_iterator it{
+                 dir, std::filesystem::directory_options::skip_permission_denied, ec};
+             !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            std::error_code entry_ec;
+            if (it->is_regular_file(entry_ec)) {
+                const auto size = it->file_size(entry_ec);
+                if (!entry_ec) {
+                    total += size;
+                }
+            }
+        }
+    };
+
+    accumulate(exefs_dir);
+    const auto romfs_dir = exefs_dir.parent_path() / "romfs";
+    if (std::filesystem::is_directory(romfs_dir, ec)) {
+        accumulate(romfs_dir);
+    }
+    return total;
 }
 
 QString FormatPatchNameVersions(const FileSys::PatchManager& patch_manager,
@@ -271,12 +313,18 @@ GameListWorker::GameListWorker(FileSys::VirtualFilesystem vfs_,
 
 GameListWorker::~GameListWorker() {
     this->disconnect();
-    stop_requested.store(true);
-    processing_completed.Wait();
+    Stop();
+}
+
+void GameListWorker::Stop() {
+    if (!stop_requested.exchange(true)) {
+        processing_completed.Wait();
+    }
 }
 
 void GameListWorker::ProcessEvents(GameListModel* model) {
-    while (true) {
+    // An event may spin a nested event loop that replaces this worker, in which case stop.
+    while (model->current_worker.get() == this) {
         std::function<void(GameListModel*)> func;
         {
             // Lock queue to protect concurrent modification.
@@ -410,7 +458,7 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
             std::vector<u64> program_ids;
             loader->ReadProgramIds(program_ids);
 
-            const auto addEntry = [this, physical_name,
+            const auto addEntry = [this, &path, physical_name,
                                    parent_dir](std::unique_ptr<Loader::AppLoader>& app_loader,
                                                const u64 id) {
                 std::vector<u8> icon;
@@ -428,9 +476,12 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
                 const FileSys::PatchManager patch{id, system.GetFileSystemController(),
                                                   system.GetContentProvider()};
 
-                auto entry = MakeGameListEntry(
-                    physical_name, name, Common::FS::GetSize(physical_name), icon, *app_loader,
-                    id, play_time_manager, patch);
+                const u64 size = IsExtractedNCAMain(physical_name)
+                                     ? LooseDumpSize(path)
+                                     : Common::FS::GetSize(physical_name);
+
+                auto entry = MakeGameListEntry(physical_name, name, size, icon, *app_loader, id,
+                                               play_time_manager, patch);
 
                 RecordEvent([=](GameListModel* model) { model->AddEntry(entry, parent_dir); });
             };
@@ -468,25 +519,28 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
             watch_list.append(QString::fromStdString(Common::FS::PathToUTF8String(path)));
 
             // Shallow scans stop at the first level, so probe the standard layouts of loose
-            // ExeFS dumps: <game>/exefs/main and <game>/updates/<title id>/exefs/main.
+            // ExeFS dumps: <game>/exefs/main, <game>/base/exefs/main and their updates in
+            // <root>/updates/<title id>/exefs/main.
             if (!deep_scan && target == ScanTarget::PopulateGameList) {
-                const auto exefs_main = path / "exefs" / "main";
-                if (Common::FS::IsFile(exefs_main)) {
-                    process_candidate(exefs_main);
-                }
+                for (const auto& content_root : {path, path / "base"}) {
+                    const auto exefs_main = content_root / "exefs" / "main";
+                    if (Common::FS::IsFile(exefs_main)) {
+                        process_candidate(exefs_main);
+                    }
 
-                const auto updates = path / "updates";
-                if (Common::FS::IsDir(updates)) {
-                    Common::FS::IterateDirEntries(
-                        updates,
-                        [&process_candidate](const std::filesystem::path& entry) {
-                            const auto update_main = entry / "exefs" / "main";
-                            if (Common::FS::IsFile(update_main)) {
-                                process_candidate(update_main);
-                            }
-                            return true;
-                        },
-                        Common::FS::DirEntryFilter::Directory);
+                    const auto updates = content_root / "updates";
+                    if (Common::FS::IsDir(updates)) {
+                        Common::FS::IterateDirEntries(
+                            updates,
+                            [&process_candidate](const std::filesystem::path& entry) {
+                                const auto update_main = entry / "exefs" / "main";
+                                if (Common::FS::IsFile(update_main)) {
+                                    process_candidate(update_main);
+                                }
+                                return true;
+                            },
+                            Common::FS::DirEntryFilter::Directory);
+                    }
                 }
             }
 

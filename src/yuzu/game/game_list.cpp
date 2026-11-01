@@ -295,7 +295,6 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
             if (!chunk.isEmpty()) {
                 callback(chunk);
             }
-            QCoreApplication::processEvents();
         }
     };
 

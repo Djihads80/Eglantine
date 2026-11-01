@@ -411,6 +411,16 @@ std::filesystem::path StaticPipelineCacheFilename() {
     return shader_dir / "vulkan_static_pipelines.bin";
 }
 
+// What a heap's allocations use. The driver also counts the space in VMA's blocks no allocation
+// uses, but freeing an image gives its share back only once its whole block is empty: the caches,
+// collecting until the usage dropped, evicted thousands of textures in a row without lowering it
+// (title 1).
+u64 AllocatedUsage(VkDeviceSize driver_usage, const VmaBudget& vma_budget) {
+    const VmaStatistics& statistics = vma_budget.statistics;
+    const u64 unused = statistics.blockBytes - statistics.allocationBytes;
+    return driver_usage - (std::min)(driver_usage, unused);
+}
+
 } // Anonymous namespace
 
 void Device::RemoveExtension(bool& extension, const std::string& extension_name) {
@@ -610,12 +620,16 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
 
     sets_per_pool = 64;
+    // AMD GCN4 and older are told apart by their lack of float16, read before float16 is turned
+    // off for newer AMD drivers below: checked after that, every AMD GPU looked like GCN4 and lost
+    // VK_EXT_sampler_filter_minmax (an RDNA3 Radeon 780M logged it).
+    const bool amd_gcn4_or_older = is_amd && !features.shader_float16_int8.shaderFloat16;
     if (is_amd_driver) {
         // AMD drivers need a higher amount of Sets per Pool in certain circumstances like in XC2.
         sets_per_pool = 96;
 
         // Disable VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT on AMD GCN4 and lower as it is broken.
-        if (!features.shader_float16_int8.shaderFloat16) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT");
             has_broken_cube_compatibility = true;
@@ -631,7 +645,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
     if (extensions.sampler_filter_minmax && is_amd) {
         // Disable ext_sampler_filter_minmax on AMD GCN4 and lower as it is broken.
-        if (!features.shader_float16_int8.shaderFloat16) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_EXT_sampler_filter_minmax");
             RemoveExtension(extensions.sampler_filter_minmax,
@@ -1615,26 +1629,16 @@ void Device::ReleaseCustomBorderColorSamplers(size_t count) const {
 }
 
 u64 Device::GetDeviceMemoryUsage() const {
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
-    budget.pNext = nullptr;
     physical.GetMemoryProperties(&budget);
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
+    if (allocator != nullptr) {
+        vmaGetHeapBudgets(allocator, heap_budgets.data());
+    }
     u64 result{};
     for (const size_t heap : valid_heap_memory) {
-        result += budget.heapUsage[heap];
-    }
-    // Space in VMA's blocks that no allocation uses counts as used, but freeing an image gives
-    // its share back only once its whole block is empty: the caches, collecting until this drops,
-    // evicted thousands of textures in a row without lowering it (title 1). Count only what
-    // allocations use.
-    if (allocator != nullptr) {
-        std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
-        vmaGetHeapBudgets(allocator, heap_budgets.data());
-        for (const size_t heap : valid_heap_memory) {
-            const VmaStatistics& statistics = heap_budgets[heap].statistics;
-            const u64 unused = statistics.blockBytes - statistics.allocationBytes;
-            result -= (std::min)(result, unused);
-        }
+        result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
     }
     return result;
 }
@@ -1652,17 +1656,23 @@ u64 Device::GetDeviceMemoryBudget() const {
     }
     // Only the main heap's budget: summing every heap's counted VRAM twice on AMD (an 8 GB card
     // reported 8.5 GB) and kept the collector's thresholds above the heap the images fill. What
-    // the other heaps use is added, as GetDeviceMemoryUsage() counts it too.
+    // the other heaps use is added the way GetDeviceMemoryUsage() counts it, so the usage reaches
+    // this when the main heap's does its budget.
     u64 result = budget.heapBudget[main_heap];
     if (heap_size_limit != 0) {
         result = (std::min)(result, heap_size_limit);
     }
     for (const size_t heap : valid_heap_memory) {
         if (heap != main_heap) {
-            const VmaStatistics& statistics = heap_budgets[heap].statistics;
-            const u64 unused = statistics.blockBytes - statistics.allocationBytes;
-            result += budget.heapUsage[heap] - (std::min)(budget.heapUsage[heap], unused);
+            result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
         }
+    }
+    if (is_integrated) {
+        // An integrated GPU's device-local heap is system memory (a Radeon 780M reported a 21 GB
+        // budget): following it let the texture cache fill that much RAM before collecting, and
+        // kept ASTC uncompressed. Its budget is at most the share CollectPhysicalMemoryInfo
+        // gives it (4 GiB, 6 GiB with aggressive VRAM use).
+        result = (std::min)(result, device_access_memory);
     }
     return result;
 }
@@ -1681,8 +1691,13 @@ void Device::CollectPhysicalMemoryInfo() {
     // EDEN_NX2_VRAM_LIMIT_MIB=<n>: treat every device-local heap as n MiB (small card tests).
     if (const char* value = std::getenv("EDEN_NX2_VRAM_LIMIT_MIB")) {
         heap_size_limit = std::strtoull(value, nullptr, 10) << 20;
-        LOG_INFO(Render_Vulkan, "EDEN_NX2_VRAM_LIMIT_MIB: device-local heaps limited to {} MiB",
-                 heap_size_limit >> 20);
+        if (heap_size_limit != 0) {
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_VRAM_LIMIT_MIB: device-local heaps limited to {} MiB",
+                     heap_size_limit >> 20);
+        } else {
+            LOG_WARNING(Render_Vulkan, "EDEN_NX2_VRAM_LIMIT_MIB={} is not a size in MiB, ignored",
+                        value);
+        }
     }
     // EDEN_NX2_VRAM_RESERVE_DIVISOR / _MAX_MIB / EDEN_NX2_VRAM_SCALER_MIB tune the host reserve.
     u64 reserve_divisor = 8;

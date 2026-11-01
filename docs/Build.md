@@ -1,9 +1,9 @@
-# Building Eden
+# Building Eglantine
 
 > [!WARNING]
 > This guide is intended for developers ONLY. If you are not a developer or packager, you are unlikely to receive support.
 
-This is a full-fledged guide to build Eden on all supported platforms.
+This is a full-fledged guide to build Eglantine on all supported platforms.
 
 If you already have a development environment set up:
 
@@ -20,11 +20,11 @@ First, you must [install some dependencies](Deps.md).
 
 ## Clone
 
-Next, you will want to clone Eden via the terminal:
+Next, you will want to clone Eglantine via the terminal:
 
 ```sh
-git clone https://git.eden-emu.dev/eden-emu/eden.git
-cd eden
+git clone https://github.com/Djihads80/Eglantine.git
+cd Eglantine
 ```
 
 Or use Qt Creator (Create Project -> Import Project -> Git Clone).
@@ -47,7 +47,7 @@ This is the recommended GUI method for Linux, macOS, and Windows.
 > [!WARNING]
 > On MSYS2, to use Qt Creator you are recommended to *also* install Qt from the online installer, ensuring to select the "MinGW" version.
 
-Open the CMakeLists.txt file in your cloned directory via File -> Open File or Project (Ctrl+O), if you didn't clone Eden via the project import tool.
+Open the CMakeLists.txt file in your cloned directory via File -> Open File or Project (Ctrl+O), if you didn't clone Eglantine via the project import tool.
 
 Select your desired "kit" (usually, the default is okay). RelWithDebInfo or Release is recommended:
 
@@ -66,7 +66,7 @@ Hit "Configure Project", then wait for CMake to finish configuring (may take a w
 >For all systems:
 >
 >- *CMake* **MUST** be in your PATH (and also *ninja*, if you are using it as `<GENERATOR>`)
->- You *MUST* be in the cloned *Eden* directory
+>- You *MUST* be in the cloned *Eglantine* directory
 >
 >On Windows:
 >
@@ -135,12 +135,12 @@ cmake -S . -B build -G "<GENERATOR>" -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COM
 <img src="https://user-images.githubusercontent.com/42481638/216899164-6cee8482-3d59-428f-b1bc-e6dc793c9b20.png" width="500">
 
 - Click OK; now CLion will build a directory and index your code to allow for IntelliSense. Please be patient.
-- Once this process has been completed (No loading bar bottom right), you can now build Eden
-- In the top right, click on the drop-down menu, select all configurations, then select Eden
+- Once this process has been completed (No loading bar bottom right), you can now build Eglantine
+- In the top right, click on the drop-down menu, select all configurations, then select Eglantine
 
 <img src="https://user-images.githubusercontent.com/42481638/216899226-975048e9-bc6d-4ec1-bc2d-bd8a1e15ed04.png" height="500" >
 
-- Now run by clicking the play button or pressing Shift+F10, and Eden will auto-launch once built.
+- Now run by clicking the play button or pressing Shift+F10, and Eglantine will auto-launch once built.
 
 <img src="https://user-images.githubusercontent.com/42481638/216899275-d514ec6a-e563-470e-81e2-3e04f0429b68.png" width="500">
 </details>
@@ -186,10 +186,10 @@ cmake --build build
 
 Your compiled executable will be in:
 
-- `build/bin/eden.exe` for Windows,
-- `build/bin/eden.app/Contents/MacOS/eden` for macOS,
-- and `build/bin/eden` for others.
+- `build/bin/eglantine.exe` for Windows,
+- `build/bin/Eglantine.app/Contents/MacOS/eglantine` for macOS,
+- and `build/bin/eglantine` for others.
 
 ## Scripts
 
-Take a look at our [CI scripts](https://github.com/Eden-CI/Workflow). You can use `.ci/common/configure.sh` on any POSIX-compliant shell, but you are heavily encouraged to instead write your own based. It's not really that hard, provided you can read CMake.
+Take a look at our [CI scripts](https://github.com/Eglantine-CI/Workflow). You can use `.ci/common/configure.sh` on any POSIX-compliant shell, but you are heavily encouraged to instead write your own based. It's not really that hard, provided you can read CMake.
