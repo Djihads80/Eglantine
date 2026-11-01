@@ -3113,6 +3113,11 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
                 if (BackSparseTilesWhole(image)) {
                     image.dirty_ranges.clear();
                     RefreshSparseTiles(image);
+                } else {
+                    LOG_ERROR(HW_GPU,
+                              "Sparse tiled image {:#x}: out of memory backing it whole, the GPU "
+                              "write lands in the shared zeroed block",
+                              image.gpu_addr);
                 }
             }
         }
