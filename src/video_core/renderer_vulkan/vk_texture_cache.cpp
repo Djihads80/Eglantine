@@ -414,23 +414,17 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     using VideoCore::Surface::IsPixelFormatASTC;
     using VideoCore::Surface::IsPixelFormatBCn;
     return Settings::values.reduce_texture_resolution.GetValue() && info.type == ImageType::e2D &&
-           info.resources.levels >= 2 && info.resources.layers <= 6 && info.num_samples == 1 &&
+           info.resources.levels >= 2 && info.num_samples == 1 &&
            (std::min)(info.size.width, info.size.height) >= 1024 &&
            (IsPixelFormatASTC(info.format) || IsPixelFormatBCn(info.format));
 }
 
-[[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
+// The host image within the host's limits: `info`, or its lower levels (level_offset > 0).
+[[nodiscard]] ImageInfo HostInfoWithinLimits(const Device& device, const ImageInfo& info,
+                                             u32& level_offset) {
     level_offset = 0;
     if (info.type != ImageType::e2D) {
         return info;
-    }
-    if (ReducesResolution(info)) {
-        level_offset = 1;
-        ImageInfo host = info;
-        host.size.width = (std::max)(info.size.width >> 1, 1U);
-        host.size.height = (std::max)(info.size.height >> 1, 1U);
-        host.resources.levels -= 1;
-        return host;
     }
     if (!WillUseAcceleratedAstcDecode(device, info)) {
         // Too big for the host to create at all (Mario Kart World's 8192x8192x68 BC6H virtual
@@ -487,6 +481,20 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     LOG_WARNING(Render_Vulkan, "{}x{}x{} ASTC image would be {} MiB decoded; keeping mip levels {}+ ({}x{})",
                 info.size.width, info.size.height, info.resources.layers, decoded_bytes(0) >> 20,
                 level_offset, host.size.width, host.size.height);
+    return host;
+}
+
+// The host image: within the host's limits, and at half resolution with reduce_texture_resolution
+// where the limits kept every level (texture arrays too, which stayed full size before: Mario
+// Kart World kept 5.5 GB of textures and phones killed it loading its third course).
+[[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
+    ImageInfo host = HostInfoWithinLimits(device, info, level_offset);
+    if (level_offset == 0 && ReducesResolution(info)) {
+        level_offset = 1;
+        host.size.width = (std::max)(info.size.width >> 1, 1U);
+        host.size.height = (std::max)(info.size.height >> 1, 1U);
+        host.resources.levels -= 1;
+    }
     return host;
 }
 
