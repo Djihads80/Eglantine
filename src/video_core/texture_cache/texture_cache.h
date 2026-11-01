@@ -1466,6 +1466,20 @@ bool TextureCache<P>::BindSparseTiles(Image& image, std::span<const LevelRect> r
 }
 
 template <class P>
+bool TextureCache<P>::BackSparseTilesWhole(Image& image) {
+    if constexpr (requires { &Image::BackTilesWhole; }) {
+        const u64 bound_bytes = ImageMemoryBytes(image);
+        const bool backed = image.BackTilesWhole();
+        if (True(image.flags & ImageFlagBits::Registered)) {
+            total_used_memory += ImageMemoryBytes(image) - bound_bytes;
+        }
+        return backed;
+    } else {
+        return false;
+    }
+}
+
+template <class P>
 bool TextureCache<P>::UploadWrittenLayers(Image& image) {
     if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
         const u32 num_layers = static_cast<u32>(image.info.resources.layers);
@@ -3090,6 +3104,18 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     if (is_modification) {
+        if constexpr (requires { &Image::BackTilesWhole; }) {
+            if (True(image.flags & ImageFlagBits::SparseTiles) && image.SparseTilesShareZeroBlock()) {
+                // The render would write the zeroed block all empty blocks share: each gets memory
+                // of its own first, and the parts that hold data are loaded again.
+                LOG_INFO(HW_GPU, "GPU write into sparse tiled image {:#x}; backing it whole",
+                         image.gpu_addr);
+                if (BackSparseTilesWhole(image)) {
+                    image.dirty_ranges.clear();
+                    RefreshSparseTiles(image);
+                }
+            }
+        }
         if constexpr (requires { &Image::BindLayers; }) {
             if (True(image.flags & ImageFlagBits::SparseLayers)) {
                 std::vector<u32> layers(static_cast<size_t>(image.info.resources.layers));
