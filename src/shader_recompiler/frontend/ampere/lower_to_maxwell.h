@@ -230,8 +230,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             return reg;
         };
-        const auto operand = [&](u32 which, bool floating = true) -> u32 {
-            const u32 form = insn.Bits(9, 3);
+        const auto operand = [&](u32 which, bool floating = true,
+                                 std::optional<u32> form_override = std::nullopt) -> u32 {
+            const u32 form = form_override.value_or(insn.Bits(9, 3));
             u32 reg{}, kind{}, abs{}, neg{};
             if (which == 0) {
                 reg = insn.Bits(24, 8); abs = insn.Bits(73, 1); neg = insn.Bits(72, 1);
@@ -1710,6 +1711,21 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 if (!valid_cbuf() || insn.Bits(62, 2)) return fail(index, "native MOV constant buffer");
                 result.instructions.push_back(base(0x4c98000000000000ULL) | (u64{15} << 39) | cbuf());
             }
+            break;
+        }
+        case 0x598: case 0x599: case 0x59a: case 0x59b: case 0x59c: case 0x59d: case 0x59e:
+        case 0x59f: { // FFMA with register sources (docs/NvidiaGpu.md: FFMA_reg `0101 1001 1--- ----`)
+            // In this family the low three bits of the opcode are the source form selector, not
+            // bits 9-11 like the 0x223/0x423 forms: 0x598 is form 0 and 0x59f is form 7, which is
+            // what operand() has to be told, otherwise it decodes the wrong operand layout.
+            const u32 reg_form = opcode & 0x7;
+            if (insn.Bits(76, 1)) return fail(index, "native FFMA denormal/mode");
+            const u32 a = operand(0, true, reg_form);
+            const u32 b = operand(1, true, reg_form);
+            const u32 c = operand(2, true, reg_form);
+            if (!operand_error.empty()) return fail(index, operand_error);
+            emit(base(0x5980000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) | (u64{c} << 39) |
+                (u64{insn.Bits(77, 1)} << 50) | (u64{insn.Bits(78, 2)} << 51) | (u64{insn.Bits(80, 1)} << 53));
             break;
         }
         case 0x223: case 0x423: case 0x623: case 0x823: case 0xa23: case 0xc23: case 0xe23: { // FFMA
