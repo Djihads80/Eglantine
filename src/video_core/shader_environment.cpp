@@ -34,6 +34,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
 #include "video_core/shader_environment.h"
+#include "video_core/nx2_draw_log.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
 
@@ -357,6 +358,7 @@ void GenericEnvironment::InitializeNativeCode(u32 source_header_size) {
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
     if (lowered.dropped_stage_buffer_writes) {
         LOG_WARNING(Shader, "Native shader at {:#x}: stage buffer writes (ISBEWR) dropped", program_base);
+        VideoCommon::Nx2DrawLog::NoteDroppedProgram(program_base);
     }
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
