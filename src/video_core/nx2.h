@@ -97,8 +97,9 @@ inline void Nx2ClearSemaphoreRegions() {
 // Switch 2 sparse regions (nx2:gpu 214, word 7 bit 0x200: title 1's terrain texture arrays and
 // layer pools, 170 MB-5.8 GB each, of which the game fills a little) get memory per block when the
 // GPU first writes there, not in full. nx2:gpu installs the handler and the span its regions cover;
-// the GPU memory manager calls Nx2BackSparseWrite before each write.
-using Nx2SparseBackingHandler = std::function<void(u64 gpu_address, u64 size)>;
+// the GPU memory manager calls Nx2BackSparseWrite before each write, with the bytes it writes
+// (blocks nobody wrote that only get zeros need no memory: they read zero already).
+using Nx2SparseBackingHandler = std::function<void(u64 gpu_address, u64 size, const u8* data)>;
 inline std::recursive_mutex g_nx2_sparse_backing_mutex;
 inline Nx2SparseBackingHandler g_nx2_sparse_backing;
 inline std::atomic<u64> g_nx2_sparse_low{~u64{0}};
@@ -122,14 +123,14 @@ inline void Nx2AddSparseSpan(u64 gpu_address, u64 size) {
     }
 }
 
-inline void Nx2BackSparseWrite(u64 gpu_address, u64 size) {
+inline void Nx2BackSparseWrite(u64 gpu_address, u64 size, const void* data) {
     if (gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
         gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
         return;
     }
     std::scoped_lock lk{g_nx2_sparse_backing_mutex};
     if (g_nx2_sparse_backing) {
-        g_nx2_sparse_backing(gpu_address, size);
+        g_nx2_sparse_backing(gpu_address, size, static_cast<const u8*>(data));
     }
 }
 
@@ -172,6 +173,15 @@ inline void Nx2SparseBlockWritten(u64 region_address, u64 block) {
     if (const auto it = g_nx2_sparse_state.find(region_address); it != g_nx2_sparse_state.end()) {
         it->second.written[block] = true;
     }
+}
+
+/// True unless the block of the region at region_address is known to hold nothing (no write from
+/// the CPU or the GPU yet).
+inline bool Nx2SparseBlockIsWritten(u64 region_address, u64 block) {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    const auto it = g_nx2_sparse_state.find(region_address);
+    return it == g_nx2_sparse_state.end() || block >= it->second.written.size() ||
+           it->second.written[block];
 }
 
 /// The game maps its own memory over [offset, +size) of the region at region_address (mapped), or
