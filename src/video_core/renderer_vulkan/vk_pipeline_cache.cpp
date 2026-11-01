@@ -326,7 +326,12 @@ size_t GetTotalPipelineWorkers() {
     const size_t max_core_threads =
         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL) - 1ULL;
 #ifdef __ANDROID__
-    const int configured = AndroidSettings::values.pipeline_worker_count.GetValue();
+    int configured = AndroidSettings::values.pipeline_worker_count.GetValue();
+    // Switch 2 programs build pipelines dozens at a time, and their draws wait for them
+    // (BuiltPipeline): with 2 workers a burst of 37 froze Mario Kart World for up to a second.
+    if (Settings::CurrentProgramIsSwitch2()) {
+        configured = (std::max)(configured, 6);
+    }
     const int clamped = std::clamp(configured, 2, 8);
     const size_t desired = static_cast<size_t>(clamped);
     if (desired == 0) {
@@ -428,7 +433,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       translation_wait_budget{GetTranslationWaitBudget()},
       num_translation_threads{use_async_translation ? GetTotalTranslationWorkers() : 0},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
-              "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
+              "VkPipelineBuilder", {},
+              // Draws of Switch 2 programs wait for these builds: not on background cores.
+              Settings::CurrentProgramIsSwitch2() ? Common::ThreadPlacement::Default
+                                                  : Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background),
       translation_workers(num_translation_threads, "VkPipelineTranslator", {},
