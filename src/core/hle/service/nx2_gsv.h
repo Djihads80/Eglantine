@@ -973,6 +973,34 @@ private:
     std::map<u32, Kernel::KEvent*> m_events;
 };
 
+// nn::camera::sdk camera context (gsv 602). GameChat builds its local camera video storage from it
+// and polls it every frame. Nothing about the commands is known beyond the arguments seen (3 and
+// 21 take the camera name "Default", 29 a u32 0x180 = 384, the width of the 384x216 camera images),
+// and the game runs on an empty success, so they answer that without a log line per call.
+class INx2CameraSession final : public ServiceFramework<INx2CameraSession> {
+public:
+    explicit INx2CameraSession(Core::System& system_) : ServiceFramework{system_, "nx2:camera"} {
+        RegisterHandlersTipc({
+            {3, &INx2CameraSession::Stub, "Unknown3 (camera name \"Default\")"},
+            {21, &INx2CameraSession::Stub, "Unknown21 (camera name \"Default\")"},
+            {29, &INx2CameraSession::Stub, "Unknown29 (u32 0x180, polled every frame)"},
+        });
+    }
+
+private:
+    void Stub(HLERequestContext& ctx) {
+        const u32 command = ctx.GetCommand();
+        if (m_logged.insert(command).second) {
+            LOG_WARNING(Service, "(STUBBED) nx2:camera TIPC {} [2]={:#x} [3]={:#x}, returning success",
+                        command, ctx.CommandBuffer()[2], ctx.CommandBuffer()[3]);
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    std::set<u32> m_logged;
+};
+
 // Video decoder output images (nn::codec image pools, gsv 991/911/961). The preference
 // (MakeDecodeImagePreference) holds an output layout code at word 1 and (width - 1) |
 // (height - 1) << 16 at word 2. Codes come in pairs, one per CodecMode: 1/4 NV12 (format 3, what
@@ -2031,13 +2059,11 @@ private:
 
     // nn::camera::sdk::CreateCameraContext sends 601() then 602(u64 1), which returns the camera
     // context session (handle at word 3, result at word 4). Auto-stubbed, 602 had no handle, the
-    // SDK sent 603 (destroy) and title 1 (1.8.0) aborted with 2034-0000. Its commands fall
-    // through to the nx2 auto stub.
+    // SDK sent 603 (destroy) and title 1 (1.8.0) aborted with 2034-0000. Its commands are
+    // answered by INx2CameraSession.
     void OpenCameraSession(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 602, returning a nx2:camera session");
-        ReturnRawSession(system, ctx,
-                         std::make_shared<INx2StubInterface>(
-                             system, INx2StubInterface::InternName("nx2:camera")));
+        ReturnRawSession(system, ctx, std::make_shared<INx2CameraSession>(system));
     }
 
     // nn::chat::gsv::Initialize sends 1201 then 1202, the same pair as 901/902 and 1001/1002.
