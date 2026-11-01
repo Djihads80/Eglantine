@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         autoconf ca-certificates ccache curl file g++ gcc git glslang-tools jq \
         libasound2-dev libavcodec-dev libavfilter-dev libboost-context-dev libboost-dev \
         libboost-fiber-dev libglu1-mesa-dev libopus-dev libpulse-dev libswscale-dev libtool \
-        libudev-dev libusb-1.0-0-dev libva-dev libvdpau-dev libxkbcommon-x11-0 \
+        libudev-dev libusb-1.0-0-dev libva-dev liblz4-dev libssl-dev libzstd-dev libvdpau-dev libxkbcommon-x11-0 \
         libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
         libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libgl1 libegl1 make \
         mesa-common-dev nasm ninja-build openjdk-17-jdk-headless patch perl pkg-config python3-pip \
