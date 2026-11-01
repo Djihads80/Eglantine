@@ -6,6 +6,7 @@
 
 #ifdef _WIN32
 
+#include <atomic>
 #include <iterator>
 #include "common/container/unordered_map.h"
 #include <boost/icl/separate_interval_set.hpp>
@@ -121,6 +122,42 @@ static void GetFuncAddress(Common::DynamicLibrary& dll, const char* name, T& pfn
     }
 }
 
+// The reserved backing section (see Impl::Init). Pages of a SEC_RESERVE section committed through
+// one view are committed for every view of it.
+static std::atomic<u8*> lazy_commit_base{};
+static std::atomic<size_t> lazy_commit_size{};
+
+static bool CommitBacking(u8* backing, size_t offset, size_t length) {
+    return VirtualAlloc(backing + offset, length, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+}
+
+// Host code (kernel page clears, GPU and DMA copies) reads and writes physical memory through the
+// backing view before the guest maps it: commit the 2 MiB around the first access. A failure (the
+// commit limit) is left to crash as an access violation.
+static LONG WINAPI CommitOnFault(PEXCEPTION_POINTERS info) {
+    const EXCEPTION_RECORD& record = *info->ExceptionRecord;
+    if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record.NumberParameters < 2) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    u8* const base = lazy_commit_base.load();
+    const size_t size = lazy_commit_size.load();
+    const auto* const address = reinterpret_cast<const u8*>(record.ExceptionInformation[1]);
+    if (base == nullptr || address < base || address >= base + size) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(address, &region, sizeof(region)) == 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (region.State == MEM_COMMIT) {
+        // Another thread committed it meanwhile (the backing view is never protected).
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    const size_t offset = AlignDown(static_cast<size_t>(address - base), HugePageSize);
+    const size_t length = (std::min)(HugePageSize, size - offset);
+    return CommitBacking(base, offset, length) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+}
+
 class HostMemory::Impl {
 public:
     explicit Impl(size_t backing_size_, size_t virtual_size_)
@@ -146,9 +183,13 @@ public:
         }
 
         // Allocate backing file map
-        backing_handle = pfn_CreateFileMapping2(INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ, PAGE_READWRITE, SEC_COMMIT, backing_size, nullptr, nullptr, 0);
+        // Reserved, not committed: Switch 2's 12 GiB layout is a 20 GiB section, and SEC_COMMIT
+        // charged all of it to the system commit limit whatever the game touched. On a 32 GB PC
+        // title 1 then ran out of commit at its first race (bad_alloc). Pages are committed when
+        // the guest maps them (Map) or when the host first touches them (CommitOnFault).
+        backing_handle = pfn_CreateFileMapping2(INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ, PAGE_READWRITE, SEC_RESERVE, backing_size, nullptr, nullptr, 0);
         if (!backing_handle) {
-            LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory", backing_size >> 20);
+            LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory (error {})", backing_size >> 20, GetLastError());
             return false;
         }
         // Allocate a virtual memory for the backing file map as placeholder
@@ -165,6 +206,10 @@ public:
             LOG_CRITICAL(HW_Memory, "Failed to map {} MiB of virtual memory", backing_size >> 20);
             return false;
         }
+        lazy_commit_base.store(backing_base);
+        lazy_commit_size.store(backing_size);
+        static std::once_flag handler_flag;
+        std::call_once(handler_flag, [] { AddVectoredExceptionHandler(1, CommitOnFault); });
         // Allocate virtual address placeholder
         virtual_base = static_cast<u8*>(pfn_VirtualAlloc2(process, nullptr, virtual_size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0));
         if (!virtual_base) {
@@ -188,6 +233,11 @@ public:
     }
 
     void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
+        // Fastmem views must only show committed pages: VirtualProtect fails on reserved ones.
+        if (!CommitBacking(backing_base, host_offset, length)) {
+            LOG_CRITICAL(HW_Memory, "Failed to commit {:#x} bytes of backing memory at {:#x}, error {}",
+                         length, host_offset, GetLastError());
+        }
         std::unique_lock lock{placeholder_mutex};
         if (!IsNiechePlaceholder(virtual_offset, length)) {
             Split(virtual_offset, length);
@@ -246,6 +296,10 @@ public:
 private:
     /// Release all resources in the object
     void Release() {
+        if (lazy_commit_base.load() == backing_base) {
+            lazy_commit_size.store(0);
+            lazy_commit_base.store(nullptr);
+        }
         if (!placeholders.empty()) {
             for (const auto& placeholder : placeholders) {
                 if (!pfn_UnmapViewOfFile2(process, virtual_base + placeholder.lower(),
