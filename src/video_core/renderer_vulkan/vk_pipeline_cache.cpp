@@ -563,7 +563,10 @@ namespace {
 // <title>/vulkan_used.bin: the graphics pipelines recent sessions used, as key hash + sessions
 // since the last use.
 constexpr u32 UsedPipelinesMagic = 0x31505545; // "EUP1"
-constexpr u8 UsedPipelinesMaxAge = 8;
+// Pipelines the last two sessions used are built at boot. Each holds ~0.45 MB of driver memory:
+// title 1 built 4,800 from eight sessions, 1.5 GB more than building them on first use (but that
+// stalled frames 4x as often), while one session of its title screen uses ~1,500.
+constexpr u8 UsedPipelinesMaxAge = 2;
 
 std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path) {
     std::unordered_map<u64, u8> used;
@@ -581,7 +584,9 @@ std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path)
             !file.read(reinterpret_cast<char*>(&age), sizeof(age))) {
             break;
         }
-        used.emplace(hash, age);
+        if (age < UsedPipelinesMaxAge) { // lists saved with a longer window
+            used.emplace(hash, age);
+        }
     }
     return used;
 }
