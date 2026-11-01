@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -101,7 +102,13 @@ struct Nx2SparseRegionState {
     u64 size;
     u64 block_size;
     std::vector<bool> written;
+    /// Once the game maps its own memory into the region (nx2:gpu 216): which tiles it maps.
+    /// Only those hold data then (writes elsewhere are dropped, as on the console).
+    std::vector<bool> mapped;
 };
+
+/// The granularity of the game's sparse tiles (nx2:gpu 216 maps 64 KiB pages).
+inline constexpr u64 Nx2SparseTileSize = 64ULL << 10;
 inline std::mutex g_nx2_sparse_state_mutex;
 inline std::map<u64, Nx2SparseRegionState> g_nx2_sparse_state;
 
@@ -127,6 +134,59 @@ inline void Nx2SparseBlockWritten(u64 region_address, u64 block) {
     if (const auto it = g_nx2_sparse_state.find(region_address); it != g_nx2_sparse_state.end()) {
         it->second.written[block] = true;
     }
+}
+
+/// The game maps its own memory over [offset, +size) of the region at region_address (mapped), or
+/// unmaps it there.
+inline void Nx2SparseTilesMapped(u64 region_address, u64 offset, u64 size, bool mapped) {
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    const auto it = g_nx2_sparse_state.find(region_address);
+    if (it == g_nx2_sparse_state.end() || size == 0) {
+        return;
+    }
+    auto& region = it->second;
+    if (region.mapped.empty()) {
+        region.mapped.resize((region.size + Nx2SparseTileSize - 1) / Nx2SparseTileSize);
+    }
+    const u64 last = (std::min)((offset + size - 1) / Nx2SparseTileSize, u64{region.mapped.size() - 1});
+    for (u64 tile = offset / Nx2SparseTileSize; tile <= last; ++tile) {
+        region.mapped[tile] = mapped;
+    }
+}
+
+/// The parts of [gpu_address, +size), which lies in one sparse region, that can hold data: the
+/// tiles the game maps there if it maps any, otherwise the blocks written. As (offset from
+/// gpu_address, size) runs.
+inline std::vector<std::pair<u64, u64>> Nx2SparseDataRanges(u64 gpu_address, u64 size) {
+    std::vector<std::pair<u64, u64>> ranges;
+    std::scoped_lock lk{g_nx2_sparse_state_mutex};
+    auto it = g_nx2_sparse_state.upper_bound(gpu_address);
+    if (it == g_nx2_sparse_state.begin()) {
+        return ranges;
+    }
+    --it;
+    const auto& [start, region] = *it;
+    if (size == 0 || gpu_address + size > start + region.size) {
+        return ranges;
+    }
+    const bool by_tile = !region.mapped.empty();
+    const u64 unit = by_tile ? Nx2SparseTileSize : region.block_size;
+    const std::vector<bool>& present = by_tile ? region.mapped : region.written;
+    const u64 begin = gpu_address - start;
+    const u64 end = begin + size;
+    for (u64 index = begin / unit; index * unit < end && index < present.size(); ++index) {
+        if (!present[index]) {
+            continue;
+        }
+        const u64 run_begin = (std::max)(index * unit, begin) - begin;
+        const u64 run_end = (std::min)((index + 1) * unit, end) - begin;
+        if (!ranges.empty() && ranges.back().first + ranges.back().second == run_begin) {
+            ranges.back().second += run_end - run_begin;
+        } else {
+            ranges.emplace_back(run_begin, run_end - run_begin);
+        }
+    }
+    return ranges;
 }
 
 /// True when [gpu_address, +size) lies in one sparse region.

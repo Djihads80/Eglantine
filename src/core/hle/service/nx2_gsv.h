@@ -962,6 +962,7 @@ private:
             ++m_tile_unmaps;
             LOG_DEBUG(Service, "nx2:gpu 216 unmap [{:#x}, +{:#x}]", gpu_address, size);
             if (region != nullptr) {
+                Tegra::Nx2SparseTilesMapped(start, gpu_address - start, size, false);
                 registry.MapSparseTile(gpu_address, 0, size);
                 MarkTiles(*region, gpu_address - start, size, false);
             } else {
@@ -998,6 +999,7 @@ private:
             }
             Tegra::Nx2SparseBlockWritten(start, block);
         }
+        Tegra::Nx2SparseTilesMapped(start, gpu_address - start, size, true);
         registry.MapSparseTile(gpu_address, cpu_address, size);
         MarkTiles(*region, gpu_address - start, size, true);
     }
