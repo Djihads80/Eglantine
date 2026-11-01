@@ -280,12 +280,15 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                         device.GetDispatchLoader());
 }
 
-vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci) const {
+vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
     if (ci.imageType == VK_IMAGE_TYPE_1D) {
         return vk::Image{};
     }
     VkImageCreateInfo sparse_ci = ci;
     sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+    if (aliased) {
+        sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
+    }
     VkImage sparse{};
     if (device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr,
                                                  &sparse) != VK_SUCCESS) {

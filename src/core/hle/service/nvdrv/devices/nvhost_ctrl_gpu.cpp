@@ -6,6 +6,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -207,6 +208,16 @@ void ApplyNx2Characteristics(GC& gc) {
     // Without the flag NvRm fails that call and the texture stays at GPU address 0 (title 1's
     // movie and the passes rendered into compressible pools never showed).
     gc.flags |= 1ULL << 34;
+    // NVGPU_GPU_FLAGS_SUPPORT_REMAP: without it NvRm fails every remap (nvnMemoryPoolMapVirtual)
+    // before asking the server, so title 1 never maps or unmaps its sparse texture tiles (nx2:gpu
+    // 216) and streams its terrain into unmapped sparse memory. EDEN_NX2_SPARSE_REMAP=0 leaves it out.
+    static const bool remap = [] {
+        const char* value = std::getenv("EDEN_NX2_SPARSE_REMAP");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (remap) {
+        gc.flags |= 1ULL << 35;
+    }
     // Bits 40..43: some NVN2 drivers (e.g. the Yoshi demo's) filter the 2D/3D/compute/inline
     // engine classes with these before picking their contexts. Without them NVN2Manager::
     // CreateDevice fails (2162-0001) right after GetEngineInfo. Values from the NS2 patch.

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <optional>
 #include <set>
 #include <span>
@@ -324,6 +325,28 @@ public:
     /// 2D images whose memory can be bound in parts, on the graphics queue.
     bool IsSparseResidencyImage2DSupported() const {
         return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
+    }
+
+    /// Whether a sparse image may bind the same memory to several of its blocks.
+    bool IsSparseResidencyAliasedSupported() const {
+        return IsSparseResidencyImage2DSupported() && features.features.sparseResidencyAliased;
+    }
+
+    /// Whether images with no memory bound may be sampled and used as attachments. AMD's drivers
+    /// fault on it (the GPU hangs shortly after the first such draw), so large images there are
+    /// backed normally. RADV is counted in until someone shows it doesn't need it.
+    /// EDEN_NX2_SPARSE_UNBACKED=1 allows unbound images on any driver, =0 on none.
+    bool CanUseUnbackedSparseImages() const {
+        static const char forced = [] {
+            const char* value = std::getenv("EDEN_NX2_SPARSE_UNBACKED");
+            return value == nullptr ? '\0' : value[0];
+        }();
+        if (forced == '0' || forced == '1') {
+            return forced == '1';
+        }
+        const VkDriverIdKHR id = GetDriverID();
+        return id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
+               id != VK_DRIVER_ID_MESA_RADV;
     }
 
     /// Returns true for tile-based deferred renderers.
