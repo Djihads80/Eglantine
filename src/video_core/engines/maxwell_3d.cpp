@@ -17,6 +17,7 @@
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/nx2_draw_log.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
@@ -216,6 +217,24 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
     }
 
     macro_segments.emplace_back(current_dma_segment, amount);
+    if (VideoCommon::Nx2DrawLog::Enabled()) [[unlikely]] {
+        // Parameters in memory the GPU wrote: Accurate re-reads them (RefreshParameters), Fast
+        // uses what the command read saw. "Stale" = a flushing read gives other words.
+        auto& counters = VideoCommon::Nx2DrawLog::Get();
+        ++counters.macro_calls;
+        if (current_dirty && current_dma_segment != 0) {
+            const u64 n = ++counters.dirty_macro_calls;
+            std::array<u32, 64> fresh{};
+            const u32 count = std::min<u32>(amount, 64);
+            memory_manager.ReadBlock(current_dma_segment, fresh.data(), count * sizeof(u32));
+            const bool stale = !std::equal(fresh.begin(), fresh.begin() + count, base_start);
+            if (stale) ++counters.dirty_macro_stale;
+            if (n <= 60) {
+                LOG_INFO(HW_GPU, "DRAWLOG gpu-written macro parameters: macro={:#x} words={} at {:#x} stale={} gpu_high={}",
+                         method, amount, current_dma_segment, stale, Settings::IsGPULevelHigh());
+            }
+        }
+    }
     current_macro_dirty |= current_dirty;
     current_dirty = false;
 
