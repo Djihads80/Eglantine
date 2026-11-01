@@ -271,6 +271,31 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
         }
+        // EDEN_NX2_DRAW_LOG: what a task/mesh implementation needs to know about the skipped
+        // draw (NX2_TASK_MESH_PIPELINE.md, phase 0): every stage slot, the mesh registers
+        // (methods 0x453 to 0x456) and how the draw was launched.
+        static std::set<std::tuple<u64, u64>> mesh_seen;
+        if (VideoCommon::Nx2DrawLog::Enabled() && mesh_seen.size() < 64 &&
+            mesh_seen.emplace(vs, ps).second) {
+            const auto& state = maxwell3d->draw_manager.draw_state;
+            std::string slots;
+            for (u32 i = 0; i < 6; ++i) {
+                const auto& pipe = regs.pipelines[i];
+                slots += fmt::format(" [{}:{} {:#x}]", i, pipe.enable != 0 ? "on" : "off",
+                                     (u64{pipe.reserved[0] & 0xff} << 32) | pipe.reserved[1]);
+            }
+            LOG_INFO(HW_GPU,
+                     "DRAWLOG skipped draw ({}): slots{} mesh_regs={:08x} {:08x} {:08x} {:08x} "
+                     "topology={} indexed={} first/count={}/{} instances={} base_instance={} "
+                     "base_vertex={} rt0={}x{}",
+                     reason, slots, regs.reg_array[0x453], regs.reg_array[0x454],
+                     regs.reg_array[0x455], regs.reg_array[0x456], static_cast<u32>(state.topology),
+                     state.draw_indexed,
+                     state.draw_indexed ? state.index_buffer.first : state.vertex_buffer.first,
+                     state.draw_indexed ? state.index_buffer.count : state.vertex_buffer.count,
+                     VideoCommon::Nx2DrawLog::LastInstanceCount(), state.base_instance,
+                     state.base_index, regs.rt[0].width, regs.rt[0].height);
+        }
     };
     GraphicsPipeline* const pipeline{[&] {
         Profile::Scope scope{Profile::Zone::PipelineLookup};
