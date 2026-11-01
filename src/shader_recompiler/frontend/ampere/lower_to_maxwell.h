@@ -892,23 +892,30 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             restore_predicate();
             break;
         }
-        case 0x3c4: { // REDUX.SUM (modulo 2^32) or .MAX (unsigned) over the actual active lanes.
+        case 0x3c4: { // REDUX.SUM (modulo 2^32), .OR, .MIN or .MAX (unsigned) over the actual active lanes.
             const u32 source = insn.Bits(24, 8), target = uniform_register(static_cast<u32>(dest));
-            const bool maximum = insn.words[2] == 0x14000;
+            const bool maximum = insn.words[2] == 0x14000, minimum = insn.words[2] == 0x10000;
+            const bool bitwise_or = insn.words[2] == 0x4000;
             if (target == ~0U || target == 255 || insn.words[1] ||
-                (insn.words[2] != 0xc000 && !maximum) || native_predicate != 7)
+                (insn.words[2] != 0xc000 && !maximum && !minimum && !bitwise_or) || native_predicate != 7)
                 return fail(index, "native warp sum mode");
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
-            mov_imm(target, 0);
+            mov_imm(target, minimum ? ~0U : 0U);
             for (u32 lane = 0; lane < 32; ++lane) {
                 emit(0xef10000000070000ULL | 251 | (u64{source} << 8) | (u64{lane} << 20) |
                     (u64{1} << 28) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
                 emit(0x3828000000070000ULL | 252 | (u64{250} << 8) | (u64{lane} << 20));
                 emit(0x0400000000070000ULL | 252 | (u64{252} << 8) | (u64{1} << 20));
                 emit(0x5c10000000070000ULL | 252 | (u64{255} << 8) | (u64{252} << 20) | (u64{1} << 48));
-                emit(0x5c40000000070000ULL | 251 | (u64{251} << 8) | (u64{252} << 20) | (u64{7} << 48));
-                if (maximum) {
-                    emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{15} << 39));
+                // Inactive lanes give the identity: zero, or all ones for MIN (OR with ~mask).
+                emit(0x5c40000000070000ULL | 251 | (u64{251} << 8) | (u64{252} << 20) |
+                     (minimum ? (u64{1} << 40) | (u64{1} << 41) : 0) | (u64{7} << 48));
+                if (maximum || minimum) {
+                    emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) |
+                         (u64{maximum ? 15U : 7U} << 39));
+                } else if (bitwise_or) {
+                    emit(0x5c40000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) |
+                         (u64{1} << 41) | (u64{7} << 48));
                 } else {
                     emit(0x5c10000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20));
                 }
@@ -929,12 +936,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0xec00000000000000ULL | predicate | 255 | (u64{address} << 8) | (u64{250} << 20));
             break;
         }
-        case 0x38c: { // ATOMS.ADD.U32, naturally aligned shared byte offset.
-            const u32 offset = insn.Bits(40, 24);
-            if (insn.words[2] || (offset & 3)) return fail(index, "native shared atomic mode");
+        case 0x38c: { // ATOMS.ADD/MIN/MAX/OR.U32, naturally aligned shared byte offset.
+            // The operation (bits 87-90) numbers ADD 0, MIN 1, MAX 2, OR 6 as Maxwell's (bits 52-55).
+            const u32 offset = insn.Bits(40, 24), operation = insn.Bits(87, 4);
+            if ((operation != 0 && operation != 1 && operation != 2 && operation != 6) ||
+                insn.words[2] != (operation << 23) || (offset & 3))
+                return fail(index, "native shared atomic mode");
             emit(0xec00000000000000ULL | predicate | dest |
                 (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(32, 8)} << 20) |
-                (u64{offset >> 2} << 30));
+                (u64{offset >> 2} << 30) | (u64{operation} << 52));
             break;
         }
         case 0x3a8: { // ATOMG.E.ADD.STRONG.GPU U32 at a 64-bit register address plus an offset.
@@ -1059,8 +1069,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (insn.words[1] || insn.words[2]) return fail(index, "native error barrier mode");
             emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
-        case 0xb1d: // BAR.SYNC 0, full workgroup.
-            if (insn.words[1] || insn.words[2] || native_predicate != 7)
+        case 0xb1d: // BAR.SYNC 0 (bit 80: .DEFER_BLOCKING), full workgroup.
+            if (insn.words[1] || (insn.words[2] & ~0x10000U) || native_predicate != 7)
                 return fail(index, "native workgroup barrier mode");
             emit(0xf0a8000000000000ULL | predicate | (u64{1} << 43) |
                 (u64{1} << 44) | (u64{1} << 39) | (u64{7} << 39));
@@ -1304,10 +1314,17 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 // The uniform base sits where a register source would (bits 32-37).
                 const u32 uniform_address =
                     insn.Bits(38, 2) ? ~0U : uniform_register(insn.Bits(32, 6));
-                if ((insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x2000U)) != 0x081e8100 ||
+                // desc[URn][Ra.64]: the uniform pair is a memory (cache policy) descriptor and
+                // Ra the whole address.
+                const bool descriptor_address = (insn.words[2] & ~0xe00U) == 0x0c1e1100;
+                if ((!descriptor_address &&
+                     (insn.words[2] & ~(0x04000000U | 0x3fU | 0xe00U | 0x2000U)) != 0x081e8100) ||
                     uniform_address == ~0U || (uniform_address & 1))
                     return fail(index, "native global load uniform addressing mode");
-                if (address == 255) {
+                if (descriptor_address) {
+                    if ((address & 1) || address >= 246)
+                        return fail(index, "native global load register address pair");
+                } else if (address == 255) {
                     address = uniform_address;
                 } else {
                     if (insn.Bits(90, 1) && ((address & 1) || address >= 246))
