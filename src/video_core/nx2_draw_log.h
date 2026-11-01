@@ -30,9 +30,6 @@ struct Counters {
     std::atomic<u64> stage_buffer_draws{};
     std::atomic<u64> instanced_draws{};
     std::atomic<u64> base_instance_draws{};
-    std::atomic<u64> macro_calls{};
-    std::atomic<u64> dirty_macro_calls{};
-    std::atomic<u64> dirty_macro_stale{};
 };
 
 inline Counters& Get() {
