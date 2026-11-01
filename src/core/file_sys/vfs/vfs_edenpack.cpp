@@ -277,11 +277,11 @@ EdenPackVfsFilesystem::EdenPackVfsFilesystem(VirtualFile archive)
             }
         }
 
-        auto root = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
+        auto tree = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
                                                           std::vector<VirtualDir>{},
                                                           "EdenPack");
-        if (!BuildDirectoryTree(this->archive, files, directories, root)) return;
-        this->root = std::move(root);
+        if (!BuildDirectoryTree(this->archive, files, directories, tree)) return;
+        root = std::move(tree);
     } catch (const std::exception& e) {
         LOG_ERROR(Loader, "Invalid EdenPack index: {}", e.what());
     }
