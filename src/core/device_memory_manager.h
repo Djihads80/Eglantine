@@ -47,6 +47,10 @@ class DeviceMemoryManager {
 
 public:
     DeviceMemoryManager(const DeviceMemory& device_memory);
+
+    /// Gives back the backing of the guest memory the device range maps (whole pages): it reads
+    /// as zeros until written again.
+    void ReleaseMemory(DAddr address, size_t size);
     ~DeviceMemoryManager();
 
     static constexpr bool HAS_FLUSH_INVALIDATION = true;

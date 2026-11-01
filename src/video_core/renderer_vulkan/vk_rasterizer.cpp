@@ -1614,6 +1614,11 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
     if (image_id == VideoCommon::NULL_IMAGE_ID) {
         return false;
     }
+    // A host image without its top levels takes no copy by guest level: the emulated copy goes
+    // through guest memory, and the image uploads the levels it keeps from there.
+    if (texture_cache.IsTrimmed(image_id)) {
+        return false;
+    }
     const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
     static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
     const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing

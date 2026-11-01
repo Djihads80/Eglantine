@@ -407,10 +407,30 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     return limit;
 }
 
+// reduce_texture_resolution: a large compressed texture keeps its levels from 1 on, a quarter of
+// the memory. Compressed formats are never render targets or storage images, so the GPU only
+// samples them; copies by guest level are kept off them (IsSafeGpuCopy, AccelerateDMA).
+[[nodiscard]] bool ReducesResolution(const ImageInfo& info) {
+    using VideoCore::Surface::IsPixelFormatASTC;
+    using VideoCore::Surface::IsPixelFormatBCn;
+    return Settings::values.reduce_texture_resolution.GetValue() && info.type == ImageType::e2D &&
+           info.resources.levels >= 2 && info.resources.layers <= 6 && info.num_samples == 1 &&
+           (std::min)(info.size.width, info.size.height) >= 1024 &&
+           (IsPixelFormatASTC(info.format) || IsPixelFormatBCn(info.format));
+}
+
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
     if (info.type != ImageType::e2D) {
         return info;
+    }
+    if (ReducesResolution(info)) {
+        level_offset = 1;
+        ImageInfo host = info;
+        host.size.width = (std::max)(info.size.width >> 1, 1U);
+        host.size.height = (std::max)(info.size.height >> 1, 1U);
+        host.resources.levels -= 1;
+        return host;
     }
     if (!WillUseAcceleratedAstcDecode(device, info)) {
         // Too big for the host to create at all (Mario Kart World's 8192x8192x68 BC6H virtual

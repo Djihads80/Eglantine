@@ -128,6 +128,10 @@ bool ImageBase::IsSafeGpuCopy() const noexcept {
     if (False(flags & ImageFlagBits::GpuModified)) {
         return false;
     }
+    // Their host levels are not the guest's (TrimmedLevels): copies by level would land wrong
+    if (True(flags & ImageFlagBits::TrimmedLevels)) {
+        return false;
+    }
     // Skip images that .are. modified from the CPU
     // We don't want to write sensitive data from the guest
     if (True(flags & ImageFlagBits::CpuModified)) {

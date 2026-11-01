@@ -776,4 +776,35 @@ void DeviceMemoryManager<Traits>::ArmReadTraps(DAddr addr, size_t size) {
     release_run();
 }
 
+template <typename Traits>
+void DeviceMemoryManager<Traits>::ReleaseMemory(DAddr address, size_t size) {
+    // Runs of device pages whose backing is contiguous, released a run at a time.
+    size_t run_begin = 0;
+    size_t run_size = 0;
+    const auto flush = [&] {
+        if (run_size != 0) {
+            device_memory_ptr->buffer.ReleaseBackingRegion(run_begin, run_size);
+            run_size = 0;
+        }
+    };
+    const DAddr first = Common::AlignUp(address, Memory::YUZU_PAGESIZE);
+    const DAddr last = Common::AlignDown(address + size, Memory::YUZU_PAGESIZE);
+    for (DAddr page = first; page < last; page += Memory::YUZU_PAGESIZE) {
+        const u8* const pointer = GetPointer<u8>(page);
+        if (pointer == nullptr) {
+            flush();
+            continue;
+        }
+        const size_t offset = static_cast<size_t>(reinterpret_cast<uintptr_t>(pointer) - physical_base);
+        if (run_size != 0 && run_begin + run_size == offset) {
+            run_size += Memory::YUZU_PAGESIZE;
+        } else {
+            flush();
+            run_begin = offset;
+            run_size = Memory::YUZU_PAGESIZE;
+        }
+    }
+    flush();
+}
+
 } // namespace Core

@@ -674,6 +674,14 @@ struct Values {
 
     SwitchableSetting<bool> use_asynchronous_shaders{linkage, true, "use_asynchronous_shaders",
                                                      Category::RendererHacks};
+    /// Large compressed textures keep their mip levels from 1 on (half resolution): less video
+    /// memory, slightly blurrier textures up close.
+    SwitchableSetting<bool> reduce_texture_resolution{linkage, false, "reduce_texture_resolution",
+                                                      Category::RendererHacks};
+    /// GPU-only guest memory (Switch 2) a texture was uploaded from is released afterwards, the
+    /// host image holding the data: less RAM, experimental.
+    SwitchableSetting<bool> release_gpu_only_memory{linkage, false, "release_gpu_only_memory",
+                                                    Category::RendererHacks};
 
     SwitchableSetting<GpuUnswizzleSize> gpu_unswizzle_texture_size{linkage,
                                                   GpuUnswizzleSize::Large,
