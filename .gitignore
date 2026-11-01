@@ -67,3 +67,5 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+*.log
+build/
