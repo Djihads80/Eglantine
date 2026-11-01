@@ -209,6 +209,16 @@ bool DmaPusher::Step() {
     return true;
 }
 
+// EDEN_NX2_SEM_WATCH=<gpu address>: log every method whose argument is the low word of an
+// address in the 16 bytes there (finds the engine and method that release a semaphore).
+static const u32 g_semaphore_watch = [] {
+    const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
+    return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
+}();
+
+// EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
+static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
+
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     for (size_t index = 0; index < commands.size();) {
         // Data word of methods command
@@ -224,6 +234,33 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            // Fast-path batching for consecutive non-execution methods in increasing mode
+            if (!dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= non_puller_methods &&
+                !VideoCommon::GpuSplit::Get().Active() &&
+                g_semaphore_watch == 0) {
+                auto subchannel = subchannels[dma_state.subchannel];
+                if (subchannel != nullptr) {
+                    const size_t available = std::min<size_t>(dma_state.method_count, commands.size() - index);
+                    u32 batch_count = 0;
+                    while (batch_count < available &&
+                           (dma_state.method + batch_count) < subchannel->execution_mask.size() &&
+                           !subchannel->execution_mask[dma_state.method + batch_count]) {
+                        ++batch_count;
+                    }
+                    if (batch_count > 1) {
+                        subchannel->method_sink.reserve(subchannel->method_sink.size() + batch_count);
+                        for (u32 i = 0; i < batch_count; ++i) {
+                            subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
+                        }
+                        dma_state.method += batch_count;
+                        dma_state.method_count -= batch_count;
+                        index += batch_count;
+                        continue;
+                    }
+                }
+            }
+
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;
@@ -321,15 +358,6 @@ void DmaPusher::SetState(const CommandHeader& command_header) {
     dma_state.method_count = command_header.method_count;
 }
 
-// EDEN_NX2_SEM_WATCH=<gpu address>: log every method whose argument is the low word of an
-// address in the 16 bytes there (finds the engine and method that release a semaphore).
-static const u32 g_semaphore_watch = [] {
-    const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
-    return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
-}();
-
-// EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
-static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
 
 void DmaPusher::WatchArgument(u32 method, u32 argument) const {
     const u32 watch = g_semaphore_watch;
