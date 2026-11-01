@@ -1883,8 +1883,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             // Native operands split across Ra/Rb; Maxwell takes contiguous coordinates and
             // a separate register list for AOFFI's one or PTP's two packed offset words.
             for (u32 i = 0; i < operands; ++i) {
-                const u32 base = i < in_a ? source_a : source_b;
-                const u32 source = base == 255 ? 255U : base + (i < in_a ? i : i - in_a);
+                const u32 first = i < in_a ? source_a : source_b;
+                const u32 source = first == 255 ? 255U : first + (i < in_a ? i : i - in_a);
                 const u32 target = i < 2 ? 250 + i : 246 + i - 2;
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) |
                      (u64{source} << 20));
@@ -2117,7 +2117,6 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                     dest >= 250 || (count > 1 && (dest & 1)) || (count <= 2 && split) ||
                     (count > 2 && (second_dest >= 250 || (count == 4 && (second_dest & 1)))))
                     return fail(index, "native explicit-LOD offset sample mode");
-                const u32 binding = insn.Bits(54, 5);
                 if (!tex_bindless) result.required_texture_buffer = tex_binding;
                 const auto copy = [&](u32 target, u32 source) {
                     emit(0x5c98000000000000ULL | predicate | target |
@@ -2148,7 +2147,6 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                     (std::popcount(mask) > 2 && (!split || second_dest >= 248)) ||
                     (std::popcount(mask) > 3 && (second_dest & 1)))
                     return fail(index, "native scalar cube array sample mode");
-                const u32 binding = insn.Bits(54, 5);
                 if (!tex_bindless) result.required_texture_buffer = tex_binding;
                 const auto copy = [&](u32 target, u32 source) {
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
@@ -2172,7 +2170,6 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
                     (source_a & 3) || source_a > 244 || source_b >= 248 || dest >= 248)
                     return fail(index, "native cube array depth comparison sample mode");
-                const u32 binding = insn.Bits(54, 5);
                 if (!tex_bindless) result.required_texture_buffer = tex_binding;
                 if (!emit_tex(0xc000000000000000ULL | predicate | dest | (u64{source_a} << 8) |
                      (u64{source_b} << 20) | (u64{7} << 28) | (u64{1} << 31) |
@@ -2218,8 +2215,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
                     (source_a & 1) || (source_b & 1) || source_a + 1 >= reserved_register || source_b + 1 >= reserved_register || dest >= reserved_register)
                     return fail(index, "native array depth comparison sample mode");
-                const u32 binding = insn.Bits(54, 5);
-            if (!tex_bindless) result.required_texture_buffer = tex_binding;
+                if (!tex_bindless) result.required_texture_buffer = tex_binding;
                 for (u32 i = 0; i < 3; ++i) {
                     const u32 source = i < 2 ? source_a + i : source_b;
                     emit(0x5c98000000000000ULL | predicate | (250 + i) |

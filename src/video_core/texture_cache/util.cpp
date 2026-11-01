@@ -943,7 +943,6 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImageRows(
     const LevelInfo level_info = MakeLevelInfo(info);
     const s32 num_levels = info.resources.levels;
     const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
-    const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
     const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
     const u32 layer_stride = AlignLayerSize(layer_size, info.size, level_info.block, tile_size.height,
                                             info.tile_width_spacing);
