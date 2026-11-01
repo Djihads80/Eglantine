@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <span>
@@ -21,6 +23,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 VK_DEFINE_HANDLE(VmaAllocator)
+VK_DEFINE_HANDLE(VmaPool)
 
 // Define all features which may be used by the implementation here.
 // Vulkan version in the macro describes the minimum version required for feature availability.
@@ -264,6 +267,17 @@ public:
     VmaAllocator GetAllocator() const {
         return allocator;
     }
+
+    /// Allocations kept out of the default blocks, which then hold images only: churned buffers
+    /// and long-lived sparse pages left holes the texture cache's collector couldn't drain.
+    enum class SeparatePool : u32 {
+        SparsePages,
+        DeviceBuffers,
+    };
+    static constexpr VkDeviceSize SeparatePoolBlockSize = 16ULL << 20;
+
+    /// The pool of that kind for a memory type, created on first use (null if that failed).
+    VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type) const;
 
     /// Returns the logical device.
     const vk::Device& GetLogical() const {
@@ -1191,6 +1205,8 @@ private:
 private:
     VkInstance instance;         ///< Vulkan instance.
     VmaAllocator allocator{};    ///< VMA allocator.
+    mutable std::mutex separate_pools_mutex;
+    mutable std::array<std::array<VmaPool, VK_MAX_MEMORY_TYPES>, 2> separate_pools{};
     vk::DeviceDispatch dld;      ///< Device function pointers.
     vk::PhysicalDevice physical; ///< Physical device.
     vk::Device logical;          ///< Logical device.

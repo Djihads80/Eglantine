@@ -779,10 +779,14 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             .flags = flags,
             .physicalDevice = physical,
             .device = *logical,
-            // 64 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
+            // 16 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
             // texture sizes left ~38% of the image blocks empty (2 GB of an 8 GB card in title
-            // 1), which the texture cache counted as used and kept evicting textures for.
-            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
+            // 1), which the texture cache counted as used and kept evicting textures for. With
+            // 64 MiB ones textures created and deleted by the thousand still left ~1.7 GB of holes
+            // after ten minutes, with 32 MiB ones ~0.5 GB: a block drains only once all of its
+            // images are gone, and fewer per block drain sooner. VMA gives allocations over half a
+            // block (8 MiB) their own memory, which goes back to the driver when they are freed.
+            .preferredLargeHeapBlockSize = 16u * 1024u * 1024u,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = heap_size_limit != 0 ? heap_size_limits.data() : nullptr,
@@ -804,7 +808,35 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 Device::~Device() {
     SaveStaticPipelineCache();
     ShutdownGPULogging();
+    for (auto& pools : separate_pools) {
+        for (VmaPool pool : pools) {
+            if (pool != VK_NULL_HANDLE) {
+                vmaDestroyPool(allocator, pool);
+            }
+        }
+    }
     vmaDestroyAllocator(allocator);
+}
+
+VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type) const {
+    std::scoped_lock lk{separate_pools_mutex};
+    VmaPool& pool = separate_pools[static_cast<u32>(kind)][memory_type];
+    if (pool == VK_NULL_HANDLE) {
+        const VmaPoolCreateInfo ci{
+            .memoryTypeIndex = memory_type,
+            .flags = 0,
+            .blockSize = SeparatePoolBlockSize,
+            .minBlockCount = 0,
+            .maxBlockCount = 0,
+            .priority = 0.f,
+            .minAllocationAlignment = 0,
+            .pMemoryAllocateNext = nullptr,
+        };
+        if (vmaCreatePool(allocator, &ci, &pool) != VK_SUCCESS) {
+            pool = VK_NULL_HANDLE;
+        }
+    }
+    return pool;
 }
 
 void Device::LoadStaticPipelineCache() {
