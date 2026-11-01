@@ -73,7 +73,7 @@ config (`qt-config.ini`) or save data.
 Eglantine's workflow `.github/workflows/release-binaries.yml` builds a Linux AppImage (Ubuntu 24.04,
 Qt 6.8.3; runs on glibc 2.39 or newer) and a Windows zip on GitHub's machines. On the fork, start it
 by hand from the Actions tab or with
-`gh workflow run release-binaries.yml -R Wael3rd/Eglantine-MKW-merge --ref mkw-eglantine -f publish_release=false`;
+`gh workflow run release-binaries.yml -R Wael3rd/Eglantine-MKW --ref mkw-eglantine -f publish_release=false`;
 the files are then artifacts of the run (kept 7 days), and `publish_release=true` would publish them
 as a pre-release instead. The Linux build is not tested here: it is built, not run.
 
