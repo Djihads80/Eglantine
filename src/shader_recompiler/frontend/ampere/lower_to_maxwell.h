@@ -92,7 +92,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                     active_link = call_links[call];
                 }
             }
-            if (active_link && insn.Bits(16, 8) == *active_link)
+            // RET has no destination GPR; bits 16..23 are reserved, not a write to R0.
+            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)
                 return fail(index, "native callee overwrites link register");
         }
         // Scratch values and emulated uniform state occupy reserved high GPRs.

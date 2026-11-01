@@ -315,6 +315,7 @@ public:
             {213, &INx2GpuSession::SubUnmapJob, "NormalUnmapGpuMemory4K"},
             {214, &INx2GpuSession::SubCreateGpuOnlyRegion, "CreateSparseRegion"},
             {215, &INx2GpuSession::SubDestroySparseRegion, "DestroySparseRegion"},
+            {216, &INx2GpuSession::SubSparseMap, "ExecuteSparseMapRequests"},
         });
         if (LazySparseRegions()) {
             Tegra::Nx2SetSparseBacking(
@@ -542,6 +543,9 @@ private:
             const u64 size = last + 1 - start;
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
+            if ((w[7] & SparseRegionFlag) == 0) {
+                m_gpu_only_ranges[start] = size; // kept out of 216, however it is backed
+            }
             if ((w[7] & SparseRegionFlag) != 0 && LazySparseRegions()) {
                 // Title 1's terrain texture arrays and layer pools (170 MB-5.8 GB, mostly empty):
                 // backed whole, they ran the pool dry and the later ones got no memory at all.
@@ -579,8 +583,17 @@ private:
                  first, last, w[1], w[2], w[7], w[8]);
         std::scoped_lock lk{m_region_mutex};
         FreeReleasedRegions();
+        if (m_gpu_only_ranges.erase(first) != 0 && last > first) {
+            DropGpuOnlyTiles(first, last - first + 1, false);
+            m_shared_regions.erase(first);
+            std::erase_if(m_shared_memory, [first](const auto& entry) { return entry.second == first; });
+        }
         if (last > first) {
-            if (m_sparse_regions.erase(first) != 0) {
+            if (const auto region = m_sparse_regions.find(first); region != m_sparse_regions.end()) {
+                m_tile_bytes -= Core::Memory::YUZU_PAGESIZE *
+                                static_cast<u64>(std::count(region->second.tile_pages.begin(),
+                                                            region->second.tile_pages.end(), true));
+                m_sparse_regions.erase(region);
                 Tegra::Nx2SparseRegionDestroyed(first);
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DestroySparse(first, last - first + 1);
             } else {
@@ -609,6 +622,49 @@ private:
         rb.Push(ResultSuccess);
     }
 
+    // Sub 216 (nn::gpu::sdk::ExecuteSparseMapRequests, behind nvnMemoryPoolMapVirtual and NvRm's
+    // remap): an A buffer of SparseMapRequests and a B buffer that gets the kind applied to each;
+    // word 8-9 is 1, 10 the address space, 11-12 the request size (40), 13 a sync flag, 14 the job
+    // slot. The reply is the number of requests done. This is how the game commits and releases
+    // its sparse texture tiles: a map points a tile at its own memory (sub 101), an unmap makes it
+    // read zero again. A region the game maps tiles into needs no memory of its own.
+    void SubSparseMap(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u32 slot = w[14];
+        const auto data = ctx.BufferDescriptorA().empty() ? std::span<const u8>{} : ctx.ReadBufferA(0);
+        const size_t count = data.size() / sizeof(SparseMapRequest);
+        std::vector<u8> kinds(count);
+        {
+            std::scoped_lock lk{m_region_mutex};
+            FreeReleasedRegions();
+            ++m_tile_calls;
+            for (size_t i = 0; i < count; ++i) {
+                SparseMapRequest request;
+                std::memcpy(&request, data.data() + i * sizeof(SparseMapRequest), sizeof(request));
+                kinds[i] = request.kind;
+                ApplySparseMapRequest(request);
+            }
+            // The first request, then at most every 30 s.
+            const auto now = std::chrono::steady_clock::now();
+            if (count != 0 && (m_tile_requests == count ||
+                               now - m_tile_log_time >= std::chrono::seconds{30})) {
+                m_tile_log_time = now;
+                LOG_INFO(Service, "nx2:gpu 216: {} calls, {} maps, {} unmaps; {} MiB of sparse tiles "
+                                  "and {} MiB in GPU-only regions mapped, {} maps into regions that "
+                                  "keep their own memory left out; {} MiB of sparse blocks backed, {} "
+                                  "MiB released",
+                         m_tile_calls, m_tile_maps, m_tile_unmaps, m_tile_bytes >> 20,
+                         m_gpu_only_tile_bytes >> 20, m_tile_kept, m_sparse_backed_bytes >> 20,
+                         m_sparse_released_bytes >> 20);
+            }
+        }
+        if (!ctx.BufferDescriptorB().empty() && count != 0) {
+            ctx.WriteBufferB(kinds.data(), kinds.size(), 0);
+        }
+        SignalAfterGpu(slot);
+        TipcReplyWords(ctx, {static_cast<u32>(count), static_cast<u32>(u64{count} >> 32)});
+    }
+
     // Returns the pages of destroyed regions the GPU thread is done with to the kernel.
     void FreeReleasedRegions() {
         auto* const process = system.ApplicationProcess();
@@ -630,8 +686,17 @@ private:
         });
     }
 
-    std::optional<u64> BackGpuOnlyRegion(u64 gpu_address, u64 size, bool log_failure = true,
-                                         bool clear = false) {
+    struct MappedBacking {
+        u64 address;
+        u64 size;
+        std::unique_ptr<Kernel::KPageGroup> pages;
+    };
+
+    // Allocates kernel memory and maps it in the alias code region. Touches no region state, so
+    // it needs no lock: the GPU back thread calls it without m_region_mutex, because mapping can
+    // wait on the guest page table lock and a guest thread holding that lock must not be stalled
+    // behind a host mutex the service thread is waiting for.
+    std::optional<MappedBacking> AllocateGpuOnlyBacking(u64 size, bool log_failure, bool clear) {
         using Core::Memory::YUZU_PAGESIZE;
         auto& kernel_core = system.Kernel();
         auto* const process = system.ApplicationProcess();
@@ -667,18 +732,16 @@ private:
         // From where the last backing went (sparse regions back hundreds of blocks), then wrapping.
         const u64 slots = region_size / Alignment;
         for (u64 i = 0; i < slots; ++i) {
-            const u64 offset = ((m_alias_hint + i) % slots) * Alignment;
+            const u64 offset = ((m_alias_hint.load(std::memory_order_relaxed) + i) % slots) * Alignment;
             if (offset + size > region_size) {
                 continue;
             }
             const Common::ProcessAddress address{region_start + offset};
             if (R_SUCCEEDED(page_table.MapPageGroup(address, *pg, Kernel::KMemoryState::IoMemory,
                                                     Kernel::KMemoryPermission::UserReadWrite))) {
-                m_alias_hint = (offset + Common::AlignUp(size, Alignment)) / Alignment;
-                m_gpu_only_regions[gpu_address] = {GetInteger(address), size, std::move(pg)};
-                m_gpu_only_bytes += size;
-                m_gpu_only_peak = (std::max)(m_gpu_only_peak, m_gpu_only_bytes);
-                return GetInteger(address);
+                m_alias_hint.store((offset + Common::AlignUp(size, Alignment)) / Alignment,
+                                   std::memory_order_relaxed);
+                return MappedBacking{GetInteger(address), size, std::move(pg)};
             }
         }
         LOG_ERROR(Service, "nx2:gpu 214 no room for {:#x} bytes in the alias code region "
@@ -687,32 +750,93 @@ private:
         return std::nullopt;
     }
 
+    // Records a mapped backing for the region at gpu_address. Needs m_region_mutex.
+    void RegisterGpuOnlyBacking(u64 gpu_address, MappedBacking&& backing) {
+        m_gpu_only_regions[gpu_address] = {backing.address, backing.size, std::move(backing.pages)};
+        m_gpu_only_bytes += backing.size;
+        m_gpu_only_peak = (std::max)(m_gpu_only_peak, m_gpu_only_bytes);
+    }
+
+    // Needs m_region_mutex.
+    std::optional<u64> BackGpuOnlyRegion(u64 gpu_address, u64 size) {
+        auto backing = AllocateGpuOnlyBacking(size, true, false);
+        if (!backing) {
+            return std::nullopt;
+        }
+        const u64 address = backing->address;
+        RegisterGpuOnlyBacking(gpu_address, std::move(*backing));
+        return address;
+    }
+
     // Runs before a GPU-side write that may land in a sparse region (Tegra::Nx2BackSparseWrite,
     // usually on the GPU thread): the blocks the write touches get memory, cleared, behind the
     // region's device pages. The GPU mapping stays as it is, so the images over the region keep
     // their storage and only see the write.
     void BackSparseWrite(u64 gpu_address, u64 size) {
-        std::scoped_lock lk{m_region_mutex};
+        struct Pending {
+            u64 region;
+            u64 block;
+        };
+        std::vector<Pending> todo;
         const u64 end = gpu_address + size;
-        auto it = m_sparse_regions.upper_bound(gpu_address);
-        if (it != m_sparse_regions.begin()) {
-            --it;
-        }
-        for (; it != m_sparse_regions.end() && it->first < end; ++it) {
-            auto& [start, region] = *it;
-            if (start + region.size <= gpu_address) {
-                continue;
+        // Calls fn(region_start, region, first_block, last_block) for each region the write touches.
+        auto for_regions = [&](auto&& fn) {
+            auto it = m_sparse_regions.upper_bound(gpu_address);
+            if (it != m_sparse_regions.begin()) {
+                --it;
             }
-            const u64 first_block = ((std::max)(gpu_address, start) - start) / SparseBlockSize;
-            const u64 last_block = ((std::min)(end, start + region.size) - 1 - start) / SparseBlockSize;
-            for (u64 block = first_block; block <= last_block; ++block) {
-                if (region.blocks[block] != BlockEmpty) {
+            for (; it != m_sparse_regions.end() && it->first < end; ++it) {
+                auto& [start, region] = *it;
+                if (start + region.size <= gpu_address) {
                     continue;
                 }
-                const u64 block_address = start + block * SparseBlockSize;
-                const u64 block_size = (std::min)(SparseBlockSize, region.size - block * SparseBlockSize);
-                const auto address = BackGpuOnlyRegion(block_address, block_size, false, true);
-                if (!address) {
+                fn(start, region, ((std::max)(gpu_address, start) - start) / SparseBlockSize,
+                   ((std::min)(end, start + region.size) - 1 - start) / SparseBlockSize);
+            }
+        };
+        bool waits_for_other = false;
+        {
+            std::unique_lock lk{m_region_mutex};
+            for_regions([&](u64 start, SparseRegion& region, u64 first, u64 last) {
+                for (u64 block = first; block <= last; ++block) {
+                    if (region.blocks[block] == BlockEmpty && region.tiles) {
+                        // The write lands in the game's own memory (a tile it mapped) or nowhere;
+                        // the texture cache only learns that the block has contents now.
+                        region.blocks[block] = BlockWritten;
+                        Tegra::Nx2SparseBlockWritten(start, block);
+                    } else if (region.blocks[block] == BlockEmpty) {
+                        region.blocks[block] = BlockPending;
+                        todo.push_back({start, block});
+                    } else if (region.blocks[block] == BlockPending) {
+                        waits_for_other = true;
+                    }
+                }
+            });
+        }
+        // Allocating and mapping happens outside the lock (see AllocateGpuOnlyBacking).
+        for (const auto& [start, block] : todo) {
+            u64 block_size = SparseBlockSize;
+            {
+                std::scoped_lock lk{m_region_mutex};
+                const auto it = m_sparse_regions.find(start);
+                if (it != m_sparse_regions.end()) {
+                    block_size = (std::min)(SparseBlockSize, it->second.size - block * SparseBlockSize);
+                }
+            }
+            auto backing = AllocateGpuOnlyBacking(block_size, false, true);
+            bool stale = false;
+            {
+                std::scoped_lock lk{m_region_mutex};
+                const auto it = m_sparse_regions.find(start);
+                if (it == m_sparse_regions.end() || block >= it->second.blocks.size()) {
+                    stale = true; // the region was destroyed while its block was being backed
+                } else if (it->second.tiles) {
+                    // The game started mapping its tiles there meanwhile (216): no block.
+                    stale = true;
+                    it->second.blocks[block] = BlockWritten;
+                    Tegra::Nx2SparseBlockWritten(start, block);
+                } else if (!backing) {
+                    auto& region = it->second;
                     region.blocks[block] = BlockFailed; // out of memory: not again for every write
                     if (!region.warned) {
                         region.warned = true;
@@ -720,20 +844,46 @@ private:
                                              "to its unbacked blocks are dropped",
                                     start);
                     }
-                    continue;
-                }
-                region.blocks[block] = BlockBacked;
-                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().BackSparse(block_address, *address,
-                                                                        block_size);
-                Tegra::Nx2SparseBlockWritten(start, block);
-                m_sparse_backed_bytes += block_size;
-                if (++m_sparse_blocks == 1 || (m_sparse_blocks % 64) == 0) {
-                    LOG_INFO(Service, "nx2:gpu {} sparse blocks backed ({} MiB); {} MiB of GPU-only "
-                                      "memory in use, peak {} MiB",
-                             m_sparse_blocks, m_sparse_backed_bytes >> 20, m_gpu_only_bytes >> 20,
-                             m_gpu_only_peak >> 20);
+                } else {
+                    const u64 block_address = start + block * SparseBlockSize;
+                    const u64 address = backing->address;
+                    it->second.blocks[block] = BlockBacked;
+                    RegisterGpuOnlyBacking(block_address, std::move(*backing));
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().BackSparse(block_address, address,
+                                                                            block_size);
+                    Tegra::Nx2SparseBlockWritten(start, block);
+                    m_sparse_backed_bytes += block_size;
+                    if (++m_sparse_blocks == 1 || (m_sparse_blocks % 64) == 0) {
+                        LOG_INFO(Service, "nx2:gpu {} sparse blocks backed ({} MiB); {} MiB of GPU-only "
+                                          "memory in use, peak {} MiB",
+                                 m_sparse_blocks, m_sparse_backed_bytes >> 20, m_gpu_only_bytes >> 20,
+                                 m_gpu_only_peak >> 20);
+                    }
                 }
             }
+            m_region_cv.notify_all();
+            if (stale && backing) {
+                // Never handed to the GPU: unmap and free right away.
+                if (auto* const process = system.ApplicationProcess(); process != nullptr) {
+                    process->GetPageTable().UnmapPageGroup(Common::ProcessAddress{backing->address},
+                                                           *backing->pages,
+                                                           Kernel::KMemoryState::IoMemory);
+                }
+                backing->pages->Close(system.Kernel());
+            }
+        }
+        if (waits_for_other) {
+            // Another thread is backing a block this write needs: wait until it is done.
+            std::unique_lock lk{m_region_mutex};
+            m_region_cv.wait(lk, [&] {
+                bool pending = false;
+                for_regions([&](u64, SparseRegion& region, u64 first, u64 last) {
+                    for (u64 block = first; block <= last; ++block) {
+                        pending |= region.blocks[block] == BlockPending;
+                    }
+                });
+                return !pending;
+            });
         }
     }
 
@@ -751,19 +901,314 @@ private:
     static constexpr u8 BlockEmpty = 0;
     static constexpr u8 BlockBacked = 1;
     static constexpr u8 BlockFailed = 2;
+    static constexpr u8 BlockPending = 3; ///< Being allocated and mapped by BackSparseWrite
+    static constexpr u8 BlockWritten = 4; ///< Written in a region the game maps tiles into
     struct SparseRegion {
         u64 size;
-        std::vector<u8> blocks; ///< BlockEmpty / BlockBacked / BlockFailed per SparseBlockSize
+        std::vector<u8> blocks; ///< BlockEmpty / Backed / Failed / Pending / Written per block
         bool warned{};          ///< Logged that the pool ran out for its blocks
+        bool tiles{};           ///< The game maps its own memory into it (216): no blocks
+        std::vector<bool> tile_pages; ///< Pages a tile maps, once `tiles`
     };
     std::map<u64, SparseRegion> m_sparse_regions; ///< By GPU address
     u64 m_sparse_blocks{};       ///< Sparse blocks backed so far
     u64 m_sparse_backed_bytes{}; ///< Sparse region memory given out so far
+    u64 m_sparse_released_bytes{}; ///< Blocks given back once the game mapped tiles there
+
+    // nn::gpu::sdk::SparseMapRequest (216), filled from NvRm's nvgpu_as_remap_op.
+    struct SparseMapRequest {
+        u64 gpu_address;
+        u64 size;
+        u8 no_write;
+        u8 cacheable;
+        u8 unknown_12;
+        u8 kind;          ///< Wanted: the compressible kind if there is one
+        u8 fallback_kind; ///< The incompressible kind
+        u8 unknown_15;    ///< Remap op flag bit 15
+        u16 padding_16;
+        u32 memory_handle; ///< Sub 101's handle; 0 unmaps the range
+        u32 padding_1c;
+        u64 offset; ///< Into that memory
+    };
+    static_assert(sizeof(SparseMapRequest) == 40);
+    u64 m_tile_calls{};
+    u64 m_tile_requests{};
+    std::chrono::steady_clock::time_point m_tile_log_time{};
+    u64 m_tile_maps{};
+    u64 m_tile_unmaps{};
+    u64 m_tile_kept{}; ///< Maps into GPU-only regions that keep their own memory, left out
+    u64 m_tile_bytes{}; ///< Sparse region pages a tile maps right now
+
+    void ApplySparseMapRequest(const SparseMapRequest& request) {
+        ++m_tile_requests;
+        if (request.size == 0) {
+            return;
+        }
+        const u64 gpu_address = request.gpu_address;
+        const u64 size = request.size;
+        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+        auto it = m_sparse_regions.upper_bound(gpu_address);
+        SparseRegion* region = nullptr;
+        u64 start = 0;
+        if (it != m_sparse_regions.begin()) {
+            --it;
+            if (gpu_address + size <= it->first + it->second.size) {
+                start = it->first;
+                region = &it->second;
+            }
+        }
+        if (const auto gpu_only = GpuOnlyRegionOf(gpu_address, size)) {
+            ApplyGpuOnlyRequest(*gpu_only, request);
+            return;
+        }
+        if (request.memory_handle == 0) {
+            ++m_tile_unmaps;
+            LOG_DEBUG(Service, "nx2:gpu 216 unmap [{:#x}, +{:#x}]", gpu_address, size);
+            if (region != nullptr) {
+                Tegra::Nx2SparseTilesMapped(start, gpu_address - start, size, false);
+                registry.MapSparseTile(gpu_address, 0, size);
+                MarkTiles(*region, gpu_address - start, size, false);
+            } else {
+                registry.Unmap(gpu_address, size);
+            }
+            return;
+        }
+        ++m_tile_maps;
+        const auto memory = m_memory.find(request.memory_handle);
+        if (memory == m_memory.end() || request.offset > memory->second.size || size > memory->second.size - request.offset) {
+            LOG_WARNING(Service, "nx2:gpu 216 map [{:#x}, +{:#x}] of unknown memory {} offset {:#x}",
+                        gpu_address, size, request.memory_handle, request.offset);
+            return;
+        }
+        const u64 cpu_address = memory->second.address + request.offset;
+        LOG_DEBUG(Service, "nx2:gpu 216 map [{:#x}, +{:#x}] -> memory {} offset {:#x} kind {:#x}",
+                  gpu_address, size, request.memory_handle, request.offset, request.kind);
+        if (region == nullptr) {
+            registry.MapAt(gpu_address, cpu_address, size);
+            return;
+        }
+        if (!region->tiles) {
+            StartTiles(start, *region);
+        }
+        // The game's memory already holds what the tile shows (title 1 fills nine world-sized
+        // masks, R8/RG16/R16 at 8192-16384 texels, in its own memory before mapping them): the
+        // blocks count as written, so the texture cache gives the images over them memory and
+        // loads them. Left unwritten, those images read zero and the static world was unlit.
+        const u64 first_block = (gpu_address - start) / SparseBlockSize;
+        const u64 last_block = (gpu_address + size - 1 - start) / SparseBlockSize;
+        for (u64 block = first_block; block <= last_block; ++block) {
+            if (region->blocks[block] == BlockEmpty) {
+                region->blocks[block] = BlockWritten;
+            }
+            Tegra::Nx2SparseBlockWritten(start, block);
+        }
+        Tegra::Nx2SparseTilesMapped(start, gpu_address - start, size, true);
+        registry.MapSparseTile(gpu_address, cpu_address, size);
+        MarkTiles(*region, gpu_address - start, size, true);
+    }
+
+    // Start of the region 214 made without the sparse flag that holds the range (by its flags,
+    // not by how it is backed).
+    std::optional<u64> GpuOnlyRegionOf(u64 gpu_address, u64 size) const {
+        auto it = m_gpu_only_ranges.upper_bound(gpu_address);
+        if (it == m_gpu_only_ranges.begin()) {
+            return std::nullopt;
+        }
+        --it;
+        if (gpu_address + size > it->first + it->second) {
+            return std::nullopt;
+        }
+        return it->first;
+    }
+
+    // 216 into a GPU-only region: render targets, and with remap support also some texture arrays
+    // (title 1: 5.8 GB and 1.4 GB). The game backs those with its own memory too, which it fills
+    // through its own address, so a map points the range at that memory the way 211 does: both
+    // addresses reach the same device pages and the texture cache sees the writes. (Re-pointing the
+    // region's own device pages instead, as for sparse tiles, left the arrays stale: black terrain.)
+    // Left alone:
+    // - Regions whose memory the game shares with another GPU-only region (render targets): the
+    //   texture cache would flush and re-upload such overlapping render targets every frame. All of
+    //   a group keep the memory 214 gave them.
+    // - Regions 214 backs as they are written: the texture cache reads an image's memory in full
+    //   when it uploads it, which makes the game's pages behind it resident on the host, while
+    //   unwritten blocks read as zero for free (title 1: ~1 GB less resident at 150 s).
+    void ApplyGpuOnlyRequest(u64 region, const SparseMapRequest& request) {
+        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+        const u64 gpu_address = request.gpu_address;
+        const u64 size = request.size;
+        if (request.memory_handle == 0) {
+            ++m_tile_unmaps;
+            DropGpuOnlyTiles(gpu_address, size, true);
+            return;
+        }
+        ++m_tile_maps;
+        if (m_sparse_regions.contains(region)) {
+            ++m_tile_kept;
+            return;
+        }
+        if (m_shared_regions.contains(region)) {
+            m_shared_memory[{request.memory_handle, request.offset}] = region;
+            ++m_tile_kept;
+            return;
+        }
+        const auto memory = m_memory.find(request.memory_handle);
+        if (memory == m_memory.end() || request.offset > memory->second.size || size > memory->second.size - request.offset) {
+            LOG_WARNING(Service, "nx2:gpu 216 map [{:#x}, +{:#x}] of unknown memory {} offset {:#x}",
+                        gpu_address, size, request.memory_handle, request.offset);
+            return;
+        }
+        if (const auto other = RegionSharing(request.memory_handle, request.offset, size, region)) {
+            ++m_tile_kept;
+            for (const u64 shared : {region, *other}) {
+                if (m_shared_regions.insert(shared).second) {
+                    const auto range = m_gpu_only_ranges.find(shared);
+                    if (range != m_gpu_only_ranges.end()) {
+                        DropGpuOnlyTiles(shared, range->second, true);
+                    }
+                    LOG_INFO(Service, "nx2:gpu GPU-only region at {:#x} shares memory with another: "
+                                      "it keeps its own",
+                             shared);
+                }
+            }
+            return;
+        }
+        DropGpuOnlyTiles(gpu_address, size, false);
+        registry.MapAt(gpu_address, memory->second.address + request.offset, size);
+        m_gpu_only_tiles[gpu_address] = {size, region, request.memory_handle, request.offset};
+        m_gpu_only_memory[{request.memory_handle, request.offset}] = {request.offset + size, region};
+        m_gpu_only_tile_max = (std::max)(m_gpu_only_tile_max, size);
+        m_gpu_only_tile_bytes += size;
+    }
+
+    // Another GPU-only region whose tiles hold any of [offset, +size) of the memory, if one does.
+    std::optional<u64> RegionSharing(u32 handle, u64 offset, u64 size, u64 region) const {
+        auto it = m_gpu_only_memory.lower_bound({handle, offset + size});
+        while (it != m_gpu_only_memory.begin()) {
+            --it;
+            const auto& [key, value] = *it;
+            const auto& [end, owner] = value;
+            if (key.first != handle || key.second + m_gpu_only_tile_max <= offset) {
+                break;
+            }
+            if (end > offset && owner != region) {
+                return owner;
+            }
+        }
+        // Regions that already keep their own memory record no tiles: compare with their requests.
+        if (const auto kept = m_shared_memory.find({handle, offset}); kept != m_shared_memory.end() &&
+                                                                     kept->second != region) {
+            return kept->second;
+        }
+        return std::nullopt;
+    }
+
+    // The memory 214 gave a GPU-only region at [gpu_address, +size), when it was backed whole.
+    std::optional<u64> OwnBackingOf(u64 gpu_address, u64 size) const {
+        auto it = m_gpu_only_regions.upper_bound(gpu_address);
+        if (it == m_gpu_only_regions.begin()) {
+            return std::nullopt;
+        }
+        --it;
+        if (gpu_address + size > it->first + it->second.size) {
+            return std::nullopt;
+        }
+        return it->second.cpu_address + (gpu_address - it->first);
+    }
+
+    // Forgets the game's tiles in [gpu_address, +size) of GPU-only regions; with `restore` (an
+    // unmap) those ranges show the region's own memory again, or nothing where it has none.
+    void DropGpuOnlyTiles(u64 gpu_address, u64 size, bool restore) {
+        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+        auto it = m_gpu_only_tiles.upper_bound(gpu_address);
+        if (it != m_gpu_only_tiles.begin()) {
+            const auto previous = std::prev(it);
+            if (previous->first + previous->second.size > gpu_address) {
+                it = previous;
+            }
+        }
+        while (it != m_gpu_only_tiles.end() && it->first < gpu_address + size) {
+            const auto& [tile_address, tile] = *it;
+            if (restore) {
+                if (const auto backing = OwnBackingOf(tile_address, tile.size)) {
+                    registry.MapAt(tile_address, *backing, tile.size);
+                } else {
+                    registry.Unmap(tile_address, tile.size);
+                }
+            }
+            if (const auto owner = m_gpu_only_memory.find({tile.memory_handle, tile.offset});
+                owner != m_gpu_only_memory.end() && owner->second.second == tile.region) {
+                if (m_shared_regions.contains(tile.region)) {
+                    m_shared_memory[owner->first] = tile.region;
+                }
+                m_gpu_only_memory.erase(owner);
+            }
+            m_gpu_only_tile_bytes -= tile.size;
+            it = m_gpu_only_tiles.erase(it);
+        }
+    }
+
+    // The game maps tiles into this region itself (216): writes outside its tiles are dropped, as
+    // on the console, so it gets no more blocks, and the blocks it got before (written while no
+    // tile was mapped, which the console would have dropped) go back.
+    void StartTiles(u64 start, SparseRegion& region) {
+        using Core::Memory::YUZU_PAGESIZE;
+        region.tiles = true;
+        region.tile_pages.assign(Common::DivCeil(region.size, YUZU_PAGESIZE), false);
+        std::shared_ptr<std::atomic<bool>> done;
+        u64 released = 0;
+        for (u64 block = 0; block < region.blocks.size(); ++block) {
+            if (region.blocks[block] != BlockBacked) {
+                continue;
+            }
+            region.blocks[block] = BlockWritten;
+            const u64 block_address = start + block * SparseBlockSize;
+            const auto backing = m_gpu_only_regions.find(block_address);
+            if (backing == m_gpu_only_regions.end()) {
+                continue;
+            }
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapSparseTile(block_address, 0,
+                                                                        backing->second.size);
+            if (!done) {
+                done = std::make_shared<std::atomic<bool>>(false);
+                system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+            }
+            released += backing->second.size;
+            m_released_regions.push_back({std::move(backing->second), done});
+            m_gpu_only_regions.erase(backing);
+        }
+        m_sparse_released_bytes += released;
+        LOG_INFO(Service, "nx2:gpu sparse region at {:#x}: the game maps its tiles, {} MiB of blocks "
+                          "released",
+                 start, released >> 20);
+    }
+
+    // Counts the bytes of tiles mapped, page by page.
+    void MarkTiles(SparseRegion& region, u64 offset, u64 size, bool mapped) {
+        using Core::Memory::YUZU_PAGESIZE;
+        if (!region.tiles) {
+            return;
+        }
+        const u64 last = (std::min)(Common::DivCeil(offset + size, YUZU_PAGESIZE),
+                                    static_cast<u64>(region.tile_pages.size()));
+        for (u64 page = offset / YUZU_PAGESIZE; page < last; ++page) {
+            if (region.tile_pages[page] != mapped) {
+                region.tile_pages[page] = mapped;
+                if (mapped) {
+                    m_tile_bytes += YUZU_PAGESIZE;
+                } else {
+                    m_tile_bytes -= YUZU_PAGESIZE;
+                }
+            }
+        }
+    }
+
     u64 m_gpu_only_bytes{};      ///< Backing of GPU-only regions and sparse blocks right now
     u64 m_gpu_only_peak{};
-    u64 m_alias_hint{}; ///< 2 MiB slot after the last backing in the alias code region
+    std::atomic<u64> m_alias_hint{}; ///< 2 MiB slot after the last backing in the alias code region
     /// Regions are created and destroyed on the service thread and backed on the GPU thread.
     std::recursive_mutex m_region_mutex;
+    std::condition_variable_any m_region_cv; ///< Signalled when a pending sparse block resolves
 
     struct GpuOnlyRegion {
         u64 cpu_address;
@@ -775,6 +1220,21 @@ private:
         std::shared_ptr<std::atomic<bool>> done; ///< Set by the GPU thread past the region's last use
     };
     std::map<u64, GpuOnlyRegion> m_gpu_only_regions; ///< By GPU address
+    std::map<u64, u64> m_gpu_only_ranges; ///< 214 regions without the sparse flag: GPU address -> size
+    struct GpuOnlyTile {
+        u64 size;
+        u64 region; ///< Start of its GPU-only region
+        u32 memory_handle;
+        u64 offset;
+    };
+    std::map<u64, GpuOnlyTile> m_gpu_only_tiles; ///< The game's memory 216 put in GPU-only regions
+    /// (memory handle, offset) -> (end offset, region) of those tiles, to find shared memory
+    std::map<std::pair<u32, u64>, std::pair<u64, u64>> m_gpu_only_memory;
+    /// Memory mapped into regions that keep their own (handle, offset) -> region
+    std::map<std::pair<u32, u64>, u64> m_shared_memory;
+    std::set<u64> m_shared_regions; ///< GPU-only regions sharing memory: they keep their own
+    u64 m_gpu_only_tile_max{};   ///< Largest such tile, bounds the search
+    u64 m_gpu_only_tile_bytes{}; ///< GPU-only region memory the game maps right now
     std::vector<ReleasedRegion> m_released_regions;
 
     struct GpuMemory {
@@ -1150,18 +1610,18 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
-        // Mario Kart World draws into the top-left corner of its present images: 2560x1440 docked
-        // (in 3840x2160 images), 1920x1080 handheld. It keeps its docked images after a switch to
-        // handheld, and showing all of them put the frame in a corner with stale docked frames
-        // around it.
-        if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL) {
-            if (!Settings::IsDockedMode()) {
-                crop_width = (std::min)(crop_width, 1920U);
-                crop_height = (std::min)(crop_height, 1080U);
-            } else if (layout.width == 3840 && layout.height == 2160) {
-                crop_width = 2560;
-                crop_height = 1440;
-            }
+        // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
+        // into the top-left 1920x1080, the handheld panel's resolution; the console's display
+        // scans out only that region. Showing whole images put the frame in a corner inside black
+        // margins that scaled with the window (seen on Mario Kart World and Splatoon Raiders).
+        if (!Settings::IsDockedMode()) {
+            crop_width = (std::min)(crop_width, 1920U);
+            crop_height = (std::min)(crop_height, 1080U);
+        } else if (system.GetApplicationProcessProgramID() == 0x0400C3F00006E000ULL &&
+                   layout.width == 3840 && layout.height == 2160) {
+            // Mario Kart World docked draws 2560x1440 into the top-left of its 4K images.
+            crop_width = 2560;
+            crop_height = 1440;
         }
         static const u32 env_crop_w = [] {
             const char* v = std::getenv("EDEN_NX2_CROP_WIDTH");

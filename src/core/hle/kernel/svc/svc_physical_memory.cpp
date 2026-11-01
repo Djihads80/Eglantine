@@ -4,10 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_system_control.h"
 #include "core/hle/kernel/svc.h"
 
 namespace Kernel::Svc {
@@ -18,7 +20,10 @@ Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
 
     // Validate size.
     R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
-    R_UNLESS(size < MainMemorySizeMax, ResultInvalidSize);
+    // Switch 2 titles size their heap from the total memory, which exceeds Switch 1's 8 GiB.
+    const size_t max_heap_size =
+        (std::max)(MainMemorySizeMax, KSystemControl::Init::GetIntendedMemorySize());
+    R_UNLESS(size < max_heap_size, ResultInvalidSize);
 
     // Set the heap size.
     KProcessAddress address{};

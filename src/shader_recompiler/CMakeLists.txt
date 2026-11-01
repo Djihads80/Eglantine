@@ -183,6 +183,7 @@ add_library(shader_recompiler STATIC
     ir_opt/lower_fp64_to_fp32.cpp
     ir_opt/lower_int64_to_int32.cpp
     ir_opt/passes.h
+    ir_opt/predicate_mask.h
     ir_opt/position_pass.cpp
     ir_opt/rescaling_pass.cpp
     ir_opt/ssa_rewrite_pass.cpp

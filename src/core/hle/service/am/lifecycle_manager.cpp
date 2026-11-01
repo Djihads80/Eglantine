@@ -12,7 +12,8 @@ namespace Service::AM {
 LifecycleManager::LifecycleManager(Core::System& system, KernelHelpers::ServiceContext& context,
                                    bool is_application)
     : m_system_event(context), m_operation_mode_changed_system_event(context),
-      m_hdcp_state_changed_event(context), m_is_application(is_application) {}
+      m_operation_mode_refresh_event(context), m_hdcp_state_changed_event(context),
+      m_is_application(is_application) {}
 
 LifecycleManager::~LifecycleManager() = default;
 
@@ -22,6 +23,10 @@ Event& LifecycleManager::GetSystemEvent() {
 
 Event& LifecycleManager::GetOperationModeChangedSystemEvent() {
     return m_operation_mode_changed_system_event;
+}
+
+Event& LifecycleManager::GetOperationModeRefreshEvent() {
+    return m_operation_mode_refresh_event;
 }
 
 Event& LifecycleManager::GetHDCPStateChangedEvent() {
@@ -152,6 +157,7 @@ void LifecycleManager::OnOperationAndPerformanceModeChanged(Kernel::KernelCore& 
         m_has_performance_mode_changed = true;
     }
     m_operation_mode_changed_system_event.Signal(kernel);
+    m_operation_mode_refresh_event.Signal(kernel);
     this->SignalSystemEventIfNeeded(kernel);
 }
 

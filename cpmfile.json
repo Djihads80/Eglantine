@@ -9,7 +9,7 @@
         "artifact": "boost-%VERSION%.tar.zst",
         "find_args": "CONFIG OPTIONAL_COMPONENTS headers context system fiber filesystem",
         "hash": "681d97be4386767662e230b2e7c9754d45e709cc5db4e747c23c27d1f5b0e87770bdf19b0bc44dcb0e8349324887bbb8fffb432098f4d0ce74a5043021a90afc",
-        "min_version": "1.57",
+        "min_version": "1.84",
         "package": "Boost",
         "repo": "eden-emulator/ext-boost",
         "version": "1.92.0"
@@ -80,6 +80,13 @@
         "package": "FFmpeg",
         "repo": "crueter-ci/FFmpeg",
         "version": "9.0.2-1790726865-946fcce07b"
+    },
+    "ffmpeg-ci-av1": {
+        "ci": true,
+        "name": "ffmpeg",
+        "package": "FFmpeg",
+        "repo": "Takoroka/ffmpeg-av1",
+        "version": "9.0.2-av1-1"
     },
     "fmt": {
         "hash": "f0da82c545b01692e9fd30fdfb613dbb8dd9716983dcd0ff19ac2a8d36f74beb5540ef38072fdecc1e34191b3682a8542ecbf3a61ef287dbba0a2679d4e023f2",
@@ -208,6 +215,7 @@
         "version": "3.6.2"
     },
     "opus": {
+        "bundled": true,
         "find_args": "MODULE",
         "hash": "9506147b0de35befda8633ff272981cc2575c860874791bd455b752f797fd7dbd1079f0ba42ccdd7bb1fe6773fa5e84b3d75667c2883dd1fb2d0e4a5fa4f8387",
         "min_version": "1.3",

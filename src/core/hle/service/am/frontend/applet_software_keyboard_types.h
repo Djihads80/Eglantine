@@ -30,6 +30,7 @@ enum class SwkbdAppletVersion : u32_le {
     Version327689 = 0x50009, // 5.0.0 - 5.1.0
     Version393227 = 0x6000B, // 6.0.0 - 7.0.1
     Version524301 = 0x8000D, // 8.0.0+
+    Version1310736 = 0x140010, // Switch 2 (Pokemon Pokopia): 0x530-byte config, UTF-8 text
 };
 
 enum class SwkbdType : u32 {

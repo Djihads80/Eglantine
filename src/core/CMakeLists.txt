@@ -1036,6 +1036,7 @@ add_library(core STATIC
     hle/service/server_manager.h
     hle/service/service.cpp
     hle/service/service.h
+    hle/service/nx2_streamplay.h
     hle/service/nx2_stub_interface.h
     hle/service/nx2_gsv.h
     hle/service/services.cpp

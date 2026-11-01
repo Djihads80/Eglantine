@@ -1170,6 +1170,7 @@
     <string name="scaling_filter_lanczos" translatable="false">Lanczos</string>
     <string name="scaling_filter_scale_force" translatable="false">ScaleForce</string>
     <string name="scaling_filter_fsr" translatable="false">AMD FidelityFX Super Resolution</string>
+    <string name="scaling_filter_fsr3" translatable="false">AMD FidelityFX Super Resolution 3</string>
     <string name="scaling_filter_area" translatable="false">Area</string>
     <string name="scaling_filter_zero_tangent" translatable="false">Zero-Tangent</string>
     <string name="scaling_filter_bspline" translatable="false">B-Spline</string>

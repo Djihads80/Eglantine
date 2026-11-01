@@ -49,7 +49,7 @@ GameListModel::~GameListModel() = default;
 void GameListModel::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
     emit PopulatingStarted();
 
-    current_worker.reset();
+    StopWorker();
     removeRows(0, rowCount());
 
     current_worker = std::make_unique<GameListWorker>(vfs, provider, game_dirs,
@@ -157,8 +157,27 @@ void GameListModel::RemoveFavorite(u64 program_id) {
     }
 }
 
+void GameListModel::StopWorker() {
+    if (!current_worker) {
+        return;
+    }
+
+    // The worker may still be inside ProcessEvents further up the stack (a nested event loop
+    // can trigger a repopulate), so stop it now but defer freeing it to the event loop.
+    current_worker->disconnect();
+    current_worker->Stop();
+    current_worker.release()->deleteLater();
+}
+
 void GameListModel::Repopulate() {
-    current_worker.reset();
+    // CreateFactories replaces the content providers a running game reads from. Stopping
+    // emulation repopulates the list anyway, so skip watcher-driven reloads until then.
+    if (QtCommon::system->IsPoweredOn()) {
+        LOG_INFO(Frontend, "Emulation is running, deferring game list reload.");
+        return;
+    }
+
+    StopWorker();
     QtCommon::system->GetFileSystemController().CreateFactories(*QtCommon::vfs);
     PopulateAsync(UISettings::values.game_dirs);
 }

@@ -14,14 +14,16 @@ namespace Service::Audio {
 // Switch 2 "aud:u" (nn::audio::CreateUserClientSessionByHipc). The SDK reaches the Switch 1
 // audio interfaces through it: command 2 returns an object used exactly like
 // IAudioRendererManager (vtable slot 1 = GetWorkBufferSize with a Switch 1 parameter block), so
-// it is backed by Eden's audren:u implementation. The nx2: name keeps unknown commands
-// auto-stubbed and logged.
+// it is backed by Eden's audren:u implementation. Command 1 is nn::audio::OpenAudioOut's
+// manager, called like IAudioOutManager (slot 1 = OpenAudioOut), backed by audout:u. The nx2: name
+// keeps unknown commands auto-stubbed and logged.
 class INx2AudioUserClient final : public ServiceFramework<INx2AudioUserClient> {
 public:
     explicit INx2AudioUserClient(Core::System& system_)
         : ServiceFramework{system_, "nx2:aud:u"} {
         // clang-format off
         static const FunctionInfo functions[] = {
+            {1, &INx2AudioUserClient::GetAudioOutManager, "GetAudioOutManager (guessed)"},
             {2, &INx2AudioUserClient::GetAudioRendererManager, "GetAudioRendererManager (guessed)"},
         };
         // clang-format on
@@ -29,6 +31,16 @@ public:
     }
 
 private:
+    void GetAudioOutManager(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u32 arg = rp.Pop<u32>();
+        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 1 arg={}, returning IAudioOutManager",
+                    arg);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IAudioOutManager>(ctx, system);
+    }
+
     void GetAudioRendererManager(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
         const u32 arg = rp.Pop<u32>();
