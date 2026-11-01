@@ -177,10 +177,11 @@ struct SoftwareBlitEngine::BlitEngineImpl {
     Common::ScratchBuffer<f32> intermediate_src;
     Common::ScratchBuffer<f32> intermediate_dst;
 
-    // Buffers grown for one huge surface (64-256 MiB) are freed after the blit rather than kept
-    // for the rest of the session; the usual sizes stay.
+    // Buffers grown for one large surface are freed after the blit rather than kept for the rest
+    // of the session; small ones stay. 16 MiB kept title 1's boot mip blits (64/16/4/1 MiB levels)
+    // in 16 such buffers, 256 MiB, across its 2D engines.
     void ReleaseLargeBuffers() {
-        constexpr size_t LargeCapacity = 16_MiB;
+        constexpr size_t LargeCapacity = 2_MiB;
         for (auto* const buffer : {&tmp_buffer, &src_buffer, &dst_buffer}) {
             if (buffer->capacity() > LargeCapacity) {
                 buffer->release();
