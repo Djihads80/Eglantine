@@ -162,6 +162,7 @@ bool DmaPusher::Step() {
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
+            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
@@ -442,6 +443,32 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         subchannel->ConsumeSink(system);
         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+    }
+}
+
+void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
+    // Title 1 runs small command lists its culling dispatches fill in each frame. Accurate GPU
+    // mode reads every command list through the caches (safe reads); here only the ones on pages
+    // the GPU has written are, or their draws run with an older frame's words (trees vanish).
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+        return;
+    }
+    bool written = false;
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+        if (const auto device = memory_manager.GpuToCpuAddress(page);
+            device && Tegra::Nx2IsGpuWritten(*device)) {
+            written = true;
+            break;
+        }
+    }
+    if (!written) {
+        return;
+    }
+    // The caches belong to the split's back: it first runs what the front queued (the dispatch
+    // that writes these words among it).
+    VideoCommon::GpuSplit::Get().Drain();
+    if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
+        memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
     }
 }
 
