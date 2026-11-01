@@ -2599,8 +2599,14 @@ bool Image::InitSparseLayers() {
     const u32 block_height = huge_astc ? 1 : VideoCore::Surface::DefaultBlockHeight(info.format);
     const u64 block_bytes = huge_astc ? 4 : VideoCore::Surface::BytesPerBlock(info.format);
     const VkExtent3D granularity = it->formatProperties.imageGranularity;
-    s.tile_width = granularity.width;
-    s.tile_height = granularity.height;
+    // Some drivers report imageGranularity {0, 0, 0} for images that are sparse anyway (AMD on
+    // Windows does it for the sparse texture arrays of this title). DivCeil() below then divides
+    // by zero and the emulator takes a hard 0xC0000094 instead of falling back. Use the format
+    // block size when the driver gives no granularity: it is what the value means for an
+    // uncompressed/BC layout, and the aligned-byte computation right below still has its own
+    // check to reject a granularity that does not match the alignment.
+    s.tile_width = granularity.width != 0 ? granularity.width : block_width;
+    s.tile_height = granularity.height != 0 ? granularity.height : block_height;
     const u64 tile = s.requirements.alignment;
     if (u64{granularity.width / block_width} * (granularity.height / block_height) * block_bytes !=
             tile &&
