@@ -244,6 +244,7 @@
     <string name="update_install_failed">Failed to install update: %1$s</string>
     <string name="home_search">Search</string>
     <string name="home_settings">Settings</string>
+    <string name="loose_dump_all_files_access">Allow All files access so extracted games (exefs/romfs folders) in your game folders can be opened</string>
     <string name="empty_gamelist">No files were found or no game directory has been selected yet.</string>
     <string name="manage_game_folders">Manage game folders</string>
     <string name="select_games_folder_description">Allows Eden to populate the games list</string>
