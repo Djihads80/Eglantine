@@ -46,6 +46,7 @@ using namespace Common::Literals;
 
 u32 GetMemorySizeForInit() {
     switch (Settings::values.memory_layout_mode.GetValue()) {
+    case Settings::MemoryLayout::Memory_Auto:
     case Settings::MemoryLayout::Memory_4Gb:
         return Smc::MemorySize_4GB;
     case Settings::MemoryLayout::Memory_6Gb:
@@ -62,6 +63,7 @@ u32 GetMemorySizeForInit() {
 
 Smc::MemoryArrangement GetMemoryArrangeForInit() {
     switch (Settings::values.memory_layout_mode.GetValue()) {
+    case Settings::MemoryLayout::Memory_Auto:
     case Settings::MemoryLayout::Memory_4Gb:
         return Smc::MemoryArrangement_4GB;
     case Settings::MemoryLayout::Memory_6Gb:

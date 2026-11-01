@@ -25,10 +25,9 @@ public:
     void Update() override;
 
 private:
-    std::string GetGameString(const std::string& title);
-    void UpdateGameStatus(std::string_view game_url, bool use_default);
-
     std::string game_title{};
+    std::string details_buffer{};
+    s64 game_start_time{};
     Core::System& system;
 };
 

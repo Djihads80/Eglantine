@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     // Init settings params
-    QCoreApplication::setOrganizationName(QStringLiteral("eden"));
+    QCoreApplication::setOrganizationName(QStringLiteral("eglantine"));
     QCoreApplication::setApplicationName(QStringLiteral("Eglantine"));
 
     // Increases the maximum open file limit.

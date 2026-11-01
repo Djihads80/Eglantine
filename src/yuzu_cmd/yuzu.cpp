@@ -128,7 +128,7 @@ static LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* exception) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     char path[MAX_PATH];
-    std::snprintf(path, sizeof(path), "%s\\eden-crash-%lu.dmp", directory, GetCurrentProcessId());
+    std::snprintf(path, sizeof(path), "%s\\eglantine-crash-%lu.dmp", directory, GetCurrentProcessId());
     const HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file != INVALID_HANDLE_VALUE) {
@@ -362,7 +362,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         const u16 error_id = u16(load_result) - loader_id;
         LOG_CRITICAL(Frontend,
             "While attempting to load the ROM requested, an error occurred. Please "
-            "refer to the Eden wiki for more information or the Eden discord for "
+            "refer to the Eglantine wiki for more information or the Eglantine discord for "
             "additional help.\n\nError Code: {:04X}-{:04X}\nError Description: {}",
             loader_id, error_id, Loader::ResultStatus(error_id));
         return SDL_APP_FAILURE;
