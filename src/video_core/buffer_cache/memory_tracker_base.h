@@ -63,6 +63,14 @@ public:
         });
     }
 
+    /// Returns true if a region has pages CPU writes no longer fault on (written by the CPU and
+    /// not uploaded since, or written through the cached path)
+    [[nodiscard]] bool IsRegionUntracked(VAddr query_cpu_addr, u64 query_size) noexcept {
+        return IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            return manager->IsRegionModified(Type::Untracked, offset, size);
+        });
+    }
+
     /// Returns true if a region has been marked as Preflushable
     [[nodiscard]] bool IsRegionPreflushable(VAddr query_cpu_addr, u64 query_size) noexcept {
         return IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {

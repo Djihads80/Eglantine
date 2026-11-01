@@ -263,8 +263,46 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
 
 template <class P>
 void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
+    // EDEN_NX2_DOWNLOAD_WINDOW=0 downloads only the range asked for.
+    static const bool window = [] {
+        const char* value = std::getenv("EDEN_NX2_DOWNLOAD_WINDOW");
+        return value == nullptr || value[0] != '0';
+    }();
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
-        DownloadBufferMemory(buffer, device_addr, size);
+        if (!window) {
+            DownloadBufferMemory(buffer, device_addr, size);
+            return;
+        }
+        // Each download waits for the whole GPU, and Mario Kart World's macros and CPU read
+        // GPU-written data a few words at a time: also take the GPU-written pages of the same
+        // buffer in the 64 KiB around the range, so the reads after them find it flushed.
+        // Only whole pages of this buffer: the tracking is per page, and clearing a page this
+        // buffer shares with another would drop the other's GPU-written state and copy bytes
+        // from outside this buffer (taking every page in the window corrupted guest memory
+        // and faulted the GPU within minutes). And only pages still write-protected: a CPU write
+        // there faults and flushes first, so the GPU's data is the newest.
+        constexpr u64 Window = u64{64} << 10;
+        constexpr u64 Page = Core::DEVICE_PAGESIZE;
+        const DAddr owned_begin = Common::AlignUp(buffer.CpuAddr(), Page);
+        const DAddr owned_end = Common::AlignDown(buffer.CpuAddr() + buffer.SizeBytes(), Page);
+        const DAddr begin = (std::max<DAddr>)(Common::AlignDown(device_addr, Window), owned_begin);
+        const DAddr end = (std::min<DAddr>)(Common::AlignUp(device_addr + size, Window), owned_end);
+        const DAddr asked_begin = Common::AlignDown(device_addr, Page);
+        const DAddr asked_end = Common::AlignUp(device_addr + size, Page);
+        boost::container::small_vector<std::pair<DAddr, u64>, 8> ranges{{device_addr, size}};
+        for (DAddr page = begin; page < end; page += Page) {
+            if ((page >= asked_begin && page < asked_end) ||
+                !memory_tracker.IsRegionGpuModified(page, Page) ||
+                memory_tracker.IsRegionUntracked(page, Page)) {
+                continue;
+            }
+            if (ranges.size() > 1 && ranges.back().first + ranges.back().second == page) {
+                ranges.back().second += Page;
+            } else {
+                ranges.emplace_back(page, Page);
+            }
+        }
+        DownloadBufferRanges(buffer, ranges);
     });
 }
 
@@ -2421,31 +2459,40 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
 
 template <class P>
 void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64 size) {
+    const std::array ranges{std::pair<DAddr, u64>{device_addr, size}};
+    DownloadBufferRanges(buffer, ranges);
+}
+
+template <class P>
+void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
+                                          std::span<const std::pair<DAddr, u64>> ranges) {
     boost::container::small_vector<BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
-    memory_tracker.ForEachDownloadRangeAndClear(
-        device_addr, size, [&](u64 device_addr_out, u64 range_size) {
-            const DAddr buffer_addr = buffer.CpuAddr();
-            const auto add_download = [&](DAddr start, DAddr end) {
-                const u64 new_offset = start - buffer_addr;
-                const u64 new_size = end - start;
-                copies.push_back(BufferCopy{
-                    .src_offset = new_offset,
-                    .dst_offset = total_size_bytes,
-                    .size = new_size,
-                });
-                // Align up to avoid cache conflicts
-                constexpr u64 align = 64ULL;
-                constexpr u64 mask = ~(align - 1ULL);
-                total_size_bytes += (new_size + align - 1) & mask;
-                largest_copy = (std::max)(largest_copy, new_size);
-            };
+    for (const auto& [device_addr, size] : ranges) {
+        memory_tracker.ForEachDownloadRangeAndClear(
+            device_addr, size, [&](u64 device_addr_out, u64 range_size) {
+                const DAddr buffer_addr = buffer.CpuAddr();
+                const auto add_download = [&](DAddr start, DAddr end) {
+                    const u64 new_offset = start - buffer_addr;
+                    const u64 new_size = end - start;
+                    copies.push_back(BufferCopy{
+                        .src_offset = new_offset,
+                        .dst_offset = total_size_bytes,
+                        .size = new_size,
+                    });
+                    // Align up to avoid cache conflicts
+                    constexpr u64 align = 64ULL;
+                    constexpr u64 mask = ~(align - 1ULL);
+                    total_size_bytes += (new_size + align - 1) & mask;
+                    largest_copy = (std::max)(largest_copy, new_size);
+                };
 
-            gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, add_download);
-            ClearDownload(device_addr_out, range_size);
-            gpu_modified_ranges.Subtract(device_addr_out, range_size);
-        });
+                gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, add_download);
+                ClearDownload(device_addr_out, range_size);
+                gpu_modified_ranges.Subtract(device_addr_out, range_size);
+            });
+    }
     if (total_size_bytes == 0) {
         return;
     }
