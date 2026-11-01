@@ -978,8 +978,14 @@ FN_MAX_LIMIT_LIST
 
     /// The driver's current memory budget for this process (VK_EXT_memory_budget), in
     /// GetDeviceMemoryUsage() terms: the usage at which the main device-local heap reaches its
-    /// budget. 0 without the extension.
+    /// budget. 0 without the extension. The unused part of the allocator's blocks is not
+    /// subtracted: see GetDeviceMemorySlack().
     u64 GetDeviceMemoryBudget() const;
+
+    /// Memory the allocator holds from the driver in the main device-local heap but has no
+    /// allocation in (the unused part of its blocks). GetDeviceMemoryUsage() does not count it,
+    /// yet the driver does: with the heap at its budget it is not available to new images.
+    u64 GetDeviceMemorySlack() const;
 
     u32 GetSetsPerPool() const {
         return sets_per_pool;

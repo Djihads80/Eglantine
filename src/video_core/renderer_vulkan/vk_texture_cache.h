@@ -69,6 +69,8 @@ public:
 
     u64 GetDeviceMemoryBudget() const;
 
+    u64 GetDeviceMemorySlack() const;
+
     bool CanReportMemoryUsage() const;
 
     /// Images that did not fit the device memory budget so far (see MemoryAllocator).

@@ -254,14 +254,33 @@ void TextureCache<P>::TickFrame() {
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
-                    critical_memory = budget - (std::min)(margin + pressure_margin, budget / 2);
+                    if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
+                        // The usage counted here leaves out the unused part of the allocator's
+                        // blocks, which the driver counts and a full heap cannot hand to a new
+                        // image (RX 7800 XT: 1.06 GiB of it, the whole margin, with the heap at
+                        // its budget for a minute before images stopped fitting). Reserve it
+                        // too: at once when it grows, slowly when it shrinks, so evicting images
+                        // (which leaves partly used blocks) does not chase the threshold down.
+                        const u64 slack = (std::min)(runtime.GetDeviceMemorySlack(), 1536_MiB);
+                        slack_margin = slack >= slack_margin
+                                           ? slack
+                                           : slack_margin - (std::min)(slack_margin - slack, 16_MiB);
+                    }
+                    critical_memory =
+                        budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
-                    ApplyThresholdOverrides(budget_check_frames == 1 || change >= 256_MiB);
+                    const bool log = budget_check_frames == 1 || change >= 256_MiB;
+                    ApplyThresholdOverrides(log);
+                    if (log) {
+                        LOG_INFO(HW_GPU,
+                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
+                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20);
+                    }
                 }
             }
         }

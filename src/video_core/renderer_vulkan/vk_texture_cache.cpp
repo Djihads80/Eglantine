@@ -2016,6 +2016,10 @@ u64 TextureCacheRuntime::GetDeviceMemoryBudget() const {
     return device.GetDeviceMemoryBudget();
 }
 
+u64 TextureCacheRuntime::GetDeviceMemorySlack() const {
+    return device.GetDeviceMemorySlack();
+}
+
 bool TextureCacheRuntime::CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {
     const VkImageAspectFlags aspect_mask = ImageAspectMask(info.format);
     if ((aspect_mask & VK_IMAGE_ASPECT_COLOR_BIT) != 0) {
