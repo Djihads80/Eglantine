@@ -72,25 +72,39 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
 
     fmt::memory_buffer buf;
     fmt::format_to(std::back_inserter(buf), "function '{}({})': port='{}' cmd_buf={{[0]={:#x}", ctx.GetCommand(), function_name, service_name, cmd_buf[0]);
-    // The Switch 2 video decoder sessions are being reverse engineered: dump whole requests.
-    const int last_word = std::string_view{service_name}.starts_with("nx2:vdec") ? 47 : 8;
+    // The Switch 2 video decoder and camera sessions are being reverse engineered: dump whole
+    // requests, and the guest PC that issued a camera request.
+    const bool is_camera = std::string_view{service_name}.starts_with("nx2:camera");
+    const int last_word = std::string_view{service_name}.starts_with("nx2:vdec") ? 47
+                           : is_camera ? 23
+                                       : 8;
     for (int i = 1; i <= last_word; ++i)
         fmt::format_to(std::back_inserter(buf), ", [{}]={:#x}", i, cmd_buf[i]);
+    if (is_camera) {
+        const auto& thread_ctx = ctx.GetThread().GetContext();
+        fmt::format_to(std::back_inserter(buf), ", pc={:#x}, lr={:#x}", thread_ctx.pc,
+                       thread_ctx.lr);
+    }
     buf.push_back('}');
 
     system.GetReporter().SaveUnimplementedFunctionReport(ctx, ctx.GetCommand(), function_name, service_name);
-    UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
     // EDEN_NX2_AUTO_STUB=1 auto-stubs every unknown command without touching the config. Switch 2
     // programs are always auto-stubbed: they still call many commands nobody has implemented.
     static const bool env_auto_stub = std::getenv("EDEN_NX2_AUTO_STUB") != nullptr;
     const auto* const caller = ctx.GetThread().GetOwnerProcess();
-    if (Settings::values.use_auto_stub || env_auto_stub ||
-        std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
-        (caller != nullptr && caller->IsSwitch2())) {
-        LOG_WARNING(Service, "Using auto stub fallback!");
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+    const bool auto_stub = Settings::values.use_auto_stub || env_auto_stub ||
+                           std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
+                           (caller != nullptr && caller->IsSwitch2());
+    if (!auto_stub) {
+        UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
+        return;
     }
+
+    // Auto-stubbed calls must not reach UNIMPLEMENTED_MSG: with debug asserts enabled it would
+    // stop the emulator before the fallback response is written.
+    LOG_WARNING(Service, "Using auto stub fallback for {}", fmt::to_string(buf));
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(ResultSuccess);
 }
 
 void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
