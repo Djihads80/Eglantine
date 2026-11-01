@@ -35,6 +35,17 @@ void ShaderCache::InvalidateRegion(VAddr addr, size_t size) {
     RemovePendingShaders();
 }
 
+void ShaderCache::InvalidateRegions(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    if (sequences.empty()) {
+        return;
+    }
+    std::scoped_lock lock{invalidation_mutex};
+    for (const auto& [addr, size] : sequences) {
+        InvalidatePagesInRegion(addr, size);
+    }
+    RemovePendingShaders();
+}
+
 void ShaderCache::OnCacheInvalidation(VAddr addr, size_t size) {
     std::scoped_lock lock{invalidation_mutex};
     InvalidatePagesInRegion(addr, size);
