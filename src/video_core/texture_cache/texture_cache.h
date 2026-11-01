@@ -446,9 +446,9 @@ void TextureCache<P>::TickFrame() {
                  image_bytes >> 20);
         std::partial_sort(largest.begin(), largest.begin() + std::min<size_t>(12, largest.size()),
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-        for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
+        for (size_t i = 0; i < std::min<size_t>(8, largest.size()); ++i) {
             const Image& image = *largest[i].second;
-            LOG_DEBUG(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
+            LOG_INFO(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
                      largest[i].first >> 20, image.gpu_addr, image.info.size.width, image.info.size.height,
                      image.info.size.depth, image.info.resources.layers, image.info.resources.levels,
                      static_cast<u32>(image.info.format), static_cast<u32>(image.info.type),
@@ -458,7 +458,7 @@ void TextureCache<P>::TickFrame() {
         for (const auto& [format, total] : by_format) formats.emplace_back(total.first, format);
         std::sort(formats.rbegin(), formats.rend());
         for (size_t i = 0; i < std::min<size_t>(8, formats.size()); ++i) {
-            LOG_DEBUG(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
+            LOG_INFO(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
                      by_format[formats[i].second].second);
         }
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
