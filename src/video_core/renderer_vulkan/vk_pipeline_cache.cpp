@@ -341,6 +341,22 @@ bool GraphicsPipelineCacheKey::operator==(const GraphicsPipelineCacheKey& rhs) c
     return std::memcmp(&rhs, this, Size()) == 0;
 }
 
+namespace {
+// NVIDIA's and AMD's drivers keep a disk cache of built pipelines of their own. Eden's copy on top
+// only kept every pipeline the title ever built in host memory (title 1: a 245 MB file, ~0.35 GB
+// of RAM for the session) and copied it whole at each save, which stalled frames; pipelines built
+// no slower without it.
+bool DriverCachesPipelines(const Device& device) {
+    switch (device.GetDriverID()) {
+    case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
+    case VK_DRIVER_ID_AMD_PROPRIETARY:
+        return true;
+    default:
+        return false;
+    }
+}
+} // Anonymous namespace
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, Scheduler& scheduler_,
                              DescriptorPool& descriptor_pool_,
@@ -354,7 +370,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       render_pass_cache{render_pass_cache_}, buffer_cache{buffer_cache_},
       texture_cache{texture_cache_}, shader_notify{shader_notify_},
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
-      use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue()},
+      use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
+                                !DriverCachesPipelines(device_)},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
