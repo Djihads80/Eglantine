@@ -132,6 +132,8 @@ add_library(core STATIC
     file_sys/program_metadata.h
     file_sys/registered_cache.cpp
     file_sys/registered_cache.h
+    file_sys/nup_container.cpp
+    file_sys/nup_container.h
     file_sys/romfs.cpp
     file_sys/romfs.h
     file_sys/romfs_factory.cpp
@@ -1156,6 +1158,8 @@ add_library(core STATIC
     loader/nso.h
     loader/nsp.cpp
     loader/nsp.h
+    loader/nup.cpp
+    loader/nup.h
     loader/xci.cpp
     loader/xci.h
     memory.cpp
