@@ -143,6 +143,13 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
     if (Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
         impl->hardware.emplace();
         impl->hardware->InitializeForDecoder(*impl->context, *impl->decoder);
+    } else {
+        // 2560x1440 VP9 movies decoded below 60 fps on one thread, and the client aborts when no
+        // frame is ready. Frame threads add a few frames of latency, covered by the client's
+        // queued inputs.
+        AVCodecContext* codec_context = impl->context->GetCodecContext();
+        codec_context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        codec_context->thread_count = 4;
     }
     impl->open = impl->context->OpenContext(*impl->decoder);
     LOG_INFO(HW_GPU, "nx2 video: decoder for \"{}\" {}", mime, impl->open ? "open" : "failed to open");
