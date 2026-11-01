@@ -779,10 +779,13 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             .flags = flags,
             .physicalDevice = physical,
             .device = *logical,
-            // 64 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
+            // 32 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
             // texture sizes left ~38% of the image blocks empty (2 GB of an 8 GB card in title
-            // 1), which the texture cache counted as used and kept evicting textures for.
-            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
+            // 1), which the texture cache counted as used and kept evicting textures for. With
+            // 64 MiB ones textures created and deleted by the thousand still left ~1.7 GB of holes
+            // after ten minutes; VMA also gives allocations over half a block (16 MiB) their own
+            // memory, which goes back to the driver when they are freed.
+            .preferredLargeHeapBlockSize = 32u * 1024u * 1024u,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = heap_size_limit != 0 ? heap_size_limits.data() : nullptr,

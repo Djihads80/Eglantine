@@ -209,7 +209,10 @@ MemoryAllocator::~MemoryAllocator() = default;
 vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
 {
     const VmaAllocationCreateInfo alloc_ci = {
-            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) |
+            // Best fit: images freed by the thousand leave holes in the blocks, which new ones
+            // should fill before VMA takes another block.
+            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
+                                                           VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT) |
                      (dedicated ? VmaAllocationCreateFlags{VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT}
                                : VmaAllocationCreateFlags{0}),
             .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
