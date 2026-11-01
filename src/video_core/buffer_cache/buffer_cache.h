@@ -234,8 +234,17 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
                                            device_addr_end_aligned - device_addr_start_aligned);
-    memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
-                                            device_addr_end_aligned - device_addr_start_aligned);
+    // Mark only data that the GPU wrote. A mark stays for the session and sends later GPU writes
+    // in the range to a download at each fence.
+    if (!area->preemtive) {
+        memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
+                                                device_addr_end_aligned - device_addr_start_aligned);
+    } else {
+        // The core keeps this area and has no mark. The next GPU write here must arm the range
+        // again, which ends the area and sets the trap.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
+    }
     return area;
 }
 
