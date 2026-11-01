@@ -583,9 +583,13 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
             program != Maxwell::ShaderType::Pixel) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
+        // Passthrough geometry programs (Donkey Kong Bananza's terrain) declare no output stream;
+        // the Maxwell translator handles them from the header's passthrough bit.
+        const bool passthrough = sph.common0.geometry_passthrough != 0;
         if (program == Maxwell::ShaderType::Geometry &&
-            (sph.common0.shader_type != 4 || !sph.common4.max_output_vertices ||
-             sph.common0.stream_out_mask != 1 || sph.common2.threads_per_input_primitive != 1)) {
+            (sph.common0.shader_type != 4 || sph.common2.threads_per_input_primitive != 1 ||
+             (!passthrough &&
+              (!sph.common4.max_output_vertices || sph.common0.stream_out_mask != 1)))) {
             throw Shader::RuntimeError("Unsupported native geometry header");
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
