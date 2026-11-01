@@ -1,0 +1,128 @@
+-- The C compiler identification is AppleClang 21.0.0.21000401
+-- The CXX compiler identification is AppleClang 21.0.0.21000401
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- [DetectArchitecture] Target architecture: arm64
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Could NOT find RenderDoc (missing: RenderDoc_INCLUDE_DIR) 
+-- [CPMUtil] Using system package OpenSSL@4.0.3
+-- Fetching needed dependencies with CPM
+-- [CPMUtil] Using system package Boost@1.92.0
+-- [CPMUtil] Using system package fmt@12.2.0
+-- [CPMUtil] Using system package lz4@ebb370ca83
+-- [CPMUtil] Using system package zstd@1.5.7
+-- [CPMUtil] Using system package nlohmann_json@3.12.0
+-- [CPMUtil] Using system package ZLIB@1.2.12
+-- [CPMUtil] Using system package Opus@a3f0ec02b3
+-- Platform Libraries: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Carbon.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Cocoa.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/IOKit.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreVideo.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreMedia.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Security.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/UniformTypeIdentifiers.framework;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Foundation.framework
+-- [CPMUtil] Using bundled package enet@v1.3.18
+-- Looking for fcntl
+-- Looking for fcntl - found
+-- Looking for poll
+-- Looking for poll - found
+-- Looking for getaddrinfo
+-- Looking for getaddrinfo - found
+-- Looking for getnameinfo
+-- Looking for getnameinfo - found
+-- Looking for gethostbyname_r
+-- Looking for gethostbyname_r - not found
+-- Looking for gethostbyaddr_r
+-- Looking for gethostbyaddr_r - not found
+-- Looking for inet_pton
+-- Looking for inet_pton - found
+-- Looking for inet_ntop
+-- Looking for inet_ntop - found
+-- Performing Test HAS_MSGHDR_FLAGS
+-- Performing Test HAS_MSGHDR_FLAGS - Success
+-- Check size of socklen_t
+-- Check size of socklen_t - done
+-- [CPMUtil] Using bundled package zbic@11b08f2712264bbed731545085cbd9702096ceb7
+-- [CPMUtil] Using bundled package httplib@v0.46.0
+-- Found OpenSSL: /opt/homebrew/lib/libcrypto.dylib (found suitable version "4.0.3", minimum required is "3.0.0") found components: Crypto SSL
+-- [CPMUtil] Using bundled package oaknut@v2.0.3
+-- [CPMUtil] Using system package VulkanHeaders@1.4.363
+-- [CPMUtil] Using system package VulkanUtilityLibraries@1.4.363
+-- [CPMUtil] Using bundled package frozen@61dce5ae18
+-- [CPMUtil] Using bundled package SimpleIni@v4.25
+-- [CPMUtil] Using bundled package cubeb@fa02160712
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY
+-- Performing Test COMPILER_HAS_HIDDEN_INLINE_VISIBILITY - Success
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR
+-- Performing Test COMPILER_HAS_DEPRECATED_ATTR - Success
+-- Looking for include file pulse/pulseaudio.h
+-- Looking for include file pulse/pulseaudio.h - not found
+-- Looking for include file alsa/asoundlib.h
+-- Looking for include file alsa/asoundlib.h - not found
+-- Looking for include file jack/jack.h
+-- Looking for include file jack/jack.h - not found
+-- Looking for include file sndio.h
+-- Looking for include file sndio.h - not found
+-- Looking for include file aaudio/AAudio.h
+-- Looking for include file aaudio/AAudio.h - not found
+-- Looking for include file AudioUnit/AudioUnit.h
+-- Looking for include file AudioUnit/AudioUnit.h - found
+-- Looking for include file audioclient.h
+-- Looking for include file audioclient.h - not found
+-- Looking for include files windows.h, mmsystem.h
+-- Looking for include files windows.h, mmsystem.h - not found
+-- Looking for include file SLES/OpenSLES.h
+-- Looking for include file SLES/OpenSLES.h - not found
+-- Looking for include file sys/soundcard.h
+-- Looking for include file sys/soundcard.h - not found
+-- Looking for include file android/log.h
+-- Looking for include file android/log.h - not found
+-- Looking for include file sys/audioio.h
+-- Looking for include file sys/audioio.h - not found
+-- Looking for include file kai.h
+-- Looking for include file kai.h - not found
+-- Could NOT find Doxygen (missing: DOXYGEN_EXECUTABLE) 
+-- [CPMUtil] Using system package SDL3@3.4.16
+-- [CPMUtil] Using system package SPIRV-Headers@1.5.5
+-- [CPMUtil] Using bundled package sirit@v1.0.5
+CMake Warning (policy) at .cache/cpm/sirit/v1.0.5/CMakeLists.txt:37 (set):
+  Policy CMP0218 is not set: The CMAKE_WARN_DEPRECATED and
+  CMAKE_ERROR_DEPRECATED variables are ignored.  Run "cmake --help-policy
+  CMP0218" for policy details.  Use the cmake_policy command to set the
+  policy and suppress this warning.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+-- [CPMUtil] Using bundled package reshade@v6.8.0
+patching file 'source/effect_lexer.cpp'
+-- [CPMUtil] Using system package libusb@v1.0.29
+-- [CPMUtil] Using bundled package VulkanMemoryAllocator@v3.3.0
+patching file 'include/vk_mem_alloc.h'
+-- Downloading time zone data...
+-- [CPMUtil] Using bundled package nx_tzdb@230326
+-- [CPMUtil] Using bundled package gamemode@ce6fe122f3
+-- [CPMUtil] Using bundled package moltenvk@v1.4.1-ryujinx
+-- Found libusb: /opt/homebrew/Cellar/libusb/1.0.30/lib/libusb-1.0.dylib (found version "1.0.30")
+-- The ASM compiler identification is AppleClang
+-- Found assembler: /usr/bin/cc
+CMake Warning (policy) at src/dynarmic/CMakeLists.txt:119 (find_package):
+  Policy CMP0167 is not set: The FindBoost module is removed.  Run "cmake
+  --help-policy CMP0167" for policy details.  Use the cmake_policy command to
+  set the policy and suppress this warning.
+This warning is for project developers.  Use -Wno-author or -Wno-policy to
+suppress it.
+
+-- Found Boost: /opt/homebrew/lib/cmake/Boost-1.92.0/BoostConfig.cmake (found suitable version "1.92.0", minimum required is "1.57")
+-- mach/mach_exc.defs location: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/Kernel.framework/Headers
+-- [GetSCMRev] Git commit: 2108c0ea93b74976070fa128dc8164eec9c0a304
+-- [GetSCMRev] Git tag: mkw-eglantine
+-- [GetSCMRev] Git refspec: mkw-eglantine
+-- Configuring done (27.0s)
+-- Generating done (0.2s)
+-- Build files have been written to: /Users/erickzavaleta/eglantine/build
