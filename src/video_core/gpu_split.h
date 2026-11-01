@@ -13,6 +13,10 @@
 
 #include "common/common_types.h"
 
+namespace VideoCommon::Nx2Profile {
+enum class Zone : u32;
+}
+
 namespace Core {
 class System;
 }
@@ -107,6 +111,8 @@ public:
     void Publish();
     /// Waits until the back executed everything sent so far.
     void Drain();
+    /// Drain, timed under the given profiler zone.
+    void Drain(Nx2Profile::Zone zone);
 
 private:
     enum class Kind : u64 {

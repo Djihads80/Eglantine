@@ -210,18 +210,22 @@ void GpuSplit::AwaitReleases(GPUVAddr address, u64 size) {
         ++it;
     }
     if (wait) {
-        Drain();
+        Drain(Nx2Profile::Zone::DrainRelease);
         sent_releases.clear();
     }
 }
 
 void GpuSplit::Drain() {
+    Drain(Nx2Profile::Zone::SplitDrain);
+}
+
+void GpuSplit::Drain(Nx2Profile::Zone zone) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
         return;
     }
     Publish();
-    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    Nx2Profile::Scope scope{zone};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
