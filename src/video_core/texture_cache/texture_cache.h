@@ -2661,6 +2661,28 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
     if (!image_id) {
         return NULL_IMAGE_VIEW_ID;
     }
+    if (True(slot_images[image_id].flags & ImageFlagBits::UnwrittenSparse) &&
+        False(slot_images[image_id].flags & ImageFlagBits::Remapped)) {
+        // The GPU is about to render into an image that has no device memory (an unwritten
+        // Switch 2 sparse region). Rendering into it is invalid: Metal faults through
+        // KosmicKrisp (device loss), MoltenVK silently drops the writes. Count the region as
+        // written and look the image up again so this draw lands in a backed image.
+        Image& unbacked = slot_images[image_id];
+        LOG_WARNING(HW_GPU, "Render target in unwritten sparse image {:#x}; backing it first",
+                    unbacked.gpu_addr);
+        Tegra::Nx2SparseMarkWritten(unbacked.gpu_addr, unbacked.guest_size_bytes);
+        unbacked.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+        delete_state = has_deleted_images;
+        do {
+            has_deleted_images = false;
+            image_id = FindOrInsertImage(info, gpu_addr);
+            delete_state |= has_deleted_images;
+        } while (has_deleted_images);
+        has_deleted_images = delete_state;
+        if (!image_id) {
+            return NULL_IMAGE_VIEW_ID;
+        }
+    }
     Image& image = slot_images[image_id];
     const ImageViewType view_type = RenderTargetImageViewType(info);
     SubresourceBase base;
