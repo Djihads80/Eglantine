@@ -358,12 +358,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             LOG_INFO(HW_GPU,
                      "DRAWLOG summary: gpu_high={} draws={} no_pipeline={} configure_failed={} "
                      "stage_buffer_draws={} instanced={} base_instance!=0={} macro_calls={} "
-                     "gpu_dirty_macro_params={} of_which_stale={}",
+                     "gpu_dirty_macro_params={} of_which_stale={} no_pipeline: rejected={} async_pending={}",
                      Settings::IsGPULevelHigh(), total, counters.no_pipeline.load(),
                      counters.configure_failed.load(), counters.stage_buffer_draws.load(),
                      counters.instanced_draws.load(), counters.base_instance_draws.load(),
                      counters.macro_calls.load(), counters.dirty_macro_calls.load(),
-                     counters.dirty_macro_stale.load());
+                     counters.dirty_macro_stale.load(), counters.rejected_stage.load(),
+                     counters.async_pending.load());
         }
     }
     static u32 native_capture_count{};
