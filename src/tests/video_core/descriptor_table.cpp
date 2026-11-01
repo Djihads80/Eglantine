@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <catch2/catch_test_macros.hpp>
 #include "video_core/texture_cache/descriptor_table.h"
@@ -94,6 +95,41 @@ TEST_CASE("Repeated image deletion cannot reuse stale descriptor view IDs", "[de
                 REQUIRE_FALSE(channels[channel].Read(memory, index).second);
             }
         }
+    }
+}
+
+TEST_CASE("Descriptor limits clear exposed slots after shrink and growth", "[descriptor_table]") {
+    struct AddressMemory {
+        void ReadBlockUnsafe(GPUVAddr address, void* output, size_t size) const {
+            std::memcpy(output, &address, size);
+        }
+    } memory;
+    constexpr std::array<u32, 9> limits{0, 63, 64, 127, 128, 0x7ffff, 0x80000, 0x80001, 0x100000};
+    for (const u32 limit : limits) {
+        VideoCommon::DescriptorTable<u64> table;
+        REQUIRE(table.Synchronize(0x1000, limit));
+        CHECK(table.Read(memory, limit).second);
+        CHECK_FALSE(table.Read(memory, limit).second);
+        table.Refresh(0x1000, 0);
+        table.Invalidate();
+        CHECK(table.Read(memory, 0).second);
+        CHECK_FALSE(table.Read(memory, 0).second);
+        table.Refresh(0x1000, limit);
+        CHECK(table.Read(memory, limit).second);
+        CHECK_FALSE(table.Read(memory, limit).second);
+        table.Invalidate();
+        table.Invalidate();
+        CHECK(table.Read(memory, limit).second);
+        CHECK_FALSE(table.Read(memory, limit).second);
+    }
+    for (const u32 limit :
+         {std::numeric_limits<u32>::max(), std::numeric_limits<u32>::max() - 0x1000}) {
+        VideoCommon::DescriptorTable<u64> table;
+        table.Refresh(0x1000, limit);
+        CHECK(table.Read(memory, 0).second);
+        table.Invalidate();
+        CHECK(table.Read(memory, 0).second);
+        CHECK_FALSE(table.Read(memory, 0).second);
     }
 }
 
