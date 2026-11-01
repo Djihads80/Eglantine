@@ -565,13 +565,22 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .has_broken_spirv_subgroup_mask_vector_extract_dynamic =
             driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
             device.GetDriverVersion() < VK_MAKE_VERSION(512, 672, 0),
-        .has_broken_spirv_subgroup_shuffle = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
+        // Expanded into one broadcast per lane, which is slow on 64/128-wide Adreno warps; only
+        // needed where the driver does not report shuffle support.
+        .has_broken_spirv_subgroup_shuffle =
+            driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
+            !device.IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_SHUFFLE_BIT),
         .max_subgroup_size = device.GetMaxSubgroupSize(),
         .has_broken_robust =
             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
         .max_user_clip_distances = device.GetMaxUserClipDistances()
     };
+    LOG_INFO(Render_Vulkan, "Subgroups: shuffle {}, relative {}, max size {}, warp 32 in compute {}, emulated shuffles {}",
+             device.IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_SHUFFLE_BIT),
+             profile.support_shuffle_relative, profile.max_subgroup_size,
+             device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT),
+             profile.has_broken_spirv_subgroup_shuffle);
 
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),

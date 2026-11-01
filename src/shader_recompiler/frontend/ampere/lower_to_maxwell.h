@@ -1458,13 +1458,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             // g / g+8 at columns 2i, 2i+1. Rebuilt from shuffles with HFMA2, accumulating in R252/R253.
             // This software expansion is large and remains opt-in for bounded validation runs.
             // On by default for Donkey Kong Bananza on desktop: rejected, its 3D scene stays blue.
-            // Not on Android, where the expansion ran DK at about one frame a second on Adreno.
             const char* const mode = std::getenv("EDEN_NX2_TENSOR");
-#ifdef __ANDROID__
-            constexpr bool emulate_by_default = false;
-#else
             const bool emulate_by_default = Settings::GetCurrentProgramID() == 0x040074A01BF12000ULL;
-#endif
             const bool emulate = mode ? std::string_view{mode} == "emulate" : emulate_by_default;
             if (!emulate)
                 return fail(index, "native matrix multiply (set EDEN_NX2_TENSOR=emulate)");
