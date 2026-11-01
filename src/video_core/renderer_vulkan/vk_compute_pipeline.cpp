@@ -134,6 +134,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);
         }
+        // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
+        // lives.
+        spv_module.reset();
         std::scoped_lock lock{build_mutex};
         is_built = true;
         build_condvar.notify_one();
