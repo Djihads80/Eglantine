@@ -138,6 +138,12 @@ public:
         ResetStorageBit(id.Value());
     }
 
+    /// Returns true when id refers to a slot that currently holds an object.
+    [[nodiscard]] bool contains(SlotId id) const noexcept {
+        return id && id.Value() / 64 < stored_bitset.size() &&
+               ((stored_bitset[id.Value() / 64] >> (id.Value() % 64)) & 1) != 0;
+    }
+
     [[nodiscard]] Iterator begin() noexcept {
         const auto it = std::ranges::find_if(stored_bitset, [](u64 value) { return value != 0; });
         if (it == stored_bitset.end()) {
