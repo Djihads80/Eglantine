@@ -36,6 +36,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_download_area.h"
 
 namespace Core::Memory {
@@ -549,8 +550,12 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
-        if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
-            !ReadTrapsEnabled()) {
+        if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
+            return;
+        }
+        if (!ReadTrapsEnabled()) {
+            // Slow-path reads can still flush these pages: they must not hit a cached read area.
+            read_trap_generation.fetch_add(1, std::memory_order_release);
             return;
         }
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
@@ -780,6 +785,7 @@ struct Memory::Impl {
         if (!gpu_device_memory) [[unlikely]] {
             gpu_device_memory = &system.Host1x().MemoryManager();
         }
+        VideoCommon::Nx2Profile::AddShared(VideoCommon::Nx2Profile::SharedCounter::SlowPathReads, 1);
         const size_t core = system.GetCurrentHostThreadID();
         auto& current_area = rasterizer_read_areas[core];
         if (const u64 generation = read_trap_generation.load(std::memory_order_acquire);
@@ -793,8 +799,11 @@ struct Memory::Impl {
                 [[likely]] {
                 return;
             }
-            DisarmReadTraps(v_address, size);
+            // Flush first: another core's read of the page must fault until the data is there.
             current_area = system.GPU().OnCPURead(address, size);
+            if (current_area.release_read_trap) {
+                DisarmReadTraps(v_address, size);
+            }
         });
     }
 

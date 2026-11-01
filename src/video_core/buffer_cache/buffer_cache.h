@@ -214,6 +214,32 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     DAddr device_addr_end_aligned = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
+    if (!AsyncBufferDownloads()) {
+        const u64 aligned_size = device_addr_end_aligned - device_addr_start_aligned;
+        if (IsRangeCovered(read_back_ranges, device_addr_start_aligned, aligned_size)) {
+            area->preemtive = true;
+            area->release_read_trap = true;
+            return area;
+        }
+        if (!gpu_modified_ranges.Intersects(device_addr, size)) {
+            // CPU data sharing a page with GPU data: not a read back, and the trap stays armed for
+            // the GPU data. The area must not hide later reads of the rest of the page, whose
+            // writes no longer invalidate read areas once the page has been armed.
+            Nx2Profile::AddShared(Nx2Profile::SharedCounter::ReadsWithoutGpuData, 1);
+            area->preemtive = true;
+            if (gpu_modified_ranges.Intersects(device_addr_start_aligned, aligned_size) ||
+                read_trapped_ranges.Intersects(device_addr_start_aligned, aligned_size)) {
+                area->start_address = device_addr;
+                area->end_address = device_addr + size;
+            }
+            return area;
+        }
+        Nx2Profile::AddShared(Nx2Profile::SharedCounter::PromotedBytes, aligned_size);
+        area->preemtive = false;
+        area->release_read_trap = true;
+        read_back_ranges.Add(device_addr_start_aligned, aligned_size);
+        return area;
+    }
     if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
         area->preemtive = true;
         return area;
@@ -279,11 +305,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
-        if (DownloadsAtFence(new_base_address, size)) {
-            uncommitted_gpu_modified_ranges.Add(new_base_address, size);
-        } else {
-            ArmReadTraps(new_base_address, size);
-        }
+        TrackGpuWrite(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
     // This subtraction in this order is important for overlapping copies.
@@ -700,6 +722,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     Nx2Profile::Add(Nx2Profile::Counter::DownloadBytes, total_size_bytes);
     Nx2Profile::Add(Nx2Profile::Counter::DownloadCopies, downloads.size());
+    Nx2Profile::Add(Nx2Profile::Counter::DownloadFences, 1);
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
     runtime.PreCopyBarrier();
@@ -1605,10 +1628,32 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    if (DownloadsAtFence(device_addr, size)) {
+    TrackGpuWrite(device_addr, size);
+}
+
+template <class P>
+void BufferCache<P>::TrackGpuWrite(DAddr device_addr, u64 size) {
+    if (AsyncBufferDownloads()) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
-    } else {
-        ArmReadTraps(device_addr, size);
+        return;
+    }
+    // Only the part the guest reads back is downloaded: one read page must not make every fence
+    // copy a whole binding.
+    const auto arm = [&](DAddr begin, DAddr end) {
+        Nx2Profile::Add(Nx2Profile::Counter::ArmedWriteBytes, end - begin);
+        ArmReadTraps(begin, end - begin);
+    };
+    DAddr cursor = device_addr;
+    read_back_ranges.ForEachInRange(device_addr, size, [&](DAddr begin, DAddr end) {
+        if (cursor < begin) {
+            arm(cursor, begin);
+        }
+        Nx2Profile::Add(Nx2Profile::Counter::HotWriteBytes, end - begin);
+        uncommitted_gpu_modified_ranges.Add(begin, end - begin);
+        cursor = end;
+    });
+    if (cursor < device_addr + size) {
+        arm(cursor, device_addr + size);
     }
 }
 
@@ -2060,6 +2105,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
     if (total_size_bytes == 0) {
         return;
     }
+    Nx2Profile::Add(Nx2Profile::Counter::SyncDownloads, 1);
 
     if constexpr (USE_MEMORY_MAPS) {
         auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
@@ -2096,6 +2142,11 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     }
     read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
                                  slot_buffers[buffer_id].SizeBytes());
+    if (!do_not_mark) {
+        // Joined buffers live on in the new buffer, and so do the guest's reads of them.
+        read_back_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
+                                  slot_buffers[buffer_id].SizeBytes());
+    }
     bool dirty_index{false};
     boost::container::small_vector<u64, NUM_VERTEX_BUFFERS> dirty_vertex_buffers;
     const auto scalar_replace = [buffer_id](Binding& binding) {

@@ -35,6 +35,7 @@
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -216,11 +217,13 @@ struct GPU::Impl {
     }
 
     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
+        VideoCommon::Nx2Profile::AddShared(VideoCommon::Nx2Profile::SharedCounter::ReadAreaMisses, 1);
         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
         if (raster_area.preemtive) {
             return raster_area;
         }
         raster_area.preemtive = true;
+        VideoCommon::Nx2Profile::AddShared(VideoCommon::Nx2Profile::SharedCounter::SyncFlushes, 1);
         // A guest CPU read of GPU-written memory (reactive flushing): count them, they decide
         // whether buffer data must be copied back at every fence (EDEN_NX2_BUFFER_DOWNLOADS).
         if (static std::atomic<u64> reads{}; (reads.fetch_add(1, std::memory_order_relaxed) & 63) == 0) {

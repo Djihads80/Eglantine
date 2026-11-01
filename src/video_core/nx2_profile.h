@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -80,7 +81,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, 12> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -130,7 +131,23 @@ enum class Counter : u32 {
     SameValueWrites, ///< Of MethodWrites: the register already held the value
     AcquireChecks,  ///< Semaphore acquires evaluated
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    DownloadFences, ///< Fences that copied buffer data back (each breaks the render pass)
+    SyncDownloads,  ///< Buffer downloads a flush waited for (each waits for the host GPU)
+    HotWriteBytes,  ///< GPU writes queued for download at the next fence (per bind, with repeats)
+    ArmedWriteBytes, ///< GPU writes left to read traps (per bind, with repeats)
 };
+
+/// Amounts counted on the guest's threads, which never reach Report.
+enum class SharedCounter : u32 {
+    SlowPathReads,       ///< Guest reads of cached pages outside fastmem
+    ReadAreaMisses,      ///< Of those: asked the GPU (takes both cache locks)
+    SyncFlushes,         ///< Of those: waited for a flush on the GPU thread
+    ReadsWithoutGpuData, ///< Of ReadAreaMisses: read no GPU-written bytes
+    PromotedBytes,       ///< Pages added to the buffers' read back ranges
+    Count,
+};
+
+inline std::array<std::atomic<u64>, static_cast<size_t>(SharedCounter::Count)> g_shared_counters{};
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
 /// while profiling): which buffer downloads anything on the GPU thread reads back.
@@ -142,6 +159,12 @@ inline std::unordered_set<u64>& DmaReadPages() {
 inline void Add(Counter counter, u64 amount) {
     if (Enabled()) {
         t_data.counters[static_cast<size_t>(counter)] += amount;
+    }
+}
+
+inline void AddShared(SharedCounter counter, u64 amount) {
+    if (Enabled()) {
+        g_shared_counters[static_cast<size_t>(counter)].fetch_add(amount, std::memory_order_relaxed);
     }
 }
 
@@ -190,6 +213,25 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    line += fmt::format(" | fences with downloads {:.0f}, sync downloads {:.0f}, writes queued for "
+                        "download {:.0f} KiB, left to read traps {:.0f} KiB",
+                        static_cast<double>(data.counters[8]) * 1e9 / window,
+                        static_cast<double>(data.counters[9]) * 1e9 / window,
+                        static_cast<double>(data.counters[10]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[11]) * 1e9 / 1024.0 / window);
+    // Totals since the last report of any thread (with the GPU thread split, two threads report).
+    const auto take_shared = [](SharedCounter counter) {
+        return g_shared_counters[static_cast<size_t>(counter)].exchange(0, std::memory_order_relaxed);
+    };
+    const u64 slow_path_reads = take_shared(SharedCounter::SlowPathReads);
+    const u64 area_misses = take_shared(SharedCounter::ReadAreaMisses);
+    const u64 reads_without_gpu_data = take_shared(SharedCounter::ReadsWithoutGpuData);
+    const u64 sync_flushes = take_shared(SharedCounter::SyncFlushes);
+    const u64 promoted_kib = take_shared(SharedCounter::PromotedBytes) / 1024;
+    line += fmt::format(" | guest reads since last report: slow path {}, asked GPU {} ({} without "
+                        "GPU data), waited for flush {}, promoted {} KiB",
+                        slow_path_reads, area_misses, reads_without_gpu_data, sync_flushes,
+                        promoted_kib);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

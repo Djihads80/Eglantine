@@ -543,23 +543,23 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
-    /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
-    /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
-    /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
-    bool DownloadsAtFence(DAddr device_addr, u64 size) noexcept {
-        return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
+    static bool IsRangeCovered(const Common::RangeSet<DAddr>& ranges, DAddr device_addr, u64 size) {
+        u64 covered_bytes = 0;
+        ranges.ForEachInRange(device_addr, size, [&](DAddr lower, DAddr upper) {
+            covered_bytes += upper - lower;
+        });
+        return covered_bytes == size;
     }
 
+    /// Queues a GPU write for download at the next fence, or for a read trap where it isn't read.
+    void TrackGpuWrite(DAddr device_addr, u64 size);
+
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
-    /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
+    /// pages, which flushes them once and adds them to read_back_ranges.
     void ArmReadTraps(DAddr device_addr, u64 size) {
         const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
         const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
-        u64 armed_bytes = 0;
-        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
-            armed_bytes += upper - lower;
-        });
-        if (armed_bytes == end - begin) {
+        if (IsRangeCovered(read_trapped_ranges, begin, end - begin)) {
             return;
         }
         read_trapped_ranges.Add(begin, end - begin);
@@ -567,6 +567,9 @@ private:
     }
 
     Common::RangeSet<DAddr> read_trapped_ranges;
+    /// Pages whose GPU data the guest CPU has read: later reads skip the flush and rely on
+    /// downloads at fences, e.g. collision meshes skinned by compute shaders.
+    Common::RangeSet<DAddr> read_back_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
