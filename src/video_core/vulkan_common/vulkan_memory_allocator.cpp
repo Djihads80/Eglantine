@@ -242,11 +242,32 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
                         ci.arrayLayers, static_cast<u32>(ci.format));
         }
+        pressure_events.fetch_add(1, std::memory_order_relaxed);
         VmaAllocationCreateInfo relaxed = alloc_ci;
         relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
     }
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
+        // Still out of device memory: a real image in host memory (slow, but valid) beats one
+        // with nothing bound, which AMD's drivers do not survive being sampled.
+        VmaAllocationCreateInfo host = alloc_ci;
+        host.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        host.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        host.preferredFlags = 0;
+        result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        static u32 host_logged{};
+        if (result == VK_SUCCESS && host_logged++ < 16) {
+            LOG_WARNING(Render_Vulkan,
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) is out of device memory; "
+                        "placed in host memory",
+                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
+                        ci.arrayLayers, static_cast<u32>(ci.format));
+        }
+    }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
+        if (!huge) {
+            pressure_events.fetch_add(1, std::memory_order_relaxed);
+        }
         // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
         // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
         // nothing bound, so views and copies still work, instead of aborting.
