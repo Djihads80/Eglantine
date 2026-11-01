@@ -125,6 +125,7 @@ template <class P>
 void TextureCache<P>::RunGarbageCollector() {
     bool high_priority_mode = false;
     bool aggressive_mode = false;
+    bool evict_old_costly = false;
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
     const auto Configure = [&](bool allow_aggressive) {
@@ -139,7 +140,8 @@ void TextureCache<P>::RunGarbageCollector() {
         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
-    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode](ImageId image_id) {
+    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
+                          &evict_old_costly](ImageId image_id) {
         if (num_iterations == 0) {
             return true;
         }
@@ -149,7 +151,8 @@ void TextureCache<P>::RunGarbageCollector() {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
-        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
+        if ((!aggressive_mode && !evict_old_costly && True(image.flags & ImageFlagBits::CostlyLoad)) ||
+            (!high_priority_mode && must_download)) {
             return false;
         }
         if (must_download) {
@@ -176,6 +179,15 @@ void TextureCache<P>::RunGarbageCollector() {
         return false;
     };
     Configure(false);
+    static const u64 old_age = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_OLD_AGE");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : 1800ULL;
+    }();
+    if (high_priority_mode && old_age != 0 && frame_tick > old_age) {
+        evict_old_costly = true;
+        lru_cache.ForEachItemBelow(frame_tick - old_age, Cleanup);
+        evict_old_costly = false;
+    }
     lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
     if (total_used_memory >= critical_memory) {
         Configure(true);

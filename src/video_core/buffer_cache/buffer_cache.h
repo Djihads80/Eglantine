@@ -1614,10 +1614,10 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
 
 template <class P>
 BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
-    if (device_addr == 0) {
+    const u64 page = device_addr >> CACHING_PAGEBITS;
+    if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
     }
-    const u64 page = device_addr >> CACHING_PAGEBITS;
     const BufferId buffer_id = page_table[page];
     if (buffer_id) {
         Buffer& buffer = slot_buffers[buffer_id];

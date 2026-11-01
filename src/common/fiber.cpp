@@ -25,8 +25,8 @@ struct Fiber::FiberImpl {
     FiberImpl() {}
 
     u32 canary_1 = CANARY_VALUE;
-    std::array<u8, DEFAULT_STACK_SIZE> stack{};
-    std::array<u8, DEFAULT_STACK_SIZE> rewind_stack{};
+    std::array<u8, DEFAULT_STACK_SIZE> stack;
+    std::array<u8, DEFAULT_STACK_SIZE> rewind_stack;
     u32 canary_2 = CANARY_VALUE;
 
     boost::context::detail::fcontext_t context{};

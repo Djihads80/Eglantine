@@ -4119,7 +4119,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
             .initialized = false,
             .level_view = [&pending](s32 level) { return *pending.views[level]; },
-            .wait = false,
+            .wait = true,
         },
         map, swizzles);
 
