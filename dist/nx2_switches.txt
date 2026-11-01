@@ -1,0 +1,28 @@
+# Switch NX2 - read when the Eglantine GUI starts.
+# One NAME=VALUE per line. Lines starting with # are ignored.
+# A variable already set in the environment wins over this file.
+# Between files, the user copy (%APPDATA%\eden\nx2_switches.txt, or
+# $XDG_CONFIG_HOME/eden/nx2_switches.txt) wins over this one, so editing this file is never
+# needed: copy the lines you want into your own and restart.
+#
+# Restart the emulator after editing.
+
+# --- Performance tuning defaults for Switch 2 ---
+EDEN_NX2_SPLIT=2
+EDEN_NX2_FENCE_BATCH=1
+# Leave buffer downloads disabled on Switch 2 (default): forcing downloads (=1) copies back
+# 90-220 MB/s of buffers CPU never touches, causing mutex contention and dropping FPS by ~38%.
+#EDEN_NX2_BUFFER_DOWNLOADS=1
+#EDEN_NX2_FRAMES_AHEAD=2  # increases input latency; enable only if needed
+
+# --- Workarounds / Debug ---
+# Drop reactive-flushing read traps on Switch 2 programs (faster, CPU may read stale GPU data)
+#EDEN_NX2_NO_REACTIVE=1
+#EDEN_NX2_MME_JIT=0
+#EDEN_NX2_PBFLUSH=0
+#EDEN_NX2_RESETFIX=0
+#EDEN_NX2_SKIP_SAME=0
+#EDEN_NX2_INLINE_DEFER=0
+#EDEN_NX2_SPLIT_SKIP=1
+#EDEN_NX2_AUTO_STUB=1
+#EDEN_NX2_KEEP_ASTC=1
