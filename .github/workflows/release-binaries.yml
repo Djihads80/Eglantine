@@ -563,36 +563,71 @@ jobs:
         run: |
           set -euo pipefail
           mkdir dist
+          # Asset names drop the commit sha: the release tag already identifies the build, and
+          # stable names let the notes table link to them.
+          strip_sha() { sed "s/-${GITHUB_SHA}//" <<< "$1"; }
           for artifact in artifacts/*/; do
             name=$(basename "$artifact")
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
-              cp "$artifact"/*.AppImage "$artifact"/*.tar.gz dist/
+              for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
+                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
+              done
             elif compgen -G "$artifact*.zip" > /dev/null; then
-              cp "$artifact"/*.zip dist/
+              for file in "$artifact"*.zip; do
+                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
+              done
             else
-              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
+              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/$(strip_sha "$name").zip" .)
             fi
           done
+          ls -la dist
 
       - name: Create release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -la dist
-          gh release create "build-${GITHUB_RUN_NUMBER}" dist/* \
+          set -euo pipefail
+          tag="build-${GITHUB_RUN_NUMBER}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+
+          cat > notes.md <<EOF
+          Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
+
+          ## Linux
+
+          Linux packages come as an AppImage (self-contained, needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch) and a tar.gz (uses your system libraries, so Qt 6 and the usual libraries must be installed).
+
+          | Build Type | Standard | PGO (Recommended) | Notes |
+          | --- | --- | --- | --- |
+          | amd64 | [AppImage](${base}/eglantine-linux-x86_64.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64.tar.gz) | [AppImage](${base}/eglantine-linux-x86_64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64-pgo.tar.gz) | Make the AppImage executable (\`chmod +x\`) and run it |
+          | ARM (aarch64) | [AppImage](${base}/eglantine-linux-aarch64.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64.tar.gz) | [AppImage](${base}/eglantine-linux-aarch64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64-pgo.tar.gz) | |
+
+          ## Windows
+
+          Windows packages are in-place zip files: extract and run \`eglantine.exe\`, or \`eden-cli.exe\` from a terminal.
+
+          | Build Type | Standard | PGO (Recommended) | Notes |
+          | --- | --- | --- | --- |
+          | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
+          | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
+
+          ## macOS
+
+          | Build Type | Standard | PGO (Recommended) | Notes |
+          | --- | --- | --- | --- |
+          | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
+
+          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
+          EOF
+
+          gh release create "${tag}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
             --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
-            --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
-
-          Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
-          Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
-          Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
-          macOS: Apple Silicon and macOS 15 or newer. Unzip and move eglantine.app to Applications; eden-cli is inside it, in Contents/MacOS. The app is not notarized, so the first time right-click it and choose Open (or run xattr -dr com.apple.quarantine eglantine.app).
-          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
+            --notes-file notes.md
 
       - name: Ping Discord
         shell: bash
