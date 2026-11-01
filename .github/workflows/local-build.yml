@@ -2,21 +2,17 @@ name: local-build
 
 # Runs only when started by hand (Actions tab or `gh workflow run local-build.yml`), on the
 # self-hosted runner from tools/local-runner. Each OS gets its own release for the commit
-# (<sha10>-linux, -windows, -android), published as soon as that OS is built; macOS and Linux
-# aarch64 come from release-binaries on GitHub's runners and land in the same releases.
+# (<sha10>-linux, -windows, -android), published as soon as that OS is built; macOS comes from
+# release-binaries on GitHub's runners and lands in the same releases. Desktop builds are PGO only.
 on:
   workflow_dispatch:
     inputs:
-      linux:
-        description: Linux x86_64 (tar.gz and AppImage)
-        type: boolean
-        default: true
       linux_pgo:
-        description: Linux x86_64 with Eden's PGO profile
+        description: Linux x86_64 PGO (tar.gz and AppImage)
         type: boolean
         default: true
       windows:
-        description: Windows x86_64 (llvm-mingw, PGO)
+        description: Windows x86_64 PGO (llvm-mingw)
         type: boolean
         default: true
       android:
@@ -47,13 +43,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x86_64
-            os: linux
-            enabled: ${{ inputs.linux }}
           - platform: linux-x86_64-pgo
             os: linux
             enabled: ${{ inputs.linux_pgo }}
-          - platform: windows-x86_64
+          - platform: windows-x86_64-pgo
             os: windows
             enabled: ${{ inputs.windows }}
           - platform: android-arm64

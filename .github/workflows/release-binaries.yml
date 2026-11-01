@@ -6,15 +6,15 @@ on:
       # The local runner (local-build.yml) normally covers Linux x86_64, Windows and Android, so
       # these default to what it can't build.
       linux_x86_64:
-        description: Linux x86_64 (plain and PGO)
+        description: Linux x86_64 PGO
         type: boolean
         default: false
       linux_aarch64:
-        description: Linux aarch64 (plain and PGO)
+        description: Linux aarch64 PGO
         type: boolean
-        default: true
+        default: false
       windows:
-        description: Windows x86_64 (MSVC, and MinGW PGO)
+        description: Windows x86_64 PGO (MinGW)
         type: boolean
         default: false
       macos:
@@ -67,11 +67,8 @@ jobs:
           # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang
           # like Eden does; MSVC cannot read an LLVM .profdata file.
           all='[
-            {"platform": "linux-x86_64", "runner": "ubuntu-24.04", "group": "LINUX_X86_64"},
             {"platform": "linux-x86_64-pgo", "runner": "ubuntu-24.04", "pgo": true, "group": "LINUX_X86_64"},
-            {"platform": "windows-x86_64", "runner": "windows-2022", "group": "WINDOWS"},
             {"platform": "windows-x86_64-pgo", "runner": "windows-2022", "pgo": true, "mingw": true, "group": "WINDOWS"},
-            {"platform": "linux-aarch64", "runner": "ubuntu-24.04-arm", "group": "LINUX_AARCH64"},
             {"platform": "linux-aarch64-pgo", "runner": "ubuntu-24.04-arm", "pgo": true, "group": "LINUX_AARCH64"},
             {"platform": "macos-arm64", "runner": "macos-15", "group": "MACOS"}
           ]'
