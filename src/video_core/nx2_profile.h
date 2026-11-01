@@ -94,21 +94,43 @@ struct ThreadData {
 
 inline thread_local ThreadData t_data;
 
+// The zones wrap hot paths (~150,000 times a second): when profiling is off a scope must cost a
+// flag test, so the timing work stays out of line.
 class Scope {
 public:
     explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled()} {
-        if (!enabled) {
-            return;
+        if (enabled) [[unlikely]] {
+            Begin();
         }
+    }
+
+    ~Scope() {
+        if (enabled) [[unlikely]] {
+            End();
+        }
+    }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+private:
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void Begin() {
         parent_child_ns = t_data.child_ns;
         t_data.child_ns = 0;
         start = Now();
     }
 
-    ~Scope() {
-        if (!enabled) {
-            return;
-        }
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void End() {
         const u64 elapsed = Now() - start;
         auto& data = t_data;
         const auto index = static_cast<size_t>(zone);
@@ -117,10 +139,6 @@ public:
         data.child_ns = parent_child_ns + elapsed;
     }
 
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-
-private:
     Zone zone;
     bool enabled;
     u64 start{};

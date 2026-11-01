@@ -1177,7 +1177,15 @@ private:
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
                      u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);
         }
-
+        // The game's present interval (vblanks per frame, nvnWindowSetPresentInterval) is in the
+        // high half of word 12, the display's refresh rate in the low half: 0x2003c is one frame
+        // per two 60 Hz vblanks. A game at interval 2 advances its clock by two vblanks a frame.
+        const u32 present_interval = std::clamp<u32>((w[12] >> 16) & 0xff, 1, 4);
+        if (present_interval != m_present_interval) {
+            LOG_INFO(Service, "nx2:vi2 present interval {} -> {} (word 12 {:#x})",
+                     m_present_interval, present_interval, w[12]);
+            m_present_interval = present_interval;
+        }
         // Wait for the previous frame's fence instead of this one, so the game prepares frame N+1
         // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
         // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
@@ -1256,12 +1264,14 @@ private:
     // present faster than that. Every slot is reported free here: hold each present until the
     // next vblank instead (title 4 ran at up to 160 fps, its timing and audio with it).
     std::chrono::steady_clock::time_point m_next_vblank{};
+    u32 m_present_interval{1};
 
     void PaceToVblank() {
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
             return;
         }
-        const auto interval = std::chrono::nanoseconds{100'000'000'000LL / 60 / Settings::SpeedLimit()};
+        const auto interval = std::chrono::nanoseconds{100'000'000'000LL * m_present_interval /
+                                                       60 / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
         if (now > m_next_vblank + interval) {
             // Running slower than 60 fps: show at once and don't bank the lost time.

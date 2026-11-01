@@ -179,6 +179,48 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
+    // Mario Kart World picks how many vblanks each frame lasts (its present interval) from a mode
+    // in its frame loop: 0 = from the frame time, 1 = 60 fps, 2 = 30 fps, and advances its clock by
+    // that many vblanks a frame. Forcing 2 gives a steady 30 fps at normal game speed. The mode's
+    // load is found by its code (same in 1.0.0 at 0x3A9EC8 and 1.8.0 at 0x69CC54):
+    //   cmp w9, w1; b.ne; ldr w8, [x19, #0x210]; cbnz w8; ... mov w8, #0x42700000 (60.0f)
+    if (Settings::values.mkw_30fps.GetValue() && name == "main" &&
+        process.GetProgramId() == 0x0400C3F00006E000ULL) {
+        constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
+        constexpr u32 Force30Insn = 0x52800048;  // mov w8, #2
+        const auto& text = nso_header.segments[0];
+        u8* const code = codeset.memory.data() + module_start + text.location;
+        const size_t count = text.size / sizeof(u32);
+        const auto word = [code](size_t index) {
+            u32 value;
+            std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
+            return value;
+        };
+        size_t found = 0;
+        size_t matches = 0;
+        for (size_t i = 2; i + 8 < count; ++i) {
+            if (word(i) != ModeLoadInsn || word(i - 2) != 0x6B01013F || // cmp w9, w1
+                (word(i - 1) & 0xFF00001F) != 0x54000001 ||             // b.ne
+                (word(i + 1) & 0xFF00001F) != 0x35000008) {             // cbnz w8
+                continue;
+            }
+            for (size_t j = i + 2; j < i + 8; ++j) {
+                if (word(j) == 0x52A84E08) { // mov w8, #0x42700000
+                    found = i;
+                    ++matches;
+                    break;
+                }
+            }
+        }
+        if (matches == 1) {
+            std::memcpy(code + found * sizeof(u32), &Force30Insn, sizeof(Force30Insn));
+            LOG_INFO(Loader, "Mario Kart World: 30 FPS mode on (main+{:#x})",
+                     text.location + found * sizeof(u32));
+        } else {
+            LOG_WARNING(Loader, "Mario Kart World: 30 FPS mode not applied ({} matches)", matches);
+        }
+    }
+
 #ifdef HAS_NCE
     // If we are computing the process code layout and using nce backend, patch.
     const auto& code = codeset.CodeSegment();

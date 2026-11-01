@@ -273,6 +273,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, use_video_framerate, tr("Sync to framerate of video playback"),
            tr("Run the game at normal speed during video playback, even when the framerate is "
               "unlocked."));
+    INSERT(Settings, mkw_30fps, tr("Mario Kart World: 30 FPS mode"),
+           tr("Keeps Mario Kart World in its own 30 FPS mode: steady 30 fps at normal game speed "
+              "instead of a slowed-down game when 60 fps can't be held.\nTakes effect at the "
+              "next game launch."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),

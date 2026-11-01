@@ -868,12 +868,13 @@ bool FrontHandledOutsideDrawManager(u32 method) {
 }
 
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
+const bool g_front_skip_same = [] {
+    const char* value = std::getenv("EDEN_NX2_SPLIT_SKIP");
+    return value == nullptr || value[0] != '0';
+}();
+
 bool FrontSkipSame() {
-    static const bool skip = [] {
-        const char* value = std::getenv("EDEN_NX2_SPLIT_SKIP");
-        return value == nullptr || value[0] != '0';
-    }();
-    return skip;
+    return g_front_skip_same;
 }
 
 } // Anonymous namespace
