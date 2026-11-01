@@ -448,6 +448,19 @@ u64 BufferCacheRuntime::CurrentTick() {
     return scheduler.CurrentTick();
 }
 
+bool BufferCacheRuntime::CanReadBuffersDirectly() const noexcept {
+    // EDEN_NX2_DIRECT_DOWNLOADS=0 copies every download.
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_DIRECT_DOWNLOADS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled && device.IsIntegrated();
+}
+
+void BufferCacheRuntime::WaitTick(u64 tick) {
+    scheduler.Wait(tick);
+}
+
 bool BufferCacheRuntime::IsFree(u64 tick) {
     return scheduler.IsFree(tick);
 }
