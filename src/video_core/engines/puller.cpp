@@ -129,6 +129,7 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
     // Switch 2 binds Ampere classes; run them on the Maxwell engines (same method layout for
     // most state). Class 0 unbinds the subchannel.
     switch (engine & 0xFFFF) {
+    case 0x0600: // Mario Kart World's setup macro binds this class for the 3D engine
     case 0xC797: // AMPERE_B
         engine = static_cast<u32>(EngineID::MAXWELL_B);
         break;
