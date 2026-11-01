@@ -1406,8 +1406,15 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     // streams several GB of textures through it).
     constexpr u64 ColdHintMinBytes = 64_KiB;
     if (image.guest_size_bytes >= ColdHintMinBytes &&
-        False(image.flags & (ImageFlagBits::GpuModified | ImageFlagBits::Sparse))) {
-        uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
+        False(image.flags & ImageFlagBits::GpuModified)) {
+        if (True(image.flags & ImageFlagBits::Sparse)) {
+            // Non-contiguous: each mapped piece (title 1 maps its own memory into these).
+            ForEachSparseSegment(image, [&](GPUVAddr, DAddr address, size_t size) {
+                uploaded_ranges.emplace_back(address, size);
+            });
+        } else {
+            uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
+        }
     }
 }
 
