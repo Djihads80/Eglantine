@@ -9,13 +9,13 @@ ARG ANDROID_CMAKE_VERSION=3.31.5
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        autoconf ca-certificates ccache cmake curl file g++ gcc git glslang-tools jq \
+        autoconf ca-certificates ccache curl file g++ gcc git glslang-tools jq \
         libasound2-dev libavcodec-dev libavfilter-dev libboost-context-dev libboost-dev \
         libboost-fiber-dev libglu1-mesa-dev libopus-dev libpulse-dev libswscale-dev libtool \
         libudev-dev libusb-1.0-0-dev libva-dev libvdpau-dev libxkbcommon-x11-0 \
         libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
         libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libgl1 libegl1 \
-        mesa-common-dev nasm ninja-build openjdk-17-jdk-headless pkg-config python3-pip \
+        mesa-common-dev nasm ninja-build openjdk-17-jdk-headless patch pkg-config python3-pip \
         spirv-headers spirv-tools sudo unzip zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,7 +28,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # Qt from the Qt archive (Ubuntu's 6.4 is older than the hosted CI's), with Qt Charts.
-RUN pip3 install --break-system-packages --no-cache-dir aqtinstall \
+# CMake 3.31 (the source tree needs it; Ubuntu ships 3.28).
+RUN pip3 install --break-system-packages --no-cache-dir aqtinstall cmake==3.31.6 \
     && aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 -m qtcharts -O /opt/qt \
     && rm -rf /root/.cache aqtinstall.log
 ENV QT_ROOT_DIR=/opt/qt/${QT_VERSION}/gcc_64
