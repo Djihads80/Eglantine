@@ -159,13 +159,38 @@ public:
 
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
 
+    /// This and the two members below are the hooks of VideoCommon::StreamUniformReusable
+    /// (buffer_cache/uniform_stream_reuse.h).
+    struct StreamUniformRef {
+        VkBuffer buffer;
+        VkDeviceAddress device_address; // base of `buffer`, 0 without buffer device address
+        u32 offset;
+    };
+
     std::span<u8> BindMappedUniformBuffer([[maybe_unused]] size_t stage,
                                           [[maybe_unused]] u32 binding_index,
                                           u32 size) {
         const StagingBufferRef ref = staging_pool.Request(size, MemoryUsage::Upload);
-        guest_descriptor_queue.AddBuffer(ref.buffer, ref.device_address,
-                                         static_cast<u32>(ref.offset), size);
+        last_stream_uniform = StreamUniformRef{
+            .buffer = ref.buffer,
+            .device_address = ref.device_address,
+            .offset = static_cast<u32>(ref.offset),
+        };
+        RebindStreamUniform(last_stream_uniform, size);
         return ref.mapped_span;
+    }
+
+    /// The allocation of the latest BindMappedUniformBuffer call.
+    [[nodiscard]] StreamUniformRef LastStreamUniformRef() const noexcept {
+        return last_stream_uniform;
+    }
+
+    /// Adds `ref` to the descriptor payload exactly as BindMappedUniformBuffer did when it made
+    /// the allocation (it is the very same call). The caller guarantees the allocation is still
+    /// live: made on the scheduler tick that is current now, so the staging pool has not recycled
+    /// it and the GPU has not even started on it.
+    void RebindStreamUniform(const StreamUniformRef& ref, u32 size) {
+        guest_descriptor_queue.AddBuffer(ref.buffer, ref.device_address, ref.offset, size);
     }
 
     [[nodiscard]] VkDeviceSize SparseAlignmentFor(bool sparse_compatible) const noexcept {
@@ -264,6 +289,8 @@ private:
     MultiRangeBufferCache multi_range_buffers;
     boost::container::small_vector<MultiRangeSource, 16> multi_range_sources;
     VkDeviceSize multi_range_total{};
+
+    StreamUniformRef last_stream_uniform{};
 
     bool limit_dynamic_storage_buffers = false;
     u32 max_dynamic_storage_buffers = (std::numeric_limits<u32>::max)();
