@@ -1125,14 +1125,22 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
     const u64 budget = device.GetDeviceMemoryBudget();
     const u64 memory = budget != 0 ? budget : device.GetDeviceLocalMemory();
     const char* keep = std::getenv("EDEN_NX2_KEEP_ASTC");
-    if (memory >= 12_GiB || (keep != nullptr && keep[0] == '1')) {
+    // EDEN_NX2_BC3_THRESHOLD_MIB overrides the 12 GiB cutoff.
+    u64 threshold = 12_GiB;
+    if (const char* value = std::getenv("EDEN_NX2_BC3_THRESHOLD_MIB")) {
+        const u64 mib = std::strtoull(value, nullptr, 10);
+        if (mib != 0) {
+            threshold = mib << 20;
+        }
+    }
+    if (memory >= threshold || (keep != nullptr && keep[0] == '1')) {
         return;
     }
     LOG_WARNING(Render_Vulkan,
                 "Switch 2 program with {} MiB of video memory: ASTC textures are re-compressed to "
-                "BC3 for this session (uncompressed ASTC needs 12 GiB or more). Set "
+                "BC3 for this session (uncompressed ASTC needs {} MiB or more). Set "
                 "EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
-                memory >> 20);
+                memory >> 20, threshold >> 20);
     // Per-game value, like the Switch 2 memory layout: RestoreGlobalState undoes it.
     Settings::values.astc_recompression.SetGlobal(false);
     Settings::values.astc_recompression.SetValue(Settings::AstcRecompression::Bc3);
@@ -2096,13 +2104,17 @@ void TextureCacheRuntime::TickFrame() {
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
         pending_transcodes.pop_front();
     }
-    static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+    static const u32 max_unused_scratch_frames = [] {
+        const char* value = std::getenv("EDEN_NX2_SCRATCH_FRAMES");
+        const u64 frames = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
+        return static_cast<u32>(frames != 0 ? frames : 60);
+    }();
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
         if (!scheduler.IsFree(scratch.tick)) {
             scratch.unused_frames = 0;
             return false;
         }
-        return ++scratch.unused_frames > MAX_UNUSED_SCRATCH_FRAMES;
+        return ++scratch.unused_frames > max_unused_scratch_frames;
     });
     std::erase_if(pending_resolve_shadows, [this](const auto& pending) {
         return scheduler.IsFree(pending.first);
