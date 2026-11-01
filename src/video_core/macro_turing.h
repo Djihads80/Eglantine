@@ -75,15 +75,29 @@ public:
         return d;
     }
 
+    struct ExecutionState {
+        std::array<Word, 24> regs{};
+        Word initialized{}, carry{}, method{}, increment{};
+        Word pc{}, loop_count{}, loop_start{}, loop_end{};
+        std::size_t consumed{};
+        bool end_next{}, stopped{};
+    };
+
     template <typename Read, typename Emit>
     // `parameters` is the load FIFO; `emit` may append to it (MME_DMA_READ_FIFOED).
     Result Execute(std::span<const Word> code, Word start,
                    std::vector<Word>& parameters, Read read, Emit emit) {
-        std::array<Word, 24> regs{};
-        Word initialized{}, carry{}, method{}, increment{};
-        Word pc = start, loop_count{}, loop_start{}, loop_end{};
-        std::size_t consumed{};
-        bool end_next{}, stopped{};
+        ExecutionState state;
+        state.pc = start;
+        return Resume(code, state, parameters, read, emit);
+    }
+
+    // Resume only at an instruction boundary, so already emitted methods are not replayed.
+    template <typename Read, typename Emit>
+    Result Resume(std::span<const Word> code, ExecutionState& state,
+                  std::vector<Word>& parameters, Read read, Emit emit) {
+        auto& [regs, initialized, carry, method, increment, pc, loop_count, loop_start, loop_end,
+               consumed, end_next, stopped] = state;
         std::string_view error;
         const auto fail = [&](std::string_view message) { if (error.empty()) error = message; };
         if (decoded.size() < code.size() / 3) decoded.resize(code.size() / 3);
