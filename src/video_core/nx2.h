@@ -301,6 +301,31 @@ inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
     return gpu_address + size <= it->first + it->second.size;
 }
 
+// GPU-only regions nx2:gpu backs whole (214 without the sparse flag), start -> size: the texture
+// cache gives back the guest memory of images it uploaded from them (release_gpu_only_memory).
+inline std::mutex g_nx2_gpu_only_mutex;
+inline std::map<u64, u64> g_nx2_gpu_only_regions;
+
+inline void Nx2GpuOnlyRegionCreated(u64 gpu_address, u64 size) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions[gpu_address] = size;
+}
+
+inline void Nx2GpuOnlyRegionDestroyed(u64 gpu_address) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions.erase(gpu_address);
+}
+
+inline bool Nx2InGpuOnlyRegion(u64 gpu_address, u64 size) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    auto it = g_nx2_gpu_only_regions.upper_bound(gpu_address);
+    if (size == 0 || it == g_nx2_gpu_only_regions.begin()) {
+        return false;
+    }
+    --it;
+    return gpu_address + size <= it->first + it->second;
+}
+
 /// The GPU renders into [gpu_address, +size): count its blocks as written, so images made there
 /// later get memory (their contents live in the host image, not in guest memory).
 inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {

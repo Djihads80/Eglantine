@@ -1809,21 +1809,34 @@ bool TextureCache<P>::UploadInChunks(Image& image) {
 
 template <class P>
 void TextureCache<P>::ReleaseGpuOnlyMemory(Image& image) {
-    // release_gpu_only_memory: a Switch 2 texture in GPU-only memory is never read by the guest
-    // CPU, and once uploaded its host image holds the data. Marked GPU modified, so whatever
-    // reads that memory through the caches downloads it back first (flushes, eviction), its
-    // backing is given back: Mario Kart World kept textures there twice, in RAM and on the GPU.
-    // Only images the host keeps byte for byte as the guest does, so a download restores them.
+    // release_gpu_only_memory: a Switch 2 texture in GPU-only memory (regions nx2:gpu backs, whole
+    // or sparse) is never read by the guest CPU, and once uploaded its host image holds the data.
+    // Mario Kart World kept textures and render targets there twice, in RAM and on the GPU.
     if (!Settings::values.release_gpu_only_memory.GetValue() ||
         !Settings::CurrentProgramIsSwitch2() || image.info.num_samples != 1 ||
         True(image.flags & (ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
-                            ImageFlagBits::TrimmedLevels | ImageFlagBits::SparseLayers |
-                            ImageFlagBits::Unbacked | ImageFlagBits::Sparse |
-                            ImageFlagBits::Remapped | ImageFlagBits::Rescaled |
-                            ImageFlagBits::CpuModified)) ||
-        !Tegra::Nx2InSparseRegion(image.gpu_addr, image.guest_size_bytes)) {
+                            ImageFlagBits::SparseLayers | ImageFlagBits::Unbacked |
+                            ImageFlagBits::Sparse | ImageFlagBits::Remapped |
+                            ImageFlagBits::Rescaled | ImageFlagBits::CpuModified)) ||
+        !(Tegra::Nx2InGpuOnlyRegion(image.gpu_addr, image.guest_size_bytes) ||
+          Tegra::Nx2InSparseRegion(image.gpu_addr, image.guest_size_bytes))) {
         return;
     }
+    if (True(image.flags & ImageFlagBits::TrimmedLevels)) {
+        // Only the levels the host doesn't keep (most of the bytes): nothing reads them, and the
+        // image uploads the levels it keeps from the guest memory left, after an eviction too.
+        const LevelArray offsets = CalculateMipLevelOffsets(image.info);
+        const u64 dropped = offsets[image.host_level_offset];
+        const u64 layer_stride =
+            image.info.resources.layers > 1 ? image.info.layer_stride : image.guest_size_bytes;
+        for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
+            device_memory.ReleaseMemory(image.cpu_addr + layer * layer_stride, dropped);
+        }
+        return;
+    }
+    // The whole image, marked GPU modified: whatever reads that memory through the caches
+    // (flushes, eviction) downloads it back first. Only images the host keeps byte for byte as
+    // the guest does, so a download restores them.
     MarkModification(image);
     device_memory.ReleaseMemory(image.cpu_addr, image.guest_size_bytes);
 }
