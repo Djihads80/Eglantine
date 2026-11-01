@@ -24,6 +24,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/literals.h"
+#include "common/memory_detect.h"
 #include <ranges>
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -1715,6 +1716,21 @@ void Device::ReleaseCustomBorderColorSamplers(size_t count) const {
 }
 
 u64 Device::GetDeviceMemoryUsage() const {
+    // Without VK_EXT_memory_budget (Qualcomm's driver), what VMA's allocations use. The caches'
+    // own estimate counted sparse and unbacked images at their full size: Mario Kart World
+    // "used" 8.5 GB with 4.7 GB allocated, and evicted textures nonstop until the phone ran out of
+    // memory.
+    if (!extensions.memory_budget) {
+        u64 used{};
+        if (allocator != nullptr) {
+            std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
+            vmaGetHeapBudgets(allocator, heap_budgets.data());
+            for (const size_t heap : valid_heap_memory) {
+                used += heap_budgets[heap].statistics.allocationBytes;
+            }
+        }
+        return used;
+    }
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
@@ -1741,7 +1757,14 @@ u64 Device::GetDeviceMemorySlack() const {
 
 u64 Device::GetDeviceMemoryBudget() const {
     if (!extensions.memory_budget) {
-        return 0;
+        // A phone GPU without the extension shares the system's RAM: a quarter of it (at least
+        // 4 GiB), ~6 GiB on a 24 GiB phone, what Turnip's budget gives on the same one. The
+        // integrated default of 4 GiB was under what Mario Kart World keeps in use.
+        if (!is_integrated) {
+            return 0;
+        }
+        const u64 quarter = Common::GetMemInfo().TotalPhysicalMemory / 4;
+        return (std::max<u64>)(quarter, u64{4} << 30);
     }
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
