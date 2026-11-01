@@ -23,6 +23,7 @@ constexpr size_t MaxInSessions = 4;
 class Manager {
 public:
     explicit Manager(Core::System& system);
+    ~Manager();
 
     /**
      * Acquire a free session id for opening a new audio in.

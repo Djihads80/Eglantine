@@ -22,6 +22,7 @@ constexpr size_t MaxOutSessions = 12;
 class Manager {
 public:
     explicit Manager(Core::System& system);
+    ~Manager();
 
     /**
      * Acquire a free session id for opening a new audio out.
