@@ -8,8 +8,10 @@
 
 #include <atomic>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <QList>
 #include <QObject>
@@ -80,7 +82,7 @@ private:
         PopulateGameList,
     };
 
-    void ScanFileSystem(ScanTarget target, const std::string& dir_path, bool deep_scan,
+    void ScanFileSystem(ScanTarget target, const std::vector<std::filesystem::path>& files,
                         GameListDir* parent_dir);
 
     std::shared_ptr<FileSys::VfsFilesystem> vfs;
