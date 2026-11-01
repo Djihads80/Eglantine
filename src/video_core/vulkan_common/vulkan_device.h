@@ -928,6 +928,11 @@ FN_MAX_LIMIT_LIST
         return 0x00010300U;
     }
 
+    /// Returns true for an integrated GPU (its device-local memory is system memory).
+    bool IsIntegrated() const {
+        return is_integrated;
+    }
+
     /// Returns true when a known debugging tool is attached.
     bool HasDebuggingToolAttached() const {
         return has_renderdoc || has_nsight_graphics || has_radeon_gpu_profiler;
