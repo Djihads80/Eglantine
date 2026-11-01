@@ -591,6 +591,13 @@ std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path)
     return used;
 }
 
+// Without a list of the pipelines recent sessions used (the first boot with this cache, or a session
+// that ended before saving it), this many cached graphics pipelines at most are built at boot and the
+// rest when first needed. A cache that grew over many builds held 48k pipelines, ~21 GB of driver
+// memory built before the game started; the list is only saved at exit or after two minutes, so a
+// boot that ran out of memory never saved one and the next boot did the same.
+constexpr size_t MaxPipelinesWithoutUsedList = 3000;
+
 // EDEN_NX2_PRELOAD_ALL_PIPELINES=1 builds every cached pipeline at boot, as before.
 bool PreloadAllPipelines() {
     static const bool all = [] {
@@ -706,6 +713,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     used_pipelines = LoadUsedPipelines(used_pipelines_filename);
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
+    size_t queued_graphics = 0;
 
     if (use_vulkan_pipeline_cache) {
         vulkan_pipeline_cache_filename = base_dir / "vulkan_pipelines.bin";
@@ -776,10 +784,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
         const u64 hash = key.Hash();
         disk_pipelines.insert(hash);
-        if (!PreloadAllPipelines() && !used_pipelines.empty() && !used_pipelines.contains(hash)) {
+        if (!PreloadAllPipelines() &&
+            (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
+                                    : !used_pipelines.contains(hash))) {
             ++skipped_pipelines;
             return;
         }
+        ++queued_graphics;
 
         workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
             ShaderPools pools;
@@ -807,7 +818,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
     if (skipped_pipelines != 0) {
         LOG_INFO(Render_Vulkan,
-                 "{} cached graphics pipelines no recent session used are built when first needed",
+                 "{} cached graphics pipelines are built when first needed",
                  skipped_pipelines);
     }
 
