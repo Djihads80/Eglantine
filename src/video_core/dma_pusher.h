@@ -232,6 +232,11 @@ public:
     std::vector<ParkedMethod> parked_methods;
     GPUVAddr split_method_end{}; ///< End of the last entry that ended inside a method
 
+    // Fast-path cache for pushbuffer memory spans
+    GPUVAddr pb_cached_gpu_addr{0};
+    size_t pb_cached_size{0};
+    const CommandHeader* pb_cached_ptr{nullptr};
+
     std::array<Engines::EngineInterface*, max_subchannels> subchannels{};
     std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
 
