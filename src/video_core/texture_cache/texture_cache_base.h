@@ -136,6 +136,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};
+    u32 seen_pressure_events{};   ///< Allocator pressure events already answered
+    u64 pressure_margin{};        ///< Extra room under the budget after images did not fit
+    u64 pressure_quiet_frames{};  ///< Frames since the last such image
     u64 astc_opaque_images{};
     u64 astc_alpha_images{};
     std::vector<u8> astc_scan_buffer;
