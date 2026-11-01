@@ -62,6 +62,11 @@ jobs:
             runner: windows-2022
             pgo: true
             mingw: true
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: linux-aarch64-pgo
+            runner: ubuntu-24.04-arm
+            pgo: true
 
     steps:
       - name: Check out source
@@ -82,14 +87,25 @@ jobs:
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache
 
-      - name: Install Qt on Linux
-        if: startsWith(matrix.platform, 'linux')
+      - name: Install Qt on Linux x86_64
+        if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
           host: linux
           target: desktop
           arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Qt on Linux ARM64
+        if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: linux_arm64
+          target: desktop
+          arch: linux_gcc_arm64
           modules: qtcharts
           cache: true
 
@@ -294,6 +310,21 @@ jobs:
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
 
+      # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
+      # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
+      # installed on the system.
+      - name: Package Linux tar.gz
+        if: startsWith(matrix.platform, 'linux')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x build/release/bin/eglantine
+          test -x build/release/bin/eden-cli
+          strip build/release/bin/eglantine build/release/bin/eden-cli
+          tar -czf "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
+            -C build/release/bin eglantine eden-cli
+          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
+
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
       # and its Qt plugin adds the Qt libraries and platform plugins. Runs on glibc 2.39+ systems.
@@ -309,10 +340,11 @@ jobs:
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
           tools="$RUNNER_TEMP/linuxdeploy"
           mkdir -p "$tools"
-          curl -fsSL -o "$tools/linuxdeploy-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          arch=$(uname -m)   # aarch64 or x86_64
+          curl -fsSL -o "$tools/linuxdeploy-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
+          https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage
           chmod +x "$tools"/*.AppImage
           # The desktop file names its icon dev.eglantine.eglantine.
           icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
@@ -321,7 +353,8 @@ jobs:
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
           export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
-          "$tools/linuxdeploy-x86_64.AppImage" --appdir AppDir \
+          export ARCH="$arch"
+          "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
             --executable build/release/bin/eglantine \
             --executable build/release/bin/eden-cli \
             --desktop-file dist/dev.eden_emu.eden.desktop \
@@ -398,12 +431,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Both Linux files go in one artifact: the tar.gz and the AppImage.
       - name: Upload Linux binary
         if: startsWith(matrix.platform, 'linux')
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
+          path: |
+            eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
+            eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -433,7 +469,8 @@ jobs:
           for artifact in artifacts/*/; do
             name=$(basename "$artifact")
             if compgen -G "$artifact*.AppImage" > /dev/null; then
-              cp "$artifact"/*.AppImage dist/
+              # Linux: ship the AppImage and the tar.gz as they are.
+              cp "$artifact"/*.AppImage "$artifact"/*.tar.gz dist/
             else
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
             fi
@@ -453,5 +490,18 @@ jobs:
             --notes "Automatic build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}.
 
           Windows: extract the zip and run eglantine.exe, or eden-cli.exe from a terminal.
-          Linux: make the AppImage executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
+          Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
+          Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
           The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
+
+      - name: Ping Discord
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
+          MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
+            "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" "${GITHUB_SHA::7}" "$URL")
+          jq -n --arg content "$MSG" \
+            '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' \
+          | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"
