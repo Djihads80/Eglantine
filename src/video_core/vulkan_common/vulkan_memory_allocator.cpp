@@ -345,7 +345,17 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    VkResult result = vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        // Video memory is full: place the buffer in system memory the GPU can read.
+        VmaAllocationCreateInfo host_ci = alloc_ci;
+        host_ci.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        host_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        host_ci.preferredFlags = 0;
+        host_ci.memoryTypeBits = 0;
+        result = vmaCreateBuffer(allocator, &ci, &host_ci, &handle, &allocation, &alloc_info);
+    }
+    vk::Check(result);
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     // Log GPU memory allocation for buffers

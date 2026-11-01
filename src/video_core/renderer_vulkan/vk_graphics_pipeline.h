@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -65,6 +66,11 @@ struct hash<Vulkan::GraphicsPipelineCacheKey> {
 
 namespace Vulkan {
 
+/// SPIR-V modules of the graphics stages, null for unused stages. Shared by the pipelines whose
+/// keys differ only in state the shaders do not see (ShaderReuseCache).
+using GraphicsShaderModules =
+    std::array<vk::ShaderModule, Tegra::Engines::Maxwell3D::Regs::MaxShaderStage>;
+
 class Device;
 class PipelineStatistics;
 class RenderPassCache;
@@ -83,7 +89,8 @@ public:
         GuestDescriptorQueue& guest_descriptor_queue,
         DescriptorBufferRing& descriptor_buffer_ring, Common::ThreadWorker* worker_thread,
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
-        const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
+        const GraphicsPipelineCacheKey& key,
+        std::shared_ptr<const GraphicsShaderModules> modules,
         const std::array<const Shader::Info*, NUM_STAGES>& infos);
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
@@ -160,7 +167,7 @@ private:
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;
 
-    std::array<vk::ShaderModule, NUM_STAGES> spv_modules;
+    std::shared_ptr<const GraphicsShaderModules> spv_modules;
 
     std::array<Shader::Info, NUM_STAGES> stage_infos;
     std::array<u32, 5> enabled_uniform_buffer_masks{};

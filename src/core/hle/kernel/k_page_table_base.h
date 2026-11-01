@@ -242,7 +242,8 @@ public:
                                 KMemoryManager::Pool pool, KProcessAddress code_address,
                                 size_t code_size, KSystemResource* system_resource,
                                 KResourceLimit* resource_limit, Core::Memory::Memory& memory,
-                                KProcessAddress aslr_space_start);
+                                KProcessAddress aslr_space_start,
+                                size_t extra_heap_region_size = 0);
 
     Result FinalizeProcess();
     void Finalize();

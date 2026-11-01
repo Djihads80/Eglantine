@@ -304,6 +304,8 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            {42, &INx2GpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -360,6 +362,19 @@ private:
         const u32 id = ctx.CommandBuffer()[2];
         LOG_WARNING(Service, "(STUBBED) nx2:gpu TIPC 21 id={}, signalling completion", id);
         EventFor(id)->Signal(system.Kernel());
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    // 41(u64 name "NvRmGpu", u64 flags, u64 label): u32 device id. Id 0 is invalid to the SDK.
+    // ponytail: ids only count up; track and reuse them if a title creates devices in a loop.
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        LOG_INFO(Service, "nx2:gpu 41 CreateGraphicsDevice flags={:#x} -> {}", ctx.CommandBuffer()[4],
+                 m_next_device);
+        TipcReplyWords(ctx, {m_next_device++});
+    }
+
+    void DestroyGraphicsDevice(HLERequestContext& ctx) {
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -872,6 +887,7 @@ private:
     std::array<Kernel::KEvent*, NumIds> m_events{};
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
+    u32 m_next_device{1};
 };
 
 // Native memory and images handed out by the Switch 2 graphics server (gsv 111/114/423/429/315),
@@ -927,6 +943,9 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     }
     const u64 block_rows = u64{1} << layout.block_height_log2;
     layout.size = layout.pitch * Common::AlignUp(u64{layout.height}, block_rows);
+    // ponytail: words 6/7 are unconfirmed and must not scale the size: multiplying by them made
+    // Mario Kart World abort at boot (0x3200F3 right after its first draws, bisect a0fae9746a).
+    // Scaling again needs a title that under-allocates without it.
     layout.alignment = std::max<u64>(64 * block_rows, 0x1000);
     return layout;
 }
@@ -1030,7 +1049,9 @@ public:
             {1, &INx2Vi2Session::ReturnOne, "Unknown1"},
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
-            {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
+            {11, &INx2Vi2Session::GetNotificationEvent, "GetNotificationEvent"},
+            {13, &INx2Vi2Session::SucceedQuietly, "ReleaseNotificationEvent"},
+            {21, &INx2Vi2Session::GetNotifications, "GetNotifications"},
             {31, &INx2Vi2Session::GetVsyncEvent, "GetVsyncEvent (guessed)"},
             {32, &INx2Vi2Session::GetVsyncEvent, "GetDisplayVsyncEvent (guessed)"},
             // Title 1 calls these ~75 times a second with the display name "default"; the
@@ -1038,6 +1059,17 @@ public:
             // in an 18 minute session).
             {104, &INx2Vi2Session::SucceedQuietly, "Unknown104 (display \"default\")"},
             {105, &INx2Vi2Session::SucceedQuietly, "Unknown105 (display \"default\")"},
+            // Display/client setup (title 2): nothing to track while presents composite directly.
+            {51, &INx2Vi2Session::SucceedQuietly, "ConfigureRequestGroups"},
+            {101, &INx2Vi2Session::OpenDisplay, "OpenDisplay"},
+            {102, &INx2Vi2Session::CloseDisplay, "CloseDisplay"},
+            {111, &INx2Vi2Session::SucceedQuietly, "OpenEndpoint"},
+            {112, &INx2Vi2Session::SucceedQuietly, "CloseEndpoint"},
+            {201, &INx2Vi2Session::RegisterClientState, "RegisterClientState"},
+            {202, &INx2Vi2Session::UnregisterClientState, "UnregisterClientState"},
+            {212, &INx2Vi2Session::GetClientAvailability, "GetClientAvailability"},
+            {251, &INx2Vi2Session::SucceedQuietly, "BindClientDisplay"},
+            {252, &INx2Vi2Session::SucceedQuietly, "UnbindClientDisplay"},
             {228, &INx2Vi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {229, &INx2Vi2Session::PresentClientBuffer, "PresentClientBuffer"},
         });
@@ -1366,6 +1398,13 @@ private:
         }
     }
 
+    // 212(u64 client token): u64 mask of the buffer slots the client may acquire. The auto stub's
+    // zero mask left the client no buffer and it tore its display down.
+    void GetClientAvailability(HLERequestContext& ctx) {
+        constexpr u64 AvailableSlots = 0x7fff;
+        TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots), static_cast<u32>(AvailableSlots >> 32)});
+    }
+
     // 228(u64 token, u32 slot): return a buffer without presenting it.
     void CancelClientBuffer(HLERequestContext& ctx) {
         constexpr u64 AvailableSlots = 0x7fff;
@@ -1390,15 +1429,97 @@ private:
         TipcReplyWords(ctx, {7});
     }
 
-    void ReturnEvent(HLERequestContext& ctx) {
-        LOG_WARNING(Service, "(STUBBED) nx2:vi2 TIPC {} [2]={:#x} [3]={:#x}, returning an event",
-                    ctx.GetCommand(), ctx.CommandBuffer()[2], ctx.CommandBuffer()[3]);
-        auto* event = m_context.CreateEvent(fmt::format("nx2:vi2:Event{}", m_events.size()));
-        m_events.push_back(event);
+    // 11: the notification event the SDK's render thread waits on while it tears a client down.
+    // One event per session, signalled as bitmaps fill (201/202, 101/102); a fresh, never
+    // signalled event per call left that thread blocked forever after 202.
+    void GetNotificationEvent(HLERequestContext& ctx) {
+        if (!m_notification_event) {
+            m_notification_event = m_context.CreateEvent(fmt::format("nx2:vi2:Notify{}", m_events.size()));
+            m_events.push_back(m_notification_event);
+        }
+        if (AnyNotification()) {
+            m_notification_event->Signal(system.Kernel());
+        }
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push(ResultSuccess);
-        rb.PushCopyObjects(ctx, event->GetReadableEvent());
+        rb.PushCopyObjects(ctx, m_notification_event->GetReadableEvent());
     }
+
+    // 21(W: 32 u32 notification counts): hand them over and clear.
+    void GetNotifications(HLERequestContext& ctx) {
+        const auto size = std::min<std::size_t>(ctx.GetWriteBufferSize(), sizeof(m_notifications));
+        if (size != 0) {
+            ctx.WriteBuffer(m_notifications.data(), size);
+        }
+        if (size >= sizeof(m_notifications)) {
+            m_notifications.fill(0);
+            if (m_notification_event) {
+                m_notification_event->Clear(system.Kernel());
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    // 101(u64 display "default", u32 flags): remember which notification index this display owns.
+    void OpenDisplay(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        m_display_notification = w[4];
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    // 102(u64 display): the display retired, wake whoever waits for that notification.
+    void CloseDisplay(HLERequestContext& ctx) {
+        Notify(m_display_notification);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    // 201(u64 token, u32 retire notification, u32 available notification).
+    void RegisterClientState(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 token = u64{w[2]} | (u64{w[3]} << 32);
+        if (token != 0 && w[4] < m_notifications.size() * 32 && w[5] < m_notifications.size() * 32 &&
+            w[4] != w[5]) {
+            m_clients[token] = w[4];
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    // 202(u64 token): the client retired; the SDK's render thread blocks on this notification.
+    void UnregisterClientState(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u64 token = u64{w[2]} | (u64{w[3]} << 32);
+        const auto client = m_clients.find(token);
+        if (client != m_clients.end()) {
+            LOG_INFO(Service, "nx2:vi2 client {:#x} retired, notification {}", token, client->second);
+            Notify(client->second);
+            m_clients.erase(client);
+        }
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    bool AnyNotification() const {
+        return std::ranges::any_of(m_notifications, [](u32 bits) { return bits != 0; });
+    }
+
+    void Notify(u32 index) {
+        if (index >= m_notifications.size() * 32) {
+            return;
+        }
+        m_notifications[index / 32] |= 1U << (index % 32);
+        if (m_notification_event) {
+            m_notification_event->Signal(system.Kernel());
+        }
+    }
+
+    std::map<u64, u32> m_clients; // token -> retire notification index
+    std::array<u32, 32> m_notifications{};
+    u32 m_display_notification{};
+    Kernel::KEvent* m_notification_event{};
 
     // 31(u32 kind) and 32(u32 display): events signalled on every vblank. Title 1's main thread
     // waits on the 32 event until it has fired twice before it submits any GPU work, and hung
@@ -1655,7 +1776,19 @@ private:
             if (release_fence) {
                 m_release_fences[image] = *release_fence;
             }
-            value = m_sync_base + ++m_handed;
+            // After the end of a stream nothing fills an image again, so a release completes at
+            // once: its fence is the syncpoint's current value. Mario Kart World releases its
+            // images after a movie ends and waits for the returned fences; a fence for a frame
+            // that never comes hung the game on a black screen after its title movie.
+            if (release_fence && m_stream_ended && m_inputs.empty() && m_decoded.empty()) {
+                const u32 reached = static_cast<u32>(
+                    system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(m_syncpoint));
+                m_sync_base = reached;
+                m_handed = 0;
+                value = reached;
+            } else {
+                value = m_sync_base + ++m_handed;
+            }
         }
         m_cv.notify_one();
         return {~m_syncpoint, 0, value, 0};
@@ -1699,7 +1832,9 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            m_stream_ended = false;
+            m_end_queued = end;
+            m_ready->room.store(!end && m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
         }
         m_cv.notify_one();
         const u64 id = ++m_submitted;
@@ -1714,6 +1849,8 @@ private:
             std::scoped_lock lk{m_mutex};
             m_inputs.clear();
             m_flush = true;
+            m_stream_ended = false;
+            m_end_queued = false;
             m_ready->room.store(true, std::memory_order_relaxed);
         }
         m_cv.notify_one();
@@ -1787,6 +1924,11 @@ private:
                 lk.lock();
                 // Even an image written during a flush counts: the client waits for its value.
                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
+                if (frame.end) {
+                    m_stream_ended = true;
+                    m_end_queued = false;
+                    m_ready->room.store(false, std::memory_order_relaxed);
+                }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
@@ -1798,7 +1940,11 @@ private:
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            // Not while the end-of-stream input is still being decoded either: re-arming here
+            // would bring back the spurious wakeups before its frame is out.
+            if (!m_stream_ended && !m_end_queued) {
+                m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            }
             const std::string codec = m_codec;
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
@@ -1930,6 +2076,8 @@ private:
     std::deque<u32> m_free;            ///< Output images, in the order the client acquires them
     std::map<u32, Fence> m_release_fences;
     std::deque<Output> m_outputs;      ///< Finished, for 213
+    bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
+    bool m_end_queued{};               ///< End-of-stream input submitted, its frame not out yet
     bool m_flush{};
     bool m_quit{};
     std::thread m_worker;
@@ -1953,6 +2101,7 @@ public:
             {111, &INx2GraphicsSystemSession::CreateNativeMemory, "CreateNativeMemory"},
             {112, &INx2GraphicsSystemSession::DestroyNativeMemory, "DestroyNativeMemory"},
             {114, &INx2GraphicsSystemSession::BindNativeMemory, "BindNativeMemory"},
+            {115, &INx2GraphicsSystemSession::ConfigureNativeMemory, "ConfigureNativeMemory"},
             {314, &INx2GraphicsSystemSession::ConfigureWindowImagePool, "DestroyNativeWindowAliasImagePool"},
             {315, &INx2GraphicsSystemSession::ConfigureWindowImagePool, "CreateNativeWindowAliasImagePool"},
             {423, &INx2GraphicsSystemSession::BindNativeGpuMemory, "BindNativeGpuMemory"},
@@ -2227,6 +2376,12 @@ private:
         m_objects->memories.erase(id);
         LOG_DEBUG(Service, "nx2:gsv 112 DestroyNativeMemory id {}", id);
         TipcReplyWords(ctx, {});
+    }
+
+    // 115(u32 mode, u32): replies a u64 optional memory mode; 0 keeps the nvdrv-compatible path
+    // (an empty reply leaves the request's mode word where the SDK reads it).
+    void ConfigureNativeMemory(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {0, 0});
     }
 
     // 114(u32 id, u64 address, u64 size, u64 flags, u64 offset): back native memory with process

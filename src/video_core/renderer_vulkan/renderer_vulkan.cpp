@@ -357,9 +357,13 @@ void RendererVulkan::RenderAppletCaptureLayer(
             VideoCore::Capture::Layout, *applet_frame.image_view, CaptureFormat);
     }
 
+    // The capture is drawn every frame. With one set of layer resources each frame waited for
+    // the host GPU to finish the previous one; rotating through three lets the GPU thread stay
+    // ahead like the swapchain blit does.
+    constexpr size_t CaptureResourceSets = 3;
     scheduler.RequestOutsideRenderPassOperationContext();
-    blit_applet.DrawToFrame(device, rasterizer, &applet_frame, capture_layers, VideoCore::Capture::Layout, 1,
-                            CaptureFormat);
+    blit_applet.DrawToFrame(device, rasterizer, &applet_frame, capture_layers, VideoCore::Capture::Layout,
+                            CaptureResourceSets, CaptureFormat);
 }
 
 } // namespace Vulkan

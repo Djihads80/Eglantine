@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -255,10 +257,31 @@ private:
         std::fill(output.begin(), output.end(), u8{0});
         std::copy_n(input.begin(), std::min(input.size(), output.size()), output.begin());
         std::fill(inline_output.begin(), inline_output.end(), u8{0});
+        if (name == "/dev/nvhost-tsg-gpu") {
+            // nvgpu TSG: subcontext create hands out a veid; bind/unbind/delete succeed; the SDK
+            // probes the rest and must see them unsupported.
+            if (command.raw == 0xc0105409 && output.size() >= 12) {
+                const u32 veid = static_cast<u32>(std::countr_one(veid_mask));
+                veid_mask |= u64{1} << (veid & 63);
+                std::memcpy(output.data() + 8, &veid, sizeof(veid));
+                return NvResult::Success;
+            }
+            if (command.raw == 0xc004540a && input.size() >= 4) {
+                u32 veid{};
+                std::memcpy(&veid, input.data(), sizeof(veid));
+                veid_mask &= ~(u64{1} << (veid & 63));
+                return NvResult::Success;
+            }
+            if (command.raw != 0xc0045401 && command.raw != 0xc0045402 &&
+                command.raw != 0xc018540b) {
+                return NvResult::NotImplemented;
+            }
+        }
         return NvResult::Success;
     }
 
     std::string name;
+    u64 veid_mask{};
 };
 
 } // namespace Service::Nvidia::Devices

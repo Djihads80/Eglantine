@@ -104,6 +104,11 @@ public:
 
     bool AccelerateHostConditionalRendering();
 
+    /// The payload of the newest semaphore release to cpu_addr that the GPU processed but whose
+    /// guest write still waits for the host GPU to finish the work before it (fences, and every
+    /// release in accurate GPU mode).
+    std::optional<u32> PendingRelease(DAddr cpu_addr);
+
     // Async downloads
     void CommitAsyncFlushes();
 
@@ -173,6 +178,11 @@ protected:
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
     std::mutex cache_mutex;
+
+    /// Releases not written to guest memory yet (PendingRelease). Written on the GPU thread,
+    /// erased by the fence that writes them.
+    ::Common::unordered_map<DAddr, u32> pending_releases;
+    std::mutex pending_releases_mutex;
 
     struct QueryCacheBaseImpl;
     friend struct QueryCacheBaseImpl;

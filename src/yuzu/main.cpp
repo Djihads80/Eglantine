@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QApplication>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "startup_checks.h"
 
 #if YUZU_ROOM
@@ -77,7 +85,66 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 #endif
 }
 
+// The NX2 switches are read from the environment (EDEN_NX2_*), which a GUI launch has no way to
+// set. nx2_switches.txt holds "NAME=VALUE" lines, one per line, '#' comments. A variable already
+// in the real environment always wins, so a launcher script can still override one run; between
+// files the later one wins, so the copy next to the executable (shipped with the build) can be
+// overridden by %APPDATA%\eden\nx2_switches.txt without editing the one that gets replaced.
+static void ParseSwitchFile(const std::filesystem::path& path,
+                            std::vector<std::pair<std::string, std::string>>& entries) {
+    std::ifstream file{path};
+    if (!file) {
+        return;
+    }
+    std::string line;
+    while (std::getline(file, line)) {
+        line.erase(0, line.find_first_not_of(" \t\r\""));
+        line.erase(line.find_last_not_of(" \t\r\"") + 1);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        std::string name = line.substr(0, eq);
+        std::string value = line.substr(eq + 1);
+        name.erase(name.find_last_not_of(" \t") + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        if (!name.empty()) {
+            entries.emplace_back(std::move(name), std::move(value));
+        }
+    }
+}
+
+static void LoadNx2Switches(const char* argv0) {
+    std::vector<std::pair<std::string, std::string>> entries;
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::absolute(argv0, ec);
+    if (!ec) {
+        ParseSwitchFile(exe.parent_path() / "nx2_switches.txt", entries);
+    }
+    if (const char* appdata = std::getenv("APPDATA")) {
+        ParseSwitchFile(std::filesystem::path{appdata} / "eden" / "nx2_switches.txt", entries);
+    } else if (const char* home = std::getenv("HOME")) {
+        ParseSwitchFile(std::filesystem::path{home} / ".config" / "eden" / "nx2_switches.txt",
+                        entries);
+    }
+    for (const auto& [name, value] : entries) {
+        if (std::getenv(name.c_str()) != nullptr) {
+            continue;
+        }
+#ifdef _WIN32
+        _putenv_s(name.c_str(), value.c_str());
+#else
+        setenv(name.c_str(), value.c_str(), 1);
+#endif
+    }
+}
+
 int main(int argc, char* argv[]) {
+    LoadNx2Switches(argv[0]);
+
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {
