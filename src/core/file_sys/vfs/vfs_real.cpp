@@ -256,7 +256,8 @@ std::unique_lock<std::mutex> RealVfsFilesystem::RefreshReference(const std::stri
     return lk;
 }
 
-void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference) {
+void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference,
+                                      const std::string& path) {
     if (in_dtor)
         return;
 
@@ -264,6 +265,11 @@ void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference
 
     // Remove from list.
     this->RemoveReferenceFromListLocked(*reference);
+
+    // Forget the path, unless it was opened again since this file's last reference went away.
+    if (const auto it = cache.find(path); it != cache.end() && it->second.expired()) {
+        cache.erase(it);
+    }
 
     // Close the file.
     if (reference->file) {
@@ -312,7 +318,7 @@ RealVfsFile::RealVfsFile(RealVfsFilesystem& base_, std::unique_ptr<FileReference
     : base(base_), reference(std::move(reference_)), path(path_), size(size_), perms(perms_) {}
 
 RealVfsFile::~RealVfsFile() {
-    base.DropReference(std::move(reference));
+    base.DropReference(std::move(reference), path);
 }
 
 std::string RealVfsFile::GetName() const {
