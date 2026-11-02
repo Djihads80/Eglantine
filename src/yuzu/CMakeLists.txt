@@ -438,13 +438,20 @@ if (WIN32 AND NOT YUZU_USE_BUNDLED_QT)
     # Copy the Qt DLLs and plugins next to the executable. WINDEPLOYQT_EXECUTABLE was never set, so
     # this step ran the emulator itself with windeployqt's arguments and failed every build that
     # uses an installed Qt (the Windows release workflow).
-    if (TARGET Qt6::windeployqt)
+    # A static Qt (MSYS2's qt6-static) is linked into the executable: there is nothing to copy, and
+    # windeployqt fails the build on it ("does not seem to be a Qt executable").
+    get_target_property(YUZU_QT_CORE_TYPE Qt6::Core TYPE)
+    if (YUZU_QT_CORE_TYPE STREQUAL "STATIC_LIBRARY")
+        set(WINDEPLOYQT_EXECUTABLE "")
+    elseif (TARGET Qt6::windeployqt)
         set(WINDEPLOYQT_EXECUTABLE "$<TARGET_FILE:Qt6::windeployqt>")
     else()
         find_program(WINDEPLOYQT_EXECUTABLE NAMES windeployqt6 windeployqt
                      HINTS "${QT_HOST_PATH}/bin" "${QT_TARGET_PATH}/bin")
     endif()
-    if (WINDEPLOYQT_EXECUTABLE)
+    if (YUZU_QT_CORE_TYPE STREQUAL "STATIC_LIBRARY")
+        # Nothing to deploy.
+    elseif (WINDEPLOYQT_EXECUTABLE)
         set(YUZU_EXE_DIR "$<TARGET_FILE_DIR:yuzu>")
         add_custom_command(TARGET yuzu POST_BUILD COMMAND ${WINDEPLOYQT_EXECUTABLE} "$<TARGET_FILE:yuzu>" --dir "${YUZU_EXE_DIR}" --libdir "${YUZU_EXE_DIR}" --plugindir "${YUZU_EXE_DIR}/plugins" --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-translations --verbose 0)
     else()
