@@ -394,7 +394,7 @@ u32 BufferCacheRuntime::SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::R
         LOG_DEBUG(Render_Vulkan, "Vertex repack selection: mask={:#x}, dynamic_input={}",
                   vertex_repack_mask, dynamic_input);
     }
-    return old_mask | vertex_repack_mask;
+    return old_mask ^ vertex_repack_mask;
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
@@ -657,7 +657,8 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset
         return;
     }
     if (buffer != VK_NULL_HANDLE && size != 0 && IsVertexRepacked(index)) {
-        const auto repacked = vertex_repack_pass->Assemble(buffer, offset, size);
+        const auto repacked =
+            vertex_repack_pass->Assemble(buffer, offset, size, u64{offset} + size);
         if (!repacked) {
             return;
         }
@@ -702,7 +703,8 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
         if (handle != VK_NULL_HANDLE && IsVertexRepacked(binding) && bindings.strides[i] == 69 &&
             bindings.sizes[i] > 0) {
             const auto repacked = vertex_repack_pass->Assemble(
-                handle, static_cast<u32>(bindings.offsets[i]), static_cast<u32>(bindings.sizes[i]));
+                handle, static_cast<u32>(bindings.offsets[i]), static_cast<u32>(bindings.sizes[i]),
+                bindings.buffers[i]->SizeBytes());
             if (!repacked) {
                 continue;
             }

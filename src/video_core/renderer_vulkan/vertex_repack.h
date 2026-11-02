@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -31,8 +32,11 @@ struct VertexRepackParameters {
     u32 dispatch_groups;
 };
 
-inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
-    u32 offset, u32 size, u64 alignment, u64 max_storage_range, u32 max_dispatch_groups) {
+inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(u32 offset, u32 size,
+                                                                        u64 alignment,
+                                                                        u64 max_storage_range,
+                                                                        u32 max_dispatch_groups,
+                                                                        u64 buffer_size) {
     if (size == 0 || alignment == 0) {
         return std::nullopt;
     }
@@ -40,9 +44,11 @@ inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
     const u64 output_size = vertices * 72;
     const u64 base = u64{offset} / alignment * alignment;
     const u64 bias = offset - base;
-    const u64 range = (bias + size + 3) / 4 * 4;
+    // The word-rounded range must not run past the end of the source buffer
+    const u64 available = buffer_size > base ? buffer_size - base : 0;
+    const u64 range = (std::min)((bias + size + 3) / 4 * 4, available);
     const u64 groups = (vertices * 18 + 127) / 128;
-    if (output_size > std::numeric_limits<u32>::max() ||
+    if (range < bias + size || output_size > std::numeric_limits<u32>::max() ||
         range > std::numeric_limits<u32>::max() || output_size > max_storage_range ||
         range > max_storage_range || groups > max_dispatch_groups) {
         return std::nullopt;

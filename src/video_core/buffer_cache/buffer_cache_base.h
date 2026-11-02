@@ -525,6 +525,13 @@ private:
 
     void UpdateVertexBufferSlot(u32 index, const Binding& binding);
 
+    /// Flags the vertex buffers overlapping a written range so host copies derived from them are
+    /// rebuilt.
+    void MarkVertexBuffersStale(DAddr device_addr, u64 size);
+
+    /// Re-dirties repacked vertex buffers whose source data was written since they were bound.
+    void RefreshRepackedVertexBuffers();
+
     void ClearDownload(DAddr base_addr, u64 size);
 
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
@@ -545,6 +552,7 @@ private:
     u32 last_index_count = 0;
 
     u32 enabled_vertex_buffers_mask = 0;
+    u32 stale_vertex_buffers_mask = 0;
     u64 vertex_buffers_serial = 0;
     std::array<Binding, 32> v_buffer{};
 
