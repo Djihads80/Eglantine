@@ -631,6 +631,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x224: { // IMAD register / zero-product move
+            if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 && insn.Bits(74, 1) &&
+                (insn.words[2] & ~0x38000ffU) == 0x000e0400 &&
+                (!rewritten_uniform || insn.Bits(87, 3) == 7)) {
+                const u32 c = insn.Bits(64, 8);
+                const u32 condition = insn.Bits(87, 3);
+                mov_imm(252, 1);
+                emit(0x5ca0000000000000ULL | predicate | 251 | (u64{252} << 8) | (u64{255} << 20) |
+                     (u64{condition} << 39) | (u64{insn.Bits(90, 1)} << 42));
+                emit(base(0x5c10000000000000ULL) | (u64{c} << 8) | (u64{251} << 20));
+                break;
+            }
             if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 && insn.Bits(75, 1) &&
                 (insn.words[2] & ~0xaffU) == 0x078e0000) {
                 emit(base(0x5c10000000000000ULL) | (u64{255} << 8) |
@@ -864,13 +875,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x886: { // VOTEU ballot and independent uniform predicate output.
             const u32 output = insn.Bits(81, 3), target = insn.Bits(16, 8);
-            if ((target >= 16 && target != 63) || insn.words[1] ||
+            const u32 target_reg = uniform_register(target);
+            if (target_reg == ~0U || insn.words[1] ||
                 insn.Bits(72, 2) > 2 || native_predicate != 7)
                 return fail(index, "native uniform vote mode");
             const u32 temporary = output == 7 ? 7 : 6 - output;
             const u32 mask = 1U << temporary;
             if (output != 7) emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
-            emit(0x50d8000000070000ULL | uniform_register(target) |
+            emit(0x50d8000000070000ULL | target_reg |
                 (u64{insn.Bits(87, 4)} << 39) | (u64{temporary} << 45) | (u64{insn.Bits(72, 2)} << 48));
             if (output != 7) {
                 emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
@@ -1022,7 +1034,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // .IS: Ra + offset addresses all constant buffers as one space, the buffer in its high
             // half (Kirby Air Riders' vertex shaders), which Eden's Maxwell LDC implements.
             const u32 width = insn.Bits(73, 3), mode = insn.Bits(78, 2);
-            if ((width != 0 && width != 4 && width != 5) || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
+            if (width > 5 || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
                 bank() >= 18 ||
                 (width == 5 && ((dest & 1) || dest >= 254))) return fail(index, "native indexed constant load mode");
             emit(base(0xef90000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
@@ -1349,6 +1361,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return fail(index, "native population count mode");
             const u32 source = operand(1, false);
             emit(base(0x5c08000000000000ULL) | (u64{source} << 20) | (u64{insn.Bits(63, 1)} << 40));
+            break;
+        }
+        case 0x34e: { // LEPC Rd: Load Effective PC into destination register
+            if (dest >= 246 && dest < 255) return fail(index, "native program uses lowering scratch registers");
+            mov_imm(static_cast<u32>(dest), index * 16);
             break;
         }
         case 0x918:
@@ -1787,7 +1804,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool small = mode == 0x00212800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
-            if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||
+            // Bit 12 (instruction bit 76) is the destination width: only the 32-bit forms lower.
+            const bool ceil = (mode & ~0x10100U) == 0x0020b000;
+            if ((!half && !small && !floor && !nearest && !ceil && (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
@@ -1818,7 +1837,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{small || nearest ? 0U : floor ? 1U : ceil ? 2U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
