@@ -134,6 +134,8 @@ add_library(core STATIC
     file_sys/registered_cache.h
     file_sys/nup_container.cpp
     file_sys/nup_container.h
+    file_sys/nup_writer.cpp
+    file_sys/nup_writer.h
     file_sys/romfs.cpp
     file_sys/romfs.h
     file_sys/romfs_factory.cpp

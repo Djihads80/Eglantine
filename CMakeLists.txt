@@ -463,6 +463,9 @@ if (lz4_ADDED)
 endif()
 
 # zstd
+# Always bundled: NUP archives are only byte-identical across platforms when every build
+# compresses with the same zstd version.
+set(zstd_FORCE_BUNDLED ON)
 AddJsonPackage(zstd)
 
 if (zstd_ADDED)
