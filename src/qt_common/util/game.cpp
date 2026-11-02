@@ -430,8 +430,10 @@ void CreateShortcut(const std::string& game_path, const u64 program_id,
         game_title = fmt::format("{:016X}", program_id);
         if (control.first != nullptr) {
             game_title = control.first->GetApplicationName();
-        } else {
+        } else if (loader != nullptr) {
             loader->ReadTitle(game_title);
+        } else {
+            LOG_WARNING(Frontend, "Could not load game title from {:s}", game_path);
         }
     }
 
@@ -448,7 +450,8 @@ void CreateShortcut(const std::string& game_path, const u64 program_id,
     std::vector<u8> icon_image_file{};
     if (control.second != nullptr) {
         icon_image_file = control.second->ReadAllBytes();
-    } else if (loader->ReadIcon(icon_image_file) != Loader::ResultStatus::Success) {
+    } else if (loader == nullptr ||
+               loader->ReadIcon(icon_image_file) != Loader::ResultStatus::Success) {
         LOG_WARNING(Frontend, "Could not read icon from {:s}", game_path);
     }
 
@@ -535,6 +538,10 @@ void CreateHomeMenuShortcut(ShortcutTarget target) {
 }
 
 bool SaveIconToFile(const std::filesystem::path& icon_path, const QImage& image) {
+    if (image.isNull()) {
+        return false;
+    }
+
 #if defined(WIN32)
 #pragma pack(push, 2)
     struct IconDir {
