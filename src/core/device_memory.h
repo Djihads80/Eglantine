@@ -66,6 +66,8 @@ public:
     }
 
     Common::HostMemory buffer;
+    /// Set once a kernel has handed out this memory: pages a later kernel never used aren't zero.
+    bool used_by_kernel{};
 };
 
 } // namespace Core

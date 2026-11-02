@@ -90,8 +90,8 @@ void InvalidateInstructionCache(KernelCore& kernel, KPageTableBase* table, Addre
 }
 
 void ClearBackingRegion(Core::System& system, KPhysicalAddress addr, u64 size, u32 fill_value) {
-    system.DeviceMemory().buffer.ClearBackingRegion(GetInteger(addr) - Core::DramMemoryMap::Base,
-                                                    size, fill_value);
+    system.Kernel().MemoryManager().FillAllocatedPages(addr, size / PageSize,
+                                                       static_cast<u8>(fill_value));
 }
 
 template <typename AddressType>

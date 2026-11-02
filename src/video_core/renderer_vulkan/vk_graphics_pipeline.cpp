@@ -312,6 +312,9 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
+    // Before the build may run: it releases the modules.
+    configure_func = ConfigureFunc(spv_modules, stage_infos);
+
     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
@@ -319,6 +322,7 @@ GraphicsPipeline::GraphicsPipeline(
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
+            spv_modules = {};
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
@@ -327,6 +331,9 @@ GraphicsPipeline::GraphicsPipeline(
             }
             return;
         }
+        // The modules are only needed to create the pipeline. Kept, the driver holds every
+        // pipeline's SPIR-V for the whole session (thousands of pipelines from the disk cache).
+        spv_modules = {};
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);
         }
@@ -343,7 +350,6 @@ GraphicsPipeline::GraphicsPipeline(
     } else {
         func();
     }
-    configure_func = ConfigureFunc(spv_modules, stage_infos);
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
