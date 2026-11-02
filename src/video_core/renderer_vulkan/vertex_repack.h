@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -14,12 +15,21 @@ constexpr bool VertexRepackInputSupported(bool dynamic_input, bool experimental_
     return dynamic_input || experimental_static;
 }
 
-inline bool ExperimentalStaticVertexRepackEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-    return enabled;
+// Pipelines without dynamic vertex input repack when the device cannot fetch the 69-byte stride.
+// EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK=1 forces the repack on, =0 forces it off.
+inline bool StaticVertexRepackSelected(const char* override_value, u32 stride_alignment) {
+    if (override_value && std::strcmp(override_value, "1") == 0) {
+        return true;
+    }
+    if (override_value && std::strcmp(override_value, "0") == 0) {
+        return false;
+    }
+    return stride_alignment > 1 && 69 % stride_alignment != 0;
+}
+
+inline bool StaticVertexRepackEnabled(u32 stride_alignment) {
+    return StaticVertexRepackSelected(std::getenv("EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK"),
+                                      stride_alignment);
 }
 
 struct VertexRepackParameters {
@@ -31,8 +41,11 @@ struct VertexRepackParameters {
     u32 dispatch_groups;
 };
 
-inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
-    u32 offset, u32 size, u64 alignment, u64 max_storage_range, u32 max_dispatch_groups) {
+inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(u32 offset, u32 size,
+                                                                        u64 alignment,
+                                                                        u64 max_storage_range,
+                                                                        u32 max_dispatch_groups,
+                                                                        u64 buffer_size) {
     if (size == 0 || alignment == 0) {
         return std::nullopt;
     }
@@ -40,9 +53,11 @@ inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
     const u64 output_size = vertices * 72;
     const u64 base = u64{offset} / alignment * alignment;
     const u64 bias = offset - base;
-    const u64 range = (bias + size + 3) / 4 * 4;
+    // The word-rounded range must not run past the end of the source buffer
+    const u64 available = buffer_size > base ? buffer_size - base : 0;
+    const u64 range = (std::min)((bias + size + 3) / 4 * 4, available);
     const u64 groups = (vertices * 18 + 127) / 128;
-    if (output_size > std::numeric_limits<u32>::max() ||
+    if (range < bias + size || output_size > std::numeric_limits<u32>::max() ||
         range > std::numeric_limits<u32>::max() || output_size > max_storage_range ||
         range > max_storage_range || groups > max_dispatch_groups) {
         return std::nullopt;

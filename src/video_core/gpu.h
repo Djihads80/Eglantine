@@ -217,6 +217,9 @@ public:
 
     [[nodiscard]] bool IsAsync() const;
 
+    /// Whether a channel is suspended on a semaphore acquire (callable from any thread).
+    [[nodiscard]] bool HasSuspendedChannels() const;
+
     [[nodiscard]] bool UseNvdec() const;
 
     void RendererFrameEndNotify();
@@ -253,6 +256,10 @@ public:
 
     /// Runs func on the GPU thread after the command lists submitted so far.
     void RunInOrder(std::function<void()>&& func);
+
+    /// RunInOrder for GPU memory maps: also done before the GPU thread reads the command lists
+    /// submitted later (with the GPU split, on its front rather than its back).
+    void MapInOrder(std::function<void()>&& func);
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes = false);

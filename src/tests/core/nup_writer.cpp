@@ -19,6 +19,7 @@
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 
 namespace {
 
@@ -173,6 +174,23 @@ void MakeDump(const fs::path& root) {
     Put(root / "dlc/0400ABCD00011001/0/romfs/addon.bin", "addon data");
 }
 
+void SetLe(std::string& buf, size_t at, u64 value, size_t bytes) {
+    for (size_t i = 0; i < bytes; ++i) {
+        buf[at + i] = static_cast<char>(value >> (8 * i));
+    }
+}
+
+// Applies `patch` to a valid archive, fixes up the TOC hash and opens the result.
+template <typename Patch>
+Loader::ResultStatus StatusAfterPatch(std::string nup, Patch&& patch) {
+    const u64 toc = Le(nup, 0x08, 8);
+    patch(nup, toc);
+    const auto hash = Sha256(std::string_view{nup}.substr(toc, Le(nup, 0x10, 8)));
+    std::copy(hash.begin(), hash.end(), nup.begin() + 0x18);
+    const auto data = std::vector<u8>(nup.begin(), nup.end());
+    return NupContainer{std::make_shared<FileSys::VectorVfsFile>(data, "bad.nup")}.GetStatus();
+}
+
 } // namespace
 
 TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContainer", "[nup]") {
@@ -197,9 +215,11 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE(packages[0].kind == NupContainer::PackageKind::Base);
     REQUIRE(packages[0].title_id == TitleId);
     REQUIRE(packages[0].version == 0);
+    REQUIRE(packages[0].display_version == "1.0.0");
     REQUIRE(packages[0].npdm.size() == 0x100);
     REQUIRE(packages[1].kind == NupContainer::PackageKind::Update);
     REQUIRE(packages[1].version == 65536);
+    REQUIRE(packages[1].display_version == "1.1.0");
     REQUIRE(packages[1].title_id == TitleId);
     REQUIRE_FALSE(packages[1].standalone_update);
     REQUIRE(packages[2].kind == NupContainer::PackageKind::Update);
@@ -251,6 +271,102 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE(random.codec == 0);
     REQUIRE(random.extent_size == 3000);
     REQUIRE_FALSE(by_name.contains(".listing"));
+}
+
+TEST_CASE("NUP reads zstd members above the memory cache through a temporary file", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    std::string large(300 * 1024, '\0');
+    u32 x = 7;
+    for (auto& c : large) {
+        x = x * 1664525 + 1013904223;
+        c = static_cast<char>('a' + (x >> 28));
+    }
+    Put(root / "Base/RomFS/large.bin", large);
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options{.raw_threshold = 1024 * 1024};
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+    for (const auto& file : RawFiles(ReadAll(archive))) {
+        if (file.name == "large.bin") {
+            REQUIRE(file.codec == 1);
+        }
+    }
+
+    const auto spill_dir = t.path / "spill";
+    FileSys::RealVfsFilesystem real;
+    {
+        // Members above 32 KiB do not fit the 64 KiB cache budget and are spilled to disk.
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read), 64 * 1024,
+                         spill_dir};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        const auto file = nup.GetRomFSDir(0)->GetFile("large.bin");
+        REQUIRE(file != nullptr);
+        REQUIRE(file->GetSize() == large.size());
+
+        std::string chunk(4096, '\0');
+        for (size_t offset = 0; offset < large.size(); offset += chunk.size()) {
+            const size_t count =
+                file->Read(reinterpret_cast<u8*>(chunk.data()), chunk.size(), offset);
+            REQUIRE(count == std::min(chunk.size(), large.size() - offset));
+            REQUIRE(chunk.compare(0, count, large, offset, count) == 0);
+        }
+        for (const size_t offset : {size_t{0}, size_t{123456}, size_t{77}, large.size() - 5}) {
+            const size_t count = file->Read(reinterpret_cast<u8*>(chunk.data()), 100, offset);
+            REQUIRE(count == std::min<size_t>(100, large.size() - offset));
+            REQUIRE(chunk.compare(0, count, large, offset, count) == 0);
+        }
+        REQUIRE(file->Read(reinterpret_cast<u8*>(chunk.data()), 10, large.size()) == 0);
+
+        REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) > 0);
+        REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    }
+    REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) == 0);
+}
+
+TEST_CASE("NUP rejects a TOC whose counts or offsets wrap", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+    const auto nup = ReadAll(archive);
+    const auto no_patch = [](std::string&, u64) {};
+    REQUIRE(StatusAfterPatch(nup, no_patch) == Loader::ResultStatus::Success);
+
+    // 2^61 directories wrap dir_count * 0x18 back to the real record size.
+    REQUIRE(StatusAfterPatch(nup, [](std::string& buf, u64 toc) {
+                SetLe(buf, toc + 0x08, Le(buf, toc + 0x08, 8) + (1ULL << 61), 8);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
+
+    const auto first_dir = [](const std::string& buf, u64 toc) {
+        return toc + 0x30 + Le(buf, toc + 0x04, 4) * 0x40;
+    };
+    // first_child + child_count wraps to a small value.
+    REQUIRE(StatusAfterPatch(nup, [&](std::string& buf, u64 toc) {
+                SetLe(buf, first_dir(buf, toc) + 0x08, 0xFFFFFFFF, 4);
+                SetLe(buf, first_dir(buf, toc) + 0x0C, 2, 4);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
+TEST_CASE("NUP rejects a directory that contains its own ancestor", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    // Give the base RomFS directory the same children as the package root, which lists it.
+    REQUIRE(StatusAfterPatch(ReadAll(archive), [](std::string& buf, u64 toc) {
+                const u64 dirs = toc + 0x30 + Le(buf, toc + 0x04, 4) * 0x40;
+                const u64 root_dir = Le(buf, toc + 0x30 + 0x08, 4);
+                const u64 romfs_dir = Le(buf, toc + 0x30 + 0x10, 4);
+                const u64 root_record = dirs + root_dir * 0x18;
+                const u64 romfs_record = dirs + romfs_dir * 0x18;
+                SetLe(buf, romfs_record + 0x08, Le(buf, root_record + 0x08, 4), 4);
+                SetLe(buf, romfs_record + 0x0C, Le(buf, root_record + 0x0C, 4), 4);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
 }
 
 TEST_CASE("NUP marks updates standalone when the dump has no base", "[nup]") {
@@ -388,7 +504,8 @@ TEST_CASE("NUP output is reproducible", "[nup]") {
     for (const u8 b : Sha256(ReadAll(archive))) {
         hex += fmt::format("{:02x}", b);
     }
-    REQUIRE(hex == "df8446903ab2c39a51af0304935eb4aa5d8ead105440976ceae7ab97133f6143");
+    // The mixed-case Base/RomFS directory supplies base version 1.0.0 on every platform.
+    REQUIRE(hex == "718231e0974ca04c7be7bd6ed4334015b777c6e5f1ed51de23f899f81ee004ab");
 }
 
 TEST_CASE("NUP writes metadata overrides to the base and the newest update", "[nup]") {

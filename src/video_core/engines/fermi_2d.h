@@ -70,6 +70,9 @@ public:
         ROP = 4,
         SrcCopyPremult = 5,
         BlendPremult = 6,
+        // Not a hardware operation: a copy that decodes sRGB-encoded values to linear, for the
+        // nx2 upscale fallback standing in for a program that decodes its output.
+        SrcCopySrgbToLinear = 7,
     };
 
     enum class MemoryLayout : u32 {

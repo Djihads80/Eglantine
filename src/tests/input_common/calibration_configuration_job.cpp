@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -19,7 +20,7 @@
 class FakeCemuhookServer {
 public:
     FakeCemuhookServer()
-        : socket(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), 0)) {}
+        : socket(io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(), 0)) {}
 
     ~FakeCemuhookServer() {
         boost::system::error_code error_code;
@@ -131,4 +132,21 @@ TEST_CASE("CalibrationConfigurationJob completed", "[input_common]") {
     REQUIRE(min_y == 0);
     REQUIRE(max_x == 200);
     REQUIRE(max_y == 200);
+}
+
+TEST_CASE("CalibrationConfigurationJob cancellation joins its worker", "[input_common]") {
+    FakeCemuhookServer server;
+    for (unsigned i = 0; i < 32; ++i) {
+        auto lifetime = std::make_shared<int>(0);
+        std::weak_ptr<int> observer = lifetime;
+        {
+            InputCommon::CemuhookUDP::CalibrationConfigurationJob job(
+                server.GetHost(), server.GetPort(),
+                [lifetime](InputCommon::CemuhookUDP::CalibrationConfigurationJob::Status) {},
+                [](u16, u16, u16, u16) {});
+            lifetime.reset();
+            job.Stop();
+        }
+        REQUIRE(observer.expired());
+    }
 }

@@ -1290,4 +1290,9 @@ else()
     target_sources(core PRIVATE hle/service/ssl/ssl_backend_none.cpp)
 endif()
 
+if (ENABLE_LTO AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    # Fibers can migrate between host threads; keep kernel TLS lookups outside LTO callers.
+    set_source_files_properties(hle/kernel/kernel.cpp PROPERTIES COMPILE_OPTIONS -fno-lto)
+endif()
+
 create_target_directory_groups(core)
