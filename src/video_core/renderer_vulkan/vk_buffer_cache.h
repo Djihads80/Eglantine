@@ -122,6 +122,9 @@ public:
 
     void Wait(u64 tick);
 
+    /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.
+    void WaitSubmittedTick(u64 tick);
+
     void Finish();
 
     u64 GetDeviceLocalMemory() const;

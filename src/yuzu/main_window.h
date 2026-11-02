@@ -10,6 +10,7 @@
 #include <optional>
 
 #include <filesystem>
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QFutureWatcher>
@@ -54,6 +55,7 @@ class QLabel;
 class MultiplayerState;
 class QPushButton;
 class QProgressDialog;
+class NupProgressDialog;
 class QSlider;
 class QHBoxLayout;
 class WaitTreeWidget;
@@ -424,7 +426,8 @@ private slots:
     void OnCreateHomeMenuDesktopShortcut();
     void OnCreateHomeMenuApplicationMenuShortcut();
     void OnCaptureScreenshot();
-    void OnCheckFirmwareDecryption();
+    /// Checks for decryption keys; `prompt` asks to install them when they are missing.
+    void OnCheckFirmwareDecryption(bool prompt = true);
 #ifdef __unix__
     void OnCheckGraphicsBackend();
 #endif
@@ -542,6 +545,8 @@ private:
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;
+    bool boot_in_progress = false;
+    bool close_pending = false;
     // The path to the game currently running
     QString current_game_path;
     // Whether a user was set on the command line (skips UserSelector if it's forced to show up)
@@ -573,7 +578,7 @@ private:
 
     // Install progress dialog
     QProgressDialog* install_progress = nullptr;
-    QProgressDialog* nup_progress = nullptr;
+    NupProgressDialog* nup_progress = nullptr;
     QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
     std::shared_ptr<std::atomic_bool> nup_cancel;
     bool nup_running{};

@@ -21,6 +21,7 @@ IApplicationProxyService::IApplicationProxyService(Core::System& system_,
         {0, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxy"},
         // Switch 2 SDKs open the proxy with command 10, same arguments.
         {10, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxy (Switch 2)"},
+        {2000, &IApplicationProxyService::StubReplyInterface, "Unknown2000"},
     };
     RegisterHandlers(functions);
 }
