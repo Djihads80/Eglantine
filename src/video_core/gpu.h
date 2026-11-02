@@ -217,6 +217,9 @@ public:
 
     [[nodiscard]] bool IsAsync() const;
 
+    /// Whether a channel is suspended on a semaphore acquire (callable from any thread).
+    [[nodiscard]] bool HasSuspendedChannels() const;
+
     [[nodiscard]] bool UseNvdec() const;
 
     void RendererFrameEndNotify();

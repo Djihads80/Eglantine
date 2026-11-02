@@ -505,6 +505,10 @@ bool GPU::IsAsync() const {
     return impl->is_async;
 }
 
+bool GPU::HasSuspendedChannels() const {
+    return impl->scheduler.HasPendingChannelsAnyThread();
+}
+
 bool GPU::UseNvdec() const {
     return impl->use_nvdec;
 }
