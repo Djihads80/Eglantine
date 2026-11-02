@@ -3064,6 +3064,7 @@ public:
             Maxwell3D::Regs::PrimitiveTopology topology{};
             DrawMode draw_mode{};
             bool draw_indexed{};
+            u32 draw_element_count{}; // Zero for indirect draws whose count is not known yet.
             u32 base_index{};
             Maxwell3D::Regs::VertexBuffer vertex_buffer;
             Maxwell3D::Regs::IndexBuffer index_buffer;

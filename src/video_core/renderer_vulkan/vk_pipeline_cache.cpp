@@ -1056,7 +1056,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     // Usually these shaders are only used once for building textures so we can assume they
     // can't be built async
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
-    if (draw_state.index_buffer.count <= 6 || draw_state.vertex_buffer.count <= 6) {
+    if (draw_state.draw_element_count <= 6) {
         return pipeline;
     }
     return nullptr;
