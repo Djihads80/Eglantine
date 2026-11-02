@@ -818,7 +818,6 @@ struct Maxwell3D::FrontState {
     Regs::ShadowRamControl control{};
     u32 executing_macro{};
     std::vector<u32> parameters;
-    std::vector<u32> fifo;
     u64 calls{};
     /// A method the draw manager handles was sent since the back last ran DrawDeferred: only
     /// then can it have a deferred instanced draw to issue at the end of a macro.
@@ -1095,9 +1094,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_jit = std::make_shared<TuringMacroJit>();
         }
         engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        fs.fifo.assign(fs.parameters.begin(), fs.parameters.end());
+        const size_t parameter_count = fs.parameters.size();
         const auto result = engine.native_jit->Execute(
-            start, fs.fifo, std::span<u32>{native_data_ram},
+            start, fs.parameters, std::span<u32>{native_data_ram},
             [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
             [&](u32 address, u32 value) {
                 if (address >= MacroRegistersStart) {
@@ -1113,7 +1112,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         if (!result.success) {
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
-                      start, result.consumed, fs.parameters.size(), result.error);
+                      start, result.consumed, parameter_count, result.error);
         }
     }
     fs.parameters.clear();
@@ -1148,7 +1147,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
         if (method == 0x158) {
-            fs.fifo.push_back(word);
+            fs.parameters.push_back(word);
         } else if (ram + i < native_data_ram.size()) {
             native_data_ram[ram + i] = word;
         }
