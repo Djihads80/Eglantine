@@ -138,6 +138,7 @@ void GpuSplit::Stop() {
     // never ran, it waited on its syncpoint forever), and the engines it held were freed.
     ring.reset();
     write_position = 0;
+    last_writer_position = 0;
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -206,6 +207,28 @@ void GpuSplit::Drain() {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
             publish_every = 8;
+            return;
+        }
+        if (spins < 16384) {
+            Pause();
+        } else {
+            std::this_thread::yield();
+        }
+    }
+}
+
+void GpuSplit::WaitForWriters() {
+    const u64 target = std::min(last_writer_position, write_position);
+    consumed_cache = consumed.load(std::memory_order_acquire);
+    if (consumed_cache >= target) {
+        return;
+    }
+    wait_target.store(target, std::memory_order_seq_cst);
+    Publish();
+    for (u32 spins = 0;; ++spins) {
+        consumed_cache = consumed.load(std::memory_order_acquire);
+        if (consumed_cache >= target) {
+            wait_target.store(~u64{0}, std::memory_order_relaxed);
             return;
         }
         if (spins < 16384) {
@@ -346,8 +369,11 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             const size_t index = read_position & RingMask;
             const size_t size = Execute(&ring[index]);
             read_position += size != 0 ? size : RingWords - index;
-            // Hand ring space back now and then while working through a long batch.
-            if (read_position - last_store >= 4096 && read_position != available) {
+            // Hand ring space back now and then while working through a long batch, and at once
+            // when the front waits for this position (WaitForWriters).
+            if ((read_position - last_store >= 4096 ||
+                 read_position >= wait_target.load(std::memory_order_relaxed)) &&
+                read_position != available) {
                 consumed.store(read_position, std::memory_order_release);
                 last_store = read_position;
             }

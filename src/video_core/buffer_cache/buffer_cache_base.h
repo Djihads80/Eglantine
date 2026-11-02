@@ -14,7 +14,9 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -321,6 +323,28 @@ public:
 
     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
 
+    /// Switch 2 GPU-written command lists (nx2.h, g_nx2_command_list_pages). While collecting (a
+    /// compute dispatch or a DMA copy being recorded), writes to command list pages are noted;
+    /// Nx2CopyListPages then records copies of those pages into host memory after the work.
+    void Nx2CollectListCopies(bool collect) {
+        nx2_collect_list_copies = collect;
+        if (!collect) {
+            nx2_list_copy_requests.clear();
+        }
+    }
+    /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
+    bool Nx2CopyListPages(u64 tick);
+    enum class Nx2ListRead { Unknown, Copied, Synced };
+    /// Front thread: Synced when guest memory holds the page `device_addr` lies in (flushed and
+    /// written by no GPU work since), else Copied with `out` filled from the copy of its last
+    /// write once the GPU is done with it. Unknown otherwise: the caller drains and flushes.
+    Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out);
+    /// Front thread, the split drained: the command list page was flushed to guest memory.
+    void Nx2NoteListSynced(DAddr page);
+    /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy
+    /// no longer holds the page.
+    void Nx2NoteListHostWrite(DAddr device_addr, u64 size);
+
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
@@ -439,6 +463,10 @@ private:
     void UpdateComputeTextureBuffers();
 
     void MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync = false);
+
+    /// Counts a GPU write to the command list pages in the range (invalidating their copies) and,
+    /// while collecting, asks for new copies.
+    void Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size);
 
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
@@ -604,6 +632,29 @@ private:
     // Covers the device address space (MaxwellDeviceTraits::device_virtual_bits).
     std::array<BufferId, ((1ULL << 36) >> CACHING_PAGEBITS)> page_table;
     Common::ScratchBuffer<u8> tmp_buffer;
+
+    /// A command list page (Nx2CopyListPages): the GPU writes noted to it and the last copy.
+    using Nx2Staging = decltype(std::declval<Runtime&>().DownloadStagingBuffer(size_t{}, true));
+    struct Nx2ListPage {
+        u64 writes{};      ///< GPU writes noted to the page
+        u64 copy_writes{}; ///< `writes` when the copy was made: the copy is current while equal
+        u64 copy_tick{};   ///< GPU tick that completes the copy
+        /// `writes` when the front last flushed the page: guest memory holds it while equal
+        u64 synced_writes{~u64{0}};
+        u32 copy_begin{};  ///< Bytes of the page the copy holds (a buffer can end inside it)
+        u32 copy_end{};
+        /// Written outside a compute dispatch or a DMA copy (a draw's storage writes) at least
+        /// once: the front can't tell from what it sent whether such a write is still queued, so
+        /// the page's lists always drain the split instead of reading a copy.
+        bool draw_written{};
+        std::optional<Nx2Staging> copy;
+    };
+    std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
+    std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
+    /// Copies replaced while the GPU may still write them: freed once it is past their tick.
+    std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
+    boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
+    bool nx2_collect_list_copies{};
 };
 
 } // namespace VideoCommon
