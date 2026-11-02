@@ -22,6 +22,9 @@ add_executable(tests
     video_core/memory_tracker.cpp
     video_core/vertex_repack.cpp
     video_core/ampere_returns.cpp
+    video_core/ampere_f2i.cpp
+    video_core/ampere_ldc.cpp
+    video_core/ampere_vote.cpp
     input_common/calibration_configuration_job.cpp
 )
 
