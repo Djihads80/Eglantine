@@ -68,8 +68,7 @@ jobs:
           - platform: linux-aarch64-pgo
             runner: ubuntu-24.04-arm
             pgo: true
-          - platform: macos-arm64
-            runner: macos-15
+          # No macOS build: its runners are often unavailable and the job then blocks the release.
 
     steps:
       - name: Check out source
