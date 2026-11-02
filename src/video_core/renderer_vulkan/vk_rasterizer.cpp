@@ -456,6 +456,24 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
+    {
+        // A draw's first and count can come from memory a skipped (rejected) compute program
+        // should have written. Past 16M vertices they are garbage: building the quad index
+        // buffer for one threw out of the GPU thread and ended the process (Hyrule Warriors:
+        // Age of Imprisonment, entering a new area), and indexed ones read far out of bounds.
+        const auto& state = maxwell3d->draw_manager.draw_state;
+        const u64 first = is_indexed ? state.index_buffer.first : state.vertex_buffer.first;
+        const u64 count = is_indexed ? state.index_buffer.count : state.vertex_buffer.count;
+        constexpr u64 MaxVertices = u64{1} << 24;
+        if (first + count > MaxVertices) {
+            static std::atomic<u32> skipped{};
+            if (skipped.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "Draw skipped: {} {} from {} (vertex/index count past {})",
+                            count, is_indexed ? "indices" : "vertices", first, MaxVertices);
+            }
+            return;
+        }
+    }
     TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
                       is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
                                  : maxwell3d->draw_manager.draw_state.vertex_buffer.count);
