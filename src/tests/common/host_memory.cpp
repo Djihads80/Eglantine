@@ -6,6 +6,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "common/host_memory.h"
 #include "common/literals.h"
 
@@ -16,6 +20,25 @@ static constexpr size_t VIRTUAL_SIZE = 1ULL << 39;
 static constexpr size_t BACKING_SIZE = 4_GiB;
 static constexpr auto PERMS = Common::MemoryPermission::ReadWrite;
 static constexpr auto HEAP = false;
+
+#ifdef _WIN32
+TEST_CASE("HostMemory: Failed arena initialization releases fallback backing", "[common]") {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        void* address{};
+        {
+            // Exceeds the Windows user address space, forcing the private fallback.
+            HostMemory memory(64_KiB, 1ULL << 60);
+            REQUIRE(memory.VirtualBasePointer() == nullptr);
+            address = memory.BackingBasePointer();
+            REQUIRE(address != nullptr);
+            memory.BackingBasePointer()[0] = 17;
+        }
+        MEMORY_BASIC_INFORMATION information{};
+        REQUIRE(VirtualQuery(address, &information, sizeof(information)) != 0);
+        REQUIRE(information.State == MEM_FREE);
+    }
+}
+#endif
 
 TEST_CASE("HostMemory: Initialize and deinitialize", "[common]") {
     {

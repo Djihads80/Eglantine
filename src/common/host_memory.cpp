@@ -7,6 +7,7 @@
 #ifdef _WIN32
 
 #include <iterator>
+#include <utility>
 #include "common/container/unordered_map.h"
 #include <boost/icl/separate_interval_set.hpp>
 #include <windows.h>
@@ -255,21 +256,24 @@ private:
                 }
             }
             Coalesce(0, virtual_size);
+            placeholders.clear();
+            placeholder_host_pointers.clear();
         }
         if (virtual_base) {
-            if (!VirtualFree(virtual_base, 0, MEM_RELEASE)) {
+            if (!VirtualFree(std::exchange(virtual_base, nullptr), 0, MEM_RELEASE)) {
                 LOG_CRITICAL(HW_Memory, "Failed to free virtual memory");
             }
         }
         if (backing_base) {
-            if (!pfn_UnmapViewOfFile2(process, backing_base, MEM_PRESERVE_PLACEHOLDER)) {
+            void* const address = std::exchange(backing_base, nullptr);
+            if (!pfn_UnmapViewOfFile2(process, address, MEM_PRESERVE_PLACEHOLDER)) {
                 LOG_CRITICAL(HW_Memory, "Failed to unmap backing memory placeholder");
             }
-            if (!VirtualFreeEx(process, backing_base, 0, MEM_RELEASE)) {
+            if (!VirtualFreeEx(process, address, 0, MEM_RELEASE)) {
                 LOG_CRITICAL(HW_Memory, "Failed to free backing memory");
             }
         }
-        if (!CloseHandle(backing_handle)) {
+        if (backing_handle && !CloseHandle(std::exchange(backing_handle, nullptr))) {
             LOG_CRITICAL(HW_Memory, "Failed to free backing memory file handle");
         }
     }
@@ -748,7 +752,7 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
 HostMemory::~HostMemory() {
 #ifdef _WIN32
     if (fallback_buffer) {
-        VirtualFree(backing_base, backing_size, MEM_RELEASE);
+        VirtualFree(backing_base, 0, MEM_RELEASE);
     }
 #else
     if (fallback_buffer) {
