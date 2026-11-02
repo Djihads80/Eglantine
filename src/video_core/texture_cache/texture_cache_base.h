@@ -288,7 +288,8 @@ public:
     bool TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
                          const Tegra::Engines::Fermi2D::Surface& src,
                          const Tegra::Engines::Fermi2D::Surface& motion_vectors,
-                         std::array<f32, 2> jitter, std::array<f32, 2> motion_scale);
+                         const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale);
 
     /// Try to find a cached image view in the given CPU address
     [[nodiscard]] std::pair<ImageView*, bool> TryFindFramebufferImageView(

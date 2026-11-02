@@ -28,6 +28,9 @@ class AccelerateDMAInterface;
 namespace Control {
 struct ChannelState;
 }
+namespace Texture {
+struct TICEntry;
+}
 } // namespace Tegra
 
 namespace VideoCore {
@@ -179,10 +182,12 @@ public:
 
     /// Stand-in for a DLSS evaluation: temporal upscale of src into dst along motion_vectors
     /// (jitter in src pixels; motion_scale turns a motion vector into a UV offset to the previous
-    /// frame). False when unsupported; the caller then falls back to AccelerateSurfaceCopy.
+    /// frame), with the frame's depth when known. False when unsupported; the caller then falls
+    /// back to AccelerateSurfaceCopy.
     [[nodiscard]] virtual bool AccelerateTemporalUpscale(
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
-        const Tegra::Engines::Fermi2D::Surface& motion_vectors, std::array<f32, 2> jitter,
+        const Tegra::Engines::Fermi2D::Surface& motion_vectors,
+        const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
         std::array<f32, 2> motion_scale) {
         return false;
     }

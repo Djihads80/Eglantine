@@ -387,11 +387,12 @@ constexpr std::array<VkPipelineShaderStageCreateInfo, 2> MakeStages(
 }
 
 void UpdateOneTextureDescriptorSet(const Device& device, VkDescriptorSet descriptor_set,
-                                   VkSampler sampler, VkImageView image_view) {
+                                   VkSampler sampler, VkImageView image_view,
+                                   VkImageLayout image_layout = VK_IMAGE_LAYOUT_GENERAL) {
     const VkDescriptorImageInfo image_info{
         .sampler = sampler,
         .imageView = image_view,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .imageLayout = image_layout,
     };
     const VkWriteDescriptorSet write_descriptor_set{
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -787,7 +788,9 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
         TransitionImageLayout(cmdbuf, src_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         BeginRenderPass(cmdbuf, dst_framebuffer);
         const VkDescriptorSet descriptor_set = one_texture_descriptor_allocator.Commit();
-        UpdateOneTextureDescriptorSet(device, descriptor_set, src_sampler, src_image_view);
+        // The source was just transitioned: describe it in that layout.
+        UpdateOneTextureDescriptorSet(device, descriptor_set, src_sampler, src_image_view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, descriptor_set,
                                   nullptr);

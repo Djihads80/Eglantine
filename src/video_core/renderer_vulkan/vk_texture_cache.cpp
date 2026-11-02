@@ -1203,11 +1203,13 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
                                          StagingBufferPool& staging_buffer_pool_,
                                          BlitImageHelper& blit_image_helper_,
                                          RenderPassCache& render_pass_cache_,
-                                         DescriptorPool& descriptor_pool,
-                                         ComputePassDescriptorQueue& compute_pass_descriptor_queue)
+                                         DescriptorPool& descriptor_pool_,
+                                         ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
     : device{device_}, scheduler{scheduler_}, memory_allocator{memory_allocator_},
       staging_buffer_pool{staging_buffer_pool_}, blit_image_helper{blit_image_helper_},
-      render_pass_cache{render_pass_cache_}, resolution{Settings::values.resolution_info} {
+      render_pass_cache{render_pass_cache_}, descriptor_pool{descriptor_pool_},
+      compute_pass_descriptor_queue{compute_pass_descriptor_queue_},
+      resolution{Settings::values.resolution_info} {
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
@@ -1535,12 +1537,130 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     });
 }
 
+bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
+    // FSR 3.1 replaces DLSS; the temporal stand-in only runs when FSR cannot (no depth, a device
+    // without the formats, a failed start). EDEN_NX2_DLSS_REPLACEMENT=standin forces
+    // the stand-in for A/B runs.
+    static const bool force_standin = [] {
+        const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
+        return value && std::string_view{value} == "standin";
+    }();
+    return !force_standin && !fsr3_unsupported;
+}
+
+bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
+                                          ImageView& motion_vectors, ImageView& depth,
+                                          std::array<u32, 2> render_size,
+                                          std::array<f32, 2> jitter,
+                                          std::array<f32, 2> motion_scale) {
+    if (!WantsTemporalUpscaleDepth()) {
+        return false;
+    }
+    if (!fsr3_upscaler) {
+        if (!Fsr3Upscaler::IsSupported(device)) {
+            LOG_WARNING(Render_Vulkan, "FSR 3.1 needs formats or features this device lacks; "
+                                       "using the temporal stand-in");
+            fsr3_unsupported = true;
+            return false;
+        }
+        try {
+            fsr3_upscaler = std::make_unique<Fsr3Upscaler>(device, scheduler, memory_allocator,
+                                                           staging_buffer_pool, descriptor_pool,
+                                                           compute_pass_descriptor_queue);
+        } catch (const vk::Exception& exception) {
+            LOG_ERROR(Render_Vulkan, "FSR 3.1 failed to start ({}); using the temporal stand-in",
+                      exception.what());
+            fsr3_unsupported = true;
+            return false;
+        }
+    }
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    // A gap in the evaluations (a menu, a movie, a load) starts the history again.
+    const auto now = std::chrono::steady_clock::now();
+    const f32 frame_time_ms =
+        fsr3_last_evaluation
+            ? std::chrono::duration<f32, std::milli>(now - *fsr3_last_evaluation).count()
+            : 1000.0f / 30.0f;
+    const bool reset = !fsr3_last_evaluation || frame_time_ms > 250.0f;
+    fsr3_last_evaluation = now;
+    // FSR's own RCAS, set by the sharpness slider: FSR takes 0-1 for 2 to 0 stops, and the slider
+    // stores stops x 100, so this is the percentage the slider shows; 0% (stored 200) is off.
+    // EDEN_NX2_TEMPORAL_SHARPEN=<stops>|off overrides the slider.
+    static const char* const sharpen_override = std::getenv("EDEN_NX2_TEMPORAL_SHARPEN");
+    const int slider = Settings::values.fsr_sharpening_slider.GetValue();
+    bool sharpen = slider < 200;
+    f32 stops = static_cast<f32>(slider) / 100.0f;
+    if (sharpen_override) {
+        sharpen = std::string_view{sharpen_override} != "off";
+        stops = static_cast<f32>(std::strtod(sharpen_override, nullptr));
+    }
+    fsr3_upscaler->Upscale({
+        .color = input_color.Handle(Shader::TextureType::Color2D),
+        .depth = depth.DepthView(),
+        .motion_vectors = motion_vectors.Handle(Shader::TextureType::Color2D),
+        .render_size = {render_size[0], render_size[1]},
+        .upscale_size = extent,
+        .jitter = jitter,
+        .motion_vector_scale = {motion_scale[0] * static_cast<f32>(render_size[0]),
+                                motion_scale[1] * static_cast<f32>(render_size[1])},
+        .frame_time_ms = frame_time_ms,
+        .reset = reset,
+        .sharpen = sharpen,
+        .sharpness = 1.0f - stops / 2.0f,
+    });
+    // Draw the result into the DLSS output, which keeps its own format; the blit leaves FSR's
+    // output image in SHADER_READ_ONLY_OPTIMAL, so return it to GENERAL for the next frame.
+    const Region2D region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
+    };
+    const VkImage output = fsr3_upscaler->OutputImage();
+    blit_image_helper.BlitColor(dst_framebuffer, fsr3_upscaler->OutputView(), output,
+                                fsr3_upscaler->PointSampler(), region, region,
+                                {extent.width, extent.height, 1});
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([output](vk::CommandBuffer cmdbuf) {
+        const VkImageMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = output,
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
+    });
+    static bool logged{};
+    if (!logged) {
+        logged = true;
+        LOG_INFO(Render_Vulkan, "DLSS replaced by FSR 3.1: {}x{} -> {}x{}", render_size[0],
+                 render_size[1], extent.width, extent.height);
+    }
+    return true;
+}
+
 bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
                                           ImageView& input_color, ImageView& motion_vectors,
+                                          ImageView* depth, std::array<u32, 2> render_size,
                                           std::array<f32, 2> jitter,
                                           std::array<f32, 2> motion_scale) {
     if (dst.Samples() != VK_SAMPLE_COUNT_1_BIT || ImageAspectMask(dst.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
         return false;
+    }
+    if (depth && UpscaleWithFsr3(dst_framebuffer, input_color, motion_vectors, *depth, render_size,
+                                 jitter, motion_scale)) {
+        return true;
     }
     const VkFormat format =
         MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, dst.format).format;
