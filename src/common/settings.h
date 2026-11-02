@@ -358,7 +358,7 @@ struct Values {
                                                   true};
 
     SwitchableSetting<ScalingFilter> scaling_filter{linkage,
-                                                    ScalingFilter::NearestNeighbor,
+                                                    ScalingFilter::ScaleForce,
                                                     "scaling_filter",
                                                     Category::Renderer,
                                                     Specialization::Default,
@@ -387,7 +387,7 @@ struct Values {
                                                       true};
 
     SwitchableSetting<AntiAliasing> anti_aliasing{linkage,
-                                                  AntiAliasing::None,
+                                                  AntiAliasing::Fxaa,
                                                   "anti_aliasing",
                                                   Category::Renderer,
                                                   Specialization::Default,

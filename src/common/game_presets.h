@@ -22,6 +22,8 @@ inline void SetMarioKartWorldRecommendedSettings(Values& settings, bool global) 
     session(settings.use_reactive_flushing, false);
     session(settings.vsync_mode, VSyncMode::FifoRelaxed);
     session(settings.use_docked_mode, ConsoleMode::Handheld);
+    session(settings.scaling_filter, ScalingFilter::ScaleForce);
+    session(settings.anti_aliasing, AntiAliasing::Fxaa);
 }
 
 inline bool ApplyMarioKartWorldPreset(Values& settings, u64 program_id, bool accepted) {

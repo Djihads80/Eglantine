@@ -462,7 +462,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         QMessageBox::Question, tr("Recommended Mario Kart World settings"),
         tr("Use the recommended settings for Mario Kart World?\n\n"
            "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-           "reactive flushing off, FIFO Relaxed VSync, and handheld mode.\n\n"
+           "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
            "Yes replaces your saved settings. No or closing this window keeps your settings."),
         QMessageBox::Yes | QMessageBox::No, this);
     recommendations->setAttribute(Qt::WA_DeleteOnClose);

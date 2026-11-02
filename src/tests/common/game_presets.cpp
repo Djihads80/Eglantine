@@ -18,6 +18,8 @@ void SetConflictingPreferences(Settings::Values& settings, bool per_game) {
     set(settings.vram_usage_mode, Settings::VramUsageMode::Aggressive);
     set(settings.use_reactive_flushing, true);
     set(settings.vsync_mode, Settings::VSyncMode::Immediate);
+    set(settings.scaling_filter, Settings::ScalingFilter::NearestNeighbor);
+    set(settings.anti_aliasing, Settings::AntiAliasing::Smaa);
 }
 
 void CheckPreset(const Settings::Values& settings) {
@@ -30,6 +32,8 @@ void CheckPreset(const Settings::Values& settings) {
     CHECK_FALSE(settings.use_reactive_flushing.GetValue());
     CHECK(settings.vsync_mode.GetValue() == Settings::VSyncMode::FifoRelaxed);
     CHECK(settings.use_docked_mode.GetValue() == Settings::ConsoleMode::Handheld);
+    CHECK(settings.scaling_filter.GetValue() == Settings::ScalingFilter::ScaleForce);
+    CHECK(settings.anti_aliasing.GetValue() == Settings::AntiAliasing::Fxaa);
 }
 
 void CheckPreferences(const Settings::Values& settings, bool global = false) {
@@ -42,8 +46,16 @@ void CheckPreferences(const Settings::Values& settings, bool global = false) {
     CHECK(settings.vram_usage_mode.GetValue(global) == Settings::VramUsageMode::Aggressive);
     CHECK(settings.use_reactive_flushing.GetValue(global));
     CHECK(settings.vsync_mode.GetValue(global) == Settings::VSyncMode::Immediate);
+    CHECK(settings.scaling_filter.GetValue(global) == Settings::ScalingFilter::NearestNeighbor);
+    CHECK(settings.anti_aliasing.GetValue(global) == Settings::AntiAliasing::Smaa);
 }
 } // namespace
+
+TEST_CASE("Display filter defaults use ScaleForce and FXAA", "[game_presets]") {
+    auto settings = std::make_unique<Settings::Values>();
+    CHECK(settings->scaling_filter.GetDefault() == Settings::ScalingFilter::ScaleForce);
+    CHECK(settings->anti_aliasing.GetDefault() == Settings::AntiAliasing::Fxaa);
+}
 
 TEST_CASE("Accepted MKW settings replace visible global preferences", "[game_presets]") {
     auto settings = std::make_unique<Settings::Values>();
