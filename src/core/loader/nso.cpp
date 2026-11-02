@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cstring>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "common/common_funcs.h"
@@ -17,6 +19,7 @@
 #include "common/zbic_compression.h"
 #include "common/settings.h"
 #include "common/swap.h"
+#include "core/arm/symbols.h"
 #include "core/core.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/hle/kernel/code_set.h"
@@ -32,6 +35,54 @@
 
 namespace Loader {
 namespace {
+
+// A Switch 1 program that imports nn::pl::IsRunningOnOunce checks whether it runs on a Switch 2:
+// a Switch 2 Edition, which uses its Switch 2 Edition content there. The SDK's function is a stub
+// that returns false (mov w0, wzr; ret) and the console answers true; do the same, and give the
+// program the Switch 2 settings (unless they use another graphics API than the window was made
+// for).
+void AnswerIsRunningOnOunce(std::span<u8> image, const std::string& name) {
+    constexpr std::string_view Symbol = "_ZN2nn2pl16IsRunningOnOunceEv";
+    const auto symbols = Core::Symbols::GetSymbols(image);
+    const auto it = symbols.find(Symbol);
+    if (it == symbols.end()) {
+        return;
+    }
+    const VAddr address = it->second.first;
+    if (address == 0) {
+        Settings::SetCurrentProgramIsSwitch2Edition(true);
+        auto& backend = Settings::values.renderer_backend;
+        if (Settings::ActiveProfile() == Settings::Profile::Switch2) {
+            return;
+        }
+        if (backend.UsingGlobal() &&
+            Settings::GlobalString(Settings::Profile::Switch1, backend) !=
+                Settings::GlobalString(Settings::Profile::Switch2, backend)) {
+            LOG_WARNING(Loader,
+                        "{} is a Switch 2 Edition, but the Switch 2 settings use another graphics "
+                        "API: keeping the Switch 1 settings",
+                        name);
+            return;
+        }
+        LOG_INFO(Loader, "{} is a Switch 2 Edition: using the Switch 2 settings", name);
+        Settings::SetActiveProfile(Settings::Profile::Switch2);
+        return;
+    }
+    constexpr u32 MovW0Zero = 0x2a1f03e0;
+    constexpr u32 Ret = 0xd65f03c0;
+    constexpr u32 MovW0One = 0x52800020;
+    std::array<u32, 2> code{};
+    if (address + sizeof(code) > image.size()) {
+        return;
+    }
+    std::memcpy(code.data(), image.data() + address, sizeof(code));
+    if (code[0] != MovW0Zero || code[1] != Ret) {
+        LOG_WARNING(Loader, "{}: nn::pl::IsRunningOnOunce is not the SDK stub, left as is", name);
+        return;
+    }
+    std::memcpy(image.data() + address, &MovW0One, sizeof(MovW0One));
+    LOG_INFO(Loader, "{}: nn::pl::IsRunningOnOunce answers true (Switch 2 Edition)", name);
+}
 struct MODHeader {
     u32_le magic;
     u32_le dynamic_offset;
@@ -174,6 +225,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         pi_header = pm->PatchNSO(pi_header, name);
 
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
+    }
+
+    if (Settings::values.nx2_switch2_edition.GetValue() && !Settings::CurrentProgramIsSwitch2()) {
+        AnswerIsRunningOnOunce(std::span<u8>(codeset.memory).subspan(module_start), name);
     }
 
 #ifdef HAS_NCE

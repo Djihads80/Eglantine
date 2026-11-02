@@ -350,6 +350,28 @@ public:
         return ResultStatus::ErrorNotImplemented;
     }
 
+    /**
+     * Get the title ids of the add-on content the application's own file carries (not installed
+     * to the NAND), such as a container's add-on packages
+     *
+     * @param[out] out_title_ids The add-on content title ids
+     * @return ResultStatus result of function
+     */
+    virtual ResultStatus ReadAddOnTitleIds(std::vector<u64>& out_title_ids) {
+        return ResultStatus::ErrorNotImplemented;
+    }
+
+    /**
+     * Get the RomFS of add-on content the application's own file carries
+     *
+     * @param title_id The add-on content's title id
+     * @param[out] out_file The RomFS
+     * @return ResultStatus result of function
+     */
+    virtual ResultStatus ReadAddOnRomFS(u64 title_id, FileSys::VirtualFile& out_file) {
+        return ResultStatus::ErrorNotImplemented;
+    }
+
     using Modules = std::map<VAddr, std::string>;
 
     virtual ResultStatus ReadNSOModules(Modules& modules) {

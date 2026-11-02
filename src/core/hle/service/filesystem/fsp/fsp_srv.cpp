@@ -515,6 +515,14 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface,
 
     auto data = romfs_controller->OpenRomFS(title_id, storage_id, FileSys::ContentRecordType::Data);
 
+    // Add-on content the application's own file carries (a NUP container's add-on packages)
+    if (FileSys::VirtualFile carried;
+        !data && system.GetAppLoader().ReadAddOnRomFS(title_id, carried) ==
+                     Loader::ResultStatus::Success) {
+        *out_interface = std::make_shared<IStorage>(system, std::move(carried));
+        R_SUCCEED();
+    }
+
     if (!data) {
         const auto archive = FileSys::SystemArchive::SynthesizeSystemArchive(title_id);
 

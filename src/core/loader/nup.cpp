@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -157,10 +158,7 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
                                                       NupContainer::PackageKind::Addon;
                                            });
     if (addon_count > 0) {
-        LOG_WARNING(Loader,
-                    "NUP container has {} add-on content package(s); AoC mounting is not "
-                    "supported yet",
-                    addon_count);
+        LOG_INFO(Loader, "NUP container has {} add-on content package(s)", addon_count);
     }
 }
 
@@ -203,6 +201,35 @@ ResultStatus AppLoader_NUP::VerifyIntegrity(
     return nup->VerifyIntegrity(std::move(progress_callback));
 }
 
+ResultStatus AppLoader_NUP::ReadAddOnTitleIds(std::vector<u64>& out_title_ids) {
+    for (const auto& package : nup->GetPackages()) {
+        if (package.kind == FileSys::NupContainer::PackageKind::Addon) {
+            out_title_ids.push_back(package.title_id);
+        }
+    }
+    return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_NUP::ReadAddOnRomFS(u64 title_id, FileSys::VirtualFile& out_file) {
+    if (const auto it = addon_romfs.find(title_id); it != addon_romfs.end()) {
+        out_file = it->second;
+        return ResultStatus::Success;
+    }
+    const auto index = nup->FindPackage(FileSys::NupContainer::PackageKind::Addon, title_id);
+    const auto dir = index ? nup->GetRomFSDir(*index) : FileSys::VirtualDir{};
+    if (dir == nullptr) {
+        return ResultStatus::ErrorNoRomFS;
+    }
+    // The package holds a loose tree; the program reads add-on content as a RomFS image
+    out_file = FileSys::CreateRomFS(dir);
+    if (out_file == nullptr) {
+        return ResultStatus::ErrorNoRomFS;
+    }
+    LOG_INFO(Loader, "Add-on content {:016X} from the NUP container", title_id);
+    addon_romfs.emplace(title_id, out_file);
+    return ResultStatus::Success;
+}
+
 ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
     const auto base_index = nup->FindBasePackage();
     const auto base_romfs = base_index ? nup->GetRomFSDir(*base_index) : FileSys::VirtualDir{};
@@ -211,7 +238,21 @@ ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
         update_index ? nup->GetRomFSDir(*update_index) : FileSys::VirtualDir{};
     // A standalone update carries the complete merged tree; a base+update pair
     // overlays the update onto the base (SPEC §4.1.4).
-    const auto merged = FileSys::NupContainer::MergeShadowDirs(base_romfs, update_romfs);
+    auto merged = FileSys::NupContainer::MergeShadowDirs(base_romfs, update_romfs);
+    // A Switch 2 Edition reads its Switch 2 Edition content (an add-on) through its own RomFS, as
+    // a layer over the program's: NSMB Wonder only counts its add-ons and mounts nothing else.
+    if (merged != nullptr && Settings::CurrentProgramIsSwitch2Edition()) {
+        for (std::size_t i = 0; i < nup->GetPackages().size(); ++i) {
+            if (nup->GetPackages()[i].kind != FileSys::NupContainer::PackageKind::Addon) {
+                continue;
+            }
+            if (const auto edition_romfs = nup->GetRomFSDir(i); edition_romfs != nullptr) {
+                LOG_INFO(Loader, "Switch 2 Edition: add-on {:016X} layered over the RomFS",
+                         nup->GetPackages()[i].title_id);
+                merged = FileSys::NupContainer::MergeShadowDirs(merged, edition_romfs);
+            }
+        }
+    }
     if (merged == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }

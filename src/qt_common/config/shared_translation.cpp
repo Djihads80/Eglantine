@@ -229,6 +229,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, nx2_idle_spin_us, tr("Idle CPU core spin (microseconds):"),
            tr("How long an idle emulated core polls for new work before it sleeps. Can cut "
               "latency between the game's job threads, at the cost of host CPU time. 0 is off."));
+    INSERT(Settings, nx2_switch2_edition, tr("Run Switch 2 Editions of Switch 1 games"),
+           tr("Tells Switch 1 games they run on a Switch 2, as the console does, so a Switch 2 "
+              "Edition uses its Switch 2 Edition content (an add-on, e.g. in a NUP). Such a game "
+              "then uses the settings on this page."));
     INSERT(Settings, nx2_mesh_shaders, tr("Mesh shaders"),
            tr("Draw the game's task and mesh shader draws (needs VK_EXT_mesh_shader). Off "
               "skips them, to compare."));

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,7 +20,7 @@ namespace Loader {
 
 /// Loads a NUP (NX Package) container: loose ExeFS/RomFS trees for a base
 /// program plus its updates in one file. The newest update package is layered
-/// over the base; add-on content packages are recognized but not yet mounted.
+/// over the base; add-on content packages are served to the program as its add-on content.
 class AppLoader_NUP final : public AppLoader {
 public:
     explicit AppLoader_NUP(FileSys::VirtualFile file_);
@@ -50,6 +51,8 @@ public:
     ResultStatus ReadTitle(std::string& title) override;
     ResultStatus ReadControlData(FileSys::NACP& control) override;
     ResultStatus ReadNSOModules(Modules& modules) override;
+    ResultStatus ReadAddOnTitleIds(std::vector<u64>& out_title_ids) override;
+    ResultStatus ReadAddOnRomFS(u64 title_id, FileSys::VirtualFile& out_file) override;
 
 private:
     std::unique_ptr<FileSys::NupContainer> nup;
@@ -60,6 +63,8 @@ private:
     u64 base_title_id{};
     std::string display_version;
     bool has_program{};
+    /// Add-on RomFS images built so far, by title id
+    std::map<u64, FileSys::VirtualFile> addon_romfs;
 };
 
 } // namespace Loader

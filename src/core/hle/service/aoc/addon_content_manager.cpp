@@ -54,6 +54,22 @@ static std::vector<u64> AccumulateAOCTitleIDs(Core::System& system) {
     return add_on_content;
 }
 
+// The installed add-on content and the add-on content the application's own file carries (a NUP
+// container's add-on packages), which the loader knows only once the application is loaded.
+static std::vector<u64> AllAOCTitleIDs(Core::System& system, const std::vector<u64>& installed) {
+    std::vector<u64> add_on_content = installed;
+    std::vector<u64> carried;
+    if (system.GetAppLoader().ReadAddOnTitleIds(carried) == Loader::ResultStatus::Success) {
+        for (const u64 title_id : carried) {
+            if (std::find(add_on_content.begin(), add_on_content.end(), title_id) ==
+                add_on_content.end()) {
+                add_on_content.push_back(title_id);
+            }
+        }
+    }
+    return add_on_content;
+}
+
 IAddOnContentManager::IAddOnContentManager(Core::System& system_)
     : ServiceFramework{system_, "aoc:u"}, add_on_content{AccumulateAOCTitleIDs(system)},
       service_context{system_, "aoc:u"} {
@@ -104,9 +120,11 @@ Result IAddOnContentManager::CountAddOnContent(Out<u32> out_count, ClientProcess
         R_SUCCEED();
     }
 
+    const auto all = AllAOCTitleIDs(system, add_on_content);
     *out_count = static_cast<u32>(
-        std::count_if(add_on_content.begin(), add_on_content.end(),
+        std::count_if(all.begin(), all.end(),
                       [current](u64 tid) { return CheckAOCTitleIDMatchesBase(tid, current); }));
+    LOG_INFO(Service_AOC, "{} add-on content for {:016X}", *out_count, current);
 
     R_SUCCEED();
 }
@@ -122,7 +140,7 @@ Result IAddOnContentManager::ListAddOnContent(Out<u32> out_count,
     std::vector<u32> out;
     const auto& disabled = Settings::values.disabled_addons[current];
     if (std::find(disabled.begin(), disabled.end(), "DLC") == disabled.end()) {
-        for (u64 content_id : add_on_content) {
+        for (u64 content_id : AllAOCTitleIDs(system, add_on_content)) {
             if (FileSys::GetBaseTitleID(content_id) != current) {
                 continue;
             }
