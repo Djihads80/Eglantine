@@ -393,6 +393,7 @@ jobs:
             "-DCMAKE_PREFIX_PATH=$ucrt/qt6-static;$ucrt" \
             "-DQt6_DIR=$ucrt/qt6-static/lib/cmake/Qt6" \
             "-DOPENSSL_ROOT_DIR=$ucrt" \
+            "-DOPENSSL_INCLUDE_DIR=$ucrt/include" \
             -DOPENSSL_USE_STATIC_LIBS=ON \
             "-DOPENSSL_CRYPTO_LIBRARY=$ucrt/lib/libcrypto.a" \
             "-DOPENSSL_SSL_LIBRARY=$ucrt/lib/libssl.a" \
