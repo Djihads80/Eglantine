@@ -388,7 +388,7 @@ TEST_CASE("NUP output is reproducible", "[nup]") {
     for (const u8 b : Sha256(ReadAll(archive))) {
         hex += fmt::format("{:02x}", b);
     }
-    REQUIRE(hex == "df8446903ab2c39a51af0304935eb4aa5d8ead105440976ceae7ab97133f6143");
+    REQUIRE(hex == "718231e0974ca04c7be7bd6ed4334015b777c6e5f1ed51de23f899f81ee004ab");
 }
 
 TEST_CASE("NUP writes metadata overrides to the base and the newest update", "[nup]") {

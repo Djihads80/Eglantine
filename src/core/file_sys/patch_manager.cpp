@@ -65,6 +65,8 @@ std::string FormatTitleVersion(u32 version,
     return fmt::format("v{}.{}.{}", bytes[3], bytes[2], bytes[1]);
 }
 
+} // Anonymous namespace
+
 // Returns a directory with name matching name case-insensitive. Returns nullptr if directory
 // doesn't have a directory with name.
 VirtualDir FindSubdirectoryCaseless(const VirtualDir dir, std::string_view name) {
@@ -82,6 +84,8 @@ VirtualDir FindSubdirectoryCaseless(const VirtualDir dir, std::string_view name)
     return nullptr;
 #endif
 }
+
+namespace {
 
 std::optional<std::vector<Core::Memory::CheatEntry>> ReadCheatFileFromFolder(
     u64 title_id, const PatchManager::BuildID& build_id_, const VirtualDir& base_path, bool upper) {
