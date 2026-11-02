@@ -2493,11 +2493,25 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
     boost::container::small_vector<BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
-    for (const auto& [device_addr, size] : ranges) {
+    const DAddr buffer_addr = buffer.CpuAddr();
+    const DAddr buffer_end = buffer_addr + buffer.SizeBytes();
+    for (const auto& [range_addr, range_size_in] : ranges) {
+        // Only this buffer's part: the tracker and gpu_modified_ranges are shared by every buffer,
+        // so a range past the buffer gave copies outside it (offsets past its size, or below its
+        // start) and cleared other buffers' GPU-written state without downloading it.
+        const DAddr range_begin = (std::max)(range_addr, buffer_addr);
+        const DAddr range_end = (std::min)(range_addr + range_size_in, buffer_end);
+        if (range_begin >= range_end) {
+            continue;
+        }
         memory_tracker.ForEachDownloadRangeAndClear(
-            device_addr, size, [&](u64 device_addr_out, u64 range_size) {
-                const DAddr buffer_addr = buffer.CpuAddr();
+            range_begin, range_end - range_begin, [&](u64 device_addr_out, u64 range_size) {
                 const auto add_download = [&](DAddr start, DAddr end) {
+                    start = (std::max)(start, buffer_addr);
+                    end = (std::min)(end, buffer_end);
+                    if (start >= end) {
+                        return;
+                    }
                     const u64 new_offset = start - buffer_addr;
                     const u64 new_size = end - start;
                     copies.push_back(BufferCopy{
