@@ -129,7 +129,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
         if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896 || opcode == 0x8a5) {
-            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892)
+            // A UPn guard is swapped in for ULOP3 and for UIADD3 without carry outputs (Hyrule
+            // Warriors: @!UP0 UIADD3 UR6, UR14, 0x1c, URZ).
+            const bool guardable = opcode == 0x292 || opcode == 0x892 ||
+                                   ((opcode == 0x290 || opcode == 0x890) && insn.Bits(81, 6) == 0x3f);
+            if (insn.Bits(12, 4) != 7 && !guardable)
                 return fail(index, "native uniform arithmetic predication");
             uniform_guard = insn.Bits(12, 4) != 7;
             rewritten_uniform = true;
@@ -2092,22 +2096,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             result.instructions.push_back(translated);
             break;
         }
-        case 0x387: case 0x983: { // Local spill: 32, 64 or 128 bits at [Ra + immediate byte offset].
-            // The size is bits 73-75 (4, 5, 6 = 32, 64, 128 bits); wider accesses become 32-bit ones.
-            // A load's bit 85 (.LU) is a cache hint.
+        case 0x387: case 0x983: { // Local spill at [Ra + immediate byte offset].
+            // The size is bits 73-75 (0-3 = U8, S8, U16, S16, then 4, 5, 6 = 32, 64, 128 bits), as
+            // Maxwell's; wider accesses become 32-bit ones. A load's bit 85 (.LU) is a cache hint.
             const bool store = opcode == 0x387;
             const u32 size = insn.Bits(73, 3);
             const u32 data = insn.Bits(32, 8), offset = insn.Bits(40, 24), address = insn.Bits(24, 8);
             const u32 words = size == 6 ? 4 : size == 5 ? 2 : 1, value = store ? data : static_cast<u32>(dest);
+            const u32 alignment = size < 2 ? 1U : size < 4 ? 2U : 4U;
             if ((address != 255 && address >= 246) || (store && insn.Bits(16, 8)) || (!store && data) ||
                 (value != 255 && (value + words > 248 || (value & (words - 1)))) || (!store && value == 255) ||
-                (offset & 3) || offset + 4 * words > 0x800000 || size < 4 || size > 6 ||
+                (offset & (alignment - 1)) || offset + 4 * words > 0x800000 || size > 6 ||
                 (insn.words[2] & ~(store ? 0xe00U : 0x200e00U)) != 0x00100000U)
                 return fail(index, "native local scalar spill mode");
             for (u32 word = 0; word < words; ++word)
                 emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
                      (value == 255 ? 255U : value + word) | (u64{address} << 8) |
-                     (u64{offset + 4 * word} << 20) | (u64{4} << 48));
+                     (u64{offset + 4 * word} << 20) | (u64{size < 4 ? size : 4U} << 48));
             break;
         }
         case 0x803: { // P2R PR, register merge source, immediate mask, byte select (76-77)
