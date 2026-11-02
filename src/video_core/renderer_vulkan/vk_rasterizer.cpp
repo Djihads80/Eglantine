@@ -968,6 +968,13 @@ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType 
     if (addr == 0 || size == 0) {
         return;
     }
+    if (True(which & (VideoCommon::CacheType::TextureCache | VideoCommon::CacheType::BufferCache))) {
+        // CPU writes into GPU-written memory are only collected when they happen. Apply them
+        // first, or the download writes the stale GPU copy over them: the Yoshi demo writes a
+        // native program over memory a compute pass had bound as a written texel buffer, and its
+        // title menu or background read as zeros once the shader cache's read flushed it.
+        gpu.InvalidateGPUCache();
+    }
     if (True(which & VideoCommon::CacheType::TextureCache)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.DownloadMemory(addr, size);
