@@ -994,6 +994,26 @@ void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind) {
     ++channel_state->uniform_cache_shots[0];
+    // Bank 24 (root table 0, NVN2's push constants) is read from bank 17, which such games do not
+    // bind: stream the table's current words as that buffer.
+    if (index == 17 && maxwell3d->root_tables.loaded && channel_state->uniform_buffers[stage][index].size == 0) {
+        const auto& words = maxwell3d->root_tables.tables[0];
+        const u32 size = (*channel_state->uniform_buffer_sizes)[stage][index];
+        const u32 copied = (std::min)(size, static_cast<u32>(sizeof(words)));
+        if constexpr (IS_OPENGL) {
+            std::array<u8, sizeof(words)> data{};
+            std::memcpy(data.data(), words.data(), copied);
+            runtime.BindFastUniformBuffer(stage, binding_index, copied);
+            runtime.PushFastUniformBuffer(stage, binding_index, std::span<const u8>(data.data(), copied));
+        } else {
+            const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            std::memset(span.data(), 0, span.size());
+            std::memcpy(span.data(), words.data(), copied);
+        }
+        channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+        channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+        return;
+    }
     const Binding& binding = channel_state->uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);

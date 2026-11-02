@@ -164,6 +164,8 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     case MAXWELL3D_REG_INDEX(vertex_array_instance_first):
     case MAXWELL3D_REG_INDEX(vertex_array_instance_subsequent):
     case MAXWELL3D_REG_INDEX(draw_texture.src_y0):
+    case RootTables::SelectMethod:
+    case RootTables::LoadMethod:
     case MAXWELL3D_REG_INDEX(wait_for_idle):
     case MAXWELL3D_REG_INDEX(shadow_ram_control):
     case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
@@ -346,6 +348,17 @@ void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argume
         LOG_DEBUG(HW_GPU, "Native GPU surface clear: value={:#x}", argument);
     }
     switch (method) {
+    case RootTables::SelectMethod:
+        root_tables.selected = argument & 7;
+        root_tables.offset = (argument >> 8) & 0xff;
+        return;
+    case RootTables::LoadMethod:
+        if (root_tables.offset < 256 && root_tables.offset % 4 == 0) {
+            root_tables.tables[root_tables.selected][root_tables.offset / 4] = argument;
+            root_tables.loaded = true;
+        }
+        root_tables.offset += 4;
+        return;
     case MAXWELL3D_REG_INDEX(wait_for_idle):
         return rasterizer->WaitForIdle();
     case MAXWELL3D_REG_INDEX(shadow_ram_control):
@@ -819,6 +832,8 @@ bool FrontHandledOutsideDrawManager(u32 method) {
         return true;
     }
     switch (method) {
+    case Maxwell3D::RootTables::SelectMethod:
+    case Maxwell3D::RootTables::LoadMethod:
     case MAXWELL3D_REG_INDEX(wait_for_idle):
     case MAXWELL3D_REG_INDEX(shadow_ram_control):
     case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
