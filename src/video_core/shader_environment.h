@@ -97,8 +97,9 @@ protected:
 
     /// Adopts an already lowered native program, or captures and lowers it when there is none.
     void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
-                              u32 source_header_size = 128);
-    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size);
+                              u32 source_header_size = 128, bool geometry = false);
+    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size,
+                                                              bool geometry = false);
     size_t native_source_size{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 

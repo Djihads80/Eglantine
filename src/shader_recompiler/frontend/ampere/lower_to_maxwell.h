@@ -43,10 +43,16 @@ struct LoweredProgram {
     explicit operator bool() const { return error.empty(); }
 };
 
+struct LoweringOptions {
+    bool geometry{};
+    u64 native_code_address{};
+};
+
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
-inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms) {
+inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
+                                          LoweringOptions options = {}) {
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
     const u32 high_uniform_base = 216 - high_uniforms;
@@ -1597,7 +1603,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
             const bool round_up = (mode & ~0x10100U) == 0x0020b000;
             const bool signed_byte = opcode == 0x305 && mode == 0x0021e100;
-            if ((!half && !small && !floor && !nearest && !round_up && !signed_byte &&
+            const bool short_trunc = opcode == 0x305 && (mode & ~0x100U) == 0x0021e800;
+            if ((!half && !small && !floor && !nearest && !round_up && !signed_byte && !short_trunc &&
                  (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
@@ -1617,7 +1624,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                      (u64{source} << 20) | (u64{7} << 39) | (u64{7} << 48));
                 emit(0x5c40000000000000ULL | predicate | 250 | (u64{source} << 8) |
                      (u64{250} << 20) | (u64{7} << 48));
-                if (!small) {
+                if (!small && !short_trunc) {
                 mov_imm(252, 0x4f800000);
                 emit(0x5800000000000000ULL | predicate | 251 | (u64{250} << 8) |
                      (u64{252} << 20) | (u64{7} << 39) | (u64{6} << 48));
@@ -1627,7 +1634,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 }
                 source = 250;
             }
-            emit(base(0x5cb0000000000000ULL) | (u64{small || signed_byte ? 1U : 2U} << 8) | (u64{2} << 10) |
+            emit(base(0x5cb0000000000000ULL) | (u64{small || signed_byte || short_trunc ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
                  (u64{small || nearest ? 0U : floor ? 1U : round_up ? 2U : 3U} << 39) |
                  (u64{insn.Bits(80, 1)} << 44));
@@ -1636,7 +1643,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(base(0x5ce0000000000000ULL) | (u64{1} << 10) | (u64{1} << 12) |
                      (u64{1} << 13) | (dest << 20) | (u64{1} << 50));
             }
-            if (!is_signed && !small) {
+            if (!is_signed && !small && !short_trunc) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
             }
@@ -2838,6 +2845,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return finish(index); // the closing self-branch
             break;
         }
+        case 0x34e: { // LEPC: load this native instruction's address as a register pair.
+            if (!options.geometry || insn.Bits(24, 8) || insn.words[1] || insn.words[2] ||
+                dest >= 254 || native_predicate != 7)
+                return fail(index, "native program counter load mode");
+            const u64 address = options.native_code_address + u64{index} * sizeof(Instruction);
+            mov_imm(static_cast<u32>(dest), static_cast<u32>(address));
+            mov_imm(static_cast<u32>(dest) + 1, static_cast<u32>(address >> 32));
+            break;
+        }
+        case 0x357: // Set the native geometry exit stub; host geometry invocations need no stub.
+            if (!options.geometry || insn.Bits(16, 8) || insn.words[1] || insn.words[2] ||
+                native_predicate != 7)
+                return fail(index, "native geometry exit setup mode");
+            break;
         case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
             // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
             // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
@@ -2847,6 +2868,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
+            if (options.geometry && !write && !insn.words[1] && !insn.words[2] &&
+                insn.Bits(24, 8) != 255 && dest != 255) {
+                // The geometry map form maps a vertex index to itself in the Maxwell frontend.
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) |
+                     (u64{insn.Bits(24, 8)} << 20));
+                break;
+            }
             if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
                 (!write && region != 3) || (!write && dest == 255))
                 return fail(index, "native stage buffer access mode");
@@ -2921,11 +2949,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     return fail(static_cast<u32>(code.size()), main_exited ? "native program lacks captured library return" : "native program has no unconditional EXIT");
 }
 
-inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
+                                      LoweringOptions options = {}) {
     // Programs using uniform registers above UR27 are lowered again with mirrors for them.
     u32 high_uniforms = 0;
     for (;;) {
-        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms);
+        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms, options);
         if (lowered || lowered.high_uniform_registers <= high_uniforms) return lowered;
         high_uniforms = lowered.high_uniform_registers;
     }
