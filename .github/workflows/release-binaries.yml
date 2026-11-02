@@ -32,9 +32,11 @@ permissions:
 env:
   PGO_LLVM_VERSION: "23"
 
+# A running build is never cancelled: it finishes and publishes. A push meanwhile queues one build;
+# a later push replaces it, so the newest commit builds as soon as the running one is done.
 concurrency:
   group: release-binaries-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
