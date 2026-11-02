@@ -41,6 +41,12 @@ batched shader removal against sequential invalidation, sparse slot iteration,
 and priority ordering against an independent queue model. Priority tests include
 both 64- and 128-priority queues.
 
+The integration also retains the calibration-worker lifetime fix, repairs stale
+memory/timer test fixtures, and defines kernel TLS out of line for ThinLTO.
+Loose RomFS directory lookup accepts mixed-case names on case-sensitive hosts;
+NUP tests check that the base version metadata and archive checksum agree across
+Windows and Linux.
+
 The Windows test package uses Clang 23.1.4, the checksum-pinned Eden v020525 PGO
 profile, and ThinLTO. Selevet's MSVC-ABI profile is not substituted for the MinGW
 build's profile. Link-time optimization is a build option; other platforms can
