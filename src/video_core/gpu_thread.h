@@ -80,6 +80,9 @@ struct GPUTickCommand final {};
 /// Command to run a function on the GPU thread after the commands queued before it
 struct RunCommand final {
     std::function<void()> func;
+    /// With the GPU split, run on its front (after draining the back) instead of deferring to the
+    /// back, so command lists read after this one see what func did (GMMU maps).
+    bool before_later_reads{};
 };
 
 using CommandData =
@@ -132,7 +135,7 @@ public:
     void TickGPU(bool is_async);
 
     /// Runs func on the GPU thread once the commands queued before it have been processed.
-    void Run(std::function<void()>&& func, bool is_async);
+    void Run(std::function<void()>&& func, bool is_async, bool before_later_reads = false);
 
     void NotifyShutdown();
 
