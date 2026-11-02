@@ -459,29 +459,6 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     // Gen keys if necessary
     OnCheckFirmwareDecryption(false);
 
-    auto* recommendations = new QMessageBox(
-        QMessageBox::Question, tr("Recommended Mario Kart World settings"),
-        tr("Use the recommended settings for Mario Kart World?\n\n"
-           "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-           "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
-           "Yes replaces your saved settings. No or closing this window keeps your settings."),
-        QMessageBox::Yes | QMessageBox::No, this);
-    recommendations->setAttribute(Qt::WA_DeleteOnClose);
-    recommendations->setDefaultButton(QMessageBox::No);
-    recommendations->setEscapeButton(QMessageBox::No);
-    recommendations->setWindowModality(Qt::NonModal);
-    connect(recommendations, &QMessageBox::finished, this, [this](int result) {
-        use_recommended_mkw_settings = result == QMessageBox::Yes;
-        if (use_recommended_mkw_settings && !emulation_running && !boot_in_progress) {
-            Settings::SetMarioKartWorldRecommendedSettings(Settings::values, true);
-            config->SaveAllValues();
-            QtCommon::system->ApplySettings();
-            UpdateStatusButtons();
-        }
-        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
-    });
-    recommendations->show();
-
 #ifdef __unix__
     OnCheckGraphicsBackend();
 #endif
@@ -1989,6 +1966,20 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+    if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+        asked_recommended_mkw_settings = true;
+        use_recommended_mkw_settings =
+            QMessageBox::question(
+                this, tr("Recommended Mario Kart World settings"),
+                tr("Use the recommended settings for Mario Kart World?\n\n"
+                   "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+                   "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                   "FXAA.\n\n"
+                   "They apply to Mario Kart World until Eglantine is closed. Your saved settings "
+                   "are not changed."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
+    }
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
                                           use_recommended_mkw_settings)) {
         QtCommon::system->ApplySettings();
