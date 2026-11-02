@@ -125,7 +125,7 @@ static LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* exception) {
                                               const void*, const void*);
     const HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
     const auto write = dbghelp ? reinterpret_cast<MiniDumpWriteDumpFn>(
-                                     GetProcAddress(dbghelp, "MiniDumpWriteDump"))
+                                     reinterpret_cast<void*>(GetProcAddress(dbghelp, "MiniDumpWriteDump")))
                                : nullptr;
     if (write == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;

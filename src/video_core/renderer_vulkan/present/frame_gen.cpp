@@ -80,7 +80,7 @@ void WritePortablePixmap(const std::filesystem::path& path, const std::string& m
 void WriteGrayscalePgm(const std::filesystem::path& path, VkExtent2D extent,
                        std::span<const u8> pixels) {
     const size_t expected = static_cast<size_t>(extent.width) * extent.height;
-    WritePortablePixmap(path, "P5", extent, pixels.subspan(0, std::min(expected, pixels.size())));
+    WritePortablePixmap(path, "P5", extent, pixels.subspan(0, (std::min)(expected, pixels.size())));
 }
 
 void WriteRaw(const std::filesystem::path& path, std::span<const u8> pixels) {
@@ -222,8 +222,8 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
         return;
     }
 
-    peak_guest_extent.width = std::max(peak_guest_extent.width, guest_extent.width);
-    peak_guest_extent.height = std::max(peak_guest_extent.height, guest_extent.height);
+    peak_guest_extent.width = (std::max)(peak_guest_extent.width, guest_extent.width);
+    peak_guest_extent.height = (std::max)(peak_guest_extent.height, guest_extent.height);
 
     const VkExtent2D extent{.width = frame->width, .height = frame->height};
     const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, extent);
