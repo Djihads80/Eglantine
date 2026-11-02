@@ -17,17 +17,17 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <key>CFBundleGetInfoString</key>
     <string></string>
     <key>CFBundleIconFile</key>
-    <string>eglantine.icns</string>
+    <string>encore.icns</string>
     <key>CFBundleIconName</key>
-    <string>eglantine</string>
+    <string>encore</string>
     <key>CFBundleIdentifier</key>
-    <string>com.yuzu-emu.yuzu</string> <!-- May be required by 3rd party ext -->
+    <string>com.cblock85.encore</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleLongVersionString</key>
     <string></string>
     <key>CFBundleName</key>
-    <string>eglantine</string>
+    <string>Encore</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

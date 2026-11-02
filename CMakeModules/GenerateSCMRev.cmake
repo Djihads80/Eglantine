@@ -52,6 +52,15 @@ else()
     set(REPO_NAME "Eglantine")
 endif()
 
+# The macOS distribution is Encore: Eglantine's Switch 2 branch with the Mac fixes, built for Apple Silicon.
+if (APPLE)
+    if (NIGHTLY_BUILD)
+        set(REPO_NAME "Encore Nightly")
+    else()
+        set(REPO_NAME "Encore")
+    endif()
+endif()
+
 set(BUILD_ID ${GIT_REFSPEC})
 set(BUILD_FULLNAME "${REPO_NAME} ${BUILD_VERSION} ")
 set(CXX_COMPILER "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")

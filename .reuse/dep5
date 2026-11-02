@@ -187,3 +187,10 @@ License: GPL-3.0-or-later
 Comment: CPM.cmake has had additional modifications from crueter to better work with CPMUtil
          https://git.crueter.xyz/CMake/CPMUtil
          https://git.crueter.xyz/CMake/Modules
+
+Files: dist/encore.icns
+       dist/encore.svg
+       dist/encore.png
+       dist/qt_themes/default/icons/256x256/encore.png
+Copyright: 2026 Encore contributors
+License: GPL-3.0-or-later

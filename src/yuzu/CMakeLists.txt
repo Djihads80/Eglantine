@@ -239,7 +239,11 @@ add_executable(yuzu
     game/carousel.h game/carousel.cpp
 )
 
-set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
+if (APPLE)
+    set_target_properties(yuzu PROPERTIES OUTPUT_NAME "Encore")
+else()
+    set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
+endif()
 
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
@@ -371,7 +375,7 @@ if (APPLE)
             XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED ON)
     # Otherwise, we'll use our own.
     else()
-        set(_icons "${_dist}/eglantine.icns" "${_dist}/Assets.car")
+        set(_icons "${_dist}/encore.icns" "${_dist}/Assets.car")
     endif()
 
     set_source_files_properties(${_icons} PROPERTIES
