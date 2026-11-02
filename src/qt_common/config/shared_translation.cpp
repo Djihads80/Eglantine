@@ -487,7 +487,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
     translations->insert({Settings::EnumMetadata<Settings::FrameGenType>::Index(),
                           {
                               PAIR(FrameGenType, Lsfg, tr("Lossless Scaling (LSFG)")),
-                              PAIR(FrameGenType, Fsr3, tr("AMD FidelityFX Super Resolution 3 (FSR 3)")),
+                              PAIR(FrameGenType, Fsr3, tr("Optical Flow Interpolation (built-in)")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::ScalingFilter>::Index(),
                           {
@@ -497,7 +497,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(ScalingFilter, Gaussian, tr("Gaussian")),
                               PAIR(ScalingFilter, Lanczos, tr("Lanczos")),
                               PAIR(ScalingFilter, ScaleForce, tr("ScaleForce")),
-                              PAIR(ScalingFilter, Fsr, tr("AMD FidelityFX Super Resolution")),
+                              PAIR(ScalingFilter, Fsr, tr("AMD FidelityFX Super Resolution 1 (FSR 1)")),
                               PAIR(ScalingFilter, Area, tr("Area")),
                               PAIR(ScalingFilter, Mmpx, tr("MMPX")),
                               PAIR(ScalingFilter, ZeroTangent, tr("Zero-Tangent")),
@@ -506,7 +506,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(ScalingFilter, Spline1, tr("Spline-1")),
                               PAIR(ScalingFilter, Sgsr, tr("Snapdragon Game Super Resolution")),
                               PAIR(ScalingFilter, SgsrEdge, tr("Snapdragon Game Super Resolution EdgeDir")),
-                              PAIR(ScalingFilter, Fsr3, tr("AMD FidelityFX Super Resolution 3")),
+                              PAIR(ScalingFilter, Fsr3, tr("AMD FidelityFX Super Resolution 1, softer sharpening")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::AntiAliasing>::Index(),
                           {
