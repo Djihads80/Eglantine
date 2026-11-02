@@ -88,6 +88,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
         u32 opcode = insn.Bits(0, 12);
         if (insn.Bits(12, 4) == 15) continue; // @!PT: never executes (compiler padding)
+        u32 f16_dest = 255, f16_second = 255, f16_components = 0;
         std::optional<u32> active_link;
         u32 active_entry = 0;
         if (main_exited) {
@@ -107,6 +108,19 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66) continue;
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= (uses_uniform_bank ? high_uniform_base : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
+        }
+        // TLD/TLD4 .F16 (bit 79): the components come packed in pairs, (0, 1) in Rd and (2, 3) in
+        // the second destination. Lowered as the F32 form into R248/R249 and R246/R247, then packed.
+        if ((opcode == 0xb66 || opcode == 0xb63) && insn.Bits(79, 2) == 1) {
+            f16_dest = insn.Bits(16, 8);
+            f16_second = insn.Bits(64, 8);
+            f16_components = static_cast<u32>(std::popcount(insn.Bits(72, 4)));
+            if (f16_dest >= 246 || (f16_second != 255 && f16_second >= 246) || insn.Bits(61, 3) == 5 ||
+                (f16_second == 255 && f16_components > 2))
+                return fail(index, "native half-precision texture result registers");
+            insn.words[2] &= ~(1U << 15);
+            insn.words[0] = (insn.words[0] & ~0x00ff0000U) | (f16_dest == 255 ? 0x00ff0000U : (248U << 16));
+            if (f16_second != 255) insn.words[2] = (insn.words[2] & ~0xffU) | 246U;
         }
         // UR0-UR21 live in R216-R237 and UR22-UR27 in R240-R245 (R239 holds the uniform
         // predicates), so even/odd pairs stay adjacent; UR28 and up below R216. Sites that
@@ -2613,6 +2627,21 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             return fail(index, "unsupported native opcode");
         }
         if (!operand_error.empty()) return fail(index, operand_error);
+        if (f16_components != 0) {
+            // Each pair as F2FP.PACK_AB: the second value in the high half.
+            const u64 pred = u64{insn.Bits(12, 4)} << 16;
+            const auto pack = [&](u32 target, u32 low, u32 high) {
+                result.instructions.push_back(0x5ca8000000000000ULL | pred | 250 | (u64{1} << 8) |
+                                              (u64{2} << 10) | (u64{high} << 20));
+                result.instructions.push_back(0x5ca8000000000000ULL | pred | 251 | (u64{1} << 8) |
+                                              (u64{2} << 10) | (u64{low} << 20));
+                result.instructions.push_back(0x5c18000000000000ULL | pred | target | (u64{250} << 8) |
+                                              (u64{251} << 20) | (u64{16} << 39));
+            };
+            if (f16_dest != 255) pack(f16_dest, 248, f16_components > 1 ? 249U : 255U);
+            if (f16_second != 255 && f16_components > 2)
+                pack(f16_second, 246, f16_components > 3 ? 247U : 255U);
+        }
         if (output_mask) {
             emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{output_mask} << 20));
             emit(0x38f0000000070000ULL | (u64{254} << 8) | (u64{output_mask} << 20));
