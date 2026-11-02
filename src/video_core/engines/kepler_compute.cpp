@@ -590,7 +590,9 @@ std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
 // Title 4's upscaler reads the tonemapped frame through the texture handle at cbuf0+0x90 and
 // writes the output resolution image through the surface handle at cbuf0+0xa0 (from its
-// TLD/SUST operands). Blit one to the other with bilinear filtering when both are plain 2D images
+// TLD/SUST operands). Fire Emblem: Fortune's Weave's DLSS network ends with a pass that reads the
+// input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11; 720p
+// to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D images
 // of the same format and the output is larger.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
@@ -600,11 +602,18 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto input = image(0x90), output = image(0xa0);
-    if (!input || !output || input->format != output->format || input->Address() == 0 ||
-        output->Address() == 0 || output->Width() <= input->Width() || !input->IsBlockLinear() ||
-        !output->IsBlockLinear())
-        return false;
+    const auto usable = [](const std::optional<Texture::TICEntry>& input,
+                           const std::optional<Texture::TICEntry>& output) {
+        return input && output && input->format == output->format && input->Address() != 0 &&
+               output->Address() != 0 && output->Width() > input->Width() && input->IsBlockLinear() &&
+               output->IsBlockLinear();
+    };
+    auto input = image(0x90), output = image(0xa0);
+    if (!usable(input, output)) {
+        input = image(0x328);
+        output = image(0x348);
+        if (!usable(input, output)) return false;
+    }
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
     switch (input->format) {
