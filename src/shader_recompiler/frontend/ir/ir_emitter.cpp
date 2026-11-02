@@ -329,6 +329,22 @@ void IREmitter::SetPatch(Patch patch, const F32& value) {
     Inst(Opcode::SetPatch, patch, value);
 }
 
+U32 IREmitter::IsbeRead(const U32& address) {
+    return Inst<U32>(Opcode::IsbeRead, address);
+}
+
+void IREmitter::IsbeWriteAttribute(const U32& address, const U32& value) {
+    Inst(Opcode::IsbeWriteAttribute, address, value);
+}
+
+void IREmitter::IsbeWriteMapU8(const U32& address, const U32& value) {
+    Inst(Opcode::IsbeWriteMapU8, address, value);
+}
+
+void IREmitter::IsbeWriteMapU32(const U32& address, const U32& value) {
+    Inst(Opcode::IsbeWriteMapU32, address, value);
+}
+
 void IREmitter::SetFragColor(u32 index, u32 component, const F32& value) {
     Inst(Opcode::SetFragColor, Imm32(index), Imm32(component), value);
 }

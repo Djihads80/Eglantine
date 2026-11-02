@@ -35,6 +35,10 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
     if (mime.find("vp8") != std::string_view::npos) {
         return NvdecCommon::VideoCodec::VP8;
     }
+    // "video/av01" or "video/av1". FFmpeg decodes AV1 with libdav1d.
+    if (mime.find("av01") != std::string_view::npos || mime.find("av1") != std::string_view::npos) {
+        return NvdecCommon::VideoCodec::AV1;
+    }
     if (mime.find("avc") != std::string_view::npos || mime.find("264") != std::string_view::npos) {
         return NvdecCommon::VideoCodec::H264;
     }

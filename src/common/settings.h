@@ -358,7 +358,7 @@ struct Values {
                                                   true};
 
     SwitchableSetting<ScalingFilter> scaling_filter{linkage,
-                                                    ScalingFilter::NearestNeighbor,
+                                                    ScalingFilter::ScaleForce,
                                                     "scaling_filter",
                                                     Category::Renderer,
                                                     Specialization::Default,
@@ -387,7 +387,7 @@ struct Values {
                                                       true};
 
     SwitchableSetting<AntiAliasing> anti_aliasing{linkage,
-                                                  AntiAliasing::None,
+                                                  AntiAliasing::Fxaa,
                                                   "anti_aliasing",
                                                   Category::Renderer,
                                                   Specialization::Default,
@@ -573,8 +573,10 @@ struct Values {
                                                                true,
                                                                true};
 
+    // BC3 by default: GPUs without ASTC otherwise keep ASTC textures as RGBA8, four times the
+    // VRAM (Mario Kart World: 7.3-7.8 GB of an 8 GB card, the rest paged into system RAM).
     SwitchableSetting<AstcRecompression, true> astc_recompression{linkage,
-                                                                  AstcRecompression::Uncompressed,
+                                                                  AstcRecompression::Bc3,
                                                                   "astc_recompression",
                                                                   Category::RendererAdvanced};
 
@@ -768,11 +770,7 @@ struct Values {
     Setting<s32> current_user{linkage, 0, "current_user", Category::System};
 
     SwitchableSetting<ConsoleMode> use_docked_mode{linkage,
-#ifdef __ANDROID__
                                                    ConsoleMode::Handheld,
-#else
-                                                   ConsoleMode::Docked,
-#endif
                                                    "use_docked_mode",
                                                    Category::System,
                                                    Specialization::Radio,

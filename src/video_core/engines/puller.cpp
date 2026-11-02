@@ -116,6 +116,7 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
         return false;
     }
     pending_acquire.reset();
+    dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
     Nx2SemaphoreWaiters::Get().Remove(this);
     return true;
 }
@@ -257,6 +258,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         dma_pusher.rasterizer->ReleaseFences();
         if (!waiters.Latched(this) && !acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             pending_acquire = acquire;
+            dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
             VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireWaits, 1);
         } else {
             waiters.Remove(this);
