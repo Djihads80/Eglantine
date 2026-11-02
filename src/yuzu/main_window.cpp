@@ -320,6 +320,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
+constexpr int EmuThreadStopTimeoutMs = 10'000;
 
 constexpr size_t CopyBufferSize = 1_MiB;
 
@@ -2209,6 +2210,23 @@ void MainWindow::OnShutdownBeginDialog() {
 void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
+        emu_terminate_timer.setSingleShot(true);
+        emu_terminate_timer.start(EmuThreadStopTimeoutMs);
+        connect(&emu_terminate_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeout,
+                Qt::UniqueConnection);
+    }
+}
+
+void MainWindow::OnEmulationStopTimeout() {
+    TerminateEmulationThread();
+    OnEmulationStopped();
+}
+
+void MainWindow::TerminateEmulationThread() {
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
+        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+        QtCommon::emu_thread->terminate();
+        QtCommon::emu_thread->wait();
     }
 }
 
@@ -2220,6 +2238,7 @@ void MainWindow::OnEmulationStopped() {
         return;
     }
     shutdown_timer.stop();
+    emu_terminate_timer.stop();
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->disconnect();
         QtCommon::emu_thread->wait();
@@ -2309,13 +2328,17 @@ void MainWindow::ShutdownGame() {
     play_time_manager->Stop();
     OnShutdownBegin();
     OnEmulationStopTimeExpired();
-    if (QtCommon::emu_thread) {
+    emu_terminate_timer.stop();
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
         connect(QtCommon::emu_thread.get(), &QThread::finished, &loop, &QEventLoop::quit);
-        if (QtCommon::emu_thread->isRunning()) {
-            loop.exec(QEventLoop::ExcludeUserInputEvents);
-        }
+        connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timeout.start(EmuThreadStopTimeoutMs);
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
+    TerminateEmulationThread();
     OnEmulationStopped();
 }
 

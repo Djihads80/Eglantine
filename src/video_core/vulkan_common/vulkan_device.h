@@ -1161,6 +1161,12 @@ FN_MAX_LIMIT_LIST
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
     }
 
+    /// The multiple vertex input binding strides must be. Metal needs 4 bytes, which MoltenVK
+    /// reports as minVertexInputBindingStrideAlignment through VK_KHR_portability_subset.
+    u32 GetMinVertexInputBindingStrideAlignment() const noexcept {
+        return IsMoltenVK() ? 4 : 1;
+    }
+
     NvidiaArchitecture GetNvidiaArch() const noexcept {
         return nvidia_arch;
     }
