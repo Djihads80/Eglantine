@@ -438,9 +438,10 @@ bool IsUndefined(IR::Opcode opcode) {
            opcode == IR::Opcode::UndefU64;
 }
 
-// Values already emitted by the program being built, by the slot that keeps them, and how deep
-// in nested BuildHandleProgram calls the build is.
+// Values already emitted by the program being built, by the slot that keeps them, how many slots
+// are in use, and how deep in nested BuildHandleProgram calls the build is.
 thread_local std::unordered_map<const IR::Inst*, u32> g_handle_slots;
+thread_local u32 g_handle_slot_count{};
 thread_local int g_handle_depth{};
 
 bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
@@ -455,11 +456,13 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
     const bool outermost = g_handle_depth++ == 0;
     if (outermost) {
         g_handle_slots.clear();
+        g_handle_slot_count = 0;
     }
     SCOPE_EXIT {
         --g_handle_depth;
         if (outermost) {
             g_handle_slots.clear();
+            g_handle_slot_count = 0;
         }
     };
     const IR::Inst* const inst{value.InstRecursive()};
@@ -478,14 +481,20 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
     } else {
         g_handle_slots.emplace(inst, ~0U);
         const size_t start = code.size();
+        const u32 first_slot = g_handle_slot_count;
         result = BuildHandleNode(value, code, budget, block);
         g_handle_slots.erase(inst);
         if (!result) {
+            // The Tee of every value the dropped code kept goes with it: a later use of one of
+            // them (another Phi input) must build it again, not load a slot nothing wrote.
             code.resize(start);
+            std::erase_if(g_handle_slots, [first_slot](const auto& entry) {
+                return entry.second != ~0U && entry.second >= first_slot;
+            });
+            g_handle_slot_count = first_slot;
         }
         if (result && inst->UseCount() > 1 && g_handle_slots.size() < 256) {
-            const u32 slot = static_cast<u32>(
-                std::ranges::count_if(g_handle_slots, [](const auto& entry) { return entry.second != ~0U; }));
+            const u32 slot = g_handle_slot_count++;
             g_handle_slots.emplace(inst, slot);
             code.push_back(static_cast<u32>(Op::Tee));
             code.push_back(slot);
