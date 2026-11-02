@@ -722,6 +722,17 @@ std::optional<IPv4Address> GetHostIPv4Address() {
     return TranslateIPv4(network_interface->ip_address);
 }
 
+std::optional<IPv4Address> GetRoomIPv4Address() {
+    if (const auto room_member = GetRoomMember().lock()) {
+        // The room host and moderators are in the Moderator state instead of Joined
+        const auto state = room_member->GetState();
+        if (state == RoomMember::State::Joined || state == RoomMember::State::Moderator) {
+            return room_member->GetFakeIpAddress();
+        }
+    }
+    return std::nullopt;
+}
+
 std::string IPv4AddressToString(IPv4Address ip_addr) {
     std::array<char, INET_ADDRSTRLEN> buf = {};
     ASSERT(inet_ntop(AF_INET, &ip_addr, buf.data(), sizeof(buf)) == buf.data());

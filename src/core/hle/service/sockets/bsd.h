@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 #include <variant>
@@ -181,12 +182,17 @@ private:
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
     static inline std::array<std::optional<FileDescriptor>, MAX_FD> file_descriptors{};
+    /// Guards file_descriptors against the room thread, which delivers proxy packets to them
+    static inline std::mutex file_descriptors_mutex;
 
     /// Callback to parse and handle a received wifi packet.
-    void OnProxyPacketReceived(const Network::ProxyPacket& packet);
+    static void OnProxyPacketReceived(const Network::ProxyPacket& packet);
 
-    // Callback identifier for the OnProxyPacketReceived event.
-    Network::RoomMember::CallbackHandle<Network::ProxyPacket> proxy_packet_received;
+    // Callback identifier for the OnProxyPacketReceived event. bsd:s, bsd:u and bsd:a share
+    // file_descriptors, so they bind once; otherwise each packet is queued once per service.
+    static inline Network::RoomMember::CallbackHandle<Network::ProxyPacket> proxy_packet_received;
+    static inline std::mutex proxy_binding_mutex;
+    static inline size_t proxy_binding_count = 0;
 
 protected:
     std::unique_lock<std::mutex> LockService() noexcept override;

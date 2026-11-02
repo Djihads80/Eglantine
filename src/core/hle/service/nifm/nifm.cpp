@@ -73,13 +73,8 @@ static u128 MakeUuidFromName(std::string_view name) {
 // A joined room is the emulated network, even in airplane mode. Its sockets only reach room
 // members, and LAN games (e.g. Mario Kart World LAN Play) need their connection request accepted.
 static bool IsNetworkAvailable() {
-    if (const auto room_member = Network::GetRoomMember().lock()) {
-        // The room host and moderators are in the Moderator state instead of Joined
-        const auto state = room_member->GetState();
-        if (state == Network::RoomMember::State::Joined ||
-            state == Network::RoomMember::State::Moderator) {
-            return true;
-        }
+    if (Network::GetRoomIPv4Address()) {
+        return true;
     }
     return Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue();
 }
@@ -128,9 +123,9 @@ static_assert(sizeof(IpAddressSetting) == 0xD, "IpAddressSetting has incorrect s
 // A host /24 mask would then put room members on different subnets, so LAN games ignore each other.
 constexpr Network::IPv4Address RoomSubnetMask{255, 255, 0, 0};
 
-static void ApplyRoomAddress(const Network::RoomMember& room_member, IpAddressSetting& setting) {
-    if (room_member.IsConnected()) {
-        setting.ip_address = room_member.GetFakeIpAddress();
+static void ApplyRoomAddress(IpAddressSetting& setting) {
+    if (const auto room_ip = Network::GetRoomIPv4Address()) {
+        setting.ip_address = *room_ip;
         setting.subnet_mask = RoomSubnetMask;
     }
 }
@@ -596,7 +591,7 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
         std::strncpy(profile.network_name.data(), st.ssid, sizeof(profile.network_name) - 1);
 
         if (auto room_member = Network::GetRoomMember().lock()) {
-            ApplyRoomAddress(*room_member, profile.ip_setting_data.ip_address_setting);
+            ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
             profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
         }
 
@@ -618,6 +613,8 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
     using Network::HostAdapterKind;
 
     const auto adapters = Network::GetAvailableNetworkInterfaces();
+    const auto selected = Network::GetSelectedNetworkInterface();
+    const auto room_ip = Network::GetRoomIPv4Address();
     constexpr size_t kEntry = 0x3F0;
 
     std::vector<u8> blob(adapters.size() * kEntry, 0);
@@ -632,6 +629,12 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
         *reinterpret_cast<in_addr*>(base + 0x18) = host.ip_address;
         *reinterpret_cast<in_addr*>(base + 0x1C) = host.subnet_mask;
         *reinterpret_cast<in_addr*>(base + 0x20) = host.gateway;
+
+        // The room traffic goes through the selected adapter, so report it like the other calls
+        if (room_ip && selected && host.name == selected->name) {
+            std::memcpy(base + 0x18, room_ip->data(), room_ip->size());
+            std::memcpy(base + 0x1C, RoomSubnetMask.data(), RoomSubnetMask.size());
+        }
 
         std::string name_utf8 = host.name;
         name_utf8.resize(0x110, '\0');
@@ -732,9 +735,7 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
             .wireless_setting_data{wifi}};
     }();
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        ApplyRoomAddress(*room_member, profile.ip_setting_data.ip_address_setting);
-    }
+    ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
 
     ctx.WriteBuffer(profile);
 
@@ -871,10 +872,8 @@ void IGeneralService::GetCurrentIpAddress(HLERequestContext& ctx) {
         ipv4.emplace(Network::IPv4Address{0, 0, 0, 0});
     }
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            ipv4 = room_member->GetFakeIpAddress();
-        }
+    if (const auto room_ip = Network::GetRoomIPv4Address()) {
+        ipv4 = room_ip;
     }
 
     IPC::ResponseBuilder rb{ctx, 3};
@@ -921,7 +920,7 @@ void IGeneralService::GetCurrentIpConfigInfo(HLERequestContext& ctx) {
     }
 
     if (auto room_member = Network::GetRoomMember().lock()) {
-        ApplyRoomAddress(*room_member, info.ip);
+        ApplyRoomAddress(info.ip);
         info.dns.is_automatic = true;
         info.dns.primary_dns = {1, 1, 1, 1};
         info.dns.secondary_dns = {8, 8, 8, 8};

@@ -43,9 +43,21 @@ void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
             LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
             return;
         }
+    }
 
-        auto decompressed = packet;
-        decompressed.data = Common::Compression::DecompressDataZSTD(packet.data);
+    // Decompress without the lock, so the game thread does not wait for it
+    ProxyPacket decompressed{
+        .local_endpoint = packet.local_endpoint,
+        .remote_endpoint = packet.remote_endpoint,
+        .protocol = packet.protocol,
+        .broadcast = packet.broadcast,
+        .data = Common::Compression::DecompressDataZSTD(packet.data),
+    };
+    {
+        std::lock_guard guard(packets_mutex);
+        if (closed) {
+            return;
+        }
         received_packets.push(std::move(decompressed));
     }
     packets_cv.notify_one();
@@ -152,26 +164,28 @@ std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, So
 
 std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> message, SockAddrIn* addr,
                                                  std::size_t max_length) {
-    ProxyPacket& packet = received_packets.front();
+    const ProxyPacket& packet = received_packets.front();
     if (addr) {
         addr->family = Domain::INET;
         addr->ip = packet.local_endpoint.ip;         // The senders ip address
         addr->portno = packet.local_endpoint.portno; // The senders port number
     }
 
-    const std::size_t read_bytes = (std::min)(packet.data.size(), max_length);
-    std::memcpy(message.data(), packet.data.data(), read_bytes);
+    const std::span<const u8> unread = std::span{packet.data}.subspan(front_read_offset);
+    const std::size_t read_bytes = (std::min)(unread.size(), max_length);
+    std::memcpy(message.data(), unread.data(), read_bytes);
 
     if ((flags & FLAG_MSG_PEEK) != 0) {
         return {static_cast<s32>(read_bytes), Errno::SUCCESS};
     }
 
-    if (protocol == Protocol::TCP && read_bytes < packet.data.size()) {
+    if (protocol == Protocol::TCP && read_bytes < unread.size()) {
         // Keep the unread part of the stream for the next call
-        packet.data.erase(packet.data.begin(), packet.data.begin() + read_bytes);
+        front_read_offset += read_bytes;
     } else {
         // Like BSD recv(), the rest of a datagram that does not fit is discarded
         received_packets.pop();
+        front_read_offset = 0;
     }
 
     return {static_cast<s32>(read_bytes), Errno::SUCCESS};
@@ -240,6 +254,7 @@ Errno ProxySocket::Close() {
         fd = INVALID_SOCKET;
         closed = true;
         received_packets = {};
+        front_read_offset = 0;
     }
     packets_cv.notify_all();
 

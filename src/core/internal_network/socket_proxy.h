@@ -90,7 +90,8 @@ private:
     SockAddrIn local_endpoint{};
     bool blocking = true;
     std::queue<ProxyPacket> received_packets;
-    Protocol protocol;
+    std::size_t front_read_offset = 0; ///< Bytes of the front TCP packet that were already read
+    Protocol protocol{};
 
     std::mutex packets_mutex;
     std::condition_variable packets_cv;
