@@ -64,4 +64,4 @@ Then just running `chmod +x script.sh && source script.sh`.
 
 ## Compatibility list
 
-Eden doesn't maintain a compatibility list. However, [EmuReady](https://www.emuready.com/) has a more fine-grained compatibility information for multiple emulators/forks as well.
+Eden doesn't maintain a compatibility list. However, [EmuReady](https://www.emuready.com/) has more fine-grained compatibility information for multiple emulators/forks as well.
