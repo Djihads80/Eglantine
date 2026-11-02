@@ -24,6 +24,7 @@
 
 #include "common/common_types.h"
 #include "core/core.h"
+#include "core/file_sys/nup_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "qt_common/config/uisettings.h"
@@ -97,6 +98,10 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
     qRegisterMetaType<QList<QStandardItem*>>("QList<QStandardItem*>");
 
     ResetViewMode();
+}
+
+void GameList::SetNupConversionRunning(bool running) {
+    nup_conversion_running = running;
 }
 
 GameList::~GameList() {
@@ -477,6 +482,11 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
+    QAction* convert_nup = nullptr;
+    if (FileSys::Nup::DumpRootFromMain(path)) {
+        convert_nup = context_menu.addAction(tr("Convert to NUP..."));
+        convert_nup->setEnabled(!nup_conversion_running);
+    }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
     QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("Add to Desktop"));
@@ -557,6 +567,10 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, path]() { emit VerifyIntegrityRequested(path); });
     connect(copy_tid, &QAction::triggered, this,
             [this, program_id]() { emit CopyTIDRequested(program_id); });
+    if (convert_nup) {
+        connect(convert_nup, &QAction::triggered, this,
+                [this, path]() { emit ConvertToNupRequested(path); });
+    }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {
         emit CreateShortcut(program_id, path, QtCommon::Game::ShortcutTarget::Desktop);
