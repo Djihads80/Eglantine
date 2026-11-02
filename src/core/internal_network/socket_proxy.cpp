@@ -102,11 +102,7 @@ Errno ProxySocket::Shutdown(ShutdownHow how) {
 }
 
 std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
-    LOG_WARNING(Network, "(STUBBED) called");
-    ASSERT(flags == 0);
-    ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
-
-    return {static_cast<s32>(0), Errno::SUCCESS};
+    return RecvFrom(flags, message, nullptr);
 }
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
