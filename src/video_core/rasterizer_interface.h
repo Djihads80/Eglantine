@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <optional>
 #include <span>
@@ -159,6 +160,16 @@ public:
     [[nodiscard]] virtual bool AccelerateSurfaceCopy(
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
         const Tegra::Engines::Fermi2D::Config& copy_config) {
+        return false;
+    }
+
+    /// Stand-in for a DLSS evaluation: temporal upscale of src into dst along motion_vectors
+    /// (jitter in src pixels; motion_scale turns a motion vector into a UV offset to the previous
+    /// frame). False when unsupported; the caller then falls back to AccelerateSurfaceCopy.
+    [[nodiscard]] virtual bool AccelerateTemporalUpscale(
+        const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
+        const Tegra::Engines::Fermi2D::Surface& motion_vectors, std::array<f32, 2> jitter,
+        std::array<f32, 2> motion_scale) {
         return false;
     }
 

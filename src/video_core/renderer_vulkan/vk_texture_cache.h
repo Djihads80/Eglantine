@@ -87,6 +87,12 @@ public:
                    Tegra::Engines::Fermi2D::Filter filter,
                    Tegra::Engines::Fermi2D::Operation operation);
 
+    /// Stands in for a DLSS evaluation: temporal upscale of input_color into dst, accumulated with
+    /// a copy of dst's previous contents (the last output). False when dst cannot take it.
+    bool TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& input_color,
+                         ImageView& motion_vectors, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale);
+
     void CopyImage(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
 
     void CopyImageMSAA(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
@@ -169,6 +175,15 @@ public:
     StagingBufferPool& staging_buffer_pool;
     BlitImageHelper& blit_image_helper;
     RenderPassCache& render_pass_cache;
+
+    /// TemporalUpscale's history: its previous result, copied right after drawing it.
+    struct TemporalHistory {
+        vk::Image image;
+        vk::ImageView view;
+        VkFormat format{};
+        VkExtent2D extent{};
+    } temporal_history;
+
     std::optional<ASTCDecoderPass> astc_decoder_pass;
     std::optional<BcEncoderPass> bc_encoder_pass;
 

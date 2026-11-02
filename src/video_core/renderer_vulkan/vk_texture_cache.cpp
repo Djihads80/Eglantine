@@ -1491,6 +1491,154 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     });
 }
 
+bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
+                                          ImageView& input_color, ImageView& motion_vectors,
+                                          std::array<f32, 2> jitter,
+                                          std::array<f32, 2> motion_scale) {
+    if (dst.Samples() != VK_SAMPLE_COUNT_1_BIT || ImageAspectMask(dst.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+        return false;
+    }
+    const VkFormat format =
+        MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, dst.format).format;
+    const VkExtent2D extent{dst.size.width, dst.size.height};
+    const VkImage output = dst.ImageHandle();
+    bool reset = false;
+    if (!temporal_history.image || temporal_history.format != format ||
+        temporal_history.extent.width != extent.width ||
+        temporal_history.extent.height != extent.height) {
+        if (temporal_history.image) {
+            scheduler.Finish(); // the old history may still be sampled
+        }
+        temporal_history.image = memory_allocator.CreateImage(VkImageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = format,
+            .extent = {extent.width, extent.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        });
+        temporal_history.view = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = *temporal_history.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .components{},
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        });
+        temporal_history.format = format;
+        temporal_history.extent = extent;
+        reset = true;
+        LOG_INFO(Render_Vulkan, "Temporal upscale into {}x{} (format {})", extent.width, extent.height,
+                 static_cast<u32>(format));
+    }
+
+    // The history holds this pass's previous result, copied right after drawing it: the game may
+    // draw into its DLSS output afterwards (post-processing), which must not feed back. The history
+    // stays in the GENERAL layout, which the blit helper's descriptors use.
+    const VkImage history = *temporal_history.image;
+    const VkImageSubresourceLayers output_layers{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .mipLevel = static_cast<u32>(dst.range.base.level),
+        .baseArrayLayer = static_cast<u32>(dst.range.base.layer),
+        .layerCount = 1,
+    };
+    static constexpr VkImageSubresourceLayers history_layers{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .mipLevel = 0,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    const auto barrier = [](VkImage image, VkAccessFlags src_access, VkAccessFlags dst_access,
+                            VkImageLayout old_layout, const VkImageSubresourceLayers& layers) {
+        return VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = src_access,
+            .dstAccessMask = dst_access,
+            .oldLayout = old_layout,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = layers.mipLevel,
+                .levelCount = 1,
+                .baseArrayLayer = layers.baseArrayLayer,
+                .layerCount = 1,
+            },
+        };
+    };
+    if (reset) {
+        // A new history image has no contents yet; the first frame does not read it.
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([history, barrier](vk::CommandBuffer cmdbuf) {
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                   0, barrier(history, 0, VK_ACCESS_SHADER_READ_BIT,
+                                              VK_IMAGE_LAYOUT_UNDEFINED, history_layers));
+        });
+    }
+    const Region2D dst_region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
+    };
+    // Each frame weighs at most 0.1 against the history (scaled by how close its samples land to
+    // the pixel; the neighbourhood clip limits what older samples contribute).
+    constexpr f32 current_weight = 0.1f;
+    blit_image_helper.TemporalUpscale(dst_framebuffer, input_color, motion_vectors,
+                                      *temporal_history.view, dst_region, jitter, motion_scale,
+                                      reset ? 1.0f : current_weight);
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([output, history, extent, output_layers, barrier](vk::CommandBuffer cmdbuf) {
+        constexpr VkAccessFlags written = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        const std::array before{
+            barrier(output, written, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                    output_layers),
+            barrier(history, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, {}, {}, before);
+        const VkImageCopy copy{
+            .srcSubresource = output_layers,
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = history_layers,
+            .dstOffset = {0, 0, 0},
+            .extent = {extent.width, extent.height, 1},
+        };
+        cmdbuf.CopyImage(output, VK_IMAGE_LAYOUT_GENERAL, history, VK_IMAGE_LAYOUT_GENERAL, copy);
+        const std::array after{
+            barrier(output, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, output_layers),
+            barrier(history, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                               {}, {}, after);
+    });
+    return true;
+}
+
 void TextureCacheRuntime::BlitImage(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& src,
                                     const Region2D& dst_region, const Region2D& src_region,
                                     Tegra::Engines::Fermi2D::Filter filter,
