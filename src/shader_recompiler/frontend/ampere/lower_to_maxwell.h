@@ -807,11 +807,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0xc82: { // UMOV UR, UR (or URZ), including uniform execution predicates.
+            // Any uniform destination (Hyrule Warriors: @UP0 UMOV UR59, UR58).
             const u32 source = insn.words[1] < 64 ? uniform_register(insn.words[1]) : ~0U;
-            if (dest >= 16 || source == ~0U || insn.words[2] != 0x08000000)
+            const u32 target = uniform_register(static_cast<u32>(dest));
+            if (target == ~0U || source == ~0U || insn.words[2] != 0x08000000)
                 return fail(index, "native uniform move mode");
-            emit(0x5c98000000000000ULL | predicate | (dest + 216) |
-                 (u64{source} << 20) | (u64{15} << 39));
+            if (target != 255)
+                emit(0x5c98000000000000ULL | predicate | target | (u64{source} << 20) | (u64{15} << 39));
             break;
         }
         case 0xab9: case 0xabb: { // ULDC U32/U64, direct or indexed.
