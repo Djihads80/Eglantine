@@ -174,6 +174,7 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
+    Nx2NoteListHostWrite(device_addr, size);
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -194,6 +195,7 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
         return;
     }
 
+    Nx2NoteListHostWrite(device_addr, size);
     tmp_buffer.resize_destructive(size);
     device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
 
@@ -301,6 +303,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         gpu_modified_ranges.Add(pair.first, pair.second);
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
             Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
+            Nx2NoteListWrite(buffer_b, pair.first, pair.second);
         }
     }
     const auto& copy = copies[0];
@@ -1660,6 +1663,194 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     }
     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
         Tegra::Nx2MarkGpuWritten(device_addr, size);
+        Nx2NoteListWrite(buffer_id, device_addr, size);
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64 size) {
+    if constexpr (!IS_OPENGL) {
+        if (size == 0 || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+            return;
+        }
+        constexpr u64 page_bits = Tegra::Nx2WrittenPageBits;
+        const u64 last = (std::min<u64>)((device_addr + size - 1) >> page_bits,
+                                         Tegra::g_nx2_command_list_pages.size() * 64 - 1);
+        for (u64 page = device_addr >> page_bits; page <= last;) {
+            // Storage buffers can be large: skip 64 pages at a time where none is a list page.
+            const u64 word =
+                Tegra::g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >>
+                (page % 64);
+            if (word == 0) {
+                page = (page / 64 + 1) * 64;
+                continue;
+            }
+            if (word & 1) {
+                const DAddr page_addr = page << page_bits;
+                {
+                    std::scoped_lock lock{nx2_list_mutex};
+                    Nx2ListPage& entry = nx2_list_pages[page_addr];
+                    ++entry.writes;
+                    if (!nx2_collect_list_copies && !entry.draw_written) {
+                        entry.draw_written = true;
+                        LOG_INFO(HW_GPU, "Command list page {:#x} is written by draws too: its "
+                                         "lists drain the split",
+                                 page_addr);
+                    }
+                }
+                if (nx2_collect_list_copies) {
+                    nx2_list_copy_requests.emplace_back(buffer_id, page_addr);
+                }
+            }
+            ++page;
+        }
+    }
+}
+
+template <class P>
+bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
+    if constexpr (IS_OPENGL) {
+        return false;
+    } else {
+        if (nx2_list_copy_requests.empty()) {
+            return false;
+        }
+        std::ranges::sort(nx2_list_copy_requests, {}, &std::pair<BufferId, DAddr>::second);
+        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
+        bool recorded = false;
+        for (size_t i = 0; i < nx2_list_copy_requests.size(); ++i) {
+            const auto [buffer_id, page] = nx2_list_copy_requests[i];
+            if (i + 1 < nx2_list_copy_requests.size() &&
+                nx2_list_copy_requests[i + 1].second == page) {
+                continue;
+            }
+            Buffer& buffer = slot_buffers[buffer_id];
+            const DAddr begin = (std::max<DAddr>)(page, buffer.CpuAddr());
+            const DAddr end =
+                (std::min<DAddr>)(page + page_size, buffer.CpuAddr() + buffer.SizeBytes());
+            if (begin >= end) {
+                continue;
+            }
+            Nx2Staging staging = runtime.DownloadStagingBuffer(page_size, true);
+            const BufferCopy copy{
+                .src_offset = buffer.Offset(begin),
+                .dst_offset = staging.offset + (begin - page),
+                .size = end - begin,
+            };
+            buffer.MarkUsage(copy.src_offset, copy.size);
+            runtime.CopyBuffer(staging.buffer, buffer, std::span{&copy, 1}, true);
+            recorded = true;
+            std::scoped_lock lock{nx2_list_mutex};
+            Nx2ListPage& entry = nx2_list_pages[page];
+            if (entry.copy) {
+                nx2_retired_list_copies.emplace_back(entry.copy_tick, std::move(*entry.copy));
+            }
+            entry.copy = staging;
+            entry.copy_writes = entry.writes;
+            entry.copy_tick = tick;
+            entry.copy_begin = static_cast<u32>(begin - page);
+            entry.copy_end = static_cast<u32>(end - page);
+        }
+        nx2_list_copy_requests.clear();
+        std::erase_if(nx2_retired_list_copies, [this](auto& retired) {
+            if (!runtime.IsFree(retired.first)) {
+                return false;
+            }
+            runtime.FreeDeferredStagingBuffer(retired.second);
+            return true;
+        });
+        return recorded;
+    }
+}
+
+template <class P>
+auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx2ListRead {
+    if constexpr (IS_OPENGL) {
+        return Nx2ListRead::Unknown;
+    } else {
+        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
+        const DAddr page = device_addr & ~(page_size - 1);
+        const u64 offset = device_addr - page;
+        if (offset + out.size() > page_size) {
+            return Nx2ListRead::Unknown;
+        }
+        const auto current = [&](const Nx2ListPage& entry) {
+            return entry.copy && !entry.draw_written && entry.copy_writes == entry.writes &&
+                   offset >= entry.copy_begin && offset + out.size() <= entry.copy_end;
+        };
+        u64 tick{};
+        u64 writes{};
+        {
+            std::scoped_lock lock{nx2_list_mutex};
+            const auto it = nx2_list_pages.find(page);
+            if (it == nx2_list_pages.end()) {
+                return Nx2ListRead::Unknown;
+            }
+            const Nx2ListPage& entry = it->second;
+            // Pages the CPU writes the lists of (GPU-written once, long before) stay synced.
+            if (!entry.draw_written && entry.synced_writes == entry.writes) {
+                return Nx2ListRead::Synced;
+            }
+            if (!current(entry)) {
+                return Nx2ListRead::Unknown;
+            }
+            // The lists after the first of a batch find the copy done: read it at once.
+            if (runtime.IsFree(entry.copy_tick)) {
+                std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
+                return Nx2ListRead::Copied;
+            }
+            tick = entry.copy_tick;
+            writes = entry.copy_writes;
+        }
+        // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
+        runtime.WaitSubmittedTick(tick);
+        std::scoped_lock lock{nx2_list_mutex};
+        const auto it = nx2_list_pages.find(page);
+        if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
+            it->second.copy_writes != writes) {
+            return Nx2ListRead::Unknown;
+        }
+        std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
+        return Nx2ListRead::Copied;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2NoteListSynced(DAddr page) {
+    if constexpr (!IS_OPENGL) {
+        std::scoped_lock lock{nx2_list_mutex};
+        Nx2ListPage& entry = nx2_list_pages[page];
+        entry.synced_writes = entry.writes;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
+    if constexpr (!IS_OPENGL) {
+        if (size == 0 || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+            return;
+        }
+        constexpr u64 page_bits = Tegra::Nx2WrittenPageBits;
+        const u64 last = (std::min<u64>)((device_addr + size - 1) >> page_bits,
+                                         Tegra::g_nx2_command_list_pages.size() * 64 - 1);
+        for (u64 page = device_addr >> page_bits; page <= last; ++page) {
+            if (!((Tegra::g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >>
+                   (page % 64)) &
+                  1)) {
+                continue;
+            }
+            std::scoped_lock lock{nx2_list_mutex};
+            const auto it = nx2_list_pages.find(page << page_bits);
+            if (it == nx2_list_pages.end()) {
+                continue;
+            }
+            Nx2ListPage& entry = it->second;
+            const bool synced = entry.synced_writes == entry.writes;
+            ++entry.writes;
+            if (synced) {
+                entry.synced_writes = entry.writes;
+            }
+        }
     }
 }
 

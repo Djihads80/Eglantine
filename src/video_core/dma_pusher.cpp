@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdio>
 
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/memory.h"
@@ -175,6 +176,11 @@ bool DmaPusher::Step() {
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            RecordParsedEntry(header, commands);
+            command_resume_offset +=
+                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
+            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -382,6 +388,15 @@ void DmaPusher::CallMethod(u32 argument) {
             ReportUnboundSubchannel();
             return;
         }
+        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        const auto engine_type = subchannel_type[dma_state.subchannel];
+        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
+                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        SCOPE_EXIT {
+            if (writer) {
+                split.NoteWriter();
+            }
+        };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {
@@ -432,6 +447,15 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             ReportUnboundSubchannel();
             return;
         }
+        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        const auto engine_type = subchannel_type[dma_state.subchannel];
+        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
+                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        SCOPE_EXIT {
+            if (writer) {
+                split.NoteWriter();
+            }
+        };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {
@@ -476,18 +500,86 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
     return false;
 }
 
+bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
+    // The pages are marked as command list pages: from the next write on, the buffer cache copies
+    // them to host memory right after the dispatch or copy that writes them and submits. The
+    // front then waits only for the back to run that work and for the GPU to finish the copy, not
+    // for everything queued and a cache flush (FlushGpuWrittenCommands: ~400 GPU round trips a
+    // second in a Mario Kart World race, during which the back had nothing to do). Pages
+    // FlushGpuWrittenCommands flushed whole and no GPU work wrote since are read from guest
+    // memory.
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
+        rasterizer == nullptr) {
+        return false;
+    }
+    const GPUVAddr end = address + u64{count} * sizeof(u32);
+    bool written = false;
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < end; page += 0x1000) {
+        if (const auto device = memory_manager.GpuToCpuAddress(page);
+            device && Tegra::Nx2IsGpuWritten(*device)) {
+            Tegra::Nx2MarkCommandListPage(*device);
+            written = true;
+        }
+    }
+    if (!written) {
+        return false;
+    }
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        split.WaitForWriters();
+    }
+    using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
+    command_headers.resize_destructive(count);
+    u8* const out = reinterpret_cast<u8*>(command_headers.data());
+    for (GPUVAddr chunk = address; chunk < end;) {
+        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+        const std::span<u8> part{out + (chunk - address), static_cast<size_t>(chunk_end - chunk)};
+        const auto device = memory_manager.GpuToCpuAddress(chunk);
+        if (!device) {
+            return false;
+        }
+        GpuWrittenList where = GpuWrittenList::Synced;
+        if (Tegra::Nx2IsGpuWritten(*device)) {
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
+        }
+        if (where == GpuWrittenList::Unknown) {
+            return false;
+        }
+        if (where == GpuWrittenList::Synced) {
+            memory_manager.ReadBlockUnsafe(chunk, part.data(), part.size());
+        }
+        chunk = chunk_end;
+    }
+    return true;
+}
+
 void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // Title 1 runs small command lists its culling dispatches fill in each frame. Accurate GPU
     // mode reads every command list through the caches (safe reads); here only the ones on pages
     // the GPU has written are, or their draws run with an older frame's words (trees vanish).
+    // These are the lists ReadGpuWrittenCommands can't take from a copy or guest memory (a page's
+    // first list, or pages draws write too).
     if (!IsGpuWrittenCommands(address, size)) {
         return;
     }
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
-    // that writes these words among it).
+    // that writes these words among it). The whole pages are flushed: their next lists read
+    // guest memory until GPU work writes them again.
     VideoCommon::GpuSplit::Get().Drain();
-    if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
+    const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
+    const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
+    if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
+                                     VideoCommon::CacheType::BufferCache)) {
+        memory_manager.FlushRegion(first_page, end_page - first_page,
+                                   VideoCommon::CacheType::BufferCache);
+    }
+    if (rasterizer == nullptr) {
+        return;
+    }
+    for (GPUVAddr page = first_page; page < end_page; page += 0x1000) {
+        if (const auto device = memory_manager.GpuToCpuAddress(page);
+            device && Tegra::Nx2IsCommandListPage(*device)) {
+            rasterizer->NoteGpuWrittenCommandListSynced(*device);
+        }
     }
 }
 
