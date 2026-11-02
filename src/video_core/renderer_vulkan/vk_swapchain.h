@@ -45,7 +45,12 @@ public:
 
     /// Returns true when the swapchain needs to be recreated.
     bool NeedsRecreation() const {
-        return IsSubOptimal() || NeedsPresentModeUpdate();
+        return !swapchain || IsSubOptimal() || NeedsPresentModeUpdate();
+    }
+
+    /// Returns false when a failed recreation left no swapchain.
+    bool IsCreated() const {
+        return static_cast<bool>(swapchain);
     }
 
     /// Returns true when the swapchain is outdated.
