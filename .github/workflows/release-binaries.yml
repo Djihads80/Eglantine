@@ -557,7 +557,8 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: github.event_name == 'push' || inputs.publish_release
+    # Publishes what built even if a platform failed (macOS runners are often unavailable).
+    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
