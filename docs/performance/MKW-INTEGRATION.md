@@ -1,6 +1,6 @@
 # Mario Kart World integration test
 
-Base: upstream `nx2` at `62214094d6c698b70f51016e5c12af415f025be7`.
+Base: upstream `nx2` at `0da830e94` (updated November 2, 2026).
 
 This branch keeps upstream's current command-list copies, shader support, ASTC
 transcode fix, fiber allocation changes, and game-loading and amiibo fixes.
@@ -25,8 +25,15 @@ Adapted from [Selevet performance build 4](https://github.com/sylvieistaken/sele
   bitsets retain the generic traversal. The slot iterator also handles an empty
   first bitmap word correctly.
 
-Handheld mode is the default. Explicit saved preferences can still select docked
-mode. The changes use the existing portable timing and synchronization paths.
+Handheld mode, ScaleForce, and FXAA are the defaults. Explicit saved preferences
+are retained. Accepting the startup recommendations saves the requested settings
+and reapplies the MKW preset after per-game configuration is loaded. Declining or
+closing the prompt preserves the user's settings.
+
+The kernel TLS implementation is compiled without LTO on GCC and Clang LTO builds
+so its lookups remain outside callers that can switch between migrating fibers.
+This restores MKW startup in the tested Windows build. Non-LTO builds keep their
+existing flags. The changes use portable timing and synchronization paths.
 
 The Windows hybrid timer, Windows RAM trimming and process-priority changes are
 not included. Unsafe preemptive reads, compute-acquire bypasses, and guest SDK VRR
@@ -48,7 +55,8 @@ NUP tests check that the base version metadata and archive checksum agree across
 Windows and Linux.
 
 The Windows test package uses Clang 23.1.4, the checksum-pinned Eden v020525 PGO
-profile, and ThinLTO. Selevet's MSVC-ABI profile is not substituted for the MinGW
+profile, and ThinLTO with backend optimization disabled (`--lto-O0`), matching the
+working startup test. Selevet's MSVC-ABI profile is not substituted for the MinGW
 build's profile. Link-time optimization is a build option; other platforms can
 continue using their usual build configuration.
 
