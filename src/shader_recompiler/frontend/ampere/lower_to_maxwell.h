@@ -1931,6 +1931,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0x223: case 0x423: case 0x623: case 0x823: case 0xa23: case 0xc23: case 0xe23: { // FFMA
             if (insn.Bits(76, 1) || (insn.Bits(81, 11) & ~(opcode == 0xe23 || opcode == 0xc23 ? 0x400U : 0U))) return fail(index, "native FFMA denormal/source mode");
+            // With the constant as the third operand (0x623), bit 75 negates that constant, like
+            // bit 63, not the register in bits 64-71: Splatoon Raiders linearizes depth with
+            // "FFMA R0, R0, R7, -c[0x3][0x0]" (R7 = c[0x3][0x0]), which came out negated and broke its
+            // shadows, while its shadow pass needs bit 63 to negate the constant.
+            if (opcode == 0x623 && insn.Bits(75, 1)) {
+                insn.words[2] &= ~(1U << 11);
+                insn.words[1] ^= 1U << 31;
+            }
             const u32 a = operand(0), b = operand(1), c = operand(2);
             emit(base(0x5980000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) | (u64{c} << 39) |
                 (u64{insn.Bits(77, 1)} << 50) | (u64{insn.Bits(78, 2)} << 51) | (u64{insn.Bits(80, 1)} << 53));
