@@ -365,6 +365,10 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
     LOG_INFO(Render_Vulkan, "69-byte vertex layout repacking {} ({})",
              enable_vertex_repack ? "enabled" : "disabled",
              "portable Vulkan layout fallback");
+    static_vertex_repack =
+        StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
+    LOG_INFO(Render_Vulkan, "Vertex repacking without dynamic vertex input {}",
+             static_vertex_repack ? "enabled" : "disabled");
     if (enable_vertex_repack) {
         vertex_repack_pass = std::make_unique<VertexRepackPass>(
             device, scheduler, descriptor_pool, staging_pool, compute_pass_descriptor_queue);
@@ -387,8 +391,7 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
 u32 BufferCacheRuntime::SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs,
                                             bool dynamic_input) {
     const u32 old_mask = vertex_repack_mask;
-    const bool input_supported = VertexRepackInputSupported(
-        dynamic_input, ExperimentalStaticVertexRepackEnabled());
+    const bool input_supported = VertexRepackInputSupported(dynamic_input, static_vertex_repack);
     vertex_repack_mask = vertex_repack_pass && input_supported ? VertexRepackMask(regs) : 0;
     if (vertex_repack_mask != old_mask) {
         LOG_DEBUG(Render_Vulkan, "Vertex repack selection: mask={:#x}, dynamic_input={}",
@@ -714,7 +717,7 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
             bindings.strides[i] = 72;
             static bool reported = false;
             if (!reported) {
-                LOG_WARNING(Render_Vulkan, "Experimental GPU vertex repacking active: 69 -> 72 bytes");
+                LOG_INFO(Render_Vulkan, "GPU vertex repacking active: 69 -> 72 bytes");
                 reported = true;
             }
         }

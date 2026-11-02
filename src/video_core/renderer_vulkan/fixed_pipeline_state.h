@@ -33,6 +33,7 @@ struct DynamicFeatures {
     bool has_dynamic_state3_logic_op_enable;
     bool has_dynamic_state3_line_stipple_enable;
     bool has_dynamic_vertex_input;
+    bool has_static_vertex_repack;
     bool has_color_write_enable;
     bool has_provoking_vertex;
     bool has_provoking_vertex_first_mode;

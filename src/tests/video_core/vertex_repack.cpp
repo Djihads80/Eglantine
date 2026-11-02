@@ -76,10 +76,15 @@ TEST_CASE("Vertex repacking requires the captured tail and stride", "[vertex_rep
     REQUIRE(Vulkan::VertexRepackMask(regs) == 0);
 }
 
-TEST_CASE("Static vertex repacking requires explicit experimental opt-in", "[vertex_repack]") {
+TEST_CASE("Static vertex repacking follows the device stride alignment", "[vertex_repack]") {
     REQUIRE(Vulkan::VertexRepackInputSupported(true, false));
     REQUIRE_FALSE(Vulkan::VertexRepackInputSupported(false, false));
     REQUIRE(Vulkan::VertexRepackInputSupported(false, true));
+    REQUIRE_FALSE(Vulkan::StaticVertexRepackSelected(nullptr, 1));
+    REQUIRE(Vulkan::StaticVertexRepackSelected(nullptr, 4));
+    REQUIRE(Vulkan::StaticVertexRepackSelected("1", 1));
+    REQUIRE_FALSE(Vulkan::StaticVertexRepackSelected("0", 4));
+    REQUIRE(Vulkan::StaticVertexRepackSelected("other", 4));
 }
 
 TEST_CASE("Vertex repack planning keeps descriptor offsets aligned", "[vertex_repack]") {

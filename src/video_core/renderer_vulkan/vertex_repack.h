@@ -15,12 +15,21 @@ constexpr bool VertexRepackInputSupported(bool dynamic_input, bool experimental_
     return dynamic_input || experimental_static;
 }
 
-inline bool ExperimentalStaticVertexRepackEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK");
-        return value && std::strcmp(value, "1") == 0;
-    }();
-    return enabled;
+// Pipelines without dynamic vertex input repack when the device cannot fetch the 69-byte stride.
+// EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK=1 forces the repack on, =0 forces it off.
+inline bool StaticVertexRepackSelected(const char* override_value, u32 stride_alignment) {
+    if (override_value && std::strcmp(override_value, "1") == 0) {
+        return true;
+    }
+    if (override_value && std::strcmp(override_value, "0") == 0) {
+        return false;
+    }
+    return stride_alignment > 1 && 69 % stride_alignment != 0;
+}
+
+inline bool StaticVertexRepackEnabled(u32 stride_alignment) {
+    return StaticVertexRepackSelected(std::getenv("EGLANTINE_EXPERIMENTAL_STATIC_VERTEX_REPACK"),
+                                      stride_alignment);
 }
 
 struct VertexRepackParameters {

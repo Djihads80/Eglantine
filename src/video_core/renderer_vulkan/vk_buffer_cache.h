@@ -271,6 +271,7 @@ private:
     std::unique_ptr<Uint8Pass> uint8_pass;
     std::unique_ptr<VertexRepackPass> vertex_repack_pass;
     u32 vertex_repack_mask{};
+    bool static_vertex_repack{};
     QuadIndexedPass quad_index_pass;
 
     MultiRangeBufferCache multi_range_buffers;
