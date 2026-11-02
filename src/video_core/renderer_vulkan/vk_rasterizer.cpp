@@ -1231,6 +1231,14 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
     return texture_cache.BlitImage(dst, src, copy_config);
 }
 
+bool RasterizerVulkan::AccelerateTemporalUpscale(
+    const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
+    const Tegra::Engines::Fermi2D::Surface& motion_vectors, std::array<f32, 2> jitter,
+    std::array<f32, 2> motion_scale) {
+    std::scoped_lock lock{texture_cache.mutex};
+    return texture_cache.TemporalUpscale(dst, src, motion_vectors, jitter, motion_scale);
+}
+
 Tegra::Engines::AccelerateDMAInterface& RasterizerVulkan::AccessAccelerateDMA() {
     return accelerate_dma;
 }

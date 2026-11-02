@@ -83,6 +83,37 @@ void BlitConstantsPass(Environment& env, IR::Program& program) {
     if (env.ShaderStage() != Stage::VertexB && env.ShaderStage() != Stage::Fragment) {
         return;
     }
+    // Bank 24 is root table 0, which games may load themselves (3D methods 0x504/0x508; the buffer
+    // cache binds it as bank 17): Fire Emblem: Fortune's Weave keeps its material push constants
+    // there. A shader reading bank 17 outside the blit block reads such a table and keeps its reads,
+    // as does one reading only words the blit block leaves zero (an unbound bank reads zero anyway;
+    // the game's enemy health gauges read only 0x40 of their table).
+    const auto in_blit_block = [](u32 offset) {
+        return offset < 0x20 || (offset >= 0x30 && offset < 0x4c) || (offset >= 0x50 && offset < 0x60);
+    };
+    const auto is_nonzero_word = [](u32 offset) {
+        return offset < 0x20 || offset == 0x38 || offset == 0x3c || offset == 0x58 || offset == 0x5c;
+    };
+    bool reads_nonzero_word{};
+    for (IR::Block* const block : program.post_order_blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            const IR::Opcode opcode{inst.GetOpcode()};
+            if ((opcode != IR::Opcode::GetCbufU32 && opcode != IR::Opcode::GetCbufF32 &&
+                 opcode != IR::Opcode::GetCbufU32x2) ||
+                !inst.Arg(0).IsImmediate() || inst.Arg(0).U32() != 17 || !inst.Arg(1).IsImmediate()) {
+                continue;
+            }
+            const u32 offset{inst.Arg(1).U32()};
+            const bool pair{opcode == IR::Opcode::GetCbufU32x2};
+            if (!in_blit_block(offset) || (pair && !in_blit_block(offset + 4))) {
+                return;
+            }
+            reads_nonzero_word |= is_nonzero_word(offset) || (pair && is_nonzero_word(offset + 4));
+        }
+    }
+    if (!reads_nonzero_word) {
+        return;
+    }
     bool used{};
     for (IR::Block* const block : program.post_order_blocks) {
         for (IR::Inst& inst : block->Instructions()) {

@@ -21,6 +21,7 @@
 #include <optional>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "common/alignment.h"
@@ -45,13 +46,17 @@
 #include "core/hle/kernel/k_resource_limit.h"
 #include "core/hle/kernel/k_server_session.h"
 #include "core/hle/kernel/k_event.h"
+#include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/kernel/k_session.h"
+#include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/k_transfer_memory.h"
+#include "core/hle/kernel/svc_results.h"
 #include "core/memory.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nx2_video_decoder.h"
 #include "video_core/nx2.h"
+#include "video_core/textures/decoders.h"
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -304,6 +309,8 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            {42, &INx2GpuSession::DestroyGraphicsDevice, "DestroyGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -395,9 +402,39 @@ private:
                              static_cast<u32>(second), static_cast<u32>(second >> 32)});
     }
 
+    // An empty partition is min = ~0, max = 0 (min > max). Fire Emblem: Fortune's Weave's SDK
+    // reads (0, 0) as a one-byte partition at address 0 and aborts in nn::gpu::sdk.
     void GetGsvPartition(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gpu TIPC 202 [2]={:#x}, empty", ctx.CommandBuffer()[2]);
-        TipcReplyWords(ctx, {0, 0, 0, 0});
+        TipcReplyWords(ctx, {~0U, ~0U, 0, 0});
+    }
+
+    // Fire Emblem: Fortune's Weave: 41(name u64, flags u64, debug label u64) returns a device id
+    // that later NvRm calls name; 0 is not a valid id. Only flags 0 has been seen.
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        const auto* b = ctx.CommandBuffer();
+        const u64 name = u64{b[2]} | (u64{b[3]} << 32);
+        const u64 flags = u64{b[4]} | (u64{b[5]} << 32);
+        u32 id = 0;
+        for (u32 candidate = 1; candidate < m_devices.size(); ++candidate) {
+            if (!m_devices[candidate]) {
+                m_devices[candidate] = true;
+                id = candidate;
+                break;
+            }
+        }
+        LOG_INFO(Service, "nx2:gpu 41 create graphics device name={:#x} flags={:#x} -> id {}", name,
+                 flags, id);
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(id != 0 ? ResultSuccess : Kernel::ResultOutOfResource);
+        rb.Push(id);
+    }
+
+    void DestroyGraphicsDevice(HLERequestContext& ctx) {
+        const u32 id = ctx.CommandBuffer()[2] & 0xff;
+        const bool existed = id < m_devices.size() && std::exchange(m_devices[id], false);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(existed ? ResultSuccess : Kernel::ResultNotFound);
     }
 
     void OpenSubSession(HLERequestContext& ctx) {
@@ -1246,6 +1283,7 @@ private:
     std::array<Kernel::KEvent*, NumIds> m_events{};
     std::map<u32, GpuMemory> m_memory;
     u32 m_next_memory_handle{1};
+    std::array<bool, 64> m_devices{}; // gpu 41 graphics device ids (0 unused)
 };
 
 // Native memory and images handed out by the Switch 2 graphics server (gsv 111/114/423/429/315),
@@ -1264,6 +1302,10 @@ struct Nx2NativeObjects {
         u64 offset{}; // into its memory (images of a decoder pool share one)
         bool window_pool{};
         bool decoder{}; // a video decoder output image (gsv 911)
+        // A decoder image the client reads on the GPU (gsv 428/426): written block-linear.
+        bool gpu_read{};
+        u32 gpu_maps{};     // outstanding 426 maps
+        bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
     };
     std::mutex mutex;
     std::map<u32, Memory> memories;
@@ -1407,11 +1449,12 @@ public:
             {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
             {31, &INx2Vi2Session::GetVsyncEvent, "GetVsyncEvent (guessed)"},
             {32, &INx2Vi2Session::GetVsyncEvent, "GetDisplayVsyncEvent (guessed)"},
-            // Title 1 calls these ~75 times a second with the display name "default"; the
+            {104, &INx2Vi2Session::GetHdrStatus, "GetHdrStatus"},
+            // Title 1 calls this ~75 times a second with the display name "default"; the
             // auto stub's empty success reply works, but logged two lines per call (a 50 MB log
             // in an 18 minute session).
-            {104, &INx2Vi2Session::SucceedQuietly, "Unknown104 (display \"default\")"},
             {105, &INx2Vi2Session::SucceedQuietly, "Unknown105 (display \"default\")"},
+            {106, &INx2Vi2Session::GetBufferMaxResolution, "GetBufferMaxResolution"},
             {228, &INx2Vi2Session::CancelClientBuffer, "CancelClientBuffer"},
             {229, &INx2Vi2Session::PresentClientBuffer, "PresentClientBuffer"},
         });
@@ -1464,9 +1507,9 @@ private:
             WaitForFrame(~w[22], w[24]);
         }
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24]);
+        Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
-        PaceToVblank();
+        PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
         // game is blocked here while Eden's GPU thread catches up (fence) and composites.
@@ -1522,18 +1565,39 @@ private:
     // present faster than that. Every slot is reported free here: hold each present until the
     // next vblank instead (title 4 ran at up to 160 fps, its timing and audio with it).
     std::chrono::steady_clock::time_point m_next_vblank{};
+    u32 m_swap_word{};
 
-    void PaceToVblank() {
+    // timing: present word 12, (swap interval << 16) | refresh rate. Fire Emblem: Fortune's Weave
+    // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
+    // at every vblank it ran at double speed. EDEN_NX2_SWAP_INTERVAL=<n> forces the interval.
+    void PaceToVblank(u32 timing) {
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
             return;
         }
-        const auto interval = std::chrono::nanoseconds{100'000'000'000LL / 60 / Settings::SpeedLimit()};
+        static const u32 forced_interval = [] {
+            const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
+            return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
+        }();
+        const u32 swap_interval =
+            forced_interval != 0 ? forced_interval : std::clamp<u32>(timing >> 16, 1, 4);
+        const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
+        if (timing != std::exchange(m_swap_word, timing)) {
+            LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
+                     m_presents, swap_interval, refresh_rate, timing);
+        }
+        const auto interval = std::chrono::nanoseconds{
+            100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
         if (now > m_next_vblank + interval) {
-            // Running slower than 60 fps: show at once and don't bank the lost time.
+            // Running slower than the swap interval: show at once and don't bank the lost time.
             m_next_vblank = now;
         } else if (now < m_next_vblank) {
-            std::this_thread::sleep_until(m_next_vblank);
+            // Sleep this service thread in the guest kernel. It runs on guest core 3, and a host
+            // sleep held that core for the whole wait: game threads scheduled there ran only
+            // between presents (Fortune's Weave's loader read one RomFS block per frame).
+            const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(m_next_vblank - now);
+            static_cast<void>(Kernel::GetCurrentThread(kernel).Sleep(
+                kernel, kernel.HardwareTimer().GetTick() + wait.count() + 2));
         }
         m_next_vblank += interval;
     }
@@ -1586,9 +1650,12 @@ private:
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value) {
+    // present_size: word 7 of the present, (height - 1) << 16 | (width - 1) of the frame drawn
+    // into the image's top-left corner (Fire Emblem: Fortune's Weave: 1280x720 in 3840x2160).
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 present_size = 0) {
         u64 address{};
         Nx2ImageLayout layout{};
+        u32 image_format{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -1601,6 +1668,7 @@ private:
             }
             address = memory->second.address;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
+            image_format = image->second.preference[6];
         }
         const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
         if (!device) {
@@ -1610,6 +1678,11 @@ private:
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
+        // Present word 7 holds the size of the frame drawn into the image's top-left corner.
+        if (present_size != 0) {
+            crop_width = (std::min)(crop_width, (present_size & 0xffffU) + 1);
+            crop_height = (std::min)(crop_height, (present_size >> 16) + 1);
+        }
         // Handheld titles keep their docked present images (up to 3840x2160) and draw the frame
         // into the top-left 1920x1080, the handheld panel's resolution; the console's display
         // scans out only that region. Showing whole images put the frame in a corner inside black
@@ -1648,7 +1721,9 @@ private:
             .width = layout.width,
             .height = layout.height,
             .stride = static_cast<u32>(layout.pitch / 4),
-            .pixel_format = android::PixelFormat::Rgba8888,
+            // Preference word 6: 1 = RGBA8, 4 = RGB10A2.
+            .pixel_format = image_format == 4 ? android::PixelFormat::Rgba1010102
+                                              : android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
@@ -1750,6 +1825,50 @@ private:
     void ReturnOne(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:vi2 TIPC {}, returning 1", ctx.GetCommand());
         TipcReplyWords(ctx, {1});
+    }
+
+    // 104(u64 display name): result, u64 output format, u32 0. Format 1 is SDR. A bare success
+    // left the format to stale reply words and a game could set up HDR output from them.
+    void GetHdrStatus(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        constexpr u64 DefaultDisplay = 0x00746c7561666564ULL; // "default"
+        Result result = Kernel::ResultInvalidCombination;
+        u64 format{};
+        if (packet[0] == 0x78 && packet[1] == 2) {
+            result = Result{ErrorModule::VI, 7};
+            if (name == DefaultDisplay) {
+                format = 1;
+                result = ResultSuccess;
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 5};
+        rb.Push(result.raw);
+        rb.Push(format);
+        rb.Push<u32>(0);
+    }
+
+    // The highest buffer resolution mode of the "default" display. Fire Emblem: Fortune's Weave picks
+    // its output from it: 1 -> 1280x720, 2 -> 1920x1080, 4 and 8 -> 2560x1440; 0 (the auto stub's
+    // reply), 3 and 5 fall back to 720p. Docked reports 4, handheld 2 (the screen is 1080p);
+    // EDEN_VI2_MAX_RESOLUTION_MODE=<n> overrides.
+    void GetBufferMaxResolution(HLERequestContext& ctx) {
+        const auto* packet = ctx.CommandBuffer();
+        const u64 name = u64{packet[2]} | (u64{packet[3]} << 32);
+        constexpr u64 DefaultDisplay = 0x00746c7561666564ULL; // "default"
+        Result result = Kernel::ResultInvalidCombination;
+        u64 mode{};
+        if (packet[0] == 0x7a && packet[1] == 2) {
+            result = Result{ErrorModule::VI, 7};
+            if (name == DefaultDisplay) {
+                static const char* forced = std::getenv("EDEN_VI2_MAX_RESOLUTION_MODE");
+                mode = forced ? std::strtoull(forced, nullptr, 0) : Settings::IsDockedMode() ? 4 : 2;
+                result = ResultSuccess;
+            }
+        }
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(result.raw);
+        rb.Push(mode);
     }
 
     // The same reply as the auto stub (success, no data), without its log lines.
@@ -2221,6 +2340,7 @@ private:
                                    const Decoded& frame, std::vector<u8>& bytes) {
         u64 address{};
         Nx2DecoderImageLayout layout{};
+        bool block_linear{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -2228,6 +2348,8 @@ private:
                 return {m_width, m_height};
             }
             layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
+            block_linear = image->second.gpu_read &&
+                           layout.format != Tegra::Host1x::Nx2PictureFormat::Nv12;
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory != m_objects->memories.end() && memory->second.address != 0) {
                 address = memory->second.address + image->second.offset;
@@ -2241,10 +2363,25 @@ private:
         const u32 width = std::min(frame.picture->width, layout.width);
         const u32 height = std::min(frame.picture->height, layout.height);
         bytes.resize(layout.size);
+        auto& memory = system.ApplicationMemory();
+        if (block_linear) {
+            // Read on the GPU: RGBA (the blit's format 0xd5) in the native block-linear layout,
+            // 16-GOB blocks, as our Eden tree writes these images.
+            decoder->Render(*frame.picture, Tegra::Host1x::Nx2PictureFormat::Rgba8, width, height,
+                            layout.pitch, 0, bytes);
+            m_tiled.resize(layout.size);
+            Tegra::Texture::SwizzleTexture(m_tiled, bytes, 4, static_cast<u32>(layout.pitch / 4),
+                                           layout.height, 1, 4, 0, 1, true);
+            memory.WriteBlock(address, m_tiled.data(), m_tiled.size());
+            if (const auto device =
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+                system.GPU().InvalidateRegion(*device, m_tiled.size());
+            }
+            return {width, height};
+        }
         decoder->Render(*frame.picture, layout.format, width, height, layout.pitch,
                         layout.chroma_offset, bytes);
         DumpFrame(bytes, layout, width, height);
-        auto& memory = system.ApplicationMemory();
         memory.WriteBlock(address, bytes.data(), layout.pitch * height);
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
@@ -2290,6 +2427,7 @@ private:
     u64 m_submitted{};
     u32 m_syncpoint{NoSyncpoint}; ///< Counts finished frames (allocated at the first register)
     u32 m_sync_base{};            ///< Its value before the first frame
+    std::vector<u8> m_tiled;      ///< Decode thread: block-linear copy of a frame (WriteImage)
 
     // Shared with the decode thread.
     std::mutex m_mutex;
@@ -2333,6 +2471,7 @@ public:
             {429, &INx2GraphicsSystemSession::CreateNativeImage, "CreateNativeImage"},
             {430, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyNativeImage"},
             {426, &INx2GraphicsSystemSession::QueryNativeImage, "MapNativeImage"},
+            {427, &INx2GraphicsSystemSession::UnmapNativeImage, "UnmapNativeImage"},
             {428, &INx2GraphicsSystemSession::QueryNativeImage, "QueryNativeImage"},
             {435, &INx2GraphicsSystemSession::CalculateNativeImageSize, "CalculateNativeImageSize"},
             {1402, &INx2GraphicsSystemSession::OpenNvsrvSession, "OpenNvsrvSession (guessed)"},
@@ -2597,8 +2736,19 @@ private:
 
     void DestroyNativeMemory(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::scoped_lock lk{m_objects->mutex};
-        m_objects->memories.erase(id);
+        std::vector<std::optional<std::pair<u64, u64>>> unmaps;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            for (auto& [image_id, image] : m_objects->images) {
+                if (image.memory == id && image.mapped_here) {
+                    unmaps.push_back(TakeDecoderMapping(image));
+                }
+            }
+            m_objects->memories.erase(id);
+        }
+        for (const auto& range : unmaps) {
+            DropDecoderMapping(range);
+        }
         LOG_DEBUG(Service, "nx2:gsv 112 DestroyNativeMemory id {}", id);
         TipcReplyWords(ctx, {});
     }
@@ -2673,6 +2823,9 @@ private:
     // the 429 preference words (0x10, 0x14), a guess.
     void QueryNativeImage(HLERequestContext& ctx) {
         const u32 handle = ctx.CommandBuffer()[2];
+        if (QueryDecoderImage(ctx, handle)) {
+            return;
+        }
         std::array<u32, 16> preference{};
         u64 image_offset = 0;
         u64 memory_address = 0;
@@ -2714,6 +2867,108 @@ private:
         rb.PushRaw<u32>(ResultSuccess.raw);
         for (const u32 w : words) {
             rb.Push<u32>(w);
+        }
+    }
+
+    // 428/426 for a decoder output image (Fire Emblem: Fortune's Weave's movie player blits each
+    // one, block-linear RGBA, format 0xd5, block height 16 GOBs, into a texture of its own). The
+    // reply follows our Eden tree, where the movies play: words 3-4 the GPU address, 5-6 the last
+    // byte's address, then the descriptor {1, 0, dimensions, .., 0x01000001, 1, offset, size}
+    // (offset 0 once mapped). 426 maps the image at its own address for the GPU: decoder pool
+    // memory is process memory (114) that no GPU mapping covers, and the blit read zeros.
+    bool QueryDecoderImage(HLERequestContext& ctx, u32 handle) {
+        const bool map = ctx.GetCommand() == 426;
+        u64 address{};
+        u64 size{};
+        u64 offset{};
+        u32 dimensions{};
+        bool register_mapping = false;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            const auto image = m_objects->images.find(handle);
+            if (image == m_objects->images.end() || !image->second.decoder) {
+                return false;
+            }
+            const auto memory = m_objects->memories.find(image->second.memory);
+            if (memory == m_objects->memories.end() || memory->second.address == 0) {
+                return false;
+            }
+            image->second.gpu_read = true;
+            offset = image->second.offset;
+            size = image->second.size;
+            dimensions = image->second.preference[2];
+            if (map) {
+                address = memory->second.address + offset;
+                register_mapping = image->second.gpu_maps++ == 0 &&
+                                   !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
+                image->second.mapped_here |= register_mapping;
+            }
+        }
+        if (register_mapping) {
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(address, size);
+        }
+        LOG_INFO(Service, "nx2:gsv {} decoder image {} at {:#x}+{:#x}{}", ctx.GetCommand(), handle,
+                 address, size, register_mapping ? ", mapped for the GPU" : "");
+        std::array<u32, 37> words{};
+        if (map) {
+            const u64 last = address + size - 1;
+            words[0] = static_cast<u32>(address);
+            words[1] = static_cast<u32>(address >> 32);
+            words[2] = static_cast<u32>(last);
+            words[3] = static_cast<u32>(last >> 32);
+        }
+        u32* const desc = words.data() + 4;
+        desc[0] = 1;
+        desc[2] = dimensions;
+        desc[8] = 0x01000001;
+        desc[9] = 1;
+        desc[10] = map ? 0 : static_cast<u32>(offset);
+        desc[11] = static_cast<u32>(size);
+        IPC::ResponseBuilder rb{ctx, static_cast<u32>(2 + words.size())};
+        rb.PushRaw<u32>(ResultSuccess.raw);
+        for (const u32 w : words) {
+            rb.Push<u32>(w);
+        }
+        return true;
+    }
+
+    // 427(u32 handle, u32 address space, u64 address, u64 last address): undoes a 426. The last
+    // unmap of a decoder image drops the GPU mapping 426 made.
+    void UnmapNativeImage(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        const u32 handle = w[2];
+        std::optional<std::pair<u64, u64>> unmap;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(handle);
+                image != m_objects->images.end() && image->second.gpu_maps != 0 &&
+                --image->second.gpu_maps == 0) {
+                unmap = TakeDecoderMapping(image->second);
+            }
+        }
+        LOG_DEBUG(Service, "nx2:gsv 427 image {} [{:#x}, {:#x}]", handle, Pair(w, 4), Pair(w, 6));
+        DropDecoderMapping(unmap);
+        TipcReplyWords(ctx, {});
+    }
+
+    // The range 426 mapped for an image, if it did; called with m_objects->mutex held.
+    std::optional<std::pair<u64, u64>> TakeDecoderMapping(Nx2NativeObjects::Image& image) {
+        image.gpu_maps = 0;
+        if (!std::exchange(image.mapped_here, false)) {
+            return std::nullopt;
+        }
+        const auto memory = m_objects->memories.find(image.memory);
+        if (memory == m_objects->memories.end() || memory->second.address == 0) {
+            return std::nullopt;
+        }
+        return std::pair{memory->second.address + image.offset, image.size};
+    }
+
+    static void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
+        if (range) {
+            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+            registry.Unmap(range->first, range->second);
+            registry.ReleaseBacking(range->first, range->second);
         }
     }
 
@@ -2775,8 +3030,15 @@ private:
 
     void DestroyNativeImage(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::scoped_lock lk{m_objects->mutex};
-        m_objects->images.erase(id);
+        std::optional<std::pair<u64, u64>> unmap;
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(id); image != m_objects->images.end()) {
+                unmap = TakeDecoderMapping(image->second);
+                m_objects->images.erase(image);
+            }
+        }
+        DropDecoderMapping(unmap);
         TipcReplyWords(ctx, {});
     }
 

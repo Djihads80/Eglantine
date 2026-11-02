@@ -222,6 +222,14 @@ void SoftwareKeyboard::InitializeForeground() {
                     sizeof(SwkbdConfigNew));
         swkbd_config_common.use_utf8 = true;
         break;
+    case SwkbdAppletVersion::Version1441810: {
+        // Fire Emblem: Fortune's Weave asks for UTF-8 and keeps the reply up to the first NUL, so the
+        // Switch 1 layout's use_utf8 (a byte of the native initial_string_offset) left one letter.
+        const bool decoded =
+            DecodeNativeSwkbdConfig(swkbd_config_data, swkbd_config_common, swkbd_config_new);
+        ASSERT(decoded);
+        break;
+    }
     default:
         UNIMPLEMENTED_MSG("Unknown SwkbdConfig revision={} with size={}", swkbd_applet_version,
                           swkbd_config_data.size());
