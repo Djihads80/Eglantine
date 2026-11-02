@@ -434,7 +434,8 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
 
         if (target == ScanTarget::PopulateGameList &&
             (file_type == Loader::FileType::XCI || file_type == Loader::FileType::XCZ ||
-             file_type == Loader::FileType::NSP || file_type == Loader::FileType::NSZ) &&
+             file_type == Loader::FileType::NSP || file_type == Loader::FileType::NSZ ||
+             file_type == Loader::FileType::NUP) &&
             !Loader::IsBootableGameContainer(file, file_type)) {
             return;
         }
