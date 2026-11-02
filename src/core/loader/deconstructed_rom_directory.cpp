@@ -21,6 +21,7 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/romfs_factory.h"
+#include "core/file_sys/vfs/vfs_layered.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/service/filesystem/filesystem.h"
@@ -81,40 +82,131 @@ struct PatchCollection {
 
 namespace {
 
-// RomFS for a loose ExeFS: the first .romfs file next to main, else a romfs/ directory next to
-// the exefs/ directory (the usual layout of an extracted title).
+bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
+    return lhs.size() == rhs.size() &&
+           std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](char a, char b) {
+               return std::tolower(static_cast<unsigned char>(a)) ==
+                      std::tolower(static_cast<unsigned char>(b));
+           });
+}
+
+FileSys::VirtualDir FindSubdirectoryCaseless(const FileSys::VirtualDir& dir,
+                                             std::string_view name) {
+    if (dir == nullptr) {
+        return nullptr;
+    }
+    const auto subdirectories = dir->GetSubdirectories();
+    const auto it = std::find_if(subdirectories.begin(), subdirectories.end(),
+                                 [name](const auto& subdirectory) {
+                                     return EqualsIgnoreCase(subdirectory->GetName(), name);
+                                 });
+    return it != subdirectories.end() ? *it : nullptr;
+}
+
+// Loose updates are stored under <title>/updates/<version>/romfs. Select the newest version
+// directory that actually contains a RomFS.
+FileSys::VirtualDir FindLooseUpdateRomFS(const FileSys::VirtualDir& exefs_dir) {
+    const auto base_dir = exefs_dir->GetParentDirectory();
+    if (base_dir == nullptr || !EqualsIgnoreCase(base_dir->GetName(), "base")) {
+        return nullptr;
+    }
+    const auto title_dir = base_dir->GetParentDirectory();
+    const auto updates_dir = FindSubdirectoryCaseless(title_dir, "updates");
+    if (updates_dir == nullptr) {
+        return nullptr;
+    }
+
+    std::string newest_version;
+    FileSys::VirtualDir newest_romfs;
+    for (const auto& update_dir : updates_dir->GetSubdirectories()) {
+        const std::string version = update_dir->GetName();
+        if (version.empty() || version.find_first_not_of("0123456789") != std::string::npos) {
+            continue;
+        }
+        const auto romfs_dir = FindSubdirectoryCaseless(update_dir, "romfs");
+        if (romfs_dir == nullptr) {
+            continue;
+        }
+        const auto first_nonzero = version.find_first_not_of('0');
+        const std::string_view normalized = first_nonzero == std::string::npos
+                                                ? std::string_view{"0"}
+                                                : std::string_view{version}.substr(first_nonzero);
+        const auto newest_nonzero = newest_version.find_first_not_of('0');
+        const std::string_view newest_normalized = newest_nonzero == std::string::npos
+                                                       ? std::string_view{"0"}
+                                                       : std::string_view{newest_version}.substr(
+                                                             newest_nonzero);
+        if (newest_romfs == nullptr || normalized.size() > newest_normalized.size() ||
+            (normalized.size() == newest_normalized.size() && normalized > newest_normalized)) {
+            newest_version = version;
+            newest_romfs = romfs_dir;
+        }
+    }
+    return newest_romfs;
+}
+
+// RomFS for a loose ExeFS: a .romfs file next to main or a romfs/ directory next to exefs/;
+// when loading base/exefs, an extracted update RomFS is layered above the base RomFS.
 FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     if (exefs_dir == nullptr) {
         return nullptr;
     }
+    FileSys::VirtualFile romfs_file;
     for (const auto& f : exefs_dir->GetFiles()) {
         if (f->GetExtension() == "romfs") {
-            return f;
+            romfs_file = f;
+            break;
         }
     }
-    if (const auto parent = exefs_dir->GetParentDirectory()) {
-        if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
-            // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
-            // MiB), so loaders of the same directory share one build while any of them holds it.
-            static std::mutex cache_mutex;
-            static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
-            std::scoped_lock lk{cache_mutex};
-            auto& cached = cache[romfs_dir->GetFullPath()];
-            if (auto built = cached.lock()) {
-                return built;
-            }
-            LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            const auto started = std::chrono::steady_clock::now();
-            auto built = FileSys::CreateRomFS(romfs_dir);
-            LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
-                     std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now() - started)
-                         .count());
-            cached = built;
-            return built;
+    const auto parent = exefs_dir->GetParentDirectory();
+    const auto romfs_dir = FindSubdirectoryCaseless(parent, "romfs");
+    const auto update_romfs = FindLooseUpdateRomFS(exefs_dir);
+    if (update_romfs == nullptr && romfs_file != nullptr) {
+        return romfs_file;
+    }
+    if (romfs_dir == nullptr && romfs_file == nullptr && update_romfs == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<FileSys::VirtualDir> layers;
+    if (update_romfs != nullptr) {
+        layers.push_back(update_romfs);
+    }
+    if (romfs_dir != nullptr) {
+        layers.push_back(romfs_dir);
+    } else if (romfs_file != nullptr) {
+        if (auto extracted = FileSys::ExtractRomFS(romfs_file)) {
+            layers.push_back(std::move(extracted));
         }
     }
-    return nullptr;
+    if (layers.empty()) {
+        return nullptr;
+    }
+
+    // Building a loose RomFS walks every file and keeps an object for each (title 1: 206k files,
+    // ~150 MiB), so loaders of the same directories share one build while any of them holds it.
+    static std::mutex cache_mutex;
+    static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
+    const std::string cache_key =
+        (romfs_dir != nullptr ? romfs_dir->GetFullPath()
+                              : romfs_file != nullptr ? romfs_file->GetFullPath() : std::string{}) +
+        (update_romfs != nullptr ? "|" + update_romfs->GetFullPath() : std::string{});
+    std::scoped_lock lk{cache_mutex};
+    auto& cached = cache[cache_key];
+    if (auto built = cached.lock()) {
+        return built;
+    }
+    LOG_INFO(Loader, update_romfs != nullptr ? "Using loose update RomFS over base RomFS"
+                                             : "Using RomFS directory next to the ExeFS");
+    const auto started = std::chrono::steady_clock::now();
+    const auto layered_dir = FileSys::LayeredVfsDirectory::MakeLayeredDirectory(std::move(layers));
+    auto built = FileSys::CreateRomFS(layered_dir);
+    LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - started)
+                 .count());
+    cached = built;
+    return built;
 }
 
 // The newest three-digit tag in a directory's file names of the form <prefix>NNN.<anything>.
