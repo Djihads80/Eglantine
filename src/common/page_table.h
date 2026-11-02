@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <limits>
 
 #include "common/common_types.h"
 #include "common/sparse_large_vector.h"
@@ -56,6 +57,17 @@ struct PageTable {
      */
     class PageEntryData {
     public:
+        // Reserved when mapping ids are exhausted; this id cannot prove span continuity.
+        static constexpr u16 INVALID_BLOCK_ID = (std::numeric_limits<u16>::max)();
+
+        [[nodiscard]] static constexpr u16 BlockIdForMapping(u64 mapping_id) noexcept {
+            return mapping_id < INVALID_BLOCK_ID ? static_cast<u16>(mapping_id) : INVALID_BLOCK_ID;
+        }
+
+        [[nodiscard]] static constexpr bool CanFastSpan(u16 first, u16 last) noexcept {
+            return first != INVALID_BLOCK_ID && first == last;
+        }
+
         struct Data {
             Data(bool marked_, PageType type_, u16 block_, u64 page_)
                 : marked(static_cast<u64>(marked_)       & 0b1)
