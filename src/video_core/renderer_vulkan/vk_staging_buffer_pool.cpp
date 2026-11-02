@@ -297,11 +297,12 @@ u64 StagingBufferPool::CachedBytes(MemoryUsage usage) const {
 }
 
 void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
-    // A few idle buffers of each size stay for reuse (one of the big ones); the rest go once the
-    // GPU is done with them and they sat unused for a while (so steady uploads don't recreate
-    // buffers every frame).
+    // A few idle buffers of each small size stay for reuse; the rest go once the GPU is done with
+    // them and they sat unused for a while (so steady uploads don't recreate buffers every frame).
+    // None of 16 MiB or more: power-of-two sizes made one image's upload a 1-2 GiB buffer, and
+    // keeping one of each such size held 4 GiB on a phone through Mario Kart World's races.
     constexpr u64 idle_ticks = 64;
-    const size_t keep = log2 >= 24 ? 1 : 4;
+    const size_t keep = log2 >= 24 ? 0 : 4;
     auto& staging = cache[log2];
     auto& entries = staging.entries;
     const u64 current_tick = scheduler.CurrentTick();
