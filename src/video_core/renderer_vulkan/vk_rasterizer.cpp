@@ -267,7 +267,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
+        // EDEN_NX2_SKIP_LOG_MAX=<n> raises the cap on distinct skipped vs/ps pairs logged (default 64).
+        static const size_t max_logged = [] {
+            const char* value = std::getenv("EDEN_NX2_SKIP_LOG_MAX");
+            return value ? static_cast<size_t>(std::strtoull(value, nullptr, 10)) : size_t{64};
+        }();
+        if (seen.size() < max_logged && seen.emplace(vs, ps, reason).second) {
             LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
         }
