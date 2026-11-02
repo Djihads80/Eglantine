@@ -192,6 +192,12 @@ private:
     // Switch 2 sends vibration every frame with 214 (pointer buffers of device handles and
     // values, like 206); Eden doesn't emulate vibration, so accept and drop it.
     Result SendNx2VibrationValues();
+    // 213 (32 bytes, aruid): sent per controller every frame by Kirby Air Riders (tens of
+    // thousands of auto stub log lines a run); no reply data. Accepted and dropped like 214.
+    Result Unknown213();
+    // 220 (16 bytes, aruid): replies one byte (meaning unknown); answer 0 instead of leaving it to
+    // the message buffer's leftovers.
+    Result Unknown220(Out<u8> out);
     Result ActivateConsoleSixAxisSensor(ClientAppletResourceUserId aruid);
     Result StartConsoleSixAxisSensor(Core::HID::ConsoleSixAxisSensorHandle console_sixaxis_handle,
                                      ClientAppletResourceUserId aruid);

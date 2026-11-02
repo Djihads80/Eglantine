@@ -17,6 +17,7 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/texture_cache/util.h"
 
@@ -100,6 +101,12 @@ void BufferCache<P>::TickFrame() {
         return;
     }
     runtime.TickFrame(slot_buffers);
+    if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
+        for (const auto& [address, size] : uploaded_buffer_ranges) {
+            device_memory.HintCold(address, size);
+        }
+        uploaded_buffer_ranges.clear();
+    }
     if (static u64 frames{}; ++frames % 600 == 0) {
         u64 total{};
         size_t count{};
@@ -141,9 +148,10 @@ void BufferCache<P>::TickFrame() {
         // title 1's buffers were ~200 MiB of an 8 GB GPU's ~6.8 GB in use, yet this collector
         // ran aggressively every frame on the device-wide figure, evicting up to 64 buffers (and
         // downloading the GPU-written ones, ~5% of the GPU thread) that were recreated later.
-        // Collect when the buffers themselves are large.
-        if (buffer_bytes >= 1_GiB) {
-            RunGarbageCollector(buffer_bytes >= 2_GiB);
+        // Collect when the buffers themselves are large. At 1 GiB it held geometry of scenes
+        // long gone: title 1's title screen grew to ~0.9 GB of buffers in ten minutes.
+        if (buffer_bytes >= 512_MiB) {
+            RunGarbageCollector(buffer_bytes >= 1_GiB);
         }
     } else if (total_used_memory >= minimum_memory) {
         RunGarbageCollector(total_used_memory >= critical_memory);
@@ -291,6 +299,9 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     const bool has_new_downloads = tmp_intervals.size() != 0;
     for (const auto& pair : tmp_intervals) {
         gpu_modified_ranges.Add(pair.first, pair.second);
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+            Tegra::Nx2MarkGpuWritten(pair.first, pair.second);
+        }
     }
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
@@ -379,6 +390,10 @@ template <class P>
 void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                u32 size) {
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!device_addr) {
+        channel_state->uniform_buffers[stage][index] = NULL_BINDING;
+        return;
+    }
     const Binding binding{
         .device_addr = *device_addr,
         .size = size,
@@ -389,7 +404,11 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
 
 template <class P>
 void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
-    channel_state->uniform_buffers[stage][index] = NULL_BINDING;
+    auto& current = channel_state->uniform_buffers[stage][index];
+    if (current.device_addr == 0 && current.size == 0 && !current.buffer_id) [[likely]] {
+        return;
+    }
+    current = NULL_BINDING;
 }
 
 template <class P>
@@ -994,6 +1013,26 @@ void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind) {
     ++channel_state->uniform_cache_shots[0];
+    // Bank 24 (root table 0, NVN2's push constants) is read from bank 17, which such games do not
+    // bind: stream the table's current words as that buffer.
+    if (index == 17 && maxwell3d->root_tables.loaded && channel_state->uniform_buffers[stage][index].size == 0) {
+        const auto& words = maxwell3d->root_tables.tables[0];
+        const u32 size = (*channel_state->uniform_buffer_sizes)[stage][index];
+        const u32 copied = (std::min)(size, static_cast<u32>(sizeof(words)));
+        if constexpr (IS_OPENGL) {
+            std::array<u8, sizeof(words)> data{};
+            std::memcpy(data.data(), words.data(), copied);
+            runtime.BindFastUniformBuffer(stage, binding_index, copied);
+            runtime.PushFastUniformBuffer(stage, binding_index, std::span<const u8>(data.data(), copied));
+        } else {
+            const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            std::memset(span.data(), 0, span.size());
+            std::memcpy(span.data(), words.data(), copied);
+        }
+        channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+        channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+        return;
+    }
     const Binding& binding = channel_state->uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
@@ -1494,6 +1533,9 @@ void BufferCache<P>::UpdateDrawIndirect() {
 
 template <class P>
 void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
+    if (channel_state->enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
+        return;
+    }
     ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
         Binding& binding = channel_state->uniform_buffers[stage][index];
         if (binding.buffer_id) {
@@ -1511,6 +1553,9 @@ void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
+    if (channel_state->enabled_storage_buffers[stage] == 0) [[likely]] {
+        return;
+    }
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->storage_buffers[stage][index];
@@ -1523,6 +1568,9 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::UpdateTextureBuffers(size_t stage) {
+    if (channel_state->enabled_texture_buffers[stage] == 0) [[likely]] {
+        return;
+    }
     ForEachEnabledBit(channel_state->enabled_texture_buffers[stage], [&](u32 index) {
         Binding& binding = channel_state->texture_buffers[stage][index];
         binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
@@ -1610,14 +1658,17 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     } else {
         ArmReadTraps(device_addr, size);
     }
+    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        Tegra::Nx2MarkGpuWritten(device_addr, size);
+    }
 }
 
 template <class P>
 BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
-    if (device_addr == 0) {
+    const u64 page = device_addr >> CACHING_PAGEBITS;
+    if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
     }
-    const u64 page = device_addr >> CACHING_PAGEBITS;
     const BufferId buffer_id = page_table[page];
     if (buffer_id) {
         Buffer& buffer = slot_buffers[buffer_id];
@@ -1927,6 +1978,11 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
+            // marks their guest memory cold (see TextureCache::RefreshContents).
+            if (copy.size >= 256_KiB) {
+                uploaded_buffer_ranges.emplace_back(device_addr, copy.size);
+            }
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
         }

@@ -33,6 +33,7 @@
 #include "video_core/host_shaders/convert_non_msaa_to_msaa_depth_stencil_frag_spv.h"
 #include "video_core/host_shaders/convert_s8d24_to_abgr8_frag_spv.h"
 #include "video_core/host_shaders/full_screen_triangle_vert_spv.h"
+#include "video_core/host_shaders/temporal_upscale_frag_spv.h"
 #include "video_core/host_shaders/vulkan_blit_depth_stencil_frag_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_frag_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_vert_spv.h"
@@ -91,6 +92,15 @@ struct PushConstants {
     std::array<float, 2> tex_offset;
 };
 
+// The vertex stage's PushConstants first, then those of temporal_upscale.frag.
+struct TemporalUpscalePushConstants {
+    PushConstants vertex;
+    std::array<float, 2> jitter;
+    std::array<float, 2> motion_scale;
+    float current_weight;
+    float padding;
+};
+
 struct MSAACopyPushConstants {
     std::array<s32, 2> dst_offset;
     std::array<s32, 2> src_offset;
@@ -108,6 +118,11 @@ inline constexpr VkDescriptorSetLayoutBinding TEXTURE_DESCRIPTOR_SET_LAYOUT_BIND
 constexpr std::array TWO_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS{
     TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING<0>,
     TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING<1>,
+};
+constexpr std::array THREE_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS{
+    TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING<0>,
+    TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING<1>,
+    TEXTURE_DESCRIPTOR_SET_LAYOUT_BINDING<2>,
 };
 constexpr VkDescriptorSetLayoutCreateInfo ONE_TEXTURE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO{
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -132,6 +147,13 @@ constexpr VkDescriptorSetLayoutCreateInfo TWO_TEXTURES_DESCRIPTOR_SET_LAYOUT_CRE
     .flags = 0,
     .bindingCount = static_cast<u32>(TWO_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS.size()),
     .pBindings = TWO_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS.data(),
+};
+constexpr VkDescriptorSetLayoutCreateInfo THREE_TEXTURES_DESCRIPTOR_SET_LAYOUT_CREATE_INFO{
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    .pNext = nullptr,
+    .flags = 0,
+    .bindingCount = static_cast<u32>(THREE_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS.size()),
+    .pBindings = THREE_TEXTURES_DESCRIPTOR_SET_LAYOUT_BINDINGS.data(),
 };
 template <VkShaderStageFlags stageFlags, size_t size>
 inline constexpr VkPushConstantRange PUSH_CONSTANT_RANGE{
@@ -355,6 +377,32 @@ void UpdateOneTextureDescriptorSet(const Device& device, VkDescriptorSet descrip
         .pTexelBufferView = nullptr,
     };
     device.GetLogical().UpdateDescriptorSets(write_descriptor_set, nullptr);
+}
+
+void UpdateThreeTexturesDescriptorSet(const Device& device, VkDescriptorSet descriptor_set,
+                                      VkSampler sampler, std::array<VkImageView, 3> image_views) {
+    std::array<VkDescriptorImageInfo, 3> image_infos{};
+    std::array<VkWriteDescriptorSet, 3> write_descriptor_sets{};
+    for (u32 binding = 0; binding < 3; ++binding) {
+        image_infos[binding] = VkDescriptorImageInfo{
+            .sampler = sampler,
+            .imageView = image_views[binding],
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        write_descriptor_sets[binding] = VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = descriptor_set,
+            .dstBinding = binding,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &image_infos[binding],
+            .pBufferInfo = nullptr,
+            .pTexelBufferView = nullptr,
+        };
+    }
+    device.GetLogical().UpdateDescriptorSets(write_descriptor_sets, nullptr);
 }
 
 void UpdateTwoTexturesDescriptorSet(const Device& device, VkDescriptorSet descriptor_set,
@@ -590,10 +638,14 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
           ONE_TEXTURE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)),
       two_textures_set_layout(device.GetLogical().CreateDescriptorSetLayout(
           TWO_TEXTURES_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)),
+      three_textures_set_layout(device.GetLogical().CreateDescriptorSetLayout(
+          THREE_TEXTURES_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)),
       one_texture_descriptor_allocator{
           descriptor_pool.Allocator(device_, scheduler_, *one_texture_set_layout, TEXTURE_DESCRIPTOR_BANK_INFO<1>)},
       two_textures_descriptor_allocator{
           descriptor_pool.Allocator(device_, scheduler_, *two_textures_set_layout, TEXTURE_DESCRIPTOR_BANK_INFO<2>)},
+      three_textures_descriptor_allocator{
+          descriptor_pool.Allocator(device_, scheduler_, *three_textures_set_layout, TEXTURE_DESCRIPTOR_BANK_INFO<3>)},
       one_texture_pipeline_layout(device.GetLogical().CreatePipelineLayout(PipelineLayoutCreateInfo(
           one_texture_set_layout.address(),
           PUSH_CONSTANT_RANGE<VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushConstants)>))),
@@ -601,6 +653,11 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
           device.GetLogical().CreatePipelineLayout(PipelineLayoutCreateInfo(
               two_textures_set_layout.address(),
               PUSH_CONSTANT_RANGE<VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushConstants)>))),
+      temporal_upscale_pipeline_layout(
+          device.GetLogical().CreatePipelineLayout(PipelineLayoutCreateInfo(
+              three_textures_set_layout.address(),
+              PUSH_CONSTANT_RANGE<VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                  sizeof(TemporalUpscalePushConstants)>))),
       clear_color_pipeline_layout(device.GetLogical().CreatePipelineLayout(PipelineLayoutCreateInfo(
           nullptr, PUSH_CONSTANT_RANGE<VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(float) * 4>))),
       msaa_copy_pipeline_layout(device.GetLogical().CreatePipelineLayout(PipelineLayoutCreateInfo(
@@ -612,6 +669,7 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
               PUSH_CONSTANT_RANGE<VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(MSAACopyPushConstants)>))),
       full_screen_vert(BuildShader(device, FULL_SCREEN_TRIANGLE_VERT_SPV)),
       blit_color_to_color_frag(BuildShader(device, BLIT_COLOR_FLOAT_FRAG_SPV)),
+      temporal_upscale_frag(BuildShader(device, TEMPORAL_UPSCALE_FRAG_SPV)),
       blit_color_msaa_frag(BuildShader(device, BLIT_COLOR_MSAA_FRAG_SPV)),
       blit_depth_stencil_frag(device.IsExtShaderStencilExportSupported()
                              ? BuildShader(device, VULKAN_BLIT_DEPTH_STENCIL_FRAG_SPV)
@@ -700,6 +758,42 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
         cmdbuf.Draw(3, 1, 0, 0);
         cmdbuf.EndRenderPass();
     });
+}
+
+void BlitImageHelper::TemporalUpscale(const Framebuffer* dst_framebuffer,
+                                      const ImageView& input_color, const ImageView& motion_vectors,
+                                      VkImageView history, const Region2D& dst_region,
+                                      std::array<f32, 2> jitter, std::array<f32, 2> motion_scale,
+                                      f32 current_weight) {
+    const VkPipelineLayout layout = *temporal_upscale_pipeline_layout;
+    const VkPipeline pipeline = FindOrEmplaceTemporalUpscalePipeline(dst_framebuffer->RenderPass());
+    const VkSampler sampler = *linear_sampler;
+    const std::array<VkImageView, 3> views{input_color.Handle(Shader::TextureType::Color2D),
+                                           motion_vectors.Handle(Shader::TextureType::Color2D),
+                                           history};
+    const TemporalUpscalePushConstants push_constants{
+        .vertex = {.tex_scale = {1.0f, 1.0f}, .tex_offset = {0.0f, 0.0f}},
+        .jitter = jitter,
+        .motion_scale = motion_scale,
+        .current_weight = current_weight,
+        .padding = 0.0f,
+    };
+    RecordShaderReadBarrier(scheduler, input_color);
+    RecordShaderReadBarrier(scheduler, motion_vectors);
+    scheduler.RequestRenderpass(dst_framebuffer);
+    scheduler.Record([this, dst_region, pipeline, layout, sampler, views,
+                      push_constants](vk::CommandBuffer cmdbuf) {
+        const VkDescriptorSet descriptor_set = three_textures_descriptor_allocator.Commit();
+        UpdateThreeTexturesDescriptorSet(device, descriptor_set, sampler, views);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, descriptor_set,
+                                  nullptr);
+        BindBlitState(cmdbuf, dst_region);
+        cmdbuf.PushConstants(layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                             push_constants);
+        cmdbuf.Draw(3, 1, 0, 0);
+    });
+    scheduler.InvalidateState();
 }
 
 void BlitImageHelper::BlitImpl(const Framebuffer* dst_framebuffer,
@@ -1283,6 +1377,59 @@ VkPipeline BlitImageHelper::FindOrEmplaceColorPipeline(const BlitImagePipelineKe
         .basePipelineIndex = 0,
     }, device.StaticPipelineCache()));
     return *blit_color_pipelines.back();
+}
+
+VkPipeline BlitImageHelper::FindOrEmplaceTemporalUpscalePipeline(VkRenderPass renderpass) {
+    const auto it = std::ranges::find(temporal_upscale_keys, renderpass);
+    if (it != temporal_upscale_keys.end()) {
+        return *temporal_upscale_pipelines[std::distance(temporal_upscale_keys.begin(), it)];
+    }
+    temporal_upscale_keys.push_back(renderpass);
+    const std::array stages = MakeStages(*full_screen_vert, *temporal_upscale_frag);
+    const VkPipelineColorBlendAttachmentState blend_attachment{
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    const VkPipelineColorBlendStateCreateInfo color_blend_create_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_CLEAR,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attachment,
+        .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f},
+    };
+    const VkPipelineInputAssemblyStateCreateInfo input_assembly_ci = GetPipelineInputAssemblyStateCreateInfo(device);
+    temporal_upscale_pipelines.push_back(device.GetLogical().CreateGraphicsPipeline({
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .stageCount = static_cast<u32>(stages.size()),
+        .pStages = stages.data(),
+        .pVertexInputState = &PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pInputAssemblyState = &input_assembly_ci,
+        .pTessellationState = nullptr,
+        .pViewportState = &PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .pRasterizationState = &PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .pMultisampleState = &PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .pDepthStencilState = nullptr,
+        .pColorBlendState = &color_blend_create_info,
+        .pDynamicState = &PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .layout = *temporal_upscale_pipeline_layout,
+        .renderPass = renderpass,
+        .subpass = 0,
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = 0,
+    }, device.StaticPipelineCache()));
+    return *temporal_upscale_pipelines.back();
 }
 
 VkPipeline BlitImageHelper::FindOrEmplaceDepthStencilPipeline(const BlitImagePipelineKey& key) {

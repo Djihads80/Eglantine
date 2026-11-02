@@ -30,15 +30,48 @@ std::optional<AxxEmitX64::DoNotFastmemMarker> AxxEmitX64::ShouldFastmem(AxxEmitC
     return marker;
 }
 
+void AxxEmitX64::AddFastmemPatch(CodePtr location, CodePtr resume_location, void (*callback)(), const DoNotFastmemMarker& marker, bool recompile) {
+    const u64 base = std::bit_cast<u64>(code.getCode());
+    const auto offset = [base](u64 address) {
+        ASSERT(address >= base && address - base <= UINT32_MAX);
+        return u32(address - base);
+    };
+    FastmemPatchInfo info{
+        .rip = offset(std::bit_cast<u64>(location)),
+        .resume_rip = offset(std::bit_cast<u64>(resume_location)),
+        .callback = offset(std::bit_cast<u64>(callback)),
+        .inst_name = 0,
+        .recompile = 0,
+        .location = std::get<0>(marker),
+    };
+    info.inst_name = std::get<1>(marker);
+    info.recompile = recompile ? 1 : 0;
+    // Code is emitted in address order; only a block's deferred fallbacks can come after a later
+    // access of the same block.
+    auto it = fastmem_patch_info.end();
+    if (!fastmem_patch_info.empty() && fastmem_patch_info.back().rip >= info.rip) {
+        it = std::lower_bound(fastmem_patch_info.begin(), fastmem_patch_info.end(), info.rip,
+                              [](const FastmemPatchInfo& entry, u32 value) { return entry.rip < value; });
+        if (it != fastmem_patch_info.end() && it->rip == info.rip) {
+            return;
+        }
+    }
+    fastmem_patch_info.insert(it, info);
+}
+
 FakeCall AxxEmitX64::FastmemCallback(u64 rip_) {
-    const auto iter = fastmem_patch_info.find(rip_);
-    if (iter != fastmem_patch_info.end()) {
+    const u64 base = std::bit_cast<u64>(code.getCode());
+    const auto iter = rip_ >= base && rip_ - base <= UINT32_MAX
+                        ? std::lower_bound(fastmem_patch_info.begin(), fastmem_patch_info.end(), u32(rip_ - base),
+                                           [](const FastmemPatchInfo& entry, u32 value) { return entry.rip < value; })
+                        : fastmem_patch_info.end();
+    if (iter != fastmem_patch_info.end() && iter->rip == u32(rip_ - base)) {
         FakeCall result{
-            .call_rip = iter->second.callback,
-            .ret_rip = iter->second.resume_rip,
+            .call_rip = base + iter->callback,
+            .ret_rip = base + iter->resume_rip,
         };
-        if (iter->second.recompile) {
-            const auto marker = iter->second.marker;
+        if (iter->recompile) {
+            const DoNotFastmemMarker marker{iter->location, static_cast<unsigned>(iter->inst_name)};
             do_not_fastmem.insert(marker);
             InvalidateBasicBlocks({std::get<0>(marker)});
         }
@@ -99,14 +132,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
             code.L(*abort);
             code.call(wrapped_fn);
 
-            fastmem_patch_info.emplace(
-                std::bit_cast<u64>(location),
-                FastmemPatchInfo{
-                    std::bit_cast<u64>(code.getCurr()),
-                    std::bit_cast<u64>(wrapped_fn),
-                    *fastmem_marker,
-                    conf.recompile_on_fastmem_failure,
-                });
+            AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
 
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);
@@ -186,14 +212,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
             code.L(*abort);
             code.call(wrapped_fn);
 
-            fastmem_patch_info.emplace(
-                std::bit_cast<u64>(location),
-                FastmemPatchInfo{
-                    std::bit_cast<u64>(code.getCurr()),
-                    std::bit_cast<u64>(wrapped_fn),
-                    *fastmem_marker,
-                    conf.recompile_on_fastmem_failure,
-                });
+            AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
 
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);
@@ -357,14 +376,7 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
 
         const auto location = EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
-        fastmem_patch_info.emplace(
-            std::bit_cast<u64>(location),
-            FastmemPatchInfo{
-                std::bit_cast<u64>(code.getCurr()),
-                std::bit_cast<u64>(wrapped_fn),
-                *fastmem_marker,
-                conf.recompile_on_exclusive_fastmem_failure,
-            });
+        AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_exclusive_fastmem_failure);
 
         code.L(*end);
 
@@ -495,14 +507,7 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
             code.L(*abort);
             code.call(wrapped_fn);
 
-            fastmem_patch_info.emplace(
-                std::bit_cast<u64>(location),
-                FastmemPatchInfo{
-                    std::bit_cast<u64>(code.getCurr()),
-                    std::bit_cast<u64>(wrapped_fn),
-                    *fastmem_marker,
-                    conf.recompile_on_exclusive_fastmem_failure,
-                });
+            AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_exclusive_fastmem_failure);
 
             code.xor_(status.cvt32(), status.cvt32()); //dep-break
             code.test(code.al, code.al);

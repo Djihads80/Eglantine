@@ -85,8 +85,12 @@ struct IPlatformServiceManager::Impl {
     // Automatically populated based on shared_fonts dump or system archives.
     // 6 builtin fonts + extra 2 for whatever may come after
     boost::container::static_vector<FontRegion, 8> shared_font_regions;
-    /// Plain TTF copies of the same fonts (Switch 2 GetBuiltInFontData), after the BFTTF data.
+    /// Where Switch 2 GetBuiltInFontData finds the same fonts as plain TTF data: page-aligned
+    /// copies in builtin_font_memory (the Switch 1 font memory is full with the system fonts).
     boost::container::static_vector<FontRegion, 8> builtin_font_regions;
+    u32 builtin_font_memory_size{};
+    /// Made by the first GetBuiltInFontSharedMemory (Switch 2 titles only).
+    Kernel::KSharedMemory* builtin_font_memory{};
     /// Backing memory for the shared font data
     std::array<u8, SHARED_FONT_MEM_SIZE> shared_font;
 };
@@ -122,7 +126,6 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     // Attempt to load shared font data from disk
     const auto* nand = fsc.GetSystemNANDContents();
     std::size_t offset = 0;
-    std::vector<std::vector<u8>> plain_fonts;
     // Rebuild shared fonts from data ncas or synthesize
     for (auto& font : SHARED_FONTS) {
         FileSys::VirtualFile romfs;
@@ -158,34 +161,52 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
                        Common::swap32);
         // Font offset and size do not account for the header
         const FontRegion region{u32(offset + 8), u32((font_data_u32.size() * sizeof(u32)) - 8)};
-        std::vector<u8> plain(region.size);
-        DecryptSharedFontToTTF(font_data_u32, plain);
-        plain_fonts.push_back(std::move(plain));
         DecryptSharedFont(font_data_u32, impl->shared_font, offset);
         impl->shared_font_regions.push_back(region);
     }
 
-    for (const auto& plain : plain_fonts) {
-        offset = Common::AlignUp(offset, 0x1000);
-        if (offset + plain.size() > SHARED_FONT_MEM_SIZE) {
-            LOG_WARNING(Service_NS, "No shared memory left for plain built-in font copies");
-            break;
-        }
-        std::memcpy(impl->shared_font.data() + offset, plain.data(), plain.size());
-        impl->builtin_font_regions.push_back({u32(offset), u32(plain.size())});
-        offset += plain.size();
+    // The data after each BFTTF header is the plain font: GetBuiltInFontSharedMemory copies it.
+    u32 builtin_offset = 0;
+    for (const auto& region : impl->shared_font_regions) {
+        impl->builtin_font_regions.push_back({builtin_offset, region.size});
+        builtin_offset = Common::AlignUp(builtin_offset + region.size, 0x1000);
     }
+    impl->builtin_font_memory_size = std::max<u32>(builtin_offset, 0x1000);
 }
 
 // Switch 2: the shared memory GetBuiltInFontData offsets point into (copy handle, u32 size); the
-// SDK maps it read-only. Eden serves its font shared memory, which holds plain copies too.
+// SDK maps it read-only. It holds plain copies of the fonts, apart from the Switch 1 font memory.
 void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx) {
-    LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontSharedMemory");
-    std::memcpy(kernel.GetFontSharedMem().GetPointer(), impl->shared_font.data(), impl->shared_font.size());
+    LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontSharedMemory, {:#x} bytes",
+                impl->builtin_font_memory_size);
+    if (impl->builtin_font_memory == nullptr) {
+        auto* const memory = Kernel::KSharedMemory::Create(kernel);
+        if (const Result result = memory->Initialize(kernel, system.DeviceMemory(), nullptr,
+                                                     Kernel::Svc::MemoryPermission::None,
+                                                     Kernel::Svc::MemoryPermission::Read,
+                                                     impl->builtin_font_memory_size);
+            result.IsError()) {
+            LOG_ERROR(Service_NS, "Failed to make {:#x} bytes of built-in font memory: {:#x}",
+                      impl->builtin_font_memory_size, result.raw);
+            memory->Close(kernel);
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(result);
+            return;
+        }
+        Kernel::KSharedMemory::Register(kernel, memory);
+        u8* const data = memory->GetPointer();
+        std::memset(data, 0, impl->builtin_font_memory_size);
+        for (size_t i = 0; i < impl->builtin_font_regions.size(); ++i) {
+            std::memcpy(data + impl->builtin_font_regions[i].offset,
+                        impl->shared_font.data() + impl->shared_font_regions[i].offset,
+                        impl->builtin_font_regions[i].size);
+        }
+        impl->builtin_font_memory = memory;
+    }
     IPC::ResponseBuilder rb{ctx, 3, 1};
     rb.Push(ResultSuccess);
-    rb.Push<u32>(static_cast<u32>(SHARED_FONT_MEM_SIZE));
-    rb.PushCopyObjects(ctx, kernel.GetFontSharedMem());
+    rb.Push<u32>(impl->builtin_font_memory_size);
+    rb.PushCopyObjects(ctx, *impl->builtin_font_memory);
 }
 
 // nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool): returns a 16-byte
@@ -212,7 +233,11 @@ void IPlatformServiceManager::GetBuiltInFontData(HLERequestContext& ctx) {
     rb.Push<u32>(0);
 }
 
-IPlatformServiceManager::~IPlatformServiceManager() = default;
+IPlatformServiceManager::~IPlatformServiceManager() {
+    if (impl->builtin_font_memory != nullptr) {
+        impl->builtin_font_memory->Close(kernel);
+    }
+}
 
 Result IPlatformServiceManager::RequestLoad(SharedFontType type) {
     // Games don't call this so all fonts should be loaded

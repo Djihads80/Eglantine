@@ -17,6 +17,7 @@
 #include "video_core/renderer_opengl/gl_shader_manager.h"
 #include "video_core/renderer_opengl/gl_shader_util.h"
 #include "video_core/renderer_opengl/gl_state_tracker.h"
+#include "video_core/shader_handle_program.h"
 #include "video_core/shader_notify.h"
 #include "video_core/texture_cache/texture_cache.h"
 
@@ -308,6 +309,19 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
         const auto read_handle{[&](const auto& desc, u32 index) {
+            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
+                if (desc.handle_program != ~0U) {
+                    // Read by the shader from a storage buffer: computed for this draw.
+                    return TexturePair(VideoCommon::EvaluateTextureHandle(
+                                           info, desc.handle_program, *gpu_memory,
+                                           [&](u32 cbuf) -> GPUVAddr {
+                                               return cbuf < cbufs.size() && cbufs[cbuf].enabled
+                                                          ? cbufs[cbuf].address
+                                                          : GPUVAddr{};
+                                           }),
+                                       via_header_index);
+                }
+            }
             ASSERT(cbufs[desc.cbuf_index].enabled);
             const u32 index_offset{index << desc.size_shift};
             const u32 offset{desc.cbuf_offset + index_offset};

@@ -87,7 +87,7 @@ public:
             {3, D<&ISslConnection::SetIoMode>, "SetIoMode"},
             {4, D<&ISslConnection::GetSocketDescriptor>, "GetSocketDescriptor"},
             {5, D<&ISslConnection::GetHostName>, "GetHostName"},
-            {6, nullptr, "GetVerifyOption"},
+            {6, &ISslConnection::StubReplyZeroed, "GetVerifyOption"},
             {7, D<&ISslConnection::GetIoMode>, "GetIoMode"},
             {8, D<&ISslConnection::DoHandshake>, "DoHandshake"},
             {9, &ISslConnection::DoHandshakeGetServerCert, "DoHandshakeGetServerCert"},
@@ -105,18 +105,20 @@ public:
             {21, D<&ISslConnection::GetRenegotiationMode>, "GetRenegotiationMode"},
             {22, D<&ISslConnection::SetOption>, "SetOption"},
             {23, D<&ISslConnection::GetOption>, "GetOption"},
-            {24, nullptr, "GetVerifyCertErrors"},
-            {25, nullptr, "GetCipherInfo"},
+            {24, &ISslConnection::StubReplyZeroed, "GetVerifyCertErrors"},
+            {25, &ISslConnection::StubReplyZeroed, "GetCipherInfo"},
             {26, D<&ISslConnection::SetNextAlpnProto>, "SetNextAlpnProto"},
             {27, D<&ISslConnection::GetNextAlpnProto>, "GetNextAlpnProto"},
-            {28, nullptr, "SetDtlsSocketDescriptor"},
-            {29, nullptr, "GetDtlsHandshakeTimeout"},
-            {30, nullptr, "SetPrivateOption"},
-            {31, nullptr, "SetSrtpCiphers"},
-            {32, nullptr, "GetSrtpCipher"},
-            {33, nullptr, "ExportKeyingMaterial"},
-            {34, nullptr, "SetIoTimeout"},
-            {35, nullptr, "GetIoTimeout"},
+            {28, &ISslConnection::StubReplyZeroed, "SetDtlsSocketDescriptor"},
+            {29, &ISslConnection::StubReplyZeroed, "GetDtlsHandshakeTimeout"},
+            {30, &ISslConnection::StubReplyZeroed, "SetPrivateOption"},
+            {31, &ISslConnection::StubReplyZeroed, "SetSrtpCiphers"},
+            {32, &ISslConnection::StubReplyZeroed, "GetSrtpCipher"},
+            {33, &ISslConnection::StubReplyZeroed, "ExportKeyingMaterial"},
+            {34, &ISslConnection::StubReplyZeroed, "SetIoTimeout"},
+            {35, &ISslConnection::StubReplyZeroed, "GetIoTimeout"},
+            {36, &ISslConnection::StubReplyZeroed, "Unknown36"},
+            {37, &ISslConnection::StubReplyZeroed, "Unknown37"},
         };
         // clang-format on
 
@@ -420,10 +422,14 @@ private:
         R_SUCCEED();
     }
 
-    Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> to_write) {
-        *to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + *to_write);
-        LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, size={}", *to_write);
+    // Replies with two words, the ALPN state and the size written to the buffer. It used to reply
+    // with one and copy the caller's (output) buffer over the protocols SetNextAlpnProto stored.
+    // No TLS negotiation happens here, so report that nothing was negotiated.
+    Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> out_state,
+                            Out<u32> out_size) {
+        LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, buffer size={}", data.size());
+        *out_state = 0;
+        *out_size = 0;
         R_SUCCEED();
     }
 
@@ -557,8 +563,10 @@ private:
         rb.Push(client_id);
     }
 
-    Result RegisterInternalPki() {
+    // Replies with a u64 (the registered certificate's id); the reply used to carry no data.
+    Result RegisterInternalPki(Out<u64> out_id) {
         LOG_WARNING(Service_SSL, "(STUBBED) called");
+        *out_id = 0;
         R_SUCCEED();
     }
 };
@@ -636,7 +644,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
         explicit ISslServiceForSystem(Core::System& system_) : ServiceFramework{system_, "ssl:s"} {
             // clang-format off
             static const FunctionInfo functions[] = {
-                {0, D<&ISslServiceForSystem::CreateContext>, "CreateContext"},
+                {0, &ISslServiceForSystem::CreateContext, "CreateContext"},
                 {1, D<&ISslServiceForSystem::GetContextCount>, "GetContextCount"},
                 {2, D<&ISslServiceForSystem::GetCertificates>, "GetCertificates"},
                 {3, D<&ISslServiceForSystem::GetCertificateBufSize>, "GetCertificateBufSize"},
@@ -646,7 +654,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
                 {7, D<&ISslServiceForSystem::SetDebugOption>, "SetDebugOption"},
                 {8, D<&ISslServiceForSystem::GetDebugOption>, "GetDebugOption"},
                 {9, D<&ISslServiceForSystem::ClearTls12FallbackFlag>, "ClearTls12FallbackFlag"},
-                {100, D<&ISslServiceForSystem::CreateContextForSystem>, "CreateContextForSystem"},
+                {100, &ISslServiceForSystem::CreateContext, "CreateContextForSystem"},
                 {101, D<&ISslServiceForSystem::SetThreadCoreMask>, "SetThreadCoreMask"},
                 {102, D<&ISslServiceForSystem::GetThreadCoreMask>, "GetThreadCoreMask"},
                 {103, D<&ISslServiceForSystem::VerifySignature>, "VerifySignature"}
@@ -656,19 +664,30 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             RegisterHandlers(functions);
         };
 
-        Result CreateContext() {
+        // 0 and 100(SslVersion, padding, u64 pid placeholder; pid): an ISslContext, like ssl's
+        // CreateContext. The empty reply returned no object, so the caller got handle 0
+        // (Minecraft calls 100).
+        void CreateContext(HLERequestContext& ctx) {
+            struct Parameters {
+                SslVersion ssl_version;
+                INSERT_PADDING_BYTES(0x4);
+                u64 pid_placeholder;
+            };
+            static_assert(sizeof(Parameters) == 0x10, "Parameters is an invalid size");
+
+            IPC::RequestParser rp{ctx};
+            const auto parameters = rp.PopRaw<Parameters>();
+            LOG_WARNING(Service_SSL, "(STUBBED) called, command={}, api_version={}", ctx.GetCommand(),
+                        parameters.ssl_version.api_version);
+
+            IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+            rb.Push(ResultSuccess);
+            rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version);
+        }
+
+        Result GetContextCount(Out<u32> out_count) {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
-        Result GetContextCount() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
+            *out_count = 0;
             return ResultSuccess;
         };
 
@@ -704,11 +723,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result FlushSessionCache() {
+        Result FlushSessionCache(Out<u32> out_count) {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
+            *out_count = 0;
             return ResultSuccess;
         };
 
@@ -736,14 +753,6 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result CreateContextForSystem() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
         Result SetThreadCoreMask() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
 
@@ -752,11 +761,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result GetThreadCoreMask() {
+        Result GetThreadCoreMask(Out<u64> out_mask) {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
+            *out_mask = 0;
             return ResultSuccess;
         };
 

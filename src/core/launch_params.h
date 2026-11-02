@@ -23,6 +23,8 @@ struct LaunchParams {
     std::optional<int> selected_user{};
     std::optional<u16> override_gdb_port{};
     std::optional<std::string> log_filter{};
+    // --pack-nup <dump> [<out.nup>]: packs a loose dump instead of booting a game (eden-cli).
+    std::optional<std::string> pack_nup_source{};
     u16 port = Network::DefaultRoomPort;
     bool use_multiplayer = false;
     bool fullscreen = false;
