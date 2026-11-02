@@ -40,6 +40,8 @@ jobs:
   build:
     name: ${{ matrix.platform }} binary
     runs-on: ${{ matrix.runner }}
+    # An experimental build that fails doesn't hold back the release of the others.
+    continue-on-error: ${{ matrix.experimental == true }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
@@ -59,6 +61,14 @@ jobs:
             pgo: true
           - platform: windows-x86_64
             runner: windows-2022
+            msvc: true
+          # The same MSVC-ABI build (Visual Studio environment, Qt for MSVC, the Visual C++ runtime)
+          # compiled by clang-cl, Visual Studio's clang in MSVC mode. Experimental for now.
+          - platform: windows-x86_64-clangcl
+            runner: windows-2022
+            msvc: true
+            clangcl: true
+            experimental: true
           - platform: windows-x86_64-pgo
             runner: windows-2022
             pgo: true
@@ -155,11 +165,11 @@ jobs:
           test -s eden.profdata
 
       - name: Set up MSVC
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Qt on Windows
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.3'
@@ -172,7 +182,7 @@ jobs:
       # MSVC is not something ccache handles well, so that job uses sccache. The other jobs use
       # ccache, which CMake enables through USE_CCACHE (externals/cmake-modules/UseCcache.cmake).
       - name: Install sccache on Windows
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         shell: pwsh
         run: |
           $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
@@ -182,12 +192,12 @@ jobs:
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Install Vulkan SDK on Windows
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         shell: pwsh
         run: ./tools/windows/install-vulkan-sdk.ps1
 
       - name: Verify Vulkan tools on Windows
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         shell: pwsh
         run: glslangValidator --version
 
@@ -266,22 +276,31 @@ jobs:
           cmake -S . -B build/release -G Ninja "${flags[@]}"
 
       - name: Configure Windows
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=OFF
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        run: |
+          set -euo pipefail
+          compiler=()
+          if [ "${{ matrix.clangcl }}" = "true" ]; then
+            # The clang-cl the Visual Studio environment above finds; it links with MSVC's link.exe.
+            command -v clang-cl
+            clang-cl --version
+            compiler=(-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl)
+          fi
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            "${compiler[@]}"
 
       - name: Configure macOS
         if: startsWith(matrix.platform, 'macos')
@@ -400,7 +419,7 @@ jobs:
           ls -la "$LDAI_OUTPUT"
 
       - name: Package Windows binary
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         shell: pwsh
         run: |
           foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
@@ -508,7 +527,7 @@ jobs:
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
       - name: Upload Windows binary
-        if: matrix.platform == 'windows-x86_64'
+        if: matrix.msvc
         uses: actions/upload-artifact@v7
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
@@ -603,7 +622,7 @@ jobs:
           Linux (AppImage): make it executable (chmod +x) and run it; it bundles its libraries and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch).
           Linux (tar.gz): extract it and run ./eglantine or ./eden-cli; it uses your system libraries, so Qt 6 and the usual libraries must be installed.
           macOS: Apple Silicon and macOS 15 or newer. Unzip and move eglantine.app to Applications; eden-cli is inside it, in Contents/MacOS. The app is not notarized, so the first time right-click it and choose Open (or run xattr -dr com.apple.quarantine eglantine.app).
-          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable."
+          The -pgo builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it. The Windows PGO build is a MinGW build, so it carries its own DLLs and needs no Visual C++ redistributable. The windows-x86_64-clangcl build is the regular Windows build compiled by clang-cl instead of MSVC (experimental)."
 
       - name: Ping Discord
         shell: bash
