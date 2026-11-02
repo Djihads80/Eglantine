@@ -42,6 +42,7 @@
 #include "set_play_time_dialog.h"
 #include "util/util.h"
 #include "yuzu/game/game_list.h"
+#include "yuzu/nup_dialogs.h"
 
 #include "applets/qt_amiibo_settings.h"
 #include "applets/qt_controller.h"
@@ -4061,21 +4062,15 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
 
     const bool resume = FileSys::Nup::HasResumableJournal(archive);
     bool delete_sources = resume;
+    FileSys::Nup::Metadata metadata;
+    QString progress_title;
+    QPixmap progress_icon;
     if (resume) {
         if (QMessageBox::question(this, tr("Resume Conversion"),
                                   tr("Resume the interrupted conversion?"),
                                   QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
             return;
     } else {
-        QMessageBox prompt(QMessageBox::Question, convert_title,
-                           tr("Source folder:\n%1\n\nTarget archive:\n%2")
-                               .arg(QString::fromStdString(Common::FS::PathToUTF8String(*root)),
-                                    QString::fromStdString(Common::FS::PathToUTF8String(archive))),
-                           QMessageBox::Yes | QMessageBox::No, this);
-        // QMessageBox takes ownership of its check box.
-        auto* low_storage = new QCheckBox(tr("Low storage: delete the original files as they "
-                                             "are packed (cannot be undone)"));
-        prompt.setCheckBox(low_storage);
         u64 needed{};
         {
             std::error_code ec;
@@ -4087,38 +4082,31 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
         }
         std::error_code space_error;
         const auto space = std::filesystem::space(archive.parent_path(), space_error);
-        const auto to_mb = [](u64 bytes) { return bytes / (1024 * 1024); };
-        const QString space_info = tr("\n\nApproximate space needed: %1 MB\nFree space on target "
-                                      "volume: %2 MB")
-                                       .arg(to_mb(needed))
-                                       .arg(space_error ? 0 : to_mb(space.available));
-        prompt.setInformativeText(space_info);
-        if (!space_error && space.available < needed) {
-            prompt.setText(prompt.text() + tr("\n\nWarning: free space is less than the "
-                                              "estimated space needed."));
-        }
-        if (prompt.exec() != QMessageBox::Yes)
+        NupMetadataDialog dialog(*root, archive, needed, space_error ? 0 : space.available, this);
+        if (dialog.exec() != QDialog::Accepted)
             return;
-        delete_sources = low_storage->isChecked();
+        delete_sources = dialog.DeleteSources();
+        metadata = dialog.Metadata();
+        progress_title = dialog.DisplayName();
+        progress_icon = dialog.CurrentIcon();
     }
 
     nup_running = true;
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
-    nup_progress =
-        new QProgressDialog(tr("Preparing conversion..."), tr("Cancel"), 0, 1000, this);
-    nup_progress->setWindowTitle(tr("Converting to NUP"));
-    nup_progress->setMinimumDuration(0);
-    nup_progress->setAutoClose(false);
-    nup_progress->setAutoReset(false);
-    connect(nup_progress, &QProgressDialog::canceled, this,
-            [cancel = nup_cancel] { cancel->store(true); });
+    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress)
+                    nup_progress->SetCancelling();
+            });
     nup_progress->show();
 
     const auto cancel = nup_cancel;
     auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
-    nup_watcher.setFuture(QtConcurrent::run([this, root = *root, archive, delete_sources,
+    nup_watcher.setFuture(QtConcurrent::run([this, root = *root, archive, delete_sources, metadata,
                                                   cancel, last_update] {
         std::string error;
         const auto on_progress = [this, last_update](
@@ -4132,22 +4120,13 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
                     [this, progress] {
                         if (!nup_progress)
                             return;
-                        const auto percent = progress.bytes_total == 0
-                                                 ? 0
-                                                 : static_cast<int>(progress.bytes_done * 1000 /
-                                                                    progress.bytes_total);
-                        nup_progress->setValue(percent);
-                        nup_progress->setLabelText(
-                            tr("%1 / %2 MB\n%3 / %4 files")
-                                .arg(progress.bytes_done / (1024 * 1024))
-                                .arg(progress.bytes_total / (1024 * 1024))
-                                .arg(progress.files_done)
-                                .arg(progress.files_total));
+                        nup_progress->SetProgress(progress);
                     },
                     Qt::QueuedConnection);
         };
         const auto result = FileSys::Nup::PackDump(
-            root, archive, {.delete_sources = delete_sources}, on_progress, cancel.get(), &error);
+            root, archive, {.delete_sources = delete_sources, .metadata = metadata}, on_progress,
+            cancel.get(), &error);
         QMetaObject::invokeMethod(
             this,
             [this, result, delete_sources, error] {
@@ -4155,7 +4134,7 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
                 nup_source_path.clear();
                 game_list->SetNupConversionRunning(false);
                 if (nup_progress) {
-                    nup_progress->close();
+                    nup_progress->Finish();
                     nup_progress->deleteLater();
                     nup_progress = nullptr;
                 }
