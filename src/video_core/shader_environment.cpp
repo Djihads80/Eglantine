@@ -328,9 +328,9 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
 namespace {
 
 // Reads a native program a 4 KiB page at a time instead of one 16-byte instruction at a time.
-// The reads do not flush the GPU caches first (ReadBlockUnsafe): the previous per-instruction
-// ReadBlock did, once per instruction. An instruction that is not inside a fully mapped page is
-// left to the caller.
+// Each page is read with ReadBlock, so GPU-written code is flushed first, once per page instead
+// of once per instruction. An instruction that is not inside a fully mapped page is left to the
+// caller.
 class NativeInstructionReader {
 public:
     using Instruction = Shader::Ampere::Instruction;
@@ -365,7 +365,7 @@ private:
         page_begin = address;
         page_end = address;
         if (length >= sizeof(Instruction) && gpu_memory.IsFullyMappedRange(address, length)) {
-            gpu_memory.ReadBlockUnsafe(address, page.data(), length);
+            gpu_memory.ReadBlock(address, page.data(), length);
             page_end = next_page;
         }
     }
@@ -415,7 +415,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
                 if (!native.empty()) break;
                 throw Shader::RuntimeError("Unmapped native shader instruction at {:#x}", address);
             }
-            gpu_memory->ReadBlockUnsafe(address, &instruction, sizeof(instruction));
+            gpu_memory->ReadBlock(address, &instruction, sizeof(instruction));
         }
         native.push_back(instruction);
         const auto status = capture.Observe(instruction, index);
