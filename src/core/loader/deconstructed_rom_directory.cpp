@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <mutex>
 #include <string_view>
 #include "common/logging.h"
 #include "common/random.h"
@@ -90,8 +92,31 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
         if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
-            LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            return FileSys::CreateRomFS(romfs_dir);
+            // Keep no ownership here: launch preparation hands its image to the real loader.
+            static std::mutex cache_mutex;
+            static std::string cached_path;
+            static std::weak_ptr<FileSys::VfsFile> cached_romfs;
+            const auto path = romfs_dir->GetFullPath();
+            {
+                std::scoped_lock lock{cache_mutex};
+                if (cached_path == path) {
+                    if (auto cached = cached_romfs.lock()) {
+                        return cached;
+                    }
+                }
+            }
+            const auto started = std::chrono::steady_clock::now();
+            LOG_INFO(Loader, "Building loose RomFS directory image");
+            auto image = FileSys::CreateRomFS(romfs_dir);
+            LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - started).count());
+            {
+                std::scoped_lock lock{cache_mutex};
+                cached_path = path;
+                cached_romfs = image;
+            }
+            return image;
         }
     }
     return nullptr;
@@ -233,7 +258,6 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         name = control->GetApplicationName();
     }
 
-    romfs = FindLooseRomFS(file_dir);
     if (const auto title_dir = file_dir->GetParentDirectory()) {
         romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
     }
@@ -245,7 +269,13 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     , dir(std::move(directory))
     , override_update(override_update_)
 {
-    romfs = FindLooseRomFS(dir);
+}
+
+void AppLoader_DeconstructedRomDirectory::EnsureRomFS() {
+    if (!romfs_initialized) {
+        romfs = FindLooseRomFS(dir ? dir : file->GetContainingDirectory());
+        romfs_initialized = true;
+    }
 }
 
 FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
@@ -283,6 +313,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     if (result != ResultStatus::Success) {
         return {result, {}};
     }
+
+    EnsureRomFS();
 
     if (override_update) {
         const FileSys::PatchManager patch_manager(
@@ -414,6 +446,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 }
 
 ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& out_dir) {
+    EnsureRomFS();
     if (romfs == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }

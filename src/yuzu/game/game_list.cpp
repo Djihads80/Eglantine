@@ -155,6 +155,10 @@ void GameList::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
     item_model->PopulateAsync(game_dirs);
 }
 
+void GameList::SetScanEnabled(bool enabled) {
+    item_model->SetScanEnabled(enabled);
+}
+
 void GameList::SaveInterfaceLayout() {
     tree_view->SaveInterfaceLayout();
 }

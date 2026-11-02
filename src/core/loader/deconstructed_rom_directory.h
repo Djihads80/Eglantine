@@ -58,8 +58,11 @@ public:
     ResultStatus ReadNSOModules(Modules& out_modules) override;
 
 private:
+    void EnsureRomFS();
+
     FileSys::ProgramMetadata metadata;
     FileSys::VirtualFile romfs;
+    bool romfs_initialized{};
     FileSys::VirtualDir dir;
 
     std::vector<u8> icon_data;

@@ -73,8 +73,11 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QInputDialog>
 #include <QMimeData>
@@ -1288,7 +1291,6 @@ void MainWindow::InitializeHotkeys() {
     hotkey_registry.LoadHotkeys();
 
     LinkActionShortcut(ui->action_Load_File, QStringLiteral("Load File"));
-    LinkActionShortcut(ui->action_Load_Amiibo, QStringLiteral("Load/Remove Amiibo"));
     LinkActionShortcut(ui->action_Exit, QStringLiteral("Exit Eglantine"));
     LinkActionShortcut(ui->action_Restart, QStringLiteral("Restart Emulation"));
     LinkActionShortcut(ui->action_Pause, QStringLiteral("Continue/Pause Emulation"));
@@ -1826,24 +1828,6 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
     const Core::SystemResultStatus result{
         QtCommon::system->Load(*render_window, filename.toStdString(), params)};
 
-    const auto drd_callout = (UISettings::values.callout_flags.GetValue() &
-                              static_cast<u32>(CalloutFlag::DRDDeprecation)) == 0;
-
-    if (result == Core::SystemResultStatus::Success &&
-        QtCommon::system->GetAppLoader().GetFileType() ==
-            Loader::FileType::DeconstructedRomDirectory &&
-        drd_callout) {
-        UISettings::values.callout_flags = UISettings::values.callout_flags.GetValue() |
-                                           static_cast<u32>(CalloutFlag::DRDDeprecation);
-        QMessageBox::warning(
-            this, tr("Warning: Outdated Game Format"),
-            tr("You are using the deconstructed ROM directory format for this game, which is an "
-               "outdated format that has been superseded by others such as NCA, NAX, XCI, or "
-               "NSP. Deconstructed ROM directories lack icons, metadata, and update "
-               "support.<br>For an explanation of the various Switch formats Eglantine supports, "
-               "out our user handbook. This message will not be shown again."));
-    }
-
     if (result != Core::SystemResultStatus::Success) {
         switch (result) {
         case Core::SystemResultStatus::ErrorGetLoader:
@@ -1907,6 +1891,31 @@ bool MainWindow::SelectAndSetCurrentUser(
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type) {
+    if (boot_in_progress || close_pending) {
+        return;
+    }
+    boot_in_progress = true;
+    game_list->SetScanEnabled(false);
+    QElapsedTimer boot_timer;
+    boot_timer.start();
+    SCOPE_EXIT {
+        boot_in_progress = false;
+        LOG_INFO(Frontend, "Launch finished: elapsed_ms={} running={}", boot_timer.elapsed(),
+                 emulation_running);
+        if (!emulation_running && !close_pending) {
+            game_list->SetScanEnabled(true);
+            game_list->PopulateAsync(UISettings::values.game_dirs);
+        }
+        if (close_pending) {
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
+    };
+    if (emulation_running) {
+        ShutdownGame();
+    }
+    if (close_pending) {
+        return;
+    }
     LOG_INFO(Frontend, "Eglantine starting...");
 
     if (params.program_id == 0 ||
@@ -1960,9 +1969,43 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     // behavior of asking.
     user_flag_cmd_line = false;
 
+    FileSys::VirtualFile prepared_romfs;
+    if (loader && loader->GetFileType() == Loader::FileType::DeconstructedRomDirectory) {
+        QProgressDialog progress(tr("Preparing game files..."), QString{}, 0, 0, this);
+        progress.setWindowModality(Qt::ApplicationModal);
+        progress.setWindowFlag(Qt::WindowCloseButtonHint, false);
+        progress.setCancelButton(nullptr);
+        progress.setMinimumDuration(0);
+        QFutureWatcher<FileSys::VirtualFile> watcher;
+        QEventLoop loop;
+        connect(&watcher, &QFutureWatcher<FileSys::VirtualFile>::finished, &loop, &QEventLoop::quit);
+        watcher.setFuture(QtConcurrent::run([&loader] {
+            FileSys::VirtualFile image;
+            loader->ReadRomFS(image);
+            return image;
+        }));
+        progress.show();
+        loop.exec();
+        try {
+            prepared_romfs = watcher.result();
+        } catch (const std::exception& error) {
+            LOG_ERROR(Frontend, "Loose RomFS preparation failed: {}", error.what());
+            QMessageBox::critical(this, tr("Unable to prepare game files"),
+                                  tr("Game preparation failed. See the log for details."));
+            return;
+        }
+        if (close_pending) {
+            return;
+        }
+    }
+
+    QElapsedTimer load_timer;
+    load_timer.start();
     if (!LoadROM(filename, params)) {
+        LOG_ERROR(Frontend, "Core load failed: elapsed_ms={}", load_timer.elapsed());
         return;
     }
+    LOG_INFO(Frontend, "Core load completed: elapsed_ms={}", load_timer.elapsed());
 
     QtCommon::system->SetShuttingDown(false);
     game_list->setDisabled(true);
@@ -2097,6 +2140,9 @@ bool MainWindow::OnShutdownBegin() {
     Settings::values.current_speed_mode = Settings::SpeedMode::Standard;
 
     if (QtCommon::system->IsShuttingDown()) {
+        status_bar_update_timer.stop();
+        connect(QtCommon::emu_thread.get(), &QThread::finished, this,
+                &MainWindow::OnEmulationStopped, Qt::UniqueConnection);
         return false;
     }
 
@@ -2107,6 +2153,8 @@ bool MainWindow::OnShutdownBegin() {
     }
 
     QtCommon::system->SetShuttingDown(true);
+    status_bar_update_timer.stop();
+    LOG_INFO(Frontend, "Shutdown requested; waiting for emulation thread");
     discord_rpc->Pause();
 
     RequestGameExit();
@@ -2126,7 +2174,8 @@ bool MainWindow::OnShutdownBegin() {
 
     shutdown_timer.setSingleShot(true);
     shutdown_timer.start(shutdown_time);
-    connect(&shutdown_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeExpired);
+    connect(&shutdown_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeExpired,
+            Qt::UniqueConnection);
 
     // Disable everything to prevent anything from being triggered here
     ui->action_Pause->setEnabled(false);
@@ -2150,14 +2199,16 @@ void MainWindow::OnEmulationStopTimeExpired() {
 }
 
 void MainWindow::OnEmulationStopped() {
+    if (!emulation_running) {
+        return;
+    }
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
+        return;
+    }
     shutdown_timer.stop();
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->disconnect();
-        if (!QtCommon::emu_thread->wait(QDeadlineTimer(10'000))) {
-            LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
-            QtCommon::emu_thread->terminate();
-            QtCommon::emu_thread->wait();
-        }
+        QtCommon::emu_thread->wait();
         QtCommon::emu_thread.reset();
     }
 
@@ -2226,6 +2277,13 @@ void MainWindow::OnEmulationStopped() {
     Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
     QtCommon::system->HIDCore().ReloadInputDevices();
     UpdateStatusButtons();
+    LOG_INFO(Frontend, "Emulation cleanup completed");
+    if (close_pending) {
+        QTimer::singleShot(0, this, &QWidget::close);
+    } else if (!boot_in_progress) {
+        game_list->SetScanEnabled(true);
+        game_list->PopulateAsync(UISettings::values.game_dirs);
+    }
 }
 
 void MainWindow::ShutdownGame() {
@@ -2237,6 +2295,13 @@ void MainWindow::ShutdownGame() {
     play_time_manager->Stop();
     OnShutdownBegin();
     OnEmulationStopTimeExpired();
+    if (QtCommon::emu_thread) {
+        QEventLoop loop;
+        connect(QtCommon::emu_thread.get(), &QThread::finished, &loop, &QEventLoop::quit);
+        if (QtCommon::emu_thread->isRunning()) {
+            loop.exec(QEventLoop::ExcludeUserInputEvents);
+        }
+    }
     OnEmulationStopped();
 }
 
@@ -3069,8 +3134,6 @@ void MainWindow::OnPauseContinueGame() {
 void MainWindow::OnStopGame() {
     if (ConfirmShutdownGame()) {
         play_time_manager->Stop();
-        // Update game list to show new play time
-        game_list->PopulateAsync(UISettings::values.game_dirs);
         if (OnShutdownBegin()) {
             OnShutdownBeginDialog();
         } else {
@@ -4576,10 +4639,28 @@ bool MainWindow::ConfirmClose() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (!ConfirmClose()) {
+    if (!close_pending && !ConfirmClose()) {
         event->ignore();
         return;
     }
+    close_pending = true;
+    game_list->SetScanEnabled(false);
+    if (boot_in_progress) {
+        event->ignore();
+        return;
+    }
+    if (QtCommon::emu_thread && emulation_running) {
+        event->ignore();
+        if (!QtCommon::emu_thread->isRunning()) {
+            OnEmulationStopped();
+            return;
+        }
+        if (OnShutdownBegin()) {
+            OnShutdownBeginDialog();
+        }
+        return;
+    }
+    LOG_INFO(Frontend, "Closing frontend after emulation cleanup");
 
     UpdateUISettings();
     game_list->SaveInterfaceLayout();
