@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bit>
 #include <limits>
@@ -209,7 +210,10 @@ MemoryAllocator::~MemoryAllocator() = default;
 vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
 {
     const VmaAllocationCreateInfo alloc_ci = {
-            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) |
+            // Best fit: images freed by the thousand leave holes in the blocks, which new ones
+            // should fill before VMA takes another block.
+            .flags = static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT |
+                                                           VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT) |
                      (dedicated ? VmaAllocationCreateFlags{VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT}
                                : VmaAllocationCreateFlags{0}),
             .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -228,7 +232,38 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
     // unbacked sparse fallback below.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    bool huge = texels > (u64{1} << 28);
+    // Without sparse residency (MoltenVK, KosmicKrisp) a huge array can't be backed layer by
+    // layer, so an unbacked one stays black (title 1's terrain). On unified-memory hosts with
+    // room to spare, back it whole instead if its memory stays under 2 GiB: the texture cache
+    // measures image sizes in 32 bits, so a larger one (the BC6H terrain array, ~5.8 GB) would
+    // overflow in the upload and keeps the unbacked fallback. EDEN_NX2_BACK_HUGE=0 turns this
+    // off, =1 forces it on; the default is on for macOS only.
+    static const bool back_huge = [] {
+        if (const char* env = std::getenv("EDEN_NX2_BACK_HUGE")) {
+            return env[0] != '0';
+        }
+#ifdef __APPLE__
+        return true;
+#else
+        return false;
+#endif
+    }();
+    if (huge && back_huge && !device.IsSparseBindingSupported()) {
+        const auto& dld = device.GetDispatchLoader();
+        VkImage probe{};
+        if (dld.vkCreateImage(*device.GetLogical(), &ci, nullptr, &probe) == VK_SUCCESS) {
+            VkMemoryRequirements requirements{};
+            dld.vkGetImageMemoryRequirements(*device.GetLogical(), probe, &requirements);
+            dld.vkDestroyImage(*device.GetLogical(), probe, nullptr);
+            huge = requirements.size > (u64{2} << 30);
+            LOG_WARNING(Render_Vulkan,
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) needs {} MiB: {}",
+                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
+                        ci.arrayLayers, static_cast<u32>(ci.format), requirements.size >> 20,
+                        huge ? "too large to back without sparse residency" : "backing it whole");
+        }
+    }
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
@@ -242,20 +277,43 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
                         ci.arrayLayers, static_cast<u32>(ci.format));
         }
+        pressure_events.fetch_add(1, std::memory_order_relaxed);
         VmaAllocationCreateInfo relaxed = alloc_ci;
         relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
     }
-    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
+        // Still out of device memory: a real image in host memory (slow, but valid) beats one
+        // with nothing bound, which AMD's drivers do not survive being sampled.
+        VmaAllocationCreateInfo host = alloc_ci;
+        host.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        host.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        host.preferredFlags = 0;
+        result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        static u32 host_logged{};
+        if (result == VK_SUCCESS && host_logged++ < 16) {
+            LOG_WARNING(Render_Vulkan,
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) is out of device memory; "
+                        "placed in host memory",
+                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
+                        ci.arrayLayers, static_cast<u32>(ci.format));
+        }
+    }
+    if (result != VK_SUCCESS && ci.imageType != VK_IMAGE_TYPE_1D) {
+        // Any failure takes this path: unified-memory drivers report OUT_OF_HOST_MEMORY for
+        // these, not DEVICE, and the throw below would abort the emulator.
+        if (!huge) {
+            pressure_events.fetch_add(1, std::memory_order_relaxed);
+        }
         // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
         // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
         // nothing bound, so views and copies still work, instead of aborting.
         if (vk::Image sparse = CreateUnbackedImage(ci)) {
             LOG_WARNING(Render_Vulkan,
-                        "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
-                        "unbacked sparse image",
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit ({}); using "
+                        "an unbacked sparse image",
                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
-                        ci.arrayLayers, static_cast<u32>(ci.format));
+                        ci.arrayLayers, static_cast<u32>(ci.format), static_cast<int>(result));
             return sparse;
         }
     }
@@ -313,6 +371,24 @@ VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &
     };
     VmaAllocation allocation{};
     VmaAllocationInfo info{};
+    // In a pool of their own (see Device::SeparatePool); anything over half a block, or a pool
+    // allocation that fails, takes the default blocks.
+    u32 memory_type{};
+    if (requirements.size <= Device::SeparatePoolBlockSize / 2 &&
+        vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &alloc_ci, &memory_type) ==
+            VK_SUCCESS) {
+        if (const VmaPool pool =
+                device.GetSeparatePool(Device::SeparatePool::SparsePages, memory_type)) {
+            VmaAllocationCreateInfo pool_ci = alloc_ci;
+            pool_ci.pool = pool;
+            if (vmaAllocateMemory(allocator, &requirements, &pool_ci, &allocation, &info) ==
+                VK_SUCCESS) {
+                memory = info.deviceMemory;
+                offset = info.offset;
+                return allocation;
+            }
+        }
+    }
     if (vmaAllocateMemory(allocator, &requirements, &alloc_ci, &allocation, &info) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
@@ -325,6 +401,39 @@ void MemoryAllocator::FreeSparseMemory(VmaAllocation allocation) const {
     if (allocation != VK_NULL_HANDLE) {
         vmaFreeMemory(allocator, allocation);
     }
+}
+
+bool MemoryAllocator::CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, MemoryUsage usage,
+                                                 const VmaAllocationCreateInfo& alloc_ci,
+                                                 VkBuffer& handle, VmaAllocation& allocation,
+                                                 VmaAllocationInfo& alloc_info) const {
+    // The buffer cache's buffers, churned by its collector: in a pool of their own (see
+    // Device::SeparatePool). Anything over half a block takes the default blocks (dedicated).
+    if (usage != MemoryUsage::DeviceLocal || ci.size > Device::SeparatePoolBlockSize / 2) {
+        return false;
+    }
+    u32 memory_type{};
+    {
+        std::scoped_lock lk{buffer_type_mutex};
+        const auto key = (u64{ci.usage} << 32) | ci.flags;
+        if (const auto it = buffer_memory_types.find(key); it != buffer_memory_types.end()) {
+            memory_type = it->second;
+        } else if (vmaFindMemoryTypeIndexForBufferInfo(allocator, &ci, &alloc_ci, &memory_type) ==
+                   VK_SUCCESS) {
+            buffer_memory_types.emplace(key, memory_type);
+        } else {
+            return false;
+        }
+    }
+    const VmaPool pool = device.GetSeparatePool(Device::SeparatePool::DeviceBuffers, memory_type);
+    if (pool == VK_NULL_HANDLE) {
+        return false;
+    }
+    VmaAllocationCreateInfo pool_ci = alloc_ci;
+    pool_ci.pool = pool;
+    pool_ci.memoryTypeBits = 0;
+    return vmaCreateBuffer(allocator, &ci, &pool_ci, &handle, &allocation, &alloc_info) ==
+           VK_SUCCESS;
 }
 
 vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
@@ -348,7 +457,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    if (!CreateBufferInSeparatePool(ci, usage, alloc_ci, handle, allocation, alloc_info)) {
+        vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    }
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     // Log GPU memory allocation for buffers

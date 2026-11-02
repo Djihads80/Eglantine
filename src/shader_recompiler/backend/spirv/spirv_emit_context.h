@@ -363,6 +363,32 @@ public:
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
+    // Task and mesh programs. Their stage buffer: the task's output region is the task payload
+    // (the mesh stage's input region); the mesh output regions live in workgroup memory until
+    // the epilogue copies them to the outputs. The two mesh instructions Sirit lacks are emitted
+    // as OpStore markers with these operands and replaced after assembly (PatchMeshInstructions).
+    struct MeshLineTarget {
+        Id variable;    ///< arrayed output
+        u32 element;    ///< vector element, or ~0 for a scalar output
+        bool is_float;  ///< bitcast the stage buffer word to F32
+    };
+    Id mesh_payload{};
+    Id mesh_payload_u32{};  ///< pointer type to one payload word
+    Id mesh_attributes{};
+    Id mesh_map{};
+    Id mesh_primitive_count{};
+    Id mesh_shared_u32{};   ///< pointer type to one workgroup word
+    Id mesh_primitive_indices{};
+    MeshInfo mesh_info{};
+    u32 mesh_threads{};
+    u32 mesh_attribute_words{};
+    u32 mesh_map_bytes{};
+    u32 mesh_primitive_base{}; ///< first word of the per-primitive groups
+    std::vector<MeshLineTarget> mesh_vertex_targets;
+    std::vector<MeshLineTarget> mesh_primitive_targets;
+    std::array<Id, 2> mesh_outputs_marker{};
+    std::array<Id, 4> mesh_tasks_marker{};
+
     Id load_const_func_u8{};
     Id load_const_func_u16{};
     Id load_const_func_u32{};
@@ -402,6 +428,7 @@ private:
 
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
+    void DefineMesh(const IR::Program& program);
 };
 
 } // namespace Shader::Backend::SPIRV

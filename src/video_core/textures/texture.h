@@ -165,6 +165,17 @@ static_assert(sizeof(TextureHandle) == 4, "TextureHandle has wrong size");
     }
 }
 
+/// Some Switch 2 bindless handles (Switch Sports' scenery, read from a uniform register) hold
+/// the texture header's byte offset in the pool, index * 32, where the handle normally has the
+/// index. Read it as an offset only when the plain index falls past the pool and the offset
+/// lands inside it, so handles that already resolve are left alone.
+[[nodiscard]] constexpr u32 TextureHeaderIndex(u32 index, u32 limit) {
+    if (index > limit && index % 32 == 0 && index / 32 <= limit) {
+        return index / 32;
+    }
+    return index;
+}
+
 struct TICEntry {
     union {
         struct {

@@ -628,7 +628,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
         if (e.conf.enable_cycle_counting) {
             e.code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
-            e.patch_information[terminal.next].jg.push_back(e.code.getCurr());
+            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jg);
             if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
                 e.EmitPatchJg(terminal.next, next_bb->entrypoint);
             } else {
@@ -636,7 +636,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
             }
         } else {
             e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
-            e.patch_information[terminal.next].jz.push_back(e.code.getCurr());
+            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jz);
             if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
                 e.EmitPatchJz(terminal.next, next_bb->entrypoint);
             } else {
@@ -656,7 +656,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        e.patch_information[terminal.next].jmp.push_back(e.code.getCurr());
+        e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jmp);
         if (auto next_bb = e.GetBasicBlock(terminal.next)) {
             e.EmitPatchJmp(terminal.next, next_bb->entrypoint);
         } else {

@@ -416,6 +416,10 @@ void ArmDynarmic32::ClearInstructionCache() {
 }
 
 void ArmDynarmic32::InvalidateCacheRange(u64 addr, std::size_t size) {
+    // Drop the cached code page too: blocks recompiled after the invalidation would
+    // otherwise still decode the old instructions (e.g. a gdbstub breakpoint written
+    // into or removed from that page).
+    m_cb->last_code_addr = u64(-1);
     m_jit->InvalidateCacheRange(static_cast<u32>(addr), size);
 }
 
