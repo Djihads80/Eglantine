@@ -12,6 +12,7 @@
 #include "video_core/renderer_opengl/gl_compute_pipeline.h"
 #include "video_core/renderer_opengl/gl_shader_manager.h"
 #include "video_core/renderer_opengl/gl_shader_util.h"
+#include "video_core/shader_handle_program.h"
 
 namespace OpenGL {
 
@@ -105,6 +106,20 @@ void ComputePipeline::Configure() {
     const auto& cbufs{qmd.const_buffer_config};
     const bool via_header_index{qmd.linked_tsc != 0};
     const auto read_handle{[&](const auto& desc, u32 index) {
+        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
+            if (desc.handle_program != ~0U) {
+                // Read by the shader from a storage buffer: computed for this dispatch.
+                return TexturePair(VideoCommon::EvaluateTextureHandle(
+                                       info, desc.handle_program, *gpu_memory,
+                                       [&](u32 cbuf) -> GPUVAddr {
+                                           return cbuf < cbufs.size() &&
+                                                          ((qmd.const_buffer_enable_mask >> cbuf) & 1) != 0
+                                                      ? cbufs[cbuf].Address()
+                                                      : GPUVAddr{};
+                                       }),
+                                   via_header_index);
+            }
+        }
         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
         const u32 index_offset{index << desc.size_shift};
         const u32 offset{desc.cbuf_offset + index_offset};

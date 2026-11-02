@@ -104,6 +104,8 @@ std::string_view Codec::GetCurrentCodecName() const {
         return "H265";
     case Host1x::NvdecCommon::VideoCodec::VP9:
         return "VP9";
+    case Host1x::NvdecCommon::VideoCodec::AV1:
+        return "AV1";
     default:
         return "Unknown";
     }

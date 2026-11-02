@@ -27,7 +27,7 @@ IAudioRendererManager::IAudioRendererManager(Core::System& system_)
         {0, D<&IAudioRendererManager::OpenAudioRenderer>, "OpenAudioRenderer"},
         {1, D<&IAudioRendererManager::GetWorkBufferSize>, "GetWorkBufferSize"},
         {2, D<&IAudioRendererManager::GetAudioDeviceService>, "GetAudioDeviceService"},
-        {3, nullptr, "OpenAudioRendererForManualExecution"},
+        {3, &IAudioRendererManager::StubReplyInterface, "OpenAudioRendererForManualExecution"},
         {4, D<&IAudioRendererManager::GetAudioDeviceServiceWithRevisionInfo>, "GetAudioDeviceServiceWithRevisionInfo"},
     };
     // clang-format on

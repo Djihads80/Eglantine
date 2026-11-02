@@ -82,6 +82,9 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::SetAttribute:
     case Opcode::SetAttributeIndexed:
     case Opcode::SetPatch:
+    case Opcode::IsbeWriteAttribute:
+    case Opcode::IsbeWriteMapU8:
+    case Opcode::IsbeWriteMapU32:
     case Opcode::SetFragColor:
     case Opcode::SetSampleMask:
     case Opcode::SetFragDepth:

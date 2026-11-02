@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include "common/container/unordered_map.h"
 #include "common/common_types.h"
@@ -20,11 +21,16 @@ class System;
 }
 
 namespace Kernel {
+class KEvent;
 class KServerSession;
 class ServiceThread;
 } // namespace Kernel
 
 namespace Service {
+
+namespace KernelHelpers {
+class ServiceContext;
+}
 
 namespace FileSystem {
 class FileSystemController;
@@ -77,6 +83,24 @@ protected:
     [[nodiscard]] virtual std::unique_lock<std::mutex> LockService() noexcept {
         return std::unique_lock{lock_service};
     }
+
+    /// Placeholder handlers for commands whose reply shape is known but whose meaning is not, for
+    /// Switch 2 callers (others get the unimplemented-function path, as with nullptr):
+    /// StubReplyZeroed replies with zeroed data words, StubReplyEvent adds a copy handle to an
+    /// event that never fires, and StubReplyInterface returns an nx2: stub interface whose
+    /// commands are auto-stubbed.
+    void StubReplyZeroed(HLERequestContext& ctx);
+    void StubReplyEvent(HLERequestContext& ctx);
+    void StubReplyInterface(HLERequestContext& ctx);
+
+private:
+    /// False (after reporting the command as unimplemented) for callers the stubs don't serve.
+    bool StubAllowed(HLERequestContext& ctx);
+
+    /// Event handed out by StubReplyEvent, created on first use.
+    Kernel::KEvent* stub_event{};
+    std::unique_ptr<KernelHelpers::ServiceContext> stub_context;
+
 private:
     template <typename T>
     friend class ServiceFramework;

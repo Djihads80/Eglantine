@@ -484,6 +484,12 @@ public:
     void RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, bool cached);
 
     /**
+     * Makes the next guest read of each rasterizer cached page in the range take the slow path
+     * (fastmem only), so that the read reaches the GPU's reactive flush once.
+     */
+    void RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size);
+
+    /**
      * Marks each page within the specified address range as debug or non-debug.
      * Debug addresses are not accessible from fastmem pointers.
      *

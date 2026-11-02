@@ -91,8 +91,9 @@ public:
         static const FunctionInfo functions[] = {
             {0, &ILogger::Log, "Log"},
             {1, &ILogger::SetDestination, "SetDestination"},
-            {2, nullptr, "TransmitHashedLog"}, //20.0.0+
-            {3, nullptr, "DevNotify"}, //20.0.0+
+            {2, &ILogger::StubReplyZeroed, "TransmitHashedLog"}, //20.0.0+
+            {3, &ILogger::StubReplyZeroed, "DevNotify"}, //20.0.0+
+            {11, &ILogger::StubReplyInterface, "Unknown11"},
         };
         RegisterHandlers(functions);
     }

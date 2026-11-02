@@ -56,6 +56,20 @@ private:
     vk::ShaderModule module;
 };
 
+class VertexRepackPass final : public ComputePass {
+public:
+    VertexRepackPass(const Device& device, Scheduler& scheduler, DescriptorPool& descriptor_pool,
+                     StagingBufferPool& staging_pool, ComputePassDescriptorQueue& descriptor_queue);
+    /// Returns nothing when the range exceeds the device limits; the binding is then left as is.
+    std::optional<std::pair<VkBuffer, VkDeviceSize>> Assemble(VkBuffer source, u32 offset,
+                                                              u32 size);
+
+private:
+    Scheduler& scheduler;
+    StagingBufferPool& staging_pool;
+    ComputePassDescriptorQueue& descriptor_queue;
+};
+
 class Uint8Pass final : public ComputePass {
 public:
     explicit Uint8Pass(const Device& device_, Scheduler& scheduler_,

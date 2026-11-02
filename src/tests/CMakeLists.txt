@@ -17,8 +17,10 @@ add_executable(tests
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/core_timing.cpp
+    core/nup_writer.cpp
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
+    video_core/vertex_repack.cpp
     video_core/ampere_returns.cpp
     input_common/calibration_configuration_job.cpp
 )

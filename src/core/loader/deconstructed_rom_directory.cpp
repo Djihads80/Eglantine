@@ -6,7 +6,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string_view>
 #include "common/logging.h"
 #include "common/random.h"
@@ -90,8 +94,24 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
         if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
+            // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
+            // MiB), so loaders of the same directory share one build while any of them holds it.
+            static std::mutex cache_mutex;
+            static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
+            std::scoped_lock lk{cache_mutex};
+            auto& cached = cache[romfs_dir->GetFullPath()];
+            if (auto built = cached.lock()) {
+                return built;
+            }
             LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            return FileSys::CreateRomFS(romfs_dir);
+            const auto started = std::chrono::steady_clock::now();
+            auto built = FileSys::CreateRomFS(romfs_dir);
+            LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - started)
+                         .count());
+            cached = built;
+            return built;
         }
     }
     return nullptr;
@@ -256,7 +276,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         }
     }
 
-    romfs = FindLooseRomFS(file_dir);
+    romfs_exefs_dir = file_dir;
     if (const auto title_dir = file_dir->GetParentDirectory()) {
         romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
     }
@@ -268,7 +288,17 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     , dir(std::move(directory))
     , override_update(override_update_)
 {
-    romfs = FindLooseRomFS(dir);
+    romfs_exefs_dir = dir;
+}
+
+// Loaders made only for metadata (the game list, title lookups) never need the RomFS, and several
+// of them were alive with a whole copy each.
+const FileSys::VirtualFile& AppLoader_DeconstructedRomDirectory::LooseRomFS() {
+    if (!romfs_resolved) {
+        romfs_resolved = true;
+        romfs = FindLooseRomFS(romfs_exefs_dir);
+    }
+    return romfs;
 }
 
 FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
@@ -327,7 +357,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that normally apply
     // LayeredFS to the RomFS; apply it here so mods in user/load/<titleid>/ work too.
-    if (romfs != nullptr) {
+    if (LooseRomFS() != nullptr) {
         const FileSys::PatchManager patch_manager(metadata.GetTitleID(),
                                                   system.GetFileSystemController(),
                                                   system.GetContentProvider());
@@ -437,7 +467,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 }
 
 ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& out_dir) {
-    if (romfs == nullptr) {
+    if (LooseRomFS() == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
 
