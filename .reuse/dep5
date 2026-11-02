@@ -15,6 +15,7 @@ License: GPL-2.0-or-later
 Files: dist/qt_themes/default/icons/256x256/eden.png
        dist/yuzu.bmp
        dist/eden.icns
+       dist/eglantine.icns
        dist/eden.ico
        dist/dev.eden_emu.eden.svg
 Copyright: 2025 Eden Emulator Project

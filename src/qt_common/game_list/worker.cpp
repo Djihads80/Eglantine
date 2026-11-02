@@ -168,7 +168,8 @@ QString FormatGameName(const std::string& physical_name) {
     return physical_name_as_qstring;
 }
 
-// Loose ExeFS dumps (<game>/exefs/main, updates in <game>/updates[/]/exefs/main) have no control
+// Loose ExeFS dumps (<game>/exefs/main or <game>/base/exefs/main, updates in
+// <game>/updates[/<title id>]/exefs/main) have no control
 // data, so they are named after their game folder.
 QString LooseExeFSName(const std::string& physical_name) {
     QDir dir = QFileInfo(QString::fromStdString(physical_name)).dir();
@@ -179,6 +180,11 @@ QString LooseExeFSName(const std::string& physical_name) {
     const auto is_updates_dir = [&dir] {
         return dir.dirName().compare(QStringLiteral("updates"), Qt::CaseInsensitive) == 0;
     };
+
+    // <game>/base/exefs (the layout of common Switch 2 dumpers): named after the game folder.
+    if (dir.dirName().compare(QStringLiteral("base"), Qt::CaseInsensitive) == 0) {
+        return dir.cdUp() ? dir.dirName() : QString{};
+    }
 
     // An update may sit in a title-ID-named folder: <game>/updates/<title id>/exefs.
     if (!is_updates_dir()) {
@@ -468,11 +474,16 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
             watch_list.append(QString::fromStdString(Common::FS::PathToUTF8String(path)));
 
             // Shallow scans stop at the first level, so probe the standard layouts of loose
-            // ExeFS dumps: <game>/exefs/main and <game>/updates/<title id>/exefs/main.
+            // ExeFS dumps: <game>/exefs/main, <game>/base/exefs/main and
+            // <game>/updates/<title id>/exefs/main.
             if (!deep_scan && target == ScanTarget::PopulateGameList) {
                 const auto exefs_main = path / "exefs" / "main";
                 if (Common::FS::IsFile(exefs_main)) {
                     process_candidate(exefs_main);
+                }
+                const auto base_main = path / "base" / "exefs" / "main";
+                if (Common::FS::IsFile(base_main)) {
+                    process_candidate(base_main);
                 }
 
                 const auto updates = path / "updates";

@@ -69,3 +69,4 @@ vulkansdk*.exe
 externals/generated
 *.log
 build/
+shot*.png
