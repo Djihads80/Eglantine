@@ -35,6 +35,7 @@ add_executable(tests
     video_core/ampere_geometry.cpp
     video_core/ampere_ldc.cpp
     video_core/ampere_vote.cpp
+    video_core/shader_attributes.cpp
     input_common/calibration_configuration_job.cpp
 )
 
