@@ -314,8 +314,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         return {result, {}};
     }
 
-    EnsureRomFS();
-
     if (override_update) {
         const FileSys::PatchManager patch_manager(
             metadata.GetTitleID(), system.GetFileSystemController(), system.GetContentProvider());
