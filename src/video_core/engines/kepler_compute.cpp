@@ -685,8 +685,32 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         result.addr_lower = static_cast<u32>(tic.Address());
         return result;
     };
+    // Title 4's program ends by decoding its result from sRGB to linear (the 0.04045 threshold
+    // and the 2.4 exponent as half-precision immediates of HSETP2 and HMUL2). The copy of its
+    // sRGB input left the frame gamma-encoded twice, washed out: decode in the copy when the
+    // program does.
+    static std::unordered_map<GPUVAddr, bool> decodes_srgb;
+    const GPUVAddr program = regs.code_loc.Address();
+    const auto [known, inserted] = decodes_srgb.try_emplace(program, false);
+    if (inserted) {
+        bool threshold = false, exponent = false;
+        std::array<u32, 0x400> block{};
+        for (u64 offset = 0; offset < 0x20000 && !(threshold && exponent); offset += sizeof(block)) {
+            if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block))) break;
+            memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
+            for (size_t word = 0; word < block.size(); word += 4) {
+                const u32 opcode = block[word] & 0xfff;
+                threshold |= opcode == 0x434 && block[word + 1] == 0x292d292d;
+                exponent |= opcode == 0x832 && block[word + 1] == 0x40cc40cc;
+            }
+        }
+        known->second = threshold && exponent;
+        LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: {}", program,
+                 known->second ? "decodes sRGB like the program" : "plain copy");
+    }
     const Fermi2D::Config config{
-        .operation = Fermi2D::Operation::SrcCopy,
+        .operation = known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                   : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,
