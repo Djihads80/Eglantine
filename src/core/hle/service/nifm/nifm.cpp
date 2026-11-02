@@ -70,6 +70,20 @@ static u128 MakeUuidFromName(std::string_view name) {
     return {h1, h2};
 }
 
+// A joined room is the emulated network, even in airplane mode. Its sockets only reach room
+// members, and LAN games (e.g. Mario Kart World LAN Play) need their connection request accepted.
+static bool IsNetworkAvailable() {
+    if (const auto room_member = Network::GetRoomMember().lock();
+        room_member && room_member->GetState() == Network::RoomMember::State::Joined) {
+        return true;
+    }
+    return Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue();
+}
+
+// Room fake IPs are spread over 192.168.0.0/16, and some room servers give members different /24s.
+// A host /24 mask would then put room members on different subnets, so LAN games ignore each other.
+constexpr Network::IPv4Address RoomSubnetMask{255, 255, 0, 0};
+
 // This is nn::nifm::RequestState
 enum class RequestState : u32 {
     NotSubmitted = 1,
@@ -430,8 +444,7 @@ private:
         LOG_DEBUG(Service_NIFM, "(STUBBED) called");
 
         const auto result = [this] {
-            const auto has_connection = Network::GetHostIPv4Address().has_value() &&
-                                        !Settings::values.airplane_mode.GetValue();
+            const auto has_connection = IsNetworkAvailable();
             switch (state) {
             case RequestState::NotSubmitted:
                 return has_connection ? ResultSuccess : ResultNetworkCommunicationDisabled;
@@ -575,6 +588,7 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
             if (room_member->IsConnected()) {
                 profile.ip_setting_data.ip_address_setting.ip_address =
                     room_member->GetFakeIpAddress();
+                profile.ip_setting_data.ip_address_setting.subnet_mask = RoomSubnetMask;
             }
             profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
         }
@@ -714,6 +728,7 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
     if (auto room_member = Network::GetRoomMember().lock()) {
         if (room_member->IsConnected()) {
             profile.ip_setting_data.ip_address_setting.ip_address = room_member->GetFakeIpAddress();
+            profile.ip_setting_data.ip_address_setting.subnet_mask = RoomSubnetMask;
         }
     }
 
@@ -904,6 +919,7 @@ void IGeneralService::GetCurrentIpConfigInfo(HLERequestContext& ctx) {
     if (auto room_member = Network::GetRoomMember().lock()) {
         if (room_member->IsConnected()) {
             info.ip.ip_address = room_member->GetFakeIpAddress();
+            info.ip.subnet_mask = RoomSubnetMask;
         }
         info.dns.is_automatic = true;
         info.dns.primary_dns = {1, 1, 1, 1};
@@ -984,7 +1000,7 @@ void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
+    if (IsNetworkAvailable()) {
         rb.Push<u8>(1);
     } else {
         rb.Push<u8>(0);
