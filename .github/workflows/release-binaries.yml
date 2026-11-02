@@ -496,6 +496,13 @@ jobs:
           codesign --verify --deep --strict "$app"
           ditto -c -k --keepParent "$app" "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
           ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          # Also ship a .dmg (drag eglantine.app onto Applications).
+          dmgdir=$(mktemp -d)
+          ditto "$app" "$dmgdir/eglantine.app"
+          ln -s /Applications "$dmgdir/Applications"
+          hdiutil create -volname "Eglantine" -srcfolder "$dmgdir" -ov -format UDZO \
+            "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
+          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
 
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
@@ -536,7 +543,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
+          path: |
+            eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
+            eglantine-${{ github.sha }}-${{ matrix.platform }}.dmg
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -570,6 +579,7 @@ jobs:
               cp "$artifact"/*.AppImage "$artifact"/*.tar.gz dist/
             elif compgen -G "$artifact*.zip" > /dev/null; then
               cp "$artifact"/*.zip dist/
+              cp "$artifact"/*.dmg dist/ 2>/dev/null || true
             else
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${name}.zip" .)
             fi
