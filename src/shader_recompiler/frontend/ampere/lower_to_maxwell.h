@@ -2277,19 +2277,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
-        case 0x306: case 0xd06: { // I2F.F32.U8, round-to-nearest (0xd06: uniform source)
+        case 0x306: case 0xd06: { // I2F.F32.U8/S8, round-to-nearest (0xd06: uniform source)
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
-            if (opcode == 0x306 && insn.words[2] == 0x00101000 && !(insn.words[1] & 0xcfffff00U)) {
-                // I2F.U16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
-                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) | (u64{source} << 20) |
-                     (u64{insn.Bits(60, 2) * 2} << 41));
+            // Bit 74: signed source (Maxwell I2F's bit 13), as in I2FP below.
+            const u64 is_signed = insn.Bits(74, 1);
+            const u32 mode = insn.words[2] & ~0x400U;
+            if (opcode == 0x306 && mode == 0x00101000 && !(insn.words[1] & 0xcfffff00U)) {
+                // I2F.U16/S16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
+                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) | (is_signed << 13) |
+                     (u64{source} << 20) | (u64{insn.Bits(60, 2) * 2} << 41));
                 break;
             }
-            // I2F.U8 Rd, Rs.B0-B3: the byte selector (bits 60-61) as Maxwell's (41-42).
-            if (insn.words[2] != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
+            // I2F.U8/S8 Rd, Rs.B0-B3: the byte selector (bits 60-61) as Maxwell's (41-42).
+            if (mode != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
                 (insn.words[1] & (opcode == 0xd06 ? 0xffffff00U : 0xcfffff00U)) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20) |
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (is_signed << 13) | (u64{source} << 20) |
                  (u64{insn.Bits(60, 2)} << 41));
             break;
         }
