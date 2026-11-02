@@ -108,6 +108,10 @@ Files: externals/FidelityFX-FSR/*
 Copyright: 2021 Advanced Micro Devices, Inc.
 License: MIT
 
+Files: externals/FidelityFX-SDK/*
+Copyright: 2024 Advanced Micro Devices, Inc.
+License: MIT
+
 Files: src/yuzu/*.ui
 Copyright: 2018-2022 yuzu Emulator Project
 License: GPL-2.0-or-later

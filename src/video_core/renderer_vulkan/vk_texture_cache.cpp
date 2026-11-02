@@ -1203,11 +1203,13 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
                                          StagingBufferPool& staging_buffer_pool_,
                                          BlitImageHelper& blit_image_helper_,
                                          RenderPassCache& render_pass_cache_,
-                                         DescriptorPool& descriptor_pool,
-                                         ComputePassDescriptorQueue& compute_pass_descriptor_queue)
+                                         DescriptorPool& descriptor_pool_,
+                                         ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
     : device{device_}, scheduler{scheduler_}, memory_allocator{memory_allocator_},
       staging_buffer_pool{staging_buffer_pool_}, blit_image_helper{blit_image_helper_},
-      render_pass_cache{render_pass_cache_}, resolution{Settings::values.resolution_info} {
+      render_pass_cache{render_pass_cache_}, descriptor_pool{descriptor_pool_},
+      compute_pass_descriptor_queue{compute_pass_descriptor_queue_},
+      resolution{Settings::values.resolution_info} {
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
@@ -1535,49 +1537,99 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     });
 }
 
-bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
-                                          ImageView& input_color, ImageView& motion_vectors,
+bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
+    // FSR 3.1 replaces DLSS; the temporal stand-in only runs when FSR cannot (no depth, a device
+    // without the formats, a failed start). EDEN_NX2_DLSS_REPLACEMENT=standin forces
+    // the stand-in for A/B runs.
+    static const bool force_standin = [] {
+        const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
+        return value && std::string_view{value} == "standin";
+    }();
+    return !force_standin && !fsr3_unsupported;
+}
+
+bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
+                                          ImageView& motion_vectors, ImageView& depth,
+                                          std::array<u32, 2> render_size,
                                           std::array<f32, 2> jitter,
                                           std::array<f32, 2> motion_scale) {
-    if (dst.Samples() != VK_SAMPLE_COUNT_1_BIT || ImageAspectMask(dst.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+    if (!WantsTemporalUpscaleDepth()) {
         return false;
     }
-    const VkFormat format =
-        MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, dst.format).format;
-    const VkExtent2D extent{dst.size.width, dst.size.height};
-    const VkImage output = dst.ImageHandle();
-    bool reset = false;
-    if (!temporal_history.image || temporal_history.format != format ||
-        temporal_history.extent.width != extent.width ||
-        temporal_history.extent.height != extent.height) {
-        if (temporal_history.image) {
-            scheduler.Finish(); // the old history may still be sampled
+    if (!fsr3_upscaler) {
+        if (!Fsr3Upscaler::IsSupported(device)) {
+            LOG_WARNING(Render_Vulkan, "FSR 3.1 needs formats or features this device lacks; "
+                                       "using the temporal stand-in");
+            fsr3_unsupported = true;
+            return false;
         }
-        temporal_history.image = memory_allocator.CreateImage(VkImageCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        try {
+            fsr3_upscaler = std::make_unique<Fsr3Upscaler>(device, scheduler, memory_allocator,
+                                                           staging_buffer_pool, descriptor_pool,
+                                                           compute_pass_descriptor_queue);
+        } catch (const vk::Exception& exception) {
+            LOG_ERROR(Render_Vulkan, "FSR 3.1 failed to start ({}); using the temporal stand-in",
+                      exception.what());
+            fsr3_unsupported = true;
+            return false;
+        }
+    }
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    // A gap in the evaluations (a menu, a movie, a load) starts the history again.
+    const auto now = std::chrono::steady_clock::now();
+    const f32 frame_time_ms =
+        fsr3_last_evaluation
+            ? std::chrono::duration<f32, std::milli>(now - *fsr3_last_evaluation).count()
+            : 1000.0f / 30.0f;
+    const bool reset = !fsr3_last_evaluation || frame_time_ms > 250.0f;
+    fsr3_last_evaluation = now;
+    // FSR's own RCAS, set by the sharpness slider: FSR takes 0-1 for 2 to 0 stops, and the slider
+    // stores stops x 100, so this is the percentage the slider shows; 0% (stored 200) is off.
+    // EDEN_NX2_TEMPORAL_SHARPEN=<stops>|off overrides the slider.
+    static const char* const sharpen_override = std::getenv("EDEN_NX2_TEMPORAL_SHARPEN");
+    const int slider = Settings::values.fsr_sharpening_slider.GetValue();
+    bool sharpen = slider < 200;
+    f32 stops = static_cast<f32>(slider) / 100.0f;
+    if (sharpen_override) {
+        sharpen = std::string_view{sharpen_override} != "off";
+        stops = static_cast<f32>(std::strtod(sharpen_override, nullptr));
+    }
+    fsr3_upscaler->Upscale({
+        .color = input_color.Handle(Shader::TextureType::Color2D),
+        .depth = depth.DepthView(),
+        .motion_vectors = motion_vectors.Handle(Shader::TextureType::Color2D),
+        .render_size = {render_size[0], render_size[1]},
+        .upscale_size = extent,
+        .jitter = jitter,
+        .motion_vector_scale = {motion_scale[0] * static_cast<f32>(render_size[0]),
+                                motion_scale[1] * static_cast<f32>(render_size[1])},
+        .frame_time_ms = frame_time_ms,
+        .reset = reset,
+        .sharpen = sharpen,
+        .sharpness = 1.0f - stops / 2.0f,
+    });
+    // Draw the result into the DLSS output, which keeps its own format; the blit leaves FSR's
+    // output image in SHADER_READ_ONLY_OPTIMAL, so return it to GENERAL for the next frame.
+    const Region2D region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
+    };
+    const VkImage output = fsr3_upscaler->OutputImage();
+    blit_image_helper.BlitColor(dst_framebuffer, fsr3_upscaler->OutputView(), output,
+                                fsr3_upscaler->PointSampler(), region, region,
+                                {extent.width, extent.height, 1});
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([output](vk::CommandBuffer cmdbuf) {
+        const VkImageMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
-            .flags = 0,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = format,
-            .extent = {extent.width, extent.height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        });
-        temporal_history.view = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .image = *temporal_history.image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = format,
-            .components{},
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = output,
             .subresourceRange{
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
@@ -1585,7 +1637,82 @@ bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageVie
                 .baseArrayLayer = 0,
                 .layerCount = 1,
             },
-        });
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
+    });
+    static bool logged{};
+    if (!logged) {
+        logged = true;
+        LOG_INFO(Render_Vulkan, "DLSS replaced by FSR 3.1: {}x{} -> {}x{}", render_size[0],
+                 render_size[1], extent.width, extent.height);
+    }
+    return true;
+}
+
+bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
+                                          ImageView& input_color, ImageView& motion_vectors,
+                                          ImageView* depth, std::array<u32, 2> render_size,
+                                          std::array<f32, 2> jitter,
+                                          std::array<f32, 2> motion_scale) {
+    if (dst.Samples() != VK_SAMPLE_COUNT_1_BIT || ImageAspectMask(dst.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+        return false;
+    }
+    if (depth && UpscaleWithFsr3(dst_framebuffer, input_color, motion_vectors, *depth, render_size,
+                                 jitter, motion_scale)) {
+        return true;
+    }
+    const VkFormat format =
+        MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, dst.format).format;
+    // The framebuffer's area is the output's size on the host (scaled with resolution scaling).
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    // The history is kept at half-float precision: in the output's format (B10G11R11 here, 5-6
+    // mantissa bits) a frame's small share of the blend rounded away, so the history never
+    // converged on the detail the jittered frames add.
+    constexpr VkFormat history_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    bool reset = false;
+    if (!temporal_history.images[0] || temporal_history.format != format ||
+        temporal_history.extent.width != extent.width ||
+        temporal_history.extent.height != extent.height) {
+        if (temporal_history.images[0]) {
+            scheduler.Finish(); // the old history may still be in use
+        }
+        for (size_t i = 0; i < temporal_history.images.size(); ++i) {
+            temporal_history.images[i] = memory_allocator.CreateImage(VkImageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = history_format,
+                .extent = {extent.width, extent.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            });
+            temporal_history.views[i] = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = *temporal_history.images[i],
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = history_format,
+                .components{},
+                .subresourceRange{
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            });
+        }
+        temporal_history.current = 0;
         temporal_history.format = format;
         temporal_history.extent = extent;
         reset = true;
@@ -1593,24 +1720,15 @@ bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageVie
                  static_cast<u32>(format));
     }
 
-    // The history holds this pass's previous result, copied right after drawing it: the game may
-    // draw into its DLSS output afterwards (post-processing), which must not feed back. The history
-    // stays in the GENERAL layout, which the blit helper's descriptors use.
-    const VkImage history = *temporal_history.image;
-    const VkImageSubresourceLayers output_layers{
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .mipLevel = static_cast<u32>(dst.range.base.level),
-        .baseArrayLayer = static_cast<u32>(dst.range.base.layer),
-        .layerCount = 1,
-    };
-    static constexpr VkImageSubresourceLayers history_layers{
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .mipLevel = 0,
-        .baseArrayLayer = 0,
-        .layerCount = 1,
-    };
+    // The shader reads the previous result from one history image and stores this one to the
+    // other: the game may draw into its DLSS output afterwards (post-processing), which must not
+    // feed back. Both stay in the GENERAL layout, which the blit helper's descriptors use.
+    const size_t read_index = temporal_history.current;
+    const size_t write_index = read_index ^ 1;
+    const VkImage history = *temporal_history.images[read_index];
+    const VkImage next_history = *temporal_history.images[write_index];
     const auto barrier = [](VkImage image, VkAccessFlags src_access, VkAccessFlags dst_access,
-                            VkImageLayout old_layout, const VkImageSubresourceLayers& layers) {
+                            VkImageLayout old_layout) {
         return VkImageMemoryBarrier{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -1623,20 +1741,24 @@ bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageVie
             .image = image,
             .subresourceRange{
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = layers.mipLevel,
+                .baseMipLevel = 0,
                 .levelCount = 1,
-                .baseArrayLayer = layers.baseArrayLayer,
+                .baseArrayLayer = 0,
                 .layerCount = 1,
             },
         };
     };
     if (reset) {
-        // A new history image has no contents yet; the first frame does not read it.
+        // New history images have no contents yet; the first frame does not use what it reads.
         scheduler.RequestOutsideRenderPassOperationContext();
-        scheduler.Record([history, barrier](vk::CommandBuffer cmdbuf) {
-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                   0, barrier(history, 0, VK_ACCESS_SHADER_READ_BIT,
-                                              VK_IMAGE_LAYOUT_UNDEFINED, history_layers));
+        scheduler.Record([history, next_history, barrier](vk::CommandBuffer cmdbuf) {
+            constexpr VkAccessFlags access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            const std::array barriers{
+                barrier(history, 0, access, VK_IMAGE_LAYOUT_UNDEFINED),
+                barrier(next_history, 0, access, VK_IMAGE_LAYOUT_UNDEFINED),
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, {}, {}, barriers);
         });
     }
     const Region2D dst_region{
@@ -1644,42 +1766,79 @@ bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageVie
         .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
     };
     // Each frame weighs at most 0.1 against the history (scaled by how close its samples land to
-    // the pixel; the neighbourhood clip limits what older samples contribute).
-    constexpr f32 current_weight = 0.1f;
+    // the pixel; the neighbourhood clip limits what older samples contribute). Still pixels use a
+    // sample kernel a third as wide as for moving ones (the jittered frames fill in the detail) and
+    // a clip of 1.5 deviations instead of 1.
+    // EDEN_NX2_TEMPORAL_WEIGHT / _KERNEL / _CLIP / _CLIP_MOTION / _KERNEL_MOTION
+    // override them (all 1 = the previous stand-in's filter).
+    const auto tuned = [](const char* name, f32 fallback) {
+        const char* value = std::getenv(name);
+        return value ? static_cast<f32>(std::strtod(value, nullptr)) : fallback;
+    };
+    static const f32 current_weight = tuned("EDEN_NX2_TEMPORAL_WEIGHT", 0.1f);
+    static const f32 kernel_scale = tuned("EDEN_NX2_TEMPORAL_KERNEL", 3.0f);
+    static const f32 clip_width = tuned("EDEN_NX2_TEMPORAL_CLIP", 1.5f);
+    static const f32 clip_motion = tuned("EDEN_NX2_TEMPORAL_CLIP_MOTION", 1.0f);
+    static const f32 kernel_motion = tuned("EDEN_NX2_TEMPORAL_KERNEL_MOTION", 1.0f);
     blit_image_helper.TemporalUpscale(dst_framebuffer, input_color, motion_vectors,
-                                      *temporal_history.view, dst_region, jitter, motion_scale,
-                                      reset ? 1.0f : current_weight);
+                                      *temporal_history.views[read_index],
+                                      *temporal_history.views[write_index], dst_region, jitter,
+                                      motion_scale, reset ? 1.0f : current_weight, kernel_scale,
+                                      clip_width, clip_motion, kernel_motion);
+    // RCAS on the output, set by the FSR sharpness slider (stops as FSR takes them, 0% = stored 200
+    // turns it off). It reads the unsharpened result just stored, which stays the history.
+    // EDEN_NX2_TEMPORAL_SHARPEN=<stops>|off overrides the slider.
+    static const char* const sharpen_override = std::getenv("EDEN_NX2_TEMPORAL_SHARPEN");
+    const int slider = Settings::values.fsr_sharpening_slider.GetValue();
+    bool sharpen = slider < 200;
+    f32 sharpness = static_cast<f32>(slider) / 100.0f;
+    if (sharpen_override) {
+        sharpen = std::string_view{sharpen_override} != "off";
+        sharpness = static_cast<f32>(std::strtod(sharpen_override, nullptr));
+    }
+    const VkImage output = dst.ImageHandle();
+    const u32 output_level = static_cast<u32>(dst.range.base.level);
+    const u32 output_layer = static_cast<u32>(dst.range.base.layer);
     scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([output, history, extent, output_layers, barrier](vk::CommandBuffer cmdbuf) {
-        constexpr VkAccessFlags written = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        const std::array before{
-            barrier(output, written, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-                    output_layers),
-            barrier(history, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
+    scheduler.Record([history, next_history, barrier, output, output_level, output_layer,
+                      sharpen](vk::CommandBuffer cmdbuf) {
+        // The next frame reads what was stored now and stores over what was read now; the
+        // sharpening pass reads what was stored now and draws over the output again.
+        const std::array barriers{
+            barrier(next_history, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL),
+            barrier(history, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL),
+            VkImageMemoryBarrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = output,
+                .subresourceRange{
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = output_level,
+                    .levelCount = 1,
+                    .baseArrayLayer = output_layer,
+                    .layerCount = 1,
+                },
+            },
         };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, {}, {}, before);
-        const VkImageCopy copy{
-            .srcSubresource = output_layers,
-            .srcOffset = {0, 0, 0},
-            .dstSubresource = history_layers,
-            .dstOffset = {0, 0, 0},
-            .extent = {extent.width, extent.height, 1},
-        };
-        cmdbuf.CopyImage(output, VK_IMAGE_LAYOUT_GENERAL, history, VK_IMAGE_LAYOUT_GENERAL, copy);
-        const std::array after{
-            barrier(output, VK_ACCESS_TRANSFER_READ_BIT,
-                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_TRANSFER_READ_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL, output_layers),
-            barrier(history, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
-        };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-                               {}, {}, after);
+        constexpr VkPipelineStageFlags stages =
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        cmdbuf.PipelineBarrier(stages, stages, 0, {}, {},
+                               vk::Span<VkImageMemoryBarrier>(barriers.data(),
+                                                              sharpen ? barriers.size() : 2));
     });
+    if (sharpen) {
+        blit_image_helper.TemporalSharpen(dst_framebuffer, *temporal_history.views[write_index],
+                                          dst_region, sharpness);
+    }
+    temporal_history.current = write_index;
     return true;
 }
 
