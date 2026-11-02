@@ -1715,6 +1715,9 @@ private:
             return value == nullptr || value[0] != '0';
         }();
         const auto entered = std::chrono::steady_clock::now();
+        // For the frame log: whether the GPU had passed this frame's fence before any wait below.
+        const bool gpu_done_at_entry =
+            ~w[22] < 192 && system.Host1x().GetSyncpointManager().IsReadyGuest(~w[22], w[24]);
         if (frames_ahead) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
@@ -1754,12 +1757,10 @@ private:
                 return static_cast<long long>(
                     std::chrono::duration_cast<std::chrono::microseconds>(d).count());
             };
-            const bool gpu_done = ~w[22] < 192 && system.Host1x().GetSyncpointManager().IsReadyGuest(
-                                                      ~w[22], w[24]);
             std::fprintf(frame_log, "%llu %lld %lld %lld %d %lld\n",
                          static_cast<unsigned long long>(m_presents),
                          us(entered - m_stats.last_present), us(waited - entered),
-                         us(paced - composited), gpu_done ? 1 : 0,
+                         us(paced - composited), gpu_done_at_entry ? 1 : 0,
                          us(entered.time_since_epoch()));
         }
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
