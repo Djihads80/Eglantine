@@ -178,11 +178,13 @@ private:
 
     s32 FindFreeFileDescriptorHandle() noexcept;
     bool IsFileDescriptorValid(s32 fd) const noexcept;
+    /// Copies a descriptor under file_descriptors_mutex; nullopt if fd has no socket
+    std::optional<FileDescriptor> CopyDescriptor(s32 fd);
 
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
     static inline std::array<std::optional<FileDescriptor>, MAX_FD> file_descriptors{};
-    /// Guards file_descriptors against the room thread, which delivers proxy packets to them
+    /// Guards file_descriptors. Calls use CopyDescriptor, so sockets outlive a concurrent close.
     static inline std::mutex file_descriptors_mutex;
 
     /// Callback to parse and handle a received wifi packet.

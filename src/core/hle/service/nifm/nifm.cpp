@@ -600,6 +600,19 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
             std::memcpy(profile.wireless_setting_data.ssid.data(), st.ssid,
                         profile.wireless_setting_data.ssid_length);
         }
+    } else if (Network::GetRoomIPv4Address()) {
+        // The selected adapter is missing, but the room still works and IsNetworkAvailable
+        // reports it, so describe the room as a wired network
+        profile.ip_setting_data.ip_address_setting.is_automatic = true;
+        ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
+
+        profile.ip_setting_data.dns_setting.is_automatic = true;
+        profile.ip_setting_data.dns_setting.primary_dns = {1, 1, 1, 1};
+        profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
+
+        profile.uuid = MakeUuidFromName(st.ssid);
+        profile.profile_type = static_cast<u8>(NetworkProfileType::User);
+        profile.interface_type = static_cast<u8>(NetworkInterfaceType::Ethernet);
     }
 
     ctx.WriteBuffer(profile);
@@ -630,8 +643,9 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
         *reinterpret_cast<in_addr*>(base + 0x1C) = host.subnet_mask;
         *reinterpret_cast<in_addr*>(base + 0x20) = host.gateway;
 
-        // The room traffic goes through the selected adapter, so report it like the other calls
-        if (room_ip && selected && host.name == selected->name) {
+        // The room traffic goes through the selected adapter, so report it like the other calls.
+        // Without a selected adapter, the first one stands for the room.
+        if (room_ip && (selected ? host.name == selected->name : i == 0)) {
             std::memcpy(base + 0x18, room_ip->data(), room_ip->size());
             std::memcpy(base + 0x1C, RoomSubnetMask.data(), RoomSubnetMask.size());
         }
