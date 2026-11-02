@@ -9,6 +9,7 @@ add_executable(tests
     common/cityhash.cpp
     common/container_hash.cpp
     common/fibers.cpp
+    common/game_presets.cpp
     common/host_memory.cpp
     common/param_package.cpp
     common/range_map.cpp
