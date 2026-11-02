@@ -18,6 +18,8 @@ class OpusDecodeObject {
 public:
     static u32 GetWorkBufferSize(u32 channel_count);
     static OpusDecodeObject& Initialize(u64 buffer, u64 buffer2);
+    /// Frees the host decoder state of every object.
+    static void ReleaseAll();
 
     s32 InitializeDecoder(u32 sample_rate, u32 channel_count);
     s32 Shutdown();
@@ -29,12 +31,13 @@ public:
     }
 
 private:
+    LibOpusDecoder* GetDecoder() const;
+
     u32 magic;
     bool initialized;
     bool state_valid;
     OpusDecodeObject* self;
     u32 final_range;
-    LibOpusDecoder* decoder;
 };
 static_assert(std::is_trivially_constructible_v<OpusDecodeObject>);
 
