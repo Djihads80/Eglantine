@@ -139,6 +139,8 @@ android {
                 applicationIdSuffix = ".nightly"
                 manifestPlaceholders += mapOf("appNameSuffix" to " Nightly")
             } else {
+                // No package suffix: the "genshinSpoof" (Optimized) flavor must keep its exact
+                // package id for the phone's game mode to recognise it.
                 manifestPlaceholders += mapOf("appNameSuffix" to "")
             }
 

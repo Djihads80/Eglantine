@@ -153,6 +153,10 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-pipe>
             # Disable RTTI (C++ only)
             $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    else()
+        # clang-cl: avoid windows.h's min/max macros, as the MSVC branch does (they break
+        # std::min/std::max in the frame generation sources now built on Windows).
+        add_compile_definitions(NOMINMAX)
     endif()
 
     if (ENABLE_WERROR)

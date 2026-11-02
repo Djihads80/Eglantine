@@ -155,7 +155,21 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        if (use_safe) {
+        // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
+        // safe read below would flush (with the split, the front can't tell: it reads memory
+        // unflushed anyway).
+        const bool submitted = command_resume_offset == 0 &&
+                               dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+                               !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
+                                                                          header.size * sizeof(u32)));
+        if (submitted) {
+            const std::span<const CommandHeader> commands{
+                command_list.submitted_words.data() +
+                    command_list.submitted_offsets[dma_pushbuffer_subindex],
+                header.size};
+            RecordParsedEntry(header, commands);
+            command_resume_offset += ProcessCommands(commands, 0);
+        } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);

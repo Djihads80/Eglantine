@@ -227,10 +227,14 @@ class GameAdapter(private val activity: AppCompatActivity) :
         }
 
         fun onClick(game: Game) {
-            val gameExists = DocumentFile.fromSingleUri(
-                YuzuApplication.appContext,
-                game.path.toUri()
-            )?.exists() == true
+            val gameExists = if (game.path.startsWith("/")) {
+                java.io.File(game.path).exists()
+            } else {
+                DocumentFile.fromSingleUri(
+                    YuzuApplication.appContext,
+                    game.path.toUri()
+                )?.exists() == true
+            }
 
             if (!gameExists) {
                 Toast.makeText(

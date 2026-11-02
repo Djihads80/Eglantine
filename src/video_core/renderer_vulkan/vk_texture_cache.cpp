@@ -201,6 +201,35 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
+// Vulkan's standard sparse block shape for single-sampled 2D images (64 KiB blocks), in texel
+// blocks, for a texel block of `block_bytes`. Only valid when the device reports
+// residencyStandard2DBlockShape.
+[[nodiscard]] bool StandardSparseBlockShape(const Device& device, u64 block_bytes,
+                                            VkExtent3D& shape) {
+    if (!device.GetPhysical().GetProperties().sparseProperties.residencyStandard2DBlockShape) {
+        return false;
+    }
+    switch (block_bytes) {
+    case 1:
+        shape = {256, 256, 1};
+        return true;
+    case 2:
+        shape = {256, 128, 1};
+        return true;
+    case 4:
+        shape = {128, 128, 1};
+        return true;
+    case 8:
+        shape = {128, 64, 1};
+        return true;
+    case 16:
+        shape = {64, 64, 1};
+        return true;
+    default:
+        return false;
+    }
+}
+
 // How SparseTiles images leave the blocks without data: unbound (reads give zero), or all bound to
 // one zeroed block where the driver can't sample unbound memory (AMD) but lets blocks share
 // memory. EDEN_NX2_SPARSE_ALIASED=1 takes the shared block wherever it is supported, =0 never.
@@ -1142,14 +1171,22 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
     const u64 budget = device.GetDeviceMemoryBudget();
     const u64 memory = budget != 0 ? budget : device.GetDeviceLocalMemory();
     const char* keep = std::getenv("EDEN_NX2_KEEP_ASTC");
-    if (memory >= 12_GiB || (keep != nullptr && keep[0] == '1')) {
+    // EDEN_NX2_BC3_THRESHOLD_MIB overrides the 12 GiB cutoff.
+    u64 threshold = 12_GiB;
+    if (const char* value = std::getenv("EDEN_NX2_BC3_THRESHOLD_MIB")) {
+        const u64 mib = std::strtoull(value, nullptr, 10);
+        if (mib != 0) {
+            threshold = mib << 20;
+        }
+    }
+    if (memory >= threshold || (keep != nullptr && keep[0] == '1')) {
         return;
     }
     LOG_WARNING(Render_Vulkan,
                 "Switch 2 program with a {} MiB video memory budget: ASTC textures are "
-                "re-compressed to BC3 for this session (uncompressed ASTC needs a 12 GiB budget). "
+                "re-compressed to BC3 for this session (uncompressed ASTC needs {} MiB or more). "
                 "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
-                memory >> 20);
+                memory >> 20, threshold >> 20);
     Settings::SetAstcRecompressionOverride(Settings::AstcRecompression::Bc3);
 }
 } // Anonymous namespace
@@ -2110,13 +2147,17 @@ void TextureCacheRuntime::TickFrame() {
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
         pending_transcodes.pop_front();
     }
-    static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+    static const u32 max_unused_scratch_frames = [] {
+        const char* value = std::getenv("EDEN_NX2_SCRATCH_FRAMES");
+        const u64 frames = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
+        return static_cast<u32>(frames != 0 ? frames : 60);
+    }();
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
         if (!scheduler.IsFree(scratch.tick)) {
             scratch.unused_frames = 0;
             return false;
         }
-        return ++scratch.unused_frames > MAX_UNUSED_SCRATCH_FRAMES;
+        return ++scratch.unused_frames > max_unused_scratch_frames;
     });
     std::erase_if(pending_resolve_shadows, [this](const auto& pending) {
         return scheduler.IsFree(pending.first);
@@ -2650,7 +2691,24 @@ bool Image::InitSparseLayers() {
     const u32 block_width = huge_astc ? 1 : VideoCore::Surface::DefaultBlockWidth(info.format);
     const u32 block_height = huge_astc ? 1 : VideoCore::Surface::DefaultBlockHeight(info.format);
     const u64 block_bytes = huge_astc ? 4 : VideoCore::Surface::BytesPerBlock(info.format);
-    const VkExtent3D granularity = it->formatProperties.imageGranularity;
+    VkExtent3D granularity = it->formatProperties.imageGranularity;
+    if (granularity.width == 0 || granularity.height == 0) {
+        // Seen with AMD's driver: the sparse block size comes back as 0, and the size computation
+        // below divided by it. Use the standard 2D block shape when the device promises it.
+        if (!StandardSparseBlockShape(device, block_bytes, granularity)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Sparse layered image {:#x}: the driver reports no sparse block size and "
+                        "no standard block shape; not using sparse layers",
+                        gpu_addr);
+            return false;
+        }
+        granularity.width *= block_width;
+        granularity.height *= block_height;
+        LOG_INFO(Render_Vulkan,
+                 "Sparse layered image {:#x}: no block size from the driver, using the standard "
+                 "{}x{} texel block",
+                 gpu_addr, granularity.width, granularity.height);
+    }
     s.tile_width = granularity.width;
     s.tile_height = granularity.height;
     const u64 tile = s.requirements.alignment;

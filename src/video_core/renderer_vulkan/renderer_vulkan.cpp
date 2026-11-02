@@ -22,6 +22,7 @@
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2.h"
 #include "video_core/present.h"
 #include "video_core/renderer_vulkan/present/util.h"
 #ifdef HAS_RESHADE
@@ -189,6 +190,14 @@ try
 #ifdef HAS_RESHADE
     VideoCore::FxChain::Instance().LoadFromSettings();
 #endif
+
+    // AMD's Windows driver crashes (integer divide by zero in amdvlk64.dll) on the sparse images
+    // that lazily backed Switch 2 regions lead to, while Mario Kart World loads its map. Back those
+    // regions whole there, as before; EDEN_NX2_SPARSE_LAZY=1 still forces lazy backing.
+    if (device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY) {
+        Tegra::g_nx2_sparse_lazy_supported = false;
+        LOG_INFO(Render_Vulkan, "AMD proprietary driver: Switch 2 sparse regions are backed whole");
+    }
 
     Report();
 } catch (const vk::Exception& exception) {

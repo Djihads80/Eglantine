@@ -200,7 +200,7 @@ object FileUtil {
      * @return String display name
      */
     fun getFilename(uri: Uri): String {
-        if (uri.scheme == "file") {
+        if (uri.scheme == "file" || (uri.scheme == null && uri.path?.startsWith("/") == true)) {
             return uri.lastPathSegment?.takeIf { it.isNotEmpty() } ?: throw IOException(
                 "Invalid file URI: $uri"
             )
