@@ -226,6 +226,20 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
     const AVPixelFormat target = format == Nx2PictureFormat::Nv12    ? AV_PIX_FMT_NV12
                                  : format == Nx2PictureFormat::Rgba8 ? AV_PIX_FMT_RGBA
                                                                      : AV_PIX_FMT_BGRA;
+    // Frames copied back from a host GPU decoder are already NV12. Copy them as they are:
+    // FFmpeg 6.1's swscale leaves the chroma plane of an NV12 to NV12 copy at zero, which shows
+    // the movies green.
+    if (target == AV_PIX_FMT_NV12 && f->format == AV_PIX_FMT_NV12 &&
+        static_cast<u32>(f->width) == width && static_cast<u32>(f->height) == height) {
+        for (u32 y = 0; y < height; ++y) {
+            std::memcpy(out.data() + y * pitch, f->data[0] + y * f->linesize[0], width);
+        }
+        for (u32 y = 0; y < (height + 1) / 2; ++y) {
+            std::memcpy(out.data() + chroma_offset + y * pitch, f->data[1] + y * f->linesize[1],
+                        width);
+        }
+        return;
+    }
     impl->scaler = sws_getCachedContext(impl->scaler, f->width, f->height,
                                         static_cast<AVPixelFormat>(f->format),
                                         static_cast<int>(width), static_cast<int>(height), target,
