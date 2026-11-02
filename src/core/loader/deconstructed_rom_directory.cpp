@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -103,7 +104,12 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
                 return built;
             }
             LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
+            const auto started = std::chrono::steady_clock::now();
             auto built = FileSys::CreateRomFS(romfs_dir);
+            LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - started)
+                         .count());
             cached = built;
             return built;
         }
