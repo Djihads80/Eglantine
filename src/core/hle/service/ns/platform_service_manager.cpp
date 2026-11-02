@@ -85,8 +85,10 @@ struct IPlatformServiceManager::Impl {
     // Automatically populated based on shared_fonts dump or system archives.
     // 6 builtin fonts + extra 2 for whatever may come after
     boost::container::static_vector<FontRegion, 8> shared_font_regions;
-    /// Plain TTF copies of the same fonts (Switch 2 GetBuiltInFontData), after the BFTTF data.
+    /// Plain TTF copies of the same fonts (Switch 2 GetBuiltInFontData), laid out on their own:
+    /// the BFTTF data of a firmware's fonts leaves no room for them next to it.
     boost::container::static_vector<FontRegion, 8> builtin_font_regions;
+    std::vector<u8> builtin_font;
     /// Backing memory for the shared font data
     std::array<u8, SHARED_FONT_MEM_SIZE> shared_font;
 };
@@ -165,23 +167,26 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         impl->shared_font_regions.push_back(region);
     }
 
+    offset = 0;
     for (const auto& plain : plain_fonts) {
         offset = Common::AlignUp(offset, 0x1000);
         if (offset + plain.size() > SHARED_FONT_MEM_SIZE) {
             LOG_WARNING(Service_NS, "No shared memory left for plain built-in font copies");
             break;
         }
-        std::memcpy(impl->shared_font.data() + offset, plain.data(), plain.size());
+        impl->builtin_font.resize(offset + plain.size());
+        std::memcpy(impl->builtin_font.data() + offset, plain.data(), plain.size());
         impl->builtin_font_regions.push_back({u32(offset), u32(plain.size())});
         offset += plain.size();
     }
 }
 
 // Switch 2: the shared memory GetBuiltInFontData offsets point into (copy handle, u32 size); the
-// SDK maps it read-only. Eden serves its font shared memory, which holds plain copies too.
+// SDK maps it read-only. Eden serves its font shared memory holding the plain copies (Switch 2
+// titles don't read the BFTTF data GetSharedMemoryNativeHandle shares).
 void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx) {
     LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontSharedMemory");
-    std::memcpy(kernel.GetFontSharedMem().GetPointer(), impl->shared_font.data(), impl->shared_font.size());
+    std::memcpy(kernel.GetFontSharedMem().GetPointer(), impl->builtin_font.data(), impl->builtin_font.size());
     IPC::ResponseBuilder rb{ctx, 3, 1};
     rb.Push(ResultSuccess);
     rb.Push<u32>(static_cast<u32>(SHARED_FONT_MEM_SIZE));
