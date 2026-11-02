@@ -361,6 +361,9 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
                       compute_pass_descriptor_queue),
       multi_range_buffers(device_) {
     const VkDriverIdKHR driver_id = device.GetDriverID();
+    // NVIDIA's driver reads the 69-byte layout as meant: there the repack would only cost a compute
+    // pass per draw.
+    VertexRepackAllowed() = driver_id != VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     const bool enable_vertex_repack = VertexRepackEnabled();
     LOG_INFO(Render_Vulkan, "69-byte vertex layout repacking {} ({})",
              enable_vertex_repack ? "enabled" : "disabled",

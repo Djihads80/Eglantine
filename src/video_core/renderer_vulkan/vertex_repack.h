@@ -52,12 +52,24 @@ inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
                                  static_cast<u32>(range), static_cast<u32>(groups)};
 }
 
+// EGLANTINE_TEST_VERTEX_REPACK: "0" turns the repack off, "1" on for every driver; unset, it is on
+// except where the device fetches the unaligned layout correctly (VertexRepackAllowed).
+inline const char* VertexRepackSetting() {
+    static const char* const value = std::getenv("EGLANTINE_TEST_VERTEX_REPACK");
+    return value;
+}
+
+inline bool& VertexRepackAllowed() {
+    static bool allowed = true;
+    return allowed;
+}
+
 inline bool VertexRepackEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("EGLANTINE_TEST_VERTEX_REPACK");
-        return !value || std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    const char* value = VertexRepackSetting();
+    if (value && std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    return VertexRepackAllowed() || (value && std::strcmp(value, "1") == 0);
 }
 
 inline u32 VertexRepackMask(const Tegra::Engines::Maxwell3D::Regs& regs) {
