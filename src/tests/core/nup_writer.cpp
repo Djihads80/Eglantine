@@ -197,9 +197,11 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE(packages[0].kind == NupContainer::PackageKind::Base);
     REQUIRE(packages[0].title_id == TitleId);
     REQUIRE(packages[0].version == 0);
+    REQUIRE(packages[0].display_version == "1.0.0");
     REQUIRE(packages[0].npdm.size() == 0x100);
     REQUIRE(packages[1].kind == NupContainer::PackageKind::Update);
     REQUIRE(packages[1].version == 65536);
+    REQUIRE(packages[1].display_version == "1.1.0");
     REQUIRE(packages[1].title_id == TitleId);
     REQUIRE_FALSE(packages[1].standalone_update);
     REQUIRE(packages[2].kind == NupContainer::PackageKind::Update);
@@ -388,7 +390,8 @@ TEST_CASE("NUP output is reproducible", "[nup]") {
     for (const u8 b : Sha256(ReadAll(archive))) {
         hex += fmt::format("{:02x}", b);
     }
-    REQUIRE(hex == "df8446903ab2c39a51af0304935eb4aa5d8ead105440976ceae7ab97133f6143");
+    // The mixed-case Base/RomFS directory supplies base version 1.0.0 on every platform.
+    REQUIRE(hex == "718231e0974ca04c7be7bd6ed4334015b777c6e5f1ed51de23f899f81ee004ab");
 }
 
 TEST_CASE("NUP writes metadata overrides to the base and the newest update", "[nup]") {
