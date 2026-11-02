@@ -232,7 +232,9 @@ struct GPU::Impl {
                      raster_area.start_address, raster_area.end_address,
                      reads.load(std::memory_order_relaxed));
         }
-        const u64 fence = RequestSyncOperation([this, &raster_area]() {
+        const u64 fence = RequestSyncOperation([this, raster_area]() {
+            // Apply collected guest writes before downloading GPU data over guest memory.
+            InvalidateGPUCache();
             renderer->ReadRasterizer()->FlushRegion(raster_area.start_address, raster_area.end_address - raster_area.start_address);
         });
         gpu_thread.TickGPU(is_async);

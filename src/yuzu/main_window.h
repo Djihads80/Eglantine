@@ -503,6 +503,7 @@ private:
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;
+    bool use_recommended_mkw_settings = false;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;
