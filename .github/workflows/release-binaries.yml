@@ -248,7 +248,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_UPDATE_CHECKER=OFF
-            -DUSE_DISCORD_PRESENCE=ON
+            -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
           )
           if [ '${{ matrix.pgo }}' = 'true' ]; then
@@ -279,7 +279,7 @@ jobs:
           -DYUZU_USE_BUNDLED_QT=OFF
           -DYUZU_USE_BUNDLED_SDL3=ON
           -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
+          -DUSE_DISCORD_PRESENCE=ON
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
