@@ -390,3 +390,34 @@ TEST_CASE("NUP output is reproducible", "[nup]") {
     }
     REQUIRE(hex == "df8446903ab2c39a51af0304935eb4aa5d8ead105440976ceae7ab97133f6143");
 }
+
+TEST_CASE("NUP writes metadata overrides to the base and the newest update", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto probed = FileSys::Nup::ProbeMetadata(root);
+    REQUIRE(probed.title_name.empty());
+    REQUIRE(probed.icon.empty());
+    // The version comes from the RomFS resource size table of the newest update that has one.
+    REQUIRE(probed.display_version == "1.1.0");
+    REQUIRE(probed.version_source == "update 65536");
+
+    FileSys::Nup::PackOptions options;
+    options.metadata.title_name = "Custom Name";
+    options.metadata.icon = {0xFF, 0xD8, 0xFF, 0xD9};
+    options.metadata.display_version = "9.8.7";
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+
+    FileSys::RealVfsFilesystem real;
+    NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    const auto& packages = nup.GetPackages();
+    REQUIRE(packages.size() == 4);
+    REQUIRE(packages[0].title_name == "Custom Name");
+    REQUIRE(packages[0].icon == options.metadata.icon);
+    REQUIRE(packages[0].display_version == "9.8.7");
+    REQUIRE(packages[2].version == 131072);
+    REQUIRE(packages[2].display_version == "9.8.7");
+    REQUIRE(packages[1].display_version == "1.1.0");
+}

@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -30,6 +31,17 @@ enum class PackResult { Success, Cancelled, InvalidSource, IoError };
 // that one file does not evict everything else from the cache.
 constexpr u64 DefaultRawThreshold = 256ULL * 1024 * 1024;
 
+// Application metadata written to the base package (or the first package when there is no base).
+// In PackOptions an empty field keeps what the dump supplies; ProbeMetadata fills all of them.
+struct Metadata {
+    std::string title_name;
+    // JPEG or PNG bytes; 256x256 JPEG as distributed on-console.
+    std::vector<u8> icon;
+    std::string display_version;
+    // Where ProbeMetadata found display_version, e.g. "update 458752" or "base".
+    std::string version_source;
+};
+
 struct PackOptions {
     // Low-storage mode: delete each source file once its extent is synced and journaled.
     bool delete_sources = false;
@@ -37,6 +49,8 @@ struct PackOptions {
     int zstd_level = 3;
     // Files larger than this are always stored raw.
     u64 raw_threshold = DefaultRawThreshold;
+    // Overrides for the name, icon and display version found in the dump.
+    Metadata metadata;
 };
 
 // A loose dump holds exefs/main and main.npdm, directly or under base/ or updates/<version>/,
@@ -45,6 +59,9 @@ bool IsLooseDump(const std::filesystem::path& dir);
 // The dump folder a game list entry's exefs/main (or exefs folder) belongs to, if it is a loose
 // dump.
 std::optional<std::filesystem::path> DumpRootFromMain(const std::filesystem::path& main);
+// Reads the name, icon and display version a dump would be packed with. The version comes from
+// the newest update that reports one, else the base.
+Metadata ProbeMetadata(const std::filesystem::path& dump_root);
 std::filesystem::path DefaultArchivePath(const std::filesystem::path& dump_root);
 
 // Writes <archive>.part and renames it when done; an existing archive is never overwritten. A
