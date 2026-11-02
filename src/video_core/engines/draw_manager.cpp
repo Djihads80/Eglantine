@@ -72,11 +72,19 @@ void Maxwell3D::DrawManager::Clear(Maxwell3D& maxwell3d, u32 layer_count) {
     }
 }
 
-void Maxwell3D::DrawManager::DrawDeferred(Maxwell3D& maxwell3d) {
+void Maxwell3D::DrawManager::DrawDeferred(Maxwell3D& maxwell3d, bool loop_continues) {
     if (draw_state.draw_mode != DrawMode::Instance || draw_state.instance_count == 0) {
+        if (!loop_continues) {
+            draw_state.drawn_instances = 0;
+        }
         return;
     }
-    DrawEnd(maxwell3d, draw_state.instance_count + 1, true);
+    // The first draw of a batch also covers the loop's first instance; a batch that continues a
+    // loop split by a register write draws only the instances after the ones already drawn.
+    const bool continued = draw_state.drawn_instances != 0;
+    DrawEnd(maxwell3d, draw_state.instance_count + (continued ? 0 : 1), true);
+    draw_state.drawn_instances =
+        loop_continues ? draw_state.drawn_instances + draw_state.instance_count : 0;
     draw_state.instance_count = 0;
 }
 
@@ -121,6 +129,7 @@ void Maxwell3D::DrawManager::DrawArrayInstanced(Maxwell3D& maxwell3d, Maxwell3D:
     draw_state.vertex_buffer.count = vertex_count;
     if (!subsequent) {
         draw_state.instance_count = 1;
+        draw_state.drawn_instances = 0;
     }
     draw_state.base_instance = draw_state.instance_count - 1;
     draw_state.draw_mode = DrawMode::Instance;
@@ -220,6 +229,9 @@ void Maxwell3D::DrawManager::DrawEnd(Maxwell3D& maxwell3d, u32 instance_count, b
         [[fallthrough]];
     case DrawMode::General:
         draw_state.base_instance = maxwell3d.regs.global_base_instance_index;
+        if (draw_state.draw_mode == DrawMode::Instance && draw_state.drawn_instances != 0) {
+            draw_state.base_instance += draw_state.drawn_instances + 1;
+        }
         draw_state.base_index = maxwell3d.regs.global_base_vertex_index;
         if (draw_state.draw_indexed) {
             draw_state.index_buffer = maxwell3d.regs.index_buffer;
