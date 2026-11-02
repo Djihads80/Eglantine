@@ -228,7 +228,7 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE(packages[3].kind == NupContainer::PackageKind::Addon);
     REQUIRE(packages[3].title_id == 0x0400ABCD00011001ULL);
     REQUIRE(packages[3].exefs_dir == 0xFFFFFFFF);
-    REQUIRE(nup.FindBestUpdatePackage() == 2);
+    REQUIRE(nup.FindBestUpdatePackage() == std::size_t{2});
 
     REQUIRE(PackedTree(nup.GetExeFSDir(0)) == SourceTree(root / "Base/ExeFS"));
     REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
