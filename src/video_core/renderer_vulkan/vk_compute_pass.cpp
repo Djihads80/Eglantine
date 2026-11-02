@@ -26,8 +26,10 @@
 #include "video_core/host_shaders/resolve_conditional_render_comp_spv.h"
 #include "video_core/host_shaders/vulkan_quad_indexed_comp_spv.h"
 #include "video_core/host_shaders/vulkan_uint8_comp_spv.h"
+#include "video_core/host_shaders/vulkan_vertex_repack_comp_spv.h"
 #include "video_core/host_shaders/block_linear_unswizzle_3d_bcn_comp_spv.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
+#include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/surface.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -323,6 +325,62 @@ ComputePass::ComputePass(const Device& device_, Scheduler& scheduler, Descriptor
 }
 
 ComputePass::~ComputePass() = default;
+
+VertexRepackPass::VertexRepackPass(const Device& device_, Scheduler& scheduler_,
+                                 DescriptorPool& descriptor_pool, StagingBufferPool& staging_pool_,
+                                 ComputePassDescriptorQueue& descriptor_queue_)
+    : ComputePass(device_, scheduler_, descriptor_pool, INPUT_OUTPUT_DESCRIPTOR_SET_BINDINGS,
+                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO,
+                  COMPUTE_PUSH_CONSTANT_RANGE<12>, VULKAN_VERTEX_REPACK_COMP_SPV),
+      scheduler{scheduler_}, staging_pool{staging_pool_}, descriptor_queue{descriptor_queue_} {}
+
+std::optional<std::pair<VkBuffer, VkDeviceSize>> VertexRepackPass::Assemble(VkBuffer source,
+                                                                           u32 offset, u32 size) {
+    const auto parameters = MakeVertexRepackParameters(
+        offset, size, device.GetStorageBufferAlignment(), device.GetMaxStorageBufferRange(),
+        device.GetMaxComputeWorkGroupCount()[0]);
+    if (!parameters) {
+        LOG_ERROR(Render_Vulkan, "Vertex repack exceeds device limits: offset={}, size={}", offset, size);
+        return std::nullopt;
+    }
+    const u32 num_vertices = parameters->vertices;
+    const u32 output_size = parameters->output_size;
+    const auto dest = staging_pool.Request(output_size, MemoryUsage::DeviceLocal);
+    const u32 base_offset = parameters->source_base;
+    const u32 bias = parameters->source_bias;
+    descriptor_queue.Acquire(scheduler, 2);
+    descriptor_queue.AddBuffer(source, base_offset, parameters->source_range);
+    descriptor_queue.AddBuffer(dest.buffer, dest.offset, output_size);
+    const void* data = descriptor_queue.UpdateData();
+    scheduler.RequestOutsideRenderPassOperationContext();
+    LOG_DEBUG(Render_Vulkan, "Vertex repack queued: source_size={}, output_size={}, groups={}",
+              size, output_size, parameters->dispatch_groups);
+    scheduler.Record([this, data, bias, size, num_vertices,
+                      groups = parameters->dispatch_groups](vk::CommandBuffer cmdbuf) {
+        const VkMemoryBarrier read_barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, read_barrier);
+        const auto set = descriptor_allocator.Commit();
+        device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, data);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        const std::array<u32, 3> constants{bias, size, num_vertices * 18};
+        cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants.data());
+        cmdbuf.Dispatch(groups, 1, 1);
+        const VkMemoryBarrier write_barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, write_barrier);
+    });
+    return std::pair<VkBuffer, VkDeviceSize>{dest.buffer, dest.offset};
+}
 
 Uint8Pass::Uint8Pass(const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool,
                      StagingBufferPool& staging_buffer_pool_,

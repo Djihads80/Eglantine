@@ -14,6 +14,7 @@ set(GLSL_INCLUDES
 )
 
 set(SHADER_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_vertex_repack.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/bc_encoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/blit_color_float.frag
