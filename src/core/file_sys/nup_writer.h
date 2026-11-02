@@ -25,10 +25,9 @@ struct PackProgress {
 
 enum class PackResult { Success, Cancelled, InvalidSource, IoError };
 
-// NupContainer keeps a zstd file in memory only while it fits its 512 MiB decompression cache;
-// a larger one is decompressed again in full on every read, which makes big compressed RomFS
-// files unusable. Files above this size are therefore stored raw, with headroom below the cap so
-// that one file does not evict everything else from the cache.
+// NupContainer keeps a zstd file in memory only while it fits half of its 512 MiB decompression
+// cache; a larger one is decompressed to a temporary file on first read, which costs time and
+// disk space. Files above this size are therefore stored raw.
 constexpr u64 DefaultRawThreshold = 256ULL * 1024 * 1024;
 
 // Application metadata written to the base package (or the first package when there is no base).

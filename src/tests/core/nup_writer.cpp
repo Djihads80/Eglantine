@@ -253,6 +253,58 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE_FALSE(by_name.contains(".listing"));
 }
 
+TEST_CASE("NUP reads zstd members above the memory cache through a temporary file", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    std::string large(300 * 1024, '\0');
+    u32 x = 7;
+    for (auto& c : large) {
+        x = x * 1664525 + 1013904223;
+        c = static_cast<char>('a' + (x >> 28));
+    }
+    Put(root / "Base/RomFS/large.bin", large);
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options{.raw_threshold = 1024 * 1024};
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+    for (const auto& file : RawFiles(ReadAll(archive))) {
+        if (file.name == "large.bin") {
+            REQUIRE(file.codec == 1);
+        }
+    }
+
+    const auto spill_dir = t.path / "spill";
+    FileSys::RealVfsFilesystem real;
+    {
+        // Members above 32 KiB do not fit the 64 KiB cache budget and are spilled to disk.
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read), 64 * 1024,
+                         spill_dir};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        const auto file = nup.GetRomFSDir(0)->GetFile("large.bin");
+        REQUIRE(file != nullptr);
+        REQUIRE(file->GetSize() == large.size());
+
+        std::string chunk(4096, '\0');
+        for (size_t offset = 0; offset < large.size(); offset += chunk.size()) {
+            const size_t count =
+                file->Read(reinterpret_cast<u8*>(chunk.data()), chunk.size(), offset);
+            REQUIRE(count == std::min(chunk.size(), large.size() - offset));
+            REQUIRE(chunk.compare(0, count, large, offset, count) == 0);
+        }
+        for (const size_t offset : {size_t{0}, size_t{123456}, size_t{77}, large.size() - 5}) {
+            const size_t count = file->Read(reinterpret_cast<u8*>(chunk.data()), 100, offset);
+            REQUIRE(count == std::min<size_t>(100, large.size() - offset));
+            REQUIRE(chunk.compare(0, count, large, offset, count) == 0);
+        }
+        REQUIRE(file->Read(reinterpret_cast<u8*>(chunk.data()), 10, large.size()) == 0);
+
+        REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) > 0);
+        REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    }
+    REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) == 0);
+}
+
 TEST_CASE("NUP marks updates standalone when the dump has no base", "[nup]") {
     TempDir t;
     const auto root = t.path / "Game";
