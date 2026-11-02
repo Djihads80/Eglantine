@@ -648,6 +648,17 @@ std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path,
 // boot that ran out of memory never saved one and the next boot did the same.
 constexpr size_t MaxPipelinesWithoutUsedList = 3000;
 
+// True when the transferable cache at path has the header this build writes (shader_environment.cpp).
+bool IsOwnPipelineCache(const std::filesystem::path& path, u32 version) {
+    static constexpr std::array<char, 8> Magic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
+    std::ifstream file{path, std::ios::binary};
+    std::array<char, 8> magic{};
+    u32 file_version{};
+    return file.read(magic.data(), magic.size()) &&
+           file.read(reinterpret_cast<char*>(&file_version), sizeof(file_version)) &&
+           magic == Magic && file_version == version;
+}
+
 // EDEN_NX2_PRELOAD_ALL_PIPELINES=1 builds every cached pipeline at boot, as before.
 bool PreloadAllPipelines() {
     static const bool all = [] {
@@ -767,15 +778,30 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
     }
-    pipeline_cache_filename = base_dir / "vulkan.bin";
-    used_pipelines_filename = base_dir / "vulkan_used.bin";
+    // Upstream Eglantine and other forks use the same <title>/vulkan*.bin names with other cache
+    // versions and delete a file of another version at boot, so switching between builds started
+    // every run with no pipelines (RX 6600 log: "Deleting old pipeline cache", ~600 pipelines
+    // built in game). Own names let the caches coexist; files this version wrote under the old
+    // names move over once.
+    const auto cache_path = [&](std::string_view stem) {
+        return base_dir / fmt::format("{}.mythos.bin", stem);
+    };
+    if (!Common::FS::Exists(cache_path("vulkan")) &&
+        IsOwnPipelineCache(base_dir / "vulkan.bin", CACHE_VERSION)) {
+        for (const std::string_view stem : {"vulkan", "vulkan_pipelines", "vulkan_used"}) {
+            std::error_code ec;
+            std::filesystem::rename(base_dir / fmt::format("{}.bin", stem), cache_path(stem), ec);
+        }
+    }
+    pipeline_cache_filename = cache_path("vulkan");
+    used_pipelines_filename = cache_path("vulkan_used");
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
     size_t queued_graphics = 0;
 
     if (use_vulkan_pipeline_cache) {
-        vulkan_pipeline_cache_filename = base_dir / "vulkan_pipelines.bin";
+        vulkan_pipeline_cache_filename = cache_path("vulkan_pipelines");
         vulkan_pipeline_cache =
             LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
     }
