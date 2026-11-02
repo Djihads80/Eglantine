@@ -55,6 +55,7 @@ class QLabel;
 class MultiplayerState;
 class QPushButton;
 class QProgressDialog;
+class NupProgressDialog;
 class QSlider;
 class QHBoxLayout;
 class WaitTreeWidget;
@@ -577,7 +578,7 @@ private:
 
     // Install progress dialog
     QProgressDialog* install_progress = nullptr;
-    QProgressDialog* nup_progress = nullptr;
+    NupProgressDialog* nup_progress = nullptr;
     QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
     std::shared_ptr<std::atomic_bool> nup_cancel;
     bool nup_running{};
