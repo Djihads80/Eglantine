@@ -93,7 +93,7 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
         }
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
-        if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
+        if (const auto romfs_dir = FileSys::FindSubdirectoryCaseless(parent, "romfs")) {
             // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
             // MiB), so loaders of the same directory share one build while any of them holds it.
             static std::mutex cache_mutex;
@@ -268,7 +268,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     romfs_exefs_dir = file_dir;
     if (const auto title_dir = file_dir->GetParentDirectory()) {
-        romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
+        romfs_version = RomFSProductVersion(FileSys::FindSubdirectoryCaseless(title_dir, "romfs"));
     }
 }
 

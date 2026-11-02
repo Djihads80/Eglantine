@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include "common/common_types.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/vfs/vfs_types.h"
@@ -50,6 +51,9 @@ struct Patch {
     std::string location;
     u32 numeric_version{0};
 };
+
+// GetSubdirectory, but case-insensitive. name must be lowercase.
+VirtualDir FindSubdirectoryCaseless(VirtualDir dir, std::string_view name);
 
 // A centralized class to manage patches to games.
 class PatchManager {
