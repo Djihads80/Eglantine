@@ -82,6 +82,13 @@ public:
                    VkImage src_image, VkSampler src_sampler, const Region2D& dst_region,
                    const Region2D& src_region, const Extent3D& src_size);
 
+    /// Temporal upscale (temporal_upscale.frag) into dst_framebuffer: the jittered input colour,
+    /// accumulated with the history image reprojected along the motion vectors.
+    void TemporalUpscale(const Framebuffer* dst_framebuffer, const ImageView& input_color,
+                         const ImageView& motion_vectors, VkImageView history,
+                         const Region2D& dst_region, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale, f32 current_weight);
+
     void BlitColorMSAA(const Framebuffer* dst_framebuffer, const ImageView& src_image_view,
                        const Region2D& dst_region, const Region2D& src_region);
 
@@ -170,6 +177,8 @@ private:
 
     [[nodiscard]] VkPipeline FindOrEmplaceColorPipeline(const BlitImagePipelineKey& key);
 
+    [[nodiscard]] VkPipeline FindOrEmplaceTemporalUpscalePipeline(VkRenderPass renderpass);
+
     [[nodiscard]] VkPipeline FindOrEmplaceDepthStencilPipeline(const BlitImagePipelineKey& key);
 
     [[nodiscard]] VkPipeline FindOrEmplaceClearColorPipeline(const BlitImagePipelineKey& key);
@@ -207,15 +216,19 @@ private:
 
     vk::DescriptorSetLayout one_texture_set_layout;
     vk::DescriptorSetLayout two_textures_set_layout;
+    vk::DescriptorSetLayout three_textures_set_layout;
     DescriptorAllocator one_texture_descriptor_allocator;
     DescriptorAllocator two_textures_descriptor_allocator;
+    DescriptorAllocator three_textures_descriptor_allocator;
     vk::PipelineLayout one_texture_pipeline_layout;
     vk::PipelineLayout two_textures_pipeline_layout;
+    vk::PipelineLayout temporal_upscale_pipeline_layout;
     vk::PipelineLayout clear_color_pipeline_layout;
     vk::PipelineLayout msaa_copy_pipeline_layout;
     vk::PipelineLayout msaa_copy_depth_stencil_pipeline_layout;
     vk::ShaderModule full_screen_vert;
     vk::ShaderModule blit_color_to_color_frag;
+    vk::ShaderModule temporal_upscale_frag;
     vk::ShaderModule blit_color_msaa_frag;
     vk::ShaderModule blit_depth_stencil_frag;
     vk::ShaderModule blit_depth_frag;
@@ -246,6 +259,8 @@ private:
 
     std::vector<BlitImagePipelineKey> blit_color_keys;
     std::vector<vk::Pipeline> blit_color_pipelines;
+    std::vector<VkRenderPass> temporal_upscale_keys;
+    std::vector<vk::Pipeline> temporal_upscale_pipelines;
     std::vector<BlitImagePipelineKey> blit_depth_stencil_keys;
     std::vector<vk::Pipeline> blit_depth_stencil_pipelines;
     std::vector<BlitImagePipelineKey> clear_color_keys;

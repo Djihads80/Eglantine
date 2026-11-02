@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+layout(local_size_x = 128) in;
+layout(std430, set = 0, binding = 0) readonly buffer Source { uint source_words[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Destination { uint dest_words[]; };
+layout(push_constant) uniform Parameters { uint source_bias; uint source_size; uint total_words; };
+
+// Diagnostic conversion of the captured 69-byte layout: insert three bytes before offset 65.
+void main() {
+    uint word = gl_GlobalInvocationID.x;
+    if (word >= total_words) return;
+    uint vertex = word / 18;
+    uint offset = (word % 18) * 4;
+    uint value = 0;
+    for (uint i = 0; i < 4; ++i) {
+        uint dest_byte = offset + i;
+        if (dest_byte >= 65 && dest_byte < 68) continue;
+        uint src_byte = vertex * 69 + dest_byte - (dest_byte >= 68 ? 3 : 0);
+        if (src_byte >= source_size) continue;
+        uint address = source_bias + src_byte;
+        uint byte_value = (source_words[address / 4] >> ((address % 4) * 8)) & 255;
+        value |= byte_value << (i * 8);
+    }
+    dest_words[word] = value;
+}
