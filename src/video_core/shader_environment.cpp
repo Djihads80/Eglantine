@@ -316,7 +316,8 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
 Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
                                                              bool via_header_index, u32 raw) {
     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
-    const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit)};
+    const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit,
+                                                       gpu_memory->UsesNativeTiling())};
     ASSERT(index <= tic_limit);
     const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
     Tegra::Texture::TICEntry entry;
