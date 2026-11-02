@@ -144,6 +144,7 @@ enum class SharedCounter : u32 {
     SyncFlushes,         ///< Of those: waited for a flush on the GPU thread
     ReadsWithoutGpuData, ///< Of ReadAreaMisses: read no GPU-written bytes
     PromotedBytes,       ///< Pages added to the buffers' read back ranges
+    ReadAreaInvalidations, ///< GPU writes that made guest threads drop their cached read areas
     Count,
 };
 
@@ -228,10 +229,11 @@ inline void Report(const char* thread_name = "GPU thread") {
     const u64 reads_without_gpu_data = take_shared(SharedCounter::ReadsWithoutGpuData);
     const u64 sync_flushes = take_shared(SharedCounter::SyncFlushes);
     const u64 promoted_kib = take_shared(SharedCounter::PromotedBytes) / 1024;
+    const u64 area_invalidations = take_shared(SharedCounter::ReadAreaInvalidations);
     line += fmt::format(" | guest reads since last report: slow path {}, asked GPU {} ({} without "
-                        "GPU data), waited for flush {}, promoted {} KiB",
+                        "GPU data), waited for flush {}, promoted {} KiB, read areas dropped {}",
                         slow_path_reads, area_misses, reads_without_gpu_data, sync_flushes,
-                        promoted_kib);
+                        promoted_kib, area_invalidations);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

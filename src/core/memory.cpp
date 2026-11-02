@@ -550,12 +550,8 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
-        if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
-            return;
-        }
-        if (!ReadTrapsEnabled()) {
-            // Slow-path reads can still flush these pages: they must not hit a cached read area.
-            read_trap_generation.fetch_add(1, std::memory_order_release);
+        if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
+            !ReadTrapsEnabled()) {
             return;
         }
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
@@ -788,7 +784,9 @@ struct Memory::Impl {
         VideoCommon::Nx2Profile::AddShared(VideoCommon::Nx2Profile::SharedCounter::SlowPathReads, 1);
         const size_t core = system.GetCurrentHostThreadID();
         auto& current_area = rasterizer_read_areas[core];
-        if (const u64 generation = read_trap_generation.load(std::memory_order_acquire);
+        // Both only grow, so the sum changes whenever either does.
+        if (const u64 generation = read_trap_generation.load(std::memory_order_acquire) +
+                                   gpu_device_memory->ReadAreaGeneration();
             read_area_generations[core] != generation) {
             current_area = {};
             read_area_generations[core] = generation;

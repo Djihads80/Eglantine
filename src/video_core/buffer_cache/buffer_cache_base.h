@@ -570,6 +570,8 @@ private:
     /// Pages whose GPU data the guest CPU has read: later reads skip the flush and rely on
     /// downloads at fences, e.g. collision meshes skinned by compute shaders.
     Common::RangeSet<DAddr> read_back_ranges;
+    /// GPU-free areas guest threads may have cached (see GetFlushArea).
+    Common::RangeSet<DAddr> handed_out_read_areas;
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 

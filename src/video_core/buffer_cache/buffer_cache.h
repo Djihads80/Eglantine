@@ -223,15 +223,20 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         }
         if (!gpu_modified_ranges.Intersects(device_addr, size)) {
             // CPU data sharing a page with GPU data: not a read back, and the trap stays armed for
-            // the GPU data. The area must not hide later reads of the rest of the page, whose
-            // writes no longer invalidate read areas once the page has been armed.
+            // the GPU data. The area covers the GPU-free bytes around the read so that the next
+            // reads there skip both cache locks, until a GPU write lands on it (TrackGpuWrite).
             Nx2Profile::AddShared(Nx2Profile::SharedCounter::ReadsWithoutGpuData, 1);
             area->preemtive = true;
-            if (gpu_modified_ranges.Intersects(device_addr_start_aligned, aligned_size) ||
-                read_trapped_ranges.Intersects(device_addr_start_aligned, aligned_size)) {
-                area->start_address = device_addr;
-                area->end_address = device_addr + size;
-            }
+            gpu_modified_ranges.ForEachInRange(device_addr_start_aligned, aligned_size,
+                                               [&](DAddr lower, DAddr upper) {
+                if (upper <= device_addr) {
+                    area->start_address = (std::max)(area->start_address, upper);
+                } else if (lower >= device_addr + size) {
+                    area->end_address = (std::min)(area->end_address, lower);
+                }
+            });
+            handed_out_read_areas.Add(area->start_address,
+                                      area->end_address - area->start_address);
             return area;
         }
         Nx2Profile::AddShared(Nx2Profile::SharedCounter::PromotedBytes, aligned_size);
@@ -1636,6 +1641,11 @@ void BufferCache<P>::TrackGpuWrite(DAddr device_addr, u64 size) {
     if (AsyncBufferDownloads()) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
         return;
+    }
+    if (handed_out_read_areas.Intersects(device_addr, size)) {
+        Nx2Profile::AddShared(Nx2Profile::SharedCounter::ReadAreaInvalidations, 1);
+        handed_out_read_areas.Clear();
+        device_memory.InvalidateReadAreas();
     }
     // Only the part the guest reads back is downloaded: one read page must not make every fence
     // copy a whole binding.
