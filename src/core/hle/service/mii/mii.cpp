@@ -48,8 +48,8 @@ public:
             {15, D<&IDatabaseService::DestroyFile>, "DestroyFile"},
             {16, D<&IDatabaseService::DeleteFile>, "DeleteFile"},
             {17, D<&IDatabaseService::Format>, "Format"},
-            {18, nullptr, "Import"},
-            {19, nullptr, "Export"},
+            {18, &IDatabaseService::StubReplyZeroed, "Import"},
+            {19, &IDatabaseService::StubReplyZeroed, "Export"},
             {20, D<&IDatabaseService::IsBrokenDatabaseWithClearFlag>, "IsBrokenDatabaseWithClearFlag"},
             {21, D<&IDatabaseService::GetIndex>, "GetIndex"},
             {22, D<&IDatabaseService::SetInterfaceVersion>, "SetInterfaceVersion"},
@@ -57,6 +57,8 @@ public:
             {24, D<&IDatabaseService::ConvertCoreDataToCharInfo>, "ConvertCoreDataToCharInfo"},
             {25, D<&IDatabaseService::ConvertCharInfoToCoreData>, "ConvertCharInfoToCoreData"},
             {26,  D<&IDatabaseService::Append>, "Append"},
+            {27, &IDatabaseService::StubReplyZeroed, "Unknown27"},
+            {28, &IDatabaseService::StubReplyZeroed, "Unknown28"},
         };
         // clang-format on
 
