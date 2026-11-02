@@ -357,7 +357,8 @@ jobs:
         if: ${{ ! matrix.mingw }}
         shell: bash
         run: |
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          # The experimental clang-cl build keeps going past errors, so one run lists them all.
+          cmake --build build/release --target yuzu yuzu-cmd --parallel ${{ matrix.clangcl && '-- -k 0' || '' }}
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
 
       - name: Build MinGW PGO
