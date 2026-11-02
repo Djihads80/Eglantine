@@ -3,8 +3,9 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
-#include <thread>
+#include <cstring>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -43,8 +44,11 @@ void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
     auto decompressed = packet;
     decompressed.data = Common::Compression::DecompressDataZSTD(packet.data);
 
-    std::lock_guard guard(packets_mutex);
-    received_packets.push(decompressed);
+    {
+        std::lock_guard guard(packets_mutex);
+        received_packets.push(std::move(decompressed));
+    }
+    packets_cv.notify_one();
 }
 
 template <typename T>
@@ -106,37 +110,26 @@ std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
 }
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
-    ASSERT(flags == 0);
+    ASSERT((flags & ~FLAG_MSG_PEEK) == 0);
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
 
-    // TODO (flTobi): Verify the timeout behavior and break when connection is lost
-    const auto timestamp = std::chrono::steady_clock::now();
-    // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
-    // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
-    // the timeout to 5s instead
-    const auto timeout = receive_timeout == 0 ? 5000 : receive_timeout;
-    while (true) {
-        {
-            std::lock_guard guard(packets_mutex);
-            if (received_packets.size() > 0) {
-                return ReceivePacket(flags, message, addr, message.size());
-            }
-        }
-
+    std::unique_lock lock(packets_mutex);
+    if (received_packets.empty()) {
         if (!blocking) {
             return {-1, Errno::AGAIN};
         }
-
-        std::this_thread::yield();
-
-        const auto time_diff = std::chrono::steady_clock::now() - timestamp;
-        const auto time_diff_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(time_diff).count();
-
-        if (time_diff_ms > timeout) {
-            return {-1, Errno::TIMEDOUT};
+        // TODO (flTobi): Verify the timeout behavior and break when connection is lost
+        // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
+        // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
+        // the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
+        const u32 timeout = receive_timeout == 0 ? 5000 : receive_timeout;
+        if (!packets_cv.wait_for(lock, std::chrono::milliseconds{timeout},
+                                 [this] { return !received_packets.empty(); })) {
+            return {-1, Errno::AGAIN};
         }
     }
+
+    return ReceivePacket(flags, message, addr, message.size());
 }
 
 std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> message, SockAddrIn* addr,
@@ -148,32 +141,22 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
         addr->portno = packet.local_endpoint.portno; // The senders port number
     }
 
-    bool peek = (flags & FLAG_MSG_PEEK) != 0;
-    std::size_t read_bytes;
-    if (packet.data.size() > max_length) {
-        read_bytes = max_length;
-        memcpy(message.data(), packet.data.data(), max_length);
+    const std::size_t read_bytes = (std::min)(packet.data.size(), max_length);
+    std::memcpy(message.data(), packet.data.data(), read_bytes);
 
-        if (protocol == Protocol::UDP) {
-            if (!peek) {
-                received_packets.pop();
-            }
-            return {-1, Errno::MSGSIZE};
-        } else if (protocol == Protocol::TCP) {
-            std::vector<u8> numArray(packet.data.size() - max_length);
-            std::copy(packet.data.begin() + max_length, packet.data.end(),
-                      std::back_inserter(numArray));
-            packet.data = numArray;
-        }
-    } else {
-        read_bytes = packet.data.size();
-        memcpy(message.data(), packet.data.data(), read_bytes);
-        if (!peek) {
-            received_packets.pop();
-        }
+    if ((flags & FLAG_MSG_PEEK) != 0) {
+        return {static_cast<s32>(read_bytes), Errno::SUCCESS};
     }
 
-    return {static_cast<u32>(read_bytes), Errno::SUCCESS};
+    if (protocol == Protocol::TCP && read_bytes < packet.data.size()) {
+        // Keep the unread part of the stream for the next call
+        packet.data.erase(packet.data.begin(), packet.data.begin() + read_bytes);
+    } else {
+        // Like BSD recv(), the rest of a datagram that does not fit is discarded
+        received_packets.pop();
+    }
+
+    return {static_cast<s32>(read_bytes), Errno::SUCCESS};
 }
 
 std::pair<s32, Errno> ProxySocket::Send(std::span<const u8> message, int flags) {
