@@ -1131,10 +1131,26 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         PrepareImage(motion_id, false, false);
         PrepareImage(dst_id, true, false);
         for (const ImageId id : {src_id, motion_id, dst_id}) {
-            if (True(slot_images[id].flags & ImageFlagBits::Rescaled) ||
-                slot_images[id].info.num_samples != 1) {
+            if (slot_images[id].info.num_samples != 1) {
                 return false;
             }
+        }
+        // With resolution scaling, bring the images that can follow to the same scale, as BlitImage
+        // does; the stand-in reads each image at its own size, so any left behind still work.
+        const auto rescaled = [&](ImageId id) {
+            return True(slot_images[id].flags & ImageFlagBits::Rescaled);
+        };
+        if (rescaled(src_id) || rescaled(motion_id) || rescaled(dst_id)) {
+            for (const ImageId id : {src_id, motion_id, dst_id}) {
+                if (!rescaled(id) && ImageCanRescale(slot_images[id])) {
+                    ScaleUp(slot_images[id]);
+                }
+            }
+        }
+        // The jitter is in the input's guest pixels.
+        if (rescaled(src_id)) {
+            const f32 factor = Settings::values.resolution_info.up_factor;
+            jitter = {jitter[0] * factor, jitter[1] * factor};
         }
         const auto view = [&](ImageId id, const Tegra::Engines::Fermi2D::Surface& surface,
                               PixelFormat format) -> std::optional<std::pair<FramebufferId, ImageViewId>> {

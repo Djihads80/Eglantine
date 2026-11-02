@@ -145,8 +145,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "Higher resolutions require more VRAM and bandwidth.\n"
               "Options lower than 1X can cause artifacts."));
     INSERT(Settings, scaling_filter, tr("Window Adapting Filter:"), QString());
-    INSERT(Settings, fsr_sharpening_slider, tr("FSR Sharpness:"),
-           tr("Determines how sharpened the image will look using FSR's or SGSR's dynamic contrast."));
+    INSERT(Settings, fsr_sharpening_slider, tr("RCAS Sharpness:"),
+           tr("Strength of RCAS (AMD's contrast-adaptive sharpening) on the temporal upscaler used "
+              "in place of a game's DLSS; 0% turns it off.\nAlso sets the sharpening of the AMD FSR 1 "
+              "and SGSR window adapting filters."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
               "can produce a more stable picture in lower resolutions."));

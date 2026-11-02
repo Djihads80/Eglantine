@@ -188,10 +188,12 @@ public:
     BlitImageHelper& blit_image_helper;
     RenderPassCache& render_pass_cache;
 
-    /// TemporalUpscale's history: its previous result, copied right after drawing it.
+    /// TemporalUpscale's history: its previous result (images[current]) and the image the next
+    /// result is stored to.
     struct TemporalHistory {
-        vk::Image image;
-        vk::ImageView view;
+        std::array<vk::Image, 2> images;
+        std::array<vk::ImageView, 2> views;
+        size_t current{};
         VkFormat format{};
         VkExtent2D extent{};
     } temporal_history;
