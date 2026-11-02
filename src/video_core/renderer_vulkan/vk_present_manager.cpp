@@ -438,6 +438,11 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
     if (is_suboptimal || size_changed) {
         RecreateSwapchain(frame);
     }
+    if (!swapchain.IsCreated()) {
+        // Recreation skips a minimized window, so an earlier failed one has nothing to replace it.
+        DiscardFrame(frame);
+        return;
+    }
 
     while (swapchain.AcquireNextImage(!use_present_thread)) {
         RecreateSwapchain(frame);

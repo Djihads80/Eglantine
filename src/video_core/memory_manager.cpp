@@ -722,6 +722,9 @@ bool MemoryManager::IsContinuousRange(GPUVAddr gpu_addr, std::size_t size) const
 }
 
 bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) const {
+    if (!IsWithinGPUAddressRange(gpu_addr) || size > address_space_size - gpu_addr) {
+        return false; // MemoryOperation skips the range without calling the unmapped callback
+    }
     bool result{true};
     auto fail = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset,
                     [[maybe_unused]] std::size_t copy_amount) {
