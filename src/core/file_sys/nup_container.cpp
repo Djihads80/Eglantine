@@ -35,6 +35,7 @@ constexpr u32 TocMagic = 0x01434F54; // "TOC\x01" little-endian
 constexpr u8 CodecRaw = 0;
 constexpr u8 CodecZstd = 1;
 constexpr u8 PackageFlagStandaloneUpdate = 0x01;
+constexpr u32 MaxDirDepth = 128;
 
 #pragma pack(push, 1)
 struct Superblock {
@@ -393,9 +394,9 @@ bool NupContainer::Parse() {
     toc_size = super.toc_size;
     blob_offset = super.blob_offset;
     file_size = super.file_size;
-    if (file_size != file->GetSize() || toc_offset < SuperblockSize ||
-        blob_offset < toc_offset + toc_size || blob_offset % 0x10 != 0 ||
-        blob_offset > file_size) {
+    if (file_size != file->GetSize() || toc_offset < SuperblockSize || blob_offset > file_size ||
+        toc_offset > blob_offset || toc_size > blob_offset - toc_offset ||
+        blob_offset % 0x10 != 0) {
         status = Loader::ResultStatus::ErrorNUPBadFormat;
         return false;
     }
@@ -425,15 +426,22 @@ bool NupContainer::Parse() {
         return false;
     }
 
-    const u64 needed = TocHeaderSize + static_cast<u64>(header.package_count) * PackageRecordSize +
-                       header.dir_count * DirRecordSize + header.file_count * FileRecordSize;
-    const u64 children_offset = needed;
-    const u64 children_bytes = header.pool_offset - needed;
-    if (toc.size() < needed || header.pool_offset < needed ||
-        header.pool_offset + header.pool_size > toc.size() || children_bytes % sizeof(u32) != 0) {
+    // The counts come from the file, so bound them by the TOC size before multiplying.
+    if (header.dir_count > toc.size() / DirRecordSize ||
+        header.file_count > toc.size() / FileRecordSize) {
         status = Loader::ResultStatus::ErrorNUPBadFormat;
         return false;
     }
+    const u64 needed = TocHeaderSize + static_cast<u64>(header.package_count) * PackageRecordSize +
+                       header.dir_count * DirRecordSize + header.file_count * FileRecordSize;
+    if (needed > toc.size() || header.pool_offset < needed || header.pool_offset > toc.size() ||
+        header.pool_size > toc.size() - header.pool_offset ||
+        (header.pool_offset - needed) % sizeof(u32) != 0) {
+        status = Loader::ResultStatus::ErrorNUPBadFormat;
+        return false;
+    }
+    const u64 children_offset = needed;
+    const u64 children_bytes = header.pool_offset - needed;
     const u8* base = toc.data();
 
     std::size_t pos = TocHeaderSize;
@@ -458,8 +466,8 @@ bool NupContainer::Parse() {
         package.root_dir = record.root_dir;
         package.exefs_dir = record.exefs_dir;
         package.romfs_dir = record.romfs_dir;
-        if (record.meta_size > 0 && record.meta_offset != 0 &&
-            record.meta_offset + record.meta_size <= file_size) {
+        if (record.meta_size > 0 && record.meta_offset != 0 && record.meta_offset <= file_size &&
+            record.meta_size <= file_size - record.meta_offset) {
             package.meta_offset = record.meta_offset;
             package.meta_size = record.meta_size;
         }
@@ -471,8 +479,9 @@ bool NupContainer::Parse() {
         DirRecord record{};
         std::memcpy(&record, base + pos, sizeof(record));
         pos += DirRecordSize;
-        if (record.first_child + record.child_count > children_bytes / sizeof(u32) ||
-            record.name_offset + record.name_length > header.pool_size) {
+        if (static_cast<u64>(record.first_child) + record.child_count >
+                children_bytes / sizeof(u32) ||
+            static_cast<u64>(record.name_offset) + record.name_length > header.pool_size) {
             status = Loader::ResultStatus::ErrorNUPBadFormat;
             return false;
         }
@@ -492,9 +501,9 @@ bool NupContainer::Parse() {
             (record.size == 0 && (record.extent_offset != 0 || record.extent_size != 0)) ||
             (record.size != 0 &&
              (record.extent_size == 0 || record.extent_offset < blob_offset ||
-              record.extent_offset % 0x10 != 0 ||
-              record.extent_offset + record.extent_size > file_size)) ||
-            record.name_offset + record.name_length > header.pool_size) {
+              record.extent_offset % 0x10 != 0 || record.extent_offset > file_size ||
+              record.extent_size > file_size - record.extent_offset)) ||
+            static_cast<u64>(record.name_offset) + record.name_length > header.pool_size) {
             status = Loader::ResultStatus::ErrorNUPBadFormat;
             return false;
         }
@@ -517,10 +526,66 @@ bool NupContainer::Parse() {
         }
     }
 
+    if (!ValidateDirTree()) {
+        status = Loader::ResultStatus::ErrorNUPBadFormat;
+        return false;
+    }
+
     for (auto& package : packages) {
         if (!ParseMeta(package)) {
             status = Loader::ResultStatus::ErrorNUPBadFormat;
             return false;
+        }
+    }
+    return true;
+}
+
+bool NupContainer::ValidateDirTree() const {
+    enum : u8 { Unvisited, InProgress, Done };
+    struct Frame {
+        u32 dir;
+        u32 next;
+    };
+    std::vector<u8> state(dirs.size(), Unvisited);
+    std::vector<u32> height(dirs.size(), 0);
+    std::vector<Frame> stack;
+    for (u32 start = 0; start < dirs.size(); ++start) {
+        if (state[start] != Unvisited) {
+            continue;
+        }
+        state[start] = InProgress;
+        stack.push_back({start, 0});
+        while (!stack.empty()) {
+            const Frame frame = stack.back();
+            const DirNode& node = dirs[frame.dir];
+            if (frame.next == node.child_count) {
+                state[frame.dir] = Done;
+                stack.pop_back();
+                if (!stack.empty()) {
+                    u32& parent_height = height[stack.back().dir];
+                    parent_height = std::max(parent_height, height[frame.dir] + 1);
+                }
+                continue;
+            }
+            ++stack.back().next;
+            const u32 child = children[static_cast<std::size_t>(node.first_child) + frame.next];
+            if (child >= dirs.size()) {
+                continue;
+            }
+            if (state[child] == InProgress) {
+                LOG_ERROR(Loader, "NUP directory tree contains a cycle");
+                return false;
+            }
+            if (state[child] == Done) {
+                height[frame.dir] = std::max(height[frame.dir], height[child] + 1);
+            } else {
+                state[child] = InProgress;
+                stack.push_back({child, 0});
+            }
+            if (stack.size() + height[child] > MaxDirDepth) {
+                LOG_ERROR(Loader, "NUP directory tree is nested too deeply");
+                return false;
+            }
         }
     }
     return true;
@@ -647,7 +712,8 @@ VirtualFile NupContainer::OpenFile(std::size_t file_index) {
 
 void NupContainer::BuildDirTree(u32 dir_index, VectorVfsDirectory& out) {
     const DirNode& node = dirs[dir_index];
-    for (u32 slot = node.first_child; slot < node.first_child + node.child_count; ++slot) {
+    const u64 end = static_cast<u64>(node.first_child) + node.child_count;
+    for (u64 slot = node.first_child; slot < end; ++slot) {
         const u32 child = children[slot];
         if (child >= dirs.size()) {
             out.AddFile(OpenFile(child - static_cast<u32>(dirs.size())));

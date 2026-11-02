@@ -184,6 +184,7 @@ private:
 
     bool Parse();
     bool ParseMeta(PackageInfo& package);
+    bool ValidateDirTree() const;
     void BuildDirTree(u32 dir_index, VectorVfsDirectory& out);
     VirtualDir BuildPackageDir(u32 dir_index);
     std::vector<u8> ReadExtentRaw(const FileNode& node) const;
