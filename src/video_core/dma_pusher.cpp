@@ -162,6 +162,9 @@ bool DmaPusher::Step() {
         // read: their words at submit time are an older frame's.
         const bool submitted = command_resume_offset == 0 &&
                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+                               (command_list.snapshot_suspensions & 1) == 0 &&
+                               command_list.snapshot_suspensions ==
+                                   suspensions.load(std::memory_order_acquire) &&
                                !IsGpuWrittenCommands(dma_state.dma_get,
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,

@@ -81,6 +81,24 @@ struct PatchCollection {
 
 namespace {
 
+FileSys::VirtualDir FindLooseRomFSDirectory(const FileSys::VirtualDir& parent) {
+    if (parent == nullptr) {
+        return nullptr;
+    }
+    if (const auto dir = parent->GetSubdirectory("romfs")) {
+        return dir;
+    }
+    for (const auto& dir : parent->GetSubdirectories()) {
+        const auto name = dir->GetName();
+        if (name.size() == 5 && std::equal(name.begin(), name.end(), "romfs", [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == b;
+            })) {
+            return dir;
+        }
+    }
+    return nullptr;
+}
+
 // RomFS for a loose ExeFS: the first .romfs file next to main, else a romfs/ directory next to
 // the exefs/ directory (the usual layout of an extracted title).
 FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
@@ -93,7 +111,7 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
         }
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
-        if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
+        if (const auto romfs_dir = FindLooseRomFSDirectory(parent)) {
             // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
             // MiB), so loaders of the same directory share one build while any of them holds it.
             static std::mutex cache_mutex;
@@ -268,7 +286,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     romfs_exefs_dir = file_dir;
     if (const auto title_dir = file_dir->GetParentDirectory()) {
-        romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
+        romfs_version = RomFSProductVersion(FindLooseRomFSDirectory(title_dir));
     }
 }
 

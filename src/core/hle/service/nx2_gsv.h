@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <atomic>
 #include <deque>
 #include <map>
@@ -1076,13 +1077,18 @@ private:
         }
         const u64 gpu_address = request.gpu_address;
         const u64 size = request.size;
+        if (size > std::numeric_limits<u64>::max() - gpu_address) {
+            LOG_WARNING(Service, "nx2:gpu 216 [{:#x}, +{:#x}] wraps the address space", gpu_address,
+                        size);
+            return;
+        }
         auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
         auto it = m_sparse_regions.upper_bound(gpu_address);
         SparseRegion* region = nullptr;
         u64 start = 0;
         if (it != m_sparse_regions.begin()) {
             --it;
-            if (gpu_address + size <= it->first + it->second.size) {
+            if (size <= it->second.size && gpu_address - it->first <= it->second.size - size) {
                 start = it->first;
                 region = &it->second;
             }
@@ -1145,7 +1151,7 @@ private:
             return std::nullopt;
         }
         --it;
-        if (gpu_address + size > it->first + it->second) {
+        if (size > it->second || gpu_address - it->first > it->second - size) {
             return std::nullopt;
         }
         return it->first;
@@ -1240,7 +1246,7 @@ private:
             return std::nullopt;
         }
         --it;
-        if (gpu_address + size > it->first + it->second.size) {
+        if (size > it->second.size || gpu_address - it->first > it->second.size - size) {
             return std::nullopt;
         }
         return it->second.cpu_address + (gpu_address - it->first);
@@ -1705,37 +1711,41 @@ private:
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
                      u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);
         }
-        // Wait for the previous frame's fence instead of this one, so the game prepares frame N+1
-        // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
-        // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
-        // EDEN_NX2_FRAMES_AHEAD=0 restores the wait for the current frame.
-        static const bool frames_ahead = [] {
+        // Wait for this frame's fence, so the game doesn't write the next frame's data (constant
+        // buffers holding texture handles, vertex data, Pokopia's glyph atlas) while the GPU
+        // thread still reads this frame's. But title 1's GPU waits on semaphores its CPU releases
+        // only after this present returns: while a channel stays suspended on one, wait for the
+        // previous frame's fence instead and let the game prepare frame N+1 meanwhile (waiting
+        // for this frame there cost 8-56 ms of every 34-105 ms frame, or never finished).
+        // EDEN_NX2_FRAMES_AHEAD=1 always waits for the previous frame, =0 always for this one.
+        static const int frames_ahead = [] {
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
-            return value == nullptr || value[0] != '0';
+            return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
         }();
         const auto entered = std::chrono::steady_clock::now();
-        if (frames_ahead) {
+        if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
                       ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
-            // Only run a frame ahead while the GPU keeps up. With the previous frame still on the
-            // GPU here, the GPU is the limit and running ahead gains nothing; and Splatoon Raiders,
-            // which reuses its command memory as if the GPU were at most a frame behind, rewrote
-            // command lists Eden had not read yet (misread commands, then crashes, with a slow
-            // GPU). Wait for this frame too then.
-            const bool gpu_behind =
-                m_previous_fence_id < 192 &&
-                !system.Host1x().GetSyncpointManager().IsReadyGuest(m_previous_fence_id,
-                                                                    m_previous_fence_value);
+            // With EDEN_NX2_FRAMES_AHEAD=1, only run a frame ahead while the GPU keeps up. With
+            // the previous frame still on the GPU here, the GPU is the limit and running ahead
+            // gains nothing; and Splatoon Raiders, which reuses its command memory as if the GPU
+            // were at most a frame behind, rewrote command lists Eden had not read yet (misread
+            // commands, then crashes, with a slow GPU). Wait for this frame too then. Not when a
+            // suspended channel brought us here: this frame can't finish before the present
+            // returns.
+            const bool gpu_behind = frames_ahead == 1 && m_previous_fence_id < 192 &&
+                                    !system.Host1x().GetSyncpointManager().IsReadyGuest(
+                                        m_previous_fence_id, m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
             if (gpu_behind) {
                 WaitForFrame(~w[22], w[24]);
             }
-            m_previous_fence_id = ~w[22];
-            m_previous_fence_value = w[24];
-        } else {
+        } else if (frames_ahead == 0) {
             WaitForFrame(~w[22], w[24]);
         }
+        m_previous_fence_id = ~w[22];
+        m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
@@ -1832,9 +1842,12 @@ private:
         m_next_vblank += interval;
     }
 
-    void WaitForFrame(u32 fence_id, u32 fence_value) {
+    /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
+    /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
+    /// Returns whether the fence was reached.
+    bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
-            return;
+            return true;
         }
         auto& syncpoints = system.Host1x().GetSyncpointManager();
         const auto start = std::chrono::steady_clock::now();
@@ -1859,10 +1872,23 @@ private:
                 wake->cv.notify_all();
             });
             std::unique_lock lk{wake->mutex};
+            // Title 1's channels resume and suspend again while they wait on this thread, so any
+            // suspension counts, not only an unbroken one.
+            bool gpu_waited = false;
             while (!wake->done && system.IsPoweredOn() &&
                    std::chrono::steady_clock::now() < deadline) {
-                wake->cv.wait_for(lk, std::chrono::milliseconds{50});
+                if (unless_gpu_waits) {
+                    gpu_waited |= system.GPU().HasSuspendedChannels();
+                    if (gpu_waited &&
+                        std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
+                        return false;
+                    }
+                }
+                wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
             }
+        }
+        if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            return false;
         }
         if (!syncpoints.IsReadyGuest(fence_id, fence_value) && m_wait_timeouts++ < 64) {
             LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
@@ -1875,6 +1901,7 @@ private:
                          std::chrono::steady_clock::now() - start)
                          .count());
         }
+        return syncpoints.IsReadyGuest(fence_id, fence_value);
     }
 
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence

@@ -12,6 +12,7 @@
 #include "common/div_ceil.h"
 #include "common/settings.h"
 #include "video_core/host_shaders/blit_color_float_frag_spv.h"
+#include "video_core/host_shaders/blit_color_srgb_to_linear_frag_spv.h"
 #include "video_core/host_shaders/blit_color_msaa_frag_spv.h"
 #include "video_core/host_shaders/blit_depth_frag_spv.h"
 #include "video_core/host_shaders/blit_depth_msaa_frag_spv.h"
@@ -708,6 +709,7 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
       blit_color_to_color_frag(BuildShader(device, BLIT_COLOR_FLOAT_FRAG_SPV)),
       temporal_upscale_frag(BuildShader(device, TEMPORAL_UPSCALE_FRAG_SPV)),
       temporal_sharpen_frag(BuildShader(device, TEMPORAL_SHARPEN_FRAG_SPV)),
+      blit_color_srgb_to_linear_frag(BuildShader(device, BLIT_COLOR_SRGB_TO_LINEAR_FRAG_SPV)),
       blit_color_msaa_frag(BuildShader(device, BLIT_COLOR_MSAA_FRAG_SPV)),
       blit_depth_stencil_frag(device.IsExtShaderStencilExportSupported()
                              ? BuildShader(device, VULKAN_BLIT_DEPTH_STENCIL_FRAG_SPV)
@@ -1403,7 +1405,10 @@ VkPipeline BlitImageHelper::FindOrEmplaceColorPipeline(const BlitImagePipelineKe
     }
     blit_color_keys.push_back(key);
 
-    const std::array stages = MakeStages(*full_screen_vert, *blit_color_to_color_frag);
+    const bool srgb_to_linear =
+        key.operation == Tegra::Engines::Fermi2D::Operation::SrcCopySrgbToLinear;
+    const std::array stages = MakeStages(
+        *full_screen_vert, srgb_to_linear ? *blit_color_srgb_to_linear_frag : *blit_color_to_color_frag);
     const VkPipelineColorBlendAttachmentState blend_attachment{
         .blendEnable = VK_FALSE,
         .srcColorBlendFactor = VK_BLEND_FACTOR_ZERO,

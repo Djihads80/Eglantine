@@ -10,11 +10,13 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include <fmt/ranges.h>
 
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
@@ -28,6 +30,9 @@ using Core::DEVICE_PAGESIZE;
 template <class P>
 BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, Runtime& runtime_)
     : runtime{runtime_}, device_memory{device_memory_}, memory_tracker{device_memory} {
+    // A new runtime has a new scheduler (its ticks restart) and a new stream buffer: whatever the
+    // stream uniform reuse remembers refers to the old ones. Before the early return below.
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
     // Ensure the first slot is used for the null buffer
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
@@ -180,6 +185,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
         gpu_modified_ranges.Subtract(device_addr, size);
     }
     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+    MarkVertexBuffersStale(device_addr, size);
 }
 
 template <class P>
@@ -230,8 +236,17 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
                                            device_addr_end_aligned - device_addr_start_aligned);
-    memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
-                                            device_addr_end_aligned - device_addr_start_aligned);
+    // Mark only data that the GPU wrote. A mark stays for the session and sends later GPU writes
+    // in the range to a download at each fence.
+    if (!area->preemtive) {
+        memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
+                                                device_addr_end_aligned - device_addr_start_aligned);
+    } else {
+        // The core keeps this area and has no mark. The next GPU write here must arm the range
+        // again, which ends the area and sets the trap.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
+    }
     return area;
 }
 
@@ -265,6 +280,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     }
 
     ClearDownload(*cpu_dest_address, amount);
+    MarkVertexBuffersStale(*cpu_dest_address, amount);
 
     BufferId buffer_a;
     BufferId buffer_b;
@@ -408,7 +424,8 @@ void BufferCache<P>::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr
 template <class P>
 void BufferCache<P>::DisableGraphicsUniformBuffer(size_t stage, u32 index) {
     auto& current = channel_state->uniform_buffers[stage][index];
-    if (current.device_addr == 0 && current.size == 0 && !current.buffer_id) [[likely]] {
+    if (current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID)
+        [[likely]] {
         return;
     }
     current = NULL_BINDING;
@@ -893,7 +910,39 @@ void BufferCache<P>::UpdateVertexBufferSlot(u32 index, const Binding& binding) {
 }
 
 template <class P>
+void BufferCache<P>::MarkVertexBuffersStale(DAddr device_addr, u64 size) {
+    if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
+        u32 mask = enabled_vertex_buffers_mask;
+        while (mask != 0) {
+            const u32 index = std::countr_zero(mask);
+            mask &= mask - 1;
+            const Binding& binding = v_buffer[index];
+            if (device_addr < binding.device_addr + binding.size &&
+                binding.device_addr < device_addr + size) {
+                stale_vertex_buffers_mask |= 1U << index;
+            }
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::RefreshRepackedVertexBuffers() {
+    if constexpr (requires { runtime.IsVertexRepacked(u32{}); }) {
+        u32 mask = std::exchange(stale_vertex_buffers_mask, 0) & enabled_vertex_buffers_mask;
+        auto& flags = maxwell3d->dirty.flags;
+        while (mask != 0) {
+            const u32 index = std::countr_zero(mask);
+            mask &= mask - 1;
+            if (runtime.IsVertexRepacked(index)) {
+                flags[Dirty::VertexBuffer0 + index] = true;
+            }
+        }
+    }
+}
+
+template <class P>
 void BufferCache<P>::BindHostVertexBuffers() {
+    RefreshRepackedVertexBuffers();
 
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
@@ -1078,8 +1127,20 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
         channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
         // Stream buffer path to avoid stalling on non-Nvidia drivers or Vulkan
-        const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-        device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
+        bool streamed = false;
+        if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
+            // The same bytes as this slot's previous bind, in the same command buffer: bind that
+            // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
+            // EDEN_NX2_UBOREUSE=0 turns it off.
+            if (VideoCommon::UniformStreamReuseEnabled()) {
+                streamed = VideoCommon::BindSmallUniformReusing(
+                    runtime, device_memory, stage, index, binding_index, device_addr, size);
+            }
+        }
+        if (!streamed) {
+            const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+            device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
+        }
         return;
     }
     // Classic cached path
@@ -1655,6 +1716,7 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
         }
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
+    MarkVertexBuffersStale(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
     if (DownloadsAtFence(device_addr, size)) {
         uncommitted_gpu_modified_ranges.Add(device_addr, size);
@@ -2205,6 +2267,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
                                                 std::span<const u8> inlined_buffer) {
     ClearDownload(dest_address, copy_size);
     gpu_modified_ranges.Subtract(dest_address, copy_size);
+    MarkVertexBuffersStale(dest_address, copy_size);
 
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];

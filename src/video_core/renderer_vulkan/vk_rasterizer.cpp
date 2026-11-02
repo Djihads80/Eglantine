@@ -1127,12 +1127,10 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
             buffer_cache.WriteMemory(addr, size);
         }
     }
-    {
-        for (const auto& [addr, size] : sequences) {
-            query_cache.InvalidateRegion(addr, size);
-            pipeline_cache.InvalidateRegion(addr, size);
-        }
+    for (const auto& [addr, size] : sequences) {
+        query_cache.InvalidateRegion(addr, size);
     }
+    pipeline_cache.InvalidateRegions(sequences);
 }
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
@@ -1424,10 +1422,27 @@ void RasterizerVulkan::FlushWork() {
 #endif // __ANDROID__
 
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
-    if ((++draw_counter & CHECK_MASK) != CHECK_MASK) {
+    if ((++draw_counter & CHECK_MASK) != 0) {
         return;
     }
-    if (draw_counter < DRAWS_TO_DISPATCH) {
+    // Keep the host GPU working while native commands are still being recorded.
+    static const u32 native_flush_draws = [] {
+        constexpr u32 fallback = 128;
+        const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
+        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+            return fallback;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (*end != '\0' || parsed == 0) {
+            return fallback;
+        }
+        return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+    }();
+    const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
+                                     ? native_flush_draws
+                                     : DRAWS_TO_DISPATCH;
+    if (draw_counter < draws_to_dispatch) {
         scheduler.DispatchWork();
         return;
     }
