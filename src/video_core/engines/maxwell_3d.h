@@ -2541,6 +2541,19 @@ public:
             return IsShaderConfigEnabled(static_cast<std::size_t>(type));
         }
 
+        // Switch 2 (NVN) task and mesh pipelines (clc597.h): SET_MESH_CONTROL, SET_MESH_SHADER_A
+        // and _B, SET_MESH_INIT_SHADER. While mesh control is on, the vertex slot holds the task
+        // program (or the mesh program when there is no task), the tessellation slot the mesh
+        // program and the geometry slot a pass-through header naming the per-primitive outputs.
+        static constexpr std::size_t MeshControl = 0x114c / 4;
+        static constexpr std::size_t MeshShaderA = 0x1150 / 4;
+        static constexpr std::size_t MeshShaderB = 0x1154 / 4;
+        static constexpr std::size_t MeshInitShader = 0x1158 / 4;
+
+        bool IsMeshEnabled() const {
+            return (reg_array[MeshControl] & 1) != 0;
+        }
+
         struct ConstantBuffer {
             u32 size;
             u32 address_high;
@@ -3083,6 +3096,12 @@ public:
         void ProcessMethodCall(Maxwell3D& maxwell3d, u32 method, u32 argument);
         void Clear(Maxwell3D& maxwell3d, u32 layer_count);
         void DrawDeferred(Maxwell3D& maxwell3d);
+        /// Instances after the first wait to be drawn together (DrawDeferred).
+        [[nodiscard]] bool HasDeferredDraw() const noexcept {
+            return draw_state.draw_mode == DrawMode::Instance && draw_state.instance_count != 0;
+        }
+        /// Methods an instance loop writes between its draws; any other write ends the loop.
+        [[nodiscard]] static bool IsInstanceLoopMethod(u32 method) noexcept;
         void DrawArray(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, u32 base_instance, u32 num_instances);
         void DrawArrayInstanced(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 vertex_first, u32 vertex_count, bool subsequent);
         void DrawIndex(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology, u32 index_first, u32 index_count, u32 base_index, u32 base_instance, u32 num_instances);
@@ -3159,6 +3178,18 @@ public:
     /// This channel's MME data RAM (shared with its compute engine).
     std::array<u32, 0xc00>& GetNativeDataRam() { return native_data_ram; }
     std::span<u32> GetNativeMacroPositions() { return native_macro_context ? std::span<u32>{native_macro_context->positions} : std::span<u32>{macro_positions}; }
+
+    /// Root tables: eight 256-byte tables written inline (method 0x504 selects a table, bits 0-2,
+    /// and a byte offset, bits 8-15; each 0x508 writes the next word) that shaders read as constant
+    /// banks 24-31. NVN2 keeps push constants in bank 24, which the Ampere lowering reads as bank 17.
+    struct RootTables {
+        static constexpr u32 SelectMethod = 0x504 / 4;
+        static constexpr u32 LoadMethod = 0x508 / 4;
+        std::array<std::array<u32, 64>, 8> tables{};
+        u32 selected{};
+        u32 offset{};
+        bool loaded{};
+    } root_tables;
 
 
     /// Write the value to the register identified by method.

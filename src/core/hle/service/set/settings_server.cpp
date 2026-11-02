@@ -102,9 +102,14 @@ ISettingsServer::ISettingsServer(Core::System& system_) : ServiceFramework{syste
         {7, C<&ISettingsServer::GetKeyCodeMap>, "GetKeyCodeMap"},
         {8, C<&ISettingsServer::GetQuestFlag>, "GetQuestFlag"},
         {9, C<&ISettingsServer::GetKeyCodeMap2>, "GetKeyCodeMap2"},
-        {10, nullptr, "GetFirmwareVersionForDebug"},
+        {10, &ISettingsServer::StubReplyZeroed, "GetFirmwareVersionForDebug"},
         {11, C<&ISettingsServer::GetDeviceNickName>, "GetDeviceNickName"},
         {12, C<&ISettingsServer::GetKeyCodeMapByPort>, "GetKeyCodeMapByPort"},
+        {13, &ISettingsServer::StubReplyZeroed, "Unknown13"},
+        {14, &ISettingsServer::StubReplyZeroed, "Unknown14"},
+        {15, &ISettingsServer::StubReplyZeroed, "Unknown15"},
+        {16, &ISettingsServer::StubReplyZeroed, "Unknown16"},
+        {17, &ISettingsServer::StubReplyZeroed, "Unknown17"},
     };
     // clang-format on
 

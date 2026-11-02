@@ -18,7 +18,7 @@ IWindowController::IWindowController(Core::System& system_, std::shared_ptr<Appl
       m_window_system{window_system}, m_applet{std::move(applet)} {
     // clang-format off
     static const FunctionInfo functions[] = {
-        {0, nullptr, "CreateWindow"},
+        {0, &IWindowController::StubReplyInterface, "CreateWindow"},
         {1,  D<&IWindowController::GetAppletResourceUserId>, "GetAppletResourceUserId"},
         {2,  D<&IWindowController::GetAppletResourceUserIdOfCallerApplet>, "GetAppletResourceUserIdOfCallerApplet"},
         {10, D<&IWindowController::AcquireForegroundRights>, "AcquireForegroundRights"},

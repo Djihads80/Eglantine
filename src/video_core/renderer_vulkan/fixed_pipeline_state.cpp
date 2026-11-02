@@ -14,6 +14,7 @@
 #include "common/settings.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 
 namespace Vulkan {
@@ -267,6 +268,18 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     dynamic_state.Refresh3(regs, features);
     if (xfb_enabled) {
         RefreshXfbState(xfb_state, regs);
+    }
+    if (!dynamic_vertex_input && ExperimentalStaticVertexRepackEnabled()) {
+        const u32 repack_mask = VertexRepackMask(regs);
+        // Refresh from guest values even when only the stride changed: offsets must not accumulate.
+        for (size_t index = 0; index < attributes.size(); ++index) {
+            const auto& input = regs.vertex_attrib_format[index];
+            attributes[index].offset.Assign(RepackedVertexOffset(repack_mask, input.buffer, input.offset));
+        }
+        for (u32 binding = 0; binding < vertex_strides.size(); ++binding) {
+            vertex_strides[binding] = static_cast<u16>(RepackedVertexStride(
+                repack_mask, binding, regs.vertex_streams[binding].stride));
+        }
     }
 }
 

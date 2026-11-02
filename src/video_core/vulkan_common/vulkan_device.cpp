@@ -620,12 +620,16 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
 
     sets_per_pool = 64;
+    // AMD GCN4 and older are told apart by their lack of float16, read before float16 is turned
+    // off for newer AMD drivers below: checked after that, every AMD GPU looked like GCN4 and lost
+    // VK_EXT_sampler_filter_minmax (an RDNA3 Radeon 780M logged it).
+    const bool amd_gcn4_or_older = is_amd && !features.shader_float16_int8.shaderFloat16;
     if (is_amd_driver) {
         // AMD drivers need a higher amount of Sets per Pool in certain circumstances like in XC2.
         sets_per_pool = 96;
 
         // Disable VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT on AMD GCN4 and lower as it is broken.
-        if (!features.shader_float16_int8.shaderFloat16) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT");
             has_broken_cube_compatibility = true;
@@ -641,7 +645,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
     if (extensions.sampler_filter_minmax && is_amd) {
         // Disable ext_sampler_filter_minmax on AMD GCN4 and lower as it is broken.
-        if (!features.shader_float16_int8.shaderFloat16) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_EXT_sampler_filter_minmax");
             RemoveExtension(extensions.sampler_filter_minmax,
@@ -775,10 +779,14 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             .flags = flags,
             .physicalDevice = physical,
             .device = *logical,
-            // 64 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
+            // 16 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
             // texture sizes left ~38% of the image blocks empty (2 GB of an 8 GB card in title
-            // 1), which the texture cache counted as used and kept evicting textures for.
-            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
+            // 1), which the texture cache counted as used and kept evicting textures for. With
+            // 64 MiB ones textures created and deleted by the thousand still left ~1.7 GB of holes
+            // after ten minutes, with 32 MiB ones ~0.5 GB: a block drains only once all of its
+            // images are gone, and fewer per block drain sooner. VMA gives allocations over half a
+            // block (8 MiB) their own memory, which goes back to the driver when they are freed.
+            .preferredLargeHeapBlockSize = 16u * 1024u * 1024u,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = heap_size_limit != 0 ? heap_size_limits.data() : nullptr,
@@ -800,7 +808,35 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 Device::~Device() {
     SaveStaticPipelineCache();
     ShutdownGPULogging();
+    for (auto& pools : separate_pools) {
+        for (VmaPool pool : pools) {
+            if (pool != VK_NULL_HANDLE) {
+                vmaDestroyPool(allocator, pool);
+            }
+        }
+    }
     vmaDestroyAllocator(allocator);
+}
+
+VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type) const {
+    std::scoped_lock lk{separate_pools_mutex};
+    VmaPool& pool = separate_pools[static_cast<u32>(kind)][memory_type];
+    if (pool == VK_NULL_HANDLE) {
+        const VmaPoolCreateInfo ci{
+            .memoryTypeIndex = memory_type,
+            .flags = 0,
+            .blockSize = SeparatePoolBlockSize,
+            .minBlockCount = 0,
+            .maxBlockCount = 0,
+            .priority = 0.f,
+            .minAllocationAlignment = 0,
+            .pMemoryAllocateNext = nullptr,
+        };
+        if (vmaCreatePool(allocator, &ci, &pool) != VK_SUCCESS) {
+            pool = VK_NULL_HANDLE;
+        }
+    }
+    return pool;
 }
 
 void Device::LoadStaticPipelineCache() {
@@ -1511,6 +1547,15 @@ void Device::RemoveUnsuitableExtensions() {
                                VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     }
 
+    // VK_EXT_mesh_shader: Switch 2 titles draw some geometry with task and mesh programs. Only
+    // the two stages are used; the multiview, shading rate and query features need more.
+    features.mesh_shader.multiviewMeshShader = VK_FALSE;
+    features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
+    features.mesh_shader.meshShaderQueries = VK_FALSE;
+    extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
+    RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
+                                       VK_EXT_MESH_SHADER_EXTENSION_NAME);
+
     // VK_KHR_shader_quad_control
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,
@@ -1637,6 +1682,16 @@ u64 Device::GetDeviceMemoryUsage() const {
         result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
     }
     return result;
+}
+
+u64 Device::GetDeviceMemorySlack() const {
+    if (allocator == nullptr) {
+        return 0;
+    }
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
+    vmaGetHeapBudgets(allocator, heap_budgets.data());
+    const VmaStatistics& statistics = heap_budgets[main_heap].statistics;
+    return statistics.blockBytes - (std::min)(statistics.blockBytes, statistics.allocationBytes);
 }
 
 u64 Device::GetDeviceMemoryBudget() const {

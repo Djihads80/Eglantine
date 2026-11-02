@@ -21,10 +21,10 @@ IScreenShotApplicationService::IScreenShotApplicationService(
     // clang-format off
     static const FunctionInfo functions[] = {
         {32, C<&IScreenShotApplicationService::SetShimLibraryVersion>, "SetShimLibraryVersion"},
-        {201, nullptr, "SaveScreenShot"},
+        {201, &IScreenShotApplicationService::StubReplyZeroed, "SaveScreenShot"},
         {203, C<&IScreenShotApplicationService::SaveScreenShotEx0>, "SaveScreenShotEx0"},
         {205, C<&IScreenShotApplicationService::SaveScreenShotEx1>, "SaveScreenShotEx1"},
-        {210, nullptr, "SaveScreenShotEx2"},
+        {210, &IScreenShotApplicationService::StubReplyZeroed, "SaveScreenShotEx2"},
     };
     // clang-format on
 
