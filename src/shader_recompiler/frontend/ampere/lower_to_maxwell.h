@@ -1583,8 +1583,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool small = mode == 0x00212800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
+            // Bit 62: |Rs| on the register form (Hyrule Warriors: F2I.FTZ.U16.NTZ R26, |R42|).
+            const bool absolute = opcode == 0x305 && !half && insn.Bits(62, 1);
             if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||
-                (opcode != 0xb05 && (insn.words[1] & 0xffffff00U)) ||
+                (opcode != 0xb05 && (insn.words[1] & (absolute ? 0xbfffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
             }
@@ -1595,6 +1597,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 extract_half({source, 2, false, false}, 0, 252);
                 source = 252;
             }
+            if (absolute) source = materialize(0, source, 249, true, false);
             if (!is_signed) {
                 // Clear NaNs without consuming a guest predicate. Clamp the
                 // conversion below 2^32, retaining an overflow mask for saturation.
@@ -1779,8 +1782,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             break;
         }
-        case 0x91a: // DEPBAR.LE SB5, 1: scoreboard wait, represented by IR data dependencies.
-            if (insn.words[0] != 0x791a || (insn.words[1] & ~0xfc0U) != 0xd000 || insn.words[2]) {
+        case 0x91a: // DEPBAR.LE SBn, count[, {list}]: scoreboard waits, represented by IR data dependencies.
+            // Bits 32-37: the scoreboard list (Hyrule Warriors: DEPBAR.LE SB0, 0x0, {3,2,1}), 38-43
+            // the count, 44-46 the scoreboard, 47 .LE.
+            if (insn.words[0] != 0x791a || (insn.words[1] & ~0x7fffU) != 0x8000 || insn.words[2]) {
                 return fail(index, "native dependency barrier mode");
             }
             break;
@@ -2138,8 +2143,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 result.instructions.push_back(base(0x0100000000000000ULL) | (u64{15} << 12) |
                     (u64{insn.words[1]} << 20));
             } else if (opcode == 0xc02) {
-                if (insn.words[1] >= 16 || insn.words[2] != 0x08000f00) return fail(index, "native uniform move source");
-                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.words[1] + 216} << 20));
+                // Any uniform register (Hyrule Warriors: MOV R18, UR17; MOV R105, UR42).
+                const u32 source = insn.words[1] < 64 ? uniform_register(insn.words[1]) : ~0U;
+                if (source == ~0U || insn.words[2] != 0x08000f00) return fail(index, "native uniform move source");
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{source} << 20));
             } else if (opcode == 0x202) {
                 if (insn.Bits(40, 24)) return fail(index, "native MOV register modifiers");
                 result.instructions.push_back(base(0x5c98000000000000ULL) | (u64{15} << 39) |
@@ -2498,6 +2505,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(0x3828000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
                      (u64{32 - insn.Bits(75, 5)} << 20) | (u64{insn.Bits(73, 1)} << 48));
                 emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{b} << 20));
+                break;
+            }
+            if (!insn.Bits(80, 1) && !insn.Bits(72, 1) && !insn.Bits(74, 1) && insn.Bits(81, 3) == 7 &&
+                !insn.Bits(62, 2)) {
+                // LEA Rd, Ra, c[b][o], s without a carry (Hyrule Warriors): ISCADD (Ra << s) + c.
+                const u32 b = operand(1, false);
+                emit(base(0x5c18000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) | (u64{b} << 20) |
+                     (u64{insn.Bits(75, 5)} << 39));
                 break;
             }
             if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
