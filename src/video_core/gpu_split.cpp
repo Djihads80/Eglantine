@@ -292,6 +292,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
+        Nx2Profile::t_last_method = method;
         if ((head & Direct) != 0) {
             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
             engine->ConsumeSink(*system);
@@ -313,6 +314,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
+        Nx2Profile::t_last_method = method;
         Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
