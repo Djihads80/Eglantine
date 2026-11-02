@@ -7,6 +7,7 @@
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/glsl/glsl_emit_context.h"
+#include "shader_recompiler/backend/nvn_storage_descriptor.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/runtime_info.h"
@@ -636,7 +637,7 @@ std::string EmitContext::DefineGlobalMemoryFunctions() {
     std::string load_func_128{"uvec4 LoadGlobal128(uint64_t addr){"};
     const size_t num_buffers{info.storage_buffers_descriptors.size()};
     for (size_t index = 0; index < num_buffers; ++index) {
-        if (!info.nvn_buffer_used[index]) {
+        if (!UsesNvnStorageDescriptor(info, info.storage_buffers_descriptors[index])) {
             continue;
         }
         define_body(write_func, index, "{0}[uint(addr-{1})>>2]=data;return;}}");
