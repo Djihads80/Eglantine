@@ -60,7 +60,8 @@ void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
         }
         received_packets.push(std::move(decompressed));
     }
-    packets_cv.notify_one();
+    // A MSG_PEEK reader leaves the packet queued, so every waiter must see it
+    packets_cv.notify_all();
 }
 
 template <typename T>
@@ -72,6 +73,7 @@ Errno ProxySocket::SetSockOpt(SOCKET fd_, int option, T value) {
 Errno ProxySocket::Initialize(Domain domain, Type type, Protocol socket_protocol) {
     {
         std::lock_guard guard(packets_mutex);
+        socket_type = type;
         protocol = socket_protocol;
     }
     SetSockOpt(fd, SO_TYPE, type);
@@ -122,7 +124,7 @@ Errno ProxySocket::Shutdown(ShutdownHow how) {
 }
 
 std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
-    if (protocol == Protocol::TCP) {
+    if (socket_type == Type::STREAM) {
         // Room TCP sockets have no peer (Connect and Send are stubs). Report an empty queue as the
         // end of the stream, as before, instead of blocking the bsd service until the timeout.
         std::lock_guard guard(packets_mutex);
@@ -179,7 +181,7 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
         return {static_cast<s32>(read_bytes), Errno::SUCCESS};
     }
 
-    if (protocol == Protocol::TCP && read_bytes < unread.size()) {
+    if (socket_type == Type::STREAM && read_bytes < unread.size()) {
         // Keep the unread part of the stream for the next call
         front_read_offset += read_bytes;
     } else {

@@ -92,6 +92,7 @@ private:
     std::queue<ProxyPacket> received_packets;
     std::size_t front_read_offset = 0; ///< Bytes of the front TCP packet that were already read
     Protocol protocol{};
+    Type socket_type{}; ///< Stream checks use the type, since protocol 0 means the default protocol
 
     std::mutex packets_mutex;
     std::condition_variable packets_cv;
