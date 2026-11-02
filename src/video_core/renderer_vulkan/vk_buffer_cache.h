@@ -110,6 +110,12 @@ public:
 
     void TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept;
 
+    u32 SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs, bool dynamic_input);
+
+    bool IsVertexRepacked(u32 binding) const {
+        return (vertex_repack_mask & (1U << binding)) != 0;
+    }
+
     u64 CurrentTick();
 
     bool IsFree(u64 tick);
@@ -263,6 +269,8 @@ private:
     vk::Buffer null_buffer;
 
     std::unique_ptr<Uint8Pass> uint8_pass;
+    std::unique_ptr<VertexRepackPass> vertex_repack_pass;
+    u32 vertex_repack_mask{};
     QuadIndexedPass quad_index_pass;
 
     MultiRangeBufferCache multi_range_buffers;

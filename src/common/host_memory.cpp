@@ -51,6 +51,7 @@
 
 #endif // ^^^ POSIX ^^^
 
+#include <cstdlib>
 #include <mutex>
 #include <random>
 
@@ -517,6 +518,14 @@ public:
         , virtual_size{virtual_size_}
     {}
 
+#ifdef __linux__
+    bool PunchHole(size_t offset, size_t length) {
+        return fd >= 0 &&
+               fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(offset),
+                         static_cast<off_t>(length)) == 0;
+    }
+#endif
+
     bool Init() {
         long page_size = sysconf(_SC_PAGESIZE);
         ASSERT_MSG(page_size == 0x1000, "page size {:#x} is incompatible with 4K paging", page_size);
@@ -791,6 +800,19 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 }
 
 void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
+#ifdef __linux__
+    const size_t first = AlignUp(physical_offset, PageAlignment);
+    const size_t last = AlignDown(physical_offset + length, PageAlignment);
+    static const bool punch = [] {
+        const char* value = std::getenv("EDEN_PUNCH_HOLE");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (punch && fill_value == 0 && impl && last > first && impl->PunchHole(first, last - first)) {
+        std::memset(backing_base + physical_offset, 0, first - physical_offset);
+        std::memset(backing_base + last, 0, physical_offset + length - last);
+        return;
+    }
+#endif
     std::memset(backing_base + physical_offset, fill_value, length);
 }
 
