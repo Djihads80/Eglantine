@@ -117,33 +117,46 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     return nullptr;
 }
 
-// The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
-// their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
-// Kart World 1.8.0). A hotfix can keep its minor version's tables (Product.110 in a 1.1.1).
-std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
-    if (romfs_dir == nullptr) {
-        return {};
-    }
-    const auto system_dir = romfs_dir->GetSubdirectory("System");
-    const auto resource_dir = system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr;
-    if (resource_dir == nullptr) {
-        return {};
-    }
-    constexpr std::string_view Prefix = "ResourceSizeTable.Product.";
+// The newest three-digit tag in a directory's file names of the form <prefix>NNN.<anything>.
+std::string NewestProductTag(const FileSys::VirtualDir& dir, std::string_view prefix) {
     std::string best;
-    for (const auto& file : resource_dir->GetFiles()) {
+    if (dir == nullptr) {
+        return best;
+    }
+    for (const auto& file : dir->GetFiles()) {
         const std::string file_name = file->GetName();
-        if (!file_name.starts_with(Prefix) || file_name.size() < Prefix.size() + 4) {
+        if (!file_name.starts_with(prefix) || file_name.size() < prefix.size() + 4) {
             continue;
         }
-        const std::string_view digits = std::string_view{file_name}.substr(Prefix.size(), 3);
-        if (file_name[Prefix.size() + 3] != '.' ||
+        const std::string_view digits = std::string_view{file_name}.substr(prefix.size(), 3);
+        if (file_name[prefix.size() + 3] != '.' ||
             !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) {
             continue;
         }
         if (std::string version{digits}; version > best) {
             best = version;
         }
+    }
+    return best;
+}
+
+// The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
+// their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
+// Kart World 1.8.0), and some name their game data list instead (GameData/GameDataList.Product.320.*
+// in Donkey Kong Bananza 3.2.0). A hotfix can keep its minor version's tables (Product.110 in a
+// 1.1.1).
+std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
+    if (romfs_dir == nullptr) {
+        return {};
+    }
+    const auto system_dir = romfs_dir->GetSubdirectory("System");
+    std::string best = NewestProductTag(
+        system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr,
+        "ResourceSizeTable.Product.");
+    if (const auto game_data = NewestProductTag(romfs_dir->GetSubdirectory("GameData"),
+                                                "GameDataList.Product.");
+        game_data > best) {
+        best = game_data;
     }
     if (best.empty()) {
         return {};

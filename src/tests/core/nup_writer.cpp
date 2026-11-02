@@ -421,3 +421,25 @@ TEST_CASE("NUP writes metadata overrides to the base and the newest update", "[n
     REQUIRE(packages[2].display_version == "9.8.7");
     REQUIRE(packages[1].display_version == "1.1.0");
 }
+
+TEST_CASE("NUP probes the version from the game data list tag", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    Put(root / "base/exefs/main", "main");
+    Put(root / "base/exefs/main.npdm", Npdm(TitleId));
+    Put(root / "base/romfs/GameData/GameDataList.Product.100.byml.zs", "x");
+    Put(root / "base/romfs/System/Resource/ResourceSizeTable.Product.rsizetable.zs", "x");
+    Put(root / "updates/458752/exefs/main", "main");
+    Put(root / "updates/458752/exefs/main.npdm", Npdm(TitleId));
+    Put(root / "updates/458752/romfs/GameData/GameDataList.Product.320.byml.zs", "x");
+    Put(root / "updates/458752/romfs/GameData/GameDataList.Product.320.revision.txt", "1");
+
+    auto probed = FileSys::Nup::ProbeMetadata(root);
+    REQUIRE(probed.display_version == "3.2.0");
+    REQUIRE(probed.version_source == "update 458752");
+
+    fs::remove_all(root / "updates");
+    probed = FileSys::Nup::ProbeMetadata(root);
+    REQUIRE(probed.display_version == "1.0.0");
+    REQUIRE(probed.version_source == "base");
+}
