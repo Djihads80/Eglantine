@@ -549,6 +549,8 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
+        // Clean cached read areas also need invalidation when reactive flushing is enabled.
+        read_trap_generation.fetch_add(1, std::memory_order_release);
         if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
             !ReadTrapsEnabled()) {
             return;
@@ -781,6 +783,19 @@ struct Memory::Impl {
             gpu_device_memory = &system.Host1x().MemoryManager();
         }
         const size_t core = system.GetCurrentHostThreadID();
+        if (core >= Core::Hardware::NUM_CPU_CORES) {
+            // A service thread has no slot in the arrays below, and it does not use a slot of a
+            // core. It keeps no area, so it asks on each read.
+            if (static std::atomic_flag logged; !logged.test_and_set(std::memory_order_relaxed)) {
+                LOG_INFO(HW_Memory, "Read of cached guest memory from a thread that is not a core");
+            }
+            Common::ScratchBuffer<u32> scratch;
+            gpu_device_memory->ApplyOpOnPointer(p, scratch, [&](DAddr address) {
+                DisarmReadTraps(v_address, size);
+                (void)system.GPU().OnCPURead(address, size);
+            });
+            return;
+        }
         auto& current_area = rasterizer_read_areas[core];
         if (const u64 generation = read_trap_generation.load(std::memory_order_acquire);
             read_area_generations[core] != generation) {
