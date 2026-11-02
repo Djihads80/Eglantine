@@ -14,6 +14,7 @@
 #include "common/assert.h"
 #include "common/bit_util.h"
 #include "common/common_types.h"
+#include "common/div_ceil.h"
 #include "common/literals.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -27,6 +28,16 @@ using namespace Common::Literals;
 
 // Maximum potential alignment of a Vulkan buffer
 constexpr VkDeviceSize MAX_ALIGNMENT = 256;
+
+// Staging buffers no request took for this many frames are freed once the GPU is done with them.
+constexpr u64 STAGING_KEEP_FRAMES = 60;
+
+// At most this many staging buffers are freed per frame, so a burst does not stall one frame.
+constexpr size_t STAGING_DELETIONS_PER_FRAME = 32;
+
+// A request may take a free buffer up to this many fine size classes larger than its own
+// (at most 1.5 times its size), instead of allocating a new one.
+constexpr u32 STAGING_REUSE_LARGER_CLASSES = 2;
 
 // Stream buffer size in bytes
 // *NIX drivers are more sensitive to increased buffers for streaming.
@@ -108,7 +119,7 @@ StagingBufferRef StagingBufferPool::Request(size_t size, MemoryUsage usage, bool
 }
 
 void StagingBufferPool::FreeDeferred(StagingBufferRef& ref) {
-    auto& entries = GetCache(ref.usage)[ref.log2_level].entries;
+    auto& entries = GetCache(ref.usage)[ref.size_class].entries;
     const auto is_this_one = [&ref](const StagingBuffer& entry) {
         return entry.index == ref.index;
     };
@@ -116,15 +127,41 @@ void StagingBufferPool::FreeDeferred(StagingBufferRef& ref) {
     ASSERT(it != entries.end());
     ASSERT(it->deferred);
     it->tick = scheduler.CurrentTick();
+    it->frame = frame;
     it->deferred = false;
 }
 
 void StagingBufferPool::TickFrame() {
-    current_delete_level = (current_delete_level + 1) % NUM_LEVELS;
+    ++frame;
+    // Every size class is checked each frame: buffers requests keep taking stay, idle ones go.
+    size_t deletions_left = STAGING_DELETIONS_PER_FRAME;
+    ReleaseCache(upload_cache, deletions_left);
+    ReleaseCache(download_cache, deletions_left);
+    ReleaseCache(device_local_cache, deletions_left);
+}
 
-    ReleaseCache(MemoryUsage::DeviceLocal);
-    ReleaseCache(MemoryUsage::Upload);
-    ReleaseCache(MemoryUsage::Download);
+// Sizes up to 1 MiB round up to a power of two. Larger ones round up to a quarter step of the
+// power of two below them (1.25, 1.5, 1.75 or 2 times it), so a 17 MiB upload takes a 20 MiB
+// buffer instead of a 32 MiB one.
+u32 StagingBufferPool::SizeClass(size_t size) {
+    const u32 log2 = static_cast<u32>(Common::Log2Ceil(size));
+    if (log2 <= FINE_SIZE_CLASSES_FROM_LOG2) {
+        return log2;
+    }
+    const u32 base_log2 = log2 - 1;
+    const size_t step = size_t{1} << (base_log2 - 2);
+    const size_t steps = Common::DivCeil(size - (size_t{1} << base_log2), step);
+    return FINE_SIZE_CLASSES_FROM_LOG2 + (base_log2 - FINE_SIZE_CLASSES_FROM_LOG2) * 4 +
+           static_cast<u32>(steps);
+}
+
+size_t StagingBufferPool::ClassSize(u32 size_class) {
+    if (size_class <= FINE_SIZE_CLASSES_FROM_LOG2) {
+        return size_t{1} << size_class;
+    }
+    const u32 fine = size_class - FINE_SIZE_CLASSES_FROM_LOG2 - 1;
+    const u32 base_log2 = FINE_SIZE_CLASSES_FROM_LOG2 + fine / 4;
+    return (size_t{1} << base_log2) + (fine % 4 + 1) * (size_t{1} << (base_log2 - 2));
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
@@ -159,7 +196,7 @@ StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
         .offset = static_cast<VkDeviceSize>(offset),
         .mapped_span = stream_pointer.subspan(offset, size),
         .usage{},
-        .log2_level{},
+        .size_class{},
         .index{},
     };
 }
@@ -172,16 +209,24 @@ bool StagingBufferPool::AreRegionsActive(size_t region_begin, size_t region_end)
 
 StagingBufferRef StagingBufferPool::GetStagingBuffer(size_t size, MemoryUsage usage,
                                                      bool deferred) {
-    if (const std::optional<StagingBufferRef> ref = TryGetReservedBuffer(size, usage, deferred)) {
-        return *ref;
+    const u32 size_class = SizeClass(size);
+    const u32 last_class =
+        size_class > FINE_SIZE_CLASSES_FROM_LOG2
+            ? (std::min)(size_class + STAGING_REUSE_LARGER_CLASSES, static_cast<u32>(NUM_LEVELS - 1))
+            : size_class;
+    for (u32 reuse_class = size_class; reuse_class <= last_class; ++reuse_class) {
+        if (const std::optional<StagingBufferRef> ref =
+                TryGetReservedBuffer(reuse_class, usage, deferred)) {
+            return *ref;
+        }
     }
     return CreateStagingBuffer(size, usage, deferred);
 }
 
-std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t size,
+std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(u32 size_class,
                                                                         MemoryUsage usage,
                                                                         bool deferred) {
-    StagingBuffers& cache_level = GetCache(usage)[Common::Log2Ceil(size)];
+    StagingBuffers& cache_level = GetCache(usage)[size_class];
 
     const auto is_free = [this](const StagingBuffer& entry) {
         return !entry.deferred && scheduler.IsFree(entry.tick);
@@ -197,18 +242,19 @@ std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t s
     }
     cache_level.iterate_index = std::distance(entries.begin(), it) + 1;
     it->tick = deferred ? (std::numeric_limits<u64>::max)() : scheduler.CurrentTick();
+    it->frame = frame;
     ASSERT(!it->deferred);
     it->deferred = deferred;
     return it->Ref();
 }
 
 StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage usage, bool deferred) {
-    auto const log2_size = Common::Log2Ceil<u32>(u32(size));
+    const u32 size_class = SizeClass(size);
     VkBufferCreateInfo buffer_ci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .size = 1ULL << log2_size,
+        .size = ClassSize(size_class),
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -232,14 +278,15 @@ StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage
         device.IsBufferDeviceAddressSupported()
             ? device.GetLogical().GetBufferDeviceAddress(*buffer)
             : VkDeviceAddress{};
-    StagingBuffer& entry = GetCache(usage)[log2_size].entries.emplace_back(StagingBuffer{
+    StagingBuffer& entry = GetCache(usage)[size_class].entries.emplace_back(StagingBuffer{
         .buffer = std::move(buffer),
         .device_address = buffer_address,
         .mapped_span = mapped_span,
         .usage = usage,
-        .log2_level = log2_size,
+        .size_class = size_class,
         .index = unique_ids++,
         .tick = deferred ? (std::numeric_limits<u64>::max)() : scheduler.CurrentTick(),
+        .frame = frame,
         .deferred = deferred,
     });
     return entry.Ref();
@@ -259,32 +306,29 @@ StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage 
     }
 }
 
-void StagingBufferPool::ReleaseCache(MemoryUsage usage) {
-    ReleaseLevel(GetCache(usage), current_delete_level);
-}
-
-void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
-    constexpr size_t deletions_per_tick = 16;
-    auto& staging = cache[log2];
-    auto& entries = staging.entries;
-    const size_t old_size = entries.size();
-
-    const auto is_deletable = [this](const StagingBuffer& entry) {
-        return scheduler.IsFree(entry.tick);
+void StagingBufferPool::ReleaseCache(StagingBuffersCache& cache, size_t& deletions_left) {
+    const auto is_deletable = [this, &deletions_left](const StagingBuffer& entry) {
+        if (deletions_left == 0 || frame - entry.frame <= STAGING_KEEP_FRAMES ||
+            !scheduler.IsFree(entry.tick)) {
+            return false;
+        }
+        --deletions_left;
+        return true;
     };
-    const size_t begin_offset = staging.delete_index;
-    const size_t end_offset = (std::min)(begin_offset + deletions_per_tick, old_size);
-    const auto begin = entries.begin() + begin_offset;
-    const auto end = entries.begin() + end_offset;
-    entries.erase(std::remove_if(begin, end, is_deletable), end);
-
-    const size_t new_size = entries.size();
-    staging.delete_index += deletions_per_tick;
-    if (staging.delete_index >= new_size) {
-        staging.delete_index = 0;
-    }
-    if (staging.iterate_index > new_size) {
-        staging.iterate_index = 0;
+    // Largest first: they hold the most memory.
+    for (auto level = cache.rbegin(); level != cache.rend(); ++level) {
+        if (deletions_left == 0) {
+            return;
+        }
+        StagingBuffers& staging = *level;
+        auto& entries = staging.entries;
+        if (entries.empty()) {
+            continue;
+        }
+        std::erase_if(entries, is_deletable);
+        if (staging.iterate_index > entries.size()) {
+            staging.iterate_index = 0;
+        }
     }
 }
 
