@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <memory>
 #include <mutex>
 
 #include "audio_core/out/audio_out_system.h"
@@ -134,6 +135,8 @@ public:
     u64 GetPlayedSampleCount() const;
 
 private:
+    /// Keeps the manager alive until this audio out is gone (declared first, destroyed last).
+    std::shared_ptr<Manager> manager_keep_alive;
     /// The AudioOut::Manager this audio out is registered with
     Manager& manager;
     /// Manager's mutex

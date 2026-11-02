@@ -70,6 +70,12 @@ Result AudioManager::SetInManager(BufferEventFunc buffer_func) {
     return Service::Audio::ResultOperationFailed;
 }
 
+void AudioManager::ClearManager(const Event::Type type) {
+    // The manager thread holds the event lock whenever it runs a callback.
+    std::scoped_lock l{lock, events.GetAudioEventLock()};
+    buffer_events[events.GetManagerIndex(type)] = nullptr;
+}
+
 void AudioManager::SetEvent(const Event::Type type, const bool signalled) {
     events.SetAudioEvent(type, signalled);
 }

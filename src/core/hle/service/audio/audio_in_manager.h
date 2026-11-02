@@ -54,7 +54,7 @@ private:
         AudioCore::AudioIn::AudioInParameter parameter,
         InCopyHandle<Kernel::KProcess> process_handle, ClientAppletResourceUserId aruid);
 
-    std::unique_ptr<AudioCore::AudioIn::Manager> impl;
+    std::shared_ptr<AudioCore::AudioIn::Manager> impl;
 };
 
 } // namespace Service::Audio
