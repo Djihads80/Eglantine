@@ -39,6 +39,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
+        {"pack-nup", required_argument, 0, 'N'},
         {0, 0, 0, 0},
         // clang-format on
     };
@@ -61,6 +62,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             case 'g':
                 p.filepath = std::string(optarg);
+                break;
+            case 'N':
+                p.pack_nup_source = std::string(optarg);
                 break;
             case 'i': {
                 p.input_profile = std::string(optarg);
@@ -196,7 +200,9 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
             "-p, --program         Pass following string as arguments to executable\n"
             "-u, --user            Select a specific user profile from 0 to 7\n"
             "-d, --debug           Run the GDB stub on a port from 1 to 65535\n"
-            "-v, --version         Output version information and exit\n",
+            "-v, --version         Output version information and exit\n"
+            "--pack-nup <dump> [<out.nup>]"
+            " Pack a loose dump with all its updates and DLC into a NUP file and exit\n",
             lp.argv0
         );
     }
