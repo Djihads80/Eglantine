@@ -15,6 +15,7 @@
 #include "common/logging.h"
 #include "common/random.h"
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
@@ -264,6 +265,9 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     if (nacp_file != nullptr) {
         control.emplace(nacp_file);
         name = control->GetApplicationName();
+    } else if (sidecar_dirs.size() > 1 && Common::ToLower(file_dir->GetName()) == "exefs") {
+        // Without control data, name the game after its folder like the game list does
+        name = sidecar_dirs.back()->GetName();
     }
 
     romfs_exefs_dir = file_dir;
@@ -522,3 +526,4 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadNSOModules(Modules& out_mo
 }
 
 } // namespace Loader
+
