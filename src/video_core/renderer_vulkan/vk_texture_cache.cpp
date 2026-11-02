@@ -244,6 +244,35 @@ enum class SparseTilesMode {
     return size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
+// Vulkan's standard sparse block shape for single-sampled 2D images (64 KiB blocks), in texel
+// blocks, for a texel block of `block_bytes`. Only valid when the device reports
+// residencyStandard2DBlockShape.
+[[nodiscard]] bool StandardSparseBlockShape(const Device& device, u64 block_bytes,
+                                            VkExtent3D& shape) {
+    if (!device.GetPhysical().GetProperties().sparseProperties.residencyStandard2DBlockShape) {
+        return false;
+    }
+    switch (block_bytes) {
+    case 1:
+        shape = {256, 256, 1};
+        return true;
+    case 2:
+        shape = {256, 128, 1};
+        return true;
+    case 4:
+        shape = {128, 128, 1};
+        return true;
+    case 8:
+        shape = {128, 64, 1};
+        return true;
+    case 16:
+        shape = {64, 64, 1};
+        return true;
+    default:
+        return false;
+    }
+}
+
 // The most device memory one SparseLayers image binds: 768 MiB, 384 MiB on GPUs with less than
 // 7 GiB (title 1's BC6H arrays are 85 MB a layer).
 [[nodiscard]] VkDeviceSize SparseLayersCap(const Device& device) {
@@ -304,6 +333,20 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
            info.size.depth == 1;
 }
 
+// The most a trimmed ASTC array keeps on the host: 512 MiB, 256 MiB on GPUs with less than 7 GiB
+// (title 1's two terrain arrays took 724 MiB of a 6 GB card next to ~1.2 GB of other sparse terrain
+// textures). EDEN_NX2_ASTC_ARRAY_MIB=<MiB> sets it.
+[[nodiscard]] u64 TrimmedAstcArrayLimit(const Device& device) {
+    static const u64 forced = [] {
+        const char* value = std::getenv("EDEN_NX2_ASTC_ARRAY_MIB");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : 0ULL;
+    }();
+    if (forced != 0) {
+        return forced;
+    }
+    return device.GetDeviceLocalMemory() < (u64{7} << 30) ? (u64{256} << 20) : (u64{512} << 20);
+}
+
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
@@ -324,8 +367,9 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if (decoded_bytes(0) <= (u64{1} << 30)) {
         return info;
     }
+    const u64 limit = TrimmedAstcArrayLimit(device);
     while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
-           decoded_bytes(level_offset) > (u64{512} << 20)) {
+           decoded_bytes(level_offset) > limit) {
         ++level_offset;
     }
     ImageInfo host = info;
@@ -2026,8 +2070,20 @@ u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {
     return device.GetDeviceMemoryUsage();
 }
 
+u64 TextureCacheRuntime::CurrentTick() const noexcept {
+    return scheduler.CurrentTick();
+}
+
+bool TextureCacheRuntime::IsFree(u64 tick) const noexcept {
+    return scheduler.IsFree(tick);
+}
+
 u64 TextureCacheRuntime::GetDeviceMemoryBudget() const {
     return device.GetDeviceMemoryBudget();
+}
+
+u64 TextureCacheRuntime::GetDeviceMemorySlack() const {
+    return device.GetDeviceMemorySlack();
 }
 
 bool TextureCacheRuntime::CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {
@@ -2107,10 +2163,33 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
 }
 
 void TextureCacheRuntime::TickFrame() {
+    static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+    // Finished decode images wait for the next texture of their shape, up to this much memory.
+    static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
+    const auto decode_bytes = [](const PendingTranscode& t) {
+        u64 bytes{};
+        for (u32 level = 0; level < t.levels; ++level) {
+            bytes += u64{(std::max)(t.width >> level, 1U)} * (std::max)(t.height >> level, 1U) * 4;
+        }
+        return bytes * t.layers;
+    };
+    u64 free_bytes{};
+    for (const PendingTranscode& t : free_transcodes) {
+        free_bytes += decode_bytes(t);
+    }
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
+        PendingTranscode& done = pending_transcodes.front();
+        const u64 bytes = decode_bytes(done);
+        if (free_bytes + bytes <= MaxFreeTranscodeBytes) {
+            done.unused_frames = 0;
+            free_bytes += bytes;
+            free_transcodes.push_back(std::move(done));
+        }
         pending_transcodes.pop_front();
     }
-    static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+    std::erase_if(free_transcodes, [](PendingTranscode& t) {
+        return ++t.unused_frames > MAX_UNUSED_SCRATCH_FRAMES;
+    });
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
         if (!scheduler.IsFree(scratch.tick)) {
             scratch.unused_frames = 0;
@@ -2650,7 +2729,24 @@ bool Image::InitSparseLayers() {
     const u32 block_width = huge_astc ? 1 : VideoCore::Surface::DefaultBlockWidth(info.format);
     const u32 block_height = huge_astc ? 1 : VideoCore::Surface::DefaultBlockHeight(info.format);
     const u64 block_bytes = huge_astc ? 4 : VideoCore::Surface::BytesPerBlock(info.format);
-    const VkExtent3D granularity = it->formatProperties.imageGranularity;
+    VkExtent3D granularity = it->formatProperties.imageGranularity;
+    if (granularity.width == 0 || granularity.height == 0) {
+        // Seen with AMD's driver: the sparse block size comes back as 0, and the size computation
+        // below divided by it. Use the standard 2D block shape when the device promises it.
+        if (!StandardSparseBlockShape(device, block_bytes, granularity)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Sparse layered image {:#x}: the driver reports no sparse block size and "
+                        "no standard block shape; not using sparse layers",
+                        gpu_addr);
+            return false;
+        }
+        granularity.width *= block_width;
+        granularity.height *= block_height;
+        LOG_INFO(Render_Vulkan,
+                 "Sparse layered image {:#x}: no block size from the driver, using the standard "
+                 "{}x{} texel block",
+                 gpu_addr, granularity.width, granularity.height);
+    }
     s.tile_width = granularity.width;
     s.tile_height = granularity.height;
     const u64 tile = s.requirements.alignment;
@@ -4087,30 +4183,47 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     const u32 levels = static_cast<u32>(info.resources.levels);
     const u32 layers = static_cast<u32>(info.resources.layers);
     constexpr VkFormat DecodeFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
-    PendingTranscode pending{
-        .tick = 0,
-        .image = memory_allocator.CreateImage(VkImageCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = DecodeFormat,
-            .extent = {width, height, 1},
-            .mipLevels = levels,
-            .arrayLayers = layers,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        }, true),
-        .views = {},
-    };
-    for (u32 level = 0; level < levels; ++level) {
-        pending.views.push_back(
-            MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
+    // A decode image of the same shape the GPU is done with: title 1's title screen decodes
+    // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
+    // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
+    const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
+        return t.width == width && t.height == height && t.levels == levels && t.layers == layers;
+    });
+    PendingTranscode pending;
+    if (reusable != free_transcodes.end()) {
+        pending = std::move(*reusable);
+        free_transcodes.erase(reusable);
+    } else {
+        pending = PendingTranscode{
+            .tick = 0,
+            .image = memory_allocator.CreateImage(VkImageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = DecodeFormat,
+                .extent = {width, height, 1},
+                .mipLevels = levels,
+                .arrayLayers = layers,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            }, true),
+            .views = {},
+            .width = width,
+            .height = height,
+            .levels = levels,
+            .layers = layers,
+            .unused_frames = 0,
+        };
+        for (u32 level = 0; level < levels; ++level) {
+            pending.views.push_back(
+                MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
+        }
     }
     astc_decoder_pass->AssembleInto(
         info, 0, image.guest_size_bytes,

@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/shader_handle_program.h"
 #include "video_core/shader_notify.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -54,6 +55,17 @@ using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 
 constexpr size_t NUM_STAGES = Maxwell::MaxShaderStage;
 
+// The stage of a program: task and mesh programs sit in the vertex and tessellation slots.
+VkShaderStageFlagBits StageFlag(const Shader::Info& info, VkShaderStageFlagBits slot_stage) {
+    if (info.is_task) {
+        return VK_SHADER_STAGE_TASK_BIT_EXT;
+    }
+    if (info.is_mesh) {
+        return VK_SHADER_STAGE_MESH_BIT_EXT;
+    }
+    return slot_stage;
+}
+
 DescriptorLayoutBuilder MakeBuilder(const Device& device, std::span<const Shader::Info> infos) {
     DescriptorLayoutBuilder builder{device};
     for (size_t index = 0; index < infos.size(); ++index) {
@@ -64,7 +76,7 @@ DescriptorLayoutBuilder MakeBuilder(const Device& device, std::span<const Shader
             VK_SHADER_STAGE_GEOMETRY_BIT,
             VK_SHADER_STAGE_FRAGMENT_BIT,
         };
-        builder.Add(infos[index], stages.at(index));
+        builder.Add(infos[index], StageFlag(infos[index], stages.at(index)));
     }
     return builder;
 }
@@ -330,6 +342,11 @@ GraphicsPipeline::GraphicsPipeline(
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);
         }
+        // Nothing reads the shader modules once the pipeline exists, and the driver keeps a copy
+        // of each one's SPIR-V while it lives (title 1: ~1,500 pipelines, 2-5 modules each).
+        for (vk::ShaderModule& module : spv_modules) {
+            module.reset();
+        }
 
         std::scoped_lock lock{build_mutex};
         is_built = true;
@@ -338,12 +355,13 @@ GraphicsPipeline::GraphicsPipeline(
             shader_notify->MarkShaderComplete();
         }
     }};
+    // Before the build: it frees the modules this looks at.
+    configure_func = ConfigureFunc(spv_modules, stage_infos);
     if (worker_thread) {
         worker_thread->QueueWork(std::move(func));
     } else {
         func();
     }
-    configure_func = ConfigureFunc(spv_modules, stage_infos);
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -382,6 +400,19 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
         const auto read_handle{[&](const auto& desc, u32 index) {
+            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
+                if (desc.handle_program != ~0U) {
+                    // Read by the shader from a storage buffer: computed for this draw.
+                    return TexturePair(VideoCommon::EvaluateTextureHandle(
+                                           info, desc.handle_program, *gpu_memory,
+                                           [&](u32 cbuf) -> GPUVAddr {
+                                               return cbuf < cbufs.size() && cbufs[cbuf].enabled
+                                                          ? cbufs[cbuf].address
+                                                          : GPUVAddr{};
+                                           }),
+                                       via_header_index);
+                }
+            }
             ASSERT(cbufs[desc.cbuf_index].enabled);
             const u32 index_offset{index << desc.size_shift};
             const u32 offset{desc.cbuf_offset + index_offset};
@@ -1073,6 +1104,19 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         }
     }
 
+    const bool is_mesh{IsMeshPipeline()};
+    if (is_mesh) {
+        // Mesh pipelines have no vertex input or input assembly.
+        dynamic_states.erase(std::remove_if(dynamic_states.begin(), dynamic_states.end(),
+                                            [](VkDynamicState state) {
+                                                return state == VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT ||
+                                                       state == VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT ||
+                                                       state == VK_DYNAMIC_STATE_VERTEX_INPUT_EXT ||
+                                                       state == VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT ||
+                                                       state == VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT;
+                                            }),
+                             dynamic_states.end());
+    }
     const VkPipelineDynamicStateCreateInfo dynamic_state_ci{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .pNext = nullptr,
@@ -1095,7 +1139,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
-                .stage = MaxwellToVK::ShaderStage(Shader::StageFromIndex(stage)),
+                .stage = StageFlag(stage_infos[stage],
+                                   MaxwellToVK::ShaderStage(Shader::StageFromIndex(stage))),
                 .module = *spv_modules[stage],
                 .pName = "main",
                 .pSpecializationInfo = nullptr,
@@ -1115,9 +1160,9 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .flags = flags,
         .stageCount = static_cast<u32>(shader_stages.size()),
         .pStages = shader_stages.data(),
-        .pVertexInputState = &vertex_input_ci,
-        .pInputAssemblyState = &input_assembly_ci,
-        .pTessellationState = &tessellation_ci,
+        .pVertexInputState = is_mesh ? nullptr : &vertex_input_ci,
+        .pInputAssemblyState = is_mesh ? nullptr : &input_assembly_ci,
+        .pTessellationState = is_mesh ? nullptr : &tessellation_ci,
         .pViewportState = &viewport_ci,
         .pRasterizationState = &rasterization_ci,
         .pMultisampleState = &multisample_ci,

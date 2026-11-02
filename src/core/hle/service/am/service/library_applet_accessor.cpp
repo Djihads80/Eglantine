@@ -62,21 +62,22 @@ ILibraryAppletAccessor::ILibraryAppletAccessor(Core::System& system_,
         {20, D<&ILibraryAppletAccessor::RequestExit>, "RequestExit"},
         {25, D<&ILibraryAppletAccessor::Terminate>, "Terminate"},
         {30, D<&ILibraryAppletAccessor::GetResult>, "GetResult"},
-        {50, nullptr, "SetOutOfFocusApplicationSuspendingEnabled"},
+        {50, &ILibraryAppletAccessor::StubReplyZeroed, "SetOutOfFocusApplicationSuspendingEnabled"},
         {60, D<&ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero>, "PresetLibraryAppletGpuTimeSliceZero"}, //10.0.0+
-        {80, nullptr, "RequestForLibraryAppletToGetForeground"}, //19.0.0+
-        {81, nullptr, "GetCurrentChildLibraryApplet"}, //19.0.0+
+        {70, &ILibraryAppletAccessor::StubReplyZeroed, "Unknown70"},
+        {80, &ILibraryAppletAccessor::StubReplyZeroed, "RequestForLibraryAppletToGetForeground"}, //19.0.0+
+        {81, &ILibraryAppletAccessor::StubReplyInterface, "GetCurrentChildLibraryApplet"}, //19.0.0+
         {90, D<&ILibraryAppletAccessor::Unknown90>, "Unknown90"}, //20.0.0+
         {100, D<&ILibraryAppletAccessor::PushInData>, "PushInData"},
         {101, D<&ILibraryAppletAccessor::PopOutData>, "PopOutData"},
-        {102, nullptr, "PushExtraStorage"},
+        {102, &ILibraryAppletAccessor::StubReplyZeroed, "PushExtraStorage"},
         {103, D<&ILibraryAppletAccessor::PushInteractiveInData>, "PushInteractiveInData"},
         {104, D<&ILibraryAppletAccessor::PopInteractiveOutData>, "PopInteractiveOutData"},
         {105, D<&ILibraryAppletAccessor::GetPopOutDataEvent>, "GetPopOutDataEvent"},
         {106, D<&ILibraryAppletAccessor::GetPopInteractiveOutDataEvent>, "GetPopInteractiveOutDataEvent"},
-        {110, nullptr, "NeedsToExitProcess"},
+        {110, &ILibraryAppletAccessor::StubReplyZeroed, "NeedsToExitProcess"},
         {120, D<&ILibraryAppletAccessor::GetLibraryAppletInfo>, "GetLibraryAppletInfo"},
-        {150, nullptr, "RequestForAppletToGetForeground"},
+        {150, &ILibraryAppletAccessor::StubReplyZeroed, "RequestForAppletToGetForeground"},
         {160, D<&ILibraryAppletAccessor::GetIndirectLayerConsumerHandle>, "GetIndirectLayerConsumerHandle"}, //2.0.0+
         {170, D<&ILibraryAppletAccessor::Unknown170>, "Unknown170"}, //22.0.0+
     };

@@ -9,6 +9,10 @@
 #include <tuple>
 #include <mutex>
 #include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <string_view>
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
@@ -18,8 +22,10 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
+#include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
@@ -49,6 +55,75 @@ ServiceFrameworkBase::ServiceFrameworkBase(Core::System& system_, const char* se
 ServiceFrameworkBase::~ServiceFrameworkBase() {
     // Wait for other threads to release access before destroying
     const auto guard = ServiceFrameworkBase::LockService();
+    if (stub_event) {
+        stub_context->CloseEvent(stub_event);
+    }
+}
+
+namespace {
+
+// Callers read the reply words they expect without checking how many were written, so an empty
+// reply hands them the request's leftover words as data (an HDR output format, a refresh rate, a
+// device id). Stub replies carry this many zeroed words.
+constexpr u32 StubZeroedWords = 32;
+
+void PushStubZeroes(IPC::ResponseBuilder& rb) {
+    for (u32 i = 0; i < StubZeroedWords; ++i) {
+        rb.Push<u32>(0);
+    }
+}
+
+} // namespace
+
+bool ServiceFrameworkBase::StubAllowed(HLERequestContext& ctx) {
+    static const bool env_auto_stub = std::getenv("EDEN_NX2_AUTO_STUB") != nullptr;
+    const auto* const caller = ctx.GetThread().GetOwnerProcess();
+    if (Settings::values.use_auto_stub || env_auto_stub ||
+        std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
+        (caller != nullptr && caller->IsSwitch2())) {
+        // Logged once per command: these are still unimplemented.
+        static std::mutex mutex;
+        static std::set<std::pair<std::string_view, u32>> logged;
+        std::scoped_lock lk{mutex};
+        if (logged.emplace(service_name, ctx.GetCommand()).second) {
+            LOG_WARNING(Service, "(STUBBED) {}::{} (placeholder reply)", service_name, ctx.GetCommand());
+        }
+        return true;
+    }
+    const auto& table = ctx.IsTipc() ? handlers_tipc : handlers;
+    const auto it = table.find(ctx.GetCommand());
+    ReportUnimplementedFunction(ctx, it == table.end() ? nullptr : &it->second);
+    return false;
+}
+
+void ServiceFrameworkBase::StubReplyZeroed(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
+    rb.Push(ResultSuccess);
+    PushStubZeroes(rb);
+}
+
+void ServiceFrameworkBase::StubReplyEvent(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    if (!stub_event) {
+        stub_context = std::make_unique<KernelHelpers::ServiceContext>(system, service_name);
+        stub_event = stub_context->CreateEvent(fmt::format("{}:StubEvent", service_name));
+    }
+    IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords, 1, 0};
+    rb.Push(ResultSuccess);
+    PushStubZeroes(rb);
+    rb.PushCopyObjects(ctx, stub_event->GetReadableEvent());
+}
+
+void ServiceFrameworkBase::StubReplyInterface(HLERequestContext& ctx) {
+    if (!StubAllowed(ctx)) {
+        return;
+    }
+    ReturnNx2StubInterface(system, ctx, service_name);
 }
 
 void ServiceFrameworkBase::RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n) {
@@ -67,6 +142,27 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
 
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
                                                        const FunctionInfoBase* info) {
+    // EDEN_NX2_AUTO_STUB=1 auto-stubs every unknown command without touching the config. Switch 2
+    // programs are always auto-stubbed: they still call many commands nobody has implemented.
+    static const bool env_auto_stub = std::getenv("EDEN_NX2_AUTO_STUB") != nullptr;
+    const auto* const caller = ctx.GetThread().GetOwnerProcess();
+    const bool auto_stub = Settings::values.use_auto_stub || env_auto_stub ||
+                           std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
+                           (caller != nullptr && caller->IsSwitch2());
+    // Auto-stubbed commands are reported once each: title 1 polls nx2:camera 29 every frame
+    // (~47 calls a second), and every report wrote a Critical line, which flushes the log file.
+    if (auto_stub) {
+        static std::mutex reported_mutex;
+        static std::set<std::pair<std::string, u32>> reported;
+        std::scoped_lock lk{reported_mutex};
+        if (!reported.emplace(service_name, ctx.GetCommand()).second) {
+            IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
+            rb.Push(ResultSuccess);
+            PushStubZeroes(rb);
+            return;
+        }
+    }
+
     auto cmd_buf = ctx.CommandBuffer();
     std::string function_name = info == nullptr ? "<unknown>" : info->name;
 
@@ -80,16 +176,11 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
 
     system.GetReporter().SaveUnimplementedFunctionReport(ctx, ctx.GetCommand(), function_name, service_name);
     UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
-    // EDEN_NX2_AUTO_STUB=1 auto-stubs every unknown command without touching the config. Switch 2
-    // programs are always auto-stubbed: they still call many commands nobody has implemented.
-    static const bool env_auto_stub = std::getenv("EDEN_NX2_AUTO_STUB") != nullptr;
-    const auto* const caller = ctx.GetThread().GetOwnerProcess();
-    if (Settings::values.use_auto_stub || env_auto_stub ||
-        std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
-        (caller != nullptr && caller->IsSwitch2())) {
-        LOG_WARNING(Service, "Using auto stub fallback!");
-        IPC::ResponseBuilder rb{ctx, 2};
+    if (auto_stub) {
+        LOG_WARNING(Service, "Using auto stub fallback (repeats of this command are not logged)");
+        IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
         rb.Push(ResultSuccess);
+        PushStubZeroes(rb);
     }
 }
 
