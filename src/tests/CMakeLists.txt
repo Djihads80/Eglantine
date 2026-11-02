@@ -31,6 +31,9 @@ add_executable(tests
     video_core/descriptor_table.cpp
     video_core/global_address_tracking.cpp
     video_core/nvn_storage_descriptor.cpp
+    video_core/ampere_f2i.cpp
+    video_core/ampere_ldc.cpp
+    video_core/ampere_vote.cpp
     input_common/calibration_configuration_job.cpp
 )
 
