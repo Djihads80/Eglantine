@@ -249,6 +249,7 @@ struct SdlState {
     // Must outlive emu_window, which keeps a pointer to it.
     InputCommon::InputSubsystem input_subsystem{};
     std::unique_ptr<EmuWindow_SDL3> emu_window;
+    bool network_initialized{};
 };
 
 static std::atomic_bool pack_nup_cancel{false};
@@ -350,6 +351,12 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
+        return SDL_APP_FAILURE;
+    }
+
+    state->network_initialized = Network::Init();
+    if (!state->network_initialized) {
+        LOG_CRITICAL(Network, "Failed to initialize room networking");
         return SDL_APP_FAILURE;
     }
 
@@ -555,7 +562,11 @@ extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         void(state->system.Pause());
         state->system.ShutdownMainProcess();
     }
+    const bool network_initialized = state->network_initialized;
     delete state;
+    if (network_initialized) {
+        Network::Shutdown();
+    }
 }
 
 #define VMA_IMPLEMENTATION
