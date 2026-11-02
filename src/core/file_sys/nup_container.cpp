@@ -4,6 +4,7 @@
 #include "core/file_sys/nup_container.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <list>
 #include <map>
@@ -60,20 +61,31 @@ struct TocHeader {
 static_assert(sizeof(TocHeader) == TocHeaderSize);
 
 struct PackageRecord {
-    u64_le title_id;
-    u32_le root_dir;
-    u32_le exefs_dir;
-    u32_le romfs_dir;
-    u32_le version;
-    u8 kind;
-    u8 flags;
-    u16_le reserved;
-    u64_le meta_offset;
-    u32_le meta_size;
-    u32_le reserved2;
-    std::array<u8, 20> reserved3;
+    u64_le title_id; // 0x00
+    u32_le root_dir; // 0x08
+    u32_le exefs_dir; // 0x0C
+    u32_le romfs_dir; // 0x10
+    u32_le version; // 0x14
+    u8 kind; // 0x18
+    u8 flags; // 0x19
+    u16_le reserved; // 0x1A
+    u32_le reserved2; // 0x1C
+    u64_le meta_offset; // 0x20
+    u32_le meta_size; // 0x28
+    std::array<u8, 20> reserved3; // 0x2C
 };
 static_assert(sizeof(PackageRecord) == PackageRecordSize);
+static_assert(offsetof(PackageRecord, title_id) == 0x00);
+static_assert(offsetof(PackageRecord, root_dir) == 0x08);
+static_assert(offsetof(PackageRecord, exefs_dir) == 0x0C);
+static_assert(offsetof(PackageRecord, romfs_dir) == 0x10);
+static_assert(offsetof(PackageRecord, version) == 0x14);
+static_assert(offsetof(PackageRecord, kind) == 0x18);
+static_assert(offsetof(PackageRecord, flags) == 0x19);
+static_assert(offsetof(PackageRecord, reserved) == 0x1A);
+static_assert(offsetof(PackageRecord, reserved2) == 0x1C);
+static_assert(offsetof(PackageRecord, meta_offset) == 0x20);
+static_assert(offsetof(PackageRecord, meta_size) == 0x28);
 
 struct DirRecord {
     u32_le name_offset;
@@ -85,19 +97,27 @@ struct DirRecord {
 static_assert(sizeof(DirRecord) == DirRecordSize);
 
 struct FileRecord {
-    u32_le name_offset;
-    u32_le name_length;
-    u32_le reserved;
-    u64_le size;
-    std::array<u8, 0x20> sha256;
-    u64_le extent_offset;
-    u64_le extent_size;
-    u8 codec;
-    u8 codec_flags;
-    u16_le reserved2;
-    std::array<u8, 8> reserved3;
+    u32_le name_offset; // 0x00
+    u32_le name_length; // 0x04
+    u64_le size; // 0x08
+    u64_le extent_offset; // 0x10
+    u64_le extent_size; // 0x18
+    std::array<u8, 0x20> sha256; // 0x20
+    u8 codec; // 0x40
+    u8 codec_flags; // 0x41
+    u16_le reserved2; // 0x42
+    std::array<u8, 12> reserved3; // 0x44
 };
 static_assert(sizeof(FileRecord) == FileRecordSize);
+static_assert(offsetof(FileRecord, name_offset) == 0x00);
+static_assert(offsetof(FileRecord, name_length) == 0x04);
+static_assert(offsetof(FileRecord, size) == 0x08);
+static_assert(offsetof(FileRecord, extent_offset) == 0x10);
+static_assert(offsetof(FileRecord, extent_size) == 0x18);
+static_assert(offsetof(FileRecord, sha256) == 0x20);
+static_assert(offsetof(FileRecord, codec) == 0x40);
+static_assert(offsetof(FileRecord, codec_flags) == 0x41);
+static_assert(offsetof(FileRecord, reserved2) == 0x42);
 
 struct TlvHeader {
     u16_le type;
