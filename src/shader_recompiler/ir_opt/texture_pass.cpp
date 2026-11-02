@@ -16,6 +16,7 @@
 #include <limits>
 #include <boost/container/small_vector.hpp>
 
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -455,6 +456,12 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
     if (outermost) {
         g_handle_slots.clear();
     }
+    SCOPE_EXIT {
+        --g_handle_depth;
+        if (outermost) {
+            g_handle_slots.clear();
+        }
+    };
     const IR::Inst* const inst{value.InstRecursive()};
     bool result;
     if (const auto it = g_handle_slots.find(inst); it != g_handle_slots.end()) {
@@ -483,10 +490,6 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
             code.push_back(static_cast<u32>(Op::Tee));
             code.push_back(slot);
         }
-    }
-    --g_handle_depth;
-    if (outermost) {
-        g_handle_slots.clear();
     }
     return result;
 }
