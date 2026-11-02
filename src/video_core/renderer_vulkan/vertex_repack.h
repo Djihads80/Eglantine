@@ -42,8 +42,8 @@ inline std::optional<VertexRepackParameters> MakeVertexRepackParameters(
     const u64 bias = offset - base;
     const u64 range = (bias + size + 3) / 4 * 4;
     const u64 groups = (vertices * 18 + 127) / 128;
-    if (output_size > std::numeric_limits<u32>::max() ||
-        range > std::numeric_limits<u32>::max() || output_size > max_storage_range ||
+    if (output_size > (std::numeric_limits<u32>::max)() ||
+        range > (std::numeric_limits<u32>::max)() || output_size > max_storage_range ||
         range > max_storage_range || groups > max_dispatch_groups) {
         return std::nullopt;
     }
