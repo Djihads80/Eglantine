@@ -31,21 +31,21 @@ ProxySocket::~ProxySocket() {
 }
 
 void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
-    if (protocol != packet.protocol || local_endpoint.portno != packet.remote_endpoint.portno ||
-        closed) {
-        return;
-    }
-
-    if (!broadcast && packet.broadcast) {
-        LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
-        return;
-    }
-
-    auto decompressed = packet;
-    decompressed.data = Common::Compression::DecompressDataZSTD(packet.data);
-
     {
+        // Runs on the room thread, while the game thread may bind, close or reconfigure the socket
         std::lock_guard guard(packets_mutex);
+        if (protocol != packet.protocol || local_endpoint.portno != packet.remote_endpoint.portno ||
+            closed) {
+            return;
+        }
+
+        if (!broadcast && packet.broadcast) {
+            LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
+            return;
+        }
+
+        auto decompressed = packet;
+        decompressed.data = Common::Compression::DecompressDataZSTD(packet.data);
         received_packets.push(std::move(decompressed));
     }
     packets_cv.notify_one();
@@ -58,7 +58,10 @@ Errno ProxySocket::SetSockOpt(SOCKET fd_, int option, T value) {
 }
 
 Errno ProxySocket::Initialize(Domain domain, Type type, Protocol socket_protocol) {
-    protocol = socket_protocol;
+    {
+        std::lock_guard guard(packets_mutex);
+        protocol = socket_protocol;
+    }
     SetSockOpt(fd, SO_TYPE, type);
 
     return Errno::SUCCESS;
@@ -85,6 +88,7 @@ std::pair<SockAddrIn, Errno> ProxySocket::GetSockName() {
 }
 
 Errno ProxySocket::Bind(SockAddrIn addr) {
+    std::lock_guard guard(packets_mutex);
     if (is_bound) {
         LOG_WARNING(Network, "Rebinding Socket is unimplemented!");
         return Errno::SUCCESS;
@@ -106,6 +110,14 @@ Errno ProxySocket::Shutdown(ShutdownHow how) {
 }
 
 std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
+    if (protocol == Protocol::TCP) {
+        // Room TCP sockets have no peer (Connect and Send are stubs). Report an empty queue as the
+        // end of the stream, as before, instead of blocking the bsd service until the timeout.
+        std::lock_guard guard(packets_mutex);
+        if (received_packets.empty()) {
+            return {0, Errno::SUCCESS};
+        }
+    }
     return RecvFrom(flags, message, nullptr);
 }
 
@@ -114,6 +126,9 @@ std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, So
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
 
     std::unique_lock lock(packets_mutex);
+    if (closed) {
+        return {-1, Errno::BADF};
+    }
     if (received_packets.empty()) {
         if (!blocking) {
             return {-1, Errno::AGAIN};
@@ -124,8 +139,11 @@ std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, So
         // the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
         const u32 timeout = receive_timeout == 0 ? 5000 : receive_timeout;
         if (!packets_cv.wait_for(lock, std::chrono::milliseconds{timeout},
-                                 [this] { return !received_packets.empty(); })) {
+                                 [this] { return closed || !received_packets.empty(); })) {
             return {-1, Errno::AGAIN};
+        }
+        if (closed) {
+            return {-1, Errno::BADF};
         }
     }
 
@@ -217,8 +235,13 @@ std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message
 }
 
 Errno ProxySocket::Close() {
-    fd = INVALID_SOCKET;
-    closed = true;
+    {
+        std::lock_guard guard(packets_mutex);
+        fd = INVALID_SOCKET;
+        closed = true;
+        received_packets = {};
+    }
+    packets_cv.notify_all();
 
     return Errno::SUCCESS;
 }
@@ -239,7 +262,10 @@ Errno ProxySocket::SetReuseAddr(bool enable) {
 }
 
 Errno ProxySocket::SetBroadcast(bool enable) {
-    broadcast = enable;
+    {
+        std::lock_guard guard(packets_mutex);
+        broadcast = enable;
+    }
     return SetSockOpt<u32>(fd, SO_BROADCAST, enable ? 1 : 0);
 }
 
