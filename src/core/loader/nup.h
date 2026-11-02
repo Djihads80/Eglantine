@@ -53,6 +53,9 @@ public:
 
 private:
     std::unique_ptr<FileSys::NupContainer> nup;
+    /// Companion base container for update-only (standalone_update) files.
+    std::unique_ptr<FileSys::NupContainer> base_nup;
+    std::optional<std::size_t> base_nup_index;
     std::unique_ptr<AppLoader> secondary_loader;
 
     std::unique_ptr<FileSys::NACP> nacp_file;

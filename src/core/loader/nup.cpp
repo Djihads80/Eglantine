@@ -84,6 +84,53 @@ std::string DecodeVersion(u32 version) {
     return fmt::format("{}.{}.{}", version >> 16, (version >> 8) & 0xFF, version & 0xFF);
 }
 
+// A standalone-update container is a patch (SPEC §3.1.2): it boots only
+// against its base package. Look for a companion base .nup next to the file
+// (matching title ID) and return it together with its base package index.
+std::unique_ptr<FileSys::NupContainer> FindCompanionBase(
+    const FileSys::VirtualFile& nup_file, u64 update_title_id,
+    std::optional<std::size_t>* out_base_index) {
+    *out_base_index = std::nullopt;
+    const auto dir = nup_file->GetContainingDirectory();
+    if (dir == nullptr) {
+        return nullptr;
+    }
+    std::unique_ptr<FileSys::NupContainer> fallback;
+    std::optional<std::size_t> fallback_index;
+    for (const auto& candidate : dir->GetFiles()) {
+        const std::string name = candidate->GetName();
+        if (name == nup_file->GetName() || name.size() < 4) {
+            continue;
+        }
+        const std::string suffix = name.substr(name.size() - 4);
+        if (suffix != ".nup" && suffix != ".NUP") {
+            continue;
+        }
+        auto container = std::make_unique<FileSys::NupContainer>(candidate);
+        if (container->GetStatus() != ResultStatus::Success) {
+            continue;
+        }
+        const auto base_index = container->FindBasePackage();
+        if (!base_index || container->GetExeFSDir(*base_index) == nullptr) {
+            continue;
+        }
+        const auto& base = container->GetPackages()[*base_index];
+        if (base.title_id == update_title_id ||
+            (update_title_id & ~0x800ULL) == static_cast<u64>(base.title_id)) {
+            *out_base_index = base_index;
+            return container;
+        }
+        if (fallback == nullptr) {
+            fallback = std::move(container);
+            fallback_index = base_index;
+        }
+    }
+    if (fallback != nullptr) {
+        *out_base_index = fallback_index;
+    }
+    return fallback;
+}
+
 } // namespace
 
 AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
@@ -95,27 +142,48 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
     const auto base_index = nup->FindBasePackage();
     const auto update_index = nup->FindBestUpdatePackage();
 
-    // The program comes from the base package; a standalone update container
-    // (SPEC §4.1.2) carries a complete patched tree and boots on its own.
+    // The program comes from the base package. An update-only container
+    // (standalone_update, SPEC §3.1.2) is a patch: it boots only against its
+    // base package, so look for a companion base .nup next to this file.
     std::optional<std::size_t> program_index;
     std::optional<std::size_t> exefs_index;
+    bool program_from_base_nup = false;
     if (base_index && nup->GetExeFSDir(*base_index) != nullptr) {
         program_index = base_index;
         exefs_index = update_index && nup->GetExeFSDir(*update_index) != nullptr
                           ? update_index
                           : base_index;
     } else if (update_index && nup->GetExeFSDir(*update_index) != nullptr) {
-        LOG_INFO(Loader,
-                 "NUP container is a standalone update; booting the update program directly");
-        program_index = update_index;
-        exefs_index = update_index;
+        const auto& update = nup->GetPackages()[*update_index];
+        LOG_INFO(Loader, "NUP container is an update-only container (standalone_update)");
+        base_nup = FindCompanionBase(file, update.title_id, &base_nup_index);
+        if (base_nup && base_nup_index) {
+            const auto& base = base_nup->GetPackages()[*base_nup_index];
+            LOG_INFO(Loader,
+                     "Update-only NUP: using companion base package {:016X} for program "
+                     "identity and content",
+                     static_cast<u64>(base.title_id));
+            program_index = base_nup_index;
+            program_from_base_nup = true;
+            exefs_index = update_index;
+        } else {
+            LOG_WARNING(Loader,
+                        "Update-only NUP {:016X}: no companion base .nup found in the same "
+                        "directory. Patch-only containers do not carry the base game's "
+                        "content - the game may crash or show a black screen. Place the "
+                        "matching base .nup next to this file.",
+                        static_cast<u64>(update.title_id));
+            program_index = update_index;
+            exefs_index = update_index;
+        }
     }
     if (!program_index || !exefs_index) {
         LOG_ERROR(Loader, "NUP container has no package with a usable ExeFS");
         return;
     }
 
-    const auto& program = nup->GetPackages()[*program_index];
+    const auto& program = program_from_base_nup ? base_nup->GetPackages()[*base_nup_index]
+                                                : nup->GetPackages()[*program_index];
     base_title_id = program.title_id;
     has_program = true;
 
@@ -204,13 +272,18 @@ ResultStatus AppLoader_NUP::VerifyIntegrity(
 }
 
 ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
-    const auto base_index = nup->FindBasePackage();
-    const auto base_romfs = base_index ? nup->GetRomFSDir(*base_index) : FileSys::VirtualDir{};
+    FileSys::VirtualDir base_romfs;
+    if (base_nup && base_nup_index) {
+        base_romfs = (*base_nup)->GetRomFSDir(*base_nup_index);
+    } else {
+        const auto base_index = nup->FindBasePackage();
+        base_romfs = base_index ? nup->GetRomFSDir(*base_index) : FileSys::VirtualDir{};
+    }
     const auto update_index = nup->FindBestUpdatePackage();
     const auto update_romfs =
         update_index ? nup->GetRomFSDir(*update_index) : FileSys::VirtualDir{};
     // A standalone update carries the complete merged tree; a base+update pair
-    // overlays the update onto the base (SPEC §4.1.4).
+    // overlays the update onto the base (SPEC §3.1.4).
     const auto merged = FileSys::NupContainer::MergeShadowDirs(base_romfs, update_romfs);
     if (merged == nullptr) {
         return ResultStatus::ErrorNoRomFS;
