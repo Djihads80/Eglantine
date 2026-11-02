@@ -155,13 +155,31 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        if (use_safe) {
+        // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
+        // safe read below would flush (with the split, the front can't tell: it reads memory
+        // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
+        // read: their words at submit time are an older frame's.
+        const bool submitted = command_resume_offset == 0 &&
+                               dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+                               !IsGpuWrittenCommands(dma_state.dma_get,
+                                                     size_t{header.size} * sizeof(u32)) &&
+                               !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
+                                                                          header.size * sizeof(u32)));
+        if (submitted) {
+            const std::span<const CommandHeader> commands{
+                command_list.submitted_words.data() +
+                    command_list.submitted_offsets[dma_pushbuffer_subindex],
+                header.size};
+            RecordParsedEntry(header, commands);
+            command_resume_offset += ProcessCommands(commands, 0);
+        } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
+            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
@@ -442,6 +460,34 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         subchannel->ConsumeSink(system);
         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);
+    }
+}
+
+bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+        return false;
+    }
+    for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+        if (const auto device = memory_manager.GpuToCpuAddress(page);
+            device && Tegra::Nx2IsGpuWritten(*device)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
+    // Title 1 runs small command lists its culling dispatches fill in each frame. Accurate GPU
+    // mode reads every command list through the caches (safe reads); here only the ones on pages
+    // the GPU has written are, or their draws run with an older frame's words (trees vanish).
+    if (!IsGpuWrittenCommands(address, size)) {
+        return;
+    }
+    // The caches belong to the split's back: it first runs what the front queued (the dispatch
+    // that writes these words among it).
+    VideoCommon::GpuSplit::Get().Drain();
+    if (memory_manager.IsMemoryDirty(address, size, VideoCommon::CacheType::BufferCache)) {
+        memory_manager.FlushRegion(address, size, VideoCommon::CacheType::BufferCache);
     }
 }
 

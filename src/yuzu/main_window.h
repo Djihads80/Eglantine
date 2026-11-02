@@ -424,7 +424,8 @@ private slots:
     void OnCreateHomeMenuDesktopShortcut();
     void OnCreateHomeMenuApplicationMenuShortcut();
     void OnCaptureScreenshot();
-    void OnCheckFirmwareDecryption();
+    /// Checks for decryption keys; `prompt` asks to install them when they are missing.
+    void OnCheckFirmwareDecryption(bool prompt = true);
 #ifdef __unix__
     void OnCheckGraphicsBackend();
 #endif
