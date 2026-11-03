@@ -334,7 +334,6 @@ struct System::Impl {
             virtual_filesystem != nullptr &&
             IsSwitch2Program(GetGameFileFromPath(virtual_filesystem, filepath));
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
-        Settings::SetCurrentProgramIsSwitch2Edition(false);
         Settings::SetAstcRecompressionOverride(std::nullopt);
         // The frontends switch before they set up the window, this covers the others.
         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {

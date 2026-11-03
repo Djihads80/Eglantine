@@ -956,8 +956,8 @@ struct Values {
                                                  Category::Switch2};
     SwitchableSetting<u32, true> nx2_idle_spin_us{linkage, 0, 0, 1000, "nx2_idle_spin_us",
                                                   Category::Switch2, Specialization::Countable};
-    // Switch 1 programs are told they run on a Switch 2 (nn::pl::IsRunningOnOunce), so Switch 2
-    // Editions use their Switch 2 Edition content; such a program then uses the Switch 2 settings.
+    // Switch 1 programs that ask (nn::pl::IsRunningOnOunce) are told they run on a Switch 2, and
+    // then use the Switch 2 settings.
     SwitchableSetting<bool> nx2_switch2_edition{linkage, false, "nx2_switch2_edition",
                                                 Category::Switch2};
     SwitchableSetting<bool> nx2_mesh_shaders{linkage, true, "nx2_mesh_shaders",
@@ -1007,11 +1007,6 @@ u64 GetCurrentProgramID();
 // Whether the program being loaded is a Switch 2 one (set by the core before the GPU starts).
 void SetCurrentProgramIsSwitch2(bool is_switch2);
 bool CurrentProgramIsSwitch2();
-
-// Whether the program being loaded is a Switch 2 Edition of a Switch 1 game that is told it runs
-// on a Switch 2 (set by the loader, before the program's RomFS is opened).
-void SetCurrentProgramIsSwitch2Edition(bool is_switch2_edition);
-bool CurrentProgramIsSwitch2Edition();
 
 // The ASTC recompression in effect: astc_recompression, unless the renderer picked another one
 // for the running program (the configuration is left as is). The core clears it on load.

@@ -238,16 +238,6 @@ bool CurrentProgramIsSwitch2() {
     return current_program_is_switch2;
 }
 
-static bool current_program_is_switch2_edition = false;
-
-void SetCurrentProgramIsSwitch2Edition(bool is_switch2_edition) {
-    current_program_is_switch2_edition = is_switch2_edition;
-}
-
-bool CurrentProgramIsSwitch2Edition() {
-    return current_program_is_switch2_edition;
-}
-
 static std::optional<AstcRecompression> astc_recompression_override;
 
 AstcRecompression GetAstcRecompression() {

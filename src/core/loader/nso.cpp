@@ -50,7 +50,6 @@ void AnswerIsRunningOnOunce(std::span<u8> image, const std::string& name) {
     }
     const VAddr address = it->second.first;
     if (address == 0) {
-        Settings::SetCurrentProgramIsSwitch2Edition(true);
         auto& backend = Settings::values.renderer_backend;
         if (Settings::ActiveProfile() == Settings::Profile::Switch2) {
             return;

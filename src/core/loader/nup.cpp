@@ -7,7 +7,6 @@
 #include <cstring>
 
 #include "common/logging.h"
-#include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -238,21 +237,7 @@ ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
         update_index ? nup->GetRomFSDir(*update_index) : FileSys::VirtualDir{};
     // A standalone update carries the complete merged tree; a base+update pair
     // overlays the update onto the base (SPEC §4.1.4).
-    auto merged = FileSys::NupContainer::MergeShadowDirs(base_romfs, update_romfs);
-    // A Switch 2 Edition reads its Switch 2 Edition content (an add-on) through its own RomFS, as
-    // a layer over the program's: NSMB Wonder only counts its add-ons and mounts nothing else.
-    if (merged != nullptr && Settings::CurrentProgramIsSwitch2Edition()) {
-        for (std::size_t i = 0; i < nup->GetPackages().size(); ++i) {
-            if (nup->GetPackages()[i].kind != FileSys::NupContainer::PackageKind::Addon) {
-                continue;
-            }
-            if (const auto edition_romfs = nup->GetRomFSDir(i); edition_romfs != nullptr) {
-                LOG_INFO(Loader, "Switch 2 Edition: add-on {:016X} layered over the RomFS",
-                         nup->GetPackages()[i].title_id);
-                merged = FileSys::NupContainer::MergeShadowDirs(merged, edition_romfs);
-            }
-        }
-    }
+    const auto merged = FileSys::NupContainer::MergeShadowDirs(base_romfs, update_romfs);
     if (merged == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
