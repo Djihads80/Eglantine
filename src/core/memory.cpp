@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
@@ -308,10 +309,28 @@ struct Memory::Impl {
     }
 
     [[nodiscard]] inline const u8* GetSpan(const VAddr addr, const std::size_t size) const noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
+        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
+        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
+            return GetPointerSilent(addr);
+        }
+        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
+            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+            return nullptr;
+        }
+        return GetContiguousSpan(addr, size);
     }
     [[nodiscard]] inline u8* GetSpan(const VAddr addr, const std::size_t size) noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
+        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
+        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
+            return GetPointerSilent(addr);
+        }
+        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
+            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+            return nullptr;
+        }
+        return GetContiguousSpan(addr, size);
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
@@ -639,8 +658,19 @@ struct Memory::Impl {
 
             page_table.entries.ZeroRegion(base, end);
         } else {
-            auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
-            ASSERT(current_block != 65535);
+            u64 mapping_id = block_count.load(std::memory_order_relaxed);
+            constexpr u64 exhausted_count =
+                u64{Common::PageTable::PageEntryData::INVALID_BLOCK_ID} + 1;
+            while (mapping_id < exhausted_count &&
+                   !block_count.compare_exchange_weak(mapping_id, mapping_id + 1,
+                                                      std::memory_order_relaxed)) {
+            }
+            const u16 current_block =
+                Common::PageTable::PageEntryData::BlockIdForMapping(mapping_id);
+            if (mapping_id == Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+                LOG_WARNING(HW_Memory,
+                            "Page table block ids are exhausted; validating spans page by page");
+            }
 
             page_table.entries.CommitRegion(base, end);
             while (base != end) {
@@ -705,6 +735,24 @@ struct Memory::Impl {
     [[nodiscard]] u8* GetPointerSilent(const Common::ProcessAddress vaddr) const {
         return GetPointerImpl(
             GetInteger(vaddr), []() {}, []() {});
+    }
+
+    [[nodiscard]] u8* GetContiguousSpan(VAddr addr, std::size_t size) const noexcept {
+        u8* const base = GetPointerSilent(addr);
+        if (base == nullptr) {
+            return nullptr;
+        }
+
+        const VAddr end = addr + size;
+        const VAddr first_page = ((addr >> YUZU_PAGEBITS) + 1) << YUZU_PAGEBITS;
+        const std::uintptr_t base_ptr = reinterpret_cast<std::uintptr_t>(base);
+        for (VAddr page = first_page; page < end; page += YUZU_PAGESIZE) {
+            const std::uintptr_t expected = base_ptr + (page - addr);
+            if (reinterpret_cast<std::uintptr_t>(GetPointerSilent(page)) != expected) {
+                return nullptr;
+            }
+        }
+        return base;
     }
 
     /// @brief Reads a particular data type out of memory at the given virtual address.
@@ -897,7 +945,7 @@ struct Memory::Impl {
 #else
     Common::HostMemory* host_buffer{};
 #endif
-    std::atomic<u16> block_count = 0;
+    std::atomic<u64> block_count = 0;
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {
