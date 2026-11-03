@@ -282,8 +282,10 @@ if (ENABLE_WEB_SERVICE OR ENABLE_UPDATE_CHECKER)
     AddJsonPackage(cpp-jwt)
 endif()
 
-# libgav1 (AV1 video decoding)
-add_subdirectory(libgav1)
+# libgav1 (AV1 video decoding where FFmpeg has no libdav1d: Android)
+if (ANDROID)
+    add_subdirectory(libgav1)
+endif()
 
 # FFMpeg
 if (YUZU_USE_EXTERNAL_FFMPEG OR YUZU_USE_BUNDLED_FFMPEG)

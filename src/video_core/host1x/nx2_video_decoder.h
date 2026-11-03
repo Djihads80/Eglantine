@@ -40,7 +40,7 @@ bool Nx2IsAv1Mime(std::string_view mime);
 
 /// The decoder behind the Switch 2 video decoder service (nn::codec::video): FFmpeg decodes the
 /// elementary stream the game demuxed, in software or on the host GPU (NVDEC emulation setting),
-/// and libgav1 decodes AV1, which the bundled FFmpeg packages lack. Used from one thread at a
+/// and on Android libgav1 decodes AV1, which its FFmpeg package lacks. Used from one thread at a
 /// time.
 class Nx2VideoDecoder {
 public:
