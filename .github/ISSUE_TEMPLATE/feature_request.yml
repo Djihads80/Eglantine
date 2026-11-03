@@ -1,0 +1,19 @@
+name: Feature Request
+description: Feature Request for Eglantine's UI
+title: "[Feature Request] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: wanted
+    attributes:
+      label: What do you want ?
+      placeholder: "I would like the UI to have..."
+    validations:
+      required: true
+  - type: textarea
+    id: useful
+    attributes:
+      label: Why it's useful
+      placeholder: "It's useful because it allows..."
+    validations:
+      required: true
