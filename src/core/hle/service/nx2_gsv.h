@@ -2553,8 +2553,8 @@ private:
             // images after a movie ends and waits for the returned fences; a fence for a frame
             // that never comes hung the game on a black screen after its title movie.
             static const bool release_now = [] {
-                const char* value = std::getenv("EDEN_NX2_VDEC_EOS_RELEASE_NOW");
-                return value != nullptr && value[0] != '0';
+                const char* env_value = std::getenv("EDEN_NX2_VDEC_EOS_RELEASE_NOW");
+                return env_value != nullptr && env_value[0] != '0';
             }();
             if (release_now && release_fence && m_stream_ended && m_inputs.empty() &&
                 m_decoded.empty()) {
