@@ -26,8 +26,11 @@
 #include "common/fs/file.h"
 #include "common/fs/path_util.h"
 #include "core/file_sys/control_metadata.h"
+#include "core/file_sys/nup_container.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/deconstructed_rom_directory.h"
+
+#include <fmt/format.h>
 
 namespace FileSys::Nup {
 namespace {
@@ -60,7 +63,6 @@ constexpr u16 TlvTitleName = 0x0005;
 constexpr u16 TlvPublisher = 0x0006;
 constexpr u16 TlvSourceDump = 0x0008;
 constexpr u16 TlvLocalizedTitles = 0x0009;
-constexpr u16 TlvLocalizedIcons = 0x000A;
 
 constexpr int JournalVersion = 1;
 constexpr u64 ProgressStep = 64ULL * 1024 * 1024;
@@ -688,6 +690,9 @@ private:
 
         if (!overrides.title_name.empty()) {
             SetTlv(tlvs, TlvTitleName, StringBytes(overrides.title_name));
+        }
+        if (!overrides.publisher.empty()) {
+            SetTlv(tlvs, TlvPublisher, StringBytes(overrides.publisher));
         }
         if (!overrides.icon.empty()) {
             SetTlv(tlvs, TlvIcon, overrides.icon);
@@ -1492,9 +1497,14 @@ Metadata ProbeMetadata(const fs::path& dump_root) {
         }
         if (names) {
             NACP control;
-            if (result.title_name.empty() &&
+            if ((result.title_name.empty() || result.publisher.empty()) &&
                 loader->ReadControlData(control) == Loader::ResultStatus::Success) {
-                result.title_name = control.GetApplicationName();
+                if (result.title_name.empty()) {
+                    result.title_name = control.GetApplicationName();
+                }
+                if (result.publisher.empty()) {
+                    result.publisher = control.GetDeveloperName();
+                }
             }
             std::vector<u8> icon;
             if (result.icon.empty() &&
@@ -1511,7 +1521,7 @@ Metadata ProbeMetadata(const fs::path& dump_root) {
     }
     // Names and icons fall back to the updates when the base has none.
     for (const auto& [version, dir] : update_dirs) {
-        if (!result.title_name.empty() && !result.icon.empty()) {
+        if (!result.title_name.empty() && !result.icon.empty() && !result.publisher.empty()) {
             break;
         }
         probe(dir, "update " + std::to_string(version), true);
@@ -1554,414 +1564,666 @@ PackResult PackDump(const fs::path& dump_root, const fs::path& archive, const Pa
     }
 }
 
-PackResult UpdateMetadata(const fs::path& archive, const MetadataUpdate& update,
-                          std::string* error_out) {
-    const auto fail = [&](PackResult res, std::string msg) {
+namespace {
+
+class ExtractError : public std::runtime_error {
+public:
+    ExtractError(ExtractResult result_, const std::string& message)
+        : std::runtime_error(message), result{result_} {}
+    ExtractResult result;
+};
+
+u64 ReadLe(const std::vector<u8>& buf, size_t offset, size_t bytes) {
+    u64 value = 0;
+    for (size_t i = 0; i < bytes; ++i) {
+        value |= static_cast<u64>(buf[offset + i]) << (8 * i);
+    }
+    return value;
+}
+
+void CountDir(const FileSys::VirtualDir& dir, u64& files, u64& bytes) {
+    if (dir == nullptr) {
+        return;
+    }
+    for (const auto& file : dir->GetFiles()) {
+        ++files;
+        bytes += file->GetSize();
+    }
+    for (const auto& sub : dir->GetSubdirectories()) {
+        CountDir(sub, files, bytes);
+    }
+}
+
+// Archive member names are labels, not paths. Reject anything that is not exactly one
+// relative filename component so a crafted archive cannot escape the output directory.
+void CheckedName(const std::string& name) {
+    const auto path = FromUtf8(name);
+    if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos || name.find(':') != std::string::npos ||
+        name.find('\0') != std::string::npos || path.filename() != path) {
+        throw ExtractError(ExtractResult::InvalidSource, "invalid file name in archive: " + name);
+    }
+}
+
+void WriteDir(const FileSys::VirtualDir& dir, const fs::path& dest, PackProgress& progress,
+              const std::function<void(const PackProgress&)>& progress_cb,
+              const std::atomic_bool* cancel, u64& last_report) {
+    if (dir == nullptr) {
+        return;
+    }
+    std::error_code ec;
+    fs::create_directories(dest, ec);
+    if (ec) {
+        throw ExtractError(ExtractResult::IoError, "cannot create " + ToUtf8(dest));
+    }
+    for (const auto& sub : dir->GetSubdirectories()) {
+        if (cancel && cancel->load()) {
+            throw ExtractError(ExtractResult::Cancelled, "cancelled");
+        }
+        CheckedName(sub->GetName());
+        WriteDir(sub, dest / FromUtf8(sub->GetName()), progress, progress_cb, cancel,
+                 last_report);
+    }
+    std::vector<u8> buffer(ReadBufferSize);
+    for (const auto& file : dir->GetFiles()) {
+        if (cancel && cancel->load()) {
+            throw ExtractError(ExtractResult::Cancelled, "cancelled");
+        }
+        CheckedName(file->GetName());
+        const auto out_path = dest / FromUtf8(file->GetName());
+        Common::FS::IOFile out{out_path, Common::FS::FileAccessMode::Write};
+        if (!out.IsOpen()) {
+            throw ExtractError(ExtractResult::IoError, "cannot write " + ToUtf8(out_path));
+        }
+        const u64 size = file->GetSize();
+        u64 offset = 0;
+        while (offset < size) {
+            if (cancel && cancel->load()) {
+                throw ExtractError(ExtractResult::Cancelled, "cancelled");
+            }
+            const size_t chunk =
+                static_cast<size_t>(std::min<u64>(buffer.size(), size - offset));
+            const size_t got = file->Read(buffer.data(), chunk, static_cast<size_t>(offset));
+            if (got == 0) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "short read of " + file->GetName());
+            }
+            if (out.WriteSpan(std::span<const u8>{buffer.data(), got}) != got) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "write failed, the disk may be full");
+            }
+            offset += got;
+            progress.bytes_done += got;
+            if (progress.bytes_done - last_report >= ProgressStep) {
+                last_report = progress.bytes_done;
+                if (progress_cb) {
+                    progress_cb(progress);
+                }
+            }
+        }
+        out.Close();
+        ++progress.files_done;
+        if (progress_cb) {
+            progress_cb(progress);
+        }
+    }
+}
+
+} // namespace
+
+std::filesystem::path DefaultExtractPath(const std::filesystem::path& archive) {
+    auto parent = archive.parent_path();
+    auto stem = archive.stem();
+    if (stem.empty()) {
+        stem = archive.filename();
+    }
+    return parent / stem;
+}
+
+ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesystem::path& out_dir,
+                         const std::function<void(const PackProgress&)>& progress_cb,
+                         const std::atomic_bool* cancel, std::string* error_out) {
+    // True once this call has claimed out_dir by creating it or verifying that it is
+    // empty. Cleanup only removes output this call can safely claim; failures before that
+    // point (missing archive, uncreatable or non-empty output) leave everything untouched.
+    bool created = false;
+    bool claimed = false;
+    const auto cleanup = [&] {
+        if (!claimed) {
+            return;
+        }
+        std::error_code rm_ec;
+        if (created) {
+            fs::remove_all(out_dir, rm_ec);
+        } else {
+            for (auto it = fs::directory_iterator(out_dir, rm_ec);
+                 !rm_ec && it != fs::directory_iterator{}; it.increment(rm_ec)) {
+                fs::remove_all(it->path(), rm_ec);
+            }
+        }
+    };
+    try {
+        std::error_code ec;
+        if (!fs::is_regular_file(archive, ec)) {
+            throw ExtractError(ExtractResult::InvalidSource, "not a file: " + ToUtf8(archive));
+        }
+        if (fs::exists(out_dir, ec)) {
+            if (!fs::is_directory(out_dir, ec)) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "output exists and is not a directory: " + ToUtf8(out_dir));
+            }
+            for (auto it = fs::directory_iterator(out_dir, ec); !ec && it != fs::directory_iterator{};
+                 it.increment(ec)) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "output directory already exists: " + ToUtf8(out_dir));
+            }
+            if (ec) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "cannot list " + ToUtf8(out_dir) + ": " + ec.message());
+            }
+            claimed = true;
+        } else {
+            fs::create_directories(out_dir, ec);
+            if (ec) {
+                throw ExtractError(ExtractResult::IoError,
+                                   "cannot create " + ToUtf8(out_dir) + ": " + ec.message());
+            }
+            created = true;
+            claimed = true;
+        }
+
+        RealVfsFilesystem vfs;
+        const auto file =
+            vfs.OpenFile(Common::FS::PathToUTF8String(archive), FileSys::OpenMode::Read);
+        if (!file) {
+            throw ExtractError(ExtractResult::IoError, "cannot open " + ToUtf8(archive));
+        }
+        FileSys::NupContainer nup{file};
+        if (nup.GetStatus() != Loader::ResultStatus::Success) {
+            throw ExtractError(ExtractResult::InvalidSource,
+                               "not a valid NUP file: " + ToUtf8(archive));
+        }
+        const auto& packages = nup.GetPackages();
+        if (packages.empty()) {
+            throw ExtractError(ExtractResult::InvalidSource, "NUP has no packages");
+        }
+
+        const bool bare =
+            packages.size() == 1 && packages[0].kind == FileSys::NupContainer::PackageKind::Base;
+
+        PackProgress progress{};
+        std::vector<std::pair<size_t, fs::path>> targets;
+        std::unordered_map<u64, size_t> addon_index;
+        for (size_t i = 0; i < packages.size(); ++i) {
+            const auto& package = packages[i];
+            fs::path dest;
+            if (bare) {
+                dest = out_dir;
+            } else if (package.kind == FileSys::NupContainer::PackageKind::Base) {
+                dest = out_dir / "base";
+            } else if (package.kind == FileSys::NupContainer::PackageKind::Update) {
+                dest = out_dir / "updates" / std::to_string(package.version);
+            } else {
+                const size_t idx = addon_index[package.title_id]++;
+                dest = out_dir / "dlc" / fmt::format("{:016X}", package.title_id) /
+                       std::to_string(idx);
+            }
+            targets.emplace_back(i, dest);
+            u64 files = 0, bytes = 0;
+            CountDir(nup.GetPackageDir(i), files, bytes);
+            progress.files_total += files;
+            progress.bytes_total += bytes;
+        }
+        if (progress_cb) {
+            progress_cb(progress);
+        }
+        u64 last_report = 0;
+        for (const auto& [index, dest] : targets) {
+            WriteDir(nup.GetPackageDir(index), dest, progress, progress_cb, cancel, last_report);
+        }
+        return ExtractResult::Success;
+    } catch (const ExtractError& e) {
+        if (e.result != ExtractResult::Success) {
+            cleanup();
+        }
         if (error_out) {
-            *error_out = std::move(msg);
+            *error_out = e.what();
         }
-        return res;
+        return e.result;
+    } catch (const std::exception& e) {
+        cleanup();
+        if (error_out) {
+            *error_out = e.what();
+        }
+        return ExtractResult::IoError;
+    }
+}
+
+namespace {
+
+std::vector<std::pair<u16, std::vector<u8>>> ParseTlvs(const std::vector<u8>& block) {
+    std::vector<std::pair<u16, std::vector<u8>>> out;
+    size_t pos = 0;
+    while (pos + 8 <= block.size()) {
+        const u16 type =
+            static_cast<u16>(block[pos] | (static_cast<u16>(block[pos + 1]) << 8));
+        const u32 size = static_cast<u32>(block[pos + 4] | (static_cast<u32>(block[pos + 5]) << 8) |
+                                          (static_cast<u32>(block[pos + 6]) << 16) |
+                                          (static_cast<u32>(block[pos + 7]) << 24));
+        pos += 8;
+        if (pos + size > block.size()) {
+            throw std::runtime_error("malformed meta block");
+        }
+        out.emplace_back(type, std::vector<u8>(block.begin() + pos, block.begin() + pos + size));
+        pos += size;
+    }
+    return out;
+}
+
+void SetOrRemoveTlv(std::vector<std::pair<u16, std::vector<u8>>>& tlvs, u16 type,
+                    const std::optional<std::vector<u8>>& value) {
+    if (!value) {
+        return;
+    }
+    std::erase_if(tlvs, [type](const auto& tlv) { return tlv.first == type; });
+    if (!value->empty()) {
+        tlvs.emplace_back(type, *value);
+    }
+}
+
+// Records of: u8 tag length, tag, u32 name length, name.
+std::vector<u8> SerializeLocalizedTitles(
+    const std::vector<std::pair<std::string, std::string>>& titles) {
+    std::vector<u8> out;
+    for (const auto& [lang, name] : titles) {
+        if (lang.empty() || lang.size() > 0xFF || name.empty()) {
+            continue;
+        }
+        out.push_back(static_cast<u8>(lang.size()));
+        out.insert(out.end(), lang.begin(), lang.end());
+        for (size_t b = 0; b < 4; ++b) {
+            out.push_back(static_cast<u8>(name.size() >> (8 * b)));
+        }
+        out.insert(out.end(), name.begin(), name.end());
+    }
+    return out;
+}
+
+// Highest-version Update package, if any. Pack and load treat this as the effective update.
+std::optional<size_t> NewestUpdateIndex(
+    const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
+    std::optional<size_t> best;
+    for (size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].kind != FileSys::NupContainer::PackageKind::Update) {
+            continue;
+        }
+        if (!best || packages[i].version > packages[*best].version) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// Base package, or the first package when the container has no base: the same target the
+// packer attaches application metadata to.
+size_t NupEditTargetIndex(const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
+    for (size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].kind == FileSys::NupContainer::PackageKind::Base) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+} // namespace
+
+Metadata ProbeNupMetadata(const fs::path& archive) {
+    Metadata out;
+    RealVfsFilesystem vfs;
+    const auto file =
+        vfs.OpenFile(Common::FS::PathToUTF8String(archive), FileSys::OpenMode::Read);
+    if (!file) {
+        return out;
+    }
+    FileSys::NupContainer nup{file};
+    if (nup.GetStatus() != Loader::ResultStatus::Success || nup.GetPackages().empty()) {
+        return out;
+    }
+    const auto& packages = nup.GetPackages();
+    const size_t target = NupEditTargetIndex(packages);
+    const auto& package = packages[target];
+    out.title_name = package.title_name;
+    out.icon = package.icon;
+    out.publisher = package.publisher;
+    out.localized_titles = package.localized_titles;
+    // Prefill the version the loader actually displays: the newest update's when one exists.
+    if (const auto update = NewestUpdateIndex(packages);
+        update && !packages[*update].display_version.empty()) {
+        out.display_version = packages[*update].display_version;
+    } else {
+        out.display_version = package.display_version;
+    }
+    out.version_source = "NUP";
+    return out;
+}
+
+EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
+                           std::string* error_out, const std::atomic_bool* cancel,
+                           const std::function<void(const PackProgress&)>& progress_cb) {
+    const auto fail = [&](EditResult result, const std::string& message) {
+        if (error_out) {
+            *error_out = message;
+        }
+        return result;
     };
-    if (!update.title_name && !update.icon) {
-        return PackResult::Success;
+    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher &&
+        !edit.localized_titles) {
+        return EditResult::NoChange;
     }
-
-    if (HasMetadataBackup(archive)) {
-        RestoreMetadataBackup(archive);
+    std::error_code ec;
+    if (!fs::is_regular_file(archive, ec)) {
+        return fail(EditResult::InvalidSource, "not a file: " + ToUtf8(archive));
     }
-
-    std::error_code perm_ec;
-    const auto perms = fs::status(archive, perm_ec).permissions();
-    if (!perm_ec && (perms & fs::perms::owner_write) == fs::perms::none) {
-        return fail(PackResult::IoError, "Permission denied: NUP file is write-protected or read-only");
-    }
-
-    Common::FS::IOFile file{archive, Common::FS::FileAccessMode::Read};
-    if (!file.IsOpen()) {
-        return fail(PackResult::IoError, "cannot open NUP archive: " + ToUtf8(archive));
-    }
-    const u64 actual_size = file.GetSize();
-    if (actual_size < SuperblockSize) {
-        return fail(PackResult::InvalidSource, "file is too small to be a NUP archive");
-    }
-
-    std::vector<u8> super(SuperblockSize);
-    if (file.ReadSpan(std::span{super}) != SuperblockSize) {
-        return fail(PackResult::IoError, "cannot read NUP superblock");
-    }
-    const auto read_le = [](std::span<const u8> buf, size_t offset, size_t bytes) -> u64 {
-        u64 value = 0;
-        for (size_t i = 0; i < bytes; ++i) {
-            value |= static_cast<u64>(buf[offset + i]) << (8 * i);
-        }
-        return value;
-    };
-    if (!std::equal(Magic.begin(), Magic.end(), super.begin()) ||
-        read_le(super, 0x04, 2) < SuperblockSize || read_le(super, 0x4C, 4) != 0) {
-        return fail(PackResult::InvalidSource, "invalid NUP superblock");
-    }
-
-    const u64 toc_offset = read_le(super, 0x08, 8);
-    const u64 toc_size = read_le(super, 0x10, 8);
-    const u64 blob_offset = read_le(super, 0x38, 8);
-    const u64 file_size = read_le(super, 0x40, 8);
-    const u32 package_count = static_cast<u32>(read_le(super, 0x48, 4));
-    if (file_size != actual_size || toc_offset < SuperblockSize ||
-        blob_offset < toc_offset + toc_size || blob_offset > file_size || package_count == 0) {
-        return fail(PackResult::InvalidSource, "malformed NUP layout");
-    }
-
-    std::vector<u8> toc(static_cast<size_t>(toc_size));
-    if (!file.Seek(static_cast<s64>(toc_offset)) ||
-        file.ReadSpan(std::span{toc}) != toc.size()) {
-        return fail(PackResult::IoError, "cannot read NUP TOC");
-    }
-    Digest current_toc_hash{};
-    unsigned int hash_len = 0;
-    EVP_Digest(toc.data(), toc.size(), current_toc_hash.data(), &hash_len, EVP_sha256(), nullptr);
-    if (!std::equal(current_toc_hash.begin(), current_toc_hash.end(), super.begin() + 0x18)) {
-        return fail(PackResult::InvalidSource, "NUP TOC SHA-256 mismatch");
-    }
-    if (toc.size() < TocHeaderSize || !std::equal(TocMagic.begin(), TocMagic.end(), toc.begin()) ||
-        read_le(toc, 0x04, 4) != package_count) {
-        return fail(PackResult::InvalidSource, "invalid NUP TOC header");
-    }
-
-    const u64 dir_count = read_le(toc, 0x08, 8);
-    const u64 file_count = read_le(toc, 0x10, 8);
-    const u64 needed = TocHeaderSize + static_cast<u64>(package_count) * PackageRecordSize +
-                       dir_count * DirRecordSize + file_count * FileRecordSize;
-    if (toc.size() < needed) {
-        return fail(PackResult::InvalidSource, "truncated NUP TOC");
-    }
-
-    u64 max_extent_end = blob_offset;
-    size_t file_pos = static_cast<size_t>(TocHeaderSize +
-                                          static_cast<u64>(package_count) * PackageRecordSize +
-                                          dir_count * DirRecordSize);
-    for (u64 i = 0; i < file_count; ++i, file_pos += FileRecordSize) {
-        const u64 f_size = read_le(toc, file_pos + 0x08, 8);
-        const u64 ext_offset = read_le(toc, file_pos + 0x10, 8);
-        const u64 ext_size = read_le(toc, file_pos + 0x18, 8);
-        if (f_size != 0) {
-            max_extent_end = std::max(max_extent_end, ext_offset + ext_size);
-        }
-    }
-
-    struct PkgMeta {
-        u8 kind{};
-        u32 version{};
-        u64 offset{};
-        u32 size{};
-        std::vector<u8> bytes;
-    };
-    std::vector<PkgMeta> pkg_metas(package_count);
-    bool all_meta_after_extents = true;
-    for (u32 i = 0; i < package_count; ++i) {
-        const size_t pos = static_cast<size_t>(TocHeaderSize + i * PackageRecordSize);
-        pkg_metas[i].version = static_cast<u32>(read_le(toc, pos + 0x14, 4));
-        pkg_metas[i].kind = toc[pos + 0x18];
-        pkg_metas[i].offset = read_le(toc, pos + 0x20, 8);
-        pkg_metas[i].size = static_cast<u32>(read_le(toc, pos + 0x28, 4));
-        if (pkg_metas[i].size > 0 && pkg_metas[i].offset != 0) {
-            if (pkg_metas[i].offset + pkg_metas[i].size > file_size) {
-                return fail(PackResult::InvalidSource, "invalid NUP package metadata range");
-            }
-            if (pkg_metas[i].offset < max_extent_end) {
-                all_meta_after_extents = false;
-            }
-            pkg_metas[i].bytes.resize(pkg_metas[i].size);
-            if (!file.Seek(static_cast<s64>(pkg_metas[i].offset)) ||
-                file.ReadSpan(std::span{pkg_metas[i].bytes}) != pkg_metas[i].bytes.size()) {
-                return fail(PackResult::IoError, "cannot read NUP package metadata");
-            }
-        }
-    }
-
-    std::optional<u32> target_pkg;
-    for (u32 i = 0; i < package_count; ++i) {
-        if (pkg_metas[i].kind == KindBase) {
-            target_pkg = i;
-            break;
-        }
-    }
-    if (!target_pkg) {
-        for (u32 i = 0; i < package_count; ++i) {
-            if (pkg_metas[i].kind == KindUpdate &&
-                (!target_pkg || pkg_metas[i].version > pkg_metas[*target_pkg].version)) {
-                target_pkg = i;
-            }
-        }
-    }
-    const u32 target = target_pkg.value_or(0);
-
-    std::vector<std::pair<u16, std::vector<u8>>> tlvs;
+    // The probe objects hold the archive open; release them before rewriting it so the
+    // replace below never runs against an open handle.
+    size_t target = 0;
+    // The newest update when it is not the target itself; NoUpdate otherwise.
+    constexpr size_t NoUpdate = std::numeric_limits<size_t>::max();
+    size_t update = NoUpdate;
+    size_t package_total = 0;
+    std::string cur_title;
+    std::string cur_version;
+    std::string cur_update_version;
+    std::string cur_publisher;
+    std::vector<u8> cur_icon;
+    std::vector<std::pair<std::string, std::string>> cur_localized;
     {
-        const auto& raw_meta = pkg_metas[target].bytes;
-        size_t pos = 0;
-        while (pos + 8 <= raw_meta.size()) {
-            const u16 type = static_cast<u16>(read_le(raw_meta, pos, 2));
-            const u32 size = static_cast<u32>(read_le(raw_meta, pos + 4, 4));
-            pos += 8;
-            if (pos + size > raw_meta.size()) {
-                break;
+        RealVfsFilesystem vfs;
+        const auto file =
+            vfs.OpenFile(Common::FS::PathToUTF8String(archive), FileSys::OpenMode::Read);
+        if (!file) {
+            return fail(EditResult::IoError, "cannot open " + ToUtf8(archive));
+        }
+        FileSys::NupContainer nup{file};
+        if (nup.GetStatus() != Loader::ResultStatus::Success || nup.GetPackages().empty()) {
+            return fail(EditResult::InvalidSource, "not a valid NUP file: " + ToUtf8(archive));
+        }
+        const auto& packages = nup.GetPackages();
+        target = NupEditTargetIndex(packages);
+        update = NewestUpdateIndex(packages).value_or(NoUpdate);
+        if (update == target) {
+            update = NoUpdate;
+        }
+        package_total = packages.size();
+        const auto& current = packages[target];
+        cur_title = current.title_name;
+        cur_version = current.display_version;
+        cur_publisher = current.publisher;
+        cur_icon = current.icon;
+        cur_localized = current.localized_titles;
+        cur_update_version =
+            update != NoUpdate ? packages[update].display_version : current.display_version;
+    }
+    const auto same = [&](const std::optional<std::string>& wanted, const std::string& have) {
+        return !wanted || *wanted == have;
+    };
+    const bool icon_same = !edit.icon || *edit.icon == cur_icon;
+    const bool localized_same = !edit.localized_titles || *edit.localized_titles == cur_localized;
+    if (same(edit.title_name, cur_title) && icon_same && localized_same &&
+        same(edit.display_version, cur_version) && same(edit.display_version, cur_update_version) &&
+        same(edit.publisher, cur_publisher)) {
+        return EditResult::NoChange;
+    }
+
+    Common::FS::IOFile in{archive, Common::FS::FileAccessMode::Read};
+    if (!in.IsOpen()) {
+        return fail(EditResult::IoError, "cannot open " + ToUtf8(archive));
+    }
+    const u64 file_size = in.GetSize();
+    if (file_size < SuperblockSize) {
+        return fail(EditResult::InvalidSource, "file too small");
+    }
+    std::vector<u8> super(SuperblockSize);
+    if (in.ReadSpan(std::span<u8>{super}) != super.size() || !in.Seek(0)) {
+        return fail(EditResult::IoError, "cannot read superblock");
+    }
+    if (super[0] != 'N' || super[1] != 'U' || super[2] != 'P' || super[3] != 0x01) {
+        return fail(EditResult::InvalidSource, "not a NUP file");
+    }
+    const u64 toc_offset = ReadLe(super, 0x08, 8);
+    const u64 toc_size = ReadLe(super, 0x10, 8);
+    const u64 blob_offset = ReadLe(super, 0x38, 8);
+    const u64 super_file_size = ReadLe(super, 0x40, 8);
+    const u64 package_count = ReadLe(super, 0x48, 4);
+    if (toc_offset != SuperblockSize || toc_size == 0 || blob_offset % ExtentAlignment != 0 ||
+        super_file_size != file_size || package_count != package_total ||
+        toc_offset + toc_size > file_size || toc_offset + toc_size > blob_offset ||
+        blob_offset > file_size) {
+        return fail(EditResult::InvalidSource, "NUP superblock mismatch");
+    }
+    if (!in.Seek(static_cast<s64>(toc_offset))) {
+        return fail(EditResult::IoError, "cannot seek to TOC");
+    }
+    std::vector<u8> toc(static_cast<size_t>(toc_size));
+    if (in.ReadSpan(std::span<u8>{toc}) != toc.size()) {
+        return fail(EditResult::IoError, "cannot read TOC");
+    }
+
+    struct RawPackage {
+        u64 meta_offset{};
+        u32 meta_size{};
+    };
+    std::vector<RawPackage> raws;
+    size_t pos = TocHeaderSize;
+    for (size_t i = 0; i < package_count; ++i) {
+        if (pos + PackageRecordSize > toc.size()) {
+            return fail(EditResult::InvalidSource, "TOC too small");
+        }
+        RawPackage raw;
+        raw.meta_offset = ReadLe(toc, pos + 0x20, 8);
+        raw.meta_size = static_cast<u32>(ReadLe(toc, pos + 0x28, 4));
+        if (raw.meta_size > 0 &&
+            (raw.meta_offset == 0 || raw.meta_offset > file_size ||
+             raw.meta_size > file_size - raw.meta_offset)) {
+            return fail(EditResult::InvalidSource, "bad meta extent");
+        }
+        raws.push_back(raw);
+        pos += PackageRecordSize;
+    }
+
+    u64 meta_start = file_size;
+    for (const auto& raw : raws) {
+        if (raw.meta_size > 0) {
+            meta_start = std::min(meta_start, raw.meta_offset);
+        }
+    }
+    if (meta_start < blob_offset || meta_start > file_size) {
+        return fail(EditResult::InvalidSource, "bad meta start");
+    }
+
+    std::vector<std::vector<u8>> new_metas(raws.size());
+    for (size_t i = 0; i < raws.size(); ++i) {
+        std::vector<u8> block;
+        if (raws[i].meta_size > 0) {
+            if (!in.Seek(static_cast<s64>(raws[i].meta_offset))) {
+                return fail(EditResult::IoError, "cannot seek to meta block");
             }
-            tlvs.emplace_back(type,
-                              std::vector<u8>(raw_meta.begin() + static_cast<std::ptrdiff_t>(pos),
-                                              raw_meta.begin() +
-                                                  static_cast<std::ptrdiff_t>(pos + size)));
-            pos += size;
+            block.resize(raws[i].meta_size);
+            if (in.ReadSpan(std::span<u8>{block}) != block.size()) {
+                return fail(EditResult::IoError, "cannot read meta block");
+            }
         }
+        if (i == target || (edit.display_version && update != NoUpdate && i == update)) {
+            auto tlvs = ParseTlvs(block);
+            if (i == target) {
+                if (edit.title_name) {
+                    SetOrRemoveTlv(tlvs, TlvTitleName, StringBytes(*edit.title_name));
+                }
+                if (edit.publisher) {
+                    SetOrRemoveTlv(tlvs, TlvPublisher, StringBytes(*edit.publisher));
+                }
+                if (edit.icon) {
+                    SetOrRemoveTlv(tlvs, TlvIcon, *edit.icon);
+                }
+                if (edit.localized_titles) {
+                    SetOrRemoveTlv(tlvs, TlvLocalizedTitles,
+                                   SerializeLocalizedTitles(*edit.localized_titles));
+                }
+            }
+            if (edit.display_version) {
+                SetOrRemoveTlv(tlvs, TlvDisplayVersion, StringBytes(*edit.display_version));
+            }
+            block = SerializeTlvs(std::move(tlvs));
+        }
+        new_metas[i] = std::move(block);
     }
 
-    if (update.title_name) {
-        std::erase_if(tlvs, [](const auto& item) {
-            return item.first == TlvTitleName || item.first == TlvLocalizedTitles;
-        });
-        if (!update.title_name->empty()) {
-            tlvs.emplace_back(TlvTitleName, StringBytes(*update.title_name));
+    u64 cursor = meta_start;
+    std::vector<std::pair<u64, u32>> meta_addrs(raws.size());
+    for (size_t i = 0; i < raws.size(); ++i) {
+        if (new_metas[i].empty()) {
+            meta_addrs[i] = {0, 0};
+        } else {
+            if (new_metas[i].size() > std::numeric_limits<u32>::max()) {
+                return fail(EditResult::IoError, "package metadata is too large");
+            }
+            meta_addrs[i] = {cursor, static_cast<u32>(new_metas[i].size())};
+            cursor += new_metas[i].size();
         }
-    }
-    if (update.icon) {
-        std::erase_if(tlvs, [](const auto& item) {
-            return item.first == TlvIcon || item.first == TlvLocalizedIcons;
-        });
-        if (!update.icon->empty()) {
-            tlvs.emplace_back(TlvIcon, *update.icon);
-        }
-    }
-    pkg_metas[target].bytes = SerializeTlvs(std::move(tlvs));
-
-    const u64 meta_region_start = all_meta_after_extents ? max_extent_end : file_size;
-    u64 cursor = meta_region_start;
-    for (u32 i = 0; i < package_count; ++i) {
-        const auto& meta_bytes = pkg_metas[i].bytes;
-        if (meta_bytes.size() > std::numeric_limits<u32>::max()) {
-            return fail(PackResult::IoError, "package metadata is too large");
-        }
-        const u64 new_offset = meta_bytes.empty() ? 0 : cursor;
-        const u32 new_size = static_cast<u32>(meta_bytes.size());
-        cursor += meta_bytes.size();
-        const size_t pos = static_cast<size_t>(TocHeaderSize + i * PackageRecordSize);
-        PutLE(toc, pos + 0x20, new_offset, 8);
-        PutLE(toc, pos + 0x28, new_size, 4);
     }
     const u64 new_file_size = cursor;
 
-    Digest new_toc_hash{};
-    EVP_Digest(toc.data(), toc.size(), new_toc_hash.data(), &hash_len, EVP_sha256(), nullptr);
-    PutBytes(super, 0x18, new_toc_hash);
-    PutLE(super, 0x40, new_file_size, 8);
+    PackProgress eprogress{};
+    eprogress.bytes_total = new_file_size;
+    eprogress.files_total = 1;
+    u64 last_write_report = 0;
+    if (progress_cb) {
+        progress_cb(eprogress);
+    }
 
-    std::error_code space_ec;
-    const auto space_info = fs::space(archive.parent_path(), space_ec);
-    const bool has_spare_space = !space_ec && (space_info.available > new_file_size + 64ULL * 1024 * 1024);
-
-    if (has_spare_space) {
-        const fs::path temp = WithSuffix(archive, ".meta.part");
-        RemoveFile(temp);
-        Common::FS::IOFile out{temp, Common::FS::FileAccessMode::Write};
-        if (!out.IsOpen()) {
-            return fail(PackResult::IoError, "cannot create temporary NUP archive: " + ToUtf8(temp));
+    std::vector<u8> new_toc = toc;
+    pos = TocHeaderSize;
+    for (size_t i = 0; i < raws.size(); ++i) {
+        for (size_t b = 0; b < 8; ++b) {
+            new_toc[pos + 0x20 + b] = static_cast<u8>(meta_addrs[i].first >> (8 * b));
         }
-        const auto abort_temp = [&](PackResult res, std::string msg) {
-            out.Close();
-            RemoveFile(temp);
-            return fail(res, std::move(msg));
-        };
-
-        const auto copy_range = [&](u64 start_offset, u64 byte_count) -> bool {
-            if (byte_count == 0) {
-                return true;
-            }
-            if (!file.Seek(static_cast<s64>(start_offset))) {
-                return false;
-            }
-            std::vector<u8> copy_buf(static_cast<size_t>(std::min<u64>(byte_count, ReadBufferSize)));
-            u64 remaining = byte_count;
-            while (remaining > 0) {
-                const size_t chunk_len = static_cast<size_t>(std::min<u64>(remaining, copy_buf.size()));
-                const auto span = std::span<u8>{copy_buf.data(), chunk_len};
-                if (file.ReadSpan(span) != chunk_len ||
-                    out.WriteSpan(std::span<const u8>{copy_buf.data(), chunk_len}) != chunk_len) {
-                    return false;
-                }
-                remaining -= chunk_len;
-            }
-            return true;
-        };
-
-        if (out.WriteSpan(std::span<const u8>{super}) != super.size() ||
-            !copy_range(SuperblockSize, toc_offset - SuperblockSize) ||
-            out.WriteSpan(std::span<const u8>{toc}) != toc.size() ||
-            !copy_range(toc_offset + toc_size, meta_region_start - (toc_offset + toc_size))) {
-            return abort_temp(PackResult::IoError, "cannot write temporary NUP archive");
+        for (size_t b = 0; b < 4; ++b) {
+            new_toc[pos + 0x28 + b] =
+                static_cast<u8>(meta_addrs[i].second >> (8 * b));
         }
-        for (u32 i = 0; i < package_count; ++i) {
-            const auto& meta_bytes = pkg_metas[i].bytes;
-            if (!meta_bytes.empty() &&
-                out.WriteSpan(std::span<const u8>{meta_bytes}) != meta_bytes.size()) {
-                return abort_temp(PackResult::IoError, "cannot write NUP package metadata");
+        pos += PackageRecordSize;
+    }
+
+    std::array<u8, 32> toc_hash{};
+    unsigned int hash_len{};
+    EVP_Digest(new_toc.data(), new_toc.size(), toc_hash.data(), &hash_len, EVP_sha256(), nullptr);
+    if (hash_len != toc_hash.size()) {
+        return fail(EditResult::IoError, "cannot hash TOC");
+    }
+
+    std::vector<u8> new_super = super;
+    std::memcpy(new_super.data() + 0x18, toc_hash.data(), toc_hash.size());
+    for (size_t b = 0; b < 8; ++b) {
+        new_super[0x40 + b] = static_cast<u8>(new_file_size >> (8 * b));
+    }
+
+    const fs::path part = WithSuffix(archive, ".part");
+    if (fs::exists(part, ec)) {
+        return fail(EditResult::IoError,
+                    "temporary file already exists: " + ToUtf8(part));
+    }
+    Common::FS::IOFile out{part, Common::FS::FileAccessMode::Write};
+    if (!out.IsOpen()) {
+        return fail(EditResult::IoError, "cannot create " + ToUtf8(part));
+    }
+    const auto write_all = [&](const u8* data, size_t size) {
+        if (out.WriteSpan(std::span<const u8>{data, size}) != size) {
+            throw std::runtime_error("write failed, the disk may be full");
+        }
+        eprogress.bytes_done += size;
+        if (eprogress.bytes_done - last_write_report >= ProgressStep && progress_cb) {
+            last_write_report = eprogress.bytes_done;
+            progress_cb(eprogress);
+        }
+    };
+    try {
+        write_all(new_super.data(), new_super.size());
+        write_all(new_toc.data(), new_toc.size());
+        // Extent offsets are absolute: preserve any padding between the TOC and the blob
+        // region instead of shifting the blob down.
+        const u64 toc_end = SuperblockSize + new_toc.size();
+        if (toc_end > blob_offset) {
+            throw std::runtime_error("rewritten TOC overlaps the blob region");
+        }
+        u64 gap = blob_offset - toc_end;
+        static constexpr std::array<u8, 4096> zeros{};
+        while (gap > 0) {
+            const size_t chunk = static_cast<size_t>(std::min<u64>(gap, zeros.size()));
+            write_all(zeros.data(), chunk);
+            gap -= chunk;
+        }
+        std::vector<u8> buffer(ReadBufferSize);
+        u64 remaining = meta_start - blob_offset;
+        if (!in.Seek(static_cast<s64>(blob_offset))) {
+            throw std::runtime_error("cannot seek to blob");
+        }
+        while (remaining > 0) {
+            if (cancel && cancel->load()) {
+                out.Close();
+                std::error_code rm_ec;
+                fs::remove(part, rm_ec);
+                return EditResult::Cancelled;
             }
+            const size_t chunk = static_cast<size_t>(std::min<u64>(buffer.size(), remaining));
+            const size_t got = in.ReadSpan(std::span<u8>{buffer.data(), chunk});
+            if (got == 0) {
+                throw std::runtime_error("short read of blob");
+            }
+            write_all(buffer.data(), got);
+            remaining -= got;
+        }
+        for (const auto& block : new_metas) {
+            if (!block.empty()) {
+                write_all(block.data(), block.size());
+            }
+        }
+        eprogress.files_done = 1;
+        if (progress_cb) {
+            progress_cb(eprogress);
         }
         if (!out.SetSize(new_file_size) || !out.Commit()) {
-            return abort_temp(PackResult::IoError, "cannot commit temporary NUP archive");
+            throw std::runtime_error("cannot finish " + ToUtf8(part));
         }
+    } catch (const std::exception& e) {
         out.Close();
-        file.Close();
-
-        std::error_code ec;
-        fs::rename(temp, archive, ec);
-        if (ec) {
-            RemoveFile(temp);
-            return fail(PackResult::IoError, "cannot replace NUP archive: " + ec.message());
-        }
-        return PackResult::Success;
+        std::error_code rm_ec;
+        fs::remove(part, rm_ec);
+        return fail(EditResult::IoError, e.what());
     }
-
-    // Low free disk space fallback: create a lightweight recovery journal (.meta.bak)
-    // containing only the original size, superblock, and TOC (< 2MB) before committing in-place.
-    const fs::path bak = WithSuffix(archive, ".meta.bak");
-    RemoveFile(bak);
-    {
-        Common::FS::IOFile bak_file{bak, Common::FS::FileAccessMode::Write};
-        if (!bak_file.IsOpen()) {
-            return fail(PackResult::IoError, "cannot create recovery backup: " + ToUtf8(bak));
-        }
-        static constexpr std::array<u8, 8> bak_magic{'N', 'U', 'P', 'B', 'A', 'K', 0x01, 0x00};
-        std::vector<u8> orig_super(SuperblockSize);
-        std::vector<u8> orig_toc(static_cast<size_t>(toc_size));
-        if (!file.Seek(0) || file.Read(orig_super) != orig_super.size() ||
-            !file.Seek(static_cast<s64>(toc_offset)) || file.Read(orig_toc) != orig_toc.size()) {
-            bak_file.Close();
-            RemoveFile(bak);
-            return fail(PackResult::IoError, "cannot read archive header for backup");
-        }
-        if (bak_file.Write(bak_magic) != 8 ||
-            !bak_file.WriteObject(actual_size) ||
-            !bak_file.WriteObject(toc_offset) ||
-            !bak_file.WriteObject(toc_size) ||
-            bak_file.Write(orig_super) != orig_super.size() ||
-            bak_file.Write(orig_toc) != orig_toc.size() ||
-            !bak_file.Commit()) {
-            bak_file.Close();
-            RemoveFile(bak);
-            return fail(PackResult::IoError, "cannot commit recovery backup");
-        }
-    }
-
-    file.Close();
-    Common::FS::IOFile rw_file{archive, Common::FS::FileAccessMode::ReadWrite};
-    if (!rw_file.IsOpen()) {
-        RemoveFile(bak);
-        return fail(PackResult::IoError, "cannot open archive in read-write mode: " + ToUtf8(archive));
-    }
-    const auto abort_rw = [&](PackResult res, std::string msg) {
-        rw_file.Close();
-        RestoreMetadataBackup(archive);
-        return fail(res, std::move(msg));
-    };
-
-    if (!rw_file.Seek(static_cast<s64>(meta_region_start))) {
-        return abort_rw(PackResult::IoError, "cannot seek to metadata region");
-    }
-    for (u32 i = 0; i < package_count; ++i) {
-        const auto& meta_bytes = pkg_metas[i].bytes;
-        if (!meta_bytes.empty()) {
-            if (rw_file.WriteSpan(std::span<const u8>{meta_bytes}) != meta_bytes.size()) {
-                return abort_rw(PackResult::IoError, "failed writing package metadata");
-            }
-        }
-    }
-    const size_t pkg_records_bytes = static_cast<size_t>(package_count) * PackageRecordSize;
-    if (!rw_file.Seek(static_cast<s64>(toc_offset + TocHeaderSize)) ||
-        rw_file.WriteSpan(std::span<const u8>{toc.data() + TocHeaderSize, pkg_records_bytes}) !=
-            pkg_records_bytes ||
-        !rw_file.Seek(0) || rw_file.WriteSpan(std::span<const u8>{super}) != super.size() ||
-        !rw_file.SetSize(new_file_size) || !rw_file.Commit()) {
-        return abort_rw(PackResult::IoError, "cannot commit updated NUP header");
-    }
-    rw_file.Close();
-    RemoveFile(bak);
-    return PackResult::Success;
-}
-
-bool HasMetadataBackup(const fs::path& archive) {
-    std::error_code ec;
-    return fs::exists(WithSuffix(archive, ".meta.bak"), ec);
-}
-
-bool RestoreMetadataBackup(const fs::path& archive, std::string* error_out) {
-    const fs::path bak = WithSuffix(archive, ".meta.bak");
-    std::error_code ec;
-    if (!fs::exists(bak, ec)) {
-        if (error_out) {
-            *error_out = "No backup file found";
-        }
-        return false;
-    }
-    Common::FS::IOFile in{bak, Common::FS::FileAccessMode::Read};
-    if (!in.IsOpen()) {
-        if (error_out) {
-            *error_out = "Cannot open backup file";
-        }
-        return false;
-    }
-    std::array<u8, 8> magic{};
-    if (in.Read(magic) != 8 ||
-        std::memcmp(magic.data(), "NUPBAK\x01\x00", 8) != 0) {
-        if (error_out) {
-            *error_out = "Invalid backup file magic";
-        }
-        return false;
-    }
-    u64 orig_size = 0;
-    u64 toc_offset = 0;
-    u64 toc_size = 0;
-    if (!in.ReadObject(orig_size) ||
-        !in.ReadObject(toc_offset) ||
-        !in.ReadObject(toc_size)) {
-        if (error_out) {
-            *error_out = "Truncated backup file header";
-        }
-        return false;
-    }
-    std::vector<u8> super(SuperblockSize);
-    if (in.Read(super) != SuperblockSize) {
-        if (error_out) {
-            *error_out = "Truncated backup superblock";
-        }
-        return false;
-    }
-    std::vector<u8> toc(static_cast<size_t>(toc_size));
-    if (in.Read(toc) != toc_size) {
-        if (error_out) {
-            *error_out = "Truncated backup TOC";
-        }
-        return false;
-    }
+    out.Close();
     in.Close();
 
-    Common::FS::IOFile file{archive, Common::FS::FileAccessMode::ReadWrite};
-    if (!file.IsOpen()) {
-        if (error_out) {
-            *error_out = "Cannot open archive to restore";
+    {
+        RealVfsFilesystem check_vfs;
+        const auto check_file =
+            check_vfs.OpenFile(Common::FS::PathToUTF8String(part), FileSys::OpenMode::Read);
+        FileSys::NupContainer check{check_file};
+        if (check.GetStatus() != Loader::ResultStatus::Success) {
+            std::error_code rm_ec;
+            fs::remove(part, rm_ec);
+            return fail(EditResult::IoError, "edited file failed validation");
         }
-        return false;
     }
-    if (!file.Seek(0) || file.Write(super) != super.size() ||
-        !file.Seek(static_cast<s64>(toc_offset)) ||
-        file.WriteSpan(std::span<const u8>{toc}) != toc.size() ||
-        !file.SetSize(orig_size) || !file.Commit()) {
-        file.Close();
-        if (error_out) {
-            *error_out = "Failed writing restored header/TOC to archive";
-        }
-        return false;
+
+    std::error_code rename_ec;
+    fs::rename(part, archive, rename_ec);
+    if (rename_ec) {
+        std::error_code rm_ec;
+        fs::remove(part, rm_ec);
+        return fail(EditResult::IoError, "cannot replace archive: " + rename_ec.message());
     }
-    file.Close();
-    RemoveFile(bak);
-    return true;
+    return EditResult::Success;
 }
+
 
 } // namespace FileSys::Nup

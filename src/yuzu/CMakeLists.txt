@@ -215,6 +215,8 @@ add_executable(yuzu
     util/url_request_interceptor.h
     util/util.cpp
     util/util.h
+    util/icon_search.cpp
+    util/icon_search.h
 
     user_data_migration.h user_data_migration.cpp
 
@@ -222,7 +224,6 @@ add_executable(yuzu
     yuzu.rc
     migration_dialog.h migration_dialog.cpp
     nup_dialogs.h nup_dialogs.cpp
-    nup_metadata.h nup_metadata.cpp
     migration_worker.h migration_worker.cpp
     libqt_common.h libqt_common.cpp
 

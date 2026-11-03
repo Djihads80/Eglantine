@@ -6,14 +6,13 @@
 
 #pragma once
 
-#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
-#include <atomic>
+
 #include <QDialog>
 #include <QList>
-#include <QPixmap>
+
 #include "configuration/shared_widget.h"
 #include "core/file_sys/vfs/vfs_types.h"
 #include "frontend_common/config.h"
@@ -73,21 +72,10 @@ private:
     void HandleApplyButtonClicked();
 
     void LoadConfiguration();
-    void UpdateIconPreview(const QPixmap& map);
-    void OnUploadNupIcon();
-    void OnDetectNupIcon();
-    bool SavePendingNupMetadata(bool show_error = false);
 
     std::unique_ptr<Ui::ConfigurePerGame> ui;
     FileSys::VirtualFile file;
-    std::filesystem::path file_path;
     u64 title_id;
-    bool is_nup_file{false};
-    bool nup_writable{false};
-    std::string initial_nup_title;
-    std::optional<std::vector<u8>> pending_nup_icon;
-    bool has_pending_nup_changes{false};
-    std::shared_ptr<std::atomic_bool> detect_cancel_token;
 
     QGraphicsScene* scene;
 

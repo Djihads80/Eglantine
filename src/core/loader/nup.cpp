@@ -76,6 +76,13 @@ std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
     if (!base.publisher.empty()) {
         CopyDeveloperToEntry(nacp->raw.language_entries.language_entries[0], base.publisher);
     }
+    if (!base.publisher.empty()) {
+        auto& entry = nacp->raw.language_entries.language_entries[0];
+        const std::size_t length =
+            std::min(base.publisher.size(), entry.developer_name.size() - 1);
+        std::memcpy(entry.developer_name.data(), base.publisher.data(), length);
+        entry.developer_name[length] = '\0';
+    }
     if (!version.empty()) {
         const std::size_t length = std::min(version.size(), nacp->raw.version_string.size() - 1);
         std::memcpy(nacp->raw.version_string.data(), version.data(), length);

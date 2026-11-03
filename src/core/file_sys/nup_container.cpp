@@ -768,6 +768,13 @@ VirtualDir NupContainer::GetRomFSDir(std::size_t package_index) {
     return romfs_dir_cache[package_index];
 }
 
+VirtualDir NupContainer::GetPackageDir(std::size_t package_index) {
+    if (package_index >= packages.size()) {
+        return nullptr;
+    }
+    return BuildPackageDir(packages[package_index].root_dir);
+}
+
 VirtualDir NupContainer::MergeShadowDirs(const VirtualDir& base, const VirtualDir& overlay) {
     if (base == nullptr) {
         return overlay;
