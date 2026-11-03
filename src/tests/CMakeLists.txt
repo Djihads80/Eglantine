@@ -38,6 +38,11 @@ add_executable(tests
 create_target_directory_groups(tests)
 
 target_link_libraries(tests PRIVATE common core input_common video_core)
+
+if (ENABLE_MCP_SERVER)
+    target_sources(tests PRIVATE mcp/protocol.cpp)
+    target_link_libraries(tests PRIVATE mcp)
+endif()
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 add_test(NAME tests COMMAND tests)

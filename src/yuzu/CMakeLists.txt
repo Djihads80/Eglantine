@@ -405,6 +405,12 @@ elseif(WIN32)
 endif()
 
 target_link_libraries(yuzu PRIVATE nlohmann_json::nlohmann_json)
+
+if (ENABLE_MCP_SERVER)
+    target_sources(yuzu PRIVATE mcp_host_qt.cpp mcp_host_qt.h)
+    target_link_libraries(yuzu PRIVATE mcp)
+    target_compile_definitions(yuzu PRIVATE YUZU_ENABLE_MCP)
+endif()
 target_link_libraries(yuzu PRIVATE common core input_common frontend_common network video_core qt_common)
 target_link_libraries(yuzu PRIVATE Boost::headers Qt6::Widgets Qt6::Charts Qt6::Concurrent)
 target_link_libraries(yuzu PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)

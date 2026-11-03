@@ -163,8 +163,16 @@ private:
     constexpr static int MaxMultiplier = 8;
 };
 
+class QAction;
+class QMenu;
+class QtMcpHost;
+namespace Mcp {
+class Server;
+}
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
+    friend class QtMcpHost; // drives boot/pause/stop/game list for the MCP server
 
     /// Max number of recently loaded items to keep track of
     static const int max_recent_files_item = 10;
@@ -552,6 +560,33 @@ private:
     bool emulation_running = false;
     bool boot_in_progress = false;
     bool close_pending = false;
+
+    /// Starts the built-in MCP server if enabled by setting or command line (no-op without it).
+    void MaybeStartMcpServer(bool cli_enable, std::optional<u16> cli_port, bool cli_allow_writes);
+#ifdef YUZU_ENABLE_MCP
+    void StartMcpServer();
+    void StopMcpServer();
+    void SetupMcpMenu();
+    void UpdateMcpMenu();
+    /// Status-bar indicator: server state, agent in control, last tool, recording, route progress.
+    void UpdateMcpStatusLabel();
+    /// Tools > MCP Server > Routes: record, run, delete the running game's routes.
+    void PopulateMcpRoutesMenu();
+
+    QMenu* mcp_routes_menu = nullptr;
+
+    QLabel* mcp_status_label = nullptr;
+    QTimer mcp_status_timer;
+    std::unique_ptr<QtMcpHost> mcp_host;
+    std::unique_ptr<Mcp::Server> mcp_server;
+    std::optional<u16> mcp_cli_port;
+    bool mcp_cli_allow_writes = false;
+    std::string mcp_last_error;
+    QMenu* mcp_menu = nullptr;
+    QAction* mcp_status_action = nullptr;
+    QAction* mcp_enable_action = nullptr;
+    QAction* mcp_writes_action = nullptr;
+#endif
     // The path to the game currently running
     QString current_game_path;
     // Whether a user was set on the command line (skips UserSelector if it's forced to show up)

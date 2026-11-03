@@ -39,6 +39,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
+        {"mcp", no_argument, 0, 'M'},
+        {"mcp-port", required_argument, 0, 'P'},
+        {"mcp-allow-writes", no_argument, 0, 'W'},
         {"pack-nup", required_argument, 0, 'N'},
         {0, 0, 0, 0},
         // clang-format on
@@ -66,6 +69,16 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             case 'g':
                 p.filepath = std::string(optarg);
+                break;
+            case 'M':
+                p.mcp_enable = true;
+                break;
+            case 'P':
+                p.mcp_enable = true;
+                p.mcp_port = static_cast<u16>(std::strtoul(optarg, nullptr, 10));
+                break;
+            case 'W':
+                p.mcp_allow_writes = true;
                 break;
             case 'N':
                 p.pack_nup_source = std::string(optarg);

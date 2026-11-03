@@ -41,6 +41,12 @@ add_executable(yuzu-cmd
 )
 
 target_link_libraries(yuzu-cmd PRIVATE common core input_common frontend_common video_core)
+
+if (ENABLE_MCP_SERVER)
+    target_sources(yuzu-cmd PRIVATE mcp_host_cli.cpp mcp_host_cli.h)
+    target_link_libraries(yuzu-cmd PRIVATE mcp hid_core)
+    target_compile_definitions(yuzu-cmd PRIVATE YUZU_ENABLE_MCP)
+endif()
 if (ENABLE_OPENGL)
     target_link_libraries(yuzu-cmd PRIVATE glad)
 endif()

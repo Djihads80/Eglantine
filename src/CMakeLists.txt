@@ -279,6 +279,10 @@ add_subdirectory(input_common)
 add_subdirectory(frontend_common)
 add_subdirectory(shader_recompiler)
 
+if (ENABLE_MCP_SERVER)
+    add_subdirectory(mcp)
+endif()
+
 if (YUZU_TESTS)
     add_subdirectory(tests)
 endif()
