@@ -1153,10 +1153,9 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // The extensions NVIDIA's DLSS asks for, where the device has them all.
     if (Streamline::WantsDevice()) {
         const std::vector<std::string> wanted = Streamline::DeviceExtensions();
-        const bool all =
-            !wanted.empty() && std::ranges::all_of(wanted, [&](const std::string& name) {
-                return supported_extensions.contains(name);
-            });
+        // Streamline may ask for no extensions at all.
+        const bool all = std::ranges::all_of(
+            wanted, [&](const std::string& name) { return supported_extensions.contains(name); });
         std::string names;
         for (const std::string& name : wanted) {
             if (all) {
@@ -1166,7 +1165,7 @@ bool Device::GetSuitability(bool requires_swapchain) {
         }
         streamline_extensions = all;
         LOG_INFO(Render_Vulkan, "NVIDIA DLSS device extensions: {} ({})",
-                 all ? "enabled" : "unavailable", names);
+                 all ? "enabled" : "unavailable", names.empty() ? "none" : names);
     }
 #endif
 
