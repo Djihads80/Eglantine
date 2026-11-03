@@ -181,7 +181,7 @@ endif()
 if (YUZU_USE_BUNDLED_FFMPEG)
     # Windows (MSVC) and Linux x86_64 get the same FFmpeg with libdav1d, for Switch 2 titles' AV1
     # movies; crueter-ci's packages, used elsewhere, have no AV1 decoder.
-    if ((MSVC OR LINUX) AND CPMUTIL_AMD64)
+    if ((MSVC OR LINUX OR WIN32) AND CPMUTIL_AMD64)
         AddJsonPackage(ffmpeg-ci-av1)
     else()
         AddJsonPackage(ffmpeg-ci)
