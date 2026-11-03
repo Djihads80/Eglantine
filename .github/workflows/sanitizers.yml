@@ -8,6 +8,7 @@ on:
       - "CMakeLists.txt"
       - "CMakeModules/**"
       - "externals/**"
+      - ".patch/**"
       - "cpmfile.json"
       - ".github/workflows/sanitizers.yml"
   push:
@@ -56,12 +57,15 @@ jobs:
   sanitize:
     name: ${{ matrix.name }}
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' }}
+    # TSan is slow and still noisy, so pull requests run only ASan + UBSan; TSan runs on pushes,
+    # the weekly schedule and manual dispatch.
+    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' && (matrix.id != 'tsan' || github.event_name != 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2000M
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
     strategy:
       fail-fast: false
       matrix:
@@ -71,7 +75,8 @@ jobs:
             flags: -fsanitize=address,undefined -fno-sanitize-recover=undefined
             # Fibers switch stacks; the use-after-return fake stack does not follow them.
             control: |
-              int main(int c, char**) { int* p = new int[4]; return p[c + 4]; }
+              int main(int c, char**) { int* p = new int[4]; volatile int v = p[c + 4]; (void)v; return 0; }
+            diagnostic: "AddressSanitizer|runtime error"
             options: >-
               ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1
               UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
@@ -81,12 +86,12 @@ jobs:
             control: |
               #include <thread>
               int g;
-              int main() { std::thread t([] { g = 1; }); g = 2; t.join(); return g; }
+              int main() { std::thread t([] { g = 1; }); g = 2; t.join(); return 0; }
+            diagnostic: "ThreadSanitizer"
             options: TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
-            # Fiber code is a known source of TSan false positives until it is annotated.
-            # Report failures without blocking until a green baseline exists.
+            # Fiber code is a known source of TSan false positives until it is annotated. Only the
+            # test run is non-blocking; install, configure, build and registration still gate.
             experimental: true
-    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - name: Check out source
@@ -118,17 +123,27 @@ jobs:
           ${{ matrix.control }}
           CPP
           g++ -g -O1 ${{ matrix.flags }} control.cpp -o control -pthread
-          if env ${{ matrix.options }} ./control; then
-            echo "::error::sanitizer positive control passed; instrumentation is not active"
+          # The control returns 0 unless a sanitizer intervenes, so require the report text too.
+          env ${{ matrix.options }} ./control > control.log 2>&1 || true
+          cat control.log
+          if ! grep -qE "${{ matrix.diagnostic }}" control.log; then
+            echo "::error::sanitizer positive control produced no report; instrumentation is not active"
             exit 1
           fi
+
+      - name: Restore dependency sources
+        uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
+          restore-keys: cpm-
 
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_C_FLAGS="${{ matrix.flags }} -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -fno-omit-frame-pointer" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}" \
             -DBUILD_TESTING=ON \
             -DYUZU_TESTS=ON \
@@ -153,4 +168,5 @@ jobs:
           grep -q "Total Tests: [1-9]" ctest-list.txt || { echo "::error::no tests registered"; exit 1; }
 
       - name: Run tests
+        continue-on-error: ${{ matrix.experimental == true }}
         run: env ${{ matrix.options }} ctest --test-dir build --no-tests=error --output-on-failure
