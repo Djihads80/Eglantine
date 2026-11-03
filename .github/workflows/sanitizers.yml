@@ -1,0 +1,156 @@
+name: sanitizers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &paths
+      - "src/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "externals/**"
+      - "cpmfile.json"
+      - ".github/workflows/sanitizers.yml"
+  push:
+    branches:
+      - nx2
+    paths: *paths
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Fail-closed gate (pattern from prosper's CI): a docs-only PR skips the expensive builds, but
+  # if this job errors its output is empty and `!= 'false'` still runs the sanitizers.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      code_changed: ${{ steps.filter.outputs.code_changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD^1 HEAD)
+          echo "$CHANGED"
+          if [ -z "$CHANGED" ] || echo "$CHANGED" | grep -qvE '\.md$|^docs/'; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ASan and TSan cannot share a binary, so each gets its own build of the Catch2 `tests` target.
+  sanitize:
+    name: ${{ matrix.name }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2000M
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan + UBSan
+            id: asan-ubsan
+            flags: -fsanitize=address,undefined -fno-sanitize-recover=undefined
+            # Fibers switch stacks; the use-after-return fake stack does not follow them.
+            control: |
+              int main(int c, char**) { int* p = new int[4]; return p[c + 4]; }
+            options: >-
+              ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1
+              UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+          - name: TSan
+            id: tsan
+            flags: -fsanitize=thread
+            control: |
+              #include <thread>
+              int g;
+              int main() { std::thread t([] { g = 1; }); g = 2; t.join(); return g; }
+            options: TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
+            # Fiber code is a known source of TSan false positives until it is annotated.
+            # Report failures without blocking until a green baseline exists.
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev mesa-common-dev nasm ninja-build \
+            libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev \
+            libva-dev libvdpau-dev spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev ccache catch2
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: sanitizers-${{ matrix.id }}-${{ github.sha }}
+          restore-keys: sanitizers-${{ matrix.id }}-
+
+      # Positive control: a deliberate bug must make the instrumented binary fail. If it passes,
+      # the flags or runtime are not actually sanitizing and a green test run means nothing.
+      - name: Verify sanitizer catches a known bug
+        run: |
+          cat > control.cpp <<'CPP'
+          ${{ matrix.control }}
+          CPP
+          g++ -g -O1 ${{ matrix.flags }} control.cpp -o control -pthread
+          if env ${{ matrix.options }} ./control; then
+            echo "::error::sanitizer positive control passed; instrumentation is not active"
+            exit 1
+          fi
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_FLAGS="${{ matrix.flags }} -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}" \
+            -DBUILD_TESTING=ON \
+            -DYUZU_TESTS=ON \
+            -DENABLE_QT=OFF \
+            -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WERROR=OFF \
+            -DUSE_CCACHE=ON
+
+      - name: Build tests
+        run: cmake --build build --target tests --parallel
+
+      - name: Verify tests are registered
+        run: |
+          ctest --test-dir build -N | tee ctest-list.txt
+          grep -q "Total Tests: [1-9]" ctest-list.txt || { echo "::error::no tests registered"; exit 1; }
+
+      - name: Run tests
+        run: env ${{ matrix.options }} ctest --test-dir build --no-tests=error --output-on-failure
