@@ -45,6 +45,7 @@ json JsonRpcError(const json& id, int code, std::string message) {
                 {"error", {{"code", code}, {"message", std::move(message)}}}};
 }
 
+/// Value of the named header (lowercase), or nullopt when absent.
 std::optional<std::string> HttpRequest::Header(const std::string& lowercase_name) const {
     const auto it = headers.find(lowercase_name);
     if (it == headers.end()) {
@@ -58,6 +59,7 @@ Protocol::Protocol(const ToolRegistry& registry_, ProtocolOptions options_,
     : registry{registry_}, options{std::move(options_)},
       context_factory{std::move(context_factory_)} {}
 
+/// True if `origin` is a loopback http(s) origin.
 bool Protocol::IsAllowedOrigin(const std::string& origin) {
     // Browsers send Origin on cross-site requests; only loopback pages may talk to the server
     // (defends against DNS rebinding). Non-browser clients usually send no Origin at all.
@@ -74,6 +76,7 @@ bool Protocol::IsAllowedOrigin(const std::string& origin) {
     return false;
 }
 
+/// True if the Host header is empty or names a loopback address, with an optional port.
 bool Protocol::IsAllowedHost(const std::string& host) {
     // A DNS-rebinding page is same-origin with the server (so browsers send no Origin), but its
     // requests still carry the attacker's host name. Browsers always send Host; other clients
@@ -103,6 +106,7 @@ bool Protocol::HasSession(const std::string& id) const {
     return sessions.contains(id);
 }
 
+/// Checks path, host, origin and token, then serves POST or deletes the session on DELETE.
 HttpResponse Protocol::Handle(const HttpRequest& request) {
     if (request.path != "/mcp") {
         return Empty(404);
@@ -129,8 +133,15 @@ HttpResponse Protocol::Handle(const HttpRequest& request) {
         if (!id) {
             return Empty(400);
         }
-        std::scoped_lock lock{sessions_mutex};
-        return Empty(sessions.erase(*id) != 0 ? 204 : 404);
+        bool erased = false;
+        {
+            std::scoped_lock lock{sessions_mutex};
+            erased = sessions.erase(*id) != 0;
+        }
+        if (erased) {
+            ReleaseLease(*id);
+        }
+        return Empty(erased ? 204 : 404);
     }
     // No standalone server-to-client SSE stream yet.
     HttpResponse response = Empty(405);
@@ -138,6 +149,7 @@ HttpResponse Protocol::Handle(const HttpRequest& request) {
     return response;
 }
 
+/// Validates a JSON-RPC message and its session, then dispatches requests that expect a reply.
 HttpResponse Protocol::HandlePost(const HttpRequest& request) {
     if (request.body.size() > options.max_body_bytes) {
         return Empty(413);
@@ -156,7 +168,9 @@ HttpResponse Protocol::HandlePost(const HttpRequest& request) {
         return JsonResponse(400, JsonRpcError(nullptr, kInvalidRequest,
                                               "JSON-RPC batching is not supported"));
     }
-    if (!message.is_object() || message.value("jsonrpc", "") != "2.0") {
+    // Type-checked first: value() throws when the member exists with another type.
+    if (!message.is_object() || !message.contains("jsonrpc") || !message["jsonrpc"].is_string() ||
+        message["jsonrpc"].get<std::string>() != "2.0") {
         return JsonResponse(400, JsonRpcError(nullptr, kInvalidRequest, "Invalid Request"));
     }
 
@@ -200,6 +214,7 @@ HttpResponse Protocol::HandlePost(const HttpRequest& request) {
     return response;
 }
 
+/// Routes a JSON-RPC request to its method handler and returns the reply.
 std::optional<json> Protocol::Dispatch(const json& message, const HttpRequest& request,
                                        std::string& new_session_id, [[maybe_unused]] int& status) {
     const std::string method = message["method"].get<std::string>();
@@ -283,6 +298,7 @@ std::optional<json> Protocol::Dispatch(const json& message, const HttpRequest& r
     return JsonRpcError(id, kMethodNotFound, "Method not found: " + method);
 }
 
+/// Negotiates the protocol version, creates a session and returns the server capabilities.
 json Protocol::HandleInitialize(const json& params, std::string& new_session_id) {
     std::string version = kSupportedProtocolVersions[0];
     if (params.is_object() && params.contains("protocolVersion") &&
@@ -314,6 +330,7 @@ json Protocol::HandleInitialize(const json& params, std::string& new_session_id)
     return result;
 }
 
+/// Validates and runs a tool call, refusing it when writes, a game or the lease are missing.
 json Protocol::HandleToolsCall(const json& id, const json& params,
                                 const std::string& session_id) {
     if (!params.is_object() || !params.contains("name") || !params["name"].is_string()) {
@@ -395,19 +412,37 @@ json Protocol::HandleToolsCall(const json& id, const json& params,
     return json{{"jsonrpc", "2.0"}, {"id", id}, {"result", result.ToJson()}};
 }
 
+/// Adds a session with a random id, evicting the least recently used one when full.
 std::string Protocol::CreateSession(std::string protocol_version) {
     static thread_local std::mt19937_64 rng{std::random_device{}()};
     const std::string id = fmt::format("{:016x}{:016x}", rng(), rng());
-    std::scoped_lock lock{sessions_mutex};
-    if (sessions.size() >= options.max_sessions) {
-        const auto oldest =
-            std::min_element(sessions.begin(), sessions.end(), [](const auto& a, const auto& b) {
-                return a.second.last_used < b.second.last_used;
-            });
-        sessions.erase(oldest);
+    std::string evicted;
+    {
+        std::scoped_lock lock{sessions_mutex};
+        if (sessions.size() >= options.max_sessions) {
+            const auto oldest = std::min_element(
+                sessions.begin(), sessions.end(), [](const auto& a, const auto& b) {
+                    return a.second.last_used < b.second.last_used;
+                });
+            evicted = oldest->first;
+            sessions.erase(oldest);
+        }
+        sessions.emplace(id,
+                         Session{std::move(protocol_version), std::chrono::steady_clock::now()});
     }
-    sessions.emplace(id, Session{std::move(protocol_version), std::chrono::steady_clock::now()});
+    if (!evicted.empty()) {
+        ReleaseLease(evicted);
+    }
     return id;
+}
+
+void Protocol::ReleaseLease(const std::string& session_id) {
+    if (!context_factory) {
+        return;
+    }
+    if (ControlLease* lease = context_factory().control) {
+        lease->Release(session_id);
+    }
 }
 
 } // namespace Mcp

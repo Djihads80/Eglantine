@@ -4,8 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <vector>
 #include <ctime>
 #include <fmt/chrono.h>
 #include "common/logging.h"
@@ -111,9 +113,25 @@ static void GenerateErrorReport(Core::System& system, Result error_code, const F
         info.backtrace_size, info.ArchAsString(), info.unk10);
 }
 
-/// Posts a crash event for a fatal error to the crash observer. The backtrace is built from the CPU
-/// context the game sent (ThrowFatalWithCpuContext), not from the calling thread: this runs on the
-/// service thread, where the caller's saved context may not be up to date yet.
+/// The AArch32 layout of the CPU context buffer (FatalInfo describes the AArch64 one).
+struct FatalAarch32Context {
+    std::array<u32_le, 16> r{}; ///< r11 = fp, r13 = sp, r14 = lr, r15 = pc
+    u32_le pstate{};
+    u32_le afsr0{};
+    u32_le afsr1{};
+    u32_le esr{};
+    u32_le far{};
+    std::array<u32_le, 32> stack_trace{};
+    u32_le stack_trace_size{};
+    u32_le start_address{};
+    u32_le register_set_flags{};
+};
+static_assert(sizeof(FatalAarch32Context) <= sizeof(FatalInfo));
+
+/// Posts a crash event for a fatal error to the crash observer. Everything comes from the CPU
+/// context the game sent (ThrowFatalWithCpuContext), decoded by architecture, not from the calling
+/// thread: this runs on the service thread, where the caller's saved context may be stale. The
+/// game's own stack trace is listed first, then a frame-pointer walk from its registers.
 static void NotifyFatalCrash(Core::System& system, Result error_code, FatalType fatal_type,
                              const FatalInfo& info) {
     std::string detail =
@@ -121,8 +139,26 @@ static void NotifyFatalCrash(Core::System& system, Result error_code, FatalType 
                     error_code.raw, 2000 + static_cast<u32>(error_code.GetModule()),
                     static_cast<u32>(error_code.GetDescription()));
     auto* const process = system.ApplicationProcess();
-    if (process != nullptr && info.pc != 0) {
-        Kernel::Svc::ThreadContext context{};
+    if (process == nullptr) {
+        Core::Trace::NotifyCrash("fatal", detail, nullptr);
+        return;
+    }
+
+    Kernel::Svc::ThreadContext context{};
+    std::vector<u64> trace;
+    if (info.arch == FatalInfo::Architecture::AArch32) {
+        FatalAarch32Context ctx32{};
+        std::memcpy(&ctx32, &info, sizeof(ctx32));
+        for (size_t i = 0; i < ctx32.r.size(); ++i) {
+            context.r[i] = ctx32.r[i];
+        }
+        context.fp = ctx32.r[11];
+        context.sp = ctx32.r[13];
+        context.lr = ctx32.r[14];
+        context.pc = ctx32.r[15];
+        const size_t count = (std::min<size_t>)(ctx32.stack_trace_size, ctx32.stack_trace.size());
+        trace.assign(ctx32.stack_trace.begin(), ctx32.stack_trace.begin() + count);
+    } else {
         for (size_t i = 0; i < context.r.size(); ++i) {
             context.r[i] = info.registers[i];
         }
@@ -130,7 +166,29 @@ static void NotifyFatalCrash(Core::System& system, Result error_code, FatalType 
         context.lr = info.registers[30];
         context.sp = info.sp;
         context.pc = info.pc;
-        detail += "\nbacktrace from the CPU context sent by the game:";
+        const size_t count = (std::min<size_t>)(info.backtrace_size, info.backtrace.size());
+        trace.assign(info.backtrace.begin(), info.backtrace.begin() + count);
+    }
+
+    // Module of an address, for the game's own stack trace (raw addresses, not symbolized here).
+    const auto modules = Core::FindModules(process);
+    const auto locate = [&](u64 address) {
+        auto it = modules.upper_bound(address);
+        if (it == modules.begin()) {
+            return fmt::format("{:#x}", address);
+        }
+        --it;
+        return fmt::format("{}+{:#x}", it->second, address - it->first);
+    };
+    detail += fmt::format("\npc {}", locate(context.pc));
+    if (!trace.empty()) {
+        detail += "\nstack trace sent by the game:";
+        for (const u64 address : trace) {
+            detail += "\n" + locate(address);
+        }
+    }
+    if (context.pc != 0) {
+        detail += "\nframe walk from the game's registers:";
         for (const auto& frame : Core::GetBacktraceFromContext(process, context)) {
             detail += fmt::format("\n{}+{:#x} {}", frame.module, frame.offset, frame.name);
         }

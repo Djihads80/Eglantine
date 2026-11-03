@@ -130,6 +130,9 @@ private:
     /// Creates a session with a random id and returns the id. Evicts the least recently used
     /// session when max_sessions is reached.
     std::string CreateSession(std::string protocol_version);
+    /// Frees the control lease if the given (ended) session holds it, so other agents are not
+    /// locked out until it expires.
+    void ReleaseLease(const std::string& session_id);
 
     const ToolRegistry& registry;
     ProtocolOptions options;

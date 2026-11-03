@@ -298,6 +298,38 @@ TEST_CASE("MCP protocol enforces the control lease", "[mcp]") {
     REQUIRE(Call(p, b, "drive", json::object())["result"]["content"][0]["text"] == "driving");
 }
 
+TEST_CASE("MCP ending a session releases its control lease", "[mcp]") {
+    ToolRegistry registry;
+    registry.Add(Tool{
+        .name = "drive",
+        .description = "Needs control",
+        .requires_control = true,
+        .handler = [](ToolContext&, const json&) { return ToolResult::Text("driving"); },
+    });
+    ControlLease lease;
+    Protocol p{registry, {}, [&lease] {
+                   ToolContext c;
+                   c.control = &lease;
+                   return c;
+               }};
+    const auto a = Initialize(p);
+    REQUIRE(Call(p, a, "drive", json::object())["result"]["content"][0]["text"] == "driving");
+    REQUIRE(lease.Current().has_value());
+    HttpRequest del;
+    del.method = "DELETE";
+    del.path = "/mcp";
+    del.headers["mcp-session-id"] = a;
+    REQUIRE(p.Handle(del).status == 204);
+    REQUIRE_FALSE(lease.Current().has_value());
+}
+
+TEST_CASE("MCP rejects a non-string jsonrpc member", "[mcp]") {
+    const auto registry = MakeRegistry();
+    Protocol p{registry, {}, {}};
+    const auto res = p.Handle(Post(json{{"jsonrpc", 2}, {"id", 1}, {"method", "ping"}}));
+    REQUIRE(json::parse(res.body)["error"]["code"] == -32600);
+}
+
 TEST_CASE("MCP refused calls do not take the control lease", "[mcp]") {
     ToolRegistry registry;
     registry.Add(Tool{
