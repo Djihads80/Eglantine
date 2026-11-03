@@ -2509,31 +2509,23 @@ void TextureCacheRuntime::TickFrame() {
     });
 }
 
-namespace {
-
-// The host image of a texture; unbacked images are created without memory (see MakeImage).
-[[nodiscard]] vk::Image MakeHostImage(TextureCacheRuntime& runtime, const ImageInfo& info,
-                                      u32 host_level_offset, GPUVAddr gpu_addr, bool backed) {
-    const Device& device = runtime.device;
-    const bool sparse_tiles = !backed && UsesSparseTiles(device, info, gpu_addr);
-    return MakeImage(
-        device, runtime.memory_allocator, TrimmedHostInfo(device, info, host_level_offset),
-        IsHugeAstcArray(device, info)   ? std::span<const VkFormat>{HugeAstcViewFormats}
-        : IsOpaqueBc1Astc(device, info) ? std::span<const VkFormat>{OpaqueAstcViewFormats}
-                                        : runtime.ViewFormats(info.format),
-        AstcHostFormat(device, info),
-        !backed && (UsesSparseLayers(device, info, gpu_addr) || sparse_tiles ||
-                    IsUnwrittenSparse(device, info, gpu_addr)),
-        sparse_tiles && SparseTilesModeOf(device) == SparseTilesMode::Aliased);
-}
-
-} // Anonymous namespace
-
 Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu_addr_,
              VAddr cpu_addr_)
     : VideoCommon::ImageBase(info_, gpu_addr_, cpu_addr_), scheduler{&runtime_.scheduler},
       runtime{&runtime_},
-      original_image(MakeHostImage(runtime_, info, host_level_offset, gpu_addr_, false)),
+      original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
+                               TrimmedHostInfo(runtime_.device, info, host_level_offset),
+                               IsHugeAstcArray(runtime_.device, info)
+                                   ? std::span<const VkFormat>{HugeAstcViewFormats}
+                               : IsOpaqueBc1Astc(runtime_.device, info)
+                                   ? std::span<const VkFormat>{OpaqueAstcViewFormats}
+                                   : runtime->ViewFormats(info.format),
+                               AstcHostFormat(runtime_.device, info),
+                               UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
+                                   UsesSparseTiles(runtime_.device, info, gpu_addr_) ||
+                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_),
+                               UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
+                                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased)),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
@@ -2544,17 +2536,6 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             flags |= VideoCommon::ImageFlagBits::SparseLayers;
         } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
             flags |= VideoCommon::ImageFlagBits::SparseTiles;
-        } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
-                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased) {
-            // The driver can't sample unbound memory (that is why the blocks were to share one),
-            // so an image whose tiles could not be set up is backed whole like any other.
-            LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: backing it whole", gpu_addr_);
-            original_image = MakeHostImage(runtime_, info, host_level_offset, gpu_addr_, true);
-            if (!original_image.IsUnbacked()) {
-                flags &= ~VideoCommon::ImageFlagBits::Unbacked;
-            } else if (texels <= (u64{1} << 28)) {
-                flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
-            }
         } else if (texels <= (u64{1} << 28)) {
             // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
             // was written there yet, so the first write gets it replaced.
