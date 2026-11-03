@@ -28,7 +28,7 @@
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
-#ifdef ARCHITECTURE_arm64
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
 #include "video_core/macro_turing_jit_arm64.h"
 #endif
 
@@ -1113,7 +1113,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                               FrontState& fs) {
-#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
     const u32 method = fs.executing_macro;
     fs.executing_macro = 0;
     auto& engine = GetNativeMacroEngine();
