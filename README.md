@@ -51,6 +51,10 @@ This repository is for personal experiments, fixes and other things that may or 
 | **No task/mesh pipelines without `VK_EXT_mesh_shader`** (`vk_pipeline_cache`) | Returns no pipeline instead of building one the driver cannot use, so the draw is skipped as before. Aimed at a `VkPipelineBuild` crash seen on RADV (Vega). Not confirmed by a tester yet. | Not merged. A dev said it is planned, but nothing is on the main repo yet. |
 | **Release guest RAM when a Switch 2 game stops** (`core`) | Destroys the 14 GiB guest memory section when a Switch 2 game stops and creates it again for the next one, instead of keeping it (and clearing it again) until the app closes. On Windows, RAM went back to the base after each of three emulate/stop cycles; before it stayed at about half of the peak. Switch 1 titles are unchanged. Tested on one machine and one title. The first emulation after launching the app still uses 3 to 6 GB more than later ones, and the cause is not known. | Not merged. Not proposed upstream yet. Branch [`feat/release-guest-memory`](https://github.com/SmileyTatsu/Eglantine/tree/feat/release-guest-memory) on this fork. |
 
+### Known issues
+
+- **More RAM in the first emulation after opening the app.** On Windows, the first Switch 2 game you start after launching Eglantine can use 3 to 6 GB more RAM than the ones started after it (about 22 to 28 GB against 19 to 22 GB of total PC RAM in my tests). The extra memory is guest memory that the emulated CPU touches, and it stayed flat during the minutes I measured. Stopping the emulation frees it, and the next emulation starts with the lower usage, so stopping the game and starting it again brings the RAM down. The cause is not known yet. It is not a leak, and it is not caused by the RAM release change above: the build without that change used as much on its first run.
+
 ## Compatibility
 
 The emulator is capable of running Mario Kart World at decent/full speed depending on specs and configurations, and Splatoon Raiders at variable performances
