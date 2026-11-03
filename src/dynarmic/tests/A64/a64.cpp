@@ -533,6 +533,60 @@ TEST_CASE("A64: SQRSHRN (scalar) in range does not set QC", "[a64]") {
     CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
 }
 
+TEST_CASE("A64: SQDMLAL, SQDMLSL", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQDMLAL(V4.S4(), V2.H4(), V1.H()[0]);
+    code.SQDMLAL2(V5.S4(), V0.H8(), V1.H()[4]);
+    code.SQDMLSL(V6.D2(), V2.S2(), V2.S()[1]);
+    code.SQDMLAL(V7.S4(), V0.H4(), V0.H4());
+    code.SQDMLSL(S8, H0, V1.H()[3]);
+
+    jit.SetPC(0);
+    jit.SetVector(0, Vector{0x7fff800000020003, 0xffff000180007fff});
+    jit.SetVector(1, Vector{0x8000000500010004, 0x0000000700008000});
+    jit.SetVector(2, Vector{0x8000000000010002, 0x7fffffff80000000});
+    for (size_t i = 4; i <= 8; i++) {
+        jit.SetVector(i, Vector{0x0000000100000002, 0x7fffffffffffffff});
+    }
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(4) == Vector{0x0000000900000012, 0x7ffbffffffffffff});
+    CHECK(jit.GetVector(5) == Vector{0x7fffffff80010002, 0x7ffffffffffeffff});
+    CHECK(jit.GetVector(6) == Vector{0x0001000300000002, 0x0000000000000000});
+    CHECK(jit.GetVector(7) == Vector{0x0000000900000014, 0x7fffffff7ffffffe});
+    CHECK(jit.GetVector(8) == Vector{0x0000000000030002, 0x0000000000000000});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == true);
+}
+
+TEST_CASE("A64: SQDMLAL (scalar) in range does not set QC", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQDMLAL(D9, S1, V1.S()[0]);
+
+    jit.SetPC(0);
+    jit.SetVector(1, Vector{0x8000000500010004, 0x0000000700008000});
+    jit.SetVector(9, Vector{0x0000000100000002, 0x7fffffffffffffff});
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(9) == Vector{0x0000000300100022, 0});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
+}
+
 TEST_CASE("A64: SQSHLU", "[a64]") {
     A64TestEnv env;
     A64::UserConfig jit_user_config{};

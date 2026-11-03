@@ -86,6 +86,25 @@ bool MultiplyByElementHalfPrecision(TranslatorVisitor& v, Imm<1> L, Imm<1> M, Im
     v.V_scalar(esize, Vd, result);
     return true;
 }
+
+bool SaturatingDoublingMultiplyAccumulateLong(TranslatorVisitor& v, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd, bool subtract) {
+    if (size == 0b00 || size == 0b11) {
+        return v.ReservedValue();
+    }
+
+    const size_t esize = 8 << size.ZeroExtend();
+    const auto [index, Vm] = CombineScalar(size, H, L, M, Vmlo);
+
+    const IR::U128 operand1 = v.ir.ZeroExtendToQuad(v.ir.VectorGetElement(esize, v.V(128, Vn), 0));
+    const IR::U128 operand2 = v.ir.VectorBroadcastElement(esize, v.V(128, Vm), index);
+    const IR::U128 accumulator = v.ir.ZeroExtendToQuad(v.ir.VectorGetElement(2 * esize, v.V(128, Vd), 0));
+    const IR::U128 product = v.ir.VectorSignedSaturatedDoublingMultiplyLong(esize, operand1, operand2);
+    const IR::U128 result = subtract ? v.ir.VectorSignedSaturatedSub(2 * esize, accumulator, product)
+                                     : v.ir.VectorSignedSaturatedAdd(2 * esize, accumulator, product);
+
+    v.V(128, Vd, result);
+    return true;
+}
 }  // Anonymous namespace
 
 bool TranslatorVisitor::FMLA_elt_1(Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
@@ -142,6 +161,14 @@ bool TranslatorVisitor::SQRDMULH_elt_1(Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> V
 
     V(128, Vd, result);
     return true;
+}
+
+bool TranslatorVisitor::SQDMLAL_elt_1(Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, size, L, M, Vmlo, H, Vn, Vd, false);
+}
+
+bool TranslatorVisitor::SQDMLSL_elt_1(Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, size, L, M, Vmlo, H, Vn, Vd, true);
 }
 
 bool TranslatorVisitor::SQDMULL_elt_1(Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
