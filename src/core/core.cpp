@@ -371,6 +371,8 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetGlobal(false);
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
+#ifdef __ANDROID__
+        // Android only: desktop users set the environment, and desktop keeps upstream's defaults.
         // The KEY=VALUE lines of an env.txt in the user directory become environment variables:
         // the EDEN_NX2_* switches, which Android has no other way to set. Each is read the first
         // time it is used, so a change takes a restart of the app.
@@ -408,6 +410,7 @@ struct System::Impl {
             Settings::values.use_asynchronous_shaders.SetGlobal(false);
             Settings::values.use_asynchronous_shaders.SetValue(true);
         }
+#endif
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
