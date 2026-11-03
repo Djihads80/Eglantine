@@ -39,7 +39,14 @@ void RomFSFactory::SetPackedUpdate(VirtualFile update_raw_file) {
 
 VirtualFile RomFSFactory::OpenCurrentProcess(u64 current_process_title_id) const {
     if (!updatable) {
-        return file;
+        if (file == nullptr) {
+            return file;
+        }
+        const PatchManager patch_manager{current_process_title_id, filesystem_controller,
+                                         content_provider};
+        auto patched = file;
+        patch_manager.ApplyLayeredFS(patched, ContentRecordType::Program);
+        return patched;
     }
 
     const auto type = ContentRecordType::Program;
