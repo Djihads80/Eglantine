@@ -566,11 +566,12 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             diag.Note(true, diag_code, 0, outcome, diag_groups, diag_threads, detail);
         }
         if (diag.Capturing()) {
-            diag.Row(fmt::format("{}\tdispatch\t{:#x}\t0x0\t{}\t{}\t{}\t0\t0x0\t0\t0\t0x0\t0\t0\t0x0\tgrid={}x{}x{} block={}x{}x{}",
+            diag.Row(fmt::format("{}\tdispatch\t{:#x}\t0x0\t{}\t{}\t{}\t0\t0x0\t0\t0\t0x0\t0\t0\t0x0\tgrid={}x{}x{} block={}x{}x{}\t{:016x}\t0000000000000000",
                                  diag.NextSeq(), diag_code, outcome, diag_threads, diag_groups,
                                  launch_description.grid_dim_x.Value(), launch_description.grid_dim_y.Value(),
                                  launch_description.grid_dim_z.Value(), launch_description.block_dim_x.Value(),
-                                 launch_description.block_dim_y.Value(), launch_description.block_dim_z.Value()));
+                                 launch_description.block_dim_y.Value(), launch_description.block_dim_z.Value(),
+                                 diag.ProgramKey(diag_code)));
         }
     };
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z) {
