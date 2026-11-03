@@ -12,8 +12,6 @@ body:
           required: true
         - label: I'm using the latest build
           required: true
-        - label: My game is legally dumped from my own console
-          required: true
 
   - type: input
     id: build

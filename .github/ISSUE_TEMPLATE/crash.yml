@@ -96,4 +96,3 @@ body:
     id: logs
     attributes:
       label: Log / crash dump
-      render: shell
