@@ -457,7 +457,17 @@ void BufferCacheRuntime::Wait(u64 tick) {
 }
 
 void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
-    scheduler.GetMasterSemaphore().Wait(tick);
+    auto& master = scheduler.GetMasterSemaphore();
+    if (master.IsFree(tick)) {
+        return;
+    }
+    // The copy's submission may be deferred (Scheduler::DeferFlush): the split's front asks the
+    // back for it rather than waiting for the back's next submission.
+    if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
+        !VideoCommon::GpuSplit::OnBackThread() && !scheduler.WaitSubmitted(tick)) {
+        LOG_WARNING(Render_Vulkan, "Command list copy tick {} not submitted in 2 s", tick);
+    }
+    master.Wait(tick);
 }
 
 void BufferCacheRuntime::Finish() {

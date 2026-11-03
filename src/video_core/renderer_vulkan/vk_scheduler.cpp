@@ -64,14 +64,16 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);
     AllocateNewContext();
     last_flush = std::chrono::steady_clock::now();
-    fence_flush_pending = false;
+    flush_pending = false;
     return signal_value;
 }
 
-bool Scheduler::DeferFenceFlush() {
+bool Scheduler::DeferFlush() {
     // Fences come one per compute release: ~11,500 a second in Hyrule Warriors: Age of
     // Imprisonment fights, each a queue submission (~22,000 a second with the others), which
     // kept the Vulkan worker busy submitting. Batched within 500 us: ~10-15% more fps there.
+    // Command list copies after dispatches were ~9,000 more a second, of which the front waited
+    // for about 5%.
     static const s64 interval_us = [] {
         const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
         return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));
@@ -80,14 +82,33 @@ bool Scheduler::DeferFenceFlush() {
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
         return false;
     }
-    fence_flush_pending = true;
+    flush_pending = true;
     return true;
 }
 
-void Scheduler::FlushDeferredFence() {
-    if (fence_flush_pending) {
+void Scheduler::FlushDeferred() {
+    if (flush_pending) {
         Flush();
     }
+}
+
+bool Scheduler::WaitSubmitted(u64 tick) {
+    if (IsSubmitted(tick)) {
+        return true;
+    }
+    VideoCommon::GpuSplit::Get().RequestIdleHook();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    for (u32 spins = 0; !IsSubmitted(tick); ++spins) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        if (spins < 64) {
+            std::this_thread::yield();
+        } else {
+            std::this_thread::sleep_for(std::chrono::microseconds{50});
+        }
+    }
+    return true;
 }
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {

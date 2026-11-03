@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <chrono>
 #include <memory>
-#include <thread>
 
 #include "common/logging.h"
 #include "video_core/gpu_split.h"
@@ -27,7 +25,7 @@ void InnerFence::Queue() {
     }
     // Get the current tick so we can wait for it
     wait_tick = scheduler.CurrentTick();
-    if (!scheduler.DeferFenceFlush()) {
+    if (!scheduler.DeferFlush()) {
         scheduler.Flush();
     }
 }
@@ -43,18 +41,14 @@ void InnerFence::Wait() {
     if (is_stubbed) {
         return;
     }
-    // A deferred fence flush (Scheduler::DeferFenceFlush) may not be submitted yet. Only the
+    // A deferred fence flush (Scheduler::DeferFlush) may not be submitted yet. Only the
     // split's back may submit; other threads (the fencing thread) wait for it to, which it does
     // before it next sleeps.
     if (!scheduler.IsSubmitted(wait_tick) && VideoCommon::GpuSplit::Get().Active() &&
         !VideoCommon::GpuSplit::OnBackThread()) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        while (!scheduler.IsSubmitted(wait_tick)) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-                LOG_WARNING(Render_Vulkan, "Fence tick {} not submitted in 2 s", wait_tick);
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::microseconds{50});
+        if (!scheduler.WaitSubmitted(wait_tick)) {
+            LOG_WARNING(Render_Vulkan, "Fence tick {} not submitted in 2 s", wait_tick);
+            return;
         }
         scheduler.GetMasterSemaphore().Wait(wait_tick);
         return;
