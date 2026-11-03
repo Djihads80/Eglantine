@@ -3177,6 +3177,16 @@ bool Image::InitSparseLayers() {
         s.tile_width *= block_width;
         s.tile_height *= block_height;
     }
+    // A block that is not one sparse page of the image can't be bound by (AMD reported 65549 x
+    // 339860304 for title 1's RGBA8 terrain arrays on an RX 9070 XT).
+    if (s.tile_width < block_width || s.tile_height < block_height ||
+        u64{s.tile_width / block_width} * (s.tile_height / block_height) * block_bytes != tile) {
+        LOG_WARNING(Render_Vulkan,
+                    "Sparse layered image {:#x}: driver block {}x{} is not a {} byte page; not "
+                    "using sparse layers",
+                    gpu_addr, granularity.width, granularity.height, tile);
+        return false;
+    }
     const u32 tail_lod = (std::min)(it->imageMipTailFirstLod, s.levels);
     VkDeviceSize bytes = 0;
     for (u32 level = 0; level < tail_lod; ++level) {
