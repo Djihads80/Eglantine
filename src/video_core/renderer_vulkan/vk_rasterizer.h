@@ -99,6 +99,8 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+    void NoteGpuWrittenCommandListSynced(DAddr page) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
@@ -131,6 +133,7 @@ public:
     bool AccelerateTemporalUpscale(const Tegra::Engines::Fermi2D::Surface& src,
                                    const Tegra::Engines::Fermi2D::Surface& dst,
                                    const Tegra::Engines::Fermi2D::Surface& motion_vectors,
+                                   const Tegra::Texture::TICEntry* depth,
                                    std::array<f32, 2> jitter,
                                    std::array<f32, 2> motion_scale) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
@@ -164,6 +167,10 @@ private:
     void PrepareDraw(bool is_indexed, Func&&);
 
     void FlushWork();
+
+    /// Records the copies of the command list pages the work just recorded wrote and submits, so
+    /// the GPU makes them now (BufferCache::Nx2CopyListPages).
+    void SubmitNx2ListCopies();
 
     void UpdateDynamicStates();
 

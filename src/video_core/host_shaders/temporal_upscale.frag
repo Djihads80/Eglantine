@@ -11,12 +11,17 @@
 layout(binding = 0) uniform sampler2D input_color;
 layout(binding = 1) uniform sampler2D motion_vectors;
 layout(binding = 2) uniform sampler2D history;
+layout(binding = 3, rgba16f) uniform writeonly image2D next_history;
 
 layout(push_constant) uniform PushConstants {
     // The vertex stage's texture scale and offset come first.
     layout(offset = 16) vec2 jitter;  // this frame's sample offset, in input pixels
     vec2 motion_scale;                // motion vector -> UV offset to the previous frame
     float current_weight;             // largest weight of this frame; 1 ignores the history
+    float kernel_scale;               // accumulation kernel distance scale
+    float clip_width;                 // neighbourhood clip of still pixels, in deviations
+    float clip_motion;                // clip of pixels moving a pixel or more per frame
+    float kernel_motion;              // kernel distance scale of moving pixels
 };
 
 layout(location = 0) in vec2 texcoord;  // 0 to 1 across the output
@@ -83,28 +88,17 @@ void main() {
     const vec2 target = texcoord * vec2(input_size);
     const ivec2 nearest = ivec2(floor(target + jitter));
 
-    vec3 filtered = vec3(0.0);
-    float total_weight = 0.0;
-    float nearest_weight = 0.0;
-    vec3 sum = vec3(0.0);
-    vec3 squares = vec3(0.0);
+    // The longest motion around the pixel, so that an edge follows the object in front.
     vec2 motion = vec2(0.0);
     float longest = -1.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            const ivec2 texel = clamp(nearest + ivec2(x, y), ivec2(0), input_size - 1);
-            const vec3 sample_color = RgbToYCoCg(Compress(texelFetch(input_color, texel, 0).rgb));
-            // A Blackman-Harris-like window over the sample's distance to the output pixel.
-            const vec2 distance = vec2(texel) + 0.5 - jitter - target;
-            const float weight = exp(-2.29 * dot(distance, distance));
-            filtered += sample_color * weight;
-            total_weight += weight;
-            nearest_weight = max(nearest_weight, weight);
-            sum += sample_color;
-            squares += sample_color * sample_color;
-            // The longest motion around the pixel, so that an edge follows the object in front.
-            const vec2 candidate =
-                texelFetch(motion_vectors, clamp(texel, ivec2(0), motion_size - 1), 0).rg;
+            // The motion vectors can be at another scale than the colour (resolution scaling).
+            const ivec2 input_texel = clamp(nearest + ivec2(x, y), ivec2(0), input_size - 1);
+            const ivec2 texel = clamp(ivec2((vec2(input_texel) + 0.5) * vec2(motion_size) /
+                                            vec2(input_size)),
+                                      ivec2(0), motion_size - 1);
+            const vec2 candidate = texelFetch(motion_vectors, texel, 0).rg;
             const float length_squared = dot(candidate, candidate);
             if (length_squared > longest) {
                 longest = length_squared;
@@ -112,21 +106,74 @@ void main() {
             }
         }
     }
-    const vec3 current = filtered / total_weight;
+    const vec2 previous = texcoord + motion * motion_scale;
+    // Still pixels: a narrow kernel (detail from many jitter positions accumulates)
+    // and a looser clip (keeps detail only some positions sample, e.g. thin bars). Moving pixels
+    // (a quarter pixel or more per frame): the wide kernel and tight clip, as their history is unreliable.
+    // The history's alpha remembers recent motion, decaying over a few frames: background that a
+    // moving object has just uncovered has no motion of its own but a history of that object.
+    const vec2 history_position = previous * vec2(textureSize(history, 0));
+    const float moved = smoothstep(0.02, 0.25, length(motion * motion_scale * vec2(textureSize(history, 0))));
+    const float moving = max(moved, texture(history, history_position).a);
+    const float kernel = mix(kernel_scale, kernel_motion, moving);
+    const float clip = mix(clip_width, clip_motion, moving);
+
+    vec3 filtered = vec3(0.0);
+    float total_weight = 0.0;
+    float nearest_weight = 0.0;
+    vec3 sum = vec3(0.0);
+    vec3 squares = vec3(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const ivec2 texel = clamp(nearest + ivec2(x, y), ivec2(0), input_size - 1);
+            const vec3 sample_color = RgbToYCoCg(Compress(texelFetch(input_color, texel, 0).rgb));
+            // A Blackman-Harris-like window over the sample's distance to the output pixel.
+            const vec2 distance = (vec2(texel) + 0.5 - jitter - target) * kernel;
+            const float weight = exp(-2.29 * dot(distance, distance));
+            filtered += sample_color * weight;
+            total_weight += weight;
+            nearest_weight = max(nearest_weight, weight);
+            sum += sample_color;
+            squares += sample_color * sample_color;
+        }
+    }
+    const vec3 current = filtered / max(total_weight, 1e-6);
     const vec3 mean = sum / 9.0;
     const vec3 deviation = sqrt(max(squares / 9.0 - mean * mean, vec3(0.0)));
-    const vec3 low = mean - deviation;
-    const vec3 high = mean + deviation;
+    const vec3 low = mean - clip * deviation;
+    const vec3 high = mean + clip * deviation;
 
-    const vec2 previous = texcoord + motion * motion_scale;
     // A frame whose samples land close to this pixel counts more; one whose samples land between
     // pixels mostly keeps the history (from other jitter positions) there.
     float weight = current_weight * nearest_weight;
+    vec3 result = current;
+    float remembered = max(moved, 0.85 * moving);
     if (current_weight >= 1.0 || any(lessThan(previous, vec2(0.0))) ||
         any(greaterThan(previous, vec2(1.0)))) {
-        weight = 1.0;
+        // No usable history: the wide kernel, as a narrow one would show the input's pixels.
+        vec3 wide = vec3(0.0);
+        float wide_total = 0.0;
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                const ivec2 texel = clamp(nearest + ivec2(x, y), ivec2(0), input_size - 1);
+                const vec2 distance = vec2(texel) + 0.5 - jitter - target;
+                const float wide_weight = exp(-2.29 * dot(distance, distance));
+                wide += RgbToYCoCg(Compress(texelFetch(input_color, texel, 0).rgb)) * wide_weight;
+                wide_total += wide_weight;
+            }
+        }
+        result = wide / wide_total;
+        remembered = 1.0;
+    } else {
+        const vec3 unclipped = RgbToYCoCg(Compress(SampleHistory(history_position)));
+        const vec3 past = ClipToBox(unclipped, low, high);
+        result = mix(past, current, weight);
+        // A history far outside the neighbourhood means the content changed without
+        // motion vectors (some animations have none): treat the pixel as moving for a while.
+        const vec3 extent = 0.5 * (high - low) + 1.0 / 65504.0;
+        const vec3 units = abs(unclipped - 0.5 * (low + high)) / extent;
+        remembered = max(remembered, smoothstep(1.25, 2.5, max(units.x, max(units.y, units.z))));
     }
-    const vec2 history_position = previous * vec2(textureSize(history, 0));
-    const vec3 past = ClipToBox(RgbToYCoCg(Compress(SampleHistory(history_position))), low, high);
-    color = vec4(Expand(YCoCgToRgb(mix(past, current, weight))), 1.0);
+    color = vec4(Expand(YCoCgToRgb(result)), 1.0);
+    imageStore(next_history, ivec2(gl_FragCoord.xy), vec4(color.rgb, remembered));
 }

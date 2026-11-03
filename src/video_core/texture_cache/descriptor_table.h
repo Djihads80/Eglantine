@@ -35,10 +35,11 @@ public:
         invalidated = true;
     }
 
-    [[nodiscard]] std::pair<T, bool> Read(Tegra::MemoryManager const& gpu_memory, u32 index) noexcept {
+    template <class MemoryManager>
+    [[nodiscard]] std::pair<T, bool> Read(const MemoryManager& gpu_memory, u32 index) noexcept {
         DEBUG_ASSERT(index <= current_limit);
-        if (invalidated) [[unlikely]] {
-            std::ranges::fill(read_descriptors, 0);
+        if (invalidated) {
+            ClearReadDescriptors();
             invalidated = false;
         }
         const GPUVAddr gpu_addr = current_gpu_addr + index * sizeof(T);
@@ -62,10 +63,8 @@ public:
         // Mario Brothership reallocates a lot of times, so use aggressive pre-alloc sizes
         // std::vector<T> by default uses quadratic growth, but that isn't even enough to satisfy brothership
         const size_t num_descriptors = ((limit + 0x80000) & (~0x7ffff)) + 1;
-        size_t old_size = read_descriptors.size();
         read_descriptors.resize(Common::DivCeil(num_descriptors, 64U));
-        old_size = (std::min)(old_size, read_descriptors.size());
-        std::fill(read_descriptors.begin(), read_descriptors.begin() + old_size, 0);
+        ClearReadDescriptors();
         invalidated = false;
         //
         descriptors.resize(num_descriptors);
@@ -76,6 +75,13 @@ public:
     GPUVAddr current_gpu_addr{};
     u32 current_limit{};
     bool invalidated{}; ///< read_descriptors is to be cleared before the next read
+
+private:
+    void ClearReadDescriptors() noexcept {
+        // Reserved capacity is not addressable. A later limit increase clears its new range.
+        const size_t words = (std::min)(read_descriptors.size(), size_t{current_limit} / 64 + 1);
+        std::fill_n(read_descriptors.begin(), words, u64{0});
+    }
 };
 
 } // namespace VideoCommon

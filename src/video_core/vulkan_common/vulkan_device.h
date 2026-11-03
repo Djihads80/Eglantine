@@ -561,6 +561,11 @@ FN_MAX_LIMIT_LIST
         return features.features.shaderStorageImageReadWithoutFormat;
     }
 
+    /// Returns true if storage images of the extended formats (e.g. R16F, RG16F, R8) are supported.
+    bool IsStorageImageExtendedFormatsSupported() const {
+        return features.features.shaderStorageImageExtendedFormats;
+    }
+
     /// Returns true if shader int64 is supported.
     bool IsShaderInt64Supported() const {
         return features.features.shaderInt64;
@@ -1159,6 +1164,12 @@ FN_MAX_LIMIT_LIST
 
     bool IsMoltenVK() const noexcept {
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
+    }
+
+    /// The multiple vertex input binding strides must be. Metal needs 4 bytes, which MoltenVK
+    /// reports as minVertexInputBindingStrideAlignment through VK_KHR_portability_subset.
+    u32 GetMinVertexInputBindingStrideAlignment() const noexcept {
+        return IsMoltenVK() ? 4 : 1;
     }
 
     NvidiaArchitecture GetNvidiaArch() const noexcept {
