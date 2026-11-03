@@ -61,6 +61,19 @@ void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
     packets_cv.notify_all();
 }
 
+std::optional<PollEvents> ProxySocket::EmulatedPoll(PollEvents events) {
+    std::lock_guard guard(packets_mutex);
+    PollEvents revents{};
+    // A queued packet reads at once. So does a closed socket, whose reads fail, and a stream,
+    // whose reads report its end while nothing is queued (see Recv).
+    if (closed || !received_packets.empty() || socket_type == Type::STREAM) {
+        revents |= events & (PollEvents::In | PollEvents::RdNorm);
+    }
+    // Sends go to the room without waiting.
+    revents |= events & PollEvents::Out;
+    return revents;
+}
+
 template <typename T>
 Errno ProxySocket::SetSockOpt(SOCKET fd_, int option, T value) {
     LOG_DEBUG(Network, "(STUBBED) called");
@@ -121,19 +134,32 @@ Errno ProxySocket::Shutdown(ShutdownHow how) {
 }
 
 std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
-    if (socket_type == Type::STREAM) {
-        // Room TCP sockets have no peer (Connect and Send are stubs). Report an empty queue as the
-        // end of the stream, as before, instead of blocking the bsd service until the timeout.
-        std::lock_guard guard(packets_mutex);
-        if (received_packets.empty()) {
-            return {0, Errno::SUCCESS};
-        }
-    }
-    return RecvFrom(flags, message, nullptr);
+    u32 msg_flags = 0;
+    return RecvMsg(flags, message, nullptr, msg_flags);
 }
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
-    ASSERT((flags & ~FLAG_MSG_PEEK) == 0);
+    u32 msg_flags = 0;
+    return Receive(flags, message, addr, msg_flags);
+}
+
+std::pair<s32, Errno> ProxySocket::RecvMsg(int flags, std::span<u8> message, SockAddrIn* addr,
+                                           u32& msg_flags) {
+    msg_flags = 0;
+    {
+        // Room TCP sockets have no peer (Connect and Send are stubs). Report an empty queue as the
+        // end of the stream, as before, instead of blocking the bsd service until the timeout.
+        std::lock_guard guard(packets_mutex);
+        if (socket_type == Type::STREAM && received_packets.empty()) {
+            return {0, Errno::SUCCESS};
+        }
+    }
+    return Receive(flags, message, addr, msg_flags);
+}
+
+std::pair<s32, Errno> ProxySocket::Receive(int flags, std::span<u8> message, SockAddrIn* addr,
+                                           u32& msg_flags) {
+    ASSERT((flags & ~(FLAG_MSG_PEEK | FLAG_MSG_DONTWAIT)) == 0);
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
 
     std::unique_lock lock(packets_mutex);
@@ -141,7 +167,7 @@ std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, So
         return {-1, Errno::BADF};
     }
     if (received_packets.empty()) {
-        if (!blocking) {
+        if (!blocking || (flags & FLAG_MSG_DONTWAIT) != 0) {
             return {-1, Errno::AGAIN};
         }
         // TODO (flTobi): Verify the timeout behavior and break when connection is lost
@@ -158,11 +184,11 @@ std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, So
         }
     }
 
-    return ReceivePacket(flags, message, addr, message.size());
+    return ReceivePacket(flags, message, addr, message.size(), msg_flags);
 }
 
 std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> message, SockAddrIn* addr,
-                                                 std::size_t max_length) {
+                                                 std::size_t max_length, u32& msg_flags) {
     const ProxyPacket& packet = received_packets.front();
     if (addr) {
         addr->family = Domain::INET;
@@ -173,6 +199,11 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
     const std::span<const u8> unread = std::span{packet.data}.subspan(front_read_offset);
     const std::size_t read_bytes = (std::min)(unread.size(), max_length);
     std::memcpy(message.data(), unread.data(), read_bytes);
+
+    // Unlike a stream's, the part of a datagram that does not fit is never read: report it.
+    if (socket_type != Type::STREAM && read_bytes < unread.size()) {
+        msg_flags |= FLAG_MSG_TRUNC;
+    }
 
     if ((flags & FLAG_MSG_PEEK) != 0) {
         return {static_cast<s32>(read_bytes), Errno::SUCCESS};
@@ -193,7 +224,7 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
 std::pair<s32, Errno> ProxySocket::Send(std::span<const u8> message, int flags) {
     LOG_WARNING(Network, "(STUBBED) called");
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
-    ASSERT(flags == 0);
+    ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
 
     return {static_cast<s32>(0), Errno::SUCCESS};
 }
@@ -210,7 +241,7 @@ void ProxySocket::SendPacket(ProxyPacket& packet) {
 
 std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message,
                                           const SockAddrIn* addr) {
-    ASSERT(flags == 0);
+    ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
 
     if (!is_bound) {
         LOG_ERROR(Network, "ProxySocket is not bound!");
@@ -272,6 +303,10 @@ Errno ProxySocket::SetLinger(bool enable, u32 linger) {
 }
 
 Errno ProxySocket::SetReuseAddr(bool enable) {
+    {
+        std::lock_guard guard(packets_mutex);
+        reuse_addr = enable;
+    }
     return SetSockOpt<u32>(fd, SO_REUSEADDR, enable ? 1 : 0);
 }
 
@@ -308,6 +343,13 @@ Errno ProxySocket::SetRcvTimeo(u32 value) {
     return SetSockOpt(fd, SO_RCVTIMEO, static_cast<int>(value));
 }
 
+Errno ProxySocket::SetNoDelay(bool enable) {
+    // Room sockets have no TCP stack; the option is only kept for GetNoDelay.
+    std::lock_guard guard(packets_mutex);
+    no_delay = enable;
+    return Errno::SUCCESS;
+}
+
 Errno ProxySocket::SetNonBlock(bool enable) {
     std::lock_guard guard(packets_mutex);
     blocking = !enable;
@@ -317,6 +359,16 @@ Errno ProxySocket::SetNonBlock(bool enable) {
 std::pair<Errno, Errno> ProxySocket::GetPendingError() {
     LOG_DEBUG(Network, "(STUBBED) called");
     return {Errno::SUCCESS, Errno::SUCCESS};
+}
+
+std::pair<bool, Errno> ProxySocket::GetReuseAddr() {
+    std::lock_guard guard(packets_mutex);
+    return {reuse_addr, Errno::SUCCESS};
+}
+
+std::pair<bool, Errno> ProxySocket::GetNoDelay() {
+    std::lock_guard guard(packets_mutex);
+    return {no_delay, Errno::SUCCESS};
 }
 
 bool ProxySocket::IsOpened() const {
