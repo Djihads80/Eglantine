@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -38,6 +39,8 @@ struct Metadata {
     std::vector<u8> icon;
     std::string display_version;
     std::string publisher;
+    // Language tag ("de", "pt-br", ...) and name, as stored; the default title is separate.
+    std::vector<std::pair<std::string, std::string>> localized_titles;
     // Where ProbeMetadata found display_version, e.g. "update 458752" or "base".
     std::string version_source;
 };
@@ -92,6 +95,8 @@ struct MetadataEdit {
     std::optional<std::vector<u8>> icon;
     std::optional<std::string> display_version;
     std::optional<std::string> publisher;
+    // Replaces every localized title; an empty list removes them.
+    std::optional<std::vector<std::pair<std::string, std::string>>> localized_titles;
 };
 
 enum class EditResult { Success, Cancelled, InvalidSource, IoError, NoChange };

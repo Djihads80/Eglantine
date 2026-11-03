@@ -4326,7 +4326,8 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
         return;
     }
     const auto edit = dialog.Edit();
-    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher) {
+    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher &&
+        !edit.localized_titles) {
         return;
     }
     const QString progress_title = dialog.DisplayName();

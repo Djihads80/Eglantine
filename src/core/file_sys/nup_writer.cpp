@@ -62,6 +62,7 @@ constexpr u16 TlvDisplayVersion = 0x0004;
 constexpr u16 TlvTitleName = 0x0005;
 constexpr u16 TlvPublisher = 0x0006;
 constexpr u16 TlvSourceDump = 0x0008;
+constexpr u16 TlvLocalizedTitles = 0x0009;
 
 constexpr int JournalVersion = 1;
 constexpr u64 ProgressStep = 64ULL * 1024 * 1024;
@@ -1830,6 +1831,24 @@ void SetOrRemoveTlv(std::vector<std::pair<u16, std::vector<u8>>>& tlvs, u16 type
     }
 }
 
+// Records of: u8 tag length, tag, u32 name length, name.
+std::vector<u8> SerializeLocalizedTitles(
+    const std::vector<std::pair<std::string, std::string>>& titles) {
+    std::vector<u8> out;
+    for (const auto& [lang, name] : titles) {
+        if (lang.empty() || lang.size() > 0xFF || name.empty()) {
+            continue;
+        }
+        out.push_back(static_cast<u8>(lang.size()));
+        out.insert(out.end(), lang.begin(), lang.end());
+        for (size_t b = 0; b < 4; ++b) {
+            out.push_back(static_cast<u8>(name.size() >> (8 * b)));
+        }
+        out.insert(out.end(), name.begin(), name.end());
+    }
+    return out;
+}
+
 // Highest-version Update package, if any. Pack and load treat this as the effective update.
 std::optional<size_t> NewestUpdateIndex(
     const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
@@ -1876,6 +1895,7 @@ Metadata ProbeNupMetadata(const fs::path& archive) {
     out.title_name = package.title_name;
     out.icon = package.icon;
     out.publisher = package.publisher;
+    out.localized_titles = package.localized_titles;
     // Prefill the version the loader actually displays: the newest update's when one exists.
     if (const auto update = NewestUpdateIndex(packages);
         update && !packages[*update].display_version.empty()) {
@@ -1896,7 +1916,8 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
         }
         return result;
     };
-    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher) {
+    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher &&
+        !edit.localized_titles) {
         return EditResult::NoChange;
     }
     std::error_code ec;
@@ -1915,6 +1936,7 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     std::string cur_update_version;
     std::string cur_publisher;
     std::vector<u8> cur_icon;
+    std::vector<std::pair<std::string, std::string>> cur_localized;
     {
         RealVfsFilesystem vfs;
         const auto file =
@@ -1938,6 +1960,7 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
         cur_version = current.display_version;
         cur_publisher = current.publisher;
         cur_icon = current.icon;
+        cur_localized = current.localized_titles;
         cur_update_version =
             update != NoUpdate ? packages[update].display_version : current.display_version;
     }
@@ -1945,7 +1968,8 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
         return !wanted || *wanted == have;
     };
     const bool icon_same = !edit.icon || *edit.icon == cur_icon;
-    if (same(edit.title_name, cur_title) && icon_same &&
+    const bool localized_same = !edit.localized_titles || *edit.localized_titles == cur_localized;
+    if (same(edit.title_name, cur_title) && icon_same && localized_same &&
         same(edit.display_version, cur_version) && same(edit.display_version, cur_update_version) &&
         same(edit.publisher, cur_publisher)) {
         return EditResult::NoChange;
@@ -2040,6 +2064,10 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
                 }
                 if (edit.icon) {
                     SetOrRemoveTlv(tlvs, TlvIcon, *edit.icon);
+                }
+                if (edit.localized_titles) {
+                    SetOrRemoveTlv(tlvs, TlvLocalizedTitles,
+                                   SerializeLocalizedTitles(*edit.localized_titles));
                 }
             }
             if (edit.display_version) {

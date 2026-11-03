@@ -828,3 +828,50 @@ TEST_CASE("NUP edit applies name/icon/version to a metadata-less dump", "[nup]")
     REQUIRE(loader.ReadDisplayVersion(version) == Loader::ResultStatus::Success);
     REQUIRE(version == "1.0.3");
 }
+
+TEST_CASE("NUP edits localized titles and keeps the rest", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options;
+    options.metadata.title_name = "Default";
+    options.metadata.icon = {0xFF, 0xD8, 0xFF, 0xD9};
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.localized_titles = std::vector<std::pair<std::string, std::string>>{
+        {"de", "Standard"}, {"ja", "デフォルト"}, {"pt-br", "Padrão"}};
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+
+    FileSys::RealVfsFilesystem real;
+    {
+        FileSys::NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+        REQUIRE(nup.GetPackages()[0].title_name == "Default");
+        REQUIRE(nup.GetPackages()[0].icon == std::vector<u8>{0xFF, 0xD8, 0xFF, 0xD9});
+        REQUIRE(nup.GetPackages()[0].localized_titles == edit.localized_titles.value());
+    }
+    REQUIRE(FileSys::Nup::ProbeNupMetadata(archive).localized_titles ==
+            edit.localized_titles.value());
+
+    // Editing only the default name leaves the localized titles alone; an empty list clears them.
+    FileSys::Nup::MetadataEdit rename;
+    rename.title_name = "Renamed";
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, rename, &error) ==
+            FileSys::Nup::EditResult::Success);
+    REQUIRE(FileSys::Nup::ProbeNupMetadata(archive).localized_titles ==
+            edit.localized_titles.value());
+
+    FileSys::Nup::MetadataEdit clear;
+    clear.localized_titles = std::vector<std::pair<std::string, std::string>>{};
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, clear, &error) ==
+            FileSys::Nup::EditResult::Success);
+    FileSys::NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetPackages()[0].localized_titles.empty());
+    REQUIRE(nup.GetPackages()[0].title_name == "Renamed");
+}
