@@ -59,7 +59,8 @@ constexpr u32 NUM_VERTEX_BUFFERS = 32;
 constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
-constexpr u32 NUM_STORAGE_BUFFERS = 16;
+// Native compute shaders bind up to 18 global memory ranges; the enable masks are 32 bits wide.
+constexpr u32 NUM_STORAGE_BUFFERS = 32;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
@@ -525,6 +526,13 @@ private:
 
     void UpdateVertexBufferSlot(u32 index, const Binding& binding);
 
+    /// Flags the vertex buffers overlapping a written range so host copies derived from them are
+    /// rebuilt.
+    void MarkVertexBuffersStale(DAddr device_addr, u64 size);
+
+    /// Re-dirties repacked vertex buffers whose source data was written since they were bound.
+    void RefreshRepackedVertexBuffers();
+
     void ClearDownload(DAddr base_addr, u64 size);
 
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
@@ -545,6 +553,7 @@ private:
     u32 last_index_count = 0;
 
     u32 enabled_vertex_buffers_mask = 0;
+    u32 stale_vertex_buffers_mask = 0;
     u64 vertex_buffers_serial = 0;
     std::array<Binding, 32> v_buffer{};
 

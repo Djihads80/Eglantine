@@ -335,10 +335,11 @@ VertexRepackPass::VertexRepackPass(const Device& device_, Scheduler& scheduler_,
       scheduler{scheduler_}, staging_pool{staging_pool_}, descriptor_queue{descriptor_queue_} {}
 
 std::optional<std::pair<VkBuffer, VkDeviceSize>> VertexRepackPass::Assemble(VkBuffer source,
-                                                                           u32 offset, u32 size) {
+                                                                            u32 offset, u32 size,
+                                                                            u64 buffer_size) {
     const auto parameters = MakeVertexRepackParameters(
         offset, size, device.GetStorageBufferAlignment(), device.GetMaxStorageBufferRange(),
-        device.GetMaxComputeWorkGroupCount()[0]);
+        device.GetMaxComputeWorkGroupCount()[0], buffer_size);
     if (!parameters) {
         LOG_ERROR(Render_Vulkan, "Vertex repack exceeds device limits: offset={}, size={}", offset, size);
         return std::nullopt;

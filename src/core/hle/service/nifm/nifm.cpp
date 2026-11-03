@@ -70,6 +70,15 @@ static u128 MakeUuidFromName(std::string_view name) {
     return {h1, h2};
 }
 
+// A joined room is the emulated network, even in airplane mode. Its sockets only reach room
+// members, and LAN games (e.g. Mario Kart World LAN Play) need their connection request accepted.
+static bool IsNetworkAvailable() {
+    if (Network::GetRoomIPv4Address()) {
+        return true;
+    }
+    return Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue();
+}
+
 // This is nn::nifm::RequestState
 enum class RequestState : u32 {
     NotSubmitted = 1,
@@ -109,6 +118,17 @@ struct IpAddressSetting {
     Network::IPv4Address default_gateway{};
 };
 static_assert(sizeof(IpAddressSetting) == 0xD, "IpAddressSetting has incorrect size.");
+
+// Room fake IPs are spread over 192.168.0.0/16, and some room servers give members different /24s.
+// A host /24 mask would then put room members on different subnets, so LAN games ignore each other.
+constexpr Network::IPv4Address RoomSubnetMask{255, 255, 0, 0};
+
+static void ApplyRoomAddress(IpAddressSetting& setting) {
+    if (const auto room_ip = Network::GetRoomIPv4Address()) {
+        setting.ip_address = *room_ip;
+        setting.subnet_mask = RoomSubnetMask;
+    }
+}
 
 // This is nn::nifm::DnsSetting
 struct DnsSetting {
@@ -430,8 +450,7 @@ private:
         LOG_DEBUG(Service_NIFM, "(STUBBED) called");
 
         const auto result = [this] {
-            const auto has_connection = Network::GetHostIPv4Address().has_value() &&
-                                        !Settings::values.airplane_mode.GetValue();
+            const auto has_connection = IsNetworkAvailable();
             switch (state) {
             case RequestState::NotSubmitted:
                 return has_connection ? ResultSuccess : ResultNetworkCommunicationDisabled;
@@ -572,10 +591,7 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
         std::strncpy(profile.network_name.data(), st.ssid, sizeof(profile.network_name) - 1);
 
         if (auto room_member = Network::GetRoomMember().lock()) {
-            if (room_member->IsConnected()) {
-                profile.ip_setting_data.ip_address_setting.ip_address =
-                    room_member->GetFakeIpAddress();
-            }
+            ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
             profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
         }
 
@@ -584,6 +600,19 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
             std::memcpy(profile.wireless_setting_data.ssid.data(), st.ssid,
                         profile.wireless_setting_data.ssid_length);
         }
+    } else if (Network::GetRoomIPv4Address()) {
+        // The selected adapter is missing, but the room still works and IsNetworkAvailable
+        // reports it, so describe the room as a wired network
+        profile.ip_setting_data.ip_address_setting.is_automatic = true;
+        ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
+
+        profile.ip_setting_data.dns_setting.is_automatic = true;
+        profile.ip_setting_data.dns_setting.primary_dns = {1, 1, 1, 1};
+        profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
+
+        profile.uuid = MakeUuidFromName(st.ssid);
+        profile.profile_type = static_cast<u8>(NetworkProfileType::User);
+        profile.interface_type = static_cast<u8>(NetworkInterfaceType::Ethernet);
     }
 
     ctx.WriteBuffer(profile);
@@ -597,6 +626,8 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
     using Network::HostAdapterKind;
 
     const auto adapters = Network::GetAvailableNetworkInterfaces();
+    const auto selected = Network::GetSelectedNetworkInterface();
+    const auto room_ip = Network::GetRoomIPv4Address();
     constexpr size_t kEntry = 0x3F0;
 
     std::vector<u8> blob(adapters.size() * kEntry, 0);
@@ -611,6 +642,13 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
         *reinterpret_cast<in_addr*>(base + 0x18) = host.ip_address;
         *reinterpret_cast<in_addr*>(base + 0x1C) = host.subnet_mask;
         *reinterpret_cast<in_addr*>(base + 0x20) = host.gateway;
+
+        // The room traffic goes through the selected adapter, so report it like the other calls.
+        // Without a selected adapter, the first one stands for the room.
+        if (room_ip && (selected ? host.name == selected->name : i == 0)) {
+            std::memcpy(base + 0x18, room_ip->data(), room_ip->size());
+            std::memcpy(base + 0x1C, RoomSubnetMask.data(), RoomSubnetMask.size());
+        }
 
         std::string name_utf8 = host.name;
         name_utf8.resize(0x110, '\0');
@@ -711,11 +749,7 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
             .wireless_setting_data{wifi}};
     }();
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            profile.ip_setting_data.ip_address_setting.ip_address = room_member->GetFakeIpAddress();
-        }
-    }
+    ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
 
     ctx.WriteBuffer(profile);
 
@@ -852,10 +886,8 @@ void IGeneralService::GetCurrentIpAddress(HLERequestContext& ctx) {
         ipv4.emplace(Network::IPv4Address{0, 0, 0, 0});
     }
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            ipv4 = room_member->GetFakeIpAddress();
-        }
+    if (const auto room_ip = Network::GetRoomIPv4Address()) {
+        ipv4 = room_ip;
     }
 
     IPC::ResponseBuilder rb{ctx, 3};
@@ -902,9 +934,7 @@ void IGeneralService::GetCurrentIpConfigInfo(HLERequestContext& ctx) {
     }
 
     if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
-            info.ip.ip_address = room_member->GetFakeIpAddress();
-        }
+        ApplyRoomAddress(info.ip);
         info.dns.is_automatic = true;
         info.dns.primary_dns = {1, 1, 1, 1};
         info.dns.secondary_dns = {8, 8, 8, 8};
@@ -984,7 +1014,7 @@ void IGeneralService::IsAnyInternetRequestAccepted(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
+    if (IsNetworkAvailable()) {
         rb.Push<u8>(1);
     } else {
         rb.Push<u8>(0);

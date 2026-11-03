@@ -10,6 +10,7 @@
 
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "frontend_common/settings_generator.h"
@@ -320,6 +321,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
+constexpr int EmuThreadStopTimeoutMs = 10'000;
 
 constexpr size_t CopyBufferSize = 1_MiB;
 
@@ -1964,6 +1966,26 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+    if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+        asked_recommended_mkw_settings = true;
+        use_recommended_mkw_settings =
+            QMessageBox::question(
+                this, tr("Recommended Mario Kart World settings"),
+                tr("Use the recommended settings for Mario Kart World?\n\n"
+                   "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+                   "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                   "FXAA.\n\n"
+                   "They apply to Mario Kart World until Eglantine is closed. Your saved settings "
+                   "are not changed."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
+    }
+    if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
+                                          use_recommended_mkw_settings)) {
+        QtCommon::system->ApplySettings();
+        Settings::UpdateGPUAccuracy();
+        LOG_INFO(Config, "Applied recommended MKW settings after per-game configuration");
+    }
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
@@ -2209,6 +2231,23 @@ void MainWindow::OnShutdownBeginDialog() {
 void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
+        emu_terminate_timer.setSingleShot(true);
+        emu_terminate_timer.start(EmuThreadStopTimeoutMs);
+        connect(&emu_terminate_timer, &QTimer::timeout, this, &MainWindow::OnEmulationStopTimeout,
+                Qt::UniqueConnection);
+    }
+}
+
+void MainWindow::OnEmulationStopTimeout() {
+    TerminateEmulationThread();
+    OnEmulationStopped();
+}
+
+void MainWindow::TerminateEmulationThread() {
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
+        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+        QtCommon::emu_thread->terminate();
+        QtCommon::emu_thread->wait();
     }
 }
 
@@ -2220,6 +2259,7 @@ void MainWindow::OnEmulationStopped() {
         return;
     }
     shutdown_timer.stop();
+    emu_terminate_timer.stop();
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->disconnect();
         QtCommon::emu_thread->wait();
@@ -2309,13 +2349,17 @@ void MainWindow::ShutdownGame() {
     play_time_manager->Stop();
     OnShutdownBegin();
     OnEmulationStopTimeExpired();
-    if (QtCommon::emu_thread) {
+    emu_terminate_timer.stop();
+    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
         connect(QtCommon::emu_thread.get(), &QThread::finished, &loop, &QEventLoop::quit);
-        if (QtCommon::emu_thread->isRunning()) {
-            loop.exec(QEventLoop::ExcludeUserInputEvents);
-        }
+        connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timeout.start(EmuThreadStopTimeoutMs);
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
+    TerminateEmulationThread();
     OnEmulationStopped();
 }
 
