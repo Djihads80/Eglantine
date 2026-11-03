@@ -1809,9 +1809,10 @@ private:
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
+        const auto& process = Kernel::GetCurrentProcess(kernel);
         const bool mkw_dynamic =
-            Kernel::GetCurrentProcess(kernel).GetProgramId() == Settings::MarioKartWorldProgramId &&
-            Settings::values.mkw_dynamic_fps.GetValue();
+            process.GetProgramId() == Settings::MarioKartWorldProgramId &&
+            process.IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
         if (mkw_dynamic) {
             swap_interval = 1;

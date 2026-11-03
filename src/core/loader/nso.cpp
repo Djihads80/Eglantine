@@ -181,6 +181,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
     // Match the instruction sequence instead of relying on a title-version-specific address.
     const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    bool mkw_dynamic_fps_patch_applied = false;
     if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
         process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
@@ -229,6 +230,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
                 std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
                             sizeof(whole_frame_time));
+                mkw_dynamic_fps_patch_applied = true;
             }
             LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
                      mkw_dynamic ? "dynamic" : "30",
@@ -313,6 +315,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Load codeset for current process
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+    if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);
+    }
     return load_base + image_size;
 }
 
