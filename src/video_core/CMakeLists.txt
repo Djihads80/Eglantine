@@ -79,6 +79,7 @@ add_library(video_core STATIC
     host1x/control.h
     host1x/gpu_device_memory_manager.cpp
     host1x/gpu_device_memory_manager.h
+    host1x/h264_packet.h
     host1x/host1x.cpp
     host1x/host1x.h
     host1x/nvdec.cpp
