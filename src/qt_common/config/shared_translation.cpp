@@ -293,6 +293,13 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Enables access to previous buffer states.\nThis option may improve rendering "
               "quality and performance consistency in some games."));
     INSERT(Settings, fix_bloom_effects, tr("Fix bloom effects"), tr("Removes bloom in Burnout."));
+    INSERT(Settings, reduce_texture_resolution, tr("Reduce texture resolution"),
+           tr("Large compressed textures keep their mip levels from the second one on: a quarter "
+              "of the video memory, slightly blurrier up close."));
+    INSERT(Settings, release_gpu_only_memory, tr("Release GPU-only memory (experimental)"),
+           tr("Switch 2 textures in GPU-only memory give back their guest memory once uploaded, "
+              "the host image holding the data. Saves RAM; may break titles that read that "
+              "memory directly."));
 
     // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
