@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -143,8 +144,26 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
     }
 }
 
-/// Writes SPIR-V to dump/<subdir>/<name>.spv, for spirv-val and spirv-dis.
+/// Whether SPIR-V the driver rejects, and that of emulated shared memory shaders, is dumped: on
+/// Android (no other way to get at it) unless EDEN_NX2_DUMP_SPIRV=0, elsewhere with
+/// EDEN_NX2_DUMP_SPIRV=1.
+[[nodiscard]] inline bool DumpsSpirv() {
+    static const bool dumps = [] {
+        const char* value = std::getenv("EDEN_NX2_DUMP_SPIRV");
+#ifdef __ANDROID__
+        return value == nullptr || value[0] != '0';
+#else
+        return value != nullptr && value[0] != '0';
+#endif
+    }();
+    return dumps;
+}
+
+/// Writes SPIR-V to dump/<subdir>/<name>.spv, for spirv-val and spirv-dis (see DumpsSpirv).
 inline void DumpSpirv(std::string_view subdir, std::string_view name, std::span<const u32> code) {
+    if (!DumpsSpirv()) {
+        return;
+    }
     const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir) / subdir;
     if (code.empty() || !Common::FS::CreateDirs(dir)) {
         return;

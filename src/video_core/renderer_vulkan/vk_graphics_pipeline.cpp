@@ -265,6 +265,9 @@ ConfigureFuncPtr ConfigureFunc(const std::array<vk::ShaderModule, NUM_STAGES>& m
 // Writes the stages of a pipeline the driver rejected to dump/failed_pipelines/<hash>_<stage>.spv.
 void DumpFailedPipeline(const GraphicsPipelineCacheKey& key,
                         const std::array<std::vector<u32>, NUM_STAGES>& spirv) {
+    if (!DumpsSpirv()) {
+        return;
+    }
     static constexpr std::array stage_names{"vertex", "tess_control", "tess_eval", "geometry",
                                             "fragment"};
     const auto dir =
