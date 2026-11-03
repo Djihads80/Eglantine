@@ -4,7 +4,11 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <mutex>
+#include <set>
+
 #include "common/common_types.h"
+#include "common/logging.h"
 #include "common/math_util.h"
 #include "common/settings.h"
 #include "video_core/surface.h"
@@ -200,7 +204,19 @@ PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) 
     case Tegra::RenderTargetFormat::R8_UINT:
         return PixelFormat::R8_UINT;
     default:
-        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        // An unrecognised format here usually means a caller passed a surface descriptor whose
+        // format field was not decoded, not that the format itself is impossible. Aborting costs
+        // everything the title had already rendered, so log a bounded number of distinct values
+        // and fall back, exactly as the cases above do.
+        {
+            static std::mutex mutex;
+            static std::set<u32> logged;
+            const std::scoped_lock lock{mutex};
+            if (logged.size() < 8 && logged.emplace(static_cast<u32>(format)).second) {
+                LOG_CRITICAL(HW_GPU, "Unimplemented format={} ({:#x}), using A8B8G8R8_UNORM",
+                             static_cast<u32>(format), static_cast<u32>(format));
+            }
+        }
         return PixelFormat::A8B8G8R8_UNORM;
     }
 }
