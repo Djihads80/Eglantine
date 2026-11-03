@@ -101,7 +101,7 @@ PixelFormat PixelFormatFromDepthFormat(Tegra::DepthFormat format) {
     }
 }
 
-PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
+std::optional<PixelFormat> TryPixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
     switch (format) {
     case Tegra::RenderTargetFormat::R32G32B32A32_FLOAT:
     case Tegra::RenderTargetFormat::R32G32B32X32_FLOAT:
@@ -204,21 +204,29 @@ PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) 
     case Tegra::RenderTargetFormat::R8_UINT:
         return PixelFormat::R8_UINT;
     default:
-        // An unrecognised format here usually means a caller passed a surface descriptor whose
-        // format field was not decoded, not that the format itself is impossible. Aborting costs
-        // everything the title had already rendered, so log a bounded number of distinct values
-        // and fall back, exactly as the cases above do.
-        {
-            static std::mutex mutex;
-            static std::set<u32> logged;
-            const std::scoped_lock lock{mutex};
-            if (logged.size() < 8 && logged.emplace(static_cast<u32>(format)).second) {
-                LOG_CRITICAL(HW_GPU, "Unimplemented format={} ({:#x}), using A8B8G8R8_UNORM",
-                             static_cast<u32>(format), static_cast<u32>(format));
-            }
-        }
-        return PixelFormat::A8B8G8R8_UNORM;
+        // The caller decides what to do with a format we cannot decode. Fermi2D has to skip
+        // the copy, see SurfaceFormatIsDecodable users.
+        return std::nullopt;
     }
+}
+
+PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
+    if (const auto decoded = TryPixelFormatFromRenderTargetFormat(format)) {
+        return *decoded;
+    }
+    // An unrecognised format here usually means a caller passed a surface descriptor whose
+    // format field was not decoded, not that the format itself is impossible. Log a bounded
+    // number of distinct values and fall back, exactly as the decoded cases do.
+    static std::mutex mutex;
+    static std::set<u32> logged;
+    {
+        const std::scoped_lock lock{mutex};
+        if (logged.size() < 8 && logged.emplace(static_cast<u32>(format)).second) {
+            LOG_CRITICAL(HW_GPU, "Unimplemented format={} ({:#x}), using A8B8G8R8_UNORM",
+                         static_cast<u32>(format), static_cast<u32>(format));
+        }
+    }
+    return PixelFormat::A8B8G8R8_UNORM;
 }
 
 PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format) {
