@@ -166,7 +166,8 @@ std::optional<std::filesystem::path> ExportPath(const std::string& name) {
 }
 
 /// timeline_export: writes the events after since_seq (all log levels by default) as one JSON
-/// object per line, overwriting any export of the same name. Fails on a bad name or short write.
+/// object per line, overwriting any export of the same name. Fails on a bad name, when no events
+/// match, or on a short write.
 ToolResult TimelineExport(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -179,6 +180,11 @@ ToolResult TimelineExport(ToolContext& ctx, const json& args) {
                               ? ParseQuery(json{{"min_level", args["min_level"]}}).min_level
                               : 0;
     const auto events = ReadEvents(ctx, args.value("since_seq", u64{0}), min_level);
+    if (events.empty()) {
+        // Also keeps the write check below meaningful: an empty write cannot be told apart from
+        // a file that failed to open.
+        return ToolResult::Error("no events match; nothing was exported");
+    }
     std::string text;
     for (const auto& e : events) {
         text += e.dump();

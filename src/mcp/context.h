@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 
 namespace Core {
@@ -23,6 +24,8 @@ struct ToolContext {
     bool writes_allowed = false;
     ControlLease* control = nullptr;
     std::string session_id; ///< MCP session making the call.
+    /// The server's live Allow Writes flag, for work that outlasts the call (background routes).
+    const std::atomic<bool>* live_writes = nullptr;
 
     /// True when a system is set, powered on and not shutting down.
     [[nodiscard]] bool GameRunning() const;

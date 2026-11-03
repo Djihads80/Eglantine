@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cmath>
 
 #include <fmt/format.h>
 
@@ -63,9 +64,12 @@ bool MatchesType(const json& value, std::string_view type) {
         return value.is_boolean();
     }
     if (type == "integer") {
-        return value.is_number_integer() ||
-               (value.is_number_float() &&
-                value.get<double>() == static_cast<double>(static_cast<s64>(value.get<double>())));
+        if (value.is_number_integer()) {
+            return true;
+        }
+        // No cast to an integer type here: that is undefined for values out of its range.
+        const double d = value.is_number_float() ? value.get<double>() : 0.5;
+        return std::isfinite(d) && std::trunc(d) == d && std::fabs(d) <= 9.007199254740992e15;
     }
     if (type == "number") {
         return value.is_number();

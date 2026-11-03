@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <thread>
 
@@ -92,6 +93,12 @@ u64 ProgramId(ToolContext& ctx) {
 /// window hidden or the game paused.
 std::optional<Frame> RawCapture(ToolContext& ctx, std::string& error) {
     namespace Cap = VideoCore::Capture;
+    // The capture is a sync operation on the GPU thread, which no longer runs once the game has
+    // stopped: it would block forever.
+    if (!ctx.GameRunning()) {
+        error = "no game is running";
+        return std::nullopt;
+    }
     const std::vector<u8> tiled = ctx.system->GPU().GetAppletCaptureBuffer();
     if (tiled.size() < Cap::TiledSize) {
         error = "applet capture buffer unavailable";
@@ -581,7 +588,7 @@ ToolResult ScreenState(ToolContext& ctx, const json&) {
 ToolResult ScreenLabels(ToolContext& ctx, const json& args) {
     std::scoped_lock lock{g_store_mutex};
     json store = LoadStore("screens", ProgramId(ctx));
-    if (args.contains("remove")) {
+    if (args.contains("remove") && store.contains("labels")) {
         store["labels"].erase(args["remove"].get<std::string>());
         SaveStore("screens", ProgramId(ctx), store);
     }
@@ -642,13 +649,22 @@ ToolResult ProbeRead(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"probes", std::move(values)}});
 }
 
-/// Runs one route step; returns ok and fills `result`.
-bool RunStep(ToolContext& ctx, const json& step, json& result) {
+/// Asked before every input a route sends: returns why the route may no longer drive the game, or
+/// "" while it may. Routes can run for minutes, so permissions are re-checked as they go.
+using RouteAuthority = std::function<std::string()>;
+
+/// Runs one route step; returns ok and fills `result`. `authority` is checked before every attempt;
+/// when it refuses, result["stopped"] is set and false is returned.
+bool RunStep(ToolContext& ctx, const json& step, json& result, const RouteAuthority& authority) {
     const auto timeout = milliseconds{step.value("timeout_ms", 30000)};
     const size_t npad = NpadIndex(step);
     // Repeat: press the input until the wait condition holds (e.g. A until 'continue_menu').
     const int repeats = step.value("repeat_until", false) ? step.value("max_repeats", 20) : 1;
     for (int attempt = 0; attempt < repeats; ++attempt) {
+        if (std::string reason = authority(); !reason.empty()) {
+            result["stopped"] = reason;
+            return false;
+        }
         if (step.contains("input")) {
             if (std::string error = RunInputSteps(ctx, npad, step["input"]); !error.empty()) {
                 result["error"] = error;
@@ -752,9 +768,10 @@ double CheckpointScore(const Frame& frame, const json& checkpoint) {
 /// checkpoint steps (a recording can hold presses the replay doesn't need, e.g. a second A
 /// where the first one was ignored). While waiting, if the screen still matches the previous
 /// checkpoint long after its input, that input is fired again (the replay's press was ignored).
-/// Returns the matched step index, or -1 on timeout/stop.
+/// Returns the matched step index, or -1 on timeout/stop. `authority` is checked on every poll
+/// (which also renews the control lease while waiting); when it refuses, result["stopped"] is set.
 int WaitCheckpoint(ToolContext& ctx, const json& steps, size_t index, int refire_from,
-                   std::stop_token stop, json& result) {
+                   std::stop_token stop, json& result, const RouteAuthority& authority) {
     const auto& step = steps[index];
     const auto began = steady_clock::now();
     const auto deadline = began + milliseconds{step.value("timeout_ms", 120000)};
@@ -777,6 +794,10 @@ int WaitCheckpoint(ToolContext& ctx, const json& steps, size_t index, int refire
         return Similarity(prev, later) < 0.9;
     };
     while (!stop.stop_requested() && !ServerStopping() && steady_clock::now() < deadline) {
+        if (std::string reason = authority(); !reason.empty()) {
+            result["stopped"] = reason;
+            return -1;
+        }
         std::string error;
         if (const auto frame = AnalysisFrame(ctx, error)) {
             for (size_t j = index; j < steps.size() && j < index + 4; ++j) {
@@ -843,30 +864,41 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
         ctx.timeline->Push(EventKind::State, 0, "route", "route " + name + " started");
     }
     set_progress(0, "running", "starting");
-    // An agent's route keeps the control lease while it runs, and stops if it lost it (another
-    // agent took over). Routes the user starts from the menu have no session.
-    const auto lost_lease = [&] {
-        ControlLease::Holder holder;
-        return ctx.control != nullptr && !ctx.session_id.empty() &&
-               !ctx.control->Touch(ctx.session_id, holder);
+    // Every route stops when asked to or when the game stops. An agent's route also keeps the
+    // control lease while it runs (each check renews it, never re-takes it) and stops if it lost
+    // the lease or the user turned Allow Writes off. Routes the user starts from the menu have no
+    // session, so only the first two apply to them.
+    const RouteAuthority authority = [&]() -> std::string {
+        if (stop.stop_requested() || ServerStopping()) {
+            return "stopped by request";
+        }
+        if (!ctx.GameRunning()) {
+            return "the game stopped";
+        }
+        if (ctx.session_id.empty()) {
+            return {};
+        }
+        if (ctx.live_writes != nullptr && !ctx.live_writes->load()) {
+            return "Allow Writes was turned off";
+        }
+        if (ctx.control != nullptr && !ctx.control->Renew(ctx.session_id)) {
+            return "lost the control lease";
+        }
+        return {};
     };
-    const auto stop_lost_lease = [&](size_t step) {
-        set_progress(step, "stopped", "lost the control lease");
+    const auto stop_route = [&](size_t step, const std::string& reason) {
+        set_progress(step, "stopped", reason);
         if (ctx.timeline) {
             ctx.timeline->Push(EventKind::State, 0, "route",
-                               "route " + name + " stopped: lost the control lease");
+                               "route " + name + " stopped: " + reason);
         }
         return false;
     };
     int last_checkpoint = -1;
     bool ok = true;
     for (size_t i = 0; i < steps.size() && ok; ++i) {
-        if (stop.stop_requested() || ServerStopping()) {
-            set_progress(i, "stopped", "stopped by request");
-            return false;
-        }
-        if (lost_lease()) {
-            return stop_lost_lease(i);
+        if (std::string reason = authority(); !reason.empty()) {
+            return stop_route(i, reason);
         }
         json r{{"step", i}};
         if (steps[i].contains("label")) {
@@ -874,7 +906,10 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
         }
         if (steps[i].contains("checkpoint")) {
             set_progress(i, "running", fmt::format("waiting for checkpoint {}", i));
-            const int matched = WaitCheckpoint(ctx, steps, i, last_checkpoint, stop, r);
+            const int matched = WaitCheckpoint(ctx, steps, i, last_checkpoint, stop, r, authority);
+            if (r.contains("stopped")) {
+                return stop_route(i, r["stopped"].get<std::string>());
+            }
             if (matched < 0) {
                 r["timed_out"] = true;
                 ok = !steps[i].value("required", true);
@@ -890,9 +925,9 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
                 r["sample"] = RunPerfSample(ctx, steps[i]["sample"]);
             }
             if (steps[i].contains("input")) {
-                // The checkpoint wait can be long: check the lease again before sending input.
-                if (lost_lease()) {
-                    return stop_lost_lease(i);
+                // The checkpoint wait and sample can be long: check again before sending input.
+                if (std::string reason = authority(); !reason.empty()) {
+                    return stop_route(i, reason);
                 }
                 if (std::string error = RunInputSteps(ctx, NpadIndex(steps[i]), steps[i]["input"]);
                     !error.empty()) {
@@ -902,7 +937,10 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
             }
             r["attempts"] = 1;
         } else {
-            ok = RunStep(ctx, steps[i], r);
+            ok = RunStep(ctx, steps[i], r, authority);
+            if (r.contains("stopped")) {
+                return stop_route(i, r["stopped"].get<std::string>());
+            }
             // Timed steps measure after their input and waits.
             if (ok && steps[i].contains("sample")) {
                 set_progress(i, "running", fmt::format("measuring at step {}", i));

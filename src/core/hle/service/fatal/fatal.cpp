@@ -11,6 +11,7 @@
 #include "common/logging.h"
 #include "common/scm_rev.h"
 #include "common/swap.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/debugger/trace_hooks.h"
 #include "core/hle/service/fatal/fatal.h"
@@ -110,18 +111,40 @@ static void GenerateErrorReport(Core::System& system, Result error_code, const F
         info.backtrace_size, info.ArchAsString(), info.unk10);
 }
 
+/// Posts a crash event for a fatal error to the crash observer. The backtrace is built from the CPU
+/// context the game sent (ThrowFatalWithCpuContext), not from the calling thread: this runs on the
+/// service thread, where the caller's saved context may not be up to date yet.
+static void NotifyFatalCrash(Core::System& system, Result error_code, FatalType fatal_type,
+                             const FatalInfo& info) {
+    std::string detail =
+        fmt::format("fatal type {} result {:#x} ({:04}-{:04d})", static_cast<u32>(fatal_type),
+                    error_code.raw, 2000 + static_cast<u32>(error_code.GetModule()),
+                    static_cast<u32>(error_code.GetDescription()));
+    auto* const process = system.ApplicationProcess();
+    if (process != nullptr && info.pc != 0) {
+        Kernel::Svc::ThreadContext context{};
+        for (size_t i = 0; i < context.r.size(); ++i) {
+            context.r[i] = info.registers[i];
+        }
+        context.fp = info.registers[29];
+        context.lr = info.registers[30];
+        context.sp = info.sp;
+        context.pc = info.pc;
+        detail += "\nbacktrace from the CPU context sent by the game:";
+        for (const auto& frame : Core::GetBacktraceFromContext(process, context)) {
+            detail += fmt::format("\n{}+{:#x} {}", frame.module, frame.offset, frame.name);
+        }
+    }
+    Core::Trace::NotifyCrash("fatal", detail, nullptr);
+}
+
 static void ThrowFatalError(Core::System& system, Result error_code, FatalType fatal_type,
-                            const FatalInfo& info, const Kernel::KThread* caller) {
+                            const FatalInfo& info) {
     LOG_ERROR(Service_Fatal, "Threw fatal error type {} with error code {:#x}", fatal_type,
               error_code.raw);
-    Core::Trace::NotifyCrash(
-        "fatal",
-        fmt::format("fatal type {} result {:#x} ({:04}-{:04d}) pc={:#x} lr/backtrace[0]={:#x}",
-                    static_cast<u32>(fatal_type), error_code.raw,
-                    2000 + static_cast<u32>(error_code.GetModule()),
-                    static_cast<u32>(error_code.GetDescription()), info.pc,
-                    info.backtrace_size != 0 ? info.backtrace[0] : 0),
-        caller);
+    if (Core::Trace::g_crash_hook.load(std::memory_order_relaxed)) {
+        NotifyFatalCrash(system, error_code, fatal_type, info);
+    }
 
     switch (fatal_type) {
     case FatalType::ErrorReportAndScreen:
@@ -143,7 +166,7 @@ void Module::Interface::ThrowFatal(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const auto error_code = rp.Pop<Result>();
 
-    ThrowFatalError(system, error_code, FatalType::ErrorScreen, {}, &ctx.GetThread());
+    ThrowFatalError(system, error_code, FatalType::ErrorScreen, {});
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -154,8 +177,8 @@ void Module::Interface::ThrowFatalWithPolicy(HLERequestContext& ctx) {
     const auto error_code = rp.Pop<Result>();
     const auto fatal_type = rp.PopEnum<FatalType>();
 
-    ThrowFatalError(system, error_code, fatal_type, {},
-                    &ctx.GetThread()); // No info is passed with ThrowFatalWithPolicy
+    ThrowFatalError(system, error_code, fatal_type,
+                    {}); // No info is passed with ThrowFatalWithPolicy
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -171,7 +194,7 @@ void Module::Interface::ThrowFatalWithCpuContext(HLERequestContext& ctx) {
     ASSERT_MSG(fatal_info.size() == sizeof(FatalInfo), "Invalid fatal info buffer size!");
     std::memcpy(&info, fatal_info.data(), sizeof(FatalInfo));
 
-    ThrowFatalError(system, error_code, fatal_type, info, &ctx.GetThread());
+    ThrowFatalError(system, error_code, fatal_type, info);
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }

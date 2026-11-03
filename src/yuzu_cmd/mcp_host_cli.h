@@ -63,7 +63,8 @@ public:
     }
 
 private:
-    /// Runs fn on the SDL main thread and waits for it (errors if the app stops meanwhile).
+    /// Runs fn on the SDL main thread and waits up to 30 s for it. On timeout it returns an error,
+    /// but fn stays queued and may still run later.
     std::string RunOnMain(std::function<std::string()> fn);
 
     Core::System& system;

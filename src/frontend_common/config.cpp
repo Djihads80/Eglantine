@@ -914,6 +914,14 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     const std::string key = AdjustKey(setting->GetLabel());
     const std::string default_value(setting->DefaultToString());
 
+    if (setting->Id() == Settings::values.mcp_token.Id()) {
+        // Read as stored, ignoring the \default flag: a token in the file must never be dropped
+        // (the server would then run without authentication), and the path adjustments of the
+        // default read would change it.
+        setting->LoadString(ReadStringSetting(key));
+        return;
+    }
+
     bool use_global = true;
     if (setting->Switchable() && !global) {
         use_global = ReadBooleanSetting(std::string(key).append("\\use_global"), std::make_optional(true));
@@ -923,10 +931,7 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     if (global || !use_global) {
         const bool is_default = ReadBooleanSetting(std::string(key).append("\\default"), std::make_optional(true));
         if (!is_default) {
-            // The default path collapses "//" (meant for paths), which would change a token.
-            setting->LoadString(setting->Id() == Settings::values.mcp_token.Id()
-                                    ? ReadStringSetting(key)
-                                    : ReadStringSetting(key, default_value));
+            setting->LoadString(ReadStringSetting(key, default_value));
         } else {
             // Empty string resets the Setting to default
             setting->LoadString("");
@@ -953,7 +958,12 @@ void Config::WriteSettingGeneric(const Settings::BasicSetting* const setting) {
     } else if (global) {
         WriteBooleanSetting(std::string(key).append("\\default"),
                             setting->ToString() == setting->DefaultToString());
-        WriteStringSetting(key, setting->ToString());
+        if (setting->Id() == Settings::values.mcp_token.Id()) {
+            // Stored as is: the path adjustments of WriteStringSetting would change a token.
+            WritePreparedSetting(key, setting->ToString(), std::nullopt, std::nullopt);
+        } else {
+            WriteStringSetting(key, setting->ToString());
+        }
     }
 }
 

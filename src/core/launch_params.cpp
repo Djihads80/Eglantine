@@ -20,6 +20,17 @@
 #endif
 
 namespace Core {
+
+/// Parses a whole decimal TCP port (1-65535); nullopt for anything else.
+static std::optional<u16> ParsePort(const char* text) {
+    char* end = nullptr;
+    const unsigned long port = std::strtoul(text, &end, 10);
+    if (end == text || *end != '\0' || port == 0 || port > 65535) {
+        return std::nullopt;
+    }
+    return static_cast<u16>(port);
+}
+
 LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[]) noexcept {
     LaunchParams p{};
 
@@ -56,7 +67,12 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 // Without a port, the configured one is used (the config is not loaded yet).
                 p.enable_gdbstub = true;
                 if (optarg != nullptr) {
-                    p.override_gdb_port = uint16_t(atoi(optarg));
+                    if (const auto port = ParsePort(optarg)) {
+                        p.override_gdb_port = *port;
+                    } else {
+                        LOG_ERROR(Frontend, "Invalid --debug port '{}', using the configured port",
+                                  optarg);
+                    }
                 }
                 break;
             case 'c':
@@ -75,18 +91,15 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
             case 'M':
                 p.mcp_enable = true;
                 break;
-            case 'P': {
+            case 'P':
                 p.mcp_enable = true;
-                char* end = nullptr;
-                const unsigned long port = std::strtoul(optarg, &end, 10);
-                if (end == optarg || *end != '\0' || port == 0 || port > 65535) {
+                if (const auto port = ParsePort(optarg)) {
+                    p.mcp_port = *port;
+                } else {
                     LOG_ERROR(Frontend, "Invalid --mcp-port '{}', using the configured port",
                               optarg);
-                } else {
-                    p.mcp_port = static_cast<u16>(port);
                 }
                 break;
-            }
             case 'W':
                 p.mcp_allow_writes = true;
                 break;

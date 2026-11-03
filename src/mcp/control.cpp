@@ -50,6 +50,17 @@ bool ControlLease::Touch(const std::string& session, Holder& out) {
     return true;
 }
 
+bool ControlLease::Renew(const std::string& session) {
+    std::scoped_lock lock{mutex};
+    const auto now = Clock::now();
+    ExpireLocked(now);
+    if (!holder || holder->session_id != session) {
+        return false;
+    }
+    holder->expires = now + (current_ttl.count() > 0 ? current_ttl : default_ttl);
+    return true;
+}
+
 bool ControlLease::Release(const std::string& session) {
     std::scoped_lock lock{mutex};
     if (holder && holder->session_id == session) {

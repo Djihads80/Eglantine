@@ -141,8 +141,8 @@ void Stop();
 void SetGlobalFilter(const Filter& filter);
 void SetColorConsoleBackendEnabled(bool enabled);
 
-/// Optional extra sink (used by the built-in MCP server's timeline). Called synchronously on the
-/// logging thread for every message that passes the global filter. Pass nullptr to remove it.
+/// Optional extra sink (used by the built-in MCP server's timeline). Called synchronously, on the
+/// thread that logs, for every message that passes the global filter. Pass nullptr to remove it.
 using ExternalSink = void (*)(const char* class_name, Level level, std::string_view message);
 void SetExternalSink(ExternalSink sink);
 

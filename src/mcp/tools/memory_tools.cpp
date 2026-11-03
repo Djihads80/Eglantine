@@ -431,10 +431,11 @@ ToolResult SearchMemory(ToolContext& ctx, const json& args) {
                      }
                      return true;
                  });
+    const bool capped = matches.size() >= max_results;
     return ToolResult::Structured(json{{"matches", std::move(matches)},
                                        {"regions", regions.size()},
                                        {"bytes_scanned", scanned},
-                                       {"capped", matches.size() >= max_results}});
+                                       {"capped", capped}});
 }
 
 // ---- watches ------------------------------------------------------------------------------
@@ -443,6 +444,8 @@ ToolResult SearchMemory(ToolContext& ctx, const json& args) {
 /// the timeline. Runs only while watches exist and a game is running.
 class WatchSampler {
 public:
+    static constexpr size_t kMaxWatches = 256;
+
     /// One watched address, its last sampled bits (unset until the first sample) and change
     /// statistics.
     struct Watch {
@@ -462,9 +465,20 @@ public:
 
     /// Adds a watch and returns its id. Starts the sampling thread if it is not running, joining
     /// a previous thread that stopped by itself. `system` and `timeline` must outlive the thread.
+    /// Returns 0 and sets `error` when the server is shutting down or the watch limit is reached.
     u32 Add(Core::System& system, Timeline* timeline, u64 address, ValueType type,
-            std::string label) {
+            std::string label, std::string& error) {
         std::scoped_lock lock{mutex};
+        // Checked under the lock Shutdown takes: a watch added after shutdown began would start
+        // a sampler that nothing joins.
+        if (ServerStopping()) {
+            error = "the MCP server is stopping";
+            return 0;
+        }
+        if (watches.size() >= kMaxWatches) {
+            error = fmt::format("at most {} watches", kMaxWatches);
+            return 0;
+        }
         const u32 id = next_id++;
         watches.push_back({id, address, type, std::move(label)});
         if (!thread.joinable() || stopped) {
@@ -581,11 +595,12 @@ ToolResult WatchAdd(ToolContext& ctx, const json& args) {
     if (!ctx.system->ApplicationMemory().IsValidVirtualAddressRange(*address, TypeSize(type))) {
         return ToolResult::Error("address not mapped");
     }
-    if (WatchSampler::Get().List().size() >= 256) {
-        return ToolResult::Error("at most 256 watches");
-    }
+    std::string error;
     const u32 id = WatchSampler::Get().Add(*ctx.system, ctx.timeline, *address, type,
-                                           args.value("label", ""));
+                                           args.value("label", ""), error);
+    if (id == 0) {
+        return ToolResult::Error(error);
+    }
     return ToolResult::Structured(
         json{{"id", id},
              {"note", "Sampled once per presented frame; changes appear as 'watch' events in the "

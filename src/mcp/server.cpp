@@ -278,7 +278,8 @@ Server::~Server() {
 }
 
 ToolContext Server::MakeContext() {
-    return ToolContext{&system, &host, &timeline, writes_allowed.load(), &control, {}};
+    return ToolContext{&system,  &host, &timeline, writes_allowed.load(),
+                       &control, {},    &writes_allowed};
 }
 
 std::string Server::Url() const {
@@ -293,6 +294,19 @@ std::string Server::Start() {
     // Long waits (wait_for, act, /events/wait) each hold a worker: leave room for normal calls.
     http->new_task_queue = [] { return new httplib::ThreadPool(8); };
     http->set_payload_max_length(2 << 20);
+    // httplib's default (SO_REUSEADDR on Windows, SO_REUSEPORT elsewhere) lets a second emulator
+    // bind the same port, and both then serve it. Take the port exclusively instead, so a second
+    // instance reports "port in use".
+    http->set_socket_options([](auto sock) {
+        int yes = 1;
+#ifdef _WIN32
+        setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&yes),
+                   sizeof(yes));
+#else
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes),
+                   sizeof(yes));
+#endif
+    });
     // httplib's 5 s defaults cut large replies (screenshots) when something inspects loopback
     // traffic (e.g. security software): clients saw connection resets mid-body.
     http->set_read_timeout(60, 0);
@@ -417,13 +431,13 @@ std::string Server::Start() {
     // GET /mcp with Accept: text/event-stream and a session: the MCP server-to-client stream.
     // Pushes notifications/message for crashes, new unimplemented commands and warning+ logs.
     http->Get("/mcp", [=, this](const httplib::Request& req, httplib::Response& res) {
+        if (!authorized(req, res)) {
+            return;
+        }
         const std::string session = req.get_header_value("Mcp-Session-Id");
         if (req.get_header_value("Accept").find("text/event-stream") == std::string::npos ||
             session.empty() || !protocol->HasSession(session)) {
             handler(req, res); // protocol rules: 405 without a stream, 400/404 for sessions
-            return;
-        }
-        if (!authorized(req, res)) {
             return;
         }
         Timeline::Query q;

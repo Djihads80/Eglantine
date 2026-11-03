@@ -38,6 +38,10 @@ public:
     /// `holder`) if someone else holds it.
     bool Touch(const std::string& session, Holder& holder);
 
+    /// For work that outlasts a call (background routes): extends the lease only if session still
+    /// holds it. Unlike Touch it never takes a free lease, so a released lease stays released.
+    bool Renew(const std::string& session);
+
     /// Releases if session holds it. Returns whether it did.
     bool Release(const std::string& session);
 

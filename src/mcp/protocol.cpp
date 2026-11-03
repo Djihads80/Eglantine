@@ -265,10 +265,17 @@ std::optional<json> Protocol::Dispatch(const json& message, const HttpRequest& r
         for (const auto& p : options.prompts) {
             if (p.name == name) {
                 const json args = params.value("arguments", json::object());
+                std::string text;
+                try {
+                    text = p.render(args);
+                } catch (const std::exception& e) {
+                    return JsonRpcError(id, kInternalError,
+                                        fmt::format("Prompt {} failed: {}", name, e.what()));
+                }
                 return ok(json{{"description", p.description},
                                {"messages", json::array({{{"role", "user"},
                                                           {"content", {{"type", "text"},
-                                                                       {"text", p.render(args)}}}}})}});
+                                                                       {"text", text}}}}})}});
             }
         }
         return JsonRpcError(id, kInvalidParams, "Unknown prompt: " + name);
