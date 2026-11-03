@@ -1599,9 +1599,17 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.multiviewMeshShader = VK_FALSE;
     features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
     features.mesh_shader.meshShaderQueries = VK_FALSE;
+    const bool has_mesh_extension = extensions.mesh_shader;
+    const bool task_shader = features.mesh_shader.taskShader != VK_FALSE;
+    const bool mesh_shader = features.mesh_shader.meshShader != VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    LOG_INFO(Render_Vulkan,
+             "VK_EXT_mesh_shader: extension {}, taskShader {}, meshShader {}: Switch 2 task/mesh "
+             "draws {}",
+             has_mesh_extension ? "present" : "absent", task_shader, mesh_shader,
+             extensions.mesh_shader ? "on" : "skipped");
 
     // VK_KHR_shader_quad_control
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
