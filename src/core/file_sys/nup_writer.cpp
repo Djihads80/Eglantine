@@ -1682,11 +1682,15 @@ std::filesystem::path DefaultExtractPath(const std::filesystem::path& archive) {
 ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesystem::path& out_dir,
                          const std::function<void(const PackProgress&)>& progress_cb,
                          const std::atomic_bool* cancel, std::string* error_out) {
-    // True when this call created out_dir. Only output this call can safely claim is removed
-    // on failure: a directory that already existed (always empty here, non-empty is refused)
-    // is emptied but kept.
+    // True once this call has claimed out_dir by creating it or verifying that it is
+    // empty. Cleanup only removes output this call can safely claim; failures before that
+    // point (missing archive, uncreatable or non-empty output) leave everything untouched.
     bool created = false;
+    bool claimed = false;
     const auto cleanup = [&] {
+        if (!claimed) {
+            return;
+        }
         std::error_code rm_ec;
         if (created) {
             fs::remove_all(out_dir, rm_ec);
@@ -1716,6 +1720,7 @@ ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesy
                 throw ExtractError(ExtractResult::IoError,
                                    "cannot list " + ToUtf8(out_dir) + ": " + ec.message());
             }
+            claimed = true;
         } else {
             fs::create_directories(out_dir, ec);
             if (ec) {
@@ -1723,6 +1728,7 @@ ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesy
                                    "cannot create " + ToUtf8(out_dir) + ": " + ec.message());
             }
             created = true;
+            claimed = true;
         }
 
         RealVfsFilesystem vfs;

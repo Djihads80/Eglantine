@@ -683,6 +683,26 @@ TEST_CASE("NUP edits default-language metadata in place", "[nup]") {
             FileSys::Nup::EditResult::NoChange);
 }
 
+TEST_CASE("NUP extract refuses a non-empty directory without touching it", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    const auto out = t.path / "Occupied";
+    fs::create_directories(out);
+    Put(out / "keep.txt", "precious");
+    Put(out / "sub" / "keep2.txt", "precious");
+    std::string error;
+    REQUIRE(FileSys::Nup::ExtractNup(archive, out, {}, nullptr, &error) ==
+            FileSys::Nup::ExtractResult::IoError);
+    REQUIRE(!error.empty());
+    REQUIRE(ReadAll(out / "keep.txt") == "precious");
+    REQUIRE(ReadAll(out / "sub" / "keep2.txt") == "precious");
+    REQUIRE_FALSE(fs::exists(out / "base"));
+}
+
 TEST_CASE("NUP extract removes output it created when it fails", "[nup]") {
     TempDir t;
     Put(t.path / "not-a-nup.bin", "junk");
