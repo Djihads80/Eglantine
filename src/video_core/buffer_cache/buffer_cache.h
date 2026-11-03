@@ -2281,11 +2281,16 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     // Most binds come back to a range nothing was written to since it was synchronized: skip
     // walking its pages while its region saw no CPU writes (they took 5% of Mario Kart World's
     // GPU back thread).
-    // EDEN_NX2_SYNC_CACHE=0 synchronizes every range every time.
+    // EDEN_NX2_SYNC_CACHE=0 synchronizes every range every time. Android only: desktop
+    // synchronizes every range every time as before.
+#ifdef __ANDROID__
     static const bool sync_cache = [] {
         const char* value = std::getenv("EDEN_NX2_SYNC_CACHE");
         return value == nullptr || value[0] != '0';
     }();
+#else
+    constexpr bool sync_cache = false;
+#endif
     const u64 generation = sync_cache ? memory_tracker.RangeGeneration(device_addr, size) : 0;
     SyncedRange& synced = synced_ranges[((device_addr >> 8) ^ size) % synced_ranges.size()];
     if (generation != 0 && synced.generation == generation && synced.device_addr == device_addr &&

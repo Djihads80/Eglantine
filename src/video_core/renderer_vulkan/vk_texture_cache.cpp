@@ -186,6 +186,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
            info.type != ImageType::Linear && Tegra::Nx2SparseUnwritten(gpu_addr, size);
 }
 
+[[nodiscard]] bool IsMobileGpu(const Device& device);
+
 // A large color array in a Switch 2 sparse region (title 1's terrain arrays: 13-26% of their
 // blocks written) gets memory by layer, as its layers are written: unbacked at first, then
 // Image::BindLayers. Only formats uploaded layer by layer: huge ASTC arrays (GPU decode) and
@@ -197,12 +199,12 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
     }
-    // ASTC the host samples as it is (Adreno) uploads layer by layer like other plain formats:
+    // ASTC a phone GPU samples as it is (Adreno) uploads layer by layer like other plain formats:
     // without this, Mario Kart World's ASTC 8x8 terrain arrays stayed unbacked (black) on phones.
     const bool layer_uploads =
         IsHugeAstcArray(device, info) ||
         (IsPixelFormatASTC(info.format)
-             ? device.IsOptimalAstcSupported()
+             ? device.IsOptimalAstcSupported() && IsMobileGpu(device)
              : (!IsPixelFormatBCn(info.format) || device.IsOptimalBcnSupported()));
     const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
@@ -4161,7 +4163,9 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
         // The sampling instruction, not the header, picks the dimension: native shaders sample
         // six layers of a 2D array as a cube (Fortune's Weave keeps point-light cubes in a
         // layered atlas; without a cube handle they sampled the null view).
-        if (info.type == VideoCommon::ImageViewType::e2DArray && info.range.extent.layers >= 6 &&
+        // Switch 2 programs only, whose native shaders do this.
+        if (Settings::CurrentProgramIsSwitch2() &&
+            info.type == VideoCommon::ImageViewType::e2DArray && info.range.extent.layers >= 6 &&
             image.info.num_samples == 1 && IsCubeCompatible(*device, image.info)) {
             create(TextureType::ColorCube, 6);
             if (info.range.extent.layers % 6 == 0) {
