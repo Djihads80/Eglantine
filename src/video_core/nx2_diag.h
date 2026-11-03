@@ -99,7 +99,11 @@ inline std::string Hex16(u64 value) {
 // EDEN_NX2_LAB: starts the shader lab beside the emulator.
 inline void StartLab() {
     const char* mode = Env("EDEN_NX2_LAB");
-    if (!mode || DrawListDir().empty()) {
+    if (!mode) {
+        return;
+    }
+    if (DrawListDir().empty()) {
+        LOG_WARNING(HW_GPU, "diag: EDEN_NX2_LAB needs EDEN_NX2_DIAG_DIR");
         return;
     }
 #ifdef _WIN32
@@ -120,6 +124,9 @@ inline void StartLab() {
         return quoted + '\'';
     };
     std::filesystem::create_directories(DrawListDir());
+    // An address left by an earlier run would point at a lab that is gone.
+    std::error_code ignored;
+    std::filesystem::remove(DrawListDir() / "lab-url.txt", ignored);
     std::string command = std::string{Env("EDEN_NX2_LAB_PYTHON") ? Env("EDEN_NX2_LAB_PYTHON") : "python3"} +
                           " -I " + quote(script.string()) + " --diag-dir " + quote(DrawListDir().string()) +
                           " --parent-pid " + std::to_string(getpid());
@@ -134,7 +141,7 @@ inline void StartLab() {
     }
     command += " >" + quote((DrawListDir() / "lab.log").string()) + " 2>&1 &";
     const int result = std::system(command.c_str());
-    LOG_INFO(HW_GPU, "diag: shader lab {} (address in {}, log in {})", result == 0 ? "started" : "failed to start",
+    LOG_INFO(HW_GPU, "diag: shader lab {} (address in {}, log in {})", result == 0 ? "launched" : "failed to launch",
              (DrawListDir() / "lab-url.txt").string(), (DrawListDir() / "lab.log").string());
 #endif
 }
