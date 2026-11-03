@@ -46,6 +46,16 @@ public:
         return front_macros;
     }
 
+    /// Whether the calling thread is the back.
+    [[nodiscard]] static bool OnBackThread() {
+        return on_back_thread;
+    }
+    /// Called on the back before it sleeps waiting for work (the rasterizer submits deferred work).
+    void SetIdleHook(void (*hook)(void*), void* argument) {
+        idle_hook = hook;
+        idle_argument = argument;
+    }
+
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
     /// commands read without cache flushes). Called by the front between commands.
     void MaybeStart(Core::System& system);
@@ -174,6 +184,9 @@ private:
     Tegra::Engines::EngineInterface* back_engine{};
 
     static GpuSplit instance;
+    static inline thread_local bool on_back_thread{};
+    void (*idle_hook)(void*){};
+    void* idle_argument{};
 
     alignas(64) std::atomic<u64> published{};
     alignas(64) std::atomic<u64> consumed{};
