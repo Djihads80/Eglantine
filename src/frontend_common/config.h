@@ -94,6 +94,7 @@ protected:
     void ReadWebServiceValues();
     void ReadNetworkValues();
     void ReadLibraryAppletValues();
+    void ReadSwitch2Values();
 
     // Read platform specific sections
     virtual void ReadHidbusValues() = 0;
@@ -125,6 +126,7 @@ protected:
     void SaveSystemValues();
     void SaveWebServiceValues();
     void SaveLibraryAppletValues();
+    void SaveSwitch2Values();
 
     // Save platform specific sections
     virtual void SaveHidbusValues() = 0;
@@ -221,6 +223,8 @@ protected:
     std::unique_ptr<CSimpleIniA> config;
     std::string config_loc;
     const bool global;
+    // The profile whose global values ReadSettingGeneric and WriteSettingGeneric use
+    Settings::Profile profile{Settings::Profile::Switch1};
 
 private:
     void WritePreparedSetting(const std::string& key, const std::string& adjusted_value,

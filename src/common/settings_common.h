@@ -49,6 +49,8 @@ enum class Category : u32 {
     Services,
     Paths,
     LibraryApplet,
+    Switch2,
+    Switch2Debug,
     MaxEnum,
 };
 

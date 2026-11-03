@@ -417,6 +417,62 @@ void Config::ReadLibraryAppletValues() {
     EndGroup();
 }
 
+namespace {
+
+// The Switch 2 profile's global CPU and graphics settings (Settings::IsProfiled), next to the
+// Switch 1 ones in [Cpu] and [Renderer].
+struct ProfileSection {
+    const char* name;
+    std::array<Settings::Category, 4> categories;
+    size_t count;
+};
+constexpr std::array Switch2ProfileSections{
+    ProfileSection{"Switch2Cpu", {Settings::Category::Cpu, Settings::Category::CpuUnsafe}, 2},
+    ProfileSection{"Switch2Renderer",
+                   {Settings::Category::Renderer, Settings::Category::RendererAdvanced,
+                    Settings::Category::RendererHacks, Settings::Category::RendererExtensions},
+                   4},
+};
+
+} // Anonymous namespace
+
+void Config::ReadSwitch2Values() {
+    BeginGroup(Settings::TranslateCategory(Settings::Category::Switch2));
+
+    ReadCategory(Settings::Category::Switch2);
+    ReadCategory(Settings::Category::Switch2Debug);
+
+    EndGroup();
+
+    if (!global) {
+        return;
+    }
+    // A configuration from before Switch 2 titles had settings of their own starts them as a copy
+    // of the current ones, so nobody's setup changes.
+    const bool saved = std::ranges::any_of(Switch2ProfileSections, [this](const auto& section) {
+        return config->GetSection(section.name) != nullptr;
+    });
+    profile = Settings::Profile::Switch2;
+    for (const auto& section : Switch2ProfileSections) {
+        BeginGroup(section.name);
+        for (size_t i = 0; i < section.count; ++i) {
+            if (saved) {
+                ReadCategory(section.categories[i]);
+                continue;
+            }
+            for (auto* const setting : FindRelevantList(section.categories[i])) {
+                if (Settings::IsProfiled(*setting)) {
+                    Settings::SetGlobalString(
+                        profile, *setting,
+                        Settings::GlobalString(Settings::Profile::Switch1, *setting));
+                }
+            }
+        }
+        EndGroup();
+    }
+    profile = Settings::Profile::Switch1;
+}
+
 void Config::ReadValues() {
     if (global) {
         ReadDataStorageValues();
@@ -434,6 +490,7 @@ void Config::ReadValues() {
     ReadRendererValues();
     ReadAudioValues();
     ReadSystemValues();
+    ReadSwitch2Values();
 }
 
 void Config::SavePlayerValues(const std::size_t player_index) {
@@ -531,8 +588,31 @@ void Config::SaveValues() {
     SaveRendererValues();
     SaveAudioValues();
     SaveSystemValues();
+    SaveSwitch2Values();
 
     WriteToIni();
+}
+
+void Config::SaveSwitch2Values() {
+    BeginGroup(Settings::TranslateCategory(Settings::Category::Switch2));
+
+    WriteCategory(Settings::Category::Switch2);
+    WriteCategory(Settings::Category::Switch2Debug);
+
+    EndGroup();
+
+    if (!global) {
+        return;
+    }
+    profile = Settings::Profile::Switch2;
+    for (const auto& section : Switch2ProfileSections) {
+        BeginGroup(section.name);
+        for (size_t i = 0; i < section.count; ++i) {
+            WriteCategory(section.categories[i]);
+        }
+        EndGroup();
+    }
+    profile = Settings::Profile::Switch1;
 }
 
 void Config::SaveAudioValues() {
@@ -922,11 +1002,12 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
 
     if (global || !use_global) {
         const bool is_default = ReadBooleanSetting(std::string(key).append("\\default"), std::make_optional(true));
-        if (!is_default) {
-            setting->LoadString(ReadStringSetting(key, default_value));
+        // Empty string resets the Setting to default
+        const std::string value = is_default ? std::string{} : ReadStringSetting(key, default_value);
+        if (global) {
+            Settings::SetGlobalString(profile, *setting, value);
         } else {
-            // Empty string resets the Setting to default
-            setting->LoadString("");
+            setting->LoadString(value);
         }
     }
 }
@@ -942,15 +1023,16 @@ void Config::WriteSettingGeneric(const Settings::BasicSetting* const setting) {
             WriteBooleanSetting(std::string(key).append("\\use_global"), setting->UsingGlobal());
         }
         if (global || !setting->UsingGlobal()) {
-            auto value = global ? setting->ToStringGlobal() : setting->ToString();
+            auto value = global ? Settings::GlobalString(profile, *setting) : setting->ToString();
             WriteBooleanSetting(std::string(key).append("\\default"),
                                 value == setting->DefaultToString());
             WriteStringSetting(key, value);
         }
     } else if (global) {
+        const auto value = Settings::GlobalString(profile, *setting);
         WriteBooleanSetting(std::string(key).append("\\default"),
-                            setting->ToString() == setting->DefaultToString());
-        WriteStringSetting(key, setting->ToString());
+                            value == setting->DefaultToString());
+        WriteStringSetting(key, value);
     }
 }
 

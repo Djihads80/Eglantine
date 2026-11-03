@@ -51,8 +51,8 @@ ConfigureGraphics::ConfigureGraphics(
     : ConfigurationShared::Tab(group_, parent), ui{std::make_unique<Ui::ConfigureGraphics>()},
       records{records_}, expose_compute_option{expose_compute_option_},
       update_aspect_ratio{update_aspect_ratio_}, system{system_},
-      combobox_translations{builder.ComboboxTranslations()} {
-    vulkan_device = Settings::values.vulkan_device.GetValue();
+      combobox_translations{builder.ComboboxTranslations()}, profile{builder.Profile()} {
+    vulkan_device = static_cast<u32>(std::stoul(Current(Settings::values.vulkan_device)));
     RetrieveVulkanDevices();
 
     ui->setupUi(this);
@@ -63,14 +63,15 @@ ConfigureGraphics::ConfigureGraphics(
         vulkan_device_combobox->addItem(device);
     }
 
-    UpdateBackgroundColorButton(QColor::fromRgb(Settings::values.bg_red.GetValue(),
-                                                Settings::values.bg_green.GetValue(),
-                                                Settings::values.bg_blue.GetValue()));
+    UpdateBackgroundColorButton(QColor::fromRgb(std::stoi(Current(Settings::values.bg_red)),
+                                                std::stoi(Current(Settings::values.bg_green)),
+                                                std::stoi(Current(Settings::values.bg_blue))));
     UpdateAPILayout();
     PopulateVSyncModeSelection(false); //< must happen after UpdateAPILayout
 
     // VSync setting needs to be determined after populating the VSync combobox
-    const auto vsync_mode_setting = Settings::values.vsync_mode.GetValue();
+    const auto vsync_mode_setting =
+        static_cast<Settings::VSyncMode>(std::stoul(Current(Settings::values.vsync_mode)));
     const auto vsync_mode = VSyncSettingToMode(vsync_mode_setting);
     int index{};
     for (const auto mode : vsync_mode_combobox_enum_map) {
@@ -127,8 +128,19 @@ ConfigureGraphics::ConfigureGraphics(
         ui->api_widget->isEnabled());
 
     if (Settings::IsConfiguringGlobal()) {
-        ui->bg_widget->setEnabled(Settings::values.bg_red.UsingGlobal());
+        // A running game does not use the other profile
+        ui->bg_widget->setEnabled(Settings::values.bg_red.UsingGlobal() ||
+                                  profile != Settings::ActiveProfile());
     }
+}
+
+std::string ConfigureGraphics::Current(const Settings::BasicSetting& setting) const {
+    return Settings::IsConfiguringGlobal() ? Settings::GlobalString(profile, setting)
+                                           : setting.ToString();
+}
+
+void ConfigureGraphics::StoreGlobal(Settings::BasicSetting& setting, u32 value) const {
+    Settings::SetGlobalString(profile, setting, std::to_string(value));
 }
 
 void ConfigureGraphics::PopulateVSyncModeSelection(bool use_setting) {
@@ -143,7 +155,8 @@ void ConfigureGraphics::PopulateVSyncModeSelection(bool use_setting) {
         vsync_mode_combobox->currentIndex();
     const auto current_mode = //< current selected vsync mode as a VkPresentModeKHR
         current_index == -1 || use_setting
-            ? VSyncSettingToMode(Settings::values.vsync_mode.GetValue())
+            ? VSyncSettingToMode(
+                  static_cast<Settings::VSyncMode>(std::stoul(Current(Settings::values.vsync_mode))))
             : vsync_mode_combobox_enum_map[current_index];
     int index{};
     const int device{vulkan_device_combobox->currentIndex()}; //< current selected Vulkan device
@@ -191,7 +204,11 @@ void ConfigureGraphics::UpdateVsyncSetting() const {
 
     const auto mode = vsync_mode_combobox_enum_map[vsync_mode_combobox->currentIndex()];
     const auto vsync_mode = PresentModeToSetting(mode);
-    Settings::values.vsync_mode.SetValue(vsync_mode);
+    if (Settings::IsConfiguringGlobal()) {
+        StoreGlobal(Settings::values.vsync_mode, static_cast<u32>(vsync_mode));
+    } else {
+        Settings::values.vsync_mode.SetValue(vsync_mode);
+    }
 }
 
 void ConfigureGraphics::UpdateDeviceSelection(int device) {
@@ -311,9 +328,25 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             QPushButton* post_shader_button = new QPushButton(tr("Configure Effects..."), widget);
             post_shader_button->setVisible(widget->checkbox->isChecked());
 
-            connect(post_shader_button, &QAbstractButton::clicked, this, [this]() {
+            // The effects dialog edits the settings in use: the other profile's effects can only
+            // be swapped in while no game runs
+            const bool other_profile =
+                Settings::IsConfiguringGlobal() && profile != Settings::ActiveProfile();
+            if (other_profile && system.IsPoweredOn()) {
+                post_shader_button->setEnabled(false);
+                post_shader_button->setToolTip(
+                    tr("These effects can be changed when no game of the other console runs."));
+            }
+            connect(post_shader_button, &QAbstractButton::clicked, this, [this, other_profile]() {
+                const auto previous = Settings::ActiveProfile();
+                if (other_profile) {
+                    Settings::SetActiveProfile(profile);
+                }
                 ConfigurePostProcessing dialog(this);
                 dialog.exec();
+                if (other_profile) {
+                    Settings::SetActiveProfile(previous);
+                }
             });
             connect(widget->checkbox, &QCheckBox::toggled, post_shader_button,
                     &QWidget::setVisible);
@@ -358,9 +391,9 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     // (3 settings, all collected into a single widget with a QColor to manage on top)
     if (Settings::IsConfiguringGlobal()) {
         apply_funcs.push_back([this](bool powered_on) {
-            Settings::values.bg_red.SetValue(static_cast<u8>(bg_color.red()));
-            Settings::values.bg_green.SetValue(static_cast<u8>(bg_color.green()));
-            Settings::values.bg_blue.SetValue(static_cast<u8>(bg_color.blue()));
+            StoreGlobal(Settings::values.bg_red, static_cast<u32>(bg_color.red()));
+            StoreGlobal(Settings::values.bg_green, static_cast<u32>(bg_color.green()));
+            StoreGlobal(Settings::values.bg_blue, static_cast<u32>(bg_color.blue()));
         });
     } else {
         QPushButton* bg_restore_button = ConfigurationShared::Widget::CreateRestoreGlobalButton(
@@ -445,13 +478,19 @@ void ConfigureGraphics::ApplyConfiguration() {
         auto backend =
             index >= combobox_translations.size() ||
                     size_t(api_combobox->currentIndex()) >= combobox_translations.at(index).size()
-                ? Settings::values.renderer_backend.GetValue()
+                ? static_cast<Settings::RendererBackend>(
+                      std::stoul(Current(Settings::values.renderer_backend)))
                 : Settings::RendererBackend(
                       combobox_translations.at(index)[api_combobox->currentIndex()].first);
         switch (backend) {
         case Settings::RendererBackend::Vulkan:
-            Settings::values.vulkan_device.SetGlobal(Settings::IsConfiguringGlobal());
-            Settings::values.vulkan_device.SetValue(vulkan_device_combobox->currentIndex());
+            if (Settings::IsConfiguringGlobal()) {
+                StoreGlobal(Settings::values.vulkan_device,
+                            static_cast<u32>(vulkan_device_combobox->currentIndex()));
+            } else {
+                Settings::values.vulkan_device.SetGlobal(false);
+                Settings::values.vulkan_device.SetValue(vulkan_device_combobox->currentIndex());
+            }
             break;
         case Settings::RendererBackend::OpenGL_GLSL:
         case Settings::RendererBackend::OpenGL_SPIRV:
@@ -487,7 +526,9 @@ void ConfigureGraphics::UpdateBackgroundColorButton(QColor color) {
 void ConfigureGraphics::UpdateAPILayout() {
     bool runtime_lock = !system.IsPoweredOn();
     bool need_global = !(Settings::IsConfiguringGlobal() || api_restore_global_button->isEnabled());
-    vulkan_device = Settings::values.vulkan_device.GetValue(need_global);
+    vulkan_device = Settings::IsConfiguringGlobal()
+                        ? static_cast<u32>(std::stoul(Current(Settings::values.vulkan_device)))
+                        : Settings::values.vulkan_device.GetValue(need_global);
     vulkan_device_widget->setEnabled(!need_global && runtime_lock);
 
     const auto current_backend = GetCurrentGraphicsBackend();
@@ -520,7 +561,8 @@ Settings::RendererBackend ConfigureGraphics::GetCurrentGraphicsBackend() const {
             return Settings::values.renderer_backend.GetValue(true);
         return index >= combobox_translations.size() || size_t(api_combobox->currentIndex()) >=
                                                             combobox_translations.at(index).size()
-                   ? Settings::values.renderer_backend.GetValue()
+                   ? static_cast<Settings::RendererBackend>(
+                         std::stoul(Current(Settings::values.renderer_backend)))
                    : Settings::RendererBackend(
                          combobox_translations.at(index).at(api_combobox->currentIndex()).first);
     }();

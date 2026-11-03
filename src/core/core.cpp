@@ -113,8 +113,6 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
     return vfs->OpenFile(path, FileSys::OpenMode::Read);
 }
 
-namespace {
-
 // Switch 2 titles boot as a loose ExeFS, with main.npdm next to main.
 bool IsSwitch2Program(const FileSys::VirtualFile& file) {
     FileSys::ProgramMetadata metadata;
@@ -141,8 +139,6 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file) {
     return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
            metadata.IsSwitch2();
 }
-
-} // namespace
 
 struct System::Impl {
     explicit Impl(System& system)
@@ -339,6 +335,11 @@ struct System::Impl {
             IsSwitch2Program(GetGameFileFromPath(virtual_filesystem, filepath));
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
         Settings::SetAstcRecompressionOverride(std::nullopt);
+        // The frontends switch before they set up the window, this covers the others.
+        if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
+            Settings::SetActiveProfile(switch2_program ? Settings::Profile::Switch2
+                                                       : Settings::Profile::Switch1);
+        }
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it
         // as a per-game value, so RestoreGlobalState brings back the configured layout afterwards.

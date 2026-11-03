@@ -1814,10 +1814,12 @@ private:
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
             return;
         }
-        static const u32 forced_interval = [] {
-            const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
-            return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
-        }();
+        // nx2_swap_interval sets it too (0: the game's).
+        static const char* const forced_interval_text = std::getenv("EDEN_NX2_SWAP_INTERVAL");
+        const u32 forced_interval =
+            forced_interval_text != nullptr
+                ? static_cast<u32>(std::strtoul(forced_interval_text, nullptr, 10))
+                : Settings::values.nx2_swap_interval.GetValue();
         const u32 swap_interval =
             forced_interval != 0 ? forced_interval : std::clamp<u32>(timing >> 16, 1, 4);
         const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;

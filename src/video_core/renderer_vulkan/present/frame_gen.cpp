@@ -244,7 +244,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
 
     if (use_fsr3 && fsr3_chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
-        fsr3_chain->Process(device, scheduler, *frame->image, *frame->storage_view, count);
+        fsr3_chain->Process(device, scheduler, *frame->image);
     } else if (chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
         scheduler.Record([this, source = *frame->image, extent, count,
@@ -286,7 +286,8 @@ void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t gen
         const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, built_extent);
 
         scheduler.RequestOutsideRenderPassOperationContext();
-        fsr3_chain->Generate(device, scheduler, *destination->storage_view, blend, flow_scale);
+        fsr3_chain->Generate(device, scheduler, destination->index, *destination->image,
+                             *destination->storage_view, blend, flow_scale);
     } else if (chain) {
         chain->SetTarget(device, last_generations, generation, destination->index,
                          *destination->storage_view);

@@ -15,37 +15,38 @@ namespace Vulkan {
 class Device;
 class Scheduler;
 
-/// AMD FidelityFX Super Resolution 3 (FSR 3) Frame Generation pipeline.
-/// Uses compute-based optical flow and bilateral frame interpolation
-/// to synthesize intermediate frames without requiring engine motion vectors.
+/// FSR 3 style frame generation: compute-based optical flow between the last two presented
+/// frames and a bilateral interpolation between them, without engine motion vectors.
 ///
-/// Optimizations:
-///  - Quarter-resolution optical flow (16├ù fewer compute invocations)
-///  - Shared-memory tile caching in both shaders
-///  - Early-out for static pixels (skip diamond search)
-///  - Duplicate-frame detection (skip optical flow entirely)
+///  - Half-resolution optical flow
+///  - The last two frames in two slots: each new frame replaces the older one
 ///  - Precise pipeline barriers instead of full-pipeline TransitionImageLayout
-///  - Descriptor-write caching (only update when image views change)
+///  - One interpolation descriptor set per slot and presentation frame
 class Fsr3FrameGen {
 public:
     explicit Fsr3FrameGen(const Device& device, MemoryAllocator& memory_allocator,
                           VkExtent2D extent, VkFormat format);
     ~Fsr3FrameGen();
 
-    void Process(const Device& device, Scheduler& scheduler, VkImage current_frame,
-                 VkImageView current_view, u64 frame_count);
+    /// Keeps the presented frame and measures the motion from the previous one.
+    void Process(const Device& device, Scheduler& scheduler, VkImage current_frame);
 
-    void Generate(const Device& device, Scheduler& scheduler, VkImageView destination_storage_view,
-                  float blend_factor, float flow_scale);
+    /// Writes the frame blend_factor (0 to 1) of the way from the previous frame to the current
+    /// one into the presentation frame with that index.
+    void Generate(const Device& device, Scheduler& scheduler, u32 target, VkImage destination,
+                  VkImageView destination_storage_view, float blend_factor, float flow_scale);
 
     [[nodiscard]] bool IsReady() const {
-        return m_initialized && m_has_history;
+        return m_initialized && m_flow_valid;
     }
 
 private:
+    static constexpr size_t MaxTargets = 8;
+
     void CreateResources(const Device& device);
     void CreateShaders(const Device& device);
     void CreatePipelines(const Device& device);
+    void WriteFrameDescriptors(const Device& device);
 
     MemoryAllocator& m_allocator;
     VkExtent2D m_extent;
@@ -65,30 +66,23 @@ private:
     vk::Pipeline m_interp_pipeline;
 
     vk::DescriptorPool m_desc_pool;
+    // Per slot: the flow from the other slot's frame to this one's
     vk::DescriptorSets m_flow_desc_sets;
+    // Per slot and target, slot * MaxTargets + target
     vk::DescriptorSets m_interp_desc_sets;
+    std::array<VkImageView, 2 * MaxTargets> m_interp_dest_views{};
 
-    // History and motion vector images
-    vk::Image m_history_image;
-    vk::ImageView m_history_view;
+    // The last two presented frames; m_newest is the current one, the other the previous one
+    std::array<vk::Image, 2> m_frames;
+    std::array<vk::ImageView, 2> m_frame_views;
+    size_t m_newest{};
 
     vk::Image m_motion_image;
     vk::ImageView m_motion_view;
 
-    // Store the last current-frame view for descriptor caching
-    vk::Image m_current_image;
-    vk::ImageView m_current_view;
-
     bool m_initialized{};
     bool m_has_history{};
-
-    // Duplicate-frame detection: skip optical flow when the frame hasn't changed
-    u64 m_last_frame_count{};
     bool m_flow_valid{};
-
-    // Descriptor caching: only update when views change
-    VkImageView m_cached_flow_current_view{VK_NULL_HANDLE};
-    VkImageView m_cached_interp_dest_view{VK_NULL_HANDLE};
 };
 
 } // namespace Vulkan

@@ -343,6 +343,16 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 #endif
     SdlConfig config{lp.config_path};
 
+    // Switch 2 titles use CPU and graphics settings of their own: switch to them before the
+    // command line and the window use the settings.
+    if (!lp.filepath.empty()) {
+        const auto vfs = std::make_shared<FileSys::RealVfsFilesystem>();
+        Settings::SetActiveProfile(
+            Core::IsSwitch2Program(Core::GetGameFileFromPath(vfs, lp.filepath))
+                ? Settings::Profile::Switch2
+                : Settings::Profile::Switch1);
+    }
+
     Core::ApplyLaunchParams(lp);
 
     if (lp.pack_nup_source) {

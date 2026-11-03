@@ -81,6 +81,11 @@ private:
 
     Settings::RendererBackend GetCurrentGraphicsBackend() const;
 
+    /// The global value in this tab's profile, or the current value in a custom configuration
+    std::string Current(const Settings::BasicSetting& setting) const;
+    /// Sets the global value in this tab's profile
+    void StoreGlobal(Settings::BasicSetting& setting, u32 value) const;
+
     int FindIndex(u32 enumeration, int value) const;
 
     std::unique_ptr<Ui::ConfigureGraphics> ui;
@@ -100,6 +105,7 @@ private:
 
     const Core::System& system;
     const ConfigurationShared::ComboboxTranslationMap& combobox_translations;
+    const Settings::Profile profile;
 
     QPushButton* api_restore_global_button;
     QComboBox* vulkan_device_combobox;

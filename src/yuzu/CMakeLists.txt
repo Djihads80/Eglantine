@@ -122,6 +122,8 @@ add_executable(yuzu
     configuration/configure_network.cpp
     configuration/configure_network.h
     configuration/configure_network.ui
+    configuration/configure_switch2.cpp
+    configuration/configure_switch2.h
     configuration/configure_system.cpp
     configuration/configure_system.h
     configuration/configure_system.ui

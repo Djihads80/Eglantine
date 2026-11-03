@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
@@ -792,12 +793,11 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     }
     // Fortune's Weave: a temporal upscale along its motion vectors that undoes this frame's camera
     // jitter (both from the frame's first DLSS pass) and accumulates the frames as DLSS would.
-    // EDEN_NX2_TEMPORAL_UPSCALE=0 blits instead.
+    // nx2_temporal_upscale off (or EDEN_NX2_TEMPORAL_UPSCALE=0) blits instead.
     const auto upscale_temporally = [&] {
-        static const bool enabled = [] {
-            const char* value = std::getenv("EDEN_NX2_TEMPORAL_UPSCALE");
-            return value == nullptr || std::string_view{value} != "0";
-        }();
+        static const char* const forced = std::getenv("EDEN_NX2_TEMPORAL_UPSCALE");
+        const bool enabled = forced != nullptr ? std::string_view{forced} != "0"
+                                               : Settings::values.nx2_temporal_upscale.GetValue();
         if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
             dlss_motion_color != input->Address())
             return false;

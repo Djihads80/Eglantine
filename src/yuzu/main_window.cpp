@@ -1918,6 +1918,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         boot_in_progress = false;
         LOG_INFO(Frontend, "Launch finished: elapsed_ms={} running={}", boot_timer.elapsed(),
                  emulation_running);
+        if (!emulation_running) {
+            // The boot failed or was cancelled: back to the Switch 1 settings
+            Settings::SetActiveProfile(Settings::Profile::Switch1);
+        }
         if (!emulation_running && !close_pending) {
             game_list->SetScanEnabled(true);
             game_list->PopulateAsync(UISettings::values.game_dirs);
@@ -1952,6 +1956,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, filename.toUtf8().constData());
     const auto loader =
         Loader::GetLoader(*QtCommon::system, v_file, params.program_id, params.program_index);
+
+    // Switch 2 titles use CPU and graphics settings of their own, the render target below included
+    Settings::SetActiveProfile(Core::IsSwitch2Program(v_file) ? Settings::Profile::Switch2
+                                                             : Settings::Profile::Switch1);
 
     if (loader != nullptr && loader->ReadProgramId(title_id) == Loader::ResultStatus::Success &&
         type == StartGameType::Normal) {
@@ -3864,6 +3872,13 @@ void MainWindow::OnConfigurePerGame() {
 
 void MainWindow::OpenPerGameConfiguration(u64 title_id, const std::string& file_name) {
     const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, file_name);
+
+    // A Switch 2 title's settings fall back to the Switch 2 profile. RestoreGlobalState below
+    // brings back the Switch 1 one; a running game keeps its own.
+    if (!QtCommon::system->IsPoweredOn()) {
+        Settings::SetActiveProfile(Core::IsSwitch2Program(v_file) ? Settings::Profile::Switch2
+                                                                 : Settings::Profile::Switch1);
+    }
 
     Settings::SetConfiguringGlobal(false);
     ConfigurePerGame dialog(this, title_id, file_name, vk_device_records, *QtCommon::system);

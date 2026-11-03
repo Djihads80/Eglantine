@@ -104,7 +104,7 @@ QWidget* Widget::CreateCheckBox(Settings::BasicSetting* bool_setting, const QStr
                                 std::function<void()>& restore_func,
                                 const std::function<void()>& touch) {
     checkbox = new QCheckBox(label, this);
-    checkbox->setCheckState(bool_setting->ToString() == "true" ? Qt::CheckState::Checked
+    checkbox->setCheckState(Value(*bool_setting) == "true" ? Qt::CheckState::Checked
                                                                : Qt::CheckState::Unchecked);
     checkbox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
@@ -160,7 +160,7 @@ QWidget* Widget::CreateCombobox(std::function<std::string()>& serializer,
         return -1;
     };
 
-    const u32 setting_value = std::strtoul(setting.ToString().c_str(), nullptr, 0);
+    const u32 setting_value = std::strtoul(Value(setting).c_str(), nullptr, 0);
     combobox->setCurrentIndex(find_index(setting_value));
 
     serializer = [this]() {
@@ -217,7 +217,7 @@ QWidget* Widget::CreateRadioGroup(std::function<std::string()>& serializer,
         }
     };
 
-    const u32 setting_value = std::strtoul(setting.ToString().c_str(), nullptr, 0);
+    const u32 setting_value = std::strtoul(Value(setting).c_str(), nullptr, 0);
     set_index(setting_value);
 
     serializer = [get_selected]() {
@@ -241,7 +241,7 @@ QWidget* Widget::CreateRadioGroup(std::function<std::string()>& serializer,
 QWidget* Widget::CreateLineEdit(std::function<std::string()>& serializer,
                                 std::function<void()>& restore_func,
                                 const std::function<void()>& touch, bool managed) {
-    const QString text = QString::fromStdString(setting.ToString());
+    const QString text = QString::fromStdString(Value(setting));
     line_edit = new QLineEdit(this);
     line_edit->setText(text);
 
@@ -262,7 +262,8 @@ QWidget* Widget::CreateLineEdit(std::function<std::string()>& serializer,
     return line_edit;
 }
 
-static void CreateIntSlider(Settings::BasicSetting& setting, bool reversed, float multiplier,
+static void CreateIntSlider(Settings::BasicSetting& setting, const std::string& value,
+                            bool reversed, float multiplier,
                             QLabel* feedback, const QString& use_format, QSlider* slider,
                             std::function<std::string()>& serializer,
                             std::function<void()>& restore_func) {
@@ -274,11 +275,11 @@ static void CreateIntSlider(Settings::BasicSetting& setting, bool reversed, floa
     };
 
     slider->connect(slider, &QAbstractSlider::valueChanged, update_feedback);
-    update_feedback(std::strtol(setting.ToString().c_str(), nullptr, 0));
+    update_feedback(std::strtol(value.c_str(), nullptr, 0));
 
     slider->setMinimum(std::strtol(setting.MinVal().c_str(), nullptr, 0));
     slider->setMaximum(max_val);
-    slider->setValue(std::strtol(setting.ToString().c_str(), nullptr, 0));
+    slider->setValue(std::strtol(value.c_str(), nullptr, 0));
 
     serializer = [slider]() { return std::to_string(slider->value()); };
     restore_func = [slider, &setting]() {
@@ -286,7 +287,8 @@ static void CreateIntSlider(Settings::BasicSetting& setting, bool reversed, floa
     };
 }
 
-static void CreateFloatSlider(Settings::BasicSetting& setting, bool reversed, float multiplier,
+static void CreateFloatSlider(Settings::BasicSetting& setting, const std::string& value,
+                              bool reversed, float multiplier,
                               QLabel* feedback, const QString& use_format, QSlider* slider,
                               std::function<std::string()>& serializer,
                               std::function<void()>& restore_func) {
@@ -301,11 +303,11 @@ static void CreateFloatSlider(Settings::BasicSetting& setting, bool reversed, fl
     };
 
     slider->connect(slider, &QAbstractSlider::valueChanged, update_feedback);
-    update_feedback(std::strtof(setting.ToString().c_str(), nullptr));
+    update_feedback(std::strtof(value.c_str(), nullptr));
 
     slider->setMinimum(min_val * use_multiplier);
     slider->setMaximum(max_val * use_multiplier);
-    slider->setValue(std::strtof(setting.ToString().c_str(), nullptr) * use_multiplier);
+    slider->setValue(std::strtof(value.c_str(), nullptr) * use_multiplier);
 
     serializer = [slider, use_multiplier]() {
         return std::to_string(slider->value() / use_multiplier);
@@ -343,11 +345,11 @@ QWidget* Widget::CreateSlider(bool reversed, float multiplier, const QString& gi
     const QString use_format = QStringLiteral("%1").append(suffix);
 
     if (setting.IsIntegral()) {
-        CreateIntSlider(setting, reversed, multiplier, feedback, use_format, slider, serializer,
-                        restore_func);
+        CreateIntSlider(setting, Value(setting), reversed, multiplier, feedback, use_format,
+                        slider, serializer, restore_func);
     } else {
-        CreateFloatSlider(setting, reversed, multiplier, feedback, use_format, slider, serializer,
-                          restore_func);
+        CreateFloatSlider(setting, Value(setting), reversed, multiplier, feedback, use_format,
+                          slider, serializer, restore_func);
     }
 
     slider->setInvertedAppearance(reversed);
@@ -365,7 +367,7 @@ QWidget* Widget::CreateSpinBox(const QString& given_suffix,
                                const std::function<void()>& touch) {
     const auto min_val = std::strtol(setting.MinVal().c_str(), nullptr, 0);
     const auto max_val = std::strtol(setting.MaxVal().c_str(), nullptr, 0);
-    const auto default_val = std::strtol(setting.ToString().c_str(), nullptr, 0);
+    const auto default_val = std::strtol(Value(setting).c_str(), nullptr, 0);
 
     QString suffix = given_suffix == default_suffix ? DefaultSuffix(this, setting) : given_suffix;
 
@@ -399,7 +401,7 @@ QWidget* Widget::CreateDoubleSpinBox(const QString& given_suffix,
                                      const std::function<void()>& touch) {
     const auto min_val = std::strtod(setting.MinVal().c_str(), nullptr);
     const auto max_val = std::strtod(setting.MaxVal().c_str(), nullptr);
-    const auto default_val = std::strtod(setting.ToString().c_str(), nullptr);
+    const auto default_val = std::strtod(Value(setting).c_str(), nullptr);
 
     QString suffix = given_suffix == default_suffix ? DefaultSuffix(this, setting) : given_suffix;
 
@@ -445,7 +447,7 @@ QWidget* Widget::CreateHexEdit(std::function<std::string()>& serializer,
     QRegularExpressionValidator* regex = new QRegularExpressionValidator(
         QRegularExpression{QStringLiteral("^[0-9a-fA-F]{0,8}$")}, line_edit);
 
-    const QString default_val = to_hex(setting.ToString());
+    const QString default_val = to_hex(Value(setting));
 
     line_edit->setText(default_val);
     line_edit->setMaxLength(8);
@@ -472,7 +474,7 @@ QWidget* Widget::CreateDateTimeEdit(bool disabled, bool restrict,
                                     const std::function<void()>& touch) {
     const long long current_time = QDateTime::currentSecsSinceEpoch();
     const s64 the_time =
-        disabled ? current_time : std::strtoll(setting.ToString().c_str(), nullptr, 0);
+        disabled ? current_time : std::strtoll(Value(setting).c_str(), nullptr, 0);
     const auto default_val = QDateTime::fromSecsSinceEpoch(the_time);
 
     date_time_edit = new QDateTimeEdit(this);
@@ -620,7 +622,7 @@ void Widget::SetupComponent(const QString& label, std::function<void()>& load_fu
             data_component = CreateLineEdit(serializer, restore_func, touch);
             break;
         case RequestType::DateTimeEdit:
-            data_component = CreateDateTimeEdit(other_setting->ToString() != "true", true,
+            data_component = CreateDateTimeEdit(Value(*other_setting) != "true", true,
                                                 serializer, restore_func, touch);
             break;
         case RequestType::SpinBox:
@@ -664,12 +666,14 @@ void Widget::SetupComponent(const QString& label, std::function<void()>& load_fu
     }
 
     if (Settings::IsConfiguringGlobal()) {
+        // A running game's own values only hide the global ones of the profile it uses
         load_func = [this, serializer, checkbox_serializer, require_checkbox, other_setting]() {
-            if (require_checkbox && other_setting->UsingGlobal()) {
-                other_setting->LoadString(checkbox_serializer());
+            if (require_checkbox &&
+                (other_setting->UsingGlobal() || EditsInactiveProfile(*other_setting))) {
+                Settings::SetGlobalString(profile, *other_setting, checkbox_serializer());
             }
-            if (setting.UsingGlobal()) {
-                setting.LoadString(serializer());
+            if (setting.UsingGlobal() || EditsInactiveProfile(setting)) {
+                Settings::SetGlobalString(profile, setting, serializer());
             }
         };
     } else {
@@ -722,12 +726,13 @@ Widget::~Widget() = default;
 
 Widget::Widget(Settings::BasicSetting* setting_, const TranslationMap& translations_,
                const ComboboxTranslationMap& combobox_translations_, QWidget* parent_,
-               bool runtime_lock_, std::vector<std::function<void(bool)>>& apply_funcs_,
-               RequestType request, bool managed, float multiplier,
-               Settings::BasicSetting* other_setting, const QString& suffix)
+               bool runtime_lock_, Settings::Profile profile_,
+               std::vector<std::function<void(bool)>>& apply_funcs_, RequestType request,
+               bool managed, float multiplier, Settings::BasicSetting* other_setting,
+               const QString& suffix)
     : QWidget(parent_), parent{parent_}, translations{translations_},
       combobox_enumerations{combobox_translations_}, setting{*setting_}, apply_funcs{apply_funcs_},
-      runtime_lock{runtime_lock_} {
+      runtime_lock{runtime_lock_}, profile{profile_} {
     if (!Settings::IsConfiguringGlobal() && !setting.Switchable()) {
         LOG_DEBUG(Frontend, "\"{}\" is not switchable, skipping...", setting.GetLabel());
         return;
@@ -759,14 +764,17 @@ Widget::Widget(Settings::BasicSetting* setting_, const TranslationMap& translati
         return;
     }
 
-    apply_funcs.push_back([load_func, setting_](bool powered_on) {
-        if (setting_->RuntimeModifiable() || !powered_on) {
+    // The running game does not use the other profile: it can be changed at any time
+    const bool inactive_profile = EditsInactiveProfile(setting);
+    apply_funcs.push_back([load_func, setting_, inactive_profile](bool powered_on) {
+        if (setting_->RuntimeModifiable() || !powered_on || inactive_profile) {
             load_func();
         }
     });
 
-    bool enable = runtime_lock || setting.RuntimeModifiable();
-    if (setting.Switchable() && Settings::IsConfiguringGlobal() && !runtime_lock) {
+    bool enable = runtime_lock || setting.RuntimeModifiable() || inactive_profile;
+    if (setting.Switchable() && Settings::IsConfiguringGlobal() && !runtime_lock &&
+        !inactive_profile) {
         enable &= setting.UsingGlobal();
     }
 
@@ -775,10 +783,20 @@ Widget::Widget(Settings::BasicSetting* setting_, const TranslationMap& translati
     this->setToolTip(tooltip);
 }
 
-Builder::Builder(QWidget* parent_, bool runtime_lock_)
+std::string Widget::Value(const Settings::BasicSetting& shown) const {
+    return Settings::IsConfiguringGlobal() ? Settings::GlobalString(profile, shown)
+                                           : shown.ToString();
+}
+
+bool Widget::EditsInactiveProfile(const Settings::BasicSetting& edited) const {
+    return Settings::IsConfiguringGlobal() && profile != Settings::ActiveProfile() &&
+           Settings::IsProfiled(edited);
+}
+
+Builder::Builder(QWidget* parent_, bool runtime_lock_, Settings::Profile profile_)
     : translations{InitializeTranslations(parent_)},
       combobox_translations{ComboboxEnumeration(parent_)}, parent{parent_},
-      runtime_lock{runtime_lock_} {}
+      runtime_lock{runtime_lock_}, profile{profile_} {}
 
 Builder::~Builder() = default;
 
@@ -805,7 +823,7 @@ Widget* Builder::BuildWidget(Settings::BasicSetting* setting,
     }
 
     return new Widget(setting, *translations, *combobox_translations, parent, runtime_lock,
-                      apply_funcs, request, managed, multiplier, other_setting, suffix);
+                      profile, apply_funcs, request, managed, multiplier, other_setting, suffix);
 }
 
 Widget* Builder::BuildWidget(Settings::BasicSetting* setting,

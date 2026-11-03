@@ -1749,6 +1749,12 @@ void Device::CollectPhysicalMemoryInfo() {
             LOG_WARNING(Render_Vulkan, "EDEN_NX2_VRAM_LIMIT_MIB={} is not a size in MiB, ignored",
                         value);
         }
+    } else if (Settings::CurrentProgramIsSwitch2() &&
+               Settings::values.nx2_vram_limit_mib.GetValue() != 0) {
+        // The same from the Switch 2 debug settings
+        heap_size_limit = u64{Settings::values.nx2_vram_limit_mib.GetValue()} << 20;
+        LOG_INFO(Render_Vulkan, "Switch 2 settings: device-local heaps limited to {} MiB",
+                 heap_size_limit >> 20);
     }
     const auto limit = [this](u64 size) {
         return heap_size_limit != 0 ? (std::min)(size, heap_size_limit) : size;

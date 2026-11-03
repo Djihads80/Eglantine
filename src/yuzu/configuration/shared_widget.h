@@ -15,6 +15,7 @@
 #include <QStringLiteral>
 #include <QWidget>
 #include <qobjectdefs.h>
+#include "common/settings.h"
 #include "qt_common/config/shared_translation.h"
 
 class QCheckBox;
@@ -73,7 +74,8 @@ public:
      */
     explicit Widget(Settings::BasicSetting* setting, const TranslationMap& translations,
                     const ComboboxTranslationMap& combobox_translations, QWidget* parent,
-                    bool runtime_lock, std::vector<std::function<void(bool)>>& apply_funcs_,
+                    bool runtime_lock, Settings::Profile profile,
+                    std::vector<std::function<void(bool)>>& apply_funcs_,
                     RequestType request = RequestType::Default, bool managed = true,
                     float multiplier = default_multiplier,
                     Settings::BasicSetting* other_setting = nullptr,
@@ -141,6 +143,11 @@ private:
                                  std::function<void()>& restore_func,
                                  const std::function<void()>& touch);
 
+    /// The value to show: in the global configuration, the global one of the profile
+    std::string Value(const Settings::BasicSetting& shown) const;
+    /// Whether the global configuration edits a profile that is not in use
+    bool EditsInactiveProfile(const Settings::BasicSetting& edited) const;
+
     QWidget* parent;
     const TranslationMap& translations;
     const ComboboxTranslationMap& combobox_enumerations;
@@ -149,11 +156,14 @@ private:
 
     bool created{false};
     bool runtime_lock{false};
+    Settings::Profile profile{};
 };
 
 class Builder {
 public:
-    explicit Builder(QWidget* parent, bool runtime_lock);
+    /// @param profile Whose global values the widgets show and set in the global configuration
+    explicit Builder(QWidget* parent, bool runtime_lock,
+                     Settings::Profile profile = Settings::Profile::Switch1);
     ~Builder();
 
     Widget* BuildWidget(Settings::BasicSetting* setting,
@@ -171,12 +181,17 @@ public:
 
     const ComboboxTranslationMap& ComboboxTranslations() const;
 
+    Settings::Profile Profile() const {
+        return profile;
+    }
+
 private:
     std::unique_ptr<TranslationMap> translations;
     std::unique_ptr<ComboboxTranslationMap> combobox_translations;
 
     QWidget* parent;
     const bool runtime_lock;
+    const Settings::Profile profile;
 };
 
 } // namespace ConfigurationShared

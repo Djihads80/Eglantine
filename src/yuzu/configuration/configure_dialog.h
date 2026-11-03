@@ -30,6 +30,7 @@ class ConfigureGraphicsExtensions;
 class ConfigureHotkeys;
 class ConfigureInput;
 class ConfigureProfileManager;
+class ConfigureSwitch2;
 class ConfigureSystem;
 class ConfigureNetwork;
 class ConfigureUi;
@@ -79,6 +80,8 @@ private:
 
     Core::System& system;
     std::unique_ptr<ConfigurationShared::Builder> builder;
+    // Edits the Switch 2 profile (Switch 2 Settings page)
+    std::unique_ptr<ConfigurationShared::Builder> switch2_builder;
     std::vector<ConfigurationShared::Tab*> tab_group;
 
     std::unique_ptr<ConfigureApplets> applets_tab;
@@ -97,4 +100,12 @@ private:
     std::unique_ptr<ConfigureProfileManager> profile_tab;
     std::unique_ptr<ConfigureSystem> system_tab;
     std::unique_ptr<ConfigureWeb> web_tab;
+
+    // Switch 2 Settings
+    std::unique_ptr<ConfigureCpu> switch2_cpu_tab;
+    std::unique_ptr<ConfigureGraphicsAdvanced> switch2_graphics_advanced_tab;
+    std::unique_ptr<ConfigureGraphicsExtensions> switch2_graphics_extensions_tab;
+    std::unique_ptr<ConfigureGraphics> switch2_graphics_tab;
+    std::unique_ptr<ConfigureSwitch2> switch2_tab;
+    std::unique_ptr<ConfigureSwitch2> switch2_debug_tab;
 };

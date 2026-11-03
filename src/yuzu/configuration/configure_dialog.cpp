@@ -27,6 +27,7 @@
 #include "yuzu/configuration/configure_input_player.h"
 #include "yuzu/configuration/configure_network.h"
 #include "yuzu/configuration/configure_profile_manager.h"
+#include "yuzu/configuration/configure_switch2.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/configure_ui.h"
 #include "yuzu/configuration/configure_web.h"
@@ -39,6 +40,8 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     : QDialog(parent), ui{std::make_unique<Ui::ConfigureDialog>()}, registry(registry_),
       system{system_},
       builder{std::make_unique<ConfigurationShared::Builder>(this, !system_.IsPoweredOn())},
+      switch2_builder{std::make_unique<ConfigurationShared::Builder>(
+          this, !system_.IsPoweredOn(), Settings::Profile::Switch2)},
       applets_tab{std::make_unique<ConfigureApplets>(system_, nullptr, *builder, this)},
       audio_tab{std::make_unique<ConfigureAudio>(system_, nullptr, *builder, this)},
       cpu_tab{std::make_unique<ConfigureCpu>(system_, nullptr, *builder, this)},
@@ -61,7 +64,27 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
       network_tab{std::make_unique<ConfigureNetwork>(system_, this)},
       profile_tab{std::make_unique<ConfigureProfileManager>(system_, this)},
       system_tab{std::make_unique<ConfigureSystem>(system_, nullptr, *builder, this)},
-      web_tab{std::make_unique<ConfigureWeb>(this)} {
+      web_tab{std::make_unique<ConfigureWeb>(this)},
+      switch2_cpu_tab{std::make_unique<ConfigureCpu>(system_, nullptr, *switch2_builder, this)},
+      switch2_graphics_advanced_tab{
+          std::make_unique<ConfigureGraphicsAdvanced>(system_, nullptr, *switch2_builder, this)},
+      switch2_graphics_extensions_tab{
+          std::make_unique<ConfigureGraphicsExtensions>(system_, nullptr, *switch2_builder, this)},
+      switch2_graphics_tab{std::make_unique<ConfigureGraphics>(
+          system_, vk_device_records,
+          [&]() { switch2_graphics_advanced_tab->ExposeComputeOption(); },
+          [](Settings::AspectRatio, Settings::ResolutionSetup) {}, nullptr, *switch2_builder,
+          this)},
+      switch2_tab{std::make_unique<ConfigureSwitch2>(
+          system_, Settings::Category::Switch2, tr("Switch 2"), tr("Switch 2"),
+          tr("Only Switch 2 games use these. The CPU and graphics settings on this page are used "
+             "by Switch 2 games in place of the ones on the CPU and Graphics pages."),
+          nullptr, *switch2_builder, this)},
+      switch2_debug_tab{std::make_unique<ConfigureSwitch2>(
+          system_, Settings::Category::Switch2Debug, tr("Debug"), tr("Switch 2 Debugging"),
+          tr("For comparing and testing. Each of these is also set by its EDEN_NX2_* "
+             "environment variable, which wins when set."),
+          nullptr, *switch2_builder, this)} {
     Settings::SetConfiguringGlobal(true);
 
     ui->setupUi(this);
@@ -82,6 +105,12 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     ui->tabWidget->addTab(system_tab.get(), tr("System"));
     ui->tabWidget->addTab(ui_tab.get(), tr("Game List"));
     ui->tabWidget->addTab(web_tab.get(), tr("Web"));
+    ui->tabWidget->addTab(switch2_cpu_tab.get(), tr("CPU"));
+    ui->tabWidget->addTab(switch2_graphics_tab.get(), tr("Graphics"));
+    ui->tabWidget->addTab(switch2_graphics_advanced_tab.get(), tr("GraphicsAdvanced"));
+    ui->tabWidget->addTab(switch2_graphics_extensions_tab.get(), tr("GraphicsExtra"));
+    ui->tabWidget->addTab(switch2_tab.get(), tr("Switch 2"));
+    ui->tabWidget->addTab(switch2_debug_tab.get(), tr("Debug"));
 
     web_tab->SetWebServiceConfigEnabled(enable_web_config);
     hotkeys_tab->Populate(registry);
@@ -138,6 +167,12 @@ void ConfigureDialog::ApplyConfiguration() {
     web_tab->ApplyConfiguration();
     network_tab->ApplyConfiguration();
     applets_tab->ApplyConfiguration();
+    switch2_cpu_tab->ApplyConfiguration();
+    switch2_graphics_tab->ApplyConfiguration();
+    switch2_graphics_advanced_tab->ApplyConfiguration();
+    switch2_graphics_extensions_tab->ApplyConfiguration();
+    switch2_tab->ApplyConfiguration();
+    switch2_debug_tab->ApplyConfiguration();
     system.ApplySettings();
     Settings::LogSettings();
 }
@@ -171,7 +206,7 @@ void ConfigureDialog::HandleApplyButtonClicked() {
 Q_DECLARE_METATYPE(QList<QWidget*>);
 
 void ConfigureDialog::PopulateSelectionList() {
-    const std::array<std::pair<QString, QList<QWidget*>>, 6> items{
+    const std::array<std::pair<QString, QList<QWidget*>>, 7> items{
         {{tr("General"),
           {general_tab.get(), hotkeys_tab.get(), ui_tab.get(), web_tab.get(), debug_tab_tab.get()}},
          {tr("System"),
@@ -181,7 +216,10 @@ void ConfigureDialog::PopulateSelectionList() {
          {tr("Graphics"),
           {graphics_tab.get(), graphics_advanced_tab.get(), graphics_extensions_tab.get()}},
          {tr("Audio"), {audio_tab.get()}},
-         {tr("Controls"), input_tab->GetSubTabs()}},
+         {tr("Controls"), input_tab->GetSubTabs()},
+         {tr("Switch 2 Settings"),
+          {switch2_cpu_tab.get(), switch2_graphics_tab.get(), switch2_graphics_advanced_tab.get(),
+           switch2_graphics_extensions_tab.get(), switch2_tab.get(), switch2_debug_tab.get()}}},
     };
 
     [[maybe_unused]] const QSignalBlocker blocker(ui->selectorList);

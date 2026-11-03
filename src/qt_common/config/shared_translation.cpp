@@ -215,6 +215,27 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, frame_gen_queue_target, tr("Queue Target"), QString());
     INSERT(Settings, frame_gen_dump_flow, tr("Dump Optical Flow"), QString());
 
+    // Switch 2
+    INSERT(Settings, nx2_gpu_split, tr("GPU thread split:"),
+           tr("Runs the GPU engines on a second thread, and the macros on the first one, so "
+              "command processing keeps up with the game.\nOnly with Normal GPU accuracy, no "
+              "safe DMA and the Vulkan renderer."));
+    INSERT(Settings, nx2_swap_interval, tr("Force swap interval:"),
+           tr("Number of display refreshes each frame is shown for: 1 is 60 FPS, 2 is 30 FPS. "
+              "0 uses what the game asks for."));
+    INSERT(Settings, nx2_temporal_upscale, tr("Temporal upscale in place of DLSS"),
+           tr("Replaces the game's DLSS pass with a temporal upscale along its motion vectors "
+              "(Fire Emblem: Fortune's Weave). Off: a plain upscaling blit."));
+    INSERT(Settings, nx2_idle_spin_us, tr("Idle CPU core spin (microseconds):"),
+           tr("How long an idle emulated core polls for new work before it sleeps. Can cut "
+              "latency between the game's job threads, at the cost of host CPU time. 0 is off."));
+    INSERT(Settings, nx2_mesh_shaders, tr("Mesh shaders"),
+           tr("Draw the game's task and mesh shader draws (needs VK_EXT_mesh_shader). Off "
+              "skips them, to compare."));
+    INSERT(Settings, nx2_vram_limit_mib, tr("Limit video memory (MiB):"),
+           tr("Treats the GPU as if it had this much video memory, to test smaller cards. 0 is "
+              "off. Applies when a game starts."));
+
     // Renderer (Advanced Graphics)
     INSERT(Settings, use_asynchronous_gpu_emulation, QString(), QString());
 
@@ -490,6 +511,13 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(FrameGenType, Lsfg, tr("Lossless Scaling (LSFG)")),
                               PAIR(FrameGenType, Fsr3, tr("Optical Flow Interpolation (built-in)")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::Nx2GpuSplit>::Index(),
+                          {
+                              PAIR(Nx2GpuSplit, Off, tr("Off")),
+                              PAIR(Nx2GpuSplit, Engines, tr("Engines")),
+                              PAIR(Nx2GpuSplit, EnginesAndMacros,
+                                   tr("Engines and macros (Recommended)")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::ScalingFilter>::Index(),
                           {

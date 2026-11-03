@@ -292,8 +292,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (no_mesh_file && (no_mesh_check++ % 1024) == 0) {
         no_mesh = std::filesystem::exists(no_mesh_file);
     }
-    if (mesh_draw && (no_mesh || !device.IsExtMeshShaderSupported())) {
-        report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
+    if (mesh_draw && (no_mesh || !Settings::values.nx2_mesh_shaders.GetValue() ||
+                      !device.IsExtMeshShaderSupported())) {
+        report_failure(no_mesh                                         ? "EDEN_NX2_NO_MESH"
+                       : !Settings::values.nx2_mesh_shaders.GetValue() ? "mesh shaders off"
+                                                                       : "no VK_EXT_mesh_shader");
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};

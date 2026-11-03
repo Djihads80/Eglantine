@@ -947,6 +947,21 @@ struct Values {
     Setting<std::string> eden_token{linkage, "",
                                     "eden_token", Category::WebService};
 
+    // Switch 2 titles only. The EDEN_NX2_* environment variable of each one still wins when set.
+    SwitchableSetting<Nx2GpuSplit, true> nx2_gpu_split{linkage, Nx2GpuSplit::EnginesAndMacros,
+                                                       "nx2_gpu_split", Category::Switch2};
+    SwitchableSetting<u32, true> nx2_swap_interval{linkage, 0, 0, 4, "nx2_swap_interval",
+                                                   Category::Switch2, Specialization::Countable};
+    SwitchableSetting<bool> nx2_temporal_upscale{linkage, true, "nx2_temporal_upscale",
+                                                 Category::Switch2};
+    SwitchableSetting<u32, true> nx2_idle_spin_us{linkage, 0, 0, 1000, "nx2_idle_spin_us",
+                                                  Category::Switch2, Specialization::Countable};
+    SwitchableSetting<bool> nx2_mesh_shaders{linkage, true, "nx2_mesh_shaders",
+                                             Category::Switch2Debug};
+    SwitchableSetting<u32, true> nx2_vram_limit_mib{linkage, 0, 0, 65536, "nx2_vram_limit_mib",
+                                                    Category::Switch2Debug,
+                                                    Specialization::Countable};
+
     // Add-Ons
     std::map<u64, std::vector<std::string>> disabled_addons;
 
@@ -1014,7 +1029,26 @@ void LogSettings();
 void TranslateResolutionInfo(ResolutionSetup setup, ResolutionScalingInfo& info);
 void UpdateRescalingInfo();
 
-// Restore the global state of all applicable settings in the Values struct
+// Switch 2 titles have global CPU and graphics settings of their own. The settings' global values
+// hold the active profile, the other profile is kept aside. Per-game values are not part of a
+// profile, so a game's own settings apply on top of whichever profile its console uses.
+enum class Profile : u32 {
+    Switch1,
+    Switch2,
+};
+
+// Whether a setting has a value in each profile (a saved CPU or graphics setting).
+bool IsProfiled(const BasicSetting& setting);
+Profile ActiveProfile();
+// Moves the profile's values into the settings, keeping the others aside. Only while no game runs.
+void SetActiveProfile(Profile profile);
+// The global value of a setting in a profile, whether or not the profile is active.
+std::string GlobalString(Profile profile, const BasicSetting& setting);
+// Sets the global value of a setting in a profile; an empty string is the default.
+void SetGlobalString(Profile profile, BasicSetting& setting, const std::string& value);
+
+// Restore the global state of all applicable settings in the Values struct, and the Switch 1
+// profile
 void RestoreGlobalState(bool is_powered_on);
 
 bool IsConfiguringGlobal();

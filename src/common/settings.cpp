@@ -17,6 +17,8 @@
 #include <string_view>
 #include <type_traits>
 #include <deque>
+#include <map>
+#include <ranges>
 #include <fmt/core.h>
 
 #include "common/settings_enums.h"
@@ -61,6 +63,7 @@ SWITCHABLE(Region, true);
 SWITCHABLE(RendererBackend, true);
 SWITCHABLE(ScalingFilter, false);
 SWITCHABLE(FrameGenType, false);
+SWITCHABLE(Nx2GpuSplit, true);
 SWITCHABLE(SpirvOptimizeMode, true);
 SWITCHABLE(TimeZone, true);
 SETTING(VSyncMode, true);
@@ -317,6 +320,9 @@ const char* TranslateCategory(Category category) {
         return "Services";
     case Category::Paths:
         return "Paths";
+    case Category::Switch2:
+    case Category::Switch2Debug:
+        return "Switch2";
     case Category::MaxEnum:
         break;
     }
@@ -417,6 +423,80 @@ size_t FrameGenMaxGenerations() {
     return FrameGenMultiplier() - 1;
 }
 
+namespace {
+
+Profile active_profile = Profile::Switch1;
+// The global values of the profile that is not active, by setting id.
+std::map<u32, std::string> inactive_values;
+
+void LoadGlobalString(BasicSetting& setting, const std::string& value) {
+    const bool using_global = setting.UsingGlobal();
+    setting.SetGlobal(true);
+    setting.LoadString(value);
+    setting.SetGlobal(using_global);
+}
+
+} // Anonymous namespace
+
+bool IsProfiled(const BasicSetting& setting) {
+    if (!setting.Save()) {
+        return false;
+    }
+    switch (setting.GetCategory()) {
+    case Category::Cpu:
+    case Category::CpuUnsafe:
+    case Category::Renderer:
+    case Category::RendererAdvanced:
+    case Category::RendererHacks:
+    case Category::RendererExtensions:
+        return true;
+    default:
+        return false;
+    }
+}
+
+Profile ActiveProfile() {
+    return active_profile;
+}
+
+void SetActiveProfile(Profile profile) {
+    if (profile == active_profile) {
+        return;
+    }
+    for (BasicSetting* const setting : values.linkage.by_category | std::views::values |
+                                           std::views::join) {
+        if (!IsProfiled(*setting)) {
+            continue;
+        }
+        std::string other = setting->ToStringGlobal();
+        if (const auto it = inactive_values.find(setting->Id()); it != inactive_values.end()) {
+            LoadGlobalString(*setting, it->second);
+        }
+        inactive_values.insert_or_assign(setting->Id(), std::move(other));
+    }
+    active_profile = profile;
+    LOG_INFO(Config, "Using the {} settings",
+             profile == Profile::Switch2 ? "Switch 2" : "Switch 1");
+}
+
+std::string GlobalString(Profile profile, const BasicSetting& setting) {
+    if (profile != active_profile && IsProfiled(setting)) {
+        if (const auto it = inactive_values.find(setting.Id()); it != inactive_values.end()) {
+            return it->second;
+        }
+    }
+    return setting.ToStringGlobal();
+}
+
+void SetGlobalString(Profile profile, BasicSetting& setting, const std::string& value) {
+    if (profile == active_profile || !IsProfiled(setting)) {
+        LoadGlobalString(setting, value);
+        return;
+    }
+    inactive_values.insert_or_assign(setting.Id(),
+                                     value.empty() ? setting.DefaultToString() : value);
+}
+
 void RestoreGlobalState(bool is_powered_on) {
     // If a game is running, DO NOT restore the global settings state
     if (is_powered_on) {
@@ -426,6 +506,7 @@ void RestoreGlobalState(bool is_powered_on) {
     for (const auto& reset : values.linkage.restore_functions) {
         reset();
     }
+    SetActiveProfile(Profile::Switch1);
 
     // Reset per-game flags
     values.use_squashed_iterated_blend = false;
