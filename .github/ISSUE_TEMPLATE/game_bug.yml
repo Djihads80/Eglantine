@@ -1,7 +1,7 @@
 name: Gameplay Bug
 description: The game doesnt works properly
 title: "[GBug] "
-labels: ["bug"]
+labels: ["game-bug"]
 body:
   - type: checkboxes
     id: checks

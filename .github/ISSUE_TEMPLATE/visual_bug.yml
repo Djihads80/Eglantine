@@ -1,5 +1,5 @@
 name: Visual Bug
-description: The game doesnt renders properly
+description: The game doesn't render properly
 title: "[VBug] "
 labels: ["visual-bug"]
 body:
