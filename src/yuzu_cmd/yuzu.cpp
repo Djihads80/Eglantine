@@ -349,6 +349,12 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         return PackNup(*lp.pack_nup_source, lp.filepath) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
     }
 
+    // Informational options already printed by ApplyLaunchParams; do not treat a
+    // missing ROM as a failure when the user only asked for help or version.
+    if (lp.print_help || lp.print_version) {
+        return SDL_APP_SUCCESS;
+    }
+
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
         return SDL_APP_FAILURE;
