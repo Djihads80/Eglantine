@@ -2159,7 +2159,12 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
         }
         const std::span<BufferCopy> copies_span(upload_copies.data(), upload_copies.size());
         UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
-        any_buffer_uploaded = true;
+        // Mapped uploads carry their own barriers (or run in the upload command buffer, which
+        // ends with one); another barrier here only ended the render pass (~50 times a frame in
+        // Pokopia).
+        if constexpr (!USE_MEMORY_MAPS_FOR_UPLOADS) {
+            any_buffer_uploaded = true;
+        }
         return false;
     } else {
         boost::container::small_vector<BufferCopy, 4> copies;
