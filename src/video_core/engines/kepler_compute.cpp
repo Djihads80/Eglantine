@@ -31,7 +31,7 @@
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
-#ifdef ARCHITECTURE_arm64
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
 #include "video_core/macro_turing_jit_arm64.h"
 #endif
 #include "video_core/rasterizer_interface.h"
@@ -183,7 +183,7 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             CallMethod(system, address, value, true);
             return true;
         };
-#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
         // Compiled macro code, as for 3D macros (macro_turing_jit.h, macro_turing_jit_arm64.h);
         // EDEN_NX2_MME_JIT=0 off.
         static const bool use_jit = [] {
@@ -1258,7 +1258,7 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
 
 void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                                   FrontState& fs) {
-#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
     const auto positions = FrontMacroPositions(fs);
     const u32 start = positions[((*fs.executing_macro - 0xe00) / 2) % positions.size()];
     fs.executing_macro.reset();

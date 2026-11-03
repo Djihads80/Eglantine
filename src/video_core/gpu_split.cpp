@@ -201,7 +201,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     ring = std::make_unique<u64[]>(RingWords);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
-#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
     // Front macros run compiled (macro_turing_jit.h, macro_turing_jit_arm64.h), or interpreted
     // where the ARM64 code is not used.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");

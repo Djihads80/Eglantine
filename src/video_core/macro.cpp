@@ -19,7 +19,7 @@
 #include "common/x64/xbyak.h"
 #include "video_core/macro_turing_jit.h"
 #endif
-#ifdef ARCHITECTURE_arm64
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
 #include "video_core/macro_turing_jit_arm64.h"
 #endif
 
@@ -1469,7 +1469,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 }
                 return true;
             };
-#if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
         // Macro code runs compiled to x86-64 or ARM64 (macro_turing_jit.h,
         // macro_turing_jit_arm64.h) instead of through the memo and the interpreter;
         // EDEN_NX2_MME_JIT=0 goes back to those, as does ARM64 code that did not match the
