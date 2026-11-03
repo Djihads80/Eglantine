@@ -646,11 +646,25 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     size_t result = 0;
     if (IsWithinGPUAddressRange(gpu_addr) && size <= address_space_size - gpu_addr) {
         const auto& runs = CurrentSnapshot().runs;
-        const auto it = std::upper_bound(
-            runs.begin(), runs.end(), gpu_addr,
-            [](GPUVAddr address, const MappingSnapshot::Run& run) { return address < run.begin; });
-        if (it != runs.begin() && gpu_addr < std::prev(it)->end) {
-            result = (std::min<size_t>)(size, std::prev(it)->end - gpu_addr);
+        struct RunHint {
+            const std::vector<MappingSnapshot::Run>* runs{};
+            size_t index{};
+        };
+        thread_local RunHint hint{};
+        if (hint.runs == &runs && hint.index < runs.size() &&
+            runs[hint.index].begin <= gpu_addr && gpu_addr < runs[hint.index].end) [[likely]] {
+            result = (std::min<size_t>)(size, runs[hint.index].end - gpu_addr);
+        } else {
+            const auto it = std::upper_bound(
+                runs.begin(), runs.end(), gpu_addr,
+                [](GPUVAddr address, const MappingSnapshot::Run& run) {
+                    return address < run.begin;
+                });
+            if (it != runs.begin() && gpu_addr < std::prev(it)->end) {
+                const auto run_it = std::prev(it);
+                hint = {&runs, static_cast<size_t>(std::distance(runs.begin(), run_it))};
+                result = (std::min<size_t>)(size, run_it->end - gpu_addr);
+            }
         }
     }
     if (VideoCommon::Nx2Perf::Verify()) {
@@ -806,12 +820,31 @@ size_t MemoryManager::GetMemoryLayoutSize(GPUVAddr gpu_addr,
     size_t result = 0;
     const s64 address = static_cast<s64>(gpu_addr);
     const auto& kinds = CurrentSnapshot().kinds;
-    auto it = std::upper_bound(kinds.begin(), kinds.end(), address,
-                               [](s64 key, const auto& range) { return key < range.first; });
-    if (address >= 0 && it != kinds.begin() && std::prev(it)->second != PTEKind::INVALID) {
-        result = it == kinds.end()
-                     ? static_cast<size_t>((std::numeric_limits<s64>::max)() - address)
-                     : static_cast<size_t>(it->first - address);
+    struct KindHint {
+        const std::vector<std::pair<s64, PTEKind>>* kinds{};
+        size_t index{};
+    };
+    thread_local KindHint hint{};
+    if (address >= 0 && hint.kinds == &kinds && hint.index < kinds.size() &&
+        kinds[hint.index].first <= address &&
+        (hint.index + 1 == kinds.size() || address < kinds[hint.index + 1].first)) [[likely]] {
+        if (kinds[hint.index].second != PTEKind::INVALID) {
+            result = hint.index + 1 == kinds.size()
+                         ? static_cast<size_t>((std::numeric_limits<s64>::max)() - address)
+                         : static_cast<size_t>(kinds[hint.index + 1].first - address);
+        }
+    } else {
+        auto it = std::upper_bound(kinds.begin(), kinds.end(), address,
+                                   [](s64 key, const auto& range) { return key < range.first; });
+        if (address >= 0 && it != kinds.begin()) {
+            const auto kind_it = std::prev(it);
+            hint = {&kinds, static_cast<size_t>(std::distance(kinds.begin(), kind_it))};
+            if (kind_it->second != PTEKind::INVALID) {
+                result = it == kinds.end()
+                             ? static_cast<size_t>((std::numeric_limits<s64>::max)() - address)
+                             : static_cast<size_t>(it->first - address);
+            }
+        }
     }
     if (VideoCommon::Nx2Perf::Verify()) {
         const size_t expected = GetMemoryLayoutSizeUncached(gpu_addr);

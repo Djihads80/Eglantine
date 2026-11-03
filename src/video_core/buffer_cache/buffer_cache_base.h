@@ -101,6 +101,7 @@ struct Binding {
     BufferId buffer_id;
     u32 segment_first{};
     u32 segment_count{};
+    bool single_range{};
 };
 
 struct MultiRangeSegment {
@@ -491,7 +492,7 @@ public:
     NativeUniformBankShadow* native_indirect_uniform_last_ptr = nullptr;
     u64 native_indirect_uniform_draw_ticket = 0;
 
-    static constexpr size_t ResolvedStorageAddrCacheSize = 512;
+    static constexpr size_t ResolvedStorageAddrCacheSize = 4096;
     struct ResolvedStorageAddrCacheEntry {
         GPUVAddr gpu_addr{};
         GPUVAddr aligned_gpu_addr{};
@@ -500,6 +501,7 @@ public:
         size_t memory_id{};
         u32 binding_size{};
         u8 flags{};
+        bool single_range{};
         bool valid{};
     };
     mutable std::array<ResolvedStorageAddrCacheEntry, ResolvedStorageAddrCacheSize>

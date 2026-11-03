@@ -654,11 +654,17 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         }
         ssbo_addr = holder + indirect_offset;
     }
-    channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
-                             maxwell3d->GetNativeMacroEngine().native_turing,
-                             indirect_offset != ~0U);
-    return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
+    Binding& slot = channel_state->storage_buffers[stage][ssbo_index];
+    Binding next = StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
+                                        maxwell3d->GetNativeMacroEngine().native_turing,
+                                        indirect_offset != ~0U);
+    if (slot.buffer_id && slot.buffer_id != NULL_BUFFER_ID &&
+        slot.device_addr == next.device_addr && slot.gpu_addr == next.gpu_addr &&
+        slot.size == next.size) {
+        next.buffer_id = slot.buffer_id;
+    }
+    slot = next;
+    return (slot.buffer_id != NULL_BUFFER_ID);
 }
 
 template <class P>
@@ -720,9 +726,15 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
         }
         ssbo_addr = holder + indirect_offset;
     }
-    channel_state->compute_storage_buffers[ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written, kepler_compute->IsNativeMode(),
-                             indirect_offset != ~0U);
+    Binding& slot = channel_state->compute_storage_buffers[ssbo_index];
+    Binding next = StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
+                                        kepler_compute->IsNativeMode(), indirect_offset != ~0U);
+    if (slot.buffer_id && slot.buffer_id != NULL_BUFFER_ID &&
+        slot.device_addr == next.device_addr && slot.gpu_addr == next.gpu_addr &&
+        slot.size == next.size) {
+        next.buffer_id = slot.buffer_id;
+    }
+    slot = next;
 }
 
 template <class P>
@@ -1388,7 +1400,7 @@ void BufferCache<P>::ResolveMultiRangeStorage(Binding& binding, bool is_written,
     binding.segment_first = 0;
     binding.segment_count = 0;
     if constexpr (requires { runtime.BindMultiRangeStorageBuffer(u64{}, bool{}); }) {
-        if (binding.gpu_addr == 0 || binding.size == 0) {
+        if (binding.single_range || binding.gpu_addr == 0 || binding.size == 0) {
             return;
         }
         if (is_written && !runtime.PrefersSparseSources()) {
@@ -1397,6 +1409,9 @@ void BufferCache<P>::ResolveMultiRangeStorage(Binding& binding, bool is_written,
         const VirtualSegments* found =
             virtual_ranges.Query(*gpu_memory, binding.gpu_addr, binding.size);
         if (!found || found->size() < 2) {
+            if (found) {
+                binding.single_range = true;
+            }
             return;
         }
         const VirtualSegments segments = *found;
@@ -1862,8 +1877,9 @@ void BufferCache<P>::UpdateStorageBuffers(size_t stage) {
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->storage_buffers[stage][index];
-        const BufferId buffer_id = FindBuffer(binding.device_addr, binding.size, false);
-        binding.buffer_id = buffer_id;
+        if (!binding.buffer_id) {
+            binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        }
         const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, graphics_segments);
     });
@@ -1931,7 +1947,9 @@ void BufferCache<P>::UpdateComputeStorageBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
         // Resolve buffer
         Binding& binding = channel_state->compute_storage_buffers[index];
-        binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        if (!binding.buffer_id) {
+            binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        }
         const bool is_written =
             ((channel_state->written_compute_storage_buffers >> index) & 1) != 0;
         ResolveMultiRangeStorage(binding, is_written, compute_segments);
@@ -2831,6 +2849,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
                 .gpu_addr = entry.aligned_gpu_addr,
                 .size = entry.binding_size,
                 .buffer_id = BufferId{},
+                .single_range = entry.single_range,
             };
         }
     }
@@ -2887,11 +2906,15 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
     if (is_written) {
         binding_size = aligned_size;
     }
+    const bool single_range =
+        (native_pointer || table_pointer) &&
+        (aligned_gpu_addr >> Core::DEVICE_PAGEBITS) == (gpu_addr >> Core::DEVICE_PAGEBITS);
     const Binding binding{
         .device_addr = *aligned_device_addr,
         .gpu_addr = aligned_gpu_addr,
         .size = binding_size,
         .buffer_id = BufferId{},
+        .single_range = single_range,
     };
     if (native_pointer || table_pointer) {
         resolved_storage_addr_cache[cache_slot] = ResolvedStorageAddrCacheEntry{
@@ -2902,6 +2925,7 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             .memory_id = memory_id,
             .binding_size = binding_size,
             .flags = cache_flags,
+            .single_range = single_range,
             .valid = true,
         };
     }
