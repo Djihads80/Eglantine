@@ -8,7 +8,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "common/socket_types.h"
-#include "common/zstd_compression.h"
 #include "core/internal_network/socket_proxy.h"
 
 namespace {
@@ -33,7 +32,7 @@ void QueuePacket(Network::ProxySocket& socket, Network::Protocol protocol,
                               .ip = {192, 168, 1, 1},
                               .portno = 35000};
     packet.protocol = protocol;
-    packet.data = Common::Compression::CompressDataZSTDDefault(payload.data(), payload.size());
+    packet.data.assign(payload.begin(), payload.end());
     socket.HandleProxyPacket(packet);
 }
 
