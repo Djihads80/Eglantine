@@ -39,6 +39,9 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#endif
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/textures/decoders.h"
 
@@ -1556,6 +1559,21 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
     if (!WantsTemporalUpscaleDepth()) {
         return false;
     }
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    // A gap in the evaluations (a menu, a movie, a load) starts the history again.
+    const auto now = std::chrono::steady_clock::now();
+    const f32 frame_time_ms =
+        fsr3_last_evaluation
+            ? std::chrono::duration<f32, std::milli>(now - *fsr3_last_evaluation).count()
+            : 1000.0f / 30.0f;
+    const bool reset = !fsr3_last_evaluation || frame_time_ms > 250.0f;
+    fsr3_last_evaluation = now;
+#ifdef EGLANTINE_STREAMLINE
+    if (UpscaleWithDlss(dst_framebuffer, input_color, motion_vectors, depth, render_size, jitter,
+                        motion_scale, reset)) {
+        return true;
+    }
+#endif
     if (!fsr3_upscaler) {
         if (!Fsr3Upscaler::IsSupported(device)) {
             LOG_WARNING(Render_Vulkan, "FSR 3.1 needs formats or features this device lacks; "
@@ -1574,15 +1592,6 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
             return false;
         }
     }
-    const VkExtent2D extent = dst_framebuffer->RenderArea();
-    // A gap in the evaluations (a menu, a movie, a load) starts the history again.
-    const auto now = std::chrono::steady_clock::now();
-    const f32 frame_time_ms =
-        fsr3_last_evaluation
-            ? std::chrono::duration<f32, std::milli>(now - *fsr3_last_evaluation).count()
-            : 1000.0f / 30.0f;
-    const bool reset = !fsr3_last_evaluation || frame_time_ms > 250.0f;
-    fsr3_last_evaluation = now;
     // FSR's own RCAS, set by the sharpness slider: FSR takes 0-1 for 2 to 0 stops, and the slider
     // stores stops x 100, so this is the percentage the slider shows; 0% (stored 200) is off.
     // EDEN_NX2_TEMPORAL_SHARPEN=<stops>|off overrides the slider.
@@ -1608,15 +1617,28 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
         .sharpen = sharpen,
         .sharpness = 1.0f - stops / 2.0f,
     });
-    // Draw the result into the DLSS output, which keeps its own format; the blit leaves FSR's
-    // output image in SHADER_READ_ONLY_OPTIMAL, so return it to GENERAL for the next frame.
+    DrawUpscaledOutput(dst_framebuffer, fsr3_upscaler->OutputView(), fsr3_upscaler->OutputImage(),
+                       fsr3_upscaler->PointSampler());
+    static bool logged{};
+    if (!logged) {
+        logged = true;
+        LOG_INFO(Render_Vulkan, "DLSS replaced by FSR 3.1: {}x{} -> {}x{}", render_size[0],
+                 render_size[1], extent.width, extent.height);
+    }
+    return true;
+}
+
+void TextureCacheRuntime::DrawUpscaledOutput(Framebuffer* dst_framebuffer, VkImageView view,
+                                             VkImage output, VkSampler sampler) {
+    // Draw the result into the DLSS output, which keeps its own format; the blit leaves the
+    // upscaler's output image in SHADER_READ_ONLY_OPTIMAL, so return it to GENERAL for the next
+    // frame.
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
     const Region2D region{
         .start = {0, 0},
         .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
     };
-    const VkImage output = fsr3_upscaler->OutputImage();
-    blit_image_helper.BlitColor(dst_framebuffer, fsr3_upscaler->OutputView(), output,
-                                fsr3_upscaler->PointSampler(), region, region,
+    blit_image_helper.BlitColor(dst_framebuffer, view, output, sampler, region, region,
                                 {extent.width, extent.height, 1});
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([output](vk::CommandBuffer cmdbuf) {
@@ -1641,14 +1663,84 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
     });
+}
+
+#ifdef EGLANTINE_STREAMLINE
+bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageView& input_color,
+                                          ImageView& motion_vectors, ImageView& depth,
+                                          std::array<u32, 2> render_size,
+                                          std::array<f32, 2> jitter,
+                                          std::array<f32, 2> motion_scale, bool reset) {
+    // EDEN_NX2_DLSS_REPLACEMENT=fsr keeps FSR 3.1 for A/B runs.
+    static const bool force_fsr = [] {
+        const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
+        return value && std::string_view{value} == "fsr";
+    }();
+    if (force_fsr || dlss_unsupported) {
+        return false;
+    }
+    if (!dlss_upscaler) {
+        // Off in the settings, or Streamline didn't start: it has said why.
+        if (!Streamline::IsDlssAvailable()) {
+            dlss_unsupported = true;
+            return false;
+        }
+        try {
+            dlss_upscaler =
+                std::make_unique<StreamlineDlssUpscaler>(device, scheduler, memory_allocator);
+        } catch (const vk::Exception& exception) {
+            LOG_WARNING(Render_Vulkan, "NVIDIA DLSS unavailable ({}); using FSR 3.1",
+                        exception.what());
+            dlss_unsupported = true;
+            return false;
+        }
+    }
+    const auto image = [&](ImageView& view, VkImageView handle, VkImageAspectFlags aspect) {
+        return StreamlineDlssUpscaler::Image{
+            .view = handle,
+            .image = view.ImageHandle(),
+            .format = MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, view.format)
+                          .format,
+            .range{
+                .aspectMask = aspect,
+                .baseMipLevel = static_cast<u32>(view.range.base.level),
+                .levelCount = 1,
+                .baseArrayLayer = static_cast<u32>(view.range.base.layer),
+                .layerCount = 1,
+            },
+            .barrier_aspect = ImageAspectMask(view.format),
+        };
+    };
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    const bool upscaled = dlss_upscaler->Upscale({
+        .color = image(input_color, input_color.Handle(Shader::TextureType::Color2D),
+                       VK_IMAGE_ASPECT_COLOR_BIT),
+        .depth = image(depth, depth.DepthView(), VK_IMAGE_ASPECT_DEPTH_BIT),
+        .motion_vectors = image(motion_vectors,
+                                motion_vectors.Handle(Shader::TextureType::Color2D),
+                                VK_IMAGE_ASPECT_COLOR_BIT),
+        .render_size = {render_size[0], render_size[1]},
+        .upscale_size = extent,
+        .jitter = jitter,
+        .motion_vector_scale = {motion_scale[0] * static_cast<f32>(render_size[0]),
+                                motion_scale[1] * static_cast<f32>(render_size[1])},
+        .reset = reset,
+    });
+    if (!upscaled) {
+        dlss_unsupported = true;
+        return false;
+    }
+    DrawUpscaledOutput(dst_framebuffer, dlss_upscaler->OutputView(), dlss_upscaler->OutputImage(),
+                       dlss_upscaler->PointSampler());
     static bool logged{};
     if (!logged) {
         logged = true;
-        LOG_INFO(Render_Vulkan, "DLSS replaced by FSR 3.1: {}x{} -> {}x{}", render_size[0],
+        LOG_INFO(Render_Vulkan, "DLSS replaced by NVIDIA DLSS: {}x{} -> {}x{}", render_size[0],
                  render_size[1], extent.width, extent.height);
     }
     return true;
 }
+#endif
 
 bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
                                           ImageView& input_color, ImageView& motion_vectors,
