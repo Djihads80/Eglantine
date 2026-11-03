@@ -89,6 +89,9 @@ public:
 
     virtual bool IsOpened() const = 0;
 
+    /// Whether HandleProxyPacket would queue the packet; checked before decompressing it
+    virtual bool AcceptsProxyPacket(const ProxyPacket& packet) = 0;
+
     /// Queues a room packet whose data is already decompressed
     virtual void HandleProxyPacket(const ProxyPacket& packet) = 0;
 
@@ -163,6 +166,8 @@ public:
     std::pair<T, Errno> GetSockOpt(SOCKET fd, int option);
 
     bool IsOpened() const override;
+
+    bool AcceptsProxyPacket(const ProxyPacket& packet) override;
 
     void HandleProxyPacket(const ProxyPacket& packet) override;
 

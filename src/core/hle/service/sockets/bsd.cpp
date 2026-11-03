@@ -965,24 +965,24 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
 }
 
 Errno BSD_USA::CloseImpl(s32 fd) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return Errno::BADF;
-    }
-
-    const Errno bsd_errno = Translate(descriptor->socket->Close());
-    if (bsd_errno != Errno::SUCCESS) {
-        return bsd_errno;
+    std::shared_ptr<Network::SocketBase> socket;
+    {
+        // Free the slot first, so of two threads closing the same fd only one closes the socket.
+        // Like POSIX close(), the fd is released even if closing the socket fails.
+        std::scoped_lock lock{file_descriptors_mutex};
+        if (!IsFileDescriptorValid(fd)) {
+            return Errno::BADF;
+        }
+        if (!file_descriptors[fd]->socket) {
+            LOG_WARNING(Service, "Uninitialized socket");
+            return Errno::BADF;
+        }
+        socket = std::move(file_descriptors[fd]->socket);
+        file_descriptors[fd].reset();
     }
 
     LOG_INFO(Service, "Close socket fd={}", fd);
-
-    // Another thread may have closed this fd and reused the slot meanwhile
-    std::scoped_lock lock{file_descriptors_mutex};
-    if (file_descriptors[fd] && file_descriptors[fd]->socket == descriptor->socket) {
-        file_descriptors[fd].reset();
-    }
-    return bsd_errno;
+    return Translate(socket->Close());
 }
 
 std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
@@ -1070,7 +1070,8 @@ void BSD_USA::BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const 
 
 void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
     // Runs on the room thread. The copies keep each socket alive if a bsd thread closes it, so
-    // the bsd threads do not wait for the decompression below.
+    // the bsd threads do not wait for the decompression below. Only sockets that accept the
+    // packet are collected, so an unwanted packet is never decompressed.
     std::array<std::shared_ptr<Network::SocketBase>, MAX_FD> sockets{};
     size_t num_sockets = 0;
     {
@@ -1081,7 +1082,8 @@ void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
             }
             // A duplicated fd shares its socket, which must still get each packet only once
             const auto sockets_end = sockets.begin() + num_sockets;
-            if (std::find(sockets.begin(), sockets_end, descriptor->socket) == sockets_end) {
+            if (std::find(sockets.begin(), sockets_end, descriptor->socket) == sockets_end &&
+                descriptor->socket->AcceptsProxyPacket(packet)) {
                 sockets[num_sockets++] = descriptor->socket;
             }
         }
@@ -1090,13 +1092,19 @@ void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
         return;
     }
 
-    // Decompress once for all sockets that share the port
+    // Decompress once for all sockets that share the port. The room does not check the frame, so
+    // drop a malformed or oversized one instead of throwing on the room thread.
+    auto data = Common::Compression::TryDecompressDataZSTD(packet.data, MAX_ROOM_PACKET_SIZE);
+    if (!data) {
+        LOG_WARNING(Service, "Dropped a room packet with an invalid or oversized payload");
+        return;
+    }
     const Network::ProxyPacket decompressed{
         .local_endpoint = packet.local_endpoint,
         .remote_endpoint = packet.remote_endpoint,
         .protocol = packet.protocol,
         .broadcast = packet.broadcast,
-        .data = Common::Compression::DecompressDataZSTD(packet.data),
+        .data = std::move(*data),
     };
     for (size_t i = 0; i < num_sockets; ++i) {
         sockets[i]->HandleProxyPacket(decompressed);

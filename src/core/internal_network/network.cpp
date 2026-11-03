@@ -1095,6 +1095,10 @@ bool Socket::IsOpened() const {
     return fd != INVALID_SOCKET;
 }
 
+bool Socket::AcceptsProxyPacket(const ProxyPacket& packet) {
+    return false;
+}
+
 void Socket::HandleProxyPacket(const ProxyPacket& packet) {
     LOG_WARNING(Network, "ProxyPacket received, but not in Proxy mode!");
 }

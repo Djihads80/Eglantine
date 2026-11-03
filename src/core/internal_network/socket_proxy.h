@@ -22,6 +22,8 @@ public:
     explicit ProxySocket() noexcept;
     ~ProxySocket() override;
 
+    bool AcceptsProxyPacket(const ProxyPacket& packet) override;
+
     void HandleProxyPacket(const ProxyPacket& packet) override;
 
     Errno Initialize(Domain domain, Type type, Protocol socket_protocol) override;
@@ -82,6 +84,9 @@ public:
     bool IsOpened() const override;
 
 private:
+    /// Expects packets_mutex to be held
+    bool MatchesPacket(const ProxyPacket& packet) const;
+
     bool broadcast = false;
     bool closed = false;
     u32 send_timeout = 0;

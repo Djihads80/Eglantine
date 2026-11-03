@@ -44,6 +44,8 @@ public:
 private:
     /// Maximum number of file descriptors
     static constexpr size_t MAX_FD = 128;
+    /// Largest decompressed room packet. A UDP datagram cannot be larger.
+    static constexpr size_t MAX_ROOM_PACKET_SIZE = 0x10000;
 
     struct FileDescriptor {
         std::shared_ptr<Network::SocketBase> socket;

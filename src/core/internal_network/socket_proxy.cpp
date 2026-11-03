@@ -30,17 +30,29 @@ ProxySocket::~ProxySocket() {
     fd = INVALID_SOCKET;
 }
 
+bool ProxySocket::MatchesPacket(const ProxyPacket& packet) const {
+    if (protocol != packet.protocol || local_endpoint.portno != packet.remote_endpoint.portno ||
+        closed) {
+        return false;
+    }
+    if (!broadcast && packet.broadcast) {
+        LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
+        return false;
+    }
+    return true;
+}
+
+bool ProxySocket::AcceptsProxyPacket(const ProxyPacket& packet) {
+    std::lock_guard guard(packets_mutex);
+    return MatchesPacket(packet);
+}
+
 void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
     {
-        // Runs on the room thread, while the game thread may bind, close or reconfigure the socket
+        // Runs on the room thread, while the game thread may bind, close or reconfigure the socket.
+        // Check again: the socket may have changed since AcceptsProxyPacket.
         std::lock_guard guard(packets_mutex);
-        if (protocol != packet.protocol || local_endpoint.portno != packet.remote_endpoint.portno ||
-            closed) {
-            return;
-        }
-
-        if (!broadcast && packet.broadcast) {
-            LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
+        if (!MatchesPacket(packet)) {
             return;
         }
         received_packets.push(packet);
