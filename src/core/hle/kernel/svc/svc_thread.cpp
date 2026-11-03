@@ -116,26 +116,25 @@ Result StartThread(Core::System& system, Handle thread_handle) {
     // starting them.
     auto& kernel = system.Kernel();
     const s32 core = thread->GetActiveCore();
-    if (core == GetCurrentCoreId(kernel)) {
-        // Sleeping lets this core run the new thread.
+    if (core == GetCurrentCoreId(kernel) || !kernel.IsMulticore()) {
+        // Sleeping lets this core run the new thread; in single-core mode the idle core passes
+        // control to the next one.
         for (int i = 0; i < 10 && !thread->HasEnteredKernel() && !thread->IsTerminationRequested();
              ++i) {
             const s64 timeout = kernel.HardwareTimer().GetTick() + 100'000 + 2;
             static_cast<void>(GetCurrentThread(kernel).Sleep(kernel, timeout));
         }
-    } else if (kernel.IsMulticore()) {
-        if (core >= 0 && core < static_cast<s32>(Core::Hardware::NUM_CPU_CORES)) {
-            const KThread* const running = kernel.Scheduler(core).GetSchedulerCurrentThread();
-            const bool preempts = running == nullptr ||
-                                  running == kernel.Scheduler(core).GetIdleThread() ||
-                                  thread->GetPriority() < running->GetPriority();
-            if (preempts) {
-                const auto deadline =
-                    std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
-                while (!thread->HasEnteredKernel() && !thread->IsTerminationRequested() &&
-                       std::chrono::steady_clock::now() < deadline) {
-                    std::this_thread::yield();
-                }
+    } else if (core >= 0 && core < static_cast<s32>(Core::Hardware::NUM_CPU_CORES)) {
+        const KThread* const running = kernel.Scheduler(core).GetSchedulerCurrentThread();
+        const bool preempts = running == nullptr || running == thread.GetPointerUnsafe() ||
+                              running == kernel.Scheduler(core).GetIdleThread() ||
+                              thread->GetPriority() < running->GetPriority();
+        if (preempts) {
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+            while (!thread->HasEnteredKernel() && !thread->IsTerminationRequested() &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
             }
         }
     }
