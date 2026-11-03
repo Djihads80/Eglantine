@@ -223,9 +223,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, nx2_swap_interval, tr("Force swap interval:"),
            tr("Number of display refreshes each frame is shown for: 1 is 60 FPS, 2 is 30 FPS. "
               "0 uses what the game asks for."));
-    INSERT(Settings, nx2_temporal_upscale, tr("Temporal upscale in place of DLSS"),
-           tr("Replaces the game's DLSS pass with a temporal upscale along its motion vectors "
-              "(Fire Emblem: Fortune's Weave). Off: a plain upscaling blit."));
+    INSERT(Settings, nx2_temporal_upscale, tr("AMD FSR 3.1 in place of DLSS"),
+           tr("Replaces the game's DLSS pass with AMD FidelityFX Super Resolution 3.1 fed with "
+              "the game's motion vectors and depth (Fire Emblem: Fortune's Weave). Off: a plain "
+              "upscaling blit."));
     INSERT(Settings, nx2_idle_spin_us, tr("Idle CPU core spin (microseconds):"),
            tr("How long an idle emulated core polls for new work before it sleeps. Can cut "
               "latency between the game's job threads, at the cost of host CPU time. 0 is off."));
