@@ -687,6 +687,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
+        graphics_miss = "stage-rejected";
         return nullptr;
     }
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
@@ -978,6 +979,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         pipeline = CreateGraphicsPipeline();
     }
     if (!pipeline) {
+        graphics_miss = "creation-failed";
         return nullptr;
     }
     if (used_this_session.insert(pipeline.get()).second &&
@@ -1050,6 +1052,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
     if (maxwell3d->regs.zeta_enable) {
+        graphics_miss = "async-build";
         return nullptr;
     }
     // If games are using a small index count, we can assume these are full screen quads.
@@ -1059,6 +1062,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (draw_state.index_buffer.count <= 6 || draw_state.vertex_buffer.count <= 6) {
         return pipeline;
     }
+    graphics_miss = "async-build";
     return nullptr;
 }
 
