@@ -156,6 +156,17 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+        // The split's back marks a page GPU-written when it runs the work that writes it, so the
+        // first time GPU work fills a page (a dispatch writing a draw's arguments, queued but not
+        // run yet), the front would still find it unmarked and take the words as submitted: an
+        // older frame's bytes (Hyrule Warriors: Age of Imprisonment draws billions of vertices in
+        // fights and loses the device). Small entries, the size of such argument blocks, wait
+        // for the compute and copy work sent so far before deciding.
+        if (auto& split = VideoCommon::GpuSplit::Get();
+            split.Active() && command_resume_offset == 0 && header.size <= 8 &&
+            !IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32))) {
+            split.WaitForWriters();
+        }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
         // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
