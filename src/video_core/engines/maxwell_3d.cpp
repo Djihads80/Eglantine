@@ -588,7 +588,11 @@ void Maxwell3D::ProcessMacroUpload(u32 data) {
 }
 
 void Maxwell3D::ProcessMacroBind(u32 data) {
-    GetNativeMacroPositions()[regs.load_mme.start_address_ptr++] = data;
+    const auto positions = GetNativeMacroPositions();
+    const u32 index = regs.load_mme.start_address_ptr++;
+    if (index < positions.size()) {
+        positions[index] = data;
+    }
 }
 
 void Maxwell3D::ProcessFirmwareCall4() {
