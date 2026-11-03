@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <optional>
 #include <set>
+#include <thread>
+
+#include <gav1/decoder.h>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -44,6 +48,64 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
         return NvdecCommon::VideoCodec::H264;
     }
     return std::nullopt;
+}
+
+AVPixelFormat Av1PixelFormat(const libgav1::DecoderBuffer& buffer) {
+    if (buffer.bitdepth != 8 && buffer.bitdepth != 10) {
+        return AV_PIX_FMT_NONE;
+    }
+    const bool ten_bit = buffer.bitdepth == 10;
+    switch (buffer.image_format) {
+    case kLibgav1ImageFormatYuv420:
+        return ten_bit ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
+    case kLibgav1ImageFormatYuv422:
+        return ten_bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV422P;
+    case kLibgav1ImageFormatYuv444:
+        return ten_bit ? AV_PIX_FMT_YUV444P10LE : AV_PIX_FMT_YUV444P;
+    case kLibgav1ImageFormatMonochrome400:
+        return ten_bit ? AV_PIX_FMT_GRAY10LE : AV_PIX_FMT_GRAY8;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+// Copies a picture libgav1 decoded into a frame of its own (libgav1 reuses its buffers), tagged
+// with the stream's matrix and range for Render.
+std::shared_ptr<FFmpeg::Frame> CopyAv1Picture(const libgav1::DecoderBuffer& buffer) {
+    const AVPixelFormat format = Av1PixelFormat(buffer);
+    const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(format);
+    if (descriptor == nullptr || buffer.displayed_width[0] <= 0 ||
+        buffer.displayed_height[0] <= 0) {
+        return nullptr;
+    }
+    auto frame = std::make_shared<FFmpeg::Frame>();
+    AVFrame* f = frame->GetFrame();
+    f->format = format;
+    f->width = buffer.displayed_width[0];
+    f->height = buffer.displayed_height[0];
+    if (av_frame_get_buffer(f, 0) < 0) {
+        return nullptr;
+    }
+    const int sample_bytes = buffer.bitdepth > 8 ? 2 : 1;
+    for (int plane = 0; plane < buffer.NumPlanes(); ++plane) {
+        const int width =
+            plane == 0 ? f->width : AV_CEIL_RSHIFT(f->width, descriptor->log2_chroma_w);
+        const int height =
+            plane == 0 ? f->height : AV_CEIL_RSHIFT(f->height, descriptor->log2_chroma_h);
+        const size_t row_bytes =
+            static_cast<size_t>(std::min(width, buffer.displayed_width[plane]) * sample_bytes);
+        for (int y = 0; y < std::min(height, buffer.displayed_height[plane]); ++y) {
+            std::memcpy(f->data[plane] + static_cast<ptrdiff_t>(y) * f->linesize[plane],
+                        buffer.plane[plane] + static_cast<ptrdiff_t>(y) * buffer.stride[plane],
+                        row_bytes);
+        }
+    }
+    // AV1 numbers its matrices as FFmpeg does (ITU-T H.273).
+    const int matrix = static_cast<int>(buffer.matrix_coefficients);
+    f->colorspace = matrix <= static_cast<int>(AVCOL_SPC_ICTCP) ? static_cast<AVColorSpace>(matrix)
+                                                                : AVCOL_SPC_UNSPECIFIED;
+    f->color_range =
+        buffer.color_range == kLibgav1ColorRangeFull ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    return frame;
 }
 
 } // namespace
@@ -87,11 +149,18 @@ bool IsH264Stream(std::span<const u8> data) {
     return false;
 }
 
+bool Nx2IsAv1Mime(std::string_view mime) {
+    return mime.find("av01") != std::string_view::npos ||
+           mime.find("av1") != std::string_view::npos;
+}
+
 struct Nx2VideoDecoder::Impl {
     std::string name;
     std::optional<FFmpeg::Decoder> decoder;
     std::optional<FFmpeg::HardwareContext> hardware;
     std::optional<FFmpeg::DecoderContext> context;
+    std::unique_ptr<libgav1::Decoder> av1; ///< Instead of FFmpeg, for AV1
+    u64 av1_errors{};
     SwsContext* scaler{};
     bool open{};
     H264PacketConverter h264_packets;
@@ -125,10 +194,57 @@ struct Nx2VideoDecoder::Impl {
                                 std::move(frame)});
         }
     }
+
+    // Not in frame parallel mode, libgav1 decodes one temporal unit per DequeueFrame and holds
+    // no picture back, so each one is decoded right away (EnqueueFrame keeps a pointer to it).
+    void DecodeAv1(std::span<const u8> data, u64 pts, std::vector<Nx2Picture>& pictures) {
+        auto status =
+            av1->EnqueueFrame(data.data(), data.size(), static_cast<int64_t>(pts), nullptr);
+        const libgav1::DecoderBuffer* buffer{};
+        if (status == libgav1::kStatusOk) {
+            status = av1->DequeueFrame(&buffer);
+        }
+        if (status != libgav1::kStatusOk) {
+            if (av1_errors++ < 8 || (av1_errors % 600) == 0) {
+                LOG_ERROR(HW_GPU, "nx2 video: AV1 frame of {} bytes not decoded ({}), {} so far",
+                          data.size(), libgav1::GetErrorString(status), av1_errors);
+            }
+            return;
+        }
+        if (buffer == nullptr) {
+            return; // nothing shown by this temporal unit
+        }
+        auto frame = CopyAv1Picture(*buffer);
+        if (!frame) {
+            if (av1_errors++ < 8) {
+                LOG_ERROR(HW_GPU, "nx2 video: unsupported AV1 picture: {}-bit, format {}, {}x{}",
+                          buffer->bitdepth, static_cast<int>(buffer->image_format),
+                          buffer->displayed_width[0], buffer->displayed_height[0]);
+            }
+            return;
+        }
+        pictures.push_back({static_cast<u32>(buffer->displayed_width[0]),
+                            static_cast<u32>(buffer->displayed_height[0]),
+                            static_cast<u64>(buffer->user_private_data), std::move(frame)});
+    }
 };
 
 Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<Impl>()} {
     impl->name = std::string{mime};
+    if (Nx2IsAv1Mime(mime)) {
+        auto av1 = std::make_unique<libgav1::Decoder>();
+        libgav1::DecoderSettings settings;
+        settings.threads =
+            static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1U, 4U));
+        const auto status = av1->Init(&settings);
+        impl->open = status == libgav1::kStatusOk;
+        if (impl->open) {
+            impl->av1 = std::move(av1);
+        }
+        LOG_INFO(HW_GPU, "nx2 video: libgav1 decoder for \"{}\" {} ({} threads)", mime,
+                 impl->open ? "open" : libgav1::GetErrorString(status), settings.threads);
+        return;
+    }
     const auto codec = CodecFromMime(mime);
     if (!codec) {
         LOG_ERROR(HW_GPU, "nx2 video: no decoder for codec \"{}\"", mime);
@@ -162,6 +278,10 @@ void Nx2VideoDecoder::Decode(std::span<const u8> data, u64 pts, std::vector<Nx2P
     if (!impl->open || data.empty()) {
         return;
     }
+    if (impl->av1) {
+        impl->DecodeAv1(data, pts, pictures);
+        return;
+    }
     impl->packet.assign(data.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
     std::memcpy(impl->packet.data(), data.data(), data.size());
 
@@ -185,13 +305,20 @@ void Nx2VideoDecoder::Drain(std::vector<Nx2Picture>& pictures) {
     if (!impl->open) {
         return;
     }
+    if (impl->av1) {
+        Reset(); // libgav1 holds no picture back (see DecodeAv1)
+        return;
+    }
     avcodec_send_packet(impl->context->GetCodecContext(), nullptr);
     impl->Receive(pictures);
     Reset();
 }
 
 void Nx2VideoDecoder::Reset() {
-    if (impl->open) {
+    if (impl->av1) {
+        // Releases its frames; the next frame may start a new sequence.
+        impl->av1->SignalEOS();
+    } else if (impl->open) {
         avcodec_flush_buffers(impl->context->GetCodecContext());
     }
     impl->pending_pts.clear();

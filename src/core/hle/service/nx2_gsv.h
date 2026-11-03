@@ -2524,6 +2524,7 @@ private:
                  w[6], w[7]);
         {
             std::scoped_lock lk{m_mutex};
+            m_av1 = Tegra::Host1x::Nx2IsAv1Mime(codec);
             m_codec = std::move(codec);
             m_width = w[5];
             m_height = w[6];
@@ -2576,6 +2577,17 @@ private:
         u32 value;
         {
             std::scoped_lock lk{m_mutex};
+            // AV1 (fefw e75ce0c202): Fortune's Weave gives back images that still wait for a
+            // frame, in a loop after Flush/Start. Frames advance the syncpoint by one each in
+            // hand-out order, so a new value would leave a hole in the sequence and put every
+            // later fence out of reach: answer with the value the image already has.
+            if (m_av1 && release_fence && IsWaiting(image)) {
+                if ((++m_idle_releases & 0xfff) == 1) {
+                    LOG_WARNING(Service, "{} release of waiting image {} (x{})",
+                                GetServiceName(), image, m_idle_releases);
+                }
+                return {~m_syncpoint, 0, m_values[image], 0};
+            }
             m_free.push_back(image);
             if (release_fence) {
                 m_release_fences[image] = *release_fence;
@@ -2598,9 +2610,25 @@ private:
             } else {
                 value = m_sync_base + ++m_handed;
             }
+            m_values[image] = value;
         }
         m_cv.notify_one();
         return {~m_syncpoint, 0, value, 0};
+    }
+
+    // With m_mutex held: the image waits for a frame.
+    bool IsWaiting(u32 image) const {
+        return m_writing == image || std::ranges::find(m_free, image) != m_free.end();
+    }
+
+    // With m_mutex held: an image that holds a frame waits for one again, at the end of the sync
+    // sequence (its old value was reached when the frame was written).
+    void Requeue(u32 image) {
+        if (IsWaiting(image)) {
+            return;
+        }
+        m_free.push_back(image);
+        m_values[image] = m_sync_base + ++m_handed;
     }
 
     void RegisterBuffer(HLERequestContext& ctx) {
@@ -2623,6 +2651,7 @@ private:
             std::scoped_lock lk{m_mutex};
             std::erase(m_free, image);
             m_release_fences.erase(image);
+            m_values.erase(image);
         }
         TipcReplyWords(ctx, {});
     }
@@ -2640,6 +2669,7 @@ private:
             const auto data = ctx.ReadBufferA(0);
             input.data.assign(data.begin(), data.end());
         }
+        const u64 size = input.data.size();
         {
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
@@ -2648,7 +2678,9 @@ private:
         }
         m_cv.notify_one();
         const u64 id = ++m_submitted;
-        TipcReplyWords(ctx, {static_cast<u32>(id), static_cast<u32>(id >> 32)});
+        // AV1: the bytes taken, as fefw's decoder replies (Fortune's Weave plays with it).
+        const u64 reply = m_av1 ? size : id;
+        TipcReplyWords(ctx, {static_cast<u32>(reply), static_cast<u32>(reply >> 32)});
     }
 
     // Flush (8) and Stop (207): drop queued input and frames not yet in an image. Images already
@@ -2665,6 +2697,18 @@ private:
             // fence as a frame to acquire.
             if (ctx.GetCommand() == 207) {
                 CompleteHandedFences();
+            }
+            if (m_av1) {
+                // fefw 2106415948/141643e8e8: Fortune's Weave flushes its character select clips
+                // when one ends or the character changes, then calls Start. Like
+                // MediaCodec.flush(), drop everything in flight: frames written but not fetched
+                // (the old clip's end of stream among them) made it take the new clip as
+                // finished. Their images wait for frames again.
+                ++m_flushes;
+                for (const auto& output : m_outputs) {
+                    Requeue(output.image);
+                }
+                m_outputs.clear();
             }
         }
         m_cv.notify_one();
@@ -2697,11 +2741,16 @@ private:
     void GetOutputInfo(HLERequestContext& ctx) {
         Log(ctx, "output info");
         std::optional<Output> output;
+        u32 width{};
+        u32 height{};
         {
             std::scoped_lock lk{m_mutex};
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
+                // AV1: words 1-2 hold the configured size, as fefw's decoder replies.
+                width = m_av1 ? m_width : output->width;
+                height = m_av1 ? m_height : output->height;
             }
         }
         if (!output) {
@@ -2711,7 +2760,7 @@ private:
             return;
         }
         const u64 pts_ns = output->pts * 1000;
-        TipcReplyWords(ctx, {output->image, output->width, output->height, output->width,
+        TipcReplyWords(ctx, {output->image, width, height, output->width,
                              output->height, 0, static_cast<u32>(pts_ns),
                              static_cast<u32>(pts_ns >> 32), output->end ? 1U : 0U, 0, 0, 0, 0,
                              0, 0, 0});
@@ -2748,6 +2797,8 @@ private:
                 m_decoded.pop_front();
                 const u32 image = m_free.front();
                 m_free.pop_front();
+                m_writing = image;
+                const u64 flushes = m_flushes;
                 std::optional<Fence> fence;
                 if (const auto it = m_release_fences.find(image); it != m_release_fences.end()) {
                     fence = it->second;
@@ -2759,7 +2810,14 @@ private:
                 }
                 const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes);
                 lk.lock();
+                m_writing.reset();
                 // Even an image written during a flush counts: the client waits for its value.
+                // An AV1 flush drops the frame, though (see Flush): the image waits again.
+                if (m_av1 && m_flushes != flushes) {
+                    Requeue(image);
+                    system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
+                    continue;
+                }
                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
                 if (frame.end) {
                     m_stream_ended = true;
@@ -2863,8 +2921,7 @@ private:
             decoder->Render(*frame.picture, Tegra::Host1x::Nx2PictureFormat::Rgba8, width, height,
                             layout.pitch, 0, bytes);
             m_tiled.resize(layout.size);
-            Tegra::Texture::SwizzleTexture(m_tiled, bytes, 4, static_cast<u32>(layout.pitch / 4),
-                                           layout.height, 1, 4, 0, 1, true);
+            SwizzleBlockLinear(m_tiled, bytes, layout.pitch, layout.height);
             memory.WriteBlock(address, m_tiled.data(), m_tiled.size());
             if (const auto device =
                     Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
@@ -2885,6 +2942,45 @@ private:
             system.GPU().InvalidateRegion(*device, layout.size);
         }
         return {width, height};
+    }
+
+    // Swizzles 4-byte pixel rows `pitch` bytes apart into 16-GOB (128-row) blocks. Each row of
+    // blocks is contiguous in the tiled image, so bands of whole block rows are swizzled on threads
+    // of their own, with the same result (fefw dd31b32b74: a 1440p frame took several ms here).
+    static void SwizzleBlockLinear(std::span<u8> tiled, std::span<const u8> linear, u64 pitch,
+                                   u32 height) {
+        constexpr u32 BlockHeightLog2 = 4;
+        constexpr u32 RowsPerBlock = 8U << BlockHeightLog2;
+        constexpr u32 Bands = 4;
+        const u32 block_rows = Common::DivCeil(height, RowsPerBlock);
+        const u64 block_row_bytes = pitch * RowsPerBlock;
+        const u32 width = static_cast<u32>(pitch / 4);
+        const auto swizzle = [&](u32 first_block, u32 last_block) {
+            if (first_block >= last_block) {
+                return;
+            }
+            const u32 first = first_block * RowsPerBlock;
+            const u32 last = std::min(last_block * RowsPerBlock, height);
+            Tegra::Texture::SwizzleTexture(tiled.subspan(first_block * block_row_bytes),
+                                           linear.subspan(first * pitch, (last - first) * pitch),
+                                           4, width, last - first, 1, BlockHeightLog2, 0, 1, true);
+        };
+        if (pitch % Tegra::Texture::GOB_SIZE_X != 0 ||
+            tiled.size() < block_rows * block_row_bytes ||
+            linear.size() < u64{height} * pitch) {
+            Tegra::Texture::SwizzleTexture(tiled, linear, 4, width, height, 1, BlockHeightLog2, 0,
+                                           1, true);
+            return;
+        }
+        const u32 per_band = Common::DivCeil(block_rows, Bands);
+        {
+            std::array<std::jthread, Bands - 1> workers;
+            for (u32 i = 1; i < Bands; ++i) {
+                workers[i - 1] = std::jthread{swizzle, std::min(i * per_band, block_rows),
+                                              std::min((i + 1) * per_band, block_rows)};
+            }
+            swizzle(0, std::min(per_band, block_rows));
+        }
     }
 
     // EDEN_NX2_VDEC_DUMP=<dir>: save the luma of every 120th decoded frame, a quarter of its size,
@@ -2940,6 +3036,11 @@ private:
     std::map<u32, Fence> m_release_fences;
     std::deque<Output> m_outputs;      ///< Finished, for 213
     bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
+    std::map<u32, u32> m_values;       ///< Sync value each image last handed out completes at
+    std::optional<u32> m_writing;      ///< Image the decode thread is writing
+    bool m_av1{};                      ///< AV1 stream: fefw's flush and release rules apply
+    u64 m_flushes{};                   ///< AV1 flushes so far
+    u64 m_idle_releases{};
     bool m_flush{};
     bool m_quit{};
     std::thread m_worker;
