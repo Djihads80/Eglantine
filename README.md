@@ -29,6 +29,7 @@ It's written in C++ with portability in mind, with builds for Windows, Linux and
 </p>
 
 <p align="center">
+  <a href="#about-this-fork">About this fork</a> |
   <a href="#compatibility">Compatibility</a> |
   <a href="#development">Development</a> |
   <a href="#building">Building</a> |
@@ -36,6 +37,18 @@ It's written in C++ with portability in mind, with builds for Windows, Linux and
   <a href="#support">Support</a> |
   <a href="#license">License</a>
 </p>
+
+## About this fork
+
+This repository is for personal experiments, fixes and other things that may or may not end up merged into [Eglantine](https://github.com/Djihads80/Eglantine). Nothing here is an official build, and anything not listed as merged can change or disappear.
+
+### Changes to the engine
+
+| Change | What it does | Status |
+|--------|--------------|--------|
+| **Texture cache descriptor ids** (`texture_cache`) | Stores the view and sampler ids next to the descriptors, so a lookup per binding on each draw is an array read instead of a hash map lookup. Effect on performance not measured. | Not merged. Not planned: the devs have not confirmed it. |
+| **Keep Switch 2 pipelines built** (`vk_pipeline_cache`) | Switch 2 titles build every cached pipeline at boot and never evict them, instead of rebuilding evicted ones on the GPU thread mid-game. Switch 1 titles are unchanged. Only applies with the disk shader cache on. | Not merged. Branch [`fix/nx2-keep-switch2-pipelines`](https://github.com/Djihads80/Eglantine/compare/fix/nx2-keep-switch2-pipelines) exists upstream. |
+| **No task/mesh pipelines without `VK_EXT_mesh_shader`** (`vk_pipeline_cache`) | Returns no pipeline instead of building one the driver cannot use, so the draw is skipped as before. Aimed at a `VkPipelineBuild` crash seen on RADV (Vega). Not confirmed by a tester yet. | Not merged. A dev said it is planned, but nothing is on the main repo yet. |
 
 ## Compatibility
 
