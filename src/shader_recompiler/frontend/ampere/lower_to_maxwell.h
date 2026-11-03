@@ -1291,11 +1291,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Lane t (group g = t/4, i = t%4): A regs hold rows g / g+8 at k 2i..2i+1 (a0, a1) and
             // 8+2i.. (a2, a3); B regs hold k 2i.. (b0) / 8+2i.. (b1) of column g; D holds rows
             // g / g+8 at columns 2i, 2i+1. Rebuilt from shuffles with HFMA2, accumulating in R252/R253.
-            // The expansion is correct but large: title 4's 372-HMMA network takes the host driver
-            // minutes to compile, so it stays opt-in (the QMD still completes when rejected).
+            // The expansion is large (title 4's 372-HMMA network takes the host driver minutes to
+            // compile), but dropping it breaks games: DK Bananza starts on a purple screen and later
+            // runs a corrupted command list. EDEN_NX2_TENSOR=0 rejects it (the QMD still completes),
             // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C.
-            static const char* const mode = std::getenv("EDEN_NX2_TENSOR");
-            if (!mode) return fail(index, "native matrix multiply (set EDEN_NX2_TENSOR to emulate)");
+            static const char* const mode = [] {
+                const char* value = std::getenv("EDEN_NX2_TENSOR");
+                return value ? value : "1";
+            }();
+            if (std::string_view{mode} == "0")
+                return fail(index, "native matrix multiply (EDEN_NX2_TENSOR=0)");
             const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
             if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xffU) != 0x800 || dest + 2 > 246 ||
                 a + 4 > 246 || b + 2 > 246 || (c != 255 && c + 2 > 246))
