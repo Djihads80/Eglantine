@@ -8,8 +8,9 @@
 
 #include <array>
 #include <optional>
-#include <vector>
+#include <string_view>
 #include <variant>
+#include <vector>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -130,6 +131,34 @@ std::optional<IPv4Address> GetRoomIPv4Address();
 
 std::string IPv4AddressToString(IPv4Address ip_addr);
 u32 IPv4AddressToInteger(IPv4Address ip_addr);
+
+/// How the opt-in private-server settings (private_server_*) route a guest host name or destination.
+enum class PrivateServerRoute {
+    /// Private-server mode is off: the usual behavior applies.
+    Disabled,
+    /// Private-server mode is on, but a setting is malformed: all guest traffic fails closed.
+    Misconfigured,
+    /// A configured host name, which resolves to the gateway alone, or the gateway or relay.
+    Routed,
+    /// Any other host name, which resolves as usual, or destination, which is blocked.
+    Unrouted,
+};
+
+struct PrivateServerRouting {
+    PrivateServerRoute route;
+    /// The gateway, which routed host names resolve to; zero unless Routed or Unrouted.
+    IPv4Address gateway;
+    /// The first malformed setting, when Misconfigured.
+    std::string_view malformed_setting;
+};
+
+/// Routes a guest host name: Routed when it is a configured domain or a subdomain of one, ignoring
+/// ASCII case and one trailing dot.
+PrivateServerRouting RoutePrivateServerHost(std::string_view host);
+
+/// Routes a guest destination: Routed for the gateway, on any port, and for the relay address on
+/// its configured ports.
+PrivateServerRouting RoutePrivateServerDestination(const SockAddrIn& destination);
 
 // named to avoid name collision with Windows macro
 std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(const std::string& host, const std::optional<std::string>& service);

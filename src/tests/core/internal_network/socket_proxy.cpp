@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "common/settings.h"
 #include "common/socket_types.h"
 #include "core/internal_network/socket_proxy.h"
 
@@ -137,6 +138,9 @@ TEST_CASE("Room TCP sockets report an empty queue as end of stream", "[core][soc
     std::array<u8, 4> received{};
     const auto start = std::chrono::steady_clock::now();
     REQUIRE(socket.Recv(0, received) == std::pair<s32, Network::Errno>{0, Network::Errno::SUCCESS});
+    Network::SockAddrIn source{};
+    REQUIRE(socket.RecvFrom(0, received, &source) ==
+            std::pair<s32, Network::Errno>{0, Network::Errno::SUCCESS});
     REQUIRE(std::chrono::steady_clock::now() - start < std::chrono::seconds{1});
 }
 
@@ -258,4 +262,24 @@ TEST_CASE("Room sockets accept only packets for their port and protocol", "[core
 TEST_CASE("Native sockets accept no room packets", "[core][sockets]") {
     Network::Socket socket;
     REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
+}
+
+TEST_CASE("Room sockets fail closed in private-server mode", "[core][sockets]") {
+    Network::ProxySocket socket;
+    BindSocket(socket, Network::Protocol::UDP);
+    const Network::SockAddrIn peer{
+        .family = Network::Domain::INET, .ip = {192, 168, 1, 2}, .portno = 35000};
+    const std::array<u8, 4> payload{1, 2, 3, 4};
+
+    // Restored before any assertion can end the test.
+    const bool enabled_before = Settings::values.private_server_enabled.GetValue();
+    Settings::values.private_server_enabled.SetValue(true);
+    const auto sent_to = socket.SendTo(0, payload, &peer);
+    const auto sent = socket.Send(payload, 0);
+    const Network::Errno connected = socket.Connect(peer);
+
+    Settings::values.private_server_enabled.SetValue(enabled_before);
+    CHECK(sent_to == std::pair<s32, Network::Errno>{-1, Network::Errno::NETUNREACH});
+    CHECK(sent == std::pair<s32, Network::Errno>{-1, Network::Errno::NETUNREACH});
+    CHECK(connected == Network::Errno::NETUNREACH);
 }

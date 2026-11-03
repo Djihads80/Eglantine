@@ -9,6 +9,7 @@
 
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/zstd_compression.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/network_interface.h"
@@ -28,6 +29,12 @@ ProxySocket::~ProxySocket() {
         return;
     }
     fd = INVALID_SOCKET;
+}
+
+/// Private-server mode confines guest traffic to its gateway and relay, which room sockets cannot
+/// reach: it fails their connections and sends, whatever room is joined.
+static bool IsPrivateServerMode() {
+    return Settings::values.private_server_enabled.GetValue();
 }
 
 bool ProxySocket::MatchesPacket(const ProxyPacket& packet) const {
@@ -65,7 +72,7 @@ std::optional<PollEvents> ProxySocket::EmulatedPoll(PollEvents events) {
     std::lock_guard guard(packets_mutex);
     PollEvents revents{};
     // A queued packet reads at once. So does a closed socket, whose reads fail, and a stream,
-    // whose reads report its end while nothing is queued (see Recv).
+    // whose reads report its end while nothing is queued (see RecvMsg).
     if (closed || !received_packets.empty() || socket_type == Type::STREAM) {
         revents |= events & (PollEvents::In | PollEvents::RdNorm);
     }
@@ -97,6 +104,10 @@ std::pair<ProxySocket::AcceptResult, Errno> ProxySocket::Accept() {
 }
 
 Errno ProxySocket::Connect(SockAddrIn addr_in) {
+    if (IsPrivateServerMode()) {
+        LOG_WARNING(Network, "Blocked room socket connection in private-server mode");
+        return Errno::NETUNREACH;
+    }
     LOG_WARNING(Network, "(STUBBED) called");
     return Errno::SUCCESS;
 }
@@ -140,7 +151,7 @@ std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
     u32 msg_flags = 0;
-    return Receive(flags, message, addr, msg_flags);
+    return RecvMsg(flags, message, addr, msg_flags);
 }
 
 std::pair<s32, Errno> ProxySocket::RecvMsg(int flags, std::span<u8> message, SockAddrIn* addr,
@@ -222,6 +233,10 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
 }
 
 std::pair<s32, Errno> ProxySocket::Send(std::span<const u8> message, int flags) {
+    if (IsPrivateServerMode()) {
+        LOG_DEBUG(Network, "Blocked room socket send in private-server mode");
+        return {-1, Errno::NETUNREACH};
+    }
     LOG_WARNING(Network, "(STUBBED) called");
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
     ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
@@ -242,6 +257,11 @@ void ProxySocket::SendPacket(ProxyPacket& packet) {
 std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message,
                                           const SockAddrIn* addr) {
     ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
+
+    if (IsPrivateServerMode()) {
+        LOG_DEBUG(Network, "Blocked room datagram in private-server mode");
+        return {-1, Errno::NETUNREACH};
+    }
 
     if (!is_bound) {
         LOG_ERROR(Network, "ProxySocket is not bound!");

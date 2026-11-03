@@ -10,10 +10,27 @@ This FAQ will serve as a general quick question and answer simple questions.
 No - The only emulator that has this kind of functionality is *Ryujinx* and it's forks.  This solution requires loading a custom module on a modded switch console to work.
 
 ### Can I Play Online Games?
-No - This would require hijacking requests to Nintendo's official servers to a custom server infrastructure built to emulate that functionality.  This is how services like [*Pretendo*](https://pretendo.network/) operate.  As such, you would not be able to play "Online", you can however play multiplayer games.
+Nintendo's official online services are not supported. A separately operated private server may
+provide compatible services; configuring one does not guarantee that a particular game works.
 
-Guest socket readiness operations (`select` and `poll`) are emulated, but this alone does not
-provide Nintendo's online services or guarantee compatibility with a particular game or server.
+Private-server mode is off by default. In `[Services]`, set `private_server_enabled=true` and its
+`\default=false` entry to enable it. Set `private_server_domains` to a comma-separated list of
+domains and `private_server_gateway` to a loopback IPv4 address; those domains and their subdomains
+resolve to that gateway. Set `private_server_ca` to the path of a single DER certificate, and
+`private_server_relay` to the server's IPv4 address and allowed ports, for example
+`203.0.113.10:3478,49160-49200`. Set a corresponding `\default=false` entry for each value.
+An empty relay permits no external relay. Invalid network settings block guest DNS and outgoing
+connections instead of falling back to unrestricted networking.
+
+This mode supplies an unsigned, emulator-generated identity, not a Nintendo credential. The server
+must authenticate players separately. The configured CA is trusted by guest TLS for every hostname;
+only use a CA from an operator you trust. Certificate and hostname checks still apply when requested
+by the game. Restricting the guest's outbound connections does not by itself guarantee that a
+server or another client cannot expose a player's address through signaling.
+In this mode the custom CA is also appended to certificate queries for known console CA IDs, so a
+title building its own trust store can use it. This changes the number of returned certificates and
+may not be compatible with every title. Room-proxy guest sockets are disabled in private-server
+mode; local-wireless traffic is separate and is not covered by these restrictions.
 
 ### What's the Difference Between Online and Multiplayer?
 I have chosen the wording carefully here for a reason.  

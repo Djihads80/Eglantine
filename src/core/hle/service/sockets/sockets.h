@@ -27,11 +27,13 @@ enum class Errno : u32 {
     MSGSIZE = 90,
     OPNOTSUPP = 95,
     AFNOSUPPORT = 97,
+    NETUNREACH = 101,
     CONNABORTED = 103,
     CONNRESET = 104,
     NOTCONN = 107,
     TIMEDOUT = 110,
     CONNREFUSED = 111,
+    HOSTUNREACH = 113,
     INPROGRESS = 115,
     ISCONN = 106,
 };

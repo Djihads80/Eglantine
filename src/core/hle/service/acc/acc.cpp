@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <string>
 
 #include "common/common_types.h"
 #include "common/fs/file.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include <ranges>
 #include "common/stb.h"
 #include "common/string_util.h"
@@ -23,6 +26,7 @@
 #include "core/hle/service/acc/acc.h"
 #include "core/hle/service/acc/async_context.h"
 #include "core/hle/service/acc/errors.h"
+#include "core/hle/service/acc/private_identity.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
@@ -717,7 +721,10 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
-        rb.PushRaw<u64>(profile_manager->GetLastOpenedUser().Hash());
+        const auto user = profile_manager->GetLastOpenedUser();
+        rb.PushRaw<u64>(Settings::values.private_server_enabled.GetValue()
+                            ? PrivateServer::GetAccountId(user)
+                            : user.Hash());
     }
 
     void EnsureIdTokenCacheAsync(HLERequestContext& ctx) {
@@ -729,12 +736,22 @@ private:
     }
 
     void LoadIdTokenCacheDeprecated(HLERequestContext& ctx) {
+        if (Settings::values.private_server_enabled.GetValue()) {
+            LoadPrivateServerIdToken(ctx);
+            return;
+        }
+
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         ensure_token_id->LoadIdTokenCache(ctx);
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
+        if (Settings::values.private_server_enabled.GetValue()) {
+            LoadPrivateServerIdToken(ctx);
+            return;
+        }
+
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         std::vector<u8> token_data(0x100);
@@ -748,6 +765,11 @@ private:
     }
 
     void GetNintendoAccountUserResourceCacheForApplication(HLERequestContext& ctx) {
+        if (Settings::values.private_server_enabled.GetValue()) {
+            GetPrivateServerUserResourceCache(ctx);
+            return;
+        }
+
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         std::vector<u8> nas_user_base_for_application(0x68);
@@ -761,6 +783,90 @@ private:
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
         rb.PushRaw<u64>(profile_manager->GetLastOpenedUser().Hash());
+    }
+
+    /// Answers an id token load with the opened profile's private-server token. The guest reads
+    /// back as many bytes as the returned length, so a buffer that cannot hold the token and its
+    /// NUL terminator is refused instead of being given a truncated token.
+    void LoadPrivateServerIdToken(HLERequestContext& ctx) {
+        const Common::UUID user_id = profile_manager->GetLastOpenedUser();
+        if (user_id.IsInvalid()) {
+            LOG_ERROR(Service_ACC, "No user is open to make a private-server id token for");
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidUserId);
+            return;
+        }
+
+        const s64 now = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+        const std::string token =
+            PrivateServer::MakeIdToken(PrivateServer::GetAccountId(user_id),
+                                       system.GetApplicationProcessProgramID(), now);
+
+        const std::size_t buffer_size = ctx.CanWriteBuffer() ? ctx.GetWriteBufferSize() : 0;
+        if (token.size() >= buffer_size) {
+            LOG_ERROR(Service_ACC, "Id token of {} bytes does not fit the {}-byte buffer",
+                      token.size() + 1, buffer_size);
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidArrayLength);
+            return;
+        }
+
+        LOG_DEBUG(Service_ACC, "called, loaded the private-server id token");
+        ctx.WriteBuffer(token.c_str(), token.size() + 1);
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push(static_cast<u32>(token.size()));
+    }
+
+    /// Answers with the opened profile's private-server account. Only the account id, country and
+    /// active flag are filled; the rest of NasUserBaseForApplication is undocumented.
+    void GetPrivateServerUserResourceCache(HLERequestContext& ctx) {
+        struct NasUserBaseForApplication {
+            u64 account_id;
+            std::array<char, 8> country;
+            u8 is_active;
+            std::array<u8, 0x57> reserved;
+        };
+        static_assert(sizeof(NasUserBaseForApplication) == 0x68);
+
+        const Common::UUID user_id = profile_manager->GetLastOpenedUser();
+        if (user_id.IsInvalid()) {
+            LOG_ERROR(Service_ACC, "No user is open to describe to a private server");
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidUserId);
+            return;
+        }
+
+        const std::size_t buffer_size = ctx.CanWriteBuffer() ? ctx.GetWriteBufferSize() : 0;
+        if (buffer_size < sizeof(NasUserBaseForApplication)) {
+            LOG_ERROR(Service_ACC, "NasUserBaseForApplication does not fit the {}-byte buffer",
+                      buffer_size);
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidArrayLength);
+            return;
+        }
+
+        LOG_DEBUG(Service_ACC, "called, loaded the private-server account");
+        const u64 account_id = PrivateServer::GetAccountId(user_id);
+        const NasUserBaseForApplication user_base{
+            .account_id = account_id,
+            .country = {'U', 'S'},
+            .is_active = 1,
+            .reserved = {},
+        };
+        ctx.WriteBuffer(user_base);
+
+        if (ctx.CanWriteBuffer(1)) {
+            std::vector<u8> unknown_out_buffer(ctx.GetWriteBufferSize(1));
+            ctx.WriteBuffer(unknown_out_buffer, 1);
+        }
+
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.PushRaw<u64>(account_id);
     }
 
     void StoreOpenContext(HLERequestContext& ctx) {

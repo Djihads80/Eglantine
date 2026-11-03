@@ -51,14 +51,13 @@ public:
                      std::shared_ptr<SelectNotifier> select_notifier);
     ~BSD_USA() override;
 
-    // These methods are called from SSL; the first two are also called from
-    // this class for the corresponding IPC methods.
-    // On the real device, the SSL service makes IPC calls to this service.
-    std::variant<s32, Errno> DuplicateSocketImpl(s32 fd);
-    Errno CloseImpl(s32 fd);
+    // Called from SSL. On the real device, the SSL service makes IPC calls to this service.
     std::optional<std::shared_ptr<Network::SocketBase>> GetSocket(s32 fd);
 
 private:
+    std::variant<s32, Errno> DuplicateSocketImpl(s32 fd);
+    Errno CloseImpl(s32 fd);
+
     /// Maximum number of file descriptors
     static constexpr size_t MAX_FD = 128;
     /// Largest decompressed room packet. A UDP datagram cannot be larger.

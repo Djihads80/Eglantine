@@ -711,6 +711,219 @@ PollEvents TranslatePollRevents(short revents) {
     return result;
 }
 
+constexpr bool IsAsciiDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+constexpr char AsciiToLower(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+/// Parses a decimal number of at most max, without sign, leading zeros or other characters.
+std::optional<u32> ParseDecimal(std::string_view text, u32 max) {
+    if (text.empty() || text.size() > 5 || (text.size() > 1 && text[0] == '0')) {
+        return std::nullopt;
+    }
+    u32 value = 0;
+    for (const char c : text) {
+        if (!IsAsciiDigit(c)) {
+            return std::nullopt;
+        }
+        value = value * 10 + static_cast<u32>(c - '0');
+    }
+    if (value > max) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// Parses a dotted-decimal IPv4 address of exactly four octets.
+std::optional<IPv4Address> ParseIPv4(std::string_view text) {
+    IPv4Address address{};
+    for (size_t i = 0; i < address.size(); ++i) {
+        const bool is_last = i + 1 == address.size();
+        const size_t end = is_last ? text.size() : text.find('.');
+        if (end == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const std::optional<u32> octet = ParseDecimal(text.substr(0, end), 255);
+        if (!octet) {
+            return std::nullopt;
+        }
+        address[i] = static_cast<u8>(*octet);
+        text.remove_prefix(is_last ? end : end + 1);
+    }
+    return address;
+}
+
+/// Calls visit on each item of a comma-separated list while it returns true. False if it returned
+/// false or an item is empty, as in an empty list.
+template <typename Visit>
+bool ForEachListItem(std::string_view list, Visit&& visit) {
+    while (true) {
+        const size_t end = list.find(',');
+        const std::string_view item = list.substr(0, end);
+        if (item.empty() || !visit(item)) {
+            return false;
+        }
+        if (end == std::string_view::npos) {
+            return true;
+        }
+        list.remove_prefix(end + 1);
+    }
+}
+
+/// Whether name is a host name of letters, digits and hyphens, in labels of 1 to 63 characters
+/// that neither start nor end with a hyphen, without a trailing dot.
+bool IsValidDomain(std::string_view name) {
+    if (name.size() > 253) {
+        return false;
+    }
+    size_t label_length = 0;
+    char previous = '.';
+    for (const char c : name) {
+        if (c == '.') {
+            if (label_length == 0 || previous == '-') {
+                return false;
+            }
+            label_length = 0;
+        } else {
+            const char lower = AsciiToLower(c);
+            const bool is_alphanumeric = IsAsciiDigit(c) || (lower >= 'a' && lower <= 'z');
+            if (!is_alphanumeric && (c != '-' || label_length == 0)) {
+                return false;
+            }
+            if (++label_length > 63) {
+                return false;
+            }
+        }
+        previous = c;
+    }
+    return label_length != 0 && previous != '-';
+}
+
+/// Whether host is domain or one of its subdomains, ignoring ASCII case.
+bool IsWithinDomain(std::string_view host, std::string_view domain) {
+    if (host.size() < domain.size()) {
+        return false;
+    }
+    const size_t start = host.size() - domain.size();
+    if (start != 0 && host[start - 1] != '.') {
+        return false;
+    }
+    const std::string_view suffix = host.substr(start);
+    return std::equal(domain.begin(), domain.end(), suffix.begin(), suffix.end(),
+                      [](char a, char b) { return AsciiToLower(a) == AsciiToLower(b); });
+}
+
+/// Whether destination, if any, is in the relay setting "A.B.C.D:PORTS", PORTS a comma-separated
+/// list of ports and first-last ranges. None if the setting is malformed; false if it is empty.
+std::optional<bool> MatchRelay(std::string_view relay, const SockAddrIn* destination) {
+    if (relay.empty()) {
+        return false;
+    }
+    const size_t colon = relay.find(':');
+    if (colon == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::optional<IPv4Address> address = ParseIPv4(relay.substr(0, colon));
+    // The unspecified, broadcast and multicast addresses name no single relay.
+    if (!address || *address == IPv4Address{} || *address == IPv4Address{255, 255, 255, 255} ||
+        ((*address)[0] & 0xF0) == 224) {
+        return std::nullopt;
+    }
+    bool matches = false;
+    const bool valid = ForEachListItem(relay.substr(colon + 1), [&](std::string_view ports) {
+        const size_t dash = ports.find('-');
+        const std::optional<u32> first = ParseDecimal(ports.substr(0, dash), 65535);
+        const std::optional<u32> last =
+            dash == std::string_view::npos ? first : ParseDecimal(ports.substr(dash + 1), 65535);
+        if (!first || !last || *first == 0 || *last < *first) {
+            return false;
+        }
+        const u32 port = destination != nullptr ? destination->portno : 0;
+        matches = matches || (destination != nullptr && destination->ip == *address &&
+                              port >= *first && port <= *last);
+        return true;
+    });
+    if (!valid) {
+        return std::nullopt;
+    }
+    return matches;
+}
+
+/// Routes a guest host name, or destination if given, checking the private-server settings as a
+/// whole: one malformed setting fails all guest traffic closed.
+PrivateServerRouting RoutePrivateServer(std::string_view host, const SockAddrIn* destination) {
+    if (!Settings::values.private_server_enabled.GetValue()) {
+        return {.route = PrivateServerRoute::Disabled, .gateway = {}, .malformed_setting = {}};
+    }
+    bool routed = false;
+    const bool domains_valid = ForEachListItem(
+        Settings::values.private_server_domains.GetValue(), [&](std::string_view domain) {
+            routed = routed || (destination == nullptr && IsWithinDomain(host, domain));
+            return IsValidDomain(domain);
+        });
+    const std::optional<IPv4Address> gateway =
+        ParseIPv4(Settings::values.private_server_gateway.GetValue());
+    const std::optional<bool> relay_matches =
+        MatchRelay(Settings::values.private_server_relay.GetValue(), destination);
+
+    std::string_view malformed_setting;
+    if (!domains_valid) {
+        malformed_setting = "private_server_domains";
+    } else if (!gateway || (*gateway)[0] != 127) {
+        malformed_setting = "private_server_gateway";
+    } else if (!relay_matches) {
+        malformed_setting = "private_server_relay";
+    }
+    if (!malformed_setting.empty()) {
+        return {
+            .route = PrivateServerRoute::Misconfigured,
+            .gateway = {},
+            .malformed_setting = malformed_setting,
+        };
+    }
+
+    if (destination != nullptr) {
+        routed = destination->ip == *gateway || *relay_matches;
+    }
+    return {
+        .route = routed ? PrivateServerRoute::Routed : PrivateServerRoute::Unrouted,
+        .gateway = *gateway,
+        .malformed_setting = {},
+    };
+}
+
+/// The error private-server mode fails guest traffic with, if routing blocks its destination.
+std::optional<Errno> BlockedEgressError(const PrivateServerRouting& routing) {
+    switch (routing.route) {
+    case PrivateServerRoute::Misconfigured:
+        return Errno::NETUNREACH;
+    case PrivateServerRoute::Unrouted:
+        return Errno::HOSTUNREACH;
+    case PrivateServerRoute::Disabled:
+    case PrivateServerRoute::Routed:
+        break;
+    }
+    return std::nullopt;
+}
+
+/// Whether destination is the loopback address fd is bound to, which a socket connecting to itself
+/// names, as the bsd service's wake socket does. Such a connection reaches nothing else.
+bool IsOwnLoopbackAddress(SOCKET fd, const SockAddrIn& destination) {
+    if (destination.ip[0] != 127) {
+        return false;
+    }
+    sockaddr_in local{};
+    socklen_t local_length = sizeof(local);
+    if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &local_length) == SOCKET_ERROR) {
+        return false;
+    }
+    const SockAddrIn own = TranslateToSockAddrIn(local, local_length);
+    return own.ip == destination.ip && own.portno == destination.portno;
+}
+
 } // Anonymous namespace
 
 NetworkInstance::NetworkInstance() {
@@ -771,6 +984,17 @@ std::string IPv4AddressToString(IPv4Address ip_addr) {
 u32 IPv4AddressToInteger(IPv4Address ip_addr) {
     return static_cast<u32>(ip_addr[0]) << 24 | static_cast<u32>(ip_addr[1]) << 16 |
            static_cast<u32>(ip_addr[2]) << 8 | static_cast<u32>(ip_addr[3]);
+}
+
+PrivateServerRouting RoutePrivateServerHost(std::string_view host) {
+    if (host.ends_with('.')) {
+        host.remove_suffix(1);
+    }
+    return RoutePrivateServer(host, nullptr);
+}
+
+PrivateServerRouting RoutePrivateServerDestination(const SockAddrIn& destination) {
+    return RoutePrivateServer({}, &destination);
 }
 
 std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
@@ -940,6 +1164,21 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
 }
 
 Errno Socket::Connect(SockAddrIn addr_in) {
+    const PrivateServerRouting routing = RoutePrivateServerDestination(addr_in);
+    if (const std::optional<Errno> error = BlockedEgressError(routing);
+        error && !IsOwnLoopbackAddress(fd, addr_in)) {
+        if (routing.route == PrivateServerRoute::Misconfigured) {
+            LOG_ERROR(Network,
+                      "Blocked connection to {}:{}: private-server mode is on, but {} is malformed",
+                      IPv4AddressToString(addr_in.ip), addr_in.portno, routing.malformed_setting);
+        } else {
+            LOG_WARNING(Network,
+                        "Blocked connection to {}:{}, neither the private-server gateway nor relay",
+                        IPv4AddressToString(addr_in.ip), addr_in.portno);
+        }
+        return *error;
+    }
+
     const sockaddr host_addr_in = TranslateFromSockAddrIn(addr_in);
     if (connect(fd, &host_addr_in, sizeof(host_addr_in)) != SOCKET_ERROR) {
         return Errno::SUCCESS;
@@ -1188,6 +1427,12 @@ std::pair<s32, Errno> Socket::SendTo(u32 flags, std::span<const u8> message,
     sockaddr host_addr_in;
 
     if (addr) {
+        if (const std::optional<Errno> error =
+                BlockedEgressError(RoutePrivateServerDestination(*addr))) {
+            LOG_DEBUG(Network, "Blocked datagram to {}:{} in private-server mode",
+                      IPv4AddressToString(addr->ip), addr->portno);
+            return {-1, *error};
+        }
         host_addr_in = TranslateFromSockAddrIn(*addr);
         to = &host_addr_in;
     }

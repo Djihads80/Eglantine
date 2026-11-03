@@ -98,8 +98,8 @@ private:
     /// Expects packets_mutex to be held
     bool MatchesPacket(const ProxyPacket& packet) const;
 
-    /// Takes the front packet as RecvFrom does, waiting for one as the socket's mode has it unless
-    /// flags holds FLAG_MSG_DONTWAIT
+    /// Takes the front packet, waiting for one as the socket's mode has it unless flags holds
+    /// FLAG_MSG_DONTWAIT
     std::pair<s32, Errno> Receive(int flags, std::span<u8> message, SockAddrIn* addr,
                                   u32& msg_flags);
 

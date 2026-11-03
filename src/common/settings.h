@@ -938,6 +938,12 @@ struct Values {
     Setting<std::string> network_interface{linkage, std::string(), "network_interface",
                                            Category::Network};
     SwitchableSetting<bool> airplane_mode{linkage, true, "airplane_mode", Category::Network};
+    // Private-server integration is explicitly enabled and does not use Nintendo credentials.
+    Setting<bool> private_server_enabled{linkage, false, "private_server_enabled", Category::Network};
+    Setting<std::string> private_server_domains{linkage, "", "private_server_domains", Category::Network};
+    Setting<std::string> private_server_gateway{linkage, "", "private_server_gateway", Category::Network};
+    Setting<std::string> private_server_ca{linkage, "", "private_server_ca", Category::Network};
+    Setting<std::string> private_server_relay{linkage, "", "private_server_relay", Category::Network};
 
     // WebService
     Setting<std::string> web_api_url{linkage, "api.ynet-fun.xyz", "web_api_url",

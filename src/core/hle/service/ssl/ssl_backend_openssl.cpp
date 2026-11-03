@@ -5,9 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
@@ -18,10 +22,6 @@
 #include "core/hle/service/ssl/ssl_backend.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
-
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
 
 using namespace Common::FS;
 
@@ -45,85 +45,25 @@ void OneTimeInit();
 void OneTimeInitLogFile();
 bool OneTimeInitBIO();
 
-#ifdef YUZU_BUNDLED_OPENSSL
-// This is ported from httplib
-struct scope_exit {
-  explicit scope_exit(std::function<void(void)> &&f)
-      : exit_function(std::move(f)), execute_on_destruction{true} {}
-
-  scope_exit(scope_exit &&rhs) noexcept
-      : exit_function(std::move(rhs.exit_function)),
-        execute_on_destruction{rhs.execute_on_destruction} {
-    rhs.release();
-  }
-
-  ~scope_exit() {
-    if (execute_on_destruction) { this->exit_function(); }
-  }
-
-  void release() { this->execute_on_destruction = false; }
-
-private:
-  scope_exit(const scope_exit &) = delete;
-  void operator=(const scope_exit &) = delete;
-  scope_exit &operator=(scope_exit &&) = delete;
-
-  std::function<void(void)> exit_function;
-  bool execute_on_destruction;
-};
-
-inline X509_STORE *CreateCaCertStore(const char *ca_cert,
-                                                    std::size_t size) {
-    auto mem = BIO_new_mem_buf(ca_cert, static_cast<int>(size));
-    auto se = scope_exit([&] { BIO_free_all(mem); });
-    if (!mem) { return nullptr; }
-
-    auto inf = PEM_X509_INFO_read_bio(mem, nullptr, nullptr, nullptr);
-    if (!inf) { return nullptr; }
-
-    auto cts = X509_STORE_new();
-    if (cts) {
-        for (auto i = 0; i < static_cast<int>(sk_X509_INFO_num(inf)); i++) {
-            auto itmp = sk_X509_INFO_value(inf, i);
-            if (!itmp) { continue; }
-
-            if (itmp->x509) { X509_STORE_add_cert(cts, itmp->x509); }
-            if (itmp->crl) { X509_STORE_add_crl(cts, itmp->crl); }
-        }
-    }
-
-    sk_X509_INFO_pop_free(inf, X509_INFO_free);
-    return cts;
-}
-
-inline void SetCaCertStore(SSL_CTX *ctx, X509_STORE *ca_cert_store) {
-    if (ca_cert_store) {
-        if (ctx) {
-            if (SSL_CTX_get_cert_store(ctx) != ca_cert_store) {
-                // Free memory allocated for old cert and use new store `ca_cert_store`
-                SSL_CTX_set_cert_store(ctx, ca_cert_store);
-            }
-        } else {
-            X509_STORE_free(ca_cert_store);
-        }
-    }
-}
-
-inline void LoadCaCertStore(SSL_CTX* ctx, const char* ca_cert, std::size_t size)
-{
-    SetCaCertStore(ctx, CreateCaCertStore(ca_cert, size));
-}
-#endif
-
 } // namespace
+
+class SSLTrustStore {
+public:
+    ~SSLTrustStore() {
+        X509_STORE_free(store);
+        for (X509* const certificate : certificates) {
+            X509_free(certificate);
+        }
+    }
+
+    X509_STORE* store = nullptr;
+    /// The certificates in store, which a store made from this one starts with
+    std::vector<X509*> certificates;
+};
 
 class SSLConnectionBackendOpenSSL final : public SSLConnectionBackend {
 public:
     Result Init() {
-        // on bundled OpenSSL, load ca cert store
-#ifdef YUZU_BUNDLED_OPENSSL
-        LoadCaCertStore(ssl_ctx, kCert, sizeof(kCert));
-#endif
         std::call_once(one_time_init_flag, OneTimeInit);
 
         if (!one_time_init_success) {
@@ -138,6 +78,7 @@ public:
             return CheckOpenSSLErrors();
         }
 
+        SSL_set_app_data(ssl, this); // for VerifyCallback
         SSL_set_connect_state(ssl);
 
         bio = BIO_new(bio_meth);
@@ -157,15 +98,10 @@ public:
         socket = std::move(socket_in);
     }
 
-    Result SetHostName(const char* hostname) override {
-        if (!skip_cert_verification) {
-            if (!SSL_set1_host(ssl, hostname)) {
-                LOG_ERROR(Service_SSL, "SSL_set1_host({}) failed", hostname);
-                return CheckOpenSSLErrors();
-            }
-        }
-        if (!SSL_set_tlsext_host_name(ssl, hostname)) { // hostname for SNI
-            LOG_ERROR(Service_SSL, "SSL_set_tlsext_host_name({}) failed", hostname);
+    Result SetHostName(const char* hostname_in) override {
+        hostname = hostname_in; // checked at the handshake if VerifyOption::HostName is set
+        if (!SSL_set_tlsext_host_name(ssl, hostname_in)) { // hostname for SNI
+            LOG_ERROR(Service_SSL, "SSL_set_tlsext_host_name({}) failed", hostname_in);
             return CheckOpenSSLErrors();
         }
         R_SUCCEED();
@@ -183,30 +119,26 @@ public:
         R_SUCCEED();
     }
 
-    void SetVerifyOption(u32 option) override {
-        skip_cert_verification = (option == 0);
-        LOG_WARNING(Service_SSL, "option={} skip_verification={}", option,
-                    skip_cert_verification);
-        if (skip_cert_verification) {
-            SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr);
-            SSL_set1_host(ssl, nullptr);
-            SSL_set_hostflags(ssl, 0);
-        } else {
-            SSL_set_verify(ssl, SSL_VERIFY_PEER, nullptr);
-        }
+    void SetVerifyOption(VerifyOption option) override {
+        verify_option = option;
+    }
+
+    void SetTrustStore(std::shared_ptr<const SSLTrustStore> store) override {
+        trust_store = std::move(store);
     }
 
     Result DoHandshake() override {
-        SSL_set_verify_result(ssl, X509_V_OK);
+        if (!handshake_started) {
+            R_TRY(ConfigureVerification());
+            handshake_started = true;
+        }
         const int ret = SSL_do_handshake(ssl);
 
-        if (!skip_cert_verification) {
-            const long verify_result = SSL_get_verify_result(ssl);
-            if (verify_result != X509_V_OK) {
-                LOG_ERROR(Service_SSL, "SSL cert verification failed because: {}",
-                          X509_verify_cert_error_string(verify_result));
-                return CheckOpenSSLErrors();
-            }
+        if (verify_error != X509_V_OK) {
+            LOG_ERROR(Service_SSL, "SSL cert verification failed because: {}",
+                      X509_verify_cert_error_string(verify_error));
+            CheckOpenSSLErrors();
+            return VerifyCertErrorResult(verify_error);
         }
 
         if (ret <= 0) {
@@ -218,6 +150,105 @@ public:
             }
         }
         return HandleReturn("SSL_do_handshake", 0, ret);
+    }
+
+    Result GetVerifyCertError() override {
+        const long error = std::exchange(verify_error, X509_V_OK);
+        if (error == X509_V_OK) {
+            R_SUCCEED();
+        }
+        return VerifyCertErrorResult(error);
+    }
+
+    // Sets the handshake to check what verify_option asks for, against trust_store. The chain
+    // is always built so that the host name and dates can be checked without VerifyOption::PeerCa,
+    // whose failures VerifyCallback then lets pass.
+    Result ConfigureVerification() {
+        constexpr auto extended_validation = VerifyOption::EvCertPartial |
+                                             VerifyOption::EvPolicyOid |
+                                             VerifyOption::EvCertFingerprint;
+        if (True(verify_option & extended_validation)) {
+            LOG_ERROR(Service_SSL, "Extended validation (verify option {:#x}) is not implemented",
+                      static_cast<u32>(verify_option));
+            return ResultInternalError;
+        }
+        if (True(verify_option & VerifyOption::HostName)) {
+            if (hostname.empty()) {
+                LOG_ERROR(Service_SSL, "Host name verification was asked for without a host name");
+                return ResultInternalError;
+            }
+            if (!SSL_set1_host(ssl, hostname.c_str())) {
+                LOG_ERROR(Service_SSL, "SSL_set1_host({}) failed", hostname);
+                return CheckOpenSSLErrors();
+            }
+        }
+        // Any trusted certificate ends a chain: server certificates may be trusted directly.
+        unsigned long flags = X509_V_FLAG_PARTIAL_CHAIN;
+        if (False(verify_option & VerifyOption::DateCheck)) {
+            flags |= X509_V_FLAG_NO_CHECK_TIME;
+        }
+        X509_VERIFY_PARAM_set_flags(SSL_get0_param(ssl), flags);
+        if (trust_store) {
+            if (!SSL_set1_verify_cert_store(ssl, trust_store->store)) {
+                LOG_ERROR(Service_SSL, "SSL_set1_verify_cert_store failed");
+                return CheckOpenSSLErrors();
+            }
+        }
+        SSL_set_verify(ssl, SSL_VERIFY_PEER, &VerifyCallback);
+        R_SUCCEED();
+    }
+
+    // Fails the handshake on the first failure of a check that verify_option asks for.
+    static int VerifyCallback(int preverify_ok, X509_STORE_CTX* store_ctx) {
+        if (preverify_ok) {
+            return 1;
+        }
+        auto* const ssl = static_cast<SSL*>(
+            X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx()));
+        auto* const self = static_cast<SSLConnectionBackendOpenSSL*>(SSL_get_app_data(ssl));
+        const int error = X509_STORE_CTX_get_error(store_ctx);
+        // The host name is only set with VerifyOption::HostName and the dates only checked with
+        // DateCheck. Anything else fails the chain, which only PeerCa asks to be trusted.
+        const bool chain_error = !IsHostNameError(error) && !IsDateError(error);
+        if (chain_error && False(self->verify_option & VerifyOption::PeerCa)) {
+            return 1;
+        }
+        if (self->verify_error == X509_V_OK) {
+            self->verify_error = error;
+        }
+        return 0;
+    }
+
+    static bool IsHostNameError(long error) {
+        return error == X509_V_ERR_HOSTNAME_MISMATCH || error == X509_V_ERR_IP_ADDRESS_MISMATCH;
+    }
+
+    static bool IsDateError(long error) {
+        return error == X509_V_ERR_CERT_NOT_YET_VALID || error == X509_V_ERR_CERT_HAS_EXPIRED ||
+               error == X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD ||
+               error == X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD;
+    }
+
+    static Result VerifyCertErrorResult(long error) {
+        if (IsHostNameError(error)) {
+            return ResultSslErrorInvalidCertDomain;
+        }
+        if (IsDateError(error)) {
+            return ResultSslErrorExpiredCertificate;
+        }
+        switch (error) {
+        case X509_V_ERR_CERT_REVOKED:
+            return ResultSslErrorRevokedCertificate;
+        case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:
+        case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+        case X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE:
+        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+        case X509_V_ERR_CERT_UNTRUSTED:
+            return ResultSslErrorUnknownCa;
+        default:
+            return ResultSslErrorBadCertificate;
+        }
     }
 
     Result Read(size_t* out_size, std::span<u8> data) override {
@@ -384,7 +415,11 @@ public:
     SSL* ssl = nullptr;
     BIO* bio = nullptr;
     bool got_read_eof = false;
-    bool skip_cert_verification = false;
+    bool handshake_started = false;
+    VerifyOption verify_option = VerifyOption::None;
+    std::shared_ptr<const SSLTrustStore> trust_store;
+    std::string hostname;
+    long verify_error = X509_V_OK; ///< The first check of verify_option that failed
 
     std::shared_ptr<Network::SocketBase> socket;
 };
@@ -396,6 +431,92 @@ Result CreateSSLConnectionBackend(std::unique_ptr<SSLConnectionBackend>* out_bac
 
     *out_backend = std::move(conn);
     return ResultSuccess;
+}
+
+Result CreateSSLTrustStore(const SSLTrustStore* base,
+                           std::span<const std::span<const u8>> der_certificates,
+                           std::shared_ptr<const SSLTrustStore>* out_store) {
+    auto trust_store = std::make_shared<SSLTrustStore>();
+    trust_store->store = X509_STORE_new();
+    if (!trust_store->store) {
+        LOG_ERROR(Service_SSL, "X509_STORE_new failed");
+        return CheckOpenSSLErrors();
+    }
+    // Takes the reference to certificate. A certificate the store fails to take, as one already
+    // in it, is trusted all the same or not at all.
+    const auto add = [&trust_store](X509* certificate) {
+        trust_store->certificates.push_back(certificate);
+        if (!X509_STORE_add_cert(trust_store->store, certificate)) {
+            ERR_clear_error();
+        }
+    };
+    if (base) {
+        for (X509* const certificate : base->certificates) {
+            X509_up_ref(certificate);
+            add(certificate);
+        }
+    }
+    for (const std::span<const u8> der : der_certificates) {
+        const unsigned char* next = der.data();
+        X509* const certificate = d2i_X509(nullptr, &next, static_cast<long>(der.size()));
+        if (!certificate) {
+            LOG_ERROR(Service_SSL, "Not trusting a certificate that does not decode");
+            CheckOpenSSLErrors();
+            continue;
+        }
+        add(certificate);
+    }
+    *out_store = std::move(trust_store);
+    R_SUCCEED();
+}
+
+Result DecodeServerPki(std::span<const u8> data, std::vector<std::vector<u8>>* out_certificates) {
+    std::vector<std::vector<u8>> certificates;
+    const std::string_view text{reinterpret_cast<const char*>(data.data()), data.size()};
+    if (text.find("-----BEGIN") != std::string_view::npos) {
+        BIO* const bio = BIO_new_mem_buf(data.data(), static_cast<int>(data.size()));
+        if (!bio) {
+            LOG_ERROR(Service_SSL, "BIO_new_mem_buf failed");
+            return CheckOpenSSLErrors();
+        }
+        ERR_clear_error(); // so that the last error is the one that ended the reading
+        while (X509* const certificate = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) {
+            const int size = i2d_X509(certificate, nullptr);
+            if (size > 0) {
+                auto& der = certificates.emplace_back(static_cast<size_t>(size));
+                unsigned char* out = der.data();
+                i2d_X509(certificate, &out);
+            }
+            X509_free(certificate);
+        }
+        BIO_free(bio);
+        // Reading ends at the end of the buffer, where no PEM block starts; anything else failed.
+        const unsigned long error = ERR_peek_last_error();
+        if (ERR_GET_LIB(error) != ERR_LIB_PEM || ERR_GET_REASON(error) != PEM_R_NO_START_LINE) {
+            LOG_ERROR(Service_SSL, "Server PKI holds a malformed PEM certificate");
+            return CheckOpenSSLErrors();
+        }
+        ERR_clear_error();
+    } else {
+        const unsigned char* next = data.data();
+        const unsigned char* const end = next + data.size();
+        while (next < end) {
+            const unsigned char* const start = next;
+            X509* const certificate = d2i_X509(nullptr, &next, static_cast<long>(end - next));
+            if (!certificate) {
+                LOG_ERROR(Service_SSL, "Server PKI holds a malformed DER certificate");
+                return CheckOpenSSLErrors();
+            }
+            X509_free(certificate);
+            certificates.emplace_back(start, next);
+        }
+    }
+    if (certificates.empty()) {
+        LOG_ERROR(Service_SSL, "Server PKI holds no certificate");
+        return ResultInternalError;
+    }
+    *out_certificates = std::move(certificates);
+    R_SUCCEED();
 }
 
 namespace {
@@ -438,13 +559,8 @@ void OneTimeInit() {
         return;
     }
 
-    SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, nullptr);
-
-    if (!SSL_CTX_set_default_verify_paths(ssl_ctx)) {
-        LOG_ERROR(Service_SSL, "SSL_CTX_set_default_verify_paths failed");
-        CheckOpenSSLErrors();
-        return;
-    }
+    // Connections trust only the certificates the console would, which each sets with
+    // SSL_set1_verify_cert_store, and never the host's: the SSL_CTX's own store stays empty.
 
     OneTimeInitLogFile();
 
