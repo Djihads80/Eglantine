@@ -522,6 +522,13 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             words[1], words[2], words[3]);
     }
     auto result = std::make_shared<LoweredNativeCode>();
+    static const bool hash_for_indirect_reset = [] {
+        const char* value = std::getenv("EDEN_NX2_RESETFIX");
+        return value && std::string_view{value} == "1";
+    }();
+    if (hash_for_indirect_reset) {
+        result->diagnostic_key = Shader::Ampere::NativeProgramKey(native);
+    }
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
     auto& lowered_code = result->code;
