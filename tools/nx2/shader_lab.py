@@ -5,7 +5,7 @@ emulator sees, hide them one by one (or in bulk, to bisect), watch which constan
 change from frame to frame, and read the disassembly.
 
 Run the emulator with EDEN_NX2_DIAG_DIR=<dir> (and EDEN_NX2_SHADER_DUMP=<dumps> for disassembly,
-EDEN_NX2_FRAME_CAPTURE=<frames> for a preview), then:
+EDEN_NX2_FRAME_CAPTURE=<frames> for a preview, EDEN_NX2_DIAG_SAMPLES=1 for the per-draw pixel probe), then:
 
     python3 -I tools/nx2/shader_lab.py --diag-dir <dir> [--dump-dir <dumps>] [--frames <frames>]
 
@@ -310,9 +310,9 @@ function rows(){const q=$("#q").value.toLowerCase();
   &&(!$("#hon").checked||isHid(p))&&(!$("#ins").checked||isIns(p))
   &&(!q||(p.key+" "+p.addr+" "+(S.labels[p.key]||"")).toLowerCase().includes(q)))
   .sort((a,b)=>{const x=a[sortBy],y=b[sortBy];return (x>y?1:x<y?-1:0)*sortDir})}
-function render(){shown=rows();const cols=[["kind","l"],["key","l"],["addr","l"],["per_s",""],["draws",""],["instances",""],["vertices",""],["rt",""]];
+function render(){shown=rows();const cols=[["kind","l"],["key","l"],["addr","l"],["per_s",""],["draws",""],["instances",""],["vertices",""],["rt",""],["probe",""]];
  $("#list").innerHTML="<table><tr><th class=l></th>"+cols.map(([c,a])=>`<th class="${a}" data-c="${c}">${c==="per_s"?"/s":c}${c===sortBy?(sortDir>0?" ▲":" ▼"):""}</th>`).join("")+"<th class=l>label</th></tr>"+
- shown.slice(0,600).map(p=>`<tr class="row ${sel===p.key+p.kind?"sel":""}" data-id="${p.key}${p.kind}"><td class=l><input type=checkbox data-h="${p.key}" ${isHid(p)?"":"checked"} title="drawn / hidden"></td><td class="l">${KIND[p.kind][0]}</td><td class="l mono">${p.key.slice(0,10)}</td><td class="l mono mut">${p.addr}</td><td>${p.per_s}</td><td>${num(p.draws)}</td><td>${num(p.instances)}</td><td>${num(p.vertices)}</td><td class=mut>${p.rt}</td><td class="l ${isHid(p)?"hid":""}">${isHid(p)?"hidden ":""}${isIns(p)?"◉ ":""}${esc(S.labels[p.key]||"")}</td></tr>`).join("")+"</table>"}
+ shown.slice(0,600).map(p=>`<tr class="row ${sel===p.key+p.kind?"sel":""}" data-id="${p.key}${p.kind}"><td class=l><input type=checkbox data-h="${p.key}" ${isHid(p)?"":"checked"} title="drawn / hidden"></td><td class="l">${KIND[p.kind][0]}</td><td class="l mono">${p.key.slice(0,10)}</td><td class="l mono mut">${p.addr}</td><td>${p.per_s}</td><td>${num(p.draws)}</td><td>${num(p.instances)}</td><td>${num(p.vertices)}</td><td class=mut>${p.rt}</td><td class="${p.probe&&p.probe.zero===p.probe.draws?"hid":"mut"}" title="draws that passed no samples / draws probed in the last capture">${p.probe?p.probe.zero+"/"+p.probe.draws:""}</td><td class="l ${isHid(p)?"hid":""}">${isHid(p)?"hidden ":""}${isIns(p)?"◉ ":""}${esc(S.labels[p.key]||"")}</td></tr>`).join("")+"</table>"}
 $("#list").onclick=e=>{const h=e.target.dataset.h;if(h){post("/api/ablate",{key:h,on:!e.target.checked});return}
  const th=e.target.closest("th");if(th&&th.dataset.c){const c=th.dataset.c;sortDir=c===sortBy?-sortDir:-1;sortBy=c;render();return}
  const tr=e.target.closest("tr.row");if(tr){sel=tr.dataset.id;render();drawDetail()}};
@@ -326,7 +326,8 @@ async function drawDetail(){const p=cur();if(!p){$("#detail").textContent="Not s
  const label=S.labels[p.key]||"";
  let body="";
  if(tab==="over"){body=`<table>${Object.entries(p.outcomes).map(([k,v])=>`<tr><td class=l>${k}</td><td>${num(v)}</td></tr>`).join("")}</table>
-  <p class=mut>last seen frame ${p.last_frame} (now ${S.frame}); last target ${p.rt}</p>`}
+  <p class=mut>last seen frame ${p.last_frame} (now ${S.frame}); last target ${p.rt}</p>
+  ${p.probe?`<div class=note>Pixel probe (last capture): ${p.probe.draws} draw(s), <b class="${p.probe.zero===p.probe.draws?"w":""}">${p.probe.zero} passed no samples</b>, ${num(p.probe.samples)} samples in total.${p.probe.zero===p.probe.draws?" Nothing this program drew reached the picture.":""}</div>`:`<p class=mut>No pixel probe yet: start the game with EDEN_NX2_DIAG_SAMPLES=1 and press “Capture frame”.</p>`}`}
  if(tab==="uni"){const w=(S.inspect||[]).find(i=>i.key===p.key);
   if(!isIns(p))body=`<div class=note>Not inspected. Press “Inspect” to watch the constant buffers this program is drawn with.</div>`;
   else if(!w||!w.slots.length)body=`<div class=note>Waiting for a draw with this program…</div>`;

@@ -36,6 +36,12 @@
 //                              to frame are reported in diag-state.json;
 //                            - draw-list: create it and the next frame's draws and dispatches are
 //                              written to draw-list-<n>.tsv (the file is removed).
+//   EDEN_NX2_DIAG_SAMPLES=1  with a draw-list capture, count the samples each draw passes (an occlusion
+//                            query per draw, up to MaxProbeQueries) and add them to the draw list as
+//                            the "samples" column and to diag-state.json as "probe". A draw that
+//                            reaches the screen with real geometry but passes 0 samples is drawing
+//                            nothing visible. Draws made while the game itself counts occlusion
+//                            samples are not probed ("-").
 //   EDEN_NX2_ABLATE_FILE=<f> use that file instead of <dir>/ablate.txt.
 namespace VideoCommon::Nx2Diag {
 
@@ -66,6 +72,13 @@ inline const std::filesystem::path& AblateFile() {
     }();
     return file;
 }
+
+inline bool SamplesEnabled() {
+    static const bool enabled = Env("EDEN_NX2_DIAG_SAMPLES") != nullptr;
+    return enabled;
+}
+
+inline constexpr u32 MaxProbeQueries = 8192;
 
 inline std::string Hex16(u64 value) {
     char text[17];
@@ -146,12 +159,30 @@ public:
         return capturing;
     }
 
-    // One tab separated row of the frame being captured (only call while Capturing()).
-    void Row(const std::string& row) {
+    // One tab separated row of the frame being captured (only call while Capturing()). `query` is the
+    // probe query of the draw (NextQuery()) and vs/ps its programs, for the samples column.
+    void Row(const std::string& row, int query = -1, u64 vs = 0, u64 ps = 0) {
         std::scoped_lock lock{mutex};
         if (capturing) {
-            rows << row << '\n';
+            rows.push_back({row, query, vs, ps});
         }
+    }
+
+    // The next probe query of the capture in progress, or -1 (not capturing or out of queries).
+    int NextQuery() {
+        std::scoped_lock lock{mutex};
+        return capturing && query_count < MaxProbeQueries ? static_cast<int>(query_count++) : -1;
+    }
+
+    u32 QueryCount() {
+        std::scoped_lock lock{mutex};
+        return query_count;
+    }
+
+    // The samples passed by each probe query of the capture that is ending.
+    void SetSamples(std::vector<u64> values) {
+        std::scoped_lock lock{mutex};
+        samples = std::move(values);
     }
 
     // Frame boundary: exports the state, starts a capture when <dir>/draw-list exists and ends the
@@ -173,20 +204,41 @@ public:
             const auto path = dir / ("draw-list-" + std::to_string(next_capture++) + ".tsv");
             if (std::ofstream out{path}) {
                 out << "seq\tkind\tvs\tps\toutcome\tvertices\tinstances\ttopology\trt0\twidth\theight\t"
-                       "format\tzeta\tblend\tcolor_mask\textra\tvs_key\tps_key\n"
-                    << rows.str();
-                LOG_INFO(HW_GPU, "diag: wrote {} ({} rows)", path.string(), seq);
+                       "format\tzeta\tblend\tcolor_mask\textra\tvs_key\tps_key\tsamples\n";
+                for (auto& [id, program] : programs) {
+                    program.probe = {};
+                }
+                for (const auto& entry : rows) {
+                    const bool known = entry.query >= 0 && static_cast<size_t>(entry.query) < samples.size();
+                    out << entry.text << '\t' << (known ? std::to_string(samples[entry.query]) : "-") << '\n';
+                    if (known) {
+                        for (const auto& [kind, address] : {std::pair{'v', entry.vs}, std::pair{'p', entry.ps}}) {
+                            const u64 key = KeyOf(address);
+                            if (const auto it = programs.find({kind, key ? key : address}); it != programs.end()) {
+                                ++it->second.probe.draws;
+                                it->second.probe.zero += samples[entry.query] == 0;
+                                it->second.probe.samples += samples[entry.query];
+                            }
+                        }
+                    }
+                }
+                LOG_INFO(HW_GPU, "diag: wrote {} ({} rows, {} probed)", path.string(), rows.size(),
+                         samples.size());
             } else {
                 LOG_ERROR(HW_GPU, "diag: cannot write {}", path.string());
             }
-            rows.str({});
+            rows.clear();
+            samples.clear();
+            query_count = 0;
             return;
         }
         std::error_code error;
         if (std::filesystem::remove(dir / "draw-list", error)) {
             capturing = true;
             seq = 0;
-            rows.str({});
+            rows.clear();
+            samples.clear();
+            query_count = 0;
         }
     }
 
@@ -260,6 +312,18 @@ private:
         u64 exported_draws{};
         double draws_per_second{};
         std::map<std::string, u64> outcomes;
+        struct Probe {
+            u64 draws{};
+            u64 zero{};
+            u64 samples{};
+        } probe;
+    };
+
+    struct RowEntry {
+        std::string text;
+        int query;
+        u64 vs;
+        u64 ps;
     };
 
     struct Watch {
@@ -355,7 +419,12 @@ private:
                 out << (first_outcome ? "" : ",") << '"' << name << "\":" << n;
                 first_outcome = false;
             }
-            out << "}}";
+            out << '}';
+            if (program.probe.draws > 0) {
+                out << ",\"probe\":{\"draws\":" << program.probe.draws << ",\"zero\":" << program.probe.zero
+                    << ",\"samples\":" << program.probe.samples << '}';
+            }
+            out << '}';
             first = false;
         }
         out << "],\"ablated\":[";
@@ -420,7 +489,9 @@ private:
     std::set<u64> inspected;
     std::filesystem::file_time_type ablate_stamp{};
     std::filesystem::file_time_type inspect_stamp{};
-    std::ostringstream rows;
+    std::vector<RowEntry> rows;
+    std::vector<u64> samples;
+    u32 query_count{};
     bool capturing{};
     u32 seq{};
     u32 next_capture{};
