@@ -676,7 +676,15 @@ struct Values {
     SwitchableSetting<bool> emulate_bgr565{linkage, false, "emulate_bgr565",
                                             Category::RendererHacks};
 
-    SwitchableSetting<bool> use_asynchronous_shaders{linkage, true, "use_asynchronous_shaders",
+    // On by default on Android (pipelines building on the GPU thread stall a phone for 100s of
+    // ms); desktop keeps it off.
+    SwitchableSetting<bool> use_asynchronous_shaders{linkage,
+#ifdef __ANDROID__
+                                                     true,
+#else
+                                                     false,
+#endif
+                                                     "use_asynchronous_shaders",
                                                      Category::RendererHacks};
     /// Large compressed textures keep their mip levels from 1 on (half resolution): less video
     /// memory, slightly blurrier textures up close.
