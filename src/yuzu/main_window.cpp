@@ -722,6 +722,8 @@ void MainWindow::UpdateMcpMenu() {
     UpdateMcpStatusLabel();
 }
 
+/// Rebuilt each time the menu opens. Calls the route tools through Server::CallTool on the GUI
+/// thread, so those tools must not wait on this thread.
 void MainWindow::PopulateMcpRoutesMenu() {
     mcp_routes_menu->clear();
     const auto disabled = [this](const QString& text) {

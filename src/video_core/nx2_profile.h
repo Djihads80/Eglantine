@@ -83,6 +83,8 @@ inline bool Enabled() {
 /// themselves at their next Report).
 inline std::atomic<u32> g_generation{0};
 
+/// Turns the profiler on or off at runtime (thread-safe). Each thread restarts its window at
+/// its next Report, so the first numbers after a toggle take one full window.
 inline void SetEnabled(bool enabled) {
     g_generation.fetch_add(1, std::memory_order_relaxed);
     g_enabled.store(enabled, std::memory_order_relaxed);
@@ -93,6 +95,7 @@ struct Snapshot {
     std::string thread;
     u64 when_ns{};   ///< Now() at the report
     u64 window_ns{};
+    /// Exclusive time (ms) and entries of one zone, both per second.
     struct ZoneStat {
         const char* name;
         double ms;
@@ -102,6 +105,7 @@ struct Snapshot {
     std::vector<std::pair<const char*, double>> counters;
 };
 
+/// Guards Snapshots(): Report writes under it from each profiled thread.
 inline std::mutex& SnapshotMutex() {
     static std::mutex mutex;
     return mutex;

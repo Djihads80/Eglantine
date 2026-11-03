@@ -27,6 +27,7 @@ namespace Mcp {
 
 class Host;
 
+/// Listen address and access settings for the MCP server.
 struct ServerConfig {
     std::string bind_address = "127.0.0.1";
     u16 port = 6544;
@@ -38,14 +39,21 @@ struct ServerConfig {
 /// of the application (it outlives individual game boots).
 class Server {
 public:
+    /// Registers all tools and builds the protocol, resources and prompts. Does not listen yet.
+    /// system and host must outlive the Server.
     Server(Core::System& system, Host& host, ServerConfig config);
+    /// Stops the server if it is running.
     ~Server();
 
     Server(const Server&) = delete;
     Server& operator=(const Server&) = delete;
 
     /// Binds and starts serving. Returns an empty string on success, else an error message.
+    /// Also installs the log sink and trace hooks, reopens the timeline, starts the HTTP thread
+    /// and writes the discovery file. Does nothing if already running.
     std::string Start();
+    /// Wakes all blocked requests, removes the log sink, hooks and discovery file, then joins the
+    /// HTTP thread. Blocks until in-flight handlers return. Safe to call when not running.
     void Stop();
 
     [[nodiscard]] bool IsRunning() const {
@@ -54,8 +62,10 @@ public:
     [[nodiscard]] const ServerConfig& Config() const {
         return config;
     }
+    /// The MCP endpoint URL, e.g. "http://127.0.0.1:6544/mcp".
     [[nodiscard]] std::string Url() const;
 
+    /// Enables or disables state-changing tools for agents. Takes effect on the next call.
     void SetWritesAllowed(bool allowed) {
         writes_allowed.store(allowed);
     }
@@ -82,6 +92,7 @@ public:
         bool writes = false;
         ActivityState activity;
     };
+    /// Snapshot of the server state for the status bar. Takes the session and lease locks.
     [[nodiscard]] Summary GetSummary();
 
     /// Runs a tool for the frontend's own UI (the user, not an agent: no lease or write checks).
@@ -89,6 +100,7 @@ public:
     ToolResult CallTool(const std::string& name, const json& arguments);
 
 private:
+    /// Builds a ToolContext with the current writes flag and no session id.
     ToolContext MakeContext();
 
     Core::System& system;

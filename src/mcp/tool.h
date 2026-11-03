@@ -33,19 +33,27 @@ struct ToolResult {
     std::optional<json> structured;
     bool is_error = false;
 
+    /// A successful result with one text block.
     static ToolResult Text(std::string text);
+    /// A result with one text block and is_error set.
     static ToolResult Error(std::string text);
     /// Sets structuredContent and mirrors it as a text block for clients that ignore it.
     static ToolResult Structured(json value);
 
+    /// Appends a text content block. Returns *this for chaining.
     ToolResult& AddText(std::string text);
+    /// Appends an image content block with the bytes base64-encoded. Returns *this for chaining.
     ToolResult& AddImage(std::span<const u8> bytes, std::string mime_type);
 
+    /// The MCP CallToolResult object (content, structuredContent, isError).
     [[nodiscard]] json ToJson() const;
 };
 
+/// Implements a tool. Runs on an HTTP worker thread; arguments have already been validated
+/// against the tool's input_schema. May throw; the server turns exceptions into errors.
 using ToolHandler = std::function<ToolResult(ToolContext& context, const json& arguments)>;
 
+/// A tool definition plus its handler, as registered in the ToolRegistry.
 struct Tool {
     std::string name;
     std::string title;
@@ -61,9 +69,11 @@ struct Tool {
     bool requires_control = false;
     ToolHandler handler;
 
+    /// The tool's entry for tools/list (name, schemas, annotations, title).
     [[nodiscard]] json DefinitionJson() const;
 };
 
+/// Standard base64 with padding.
 std::string Base64Encode(std::span<const u8> bytes);
 
 } // namespace Mcp

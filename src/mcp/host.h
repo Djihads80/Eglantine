@@ -20,6 +20,7 @@ class Tas;
 
 namespace Mcp {
 
+/// One title from the frontend's game list.
 struct GameEntry {
     std::string path;
     std::string title;
@@ -33,6 +34,7 @@ struct Frame {
     std::vector<u8> bgra;
 };
 
+/// Performance figures from the frontend. valid is false when it has none (e.g. no game).
 struct PerfSnapshot {
     bool valid = false;
     double game_fps = 0.0;
@@ -48,6 +50,7 @@ class Host {
 public:
     virtual ~Host() = default;
 
+    /// Short frontend name (e.g. for the discovery file and status).
     [[nodiscard]] virtual std::string FrontendName() const = 0;
 
     /// Last stats the frontend computed (it owns the resetting perf counters).
@@ -60,20 +63,25 @@ public:
         return nullptr;
     }
 
+    /// The frontend's game list, or nullopt if this frontend has none.
     [[nodiscard]] virtual std::optional<std::vector<GameEntry>> ListGames() {
         return std::nullopt;
     }
 
     /// Each returns an empty string on success or an error message.
+    /// Boots the game at path, as if the user opened it.
     virtual std::string BootGame([[maybe_unused]] const std::string& path) {
         return "not supported by this frontend";
     }
+    /// Pauses emulation.
     virtual std::string Pause() {
         return "not supported by this frontend";
     }
+    /// Resumes paused emulation.
     virtual std::string Resume() {
         return "not supported by this frontend";
     }
+    /// Stops the running game; the emulator stays open.
     virtual std::string Stop() {
         return "not supported by this frontend";
     }

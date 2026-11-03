@@ -20,6 +20,7 @@ namespace Mcp {
 
 namespace {
 
+/// Whether the `capture` array names `what`.
 bool Wants(const json& capture, std::string_view what) {
     for (const auto& c : capture) {
         if (c.get<std::string>() == what) {
@@ -29,6 +30,9 @@ bool Wants(const json& capture, std::string_view what) {
     return false;
 }
 
+/// act tool: runs optional input, waits (event, screen, frames, then ms, each with its own
+/// timeout), then captures what was asked for. Blocks the calling thread for the whole wait.
+/// Input needs writes and the control lease; a timed-out wait is reported, not an error.
 ToolResult Act(ToolContext& ctx, const json& args) {
     using namespace std::chrono;
     const auto started = steady_clock::now();

@@ -15,6 +15,8 @@ namespace Mcp {
 
 namespace {
 
+/// Describes a lease holder for the caller: whether it is them, a short session id, and how long
+/// the lease has been held and has left, in whole seconds.
 json HolderJson(const ControlLease::Holder& h, const std::string& caller) {
     const auto now = ControlLease::Clock::now();
     return json{
@@ -28,6 +30,7 @@ json HolderJson(const ControlLease::Holder& h, const std::string& caller) {
     };
 }
 
+/// control_status: reports whether the lease is free, or who holds it.
 ToolResult ControlStatus(ToolContext& ctx, const json&) {
     if (!ctx.control) {
         return ToolResult::Error("control leases are not available");
@@ -43,6 +46,8 @@ ToolResult ControlStatus(ToolContext& ctx, const json&) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// acquire_control: takes or renews the lease for the calling session. If another session holds
+/// it, returns that holder as an error result with "acquired": false. Logs success to the timeline.
 ToolResult AcquireControl(ToolContext& ctx, const json& args) {
     if (!ctx.control) {
         return ToolResult::Error("control leases are not available");
@@ -69,6 +74,7 @@ ToolResult AcquireControl(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// release_control: frees the lease if the caller holds it; "released" says whether it did.
 ToolResult ReleaseControl(ToolContext& ctx, const json&) {
     if (!ctx.control) {
         return ToolResult::Error("control leases are not available");
@@ -80,6 +86,8 @@ ToolResult ReleaseControl(ToolContext& ctx, const json&) {
     return ToolResult::Structured(json{{"released", released}});
 }
 
+/// quit_emulator: asks the frontend to close. The close is asynchronous, so the reply is sent
+/// before the window (and this server) goes away.
 ToolResult QuitEmulator(ToolContext& ctx, const json&) {
     if (!ctx.host) {
         return ToolResult::Error("no frontend host");
@@ -96,6 +104,7 @@ ToolResult QuitEmulator(ToolContext& ctx, const json&) {
 
 } // namespace
 
+/// Registers the control lease tools and quit_emulator.
 void RegisterControlTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "control_status",

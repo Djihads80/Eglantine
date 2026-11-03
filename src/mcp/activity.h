@@ -14,6 +14,7 @@
 
 namespace Mcp {
 
+/// Plain data copied out by Activity::Snapshot.
 struct ActivityState {
     std::string last_tool;
     std::chrono::steady_clock::time_point last_tool_time{};
@@ -32,19 +33,24 @@ struct ActivityState {
     std::chrono::steady_clock::time_point route_changed{}; ///< Last state change (UIs fade "done")
 };
 
+/// Process-wide holder of the current ActivityState, guarded by a mutex.
 class Activity {
 public:
+    /// The single instance.
     static Activity& Get() {
         static Activity instance;
         return instance;
     }
 
+    /// Calls fn(ActivityState&) with the lock held. fn must be short and must not call back
+    /// into Activity.
     template <typename Fn>
     void Update(Fn&& fn) {
         std::scoped_lock lock{mutex};
         fn(state);
     }
 
+    /// A copy of the current state.
     [[nodiscard]] ActivityState Snapshot() {
         std::scoped_lock lock{mutex};
         return state;

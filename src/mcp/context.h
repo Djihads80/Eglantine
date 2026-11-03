@@ -24,6 +24,7 @@ struct ToolContext {
     ControlLease* control = nullptr;
     std::string session_id; ///< MCP session making the call.
 
+    /// True when a system is set, powered on and not shutting down.
     [[nodiscard]] bool GameRunning() const;
 };
 

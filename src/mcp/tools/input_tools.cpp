@@ -30,6 +30,7 @@ namespace {
 using VirtualButton = InputCommon::VirtualGamepad::VirtualButton;
 using VirtualStick = InputCommon::VirtualGamepad::VirtualStick;
 
+/// Button names accepted by the tools, mapped to virtual gamepad buttons.
 constexpr std::array<std::pair<std::string_view, VirtualButton>, 20> kButtons{{
     {"A", VirtualButton::ButtonA},
     {"B", VirtualButton::ButtonB},
@@ -53,6 +54,7 @@ constexpr std::array<std::pair<std::string_view, VirtualButton>, 20> kButtons{{
     {"CAPTURE", VirtualButton::ButtonCapture},
 }};
 
+/// JSON array of every button name in kButtons, for schema enums.
 json ButtonEnum() {
     json names = json::array();
     for (const auto& [name, button] : kButtons) {
@@ -61,6 +63,8 @@ json ButtonEnum() {
     return names;
 }
 
+/// Looks up a button by its exact (upper case) name. Callers dereference the result directly,
+/// relying on the schema enum to have rejected unknown names.
 std::optional<VirtualButton> ParseButton(std::string_view name) {
     for (const auto& [n, button] : kButtons) {
         if (n == name) {
@@ -70,6 +74,8 @@ std::optional<VirtualButton> ParseButton(std::string_view name) {
     return std::nullopt;
 }
 
+/// Returns the frontend's virtual gamepad, or nullptr with error set if there is no host or
+/// input subsystem.
 InputCommon::VirtualGamepad* Gamepad(ToolContext& ctx, std::string& error) {
     if (!ctx.host) {
         error = "no frontend host";
@@ -83,10 +89,12 @@ InputCommon::VirtualGamepad* Gamepad(ToolContext& ctx, std::string& error) {
     return input->GetVirtualGamepad();
 }
 
+/// Sleeps for ms clamped to 0..60000, returning early if the server is stopping.
 void SleepMs(int ms) {
     SleepUnlessStopping(std::chrono::milliseconds{std::clamp(ms, 0, 60000)});
 }
 
+/// Records an Input event on the timeline, if one is attached.
 void LogInput(ToolContext& ctx, const std::string& what) {
     if (ctx.timeline) {
         ctx.timeline->Push(EventKind::Input, 0, "mcp", what);
@@ -101,6 +109,7 @@ json StickArray() {
                 {"description", "[x, y], each in -1..1 (up is +y)."}};
 }
 
+/// Joins a JSON array of button names with "+" (e.g. "ZL+ZR") for log and reply text.
 std::string JoinButtons(const json& buttons) {
     std::string out;
     for (const auto& b : buttons) {
@@ -109,6 +118,8 @@ std::string JoinButtons(const json& buttons) {
     return out;
 }
 
+/// press_buttons: holds all buttons together for hold_ms, releases them, and repeats with gap_ms
+/// between presses. Blocks the calling worker thread for the whole duration.
 ToolResult PressButtons(ToolContext& ctx, const json& args) {
     std::string error;
     auto* pad = Gamepad(ctx, error);
@@ -140,6 +151,8 @@ ToolResult PressButtons(ToolContext& ctx, const json& args) {
     return ToolResult::Text(fmt::format("pressed {} x{}", JoinButtons(args.at("buttons")), repeat));
 }
 
+/// set_stick: moves a stick and either recenters it after hold_ms or, with hold_ms 0, leaves it
+/// latched until the next call.
 ToolResult SetStick(ToolContext& ctx, const json& args) {
     std::string error;
     auto* pad = Gamepad(ctx, error);
@@ -163,6 +176,7 @@ ToolResult SetStick(ToolContext& ctx, const json& args) {
                                         : "stick latched (call again with 0,0 to center)");
 }
 
+/// Total wall-clock length of a step list in ms, using the same defaults as RunInputSteps.
 long long StepsDurationMs(const json& steps) {
     long long total_ms = 0;
     for (const auto& step : steps) {
@@ -180,6 +194,7 @@ ToolResult InputSequence(ToolContext& ctx, const json& args) {
         fmt::format("ran {} steps in ~{} ms", steps.size(), StepsDurationMs(steps)));
 }
 
+/// release_all: releases every virtual button and centers all sticks on every player.
 ToolResult ReleaseAll(ToolContext& ctx, const json&) {
     std::string error;
     auto* pad = Gamepad(ctx, error);
@@ -191,6 +206,7 @@ ToolResult ReleaseAll(ToolContext& ctx, const json&) {
     return ToolResult::Text("all virtual buttons released and sticks centered");
 }
 
+/// Returns the frontend's touch screen driver, or nullptr with error set if there is none.
 InputCommon::TouchScreen* Touch(ToolContext& ctx, std::string& error) {
     auto* input = ctx.host ? ctx.host->GetInputSubsystem() : nullptr;
     if (!input) {
@@ -200,6 +216,7 @@ InputCommon::TouchScreen* Touch(ToolContext& ctx, std::string& error) {
     return input->GetTouchScreen();
 }
 
+/// tap: presses finger 0 at (x, y) for hold_ms, `repeat` times with gap_ms between taps.
 ToolResult Tap(ToolContext& ctx, const json& args) {
     std::string error;
     auto* touch = Touch(ctx, error);
@@ -221,6 +238,8 @@ ToolResult Tap(ToolContext& ctx, const json& args) {
     return ToolResult::Text(fmt::format("tapped ({:.3f}, {:.3f})", x, y));
 }
 
+/// swipe: drags finger 0 in a straight line, moving it about every 16 ms over duration_ms, then
+/// holds at the end for hold_end_ms before lifting.
 ToolResult Swipe(ToolContext& ctx, const json& args) {
     std::string error;
     auto* touch = Touch(ctx, error);
@@ -246,6 +265,8 @@ ToolResult Swipe(ToolContext& ctx, const json& args) {
     return ToolResult::Text("swiped");
 }
 
+/// get_controller_state: ControllerStateJson for the requested player, or an error if the npad
+/// index has no emulated controller.
 ToolResult ControllerState(ToolContext& ctx, const json& args) {
     json state = ControllerStateJson(ctx, NpadIndex(args));
     if (state.is_null()) {

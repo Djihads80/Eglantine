@@ -50,11 +50,14 @@ std::string Normalize(std::string_view msg) {
     return out;
 }
 
+/// Events sharing kind, source, level and normalized message, with the first message as example.
 struct Cluster {
     std::string kind, source, level, pattern, example;
     u64 count = 0, first_frame = 0, last_frame = 0, first_seq = 0;
 };
 
+/// Groups EventJson-shaped events into clusters, most frequent first. Expects events oldest first:
+/// first_frame/first_seq come from the first event seen and last_frame from the last.
 std::vector<Cluster> ClusterEvents(const std::vector<json>& events) {
     std::map<std::string, Cluster> clusters;
     for (const auto& e : events) {
@@ -79,6 +82,7 @@ std::vector<Cluster> ClusterEvents(const std::vector<json>& events) {
     return out;
 }
 
+/// A cluster as JSON with its frame range; "level" only for log clusters.
 json ClusterJson(const Cluster& c) {
     json j{{"kind", c.kind}, {"source", c.source}, {"count", c.count},
            {"frames", fmt::format("{}..{}", c.first_frame, c.last_frame)}, {"example", c.example}};
@@ -88,6 +92,8 @@ json ClusterJson(const Cluster& c) {
     return j;
 }
 
+/// Reads every event after since_seq at min_level or above, in pages of 5000, as EventJson.
+/// Stops early once more than 200000 events are collected. ctx.timeline must not be null.
 std::vector<json> ReadEvents(ToolContext& ctx, u64 since_seq, int min_level) {
     std::vector<json> events;
     Timeline::Query q;
@@ -107,6 +113,8 @@ std::vector<json> ReadEvents(ToolContext& ctx, u64 since_seq, int min_level) {
     return events;
 }
 
+/// summarize_since: counts per kind, the "top" largest clusters, up to 50 crash and unimpl events
+/// verbatim, current perf, and next_seq. Logs default to warning and above.
 ToolResult SummarizeSince(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -157,6 +165,8 @@ std::optional<std::filesystem::path> ExportPath(const std::string& name) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "mcp" / (name + ".jsonl");
 }
 
+/// timeline_export: writes the events after since_seq (all log levels by default) as one JSON
+/// object per line, overwriting any export of the same name. Fails on a bad name or short write.
 ToolResult TimelineExport(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -184,6 +194,8 @@ ToolResult TimelineExport(ToolContext& ctx, const json& args) {
                                        {"bytes", text.size()}});
 }
 
+/// Parses a timeline_export file back into events, skipping lines that are not valid JSON.
+/// Returns nullopt with `error` set for a bad name or a missing or empty file.
 std::optional<std::vector<json>> LoadExport(const std::string& name, std::string& error) {
     const auto path = ExportPath(name);
     if (!path) {
@@ -209,6 +221,9 @@ std::optional<std::vector<json>> LoadExport(const std::string& name, std::string
     return events;
 }
 
+/// compare_runs: clusters both exports and lists clusters only in a, only in b, and in both with
+/// a count ratio above 2x either way. Each list is sorted by count and cut to "limit", with the
+/// untrimmed size in "total".
 ToolResult CompareRuns(ToolContext&, const json& args) {
     std::string error;
     const auto a = LoadExport(args.at("a").get<std::string>(), error);
@@ -273,6 +288,8 @@ ToolResult CompareRuns(ToolContext&, const json& args) {
                  "only_in_a = what the change removed."}});
 }
 
+/// firmware_status: whether firmware is installed and, if its version can be read, the version
+/// and display strings.
 ToolResult FirmwareStatus(ToolContext& ctx, const json&) {
     const bool present = FirmwareManager::CheckFirmwarePresence(*ctx.system);
     json out{{"installed", present}};
@@ -294,6 +311,7 @@ json LevelSchema() {
 
 } // namespace
 
+/// Registers summarize_since, timeline_export, compare_runs and firmware_status.
 void RegisterTimelineTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "summarize_since",

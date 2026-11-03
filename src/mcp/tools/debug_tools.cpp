@@ -15,6 +15,9 @@ namespace Mcp {
 
 namespace {
 
+/// unimplemented_commands: lists the recorded unimplemented service commands, optionally filtered
+/// by service prefix and sorted by call count. "total" counts the filtered list. With "reset" the
+/// whole registry is cleared after the list is built, including entries the filter excluded.
 ToolResult UnimplementedCommands(ToolContext&, const json& args) {
     auto records = Service::GetUnimplementedCommands();
     const std::string service_filter = args.value("service_prefix", "");
@@ -57,6 +60,7 @@ ToolResult UnimplementedCommands(ToolContext&, const json& args) {
 
 } // namespace
 
+/// Registers the bring-up debugging tools.
 void RegisterDebugTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "unimplemented_commands",

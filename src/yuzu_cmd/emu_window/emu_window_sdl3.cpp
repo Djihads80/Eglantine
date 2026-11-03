@@ -169,6 +169,7 @@ bool EmuWindow_SDL3::IsShown() const {
     return is_shown;
 }
 
+/// Called by the renderer on its thread after each presented frame: steps the TAS engine.
 void EmuWindow_SDL3::OnFrameDisplayed() {
     // Without this TAS scripts never advanced in eden-cli (only the Qt frontend called it).
     input_subsystem->GetTas()->UpdateThread();

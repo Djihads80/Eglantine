@@ -47,13 +47,17 @@ using namespace std::chrono;
 
 // ---- per-game storage ---------------------------------------------------------------------
 
+/// Guards load-modify-save of the per-game JSON store files.
 std::mutex g_store_mutex;
 
+/// <config>/mcp/<kind>/<program id>.json.
 std::filesystem::path StorePath(std::string_view kind, u64 program_id) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "mcp" / std::string{kind} /
            fmt::format("{:016X}.json", program_id);
 }
 
+/// Reads a store file; an empty object if it is missing or not valid JSON. Callers hold
+/// g_store_mutex.
 json LoadStore(std::string_view kind, u64 program_id) {
     const std::string text =
         Common::FS::ReadStringFromFile(StorePath(kind, program_id), Common::FS::FileType::TextFile);
@@ -67,6 +71,7 @@ json LoadStore(std::string_view kind, u64 program_id) {
     }
 }
 
+/// Writes a store file, creating its directory. A failed write is only logged.
 void SaveStore(std::string_view kind, u64 program_id, const json& data) {
     const auto path = StorePath(kind, program_id);
     std::error_code ec;
@@ -161,10 +166,12 @@ std::vector<u8> EncodePng(const Frame& frame, u32 max_width) {
 constexpr u32 kThumbW = 48;
 constexpr u32 kThumbH = 27;
 
+/// Part of the screen in normalized 0..1 coordinates; the default is the whole screen.
 struct Region {
     double x = 0, y = 0, w = 1, h = 1;
 };
 
+/// Region from an [x, y, w, h] array; the whole screen if `v` is not a 4-element array.
 Region ParseRegion(const json& v) {
     if (!v.is_array() || v.size() != 4) {
         return {};
@@ -270,6 +277,7 @@ std::vector<u8> FromHex(const std::string& s) {
     return v;
 }
 
+/// Whether `v` is a non-empty string of an even number of hex digits.
 bool IsHexString(const json& v) {
     if (!v.is_string()) {
         return false;
@@ -278,6 +286,7 @@ bool IsHexString(const json& v) {
     return !s.empty() && s.size() % 2 == 0 && !FromHex(s).empty();
 }
 
+/// How well the current frame matches one screen label.
 struct ScreenMatch {
     std::string label;
     double score = 0.0;
@@ -324,6 +333,9 @@ std::vector<ScreenMatch> MatchScreens(const Frame& frame, const json& labels) {
     return out;
 }
 
+/// {screen, scores (top 5), source} for the current frame; screen is "unknown" when no label
+/// reaches its threshold. Null with `error` set if there is no frame or no labels. Can block up
+/// to 1.5 s waiting for a display frame.
 json ScreenStateJson(ToolContext& ctx, std::string& error) {
     const auto frame = AnalysisFrame(ctx, error);
     if (!frame) {
@@ -401,6 +413,8 @@ std::optional<u64> ResolveAddress(ToolContext& ctx, const std::string& expr, std
     return address;
 }
 
+/// Reads one probe's value from guest memory as its `type` (u32 by default), adding its
+/// `meaning` if one is defined. Errors (bad address, unmapped memory) go in an "error" field.
 json ReadProbe(ToolContext& ctx, const std::string& name, const json& probe) {
     std::string error;
     const auto address = ResolveAddress(ctx, probe.at("address").get<std::string>(), error);
@@ -436,6 +450,7 @@ json ReadProbe(ToolContext& ctx, const std::string& name, const json& probe) {
     return out;
 }
 
+/// Current values of the game's saved probes keyed by name; all of them when `names` is empty.
 json ReadAllProbes(ToolContext& ctx, const json& names) {
     json probes;
     {
@@ -454,6 +469,8 @@ json ReadAllProbes(ToolContext& ctx, const json& names) {
     return out;
 }
 
+/// Compares a probe value with `target` using `op` (equals, not_equals, greater, less). False
+/// for a non-numeric value or an unknown op.
 bool ProbeCondition(const json& value, const std::string& op, const json& target) {
     if (!value.is_number()) {
         return false;
@@ -487,6 +504,8 @@ std::string WaitScreen(ToolContext& ctx, const json& labels, milliseconds timeou
     return {};
 }
 
+/// Polls the probe named in `cond` about every 16 ms until its condition holds. Returns false on
+/// timeout or server stop; `values` holds the last read.
 bool WaitProbe(ToolContext& ctx, const json& cond, milliseconds timeout, json& values) {
     const auto deadline = steady_clock::now() + timeout;
     const std::string name = cond.at("name").get<std::string>();
@@ -504,6 +523,9 @@ bool WaitProbe(ToolContext& ctx, const json& cond, milliseconds timeout, json& v
 
 // ---- tools --------------------------------------------------------------------------------
 
+/// screen_label tool: adds a fingerprint of the current frame (or `region` of it) to a label,
+/// or replaces its samples, and returns a PNG of the stored region. Holds g_store_mutex while
+/// saving.
 ToolResult ScreenLabel(ToolContext& ctx, const json& args) {
     std::string error;
     const auto frame = AnalysisFrame(ctx, error);
@@ -555,6 +577,7 @@ ToolResult ScreenState(ToolContext& ctx, const json&) {
     return ToolResult::Structured(std::move(state));
 }
 
+/// screen_labels tool: lists the game's labels, first removing `remove` if given.
 ToolResult ScreenLabels(ToolContext& ctx, const json& args) {
     std::scoped_lock lock{g_store_mutex};
     json store = LoadStore("screens", ProgramId(ctx));
@@ -574,6 +597,7 @@ ToolResult ScreenLabels(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"labels", std::move(list)}});
 }
 
+/// screenshot_raw tool: PNG of the capture layer plus the guest frame number.
 ToolResult ScreenshotRaw(ToolContext& ctx, const json& args) {
     std::string error;
     const auto frame = RawCapture(ctx, error);
@@ -586,6 +610,8 @@ ToolResult ScreenshotRaw(ToolContext& ctx, const json& args) {
     return r;
 }
 
+/// probe_save tool: stores the probe and returns its current value. The probe is saved even if
+/// that read fails.
 ToolResult ProbeSave(ToolContext& ctx, const json& args) {
     const std::string name = args.at("name").get<std::string>();
     json probe{{"address", args.at("address")}, {"type", args.value("type", "u32")}};
@@ -603,6 +629,8 @@ ToolResult ProbeSave(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"saved", name}, {"now", std::move(check)}});
 }
 
+/// probe_read tool: reads the probes, then deletes `remove` if given (it still appears in this
+/// result).
 ToolResult ProbeRead(ToolContext& ctx, const json& args) {
     json values = ReadAllProbes(ctx, args.value("names", json::array()));
     if (args.value("remove", std::string{}) != "") {
@@ -683,6 +711,8 @@ ToolResult RouteSave(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"saved", args["name"]}, {"steps", args["steps"].size()}});
 }
 
+/// route_list tool: removes `remove` if given, then lists the game's routes (full steps, or only
+/// step counts with `summary`) and the store file path.
 ToolResult RouteList(ToolContext& ctx, const json& args) {
     std::scoped_lock lock{g_store_mutex};
     json store = LoadStore("routes", ProgramId(ctx));
@@ -712,6 +742,7 @@ ToolResult RouteList(ToolContext& ctx, const json& args) {
 
 // ---- checkpoints (recorded fingerprints) --------------------------------------------------
 
+/// Similarity (0..1) of the frame to a recorded checkpoint's thumbnail.
 double CheckpointScore(const Frame& frame, const json& checkpoint) {
     const auto thumb = Thumb(frame, ParseRegion(checkpoint.value("region", json{})));
     return Similarity(thumb, FromHex(checkpoint.at("thumb").get<std::string>()));
@@ -895,6 +926,7 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
     return ok;
 }
 
+/// The one route run with background:true and its results; fields are guarded by `mutex`.
 struct BackgroundRoute {
     std::mutex mutex;
     std::jthread thread;
@@ -904,11 +936,14 @@ struct BackgroundRoute {
     steady_clock::time_point started{};
 };
 
+/// The process-wide background route slot.
 BackgroundRoute& Background() {
     static BackgroundRoute bg;
     return bg;
 }
 
+/// Inline `steps` if given, else the steps of the saved route `name`; nullopt with `error` set
+/// when no such route exists.
 std::optional<json> LoadRouteSteps(ToolContext& ctx, const json& args, std::string& error) {
     if (args.contains("steps")) {
         return args["steps"];
@@ -923,6 +958,9 @@ std::optional<json> LoadRouteSteps(ToolContext& ctx, const json& args, std::stri
     return store["routes"][name]["steps"];
 }
 
+/// route_run tool: validates the steps, then either runs them on the calling thread (blocking
+/// until done; is_error set if the route failed) or, with `background`, starts them on the
+/// background route thread and returns at once. Refuses if a background route is running.
 ToolResult RouteRun(ToolContext& ctx, const json& args) {
     std::string error;
     const auto steps_opt = LoadRouteSteps(ctx, args, error);
@@ -1012,6 +1050,8 @@ ToolResult RouteRun(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// route_status tool: progress from Activity (covers blocking and menu-started routes), plus
+/// elapsed time and per-step results when a background route has run.
 ToolResult RouteStatus(ToolContext&, const json&) {
     auto& bg = Background();
     std::scoped_lock lock{bg.mutex};
@@ -1056,11 +1096,14 @@ ToolResult RouteStop(ToolContext&, const json&) {
 /// press"; input during motion becomes timed input.
 class Recorder {
 public:
+    /// Controller state at one presented frame; t_ms is from the start of the recording, sticks
+    /// are -1..1.
     struct InputFrame {
         u64 t_ms;
         u64 buttons;
         float lx, ly, rx, ry;
     };
+    /// Full-screen luma thumbnail taken at t_ms.
     struct Snapshot {
         u64 t_ms;
         std::vector<u8> thumb;
@@ -1071,6 +1114,7 @@ public:
         return instance;
     }
 
+    /// Starts the recording thread. Returns false if a recording is already running.
     bool Start(ToolContext ctx, std::string name) {
         std::scoped_lock lock{mutex};
         if (thread.joinable()) {
@@ -1124,12 +1168,16 @@ public:
     }
 
 private:
+    /// No buttons held and every stick inside the 0.25 dead zone.
     static bool Neutral(const InputFrame& f) {
         constexpr float dead = 0.25f;
         return f.buttons == 0 && std::abs(f.lx) < dead && std::abs(f.ly) < dead &&
                std::abs(f.rx) < dead && std::abs(f.ry) < dead;
     }
 
+    /// Recording thread: polls every 2 ms and, per new presented frame, stores player 1's (or
+    /// handheld's) input. Takes a snapshot when input starts and at most every 500 ms otherwise.
+    /// Ends on stop request or when the system powers off.
     void Run(std::stop_token stop, ToolContext ctx) {
         const auto start = steady_clock::now();
         const auto now_ms = [&] {
@@ -1206,6 +1254,7 @@ private:
     std::vector<Snapshot> snapshots;
 };
 
+/// input_sequence button names by bit position in the npad button mask.
 constexpr std::array<std::string_view, 16> kNpadButtonNames{
     "A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R",
     "ZL", "ZR", "PLUS", "MINUS", "DLEFT", "DUP", "DRIGHT", "DDOWN"};
@@ -1246,6 +1295,7 @@ json FramesToInput(const std::vector<Recorder::InputFrame>& frames, size_t begin
     return steps;
 }
 
+/// The last snapshot taken at or before t_ms (20 ms slack), or null if none.
 const Recorder::Snapshot* SnapshotAt(const std::vector<Recorder::Snapshot>& snaps, u64 t_ms) {
     const Recorder::Snapshot* best = nullptr;
     for (const auto& s : snaps) {
@@ -1257,6 +1307,9 @@ const Recorder::Snapshot* SnapshotAt(const std::vector<Recorder::Snapshot>& snap
 }
 
 /// Turns a recording into route steps.
+/// Each run of non-neutral input becomes one step: a checkpoint step if the screen was settled
+/// before it, else a timed (wait_ms) step. Ends with an optional end-screen checkpoint.
+/// `summary` gets checkpoint/timed counts, frame count and duration.
 json BuildRecordedRoute(const std::vector<Recorder::InputFrame>& frames,
                         const std::vector<Recorder::Snapshot>& snaps, double threshold,
                         json& summary) {
@@ -1312,6 +1365,7 @@ json BuildRecordedRoute(const std::vector<Recorder::InputFrame>& frames,
     return steps;
 }
 
+/// route_record_start tool: starts the Recorder thread; error if one is already recording.
 ToolResult RouteRecordStart(ToolContext& ctx, const json& args) {
     const std::string name = args.at("name").get<std::string>();
     if (!Recorder::Get().Start(ctx, name)) {
@@ -1327,6 +1381,9 @@ ToolResult RouteRecordStart(ToolContext& ctx, const json& args) {
                  "Then call route_record_stop."}});
 }
 
+/// route_record_stop tool: stops the Recorder (joins its thread), builds the route and saves it
+/// under the program that was running when recording started. Error if not recording or no
+/// input was recorded.
 ToolResult RouteRecordStop(ToolContext& ctx, const json& args) {
     std::vector<Recorder::InputFrame> frames;
     std::vector<Recorder::Snapshot> snaps;
@@ -1371,6 +1428,7 @@ json RegionSchema() {
                                 "a menu box), so changing backgrounds don't matter."}};
 }
 
+/// Schema of a route's step list, shared by route_save and route_run.
 json RouteStepsSchema() {
     return json{
         {"type", "array"},
@@ -1429,11 +1487,13 @@ namespace {
 constexpr u32 kBaseW = 96;
 constexpr u32 kBaseH = 54;
 
+/// <config>/mcp/baselines/<program id>/<name>.png.
 std::filesystem::path BaselinePng(u64 program_id, const std::string& name) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "mcp" / "baselines" /
            fmt::format("{:016X}", program_id) / (name + ".png");
 }
 
+/// Baseline names become file names: 1-64 letters, digits, '-' or '_'.
 bool ValidName(const std::string& name) {
     return !name.empty() && name.size() <= 64 &&
            std::all_of(name.begin(), name.end(), [](char c) {

@@ -358,11 +358,14 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
 }
 
 namespace {
+/// Backing store of RecordUnimplementedCommand. records is guarded by mutex; origin is the time
+/// first_seen_us counts from.
 struct UnimplementedRegistry {
     std::mutex mutex;
     std::vector<UnimplementedCommandRecord> records;
     std::chrono::steady_clock::time_point origin = std::chrono::steady_clock::now();
 };
+/// Process-wide registry, created on first use.
 UnimplementedRegistry& Registry() {
     static UnimplementedRegistry registry;
     return registry;

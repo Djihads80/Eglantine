@@ -30,6 +30,7 @@ namespace {
 using InputCommon::TasInput::Tas;
 using InputCommon::TasInput::TasState;
 
+/// Largest script tas_write_script will write.
 constexpr size_t kMaxScriptBytes = 4 * 1024 * 1024;
 
 /// Button names shared with the input tools; HOME and CAPTURE are left out (the TAS engine
@@ -46,6 +47,7 @@ json TasButtonEnum() {
     return names;
 }
 
+/// Path the TAS engine loads player N's script from (TAS dir/script0-N.txt).
 std::filesystem::path ScriptPath(int player) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::TASDir) /
            fmt::format("script0-{}.txt", player);
@@ -67,6 +69,7 @@ const char* StateName(TasState state) {
     return "?";
 }
 
+/// Returns the frontend's TAS driver, or nullptr if there is no host or input subsystem.
 Tas* TasEngine(ToolContext& ctx) {
     if (!ctx.host) {
         return nullptr;
@@ -93,6 +96,8 @@ json StatusJson(Tas& tas) {
                      Common::FS::GetEdenPath(Common::FS::EdenPath::TASDir))}};
 }
 
+/// Formats an optional [x, y] stick in -1..1 as a TAS-nx "x;y" axis pair in +-32767 ("0;0" if
+/// null).
 std::string Axis(const json& stick) {
     if (stick.is_null()) {
         return "0;0";
@@ -129,6 +134,7 @@ std::string ExpandSteps(const json& steps, size_t& total_frames) {
     return out;
 }
 
+/// tas_status: the engine's StatusJson, or an error if the frontend has no TAS engine.
 ToolResult TasStatus(ToolContext& ctx, const json&) {
     Tas* tas = TasEngine(ctx);
     if (!tas) {
@@ -137,6 +143,9 @@ ToolResult TasStatus(ToolContext& ctx, const json&) {
     return ToolResult::Structured(StatusJson(*tas));
 }
 
+/// tas_write_script: writes player N's script from 'steps' (expanded) or a raw 'script', then
+/// enables TAS and reloads the scripts through the host. Errors if neither argument is given,
+/// the text exceeds kMaxScriptBytes, or the file cannot be written.
 ToolResult TasWriteScript(ToolContext& ctx, const json& args) {
     const int player = args.value("player", 1);
     std::string text;
@@ -174,6 +183,8 @@ ToolResult TasWriteScript(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// tas_read_script: returns a player's script file or the last recording, cut to max_bytes
+/// (default 64 KiB). A missing file reads as an empty script.
 ToolResult TasReadScript(ToolContext&, const json& args) {
     const std::string which = args.value("which", "1");
     std::filesystem::path path;
@@ -198,6 +209,13 @@ ToolResult TasReadScript(ToolContext&, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/**
+ * tas_play: restarts the loaded scripts from frame 0. With wait (the default) it polls the engine
+ * every 2 ms until the script stops or wraps, timeout_ms passes or the server stops, taking a
+ * screenshot when the script frame reaches each screenshot_at entry.
+ * @return Completion, frames played, the screenshots, and warning-or-worse timeline events
+ *         pushed since the call started.
+ */
 ToolResult TasPlay(ToolContext& ctx, const json& args) {
     using namespace std::chrono;
     Tas* tas = TasEngine(ctx);
@@ -294,6 +312,7 @@ ToolResult TasPlay(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// tas_stop: stops script playback (recording is left alone) and returns the new status.
 ToolResult TasStop(ToolContext& ctx, const json&) {
     if (std::string error = ctx.host->WithTas(false, [](Tas& t) { t.Stop(); }); !error.empty()) {
         return ToolResult::Error(error);
@@ -302,6 +321,8 @@ ToolResult TasStop(ToolContext& ctx, const json&) {
     return ToolResult::Structured(tas ? StatusJson(*tas) : json{{"stopped", true}});
 }
 
+/// tas_record_start: enables TAS and starts recording, or reports success if already recording.
+/// Needs a running game.
 ToolResult TasRecordStart(ToolContext& ctx, const json&) {
     bool recording = false;
     std::string error = ctx.host->WithTas(true, [&](Tas& t) {
@@ -324,6 +345,8 @@ ToolResult TasRecordStart(ToolContext& ctx, const json&) {
                       "Call tas_record_stop to save."}});
 }
 
+/// tas_record_stop: ends recording and saves it to record.txt, and also over player 1's script
+/// when save_as_script is set. Errors if nothing was recording.
 ToolResult TasRecordStop(ToolContext& ctx, const json& args) {
     const bool overwrite = args.value("save_as_script", false);
     size_t frames = 0;
@@ -354,6 +377,8 @@ ToolResult TasRecordStop(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// tas_set_options: sets the tas_loop and tas_enable settings directly (no host call) and
+/// returns the previous and new values.
 ToolResult TasSetOptions(ToolContext&, const json& args) {
     json previous{{"loop", Settings::values.tas_loop.GetValue()},
                   {"tas_enabled", Settings::values.tas_enable.GetValue()}};

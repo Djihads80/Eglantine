@@ -39,6 +39,7 @@ inline std::atomic<UnimplementedHook> g_unimplemented_hook{nullptr};
 
 /// Snapshot, in first-seen order.
 std::vector<UnimplementedCommandRecord> GetUnimplementedCommands();
+/// Drops all records (thread-safe), so the next call of each command counts as first seen again.
 void ClearUnimplementedCommands();
 
 } // namespace Service

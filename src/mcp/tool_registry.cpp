@@ -47,6 +47,8 @@ json ToolRegistry::ListJson() const {
 
 namespace {
 
+/// Whether value has the JSON Schema type named by type. Integral floats such as 3.0 count as
+/// integers; unknown type names always match.
 bool MatchesType(const json& value, std::string_view type) {
     if (type == "object") {
         return value.is_object();

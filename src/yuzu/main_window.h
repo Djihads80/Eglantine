@@ -564,9 +564,15 @@ private:
     /// Starts the built-in MCP server if enabled by setting or command line (no-op without it).
     void MaybeStartMcpServer(bool cli_enable, std::optional<u16> cli_port, bool cli_allow_writes);
 #ifdef YUZU_ENABLE_MCP
+    /// Creates the host (once) and starts a server from the settings and command line. On failure
+    /// keeps the error for the menu and status bar. No-op if running or still stopping.
     void StartMcpServer();
+    /// Destroys the server on a helper thread while pumping GUI events, since in-flight requests
+    /// may be waiting on this thread. Blocks until it is gone.
     void StopMcpServer();
+    /// Adds Tools > MCP Server (enable, writes, routes, dashboard and copy actions). Runs once.
     void SetupMcpMenu();
+    /// Syncs the menu checkboxes and status text with the server state, without firing toggles.
     void UpdateMcpMenu();
     /// Status-bar indicator: server state, agent in control, last tool, recording, route progress.
     void UpdateMcpStatusLabel();
@@ -576,12 +582,17 @@ private:
     QMenu* mcp_routes_menu = nullptr;
 
     QLabel* mcp_status_label = nullptr;
+    /// Refreshes mcp_status_label every second.
     QTimer mcp_status_timer;
+    /// Kept across server restarts; must outlive mcp_server.
     std::unique_ptr<QtMcpHost> mcp_host;
     std::unique_ptr<Mcp::Server> mcp_server;
     bool mcp_stopping = false; ///< StopMcpServer is waiting for the old server to finish
+    /// --mcp-port, which overrides the mcp_port setting.
     std::optional<u16> mcp_cli_port;
+    /// --mcp-allow-writes; cleared once the user toggles Allow Writes in the menu.
     bool mcp_cli_allow_writes = false;
+    /// Why the last start failed; empty after a successful start.
     std::string mcp_last_error;
     QMenu* mcp_menu = nullptr;
     QAction* mcp_status_action = nullptr;

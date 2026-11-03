@@ -17,6 +17,7 @@ class ControlLease {
 public:
     using Clock = std::chrono::steady_clock;
 
+    /// Snapshot of who holds the lease and until when.
     struct Holder {
         std::string session_id;
         std::string label; ///< Optional name the agent gave itself.
@@ -24,6 +25,7 @@ public:
         Clock::time_point expires;
     };
 
+    /// default_ttl is how long the lease lasts after its last use unless Acquire sets another.
     explicit ControlLease(std::chrono::seconds default_ttl = std::chrono::seconds{120})
         : default_ttl{default_ttl} {}
 
@@ -42,12 +44,15 @@ public:
     /// Forcibly frees the lease (e.g. from the emulator's UI).
     void Reset();
 
+    /// The live holder, or nullopt if the lease is free or has expired.
     [[nodiscard]] std::optional<Holder> Current();
 
 private:
+    /// Drops the holder if its lease has expired. Caller must hold mutex.
     void ExpireLocked(Clock::time_point now);
 
     std::chrono::seconds default_ttl;
+    /// TTL chosen by the last Acquire or grant; Touch renews with it.
     std::chrono::seconds current_ttl{0};
     std::mutex mutex;
     std::optional<Holder> holder;

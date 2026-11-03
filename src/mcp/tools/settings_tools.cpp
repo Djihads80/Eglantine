@@ -28,6 +28,7 @@ namespace Mcp {
 
 namespace {
 
+/// ASCII lower-case copy of s, for case-insensitive matching.
 std::string Lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -43,6 +44,7 @@ bool Hidden(const Settings::BasicSetting& s) {
            name.find("password") != std::string::npos || name.find("serial") != std::string::npos;
 }
 
+/// Looks up a setting by its exact config key. Returns nullptr if unknown or Hidden.
 Settings::BasicSetting* Find(const std::string& name) {
     auto& by_key = Settings::values.linkage.by_key;
     const auto it = by_key.find(name);
@@ -52,6 +54,8 @@ Settings::BasicSetting* Find(const std::string& name) {
     return it->second;
 }
 
+/// Name and value of a setting (enum values by name). With detail, also its category, default,
+/// type, runtime modifiability, raw enum index, range and per-game override state.
 json SettingJson(const Settings::BasicSetting& s, bool detail) {
     json out{{"name", s.GetLabel()}, {"value", s.IsEnum() ? s.Canonicalize() : s.ToString()}};
     if (detail) {
@@ -90,6 +94,8 @@ std::string SetFromString(Settings::BasicSetting& s, const std::string& value) {
     return {};
 }
 
+/// settings_list: visible settings, optionally limited to one category (case-insensitive), a
+/// name substring, or values that differ from their default.
 ToolResult SettingsList(ToolContext&, const json& args) {
     const std::string filter = Lower(args.value("filter", ""));
     const std::string category = Lower(args.value("category", ""));
@@ -115,6 +121,8 @@ ToolResult SettingsList(ToolContext&, const json& args) {
     return ToolResult::Structured(json{{"settings", std::move(list)}});
 }
 
+/// settings_get: detailed SettingJson per requested name; unknown or hidden names get an error
+/// entry instead of failing the call.
 ToolResult SettingsGet(ToolContext&, const json& args) {
     json out = json::array();
     for (const auto& n : args.at("names")) {
@@ -128,6 +136,13 @@ ToolResult SettingsGet(ToolContext&, const json& args) {
     return ToolResult::Structured(json{{"settings", std::move(out)}});
 }
 
+/**
+ * Sets each name -> value pair in changes on the calling thread, logging each change on the
+ * timeline. Failures are reported per entry and do not stop the others.
+ * @param apply When true and a game is running, asks the host to apply the new settings.
+ * @return Per-setting before/after or error, with reboot_needed if a changed setting is not
+ *         runtime-modifiable. is_error is set only when a single requested change failed.
+ */
 ToolResult ApplyChanges(ToolContext& ctx, const json& changes, bool apply) {
     json results = json::array();
     bool any_error = false;
@@ -180,6 +195,8 @@ ToolResult SettingsSet(ToolContext& ctx, const json& args) {
     return ApplyChanges(ctx, args.at("values"), true);
 }
 
+/// debug_knobs: applies 'value', then 'set' and 'clear' bit lists, to the 16-bit knob mask.
+/// Reading is always allowed; an actual change needs MCP writes enabled.
 ToolResult DebugKnobs(ToolContext& ctx, const json& args) {
     auto& knobs = Settings::values.debug_knobs;
     const u16 before = knobs.GetValue();
@@ -217,6 +234,8 @@ ToolResult DebugKnobs(ToolContext& ctx, const json& args) {
                                                 "live without rebuilding."}});
 }
 
+/// set_determinism: maps rng_seed, rtc, language and region onto their settings (enabling the
+/// seed/RTC overrides) and applies them via ApplyChanges. clear wins over rng_seed and rtc.
 ToolResult SetDeterminism(ToolContext& ctx, const json& args) {
     json changes = json::object();
     if (args.contains("rng_seed")) {
@@ -243,6 +262,8 @@ ToolResult SetDeterminism(ToolContext& ctx, const json& args) {
     return ApplyChanges(ctx, changes, true);
 }
 
+/// env_switches: environment variables of this process whose names start with prefix
+/// (case-sensitive, default "EDEN_").
 ToolResult EnvSwitches(ToolContext&, const json& args) {
     const std::string prefix = args.value("prefix", "EDEN_");
     json vars = json::object();

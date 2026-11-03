@@ -30,8 +30,10 @@ namespace Mcp {
 
 namespace {
 
+/// Value types the typed read, write, search, watch and scan tools accept.
 enum class ValueType { U8, U16, U32, U64, S8, S16, S32, S64, F32, F64 };
 
+/// Type names as used in tool arguments, in ValueType order (indexed by the enum value).
 constexpr std::array<std::pair<std::string_view, ValueType>, 10> kTypes{{
     {"u8", ValueType::U8},   {"u16", ValueType::U16}, {"u32", ValueType::U32},
     {"u64", ValueType::U64}, {"s8", ValueType::S8},   {"s16", ValueType::S16},
@@ -39,6 +41,7 @@ constexpr std::array<std::pair<std::string_view, ValueType>, 10> kTypes{{
     {"f64", ValueType::F64},
 }};
 
+/// The type names as a JSON array, for schema "enum" lists.
 json TypeEnum() {
     json names = json::array();
     for (const auto& [name, type] : kTypes) {
@@ -47,6 +50,7 @@ json TypeEnum() {
     return names;
 }
 
+/// ValueType for a type name; unknown names give U32.
 ValueType ParseType(const std::string& name) {
     for (const auto& [n, type] : kTypes) {
         if (n == name) {
@@ -56,6 +60,7 @@ ValueType ParseType(const std::string& name) {
     return ValueType::U32;
 }
 
+/// Size of a value of `type` in bytes (1, 2, 4 or 8).
 size_t TypeSize(ValueType type) {
     switch (type) {
     case ValueType::U8:
@@ -101,6 +106,8 @@ double AsDouble(u64 bits, ValueType type) {
     return 0.0;
 }
 
+/// JSON number for a value: u64 stays unsigned, floats become doubles, other integers are signed
+/// (sign-extended for signed types).
 json ValueJson(u64 bits, ValueType type) {
     switch (type) {
     case ValueType::U64: return bits;
@@ -129,6 +136,8 @@ std::string Hex(u64 v) {
     return fmt::format("{:#x}", v);
 }
 
+/// Address from a JSON integer or a string in any base std::stoull accepts ("0x..." for hex).
+/// Returns nullopt for other types or unparsable strings.
 std::optional<u64> ParseAddress(const json& v) {
     if (v.is_number_unsigned() || v.is_number_integer()) {
         return v.get<u64>();
@@ -147,6 +156,8 @@ json AddressSchema(const char* what) {
     return json{{"description", fmt::format("{} as a hex string (\"0x8004a000\") or integer.", what)}};
 }
 
+/// Bytes from a hex string, ignoring whitespace and one leading "0x". Returns nullopt for an odd
+/// digit count or a non-hex pair.
 std::optional<std::vector<u8>> ParseHexBytes(std::string text) {
     std::erase_if(text, [](char c) { return c == ' ' || c == '\n' || c == '\t'; });
     if (text.starts_with("0x")) {
@@ -166,6 +177,7 @@ std::optional<std::vector<u8>> ParseHexBytes(std::string text) {
     return out;
 }
 
+/// Lowercase hex string of the bytes, two digits each, no separators.
 std::string ToHex(std::span<const u8> bytes) {
     std::string out;
     out.reserve(bytes.size() * 2);
@@ -175,6 +187,7 @@ std::string ToHex(std::span<const u8> bytes) {
     return out;
 }
 
+/// A contiguous mapped range of guest virtual memory.
 struct Region {
     u64 base;
     u64 size;
@@ -226,12 +239,15 @@ std::vector<Region> SearchRegions(Kernel::KProcess& process, const std::string& 
     return out;
 }
 
+/// The application process, or null when there is no system or no application running.
 Kernel::KProcess* Process(ToolContext& ctx) {
     return ctx.system ? ctx.system->ApplicationProcess() : nullptr;
 }
 
 // ---- read / write -------------------------------------------------------------------------
 
+/// read_memory: reads `length` bytes (default 64) as hex or ascii, or `count` values of a type.
+/// Fails if the address is bad, the size is over 64 KiB, or the range is not fully mapped.
 ToolResult ReadMemory(ToolContext& ctx, const json& args) {
     const auto address = ParseAddress(args.at("address"));
     if (!address) {
@@ -277,6 +293,9 @@ ToolResult ReadMemory(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// write_memory: writes hex bytes or one typed value, invalidates the instruction cache for the
+/// range, and logs old and new bytes as a 'watch' event. Returns the bytes before and after.
+/// Fails if the range is not fully mapped.
 ToolResult WriteMemory(ToolContext& ctx, const json& args) {
     const auto address = ParseAddress(args.at("address"));
     if (!address) {
@@ -338,6 +357,9 @@ void ForEachChunk(Core::Memory::Memory& memory, const std::vector<Region>& regio
     }
 }
 
+/// search_memory: scans the chosen regions for a hex pattern with "??" wildcards, an ascii string
+/// or a typed value, at addresses that are multiples of `align`. Stops at max_results matches.
+/// Blocks the HTTP worker thread for the whole scan, which can take a while for large regions.
 ToolResult SearchMemory(ToolContext& ctx, const json& args) {
     auto* process = Process(ctx);
     if (!process) {
@@ -421,6 +443,8 @@ ToolResult SearchMemory(ToolContext& ctx, const json& args) {
 /// the timeline. Runs only while watches exist and a game is running.
 class WatchSampler {
 public:
+    /// One watched address, its last sampled bits (unset until the first sample) and change
+    /// statistics.
     struct Watch {
         u32 id;
         u64 address;
@@ -436,6 +460,8 @@ public:
         return instance;
     }
 
+    /// Adds a watch and returns its id. Starts the sampling thread if it is not running, joining
+    /// a previous thread that stopped by itself. `system` and `timeline` must outlive the thread.
     u32 Add(Core::System& system, Timeline* timeline, u64 address, ValueType type,
             std::string label) {
         std::scoped_lock lock{mutex};
@@ -453,6 +479,8 @@ public:
         return id;
     }
 
+    /// Removes a watch; returns whether one had that id. The thread exits on its next frame once
+    /// no watches remain.
     bool Remove(u32 id) {
         std::scoped_lock lock{mutex};
         return std::erase_if(watches, [id](const Watch& w) { return w.id == id; }) != 0;
@@ -463,6 +491,7 @@ public:
         watches.clear();
     }
 
+    /// Copy of the current watches, taken under the lock.
     std::vector<Watch> List() {
         std::scoped_lock lock{mutex};
         return watches;
@@ -491,6 +520,9 @@ public:
     }
 
 private:
+    /// Sampling thread body: polls every 2 ms for a new presented frame, then reads each watch
+    /// under the lock and posts changes. Unreadable addresses are skipped. Clears the watches and
+    /// exits (setting `stopped`) when none are left or the system powers off.
     void Run(std::stop_token stop, Core::System& system, Timeline* timeline) {
         u64 last_frame = PresentedFrames();
         while (!stop.stop_requested()) {
@@ -539,6 +571,7 @@ private:
     std::jthread thread;
 };
 
+/// watch_add: adds a watch on a mapped address (at most 256) and returns its id.
 ToolResult WatchAdd(ToolContext& ctx, const json& args) {
     const auto address = ParseAddress(args.at("address"));
     if (!address) {
@@ -560,6 +593,7 @@ ToolResult WatchAdd(ToolContext& ctx, const json& args) {
                       "within one frame are missed. Watches clear when the game stops."}});
 }
 
+/// watch_list: each watch with its last value (null before the first sample) and change count.
 ToolResult WatchList(ToolContext&, const json&) {
     json list = json::array();
     for (const auto& w : WatchSampler::Get().List()) {
@@ -575,6 +609,7 @@ ToolResult WatchList(ToolContext&, const json&) {
     return ToolResult::Structured(json{{"watches", std::move(list)}});
 }
 
+/// watch_remove: removes all watches with all:true, otherwise the one with `id` (error if none).
 ToolResult WatchRemove(ToolContext&, const json& args) {
     if (args.value("all", false)) {
         WatchSampler::Get().Clear();
@@ -590,6 +625,8 @@ ToolResult WatchRemove(ToolContext&, const json& args) {
 
 // ---- scans --------------------------------------------------------------------------------
 
+/// The one value scan in progress: candidate addresses and their values from the last round.
+/// round 0 means no scan has been started. Guarded by mutex.
 struct ScanState {
     std::mutex mutex;
     ValueType type = ValueType::U32;
@@ -606,6 +643,8 @@ ScanState& Scan() {
 
 constexpr size_t kMaxCandidates = 10'000'000;
 
+/// Whether a candidate passes a scan_next filter, comparing its current value with `value` or with
+/// its value from the previous round. Unknown filters return false.
 bool Compare(const std::string& filter, double now, double before, double value) {
     if (filter == "equals") return now == value;
     if (filter == "not_equals") return now != value;
@@ -618,6 +657,9 @@ bool Compare(const std::string& filter, double now, double before, double value)
     return false;
 }
 
+/// scan_start: replaces any previous scan with every type-aligned address in the chosen regions
+/// holding `value` (floats within `tolerance`). Holds the scan lock for the whole scan and stops
+/// at kMaxCandidates, setting "truncated".
 ToolResult ScanStart(ToolContext& ctx, const json& args) {
     auto* process = Process(ctx);
     if (!process) {
@@ -659,6 +701,9 @@ ToolResult ScanStart(ToolContext& ctx, const json& args) {
                                                 "(e.g. filter:'decreased' or 'equals' value:N)."}});
 }
 
+/// scan_next: rereads every candidate and keeps those passing the filter, storing their new
+/// values for the next round. Unreadable candidates are dropped. Lists the results once 20 or
+/// fewer remain. Fails if no scan was started or the filter needs a value and none was given.
 ToolResult ScanNext(ToolContext& ctx, const json& args) {
     auto& scan = Scan();
     std::scoped_lock lock{scan.mutex};
@@ -703,6 +748,8 @@ ToolResult ScanNext(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// scan_results: the first `limit` candidates with their current value and the value stored by
+/// the last round. Does not filter or change the scan.
 ToolResult ScanResults(ToolContext& ctx, const json& args) {
     auto& scan = Scan();
     std::scoped_lock lock{scan.mutex};
@@ -735,6 +782,7 @@ void StopMemoryWork() {
     WatchSampler::Get().Shutdown();
 }
 
+/// Registers the memory read/write, search, watch and value scan tools.
 void RegisterMemoryTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "read_memory",

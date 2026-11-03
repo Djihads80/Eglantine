@@ -21,6 +21,7 @@ namespace Mcp {
 
 namespace {
 
+/// ASCII lower-case copy of s, for case-insensitive matching.
 std::string Lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -31,6 +32,7 @@ ToolResult HostMissing() {
     return ToolResult::Error("no frontend host is attached");
 }
 
+/// list_games: the host's game list, filtered by a case-insensitive substring of title or path.
 ToolResult ListGames(ToolContext& ctx, const json& args) {
     if (!ctx.host) {
         return HostMissing();
@@ -53,6 +55,9 @@ ToolResult ListGames(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"games", std::move(list)}});
 }
 
+/// boot_game: boots 'path', or else the single game list entry whose program id equals
+/// 'program_id' or whose title contains 'title'. Errors on no match or several matches. Returns
+/// the timeline sequence from before the boot so the caller can follow it.
 ToolResult BootGame(ToolContext& ctx, const json& args) {
     if (!ctx.host) {
         return HostMissing();
@@ -102,6 +107,8 @@ ToolResult BootGame(ToolContext& ctx, const json& args) {
                       "once frames are presented."}});
 }
 
+/// Shared handler for pause/resume/stop: calls the given Host action and logs a State event on
+/// success. `what` names the action in the reply and the timeline.
 ToolResult Lifecycle(ToolContext& ctx, std::string (Host::*action)(), std::string_view what) {
     if (!ctx.host) {
         return HostMissing();
@@ -115,6 +122,7 @@ ToolResult Lifecycle(ToolContext& ctx, std::string (Host::*action)(), std::strin
     return ToolResult::Text(fmt::format("{}: ok", what));
 }
 
+/// screenshot: PNG of the next presented frame plus the guest present count at reply time.
 ToolResult Screenshot(ToolContext& ctx, const json& args) {
     if (!ctx.host) {
         return HostMissing();
@@ -133,6 +141,7 @@ ToolResult Screenshot(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// set_docked: switches console mode through the host and logs it on the timeline.
 ToolResult SetDocked(ToolContext& ctx, const json& args) {
     if (!ctx.host) {
         return HostMissing();
@@ -180,6 +189,8 @@ ToolResult FrameAdvance(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// capture_frames: takes `count` screenshots, waiting every_frames presents (up to 20 s) between
+/// them. A failed capture is reported in its slot and does not stop the burst.
 ToolResult CaptureFrames(ToolContext& ctx, const json& args) {
     if (!ctx.host) {
         return HostMissing();
@@ -209,6 +220,8 @@ ToolResult CaptureFrames(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// game_info: running game metadata from the app loader. Fields the loader cannot read are left
+/// out; the icon is attached as JPEG unless icon is false.
 ToolResult GameInfo(ToolContext& ctx, const json& args) {
     auto& loader = ctx.system->GetAppLoader();
     json out{{"program_id", fmt::format("{:016X}", ctx.system->GetApplicationProcessProgramID())}};

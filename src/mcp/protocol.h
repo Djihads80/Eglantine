@@ -23,15 +23,18 @@ class ToolRegistry;
 inline constexpr const char* kSupportedProtocolVersions[] = {"2025-11-25", "2025-06-18",
                                                               "2025-03-26"};
 
+/// A parsed HTTP request as handed to Protocol by the transport.
 struct HttpRequest {
     std::string method; ///< "GET", "POST", "DELETE", ...
     std::string path;
     std::map<std::string, std::string> headers; ///< Keys lowercased.
     std::string body;
 
+    /// Returns the value of a header, or nullopt if absent. The name must be lowercase.
     [[nodiscard]] std::optional<std::string> Header(const std::string& lowercase_name) const;
 };
 
+/// An HTTP response for the transport to send. An empty content_type means no body.
 struct HttpResponse {
     int status = 200;
     std::string content_type;
@@ -56,6 +59,7 @@ struct Prompt {
     std::function<std::string(const json& arguments)> render;
 };
 
+/// Configuration for a Protocol instance, fixed at construction.
 struct ProtocolOptions {
     std::string server_version = "dev";
     std::string instructions;
@@ -71,12 +75,24 @@ struct ProtocolOptions {
 /// negotiation and JSON-RPC dispatch to the tool registry. Thread-safe.
 class Protocol {
 public:
+    /// Builds a fresh ToolContext for each tool call or resource read.
     using ContextFactory = std::function<ToolContext()>;
 
+    /// The registry must outlive the Protocol.
     Protocol(const ToolRegistry& registry, ProtocolOptions options, ContextFactory context_factory);
 
+    /**
+     * Handles one request to /mcp: checks Host, Origin and the bearer token, then serves POST
+     * (JSON-RPC) and DELETE (end session). Other methods get 405. May be called from any thread;
+     * blocks while a tool runs, and non-read-only tools are serialized.
+     *
+     * @param request The parsed HTTP request.
+     *
+     * @return The response to send. Failures are reported as HTTP status codes or JSON-RPC errors.
+     */
     HttpResponse Handle(const HttpRequest& request);
 
+    /// Number of live sessions.
     [[nodiscard]] size_t SessionCount() const;
 
     /// Whether id names a live session (for the SSE stream on GET /mcp).
@@ -88,17 +104,31 @@ public:
     [[nodiscard]] static bool IsAllowedHost(const std::string& host);
 
 private:
+    /// State kept per Mcp-Session-Id. Guarded by sessions_mutex.
     struct Session {
         std::string protocol_version;
         std::chrono::steady_clock::time_point last_used;
     };
 
+    /// Validates a POST body and session, then dispatches requests. Notifications get 202.
     HttpResponse HandlePost(const HttpRequest& request);
+    /// Routes one JSON-RPC request by method. Sets new_session_id on initialize.
     std::optional<json> Dispatch(const json& message, const HttpRequest& request,
                                  std::string& new_session_id, int& http_status);
+    /// Negotiates the protocol version, creates a session and returns server capabilities.
     json HandleInitialize(const json& params, std::string& new_session_id);
+    /**
+     * Runs a tool after validating arguments and checking writes, game state and the control
+     * lease. Tools that are not read-only run under mutating_tools_mutex and are re-checked
+     * once the lock is held.
+     *
+     * @return A JSON-RPC response. Refusals are tool results with isError set; unknown tools,
+     *         bad arguments and exceptions thrown by the handler are JSON-RPC errors.
+     */
     json HandleToolsCall(const json& id, const json& params, const std::string& session_id);
 
+    /// Creates a session with a random id and returns the id. Evicts the least recently used
+    /// session when max_sessions is reached.
     std::string CreateSession(std::string protocol_version);
 
     const ToolRegistry& registry;
@@ -112,6 +142,7 @@ private:
     std::mutex mutating_tools_mutex;
 };
 
+/// Builds a JSON-RPC 2.0 error response object.
 json JsonRpcError(const json& id, int code, std::string message);
 
 } // namespace Mcp

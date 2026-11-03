@@ -44,6 +44,8 @@ auto RunOnGuiThread(QObject* context, Fn&& fn) {
     }
 }
 
+/// Recursively appends every item under item that has a non-empty full path (folders and
+/// favorites included, so the result may hold duplicates).
 void CollectGames(const QStandardItem* item, std::vector<Mcp::GameEntry>& out) {
     if (item == nullptr) {
         return;

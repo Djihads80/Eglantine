@@ -8,6 +8,7 @@
 
 namespace Mcp {
 
+/// The whole dashboard page. It polls /status.json and /screen.png and reads /stream/timeline.
 inline constexpr const char* kDashboardHtml = R"HTML(<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Eglantine MCP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">

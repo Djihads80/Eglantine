@@ -28,6 +28,8 @@ namespace Mcp {
 
 namespace {
 
+/// Filters and counters of the IPC and SVC traces, shared between the tool handlers and the hooks
+/// (which run on emulator threads). Every field is guarded by mutex.
 struct TraceState {
     std::mutex mutex;
     // IPC
@@ -41,11 +43,15 @@ struct TraceState {
     std::map<u32, u64> svc_counts;
 };
 
+/// The process-wide trace state, created on first use.
 TraceState& State() {
     static TraceState state;
     return state;
 }
 
+/// IPC hook, called on the emulator thread that dispatched the command. Counts calls matching the
+/// service prefix, then (outside the lock) posts an 'ipc' event with up to 12 request words unless
+/// events are off or errors_only filters it out.
 void OnIpc(const Core::Trace::IpcCall& call) {
     auto& s = State();
     bool emit = false;
@@ -73,6 +79,8 @@ void OnIpc(const Core::Trace::IpcCall& call) {
                                call.thread_id, words));
 }
 
+/// SVC hook, called on the guest thread making the call. Counts SVCs that pass the id filter and
+/// posts each as an 'svc' event with the first four inputs and three outputs.
 void OnSvc(const Core::Trace::SvcCall& call) {
     auto& s = State();
     {
@@ -90,6 +98,8 @@ void OnSvc(const Core::Trace::SvcCall& call) {
     }
 }
 
+/// Posts a newly seen unimplemented command as an 'unimpl' event, with its first request words
+/// and backtrace.
 void OnUnimplemented(const Service::UnimplementedCommandRecord& r) {
     if (Timeline* timeline = Server::ActiveTimeline()) {
         timeline->Push(EventKind::Unimplemented, 0, r.service,
@@ -100,6 +110,8 @@ void OnUnimplemented(const Service::UnimplementedCommandRecord& r) {
     }
 }
 
+/// Posts a guest crash as a critical-level 'crash' event, adding the faulting thread's id, name and
+/// backtrace when a thread is given. Does nothing when no server timeline is active.
 void OnCrash(std::string_view kind, std::string_view detail, const Kernel::KThread* thread) {
     Timeline* timeline = Server::ActiveTimeline();
     if (!timeline) {
@@ -116,6 +128,8 @@ void OnCrash(std::string_view kind, std::string_view detail, const Kernel::KThre
     timeline->Push(EventKind::Crash, 5, std::string{kind}, std::move(text));
 }
 
+/// ipc_trace: stores the filter options and installs or removes the IPC hook. Enabling resets the
+/// counters; disabling keeps them for ipc_summary.
 ToolResult IpcTrace(ToolContext&, const json& args) {
     auto& s = State();
     const bool enable = args.at("enable").get<bool>();
@@ -139,6 +153,8 @@ ToolResult IpcTrace(ToolContext&, const json& args) {
                         : "IPC tracing off."}});
 }
 
+/// ipc_summary: copies the IPC counters under the lock (optionally clearing them), then returns the
+/// "top" most frequent (service, command, function, result) rows. "kinds" is the number of rows.
 ToolResult IpcSummary(ToolContext&, const json& args) {
     auto& s = State();
     std::vector<std::pair<u64, json>> rows;
@@ -172,6 +188,8 @@ ToolResult IpcSummary(ToolContext&, const json& args) {
         {"top", std::move(list)}});
 }
 
+/// svc_trace: replaces the SVC id filter and installs or removes the SVC hook. Enabling resets the
+/// counters; the reply carries the current per-SVC counts.
 ToolResult SvcTrace(ToolContext&, const json& args) {
     auto& s = State();
     const bool enable = args.at("enable").get<bool>();
@@ -201,6 +219,8 @@ ToolResult SvcTrace(ToolContext&, const json& args) {
                  "[0x18] for WaitSynchronization."}});
 }
 
+/// list_services: sorted registered service names matching the prefix. "total" counts all
+/// registered services, not just the matches.
 ToolResult ListServices(ToolContext& ctx, const json& args) {
     auto names = ctx.system->ServiceManager().GetRegisteredServiceNames();
     std::sort(names.begin(), names.end());
@@ -228,6 +248,7 @@ void RemoveTraceHooks() {
     Core::Trace::g_svc_hook.store(nullptr, std::memory_order_relaxed);
 }
 
+/// Registers ipc_trace, ipc_summary, svc_trace and list_services.
 void RegisterTraceTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "ipc_trace",

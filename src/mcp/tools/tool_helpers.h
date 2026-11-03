@@ -21,6 +21,7 @@ namespace Mcp {
 struct ToolContext;
 
 // input_tools.cpp
+/// Schema of the `player` argument (1-8 = P1-P8, 9 = handheld).
 json PlayerSchema();
 /// Schema of one input_sequence-style step list.
 json InputStepsSchema();
@@ -32,10 +33,15 @@ std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps);
 json ControllerStateJson(ToolContext& ctx, size_t npad);
 
 // core_tools.cpp
+/// One timeline event as JSON (seq, t_ms, frame, kind, source, msg; level for logs).
 json EventJson(const Event& event);
 /// Filter properties shared by timeline, wait_for and act.
 json FilterProperties();
+/// Builds a timeline query from FilterProperties-style arguments. Unknown kinds and levels are
+/// ignored.
 Timeline::Query ParseQuery(const json& args);
+/// Frontend fps, emulation speed, frame time and shader builds, or null when there is no host
+/// or no valid sample yet.
 json PerfJson(ToolContext& ctx);
 
 // game_state_tools.cpp
@@ -63,11 +69,14 @@ void StopMemoryWork();
 std::optional<std::vector<u8>> RawCapturePng(ToolContext& ctx, u32 max_width, std::string& error);
 
 // trace_tools.cpp: core observers feeding the timeline (installed while the server runs).
+/// Installs the unimplemented-command and crash hooks that post timeline events.
 void InstallTraceHooks();
+/// Clears all trace hooks, including the IPC and SVC ones the trace tools may have enabled.
 void RemoveTraceHooks();
 
 /// Set while the server shuts down: long waits in tools check it and return early.
 inline std::atomic<bool> g_server_stopping{false};
+/// Whether the server is shutting down (reads g_server_stopping).
 [[nodiscard]] inline bool ServerStopping() {
     return g_server_stopping.load(std::memory_order_relaxed);
 }

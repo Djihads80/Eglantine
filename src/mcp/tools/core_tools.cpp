@@ -116,6 +116,7 @@ u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout) {
 
 namespace {
 
+/// Lowercase hex string of the bytes, two digits each, no separators.
 std::string HexBytes(std::span<const u8> bytes) {
     std::string out;
     for (const u8 b : bytes) {
@@ -124,6 +125,8 @@ std::string HexBytes(std::span<const u8> bytes) {
     return out;
 }
 
+/// status: frontend and build version, MCP state, and when a game runs its ids, title, frame and
+/// docked mode. Perf is added whenever the host has a valid sample.
 ToolResult Status(ToolContext& ctx, const json&) {
     json out;
     out["frontend"] = ctx.host ? ctx.host->FrontendName() : "none";
@@ -153,6 +156,8 @@ ToolResult Status(ToolContext& ctx, const json&) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// timeline: returns up to "limit" matching events after since_seq, with next_seq to continue
+/// from, and "dropped"/"truncated" only when non-zero.
 ToolResult ReadTimeline(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -174,6 +179,9 @@ ToolResult ReadTimeline(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(std::move(out));
 }
 
+/// wait_for: blocks the HTTP worker thread handling the request until a matching event arrives
+/// or the timeout passes. Without since_seq only events pushed after the call starts count. On a
+/// match next_seq is that event's seq; on timeout it is the last seq and "matched" is false.
 ToolResult WaitFor(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -192,6 +200,7 @@ ToolResult WaitFor(ToolContext& ctx, const json& args) {
         json{{"matched", true}, {"event", EventJson(*found)}, {"next_seq", found->seq}});
 }
 
+/// mark: pushes an agent marker event and returns its seq.
 ToolResult Mark(ToolContext& ctx, const json& args) {
     if (!ctx.timeline) {
         return ToolResult::Error("timeline unavailable");
@@ -201,6 +210,8 @@ ToolResult Mark(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"seq", seq}});
 }
 
+/// set_log_filter: applies the filter string to the global logger and stores it in the settings
+/// value. Returns the new and previous filter strings; parse errors are not reported.
 ToolResult SetLogFilter(ToolContext&, const json& args) {
     const std::string filter_string = args.at("filter").get<std::string>();
     const std::string previous = Settings::values.log_filter.GetValue();
@@ -213,6 +224,7 @@ ToolResult SetLogFilter(ToolContext&, const json& args) {
 
 } // namespace
 
+/// Registers status, timeline, wait_for, mark and set_log_filter.
 void RegisterCoreTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "status",

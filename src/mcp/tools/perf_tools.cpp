@@ -37,6 +37,8 @@ namespace {
 
 namespace Profile = VideoCommon::Nx2Profile;
 
+/// One GPU thread's profiler report as JSON: zones sorted by cost (only the `top` costliest
+/// when non-zero), non-zero counters, and the report's age relative to `now` (ns).
 json SnapshotJson(const Profile::Snapshot& snap, u64 now, size_t top) {
     std::vector<Profile::Snapshot::ZoneStat> zones = snap.zones;
     std::sort(zones.begin(), zones.end(),
@@ -69,6 +71,9 @@ json SnapshotJson(const Profile::Snapshot& snap, u64 now, size_t top) {
                 {"split_drains_total_per_s", total_drains}};
 }
 
+/// gpu_profile tool: applies enable/window_ms, then returns every GPU thread's last report.
+/// With `fresh`, polls for up to 2 windows + 3 s until each report covers only time after the
+/// call. Takes the profiler's snapshot mutex while reading.
 ToolResult GpuProfile(ToolContext& ctx, const json& args) {
     using namespace std::chrono;
     const bool was_enabled = Profile::Enabled();
@@ -177,6 +182,8 @@ std::map<u32, std::pair<std::string, u64>> SampleHostThreads() {
 
 /// Frame pacing, GPU profile, host thread CPU and an optional baseline check over one window:
 /// the repeatable "before/after" measurement for performance work.
+/// Blocks the calling thread for `seconds` (ends early on server stop), then up to 3 s more for
+/// the GPU report. Restores the profiler's previous enable state and window afterwards.
 ToolResult PerfSample(ToolContext& ctx, const json& args) {
     using namespace std::chrono;
     const int seconds = args.value("seconds", 10);
@@ -325,12 +332,14 @@ json RunPerfSample(ToolContext& ctx, const json& args) {
 
 namespace {
 
+/// baseline_save tool: wraps BaselineSave, turning its error into a tool error.
 ToolResult BaselineSaveTool(ToolContext& ctx, const json& args) {
     std::string error;
     const json r = BaselineSave(ctx, args.at("name").get<std::string>(), error);
     return r.is_null() ? ToolResult::Error(error) : ToolResult::Structured(r);
 }
 
+/// baseline_check tool: the BaselineCheck result plus the current frame as a PNG.
 ToolResult BaselineCheckTool(ToolContext& ctx, const json& args) {
     std::string error;
     std::vector<u8> png;

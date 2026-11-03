@@ -389,6 +389,7 @@ void Filter::ParseFilterString(std::string_view filter_view) {
 // Constructor shall NOT depend upon Settings() or whatever
 // it's ran at global static ctor() time... so BE CAREFUL MFER!
 static std::optional<Common::Log::Impl> logging_instance{};
+/// See SetExternalSink. Loaded once per message that passes the filter; nullptr when unset.
 static std::atomic<Common::Log::ExternalSink> external_sink{nullptr};
 
 void SetExternalSink(ExternalSink sink) {

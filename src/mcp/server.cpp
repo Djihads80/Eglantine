@@ -85,6 +85,8 @@ std::string RedactKeys(std::string_view message) {
     return out;
 }
 
+/// External log sink: copies each log line, redacted, into the active timeline if there is one.
+/// Called from whichever thread logs.
 void LogSink(const char* class_name, Common::Log::Level level, std::string_view message) {
     if (Timeline* timeline = g_active_timeline.load(std::memory_order_acquire)) {
         timeline->Push(EventKind::Log, static_cast<u8>(level), class_name, RedactKeys(message));
@@ -99,6 +101,7 @@ u64 CurrentProcessId() {
 #endif
 }
 
+/// Where the discovery file (url, port, pid) is written while the server runs.
 std::filesystem::path DiscoveryPath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "mcp-server.json";
 }
@@ -151,6 +154,7 @@ Server::Server(Core::System& system_, Host& host_, ServerConfig config_)
     options.instructions = kInstructions;
 
     // Resources: live views built from the tools, readable without a tool call.
+    // run_tool returns the tool's structured result, or an {"error"} object if unavailable.
     const auto run_tool = [this](const char* name, const nlohmann::json& args, ToolContext& ctx) {
         const Tool* tool = registry.Find(name);
         if (!tool || (tool->requires_game && !ctx.GameRunning())) {
@@ -294,6 +298,8 @@ std::string Server::Start() {
     http->set_read_timeout(60, 0);
     http->set_write_timeout(60, 0);
 
+    // Converts an httplib request (headers lowercased) to HttpRequest, runs it through Protocol
+    // and copies the result back. Runs on an httplib worker thread.
     const auto handler = [this](const httplib::Request& req, httplib::Response& res) {
         HttpRequest request;
         request.method = req.method;
@@ -387,6 +393,7 @@ std::string Server::Start() {
                 return true;
             });
     };
+    // One timeline event as JSON; log events also carry their level name.
     const auto event_json = [](const Event& e) {
         nlohmann::json j{{"seq", e.seq},       {"frame", e.frame},     {"kind", EventKindName(e.kind)},
                          {"source", e.source}, {"msg", e.message}};

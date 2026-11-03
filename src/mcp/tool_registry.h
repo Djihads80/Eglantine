@@ -12,17 +12,22 @@
 
 namespace Mcp {
 
+/// The set of tools the server offers, keyed and ordered by name. Filled once at startup and
+/// read-only afterwards, so concurrent lookups need no lock.
 class ToolRegistry {
 public:
     /// Adds a tool. Names must be unique snake_case; asserts otherwise.
     void Add(Tool tool);
 
+    /// Returns the tool with this name, or nullptr. The pointer lives as long as the registry.
     [[nodiscard]] const Tool* Find(std::string_view name) const;
+    /// The tools/list array: every tool's DefinitionJson, sorted by name.
     [[nodiscard]] json ListJson() const;
     [[nodiscard]] size_t Size() const {
         return tools.size();
     }
 
+    /// Calls fn(const Tool&) for every tool in name order.
     template <typename Fn>
     void ForEach(Fn&& fn) const {
         for (const auto& [name, tool] : tools) {

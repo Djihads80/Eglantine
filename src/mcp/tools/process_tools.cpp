@@ -27,6 +27,7 @@ std::string Hex(u64 value) {
     return fmt::format("{:#x}", value);
 }
 
+/// Name of a memory state as used in memory_map output and its "state" filter.
 const char* MemoryStateName(Kernel::Svc::MemoryState state) {
     using S = Kernel::Svc::MemoryState;
     switch (state) {
@@ -56,6 +57,8 @@ const char* MemoryStateName(Kernel::Svc::MemoryState state) {
     }
 }
 
+/// "rwx"-style permission string. Free regions and any permission other than r-x, r-- or rw-
+/// show as "---".
 const char* PermissionString(const Kernel::Svc::MemoryInfo& info) {
     if (info.state == Kernel::Svc::MemoryState::Free) {
         return "---";
@@ -68,10 +71,12 @@ const char* PermissionString(const Kernel::Svc::MemoryInfo& info) {
     }
 }
 
+/// The application process, or null when there is no system or no application running.
 Kernel::KProcess* Process(ToolContext& ctx) {
     return ctx.system ? ctx.system->ApplicationProcess() : nullptr;
 }
 
+/// Loaded modules of the process with name, base, end and size.
 json ModulesJson(Kernel::KProcess* process) {
     json modules = json::array();
     for (const auto& [base, name] : Core::FindModules(process)) {
@@ -82,6 +87,7 @@ json ModulesJson(Kernel::KProcess* process) {
     return modules;
 }
 
+/// process_info: pid, name, program id, Switch 2 flag, address-space regions and modules.
 ToolResult ProcessInfo(ToolContext& ctx, const json&) {
     auto* process = Process(ctx);
     if (!process) {
@@ -106,6 +112,9 @@ ToolResult ProcessInfo(ToolContext& ctx, const json&) {
     });
 }
 
+/// memory_map: walks the page table from address 0 with QueryInfo. Free and Inaccessible regions
+/// are skipped unless include_free, the trailing Inaccessible region always is, and the walk stops
+/// once more than 20000 regions are collected.
 ToolResult MemoryMap(ToolContext& ctx, const json& args) {
     auto* process = Process(ctx);
     if (!process) {
@@ -145,6 +154,7 @@ ToolResult MemoryMap(ToolContext& ctx, const json& args) {
     return ToolResult::Structured(json{{"regions", std::move(regions)}});
 }
 
+/// One guest thread's id, name, state, wait reason, priority, core and CPU time.
 json ThreadJson(const Kernel::KThread& thread) {
     return json{{"id", thread.GetThreadId()},
                 {"name", Core::GetThreadName(&thread).value_or("")},
@@ -155,6 +165,7 @@ json ThreadJson(const Kernel::KThread& thread) {
                 {"cpu_time_ticks", thread.GetCpuTime()}};
 }
 
+/// list_threads: snapshot of the process's threads, taken under the process list lock.
 ToolResult ListThreads(ToolContext& ctx, const json&) {
     auto* process = Process(ctx);
     if (!process) {
@@ -173,6 +184,9 @@ ToolResult ListThreads(ToolContext& ctx, const json&) {
                       "CPU profile."}});
 }
 
+/// backtrace: symbolized frames of one thread (thread_id) or all, read under the process list
+/// lock. Pauses the game through the host first if it is running and resumes it afterwards.
+/// Fails if pausing fails or no thread has the requested id.
 ToolResult Backtrace(ToolContext& ctx, const json& args) {
     auto* process = Process(ctx);
     if (!process || !ctx.host) {
@@ -220,6 +234,7 @@ ToolResult Backtrace(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Registers process_info, memory_map, list_threads and backtrace.
 void RegisterProcessTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "process_info",

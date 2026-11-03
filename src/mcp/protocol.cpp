@@ -22,6 +22,7 @@ constexpr int kMethodNotFound = -32601;
 constexpr int kInvalidParams = -32602;
 constexpr int kInternalError = -32603;
 
+/// Whether version is one of kSupportedProtocolVersions.
 bool IsSupportedVersion(const std::string& version) {
     return std::any_of(std::begin(kSupportedProtocolVersions), std::end(kSupportedProtocolVersions),
                        [&](const char* v) { return version == v; });
@@ -31,6 +32,7 @@ HttpResponse JsonResponse(int status, const json& body) {
     return HttpResponse{status, "application/json", body.dump(), {}};
 }
 
+/// A response with only a status code and no body.
 HttpResponse Empty(int status) {
     return HttpResponse{status, "", "", {}};
 }
