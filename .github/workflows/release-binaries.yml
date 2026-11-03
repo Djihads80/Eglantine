@@ -625,12 +625,6 @@ jobs:
           | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
           | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
 
-          ## macOS
-
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
-
           The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
           EOF
 
@@ -646,6 +640,8 @@ jobs:
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          # Forks have no webhook: nothing to ping.
+          if [ -z "$WEBHOOK" ]; then exit 0; fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
           MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
             "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" "${GITHUB_SHA::7}" "$URL")
