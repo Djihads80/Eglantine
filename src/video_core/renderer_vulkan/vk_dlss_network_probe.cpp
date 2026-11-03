@@ -3,10 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include "video_core/host_shaders/dlss_network_probe_comp_spv.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+/* X11 defines */
+#undef Success
+#undef BadValue
 #include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
