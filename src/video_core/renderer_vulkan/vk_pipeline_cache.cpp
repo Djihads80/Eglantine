@@ -13,6 +13,7 @@
 #include <memory>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <bit>
 #include <numeric>
@@ -1251,6 +1252,21 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (programs[index].info.requires_layer_emulation) {
             layer_source_program = &programs[index];
         }
+    }
+    // Task and mesh programs need VK_EXT_mesh_shader with both stages: without it, don't hand the
+    // driver a pipeline it doesn't support (the rasterizer skips the draw).
+    if (!device.IsExtMeshShaderSupported() &&
+        std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
+            return program.info.is_task || program.info.is_mesh;
+        })) {
+        static bool reported{};
+        if (!std::exchange(reported, true)) {
+            LOG_WARNING(Render_Vulkan,
+                        "Task/mesh pipeline {:016x} skipped: no VK_EXT_mesh_shader task and mesh "
+                        "support",
+                        hash);
+        }
+        return nullptr;
     }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
