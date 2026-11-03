@@ -24,6 +24,7 @@ constexpr std::array<std::pair<EventKind, std::string_view>, 10> kKindNames{{
 }};
 } // namespace
 
+/// Short name of an event kind ("log", "crash", ...), or "unknown".
 std::string_view EventKindName(EventKind kind) {
     for (const auto& [k, name] : kKindNames) {
         if (k == kind) {
@@ -33,6 +34,7 @@ std::string_view EventKindName(EventKind kind) {
     return "unknown";
 }
 
+/// Event kind for a short name, or nullopt if the name is unknown.
 std::optional<EventKind> EventKindFromName(std::string_view name) {
     for (const auto& [k, n] : kKindNames) {
         if (n == name) {
@@ -42,10 +44,12 @@ std::optional<EventKind> EventKindFromName(std::string_view name) {
     return std::nullopt;
 }
 
+/// Creates a ring holding `capacity` events (at least one).
 Timeline::Timeline(size_t capacity, FrameSource frame_source_)
     : frame_source{std::move(frame_source_)}, start{std::chrono::steady_clock::now()},
       ring(capacity == 0 ? 1 : capacity) {}
 
+/// Stores an event stamped with time and frame, wakes waiters, and returns its sequence number.
 u64 Timeline::Push(EventKind kind, u8 level, std::string source, std::string message) {
     const u64 time_us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
                                              std::chrono::steady_clock::now() - start)
@@ -70,6 +74,7 @@ u64 Timeline::Push(EventKind kind, u8 level, std::string source, std::string mes
     return seq;
 }
 
+/// True if the event passes the query's kind, level, source and text filters.
 bool Timeline::Matches(const Event& event, const Query& query) {
     if (!query.kinds.empty() &&
         std::find(query.kinds.begin(), query.kinds.end(), event.kind) == query.kinds.end()) {
@@ -87,6 +92,7 @@ bool Timeline::Matches(const Event& event, const Query& query) {
     return true;
 }
 
+/// Matching events after `since_seq`, up to the limit, with dropped and truncated counts.
 Timeline::QueryResult Timeline::Read(const Query& query) const {
     QueryResult result;
     std::scoped_lock lock{mutex};
@@ -117,6 +123,7 @@ Timeline::QueryResult Timeline::Read(const Query& query) const {
     return result;
 }
 
+/// Blocks until an event after `since_seq` matches the query, or the timeout passes.
 std::optional<Event> Timeline::WaitFor(const Query& query, std::chrono::milliseconds timeout) const {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     u64 cursor = query.since_seq;

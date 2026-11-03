@@ -5,12 +5,14 @@
 
 namespace Mcp {
 
+/// Drops the holder if its lease has expired by `now`. Caller holds the mutex.
 void ControlLease::ExpireLocked(Clock::time_point now) {
     if (holder && now >= holder->expires) {
         holder.reset();
     }
 }
 
+/// Takes or extends the lease for `session`; fails, reporting the holder, if another holds it.
 bool ControlLease::Acquire(const std::string& session, const std::string& label,
                            std::optional<std::chrono::seconds> ttl, Holder& out) {
     std::scoped_lock lock{mutex};
@@ -33,6 +35,7 @@ bool ControlLease::Acquire(const std::string& session, const std::string& label,
     return true;
 }
 
+/// Implicitly takes a free lease or extends our own; fails if another session holds it.
 bool ControlLease::Touch(const std::string& session, Holder& out) {
     std::scoped_lock lock{mutex};
     const auto now = Clock::now();
@@ -50,6 +53,7 @@ bool ControlLease::Touch(const std::string& session, Holder& out) {
     return true;
 }
 
+/// Extends the lease if `session` holds it; never takes a free one.
 bool ControlLease::Renew(const std::string& session) {
     std::scoped_lock lock{mutex};
     const auto now = Clock::now();
@@ -61,6 +65,7 @@ bool ControlLease::Renew(const std::string& session) {
     return true;
 }
 
+/// Gives up the lease if `session` holds it.
 bool ControlLease::Release(const std::string& session) {
     std::scoped_lock lock{mutex};
     if (holder && holder->session_id == session) {

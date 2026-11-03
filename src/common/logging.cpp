@@ -429,6 +429,7 @@ void SetColorConsoleBackendEnabled(bool enabled) {
         logging_instance->color_console_backend.enabled = enabled;
 }
 
+/// Formats a message that passes the filter and writes it to every backend and the external sink.
 void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, unsigned int line_num, const char* function, fmt::string_view format, const fmt::format_args& args) {
     if (logging_instance && logging_instance->filter.CheckMessage(log_class, log_level)) {
         auto const flush = ::Settings::values.log_flush_line.GetValue();

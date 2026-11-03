@@ -35,6 +35,7 @@ ToolResult& ToolResult::AddImage(std::span<const u8> bytes, std::string mime_typ
     return *this;
 }
 
+/// The MCP tools/call result object: content, structuredContent and isError.
 json ToolResult::ToJson() const {
     json out{{"content", content}};
     if (structured) {
@@ -46,6 +47,7 @@ json ToolResult::ToJson() const {
     return out;
 }
 
+/// The tool's entry for tools/list: name, schemas, title and annotations.
 json Tool::DefinitionJson() const {
     json out{
         {"name", name},
@@ -67,6 +69,7 @@ json Tool::DefinitionJson() const {
     return out;
 }
 
+/// Standard base64 encoding with padding.
 std::string Base64Encode(std::span<const u8> bytes) {
     static constexpr char table[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

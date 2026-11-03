@@ -31,6 +31,7 @@ static std::optional<u16> ParsePort(const char* text) {
     return static_cast<u16>(port);
 }
 
+/// Parses the command line options into a LaunchParams.
 LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[]) noexcept {
     LaunchParams p{};
 
@@ -196,6 +197,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     return p;
 }
 
+/// Applies the parsed command line options to the log filter and settings.
 void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     // apply the log_filter setting
     // the logger was initialized before and doesn't pick up the filter on its own

@@ -325,6 +325,7 @@ ToolResult PerfSample(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Runs perf_sample and returns its structured result, or an {"error"} object.
 json RunPerfSample(ToolContext& ctx, const json& args) {
     ToolResult r = PerfSample(ctx, args);
     return r.structured ? *r.structured : json{{"error", "no data"}};
@@ -357,6 +358,7 @@ ToolResult BaselineCheckTool(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Registers perf_sample, baseline_save, baseline_check and gpu_profile.
 void RegisterPerfTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "perf_sample",

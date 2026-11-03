@@ -114,6 +114,7 @@ std::string GetTimeZoneString(TimeZone time_zone) {
     return location_name;
 }
 
+/// Logs every setting's value, modified ones first, hiding the token secrets.
 void LogSettings() {
     std::deque<std::string> settings_list;
     for (auto& [category, settings] : values.linkage.by_category) {

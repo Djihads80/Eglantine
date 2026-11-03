@@ -254,6 +254,7 @@ Kernel::KProcessAddress GetModuleEnd(const Kernel::KProcess* process,
     return cur_addr - 1;
 }
 
+/// Maps the base address of each executable code region in the process to its module name.
 Loader::AppLoader::Modules FindModules(Kernel::KProcess* process) {
     Loader::AppLoader::Modules modules;
 

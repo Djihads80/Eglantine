@@ -39,6 +39,7 @@ constexpr std::array<std::string_view, 18> kTasButtons{
     "A",     "B",    "X",   "Y",     "LSTICK", "RSTICK", "L",  "R",  "ZL",
     "ZR",    "PLUS", "MINUS", "DLEFT", "DUP",  "DRIGHT", "DDOWN", "SL", "SR"};
 
+/// The TAS button names as a JSON array, for schema enums.
 json TasButtonEnum() {
     json names = json::array();
     for (const auto name : kTasButtons) {
@@ -57,6 +58,7 @@ std::filesystem::path RecordPath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::TASDir) / "record.txt";
 }
 
+/// Lowercase name of a TAS engine state.
 const char* StateName(TasState state) {
     switch (state) {
     case TasState::Running:
@@ -408,6 +410,7 @@ json StickProp() {
 
 } // namespace
 
+/// Registers the TAS script, playback, recording and status tools.
 void RegisterTasTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "tas_status",

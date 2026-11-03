@@ -174,6 +174,7 @@ ToolResult Act(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Registers act, which runs input steps and reports what happened.
 void RegisterActTools(ToolRegistry& registry) {
     json event_filter = FilterProperties();
     event_filter.erase("since_seq");

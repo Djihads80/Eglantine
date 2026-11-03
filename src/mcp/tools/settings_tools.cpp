@@ -289,6 +289,7 @@ ToolResult EnvSwitches(ToolContext&, const json& args) {
 
 } // namespace
 
+/// Registers the settings, debug knob, determinism and environment switch tools.
 void RegisterSettingsTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "settings_list",

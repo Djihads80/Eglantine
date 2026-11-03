@@ -38,6 +38,7 @@ std::string CliMcpHost::BootGame(const std::string&) {
     return "eden-cli runs the game given on its command line; relaunch it with another game";
 }
 
+/// Queues fn for the main thread and waits up to 30 s for its result.
 std::string CliMcpHost::RunOnMain(std::function<std::string()> fn) {
     auto task = std::make_shared<std::packaged_task<std::string()>>(std::move(fn));
     auto result = task->get_future();
@@ -51,6 +52,7 @@ std::string CliMcpHost::RunOnMain(std::function<std::string()> fn) {
     return result.get();
 }
 
+/// Runs the queued main thread tasks and samples the perf counters every 500 ms.
 void CliMcpHost::DrainMainThread() {
     std::vector<std::function<void()>> tasks;
     {
@@ -99,6 +101,7 @@ std::string CliMcpHost::Quit() {
     return {};
 }
 
+/// Applies changed settings to the running system on the main thread.
 std::string CliMcpHost::ApplySettings() {
     return RunOnMain([this] {
         if (system.IsPoweredOn()) {
@@ -108,6 +111,7 @@ std::string CliMcpHost::ApplySettings() {
     });
 }
 
+/// Runs fn on the TAS engine on the main thread.
 std::string CliMcpHost::WithTas(bool require_game,
                                 std::function<void(InputCommon::TasInput::Tas&)> fn) {
     return RunOnMain([this, require_game, fn = std::move(fn)]() -> std::string {
@@ -124,6 +128,7 @@ std::string CliMcpHost::WithTas(bool require_game,
     });
 }
 
+/// Asks the renderer for a 16:9 BGRA frame `width` wide and waits up to `timeout` for it.
 std::optional<Mcp::Frame> CliMcpHost::CaptureFrame(u32 width, std::chrono::milliseconds timeout,
                                                    std::string& error) {
     if (!system.IsPoweredOn()) {
@@ -171,6 +176,7 @@ std::optional<Mcp::Frame> CliMcpHost::CaptureFrame(u32 width, std::chrono::milli
     return capture->frame;
 }
 
+/// Captures a frame and encodes it as an opaque RGBA PNG.
 std::optional<std::vector<u8>> CliMcpHost::CaptureScreenshotPng(u32 max_width,
                                                                 std::chrono::milliseconds timeout,
                                                                 std::string& error) {

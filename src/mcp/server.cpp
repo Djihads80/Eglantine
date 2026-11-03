@@ -118,6 +118,7 @@ Timeline* Server::ActiveTimeline() {
     return g_active_timeline.load(std::memory_order_acquire);
 }
 
+/// Runs a tool directly, bypassing the protocol layer, and turns exceptions into errors.
 ToolResult Server::CallTool(const std::string& name, const json& arguments) {
     const Tool* tool = registry.Find(name);
     if (!tool) {
@@ -134,6 +135,7 @@ ToolResult Server::CallTool(const std::string& name, const json& arguments) {
     }
 }
 
+/// Current URL, session count, write state, activity and lease holder for the frontend.
 Server::Summary Server::GetSummary() {
     Summary s{.url = Url(),
               .sessions = protocol->SessionCount(),
@@ -286,6 +288,7 @@ std::string Server::Url() const {
     return fmt::format("http://{}:{}/mcp", config.bind_address, config.port);
 }
 
+/// Sets up the HTTP routes, binds the port and starts listening; returns an error or empty.
 std::string Server::Start() {
     if (running) {
         return {};
@@ -587,6 +590,7 @@ std::string Server::Start() {
     return {};
 }
 
+/// Wakes waiting requests, removes the hooks and discovery file, and stops the HTTP thread.
 void Server::Stop() {
     if (!running.exchange(false)) {
         return;

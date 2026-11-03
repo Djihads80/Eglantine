@@ -146,6 +146,7 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
         handlers_tipc.emplace_hint(handlers_tipc.cend(), functions[i].expected_header, functions[i]);
 }
 
+/// Records and logs a call to an unknown command, replying with a zeroed stub when auto-stubbed.
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
                                                        const FunctionInfoBase* info) {
     // EDEN_NX2_AUTO_STUB=1 auto-stubs every unknown command without touching the config. Switch 2
@@ -279,6 +280,7 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
 }
 } // Anonymous namespace
 
+/// Handles one IPC request by command type, counting it and reporting it to the trace hook.
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const auto guard = LockService();
@@ -372,6 +374,7 @@ UnimplementedRegistry& Registry() {
 }
 } // namespace
 
+/// Counts a call to an unimplemented command; the first call is stored and sent to the hook.
 void RecordUnimplementedCommand(const std::string& service, u32 command,
                                 const std::string& function, bool auto_stubbed,
                                 const std::string& request_words, const Kernel::KThread* caller) {

@@ -185,6 +185,7 @@ long long StepsDurationMs(const json& steps) {
     return total_ms;
 }
 
+/// input_sequence: runs the steps on one player and reports their total duration.
 ToolResult InputSequence(ToolContext& ctx, const json& args) {
     const auto& steps = args.at("steps");
     if (std::string error = RunInputSteps(ctx, NpadIndex(args), steps); !error.empty()) {
@@ -278,6 +279,7 @@ ToolResult ControllerState(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Schema of the shared `player` argument: 1-8, or 9 for handheld.
 json PlayerSchema() {
     return json{{"description", "1-8 for players 1-8 (default 1), or 9 for handheld mode."},
                 {"type", "integer"},
@@ -306,6 +308,8 @@ json InputStepsSchema() {
                   {"additionalProperties", false}}}};
 }
 
+/// Presses, holds and releases each step's buttons and sticks in turn (at most 60 s in total).
+/// Returns an error message, or empty on success.
 std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps) {
     std::string error;
     auto* pad = Gamepad(ctx, error);
@@ -348,6 +352,7 @@ std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps) {
     return {};
 }
 
+/// Connection, style, pressed buttons and stick positions of one controller, or null.
 json ControllerStateJson(ToolContext& ctx, size_t npad) {
     if (!ctx.system) {
         return nullptr;
@@ -379,6 +384,7 @@ json ControllerStateJson(ToolContext& ctx, size_t npad) {
     };
 }
 
+/// Registers the button, stick, touch, input sequence and controller state tools.
 void RegisterInputTools(ToolRegistry& registry) {
     const json button_list = {{"type", "array"},
                               {"items", {{"type", "string"}, {"enum", ButtonEnum()}}},

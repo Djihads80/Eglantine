@@ -6,6 +6,7 @@
 
 namespace Mcp {
 
+/// True while a game is powered on and not shutting down.
 bool ToolContext::GameRunning() const {
     return system != nullptr && system->IsPoweredOn() && !system->IsShuttingDown();
 }

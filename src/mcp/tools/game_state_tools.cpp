@@ -248,6 +248,7 @@ double Similarity(const std::vector<u8>& a, const std::vector<u8>& b,
     return std::max(0.0, sab / std::sqrt(saa * sbb));
 }
 
+/// Lowercase hex string of the bytes, two digits each.
 std::string ToHex(const std::vector<u8>& v) {
     std::string s;
     s.reserve(v.size() * 2);
@@ -575,6 +576,7 @@ ToolResult ScreenLabel(ToolContext& ctx, const json& args) {
     return result;
 }
 
+/// screen_state tool: the best matching screen label and scores for the current frame.
 ToolResult ScreenState(ToolContext& ctx, const json&) {
     std::string error;
     json state = ScreenStateJson(ctx, error);
@@ -1122,6 +1124,7 @@ bool StopBackgroundRoute() {
     return true;
 }
 
+/// route_stop tool: stops the background route, if one is running.
 ToolResult RouteStop(ToolContext&, const json&) {
     return ToolResult::Text(StopBackgroundRoute() ? "route stopped" : "no background route");
 }
@@ -1198,6 +1201,7 @@ public:
         return thread.joinable();
     }
 
+    /// Stops and joins the recording thread if it is still running.
     ~Recorder() {
         if (thread.joinable()) {
             thread.request_stop();
@@ -1540,6 +1544,7 @@ bool ValidName(const std::string& name) {
 }
 } // namespace
 
+/// Writes the current frame's PNG and stores its fingerprint under `name` for this game.
 json BaselineSave(ToolContext& ctx, const std::string& name, std::string& error) {
     if (!ValidName(name)) {
         error = "name: letters, digits, '-' or '_'";
@@ -1568,6 +1573,7 @@ json BaselineSave(ToolContext& ctx, const std::string& name, std::string& error)
     return json{{"saved", name}, {"png", Common::FS::PathToUTF8String(png_path)}};
 }
 
+/// Scores the current frame's fingerprint against the stored baseline and the threshold.
 json BaselineCheck(ToolContext& ctx, const std::string& name, double threshold, std::string& error,
                    std::vector<u8>* current_png) {
     json entry;
@@ -1604,6 +1610,7 @@ void StopGameStateWork() {
     Recorder::Get().Stop(frames, snaps, name);
 }
 
+/// PNG of the raw capture layer scaled to max_width, or nullopt with `error` set.
 std::optional<std::vector<u8>> RawCapturePng(ToolContext& ctx, u32 max_width, std::string& error) {
     const auto frame = RawCapture(ctx, error);
     if (!frame) {
@@ -1612,6 +1619,7 @@ std::optional<std::vector<u8>> RawCapturePng(ToolContext& ctx, u32 max_width, st
     return EncodePng(*frame, max_width);
 }
 
+/// Registers the screen label, probe, raw screenshot and route tools.
 void RegisterGameStateTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "screen_label",

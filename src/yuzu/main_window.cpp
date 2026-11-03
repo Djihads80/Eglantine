@@ -575,6 +575,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     }
 }
 
+/// Sets up the MCP menu and status timer, and starts the server if enabled by CLI or setting.
 void MainWindow::MaybeStartMcpServer([[maybe_unused]] bool cli_enable,
                                      [[maybe_unused]] std::optional<u16> cli_port,
                                      [[maybe_unused]] bool cli_allow_writes) {
@@ -594,6 +595,7 @@ void MainWindow::MaybeStartMcpServer([[maybe_unused]] bool cli_enable,
 }
 
 #ifdef YUZU_ENABLE_MCP
+/// Creates the host and server from the settings and starts it, keeping any error for the UI.
 void MainWindow::StartMcpServer() {
     if (mcp_server || mcp_stopping) {
         return;
@@ -624,6 +626,7 @@ void MainWindow::StartMcpServer() {
     mcp_last_error.clear();
 }
 
+/// Stops the server on a helper thread while this thread keeps processing events.
 void MainWindow::StopMcpServer() {
     if (!mcp_server) {
         return;
@@ -645,6 +648,7 @@ void MainWindow::StopMcpServer() {
     mcp_stopping = false;
 }
 
+/// Builds the Tools > MCP Server menu once: enable, writes, routes, dashboard and copy actions.
 void MainWindow::SetupMcpMenu() {
     if (mcp_menu) {
         return;
@@ -701,6 +705,7 @@ void MainWindow::SetupMcpMenu() {
             });
 }
 
+/// Syncs the MCP menu checkboxes and status text with the server state.
 void MainWindow::UpdateMcpMenu() {
     if (!mcp_menu) {
         return;
@@ -847,6 +852,7 @@ void MainWindow::PopulateMcpRoutesMenu() {
     open_folder();
 }
 
+/// Refreshes the status bar MCP indicator: clients, recording, route and last tool call.
 void MainWindow::UpdateMcpStatusLabel() {
     if (!mcp_status_label) {
         return;
@@ -919,6 +925,7 @@ void MainWindow::UpdateMcpStatusLabel() {
 }
 #endif
 
+/// Cancels pending work, releases the MCP server and frees the render window.
 MainWindow::~MainWindow() {
     if (nup_cancel) {
         nup_cancel->store(true);
@@ -1299,6 +1306,7 @@ void MainWindow::WebBrowserRequestExit() {
 #endif
 }
 
+/// Creates the render window, game list, loading screen and status bar widgets.
 void MainWindow::InitializeWidgets() {
     render_window = new GRenderWindow(this, input_subsystem);
     render_window->hide();
@@ -5194,6 +5202,7 @@ bool MainWindow::ConfirmClose() {
     return question(this, tr("Eglantine"), text);
 }
 
+/// Confirms closing, waits for emulation to stop, then saves state and shuts down.
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (!close_pending && !ConfirmClose()) {
         event->ignore();

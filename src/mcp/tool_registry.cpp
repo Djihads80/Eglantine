@@ -11,6 +11,7 @@
 
 namespace Mcp {
 
+/// True for 1 to 64 characters of [a-z0-9_] starting with a lowercase letter.
 bool IsValidToolName(std::string_view name) {
     if (name.empty() || name.size() > 64 || name[0] < 'a' || name[0] > 'z') {
         return false;
@@ -23,6 +24,7 @@ bool IsValidToolName(std::string_view name) {
     return true;
 }
 
+/// Registers a tool, asserting that it is well formed and its name is unique.
 void ToolRegistry::Add(Tool tool) {
     ASSERT_MSG(IsValidToolName(tool.name), "invalid MCP tool name '{}'", tool.name);
     ASSERT_MSG(!tool.description.empty(), "MCP tool '{}' has no description", tool.name);
@@ -33,11 +35,13 @@ void ToolRegistry::Add(Tool tool) {
     ASSERT_MSG(inserted, "duplicate MCP tool '{}'", it->first);
 }
 
+/// The tool with this name, or nullptr.
 const Tool* ToolRegistry::Find(std::string_view name) const {
     const auto it = tools.find(name);
     return it == tools.end() ? nullptr : &it->second;
 }
 
+/// Definitions of all tools, in name order, for tools/list.
 json ToolRegistry::ListJson() const {
     json list = json::array();
     for (const auto& [name, tool] : tools) {
@@ -82,6 +86,7 @@ bool MatchesType(const json& value, std::string_view type) {
 
 } // namespace
 
+/// Checks a value against a JSON Schema subset; returns the first error found, or nullopt.
 std::optional<std::string> ValidateArguments(const json& schema, const json& value,
                                              const std::string& path) {
     if (!schema.is_object()) {

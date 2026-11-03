@@ -78,6 +78,7 @@ size_t TypeSize(ValueType type) {
     }
 }
 
+/// True for the f32 and f64 value types.
 bool IsFloat(ValueType type) {
     return type == ValueType::F32 || type == ValueType::F64;
 }
@@ -526,6 +527,7 @@ public:
         }
     }
 
+    /// Stops and joins the sampling thread if it is still running.
     ~WatchSampler() {
         if (thread.joinable()) {
             thread.request_stop();

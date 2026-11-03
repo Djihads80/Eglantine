@@ -82,6 +82,7 @@ void QtMcpHost::OnStatsUpdated(const Core::PerfStatsResults& results,
     perf.shaders_building = static_cast<u32>(shaders.NumBuildingNoReport());
 }
 
+/// The last stats update, marked invalid when no game is running.
 Mcp::PerfSnapshot QtMcpHost::GetPerfSnapshot() {
     std::scoped_lock lock{perf_mutex};
     Mcp::PerfSnapshot snapshot = perf;
@@ -95,6 +96,7 @@ InputCommon::InputSubsystem* QtMcpHost::GetInputSubsystem() {
     return window.input_subsystem.get();
 }
 
+/// The game list's entries, one per path, read on the GUI thread.
 std::optional<std::vector<Mcp::GameEntry>> QtMcpHost::ListGames() {
     return RunOnGuiThread(&window, [this]() -> std::optional<std::vector<Mcp::GameEntry>> {
         if (window.game_list == nullptr) {
@@ -115,6 +117,7 @@ std::optional<std::vector<Mcp::GameEntry>> QtMcpHost::ListGames() {
     });
 }
 
+/// Boots the game at `path` on the GUI thread unless one is already running.
 std::string QtMcpHost::BootGame(const std::string& path) {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (window.emulation_running) {
@@ -125,6 +128,7 @@ std::string QtMcpHost::BootGame(const std::string& path) {
     });
 }
 
+/// Switches docked or handheld mode without the warning box, like the status bar toggle.
 std::string QtMcpHost::SetDocked(bool docked) {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (!QtCommon::system) {
@@ -153,6 +157,7 @@ std::string QtMcpHost::SetDocked(bool docked) {
     });
 }
 
+/// Applies changed settings to the running system on the GUI thread.
 std::string QtMcpHost::ApplySettings() {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (window.emulation_running && QtCommon::system) {
@@ -162,6 +167,7 @@ std::string QtMcpHost::ApplySettings() {
     });
 }
 
+/// Runs fn on the TAS engine on the GUI thread, then refreshes the TAS status.
 std::string QtMcpHost::WithTas(bool require_game,
                                std::function<void(InputCommon::TasInput::Tas&)> fn) {
     return RunOnGuiThread(&window, [&]() -> std::string {
@@ -180,6 +186,7 @@ std::string QtMcpHost::WithTas(bool require_game,
     });
 }
 
+/// Pauses the running game on the GUI thread.
 std::string QtMcpHost::Pause() {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (!window.emulation_running) {
@@ -190,6 +197,7 @@ std::string QtMcpHost::Pause() {
     });
 }
 
+/// Resumes the paused game on the GUI thread.
 std::string QtMcpHost::Resume() {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (!window.emulation_running) {
@@ -200,6 +208,7 @@ std::string QtMcpHost::Resume() {
     });
 }
 
+/// Shuts down the running game on the GUI thread.
 std::string QtMcpHost::Stop() {
     return RunOnGuiThread(&window, [&]() -> std::string {
         if (!window.emulation_running) {
@@ -210,6 +219,7 @@ std::string QtMcpHost::Stop() {
     });
 }
 
+/// Queues stopping the game and closing the main window.
 std::string QtMcpHost::Quit() {
     // Queued, not blocking: closing destroys the MCP server, which must first finish this reply.
     MainWindow* main_window = &window;
@@ -225,6 +235,7 @@ std::string QtMcpHost::Quit() {
     return {};
 }
 
+/// Captures a screenshot and encodes it as PNG.
 std::optional<std::vector<u8>> QtMcpHost::CaptureScreenshotPng(u32 max_width,
                                                                std::chrono::milliseconds timeout,
                                                                std::string& error) {
@@ -242,6 +253,7 @@ std::optional<std::vector<u8>> QtMcpHost::CaptureScreenshotPng(u32 max_width,
     return std::vector<u8>(png.begin(), png.end());
 }
 
+/// Captures a screenshot as raw BGRA pixels.
 std::optional<Mcp::Frame> QtMcpHost::CaptureFrame(u32 width, std::chrono::milliseconds timeout,
                                                   std::string& error) {
     const auto image = CaptureImage(width, timeout, error);
@@ -259,6 +271,7 @@ std::optional<Mcp::Frame> QtMcpHost::CaptureFrame(u32 width, std::chrono::millis
     return frame;
 }
 
+/// Asks the renderer for a 16:9 screenshot max_width wide and waits up to `timeout` for it.
 std::optional<QImage> QtMcpHost::CaptureImage(u32 max_width, std::chrono::milliseconds timeout,
                                               std::string& error) {
     if (!window.emulation_running || !QtCommon::system || !QtCommon::system->IsPoweredOn()) {

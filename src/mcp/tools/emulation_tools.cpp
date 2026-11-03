@@ -255,6 +255,7 @@ ToolResult GameInfo(ToolContext& ctx, const json& args) {
 
 } // namespace
 
+/// Registers the boot, pause/resume/stop, docked mode, frame and screenshot tools.
 void RegisterEmulationTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "set_docked",

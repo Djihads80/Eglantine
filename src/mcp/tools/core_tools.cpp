@@ -21,6 +21,7 @@
 
 namespace Mcp {
 
+/// An event as JSON; log events also get their level name.
 json EventJson(const Event& e) {
     json out{{"seq", e.seq},
              {"t_ms", static_cast<double>(e.time_us) / 1000.0},
@@ -61,6 +62,7 @@ json FilterProperties() {
     };
 }
 
+/// Builds a timeline query from the shared filter arguments.
 Timeline::Query ParseQuery(const json& args) {
     Timeline::Query q;
     q.since_seq = args.value("since_seq", u64{0});
@@ -86,6 +88,7 @@ Timeline::Query ParseQuery(const json& args) {
     return q;
 }
 
+/// FPS, speed, frame time and shader builds from the host, or null if unavailable.
 json PerfJson(ToolContext& ctx) {
     if (!ctx.host) {
         return nullptr;
@@ -104,6 +107,8 @@ u64 PresentedFrames() {
     return Core::g_nx2_present_count.load(std::memory_order_relaxed);
 }
 
+/// Waits until `frames` more frames are presented, the timeout or a server stop.
+/// Returns the number of frames actually presented.
 u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout) {
     const u64 start = PresentedFrames();
     const auto deadline = std::chrono::steady_clock::now() + timeout;

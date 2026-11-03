@@ -906,6 +906,7 @@ void Config::WriteCategory(const Settings::Category category) {
     std::ranges::for_each(settings, [&](const auto& setting) { WriteSettingGeneric(setting); });
 }
 
+/// Loads one setting from the config file, honoring its global and default flags.
 void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     if (!setting->Save() || (!setting->Switchable() && !global)) {
         return;
@@ -939,6 +940,7 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     }
 }
 
+/// Writes one setting to the config file with its global and default flags.
 void Config::WriteSettingGeneric(const Settings::BasicSetting* const setting) {
     if (!setting->Save()) {
         return;
