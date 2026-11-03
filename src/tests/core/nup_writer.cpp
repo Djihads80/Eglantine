@@ -560,3 +560,83 @@ TEST_CASE("NUP probes the version from the game data list tag", "[nup]") {
     REQUIRE(probed.display_version == "1.0.0");
     REQUIRE(probed.version_source == "base");
 }
+
+TEST_CASE("NUP UpdateMetadata updates title name and icon in metadata", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    const std::vector<u8> fake_icon{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    std::string error;
+    REQUIRE(FileSys::Nup::UpdateMetadata(
+                archive, {.title_name = std::string{"Mario Kart World"}, .icon = fake_icon},
+                &error) == FileSys::Nup::PackResult::Success);
+    INFO(error);
+    REQUIRE_FALSE(fs::exists(archive.string() + ".meta.part"));
+
+    FileSys::RealVfsFilesystem real;
+    NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    REQUIRE(nup.GetPackages()[0].title_name == "Mario Kart World");
+    REQUIRE(nup.GetPackages()[0].icon == fake_icon);
+    REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
+}
+
+TEST_CASE("NUP metadata recovery backup restores archive on crash", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    const auto original_bytes = ReadAll(archive);
+
+    // Intentionally create a backup file and simulate an interrupted write
+    const auto bak = archive.string() + ".meta.bak";
+    {
+        Common::FS::IOFile bak_out{bak, Common::FS::FileAccessMode::Write};
+        REQUIRE(bak_out.IsOpen());
+        static constexpr std::array<u8, 8> bak_magic{'N', 'U', 'P', 'B', 'A', 'K', 0x01, 0x00};
+        REQUIRE(bak_out.Write(bak_magic) == 8);
+        REQUIRE(bak_out.WriteObject(static_cast<u64>(original_bytes.size())));
+        const u64 toc_off = Le(original_bytes, 0x08, 8);
+        const u64 toc_sz = Le(original_bytes, 0x10, 8);
+        REQUIRE(bak_out.WriteObject(toc_off));
+        REQUIRE(bak_out.WriteObject(toc_sz));
+        std::vector<u8> super(0x80);
+        std::copy_n(original_bytes.begin(), 0x80, super.begin());
+        REQUIRE(bak_out.Write(super) == 0x80);
+        std::vector<u8> toc(static_cast<size_t>(toc_sz));
+        std::copy_n(original_bytes.begin() + static_cast<std::ptrdiff_t>(toc_off), toc_sz,
+                    toc.begin());
+        REQUIRE(bak_out.Write(toc) == toc.size());
+        REQUIRE(bak_out.Commit());
+    }
+    REQUIRE(FileSys::Nup::HasMetadataBackup(archive));
+
+    // Corrupt the archive's superblock and append garbage
+    {
+        Common::FS::IOFile file{archive, Common::FS::FileAccessMode::ReadWrite};
+        REQUIRE(file.IsOpen());
+        std::vector<u8> zeros(0x80, 0);
+        REQUIRE(file.Seek(0));
+        REQUIRE(file.Write(zeros) == zeros.size());
+        REQUIRE(file.Seek(static_cast<s64>(file.GetSize())));
+        REQUIRE(file.Write(zeros) == zeros.size());
+        REQUIRE(file.Commit());
+    }
+
+    // Restore from backup
+    std::string err;
+    REQUIRE(FileSys::Nup::RestoreMetadataBackup(archive, &err));
+    REQUIRE_FALSE(FileSys::Nup::HasMetadataBackup(archive));
+    REQUIRE(ReadAll(archive) == original_bytes);
+
+    FileSys::RealVfsFilesystem real;
+    NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+}

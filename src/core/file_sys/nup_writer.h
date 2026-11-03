@@ -73,4 +73,19 @@ PackResult PackDump(const std::filesystem::path& dump_root, const std::filesyste
 
 bool HasResumableJournal(const std::filesystem::path& archive);
 
+struct MetadataUpdate {
+    std::optional<std::string> title_name;
+    std::optional<std::vector<u8>> icon;
+};
+
+// Writes an updated NUP container with modified title name and/or icon metadata to a temporary
+// file and atomically replaces the archive when complete.
+PackResult UpdateMetadata(const std::filesystem::path& archive, const MetadataUpdate& update,
+                          std::string* error_out = nullptr);
+
+/// Checks if a recovery backup (.meta.bak) exists from an interrupted metadata update.
+bool HasMetadataBackup(const std::filesystem::path& archive);
+
+/// Restores the original NUP container metadata from its recovery backup.
+bool RestoreMetadataBackup(const std::filesystem::path& archive, std::string* error_out = nullptr);
 } // namespace FileSys::Nup
