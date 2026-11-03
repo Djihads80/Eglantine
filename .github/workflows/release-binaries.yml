@@ -553,12 +553,82 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  android:
+    name: android-arm64 apk
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1500M
+      # Gradle's .cxx build folders are named by a config hash; relative paths keep hits stable.
+      CCACHE_BASEDIR: ${{ github.workspace }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # The runner image has the SDK; add the NDK, CMake and platform the Gradle build asks for,
+      # and glslangValidator for the host shaders.
+      - name: Install Android packages
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends glslang-tools ccache
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.31.5" > /dev/null
+
+      - name: Cache CPM downloads
+        uses: actions/cache@v5
+        with:
+          path: .cache/cpm
+          key: cpm-android-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-android-
+
+      - name: Cache compiler objects
+        uses: actions/cache@v5
+        with:
+          path: .ccache
+          key: objects-android-arm64-${{ github.sha }}
+          restore-keys: |
+            objects-android-arm64-
+
+      # A second APK under AnTuTu's package name, which some GPU drivers run with higher clocks.
+      # Both share the native build, so the second assemble only repackages.
+      - name: Build APKs
+        shell: bash
+        working-directory: src/android
+        run: |
+          set -euo pipefail
+          for variant in "dev.eglantine.eglantine:" "com.antutu.ABenchMark:-antutu"; do
+            ./gradlew --no-daemon "-PappId=${variant%%:*}" "-PYUZU_ANDROID_ARGS=-DUSE_CCACHE=ON" \
+              assembleMainlineRelease
+            apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
+            cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
+          done
+          ccache --show-stats
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-android-arm64-${{ github.sha }}
+          path: eglantine-${{ github.sha }}-android-arm64*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
   # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
   # unticked.
   release:
     name: Publish release
-    needs: build
+    needs: [build, android]
     if: github.event_name == 'push' || inputs.publish_release
     runs-on: ubuntu-24.04
     permissions:
@@ -583,6 +653,10 @@ jobs:
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
               for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
+                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
+              done
+            elif compgen -G "$artifact*.apk" > /dev/null; then
+              for file in "$artifact"*.apk; do
                 cp "$file" "dist/$(strip_sha "$(basename "$file")")"
               done
             elif compgen -G "$artifact*.zip" > /dev/null; then
@@ -632,6 +706,13 @@ jobs:
           | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
 
           The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
+
+          ## Android
+
+          | Build Type | APK | Notes |
+          | --- | --- | --- |
+          | arm64 | [APK](${base}/eglantine-android-arm64.apk) | Android 13 or newer |
+          | arm64 (AnTuTu package) | [APK](${base}/eglantine-android-arm64-antutu.apk) | Installed as \`com.antutu.ABenchMark\`, which some GPU drivers run with higher clocks. Cannot be installed alongside AnTuTu itself |
           EOF
 
           gh release create "${tag}" dist/* \
