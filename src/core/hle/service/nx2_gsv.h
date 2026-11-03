@@ -2453,15 +2453,66 @@ private:
 
     static constexpr u32 NoSyncpoint = ~0U;
     static constexpr size_t MaxQueuedInputs = 8;
+    static constexpr size_t MaxQueuedAv1Inputs = 3; // fefw's MaximumPendingInputs
     static constexpr size_t MaxDecodedAhead = 2; // decoded frames held while no image is free
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
+    static constexpr u64 SummaryFrames = 150;    // AV1: a state line every 150 frames (5 s)
+    static constexpr std::chrono::seconds StallReport{2};
+    static constexpr u32 EmptyOutputResult = 0x1c286f; // 213: nothing finished
+    static constexpr u32 InputBusyResult = 0x1c266f;   // 109: input queue full (fefw)
+
+    // EDEN_NX2_VDEC_TRACE=1: every video decoder call, reply and written frame at Info level.
+    static bool Tracing() {
+        static const bool trace = std::getenv("EDEN_NX2_VDEC_TRACE") != nullptr;
+        return trace;
+    }
+
+    // With m_mutex held.
+    size_t InputLimit() const {
+        return m_av1 ? MaxQueuedAv1Inputs : MaxQueuedInputs;
+    }
+
+    // With m_mutex held: where every queue stands, to tell from the log which side a movie that
+    // stops waits on (the client's input or releases, or the decoder).
+    void LogState(std::string_view what) {
+        using Ms = std::chrono::duration<double, std::milli>;
+        using S = std::chrono::duration<double>;
+        const u32 reached =
+            m_syncpoint == NoSyncpoint
+                ? 0
+                : static_cast<u32>(
+                      system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(m_syncpoint));
+        const double decode_ms =
+            m_timed_decodes ? Ms(m_decode_time).count() / static_cast<double>(m_timed_decodes) : 0;
+        const double write_ms =
+            m_timed_writes ? Ms(m_write_time).count() / static_cast<double>(m_timed_writes) : 0;
+        const double stream_s =
+            static_cast<double>(m_last_fetch_pts - m_first_fetch_pts) / 1'000'000.0;
+        const double wall_s =
+            m_first_fetch_time ? S(std::chrono::steady_clock::now() - *m_first_fetch_time).count()
+                               : 0;
+        LOG_INFO(Service,
+                 "{} {} frame {}: {} inputs ({} KiB, {} busy, {} without a picture), {} fetched, "
+                 "{} empty polls, {} releases ({} idle); waiting {} inputs, {} decoded, {} free "
+                 "images, {} unfetched; sync {} of {} handed; decode {:.1f} ms, write {:.1f} ms; "
+                 "pts in {} us, stream {:.2f} s fetched in {:.2f} s",
+                 GetServiceName(), what, m_frames_out, m_submitted, m_submitted_bytes >> 10,
+                 m_busy_submits, m_no_picture, m_fetched, m_empty_polls, m_releases,
+                 m_idle_releases, m_inputs.size(), m_decoded.size(), m_free.size(),
+                 m_outputs.size(), reached, m_sync_base + m_handed, decode_ms, write_ms,
+                 m_last_pts_in, stream_s, wall_s);
+        m_decode_time = {};
+        m_timed_decodes = 0;
+        m_write_time = {};
+        m_timed_writes = 0;
+    }
 
     void Log(HLERequestContext& ctx, std::string_view what) {
         const auto* w = ctx.CommandBuffer();
         if (Nx2FirstVideoCommand(GetServiceName(), ctx.GetCommand())) {
             LOG_INFO(Service, "{} TIPC {} {} (first use): words {:08x}", GetServiceName(),
                      ctx.GetCommand(), what, fmt::join(std::span<const u32>{w, 12}, " "));
-        } else if (static const bool trace = std::getenv("EDEN_NX2_VDEC_TRACE") != nullptr; trace) {
+        } else if (Tracing()) {
             // EDEN_NX2_VDEC_TRACE=1: every video decoder call at Info level.
             LOG_INFO(Service, "{} TIPC {} {}: [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x}",
                      GetServiceName(), ctx.GetCommand(), what, w[2], w[3], w[4], w[5]);
@@ -2522,15 +2573,22 @@ private:
         Log(ctx, "configure");
         LOG_INFO(Service, "{} configure codec \"{}\" {}x{} rate {}", GetServiceName(), codec, w[5],
                  w[6], w[7]);
+        const bool av1 = Tegra::Host1x::Nx2IsAv1Mime(codec);
         {
             std::scoped_lock lk{m_mutex};
-            m_av1 = Tegra::Host1x::Nx2IsAv1Mime(codec);
+            m_av1 = av1;
             m_codec = std::move(codec);
             m_width = w[5];
             m_height = w[6];
         }
         if (!m_worker.joinable()) {
             m_worker = std::thread{[this] { DecodeLoop(); }};
+        }
+        if (av1) {
+            // fefw replies a u64 of zero. With the result alone the client read the words its
+            // request left in the buffer (the codec name's address) as that value.
+            TipcReplyWords(ctx, {0, 0});
+            return;
         }
         TipcReplyWords(ctx, {});
     }
@@ -2586,7 +2644,14 @@ private:
                     LOG_WARNING(Service, "{} release of waiting image {} (x{})",
                                 GetServiceName(), image, m_idle_releases);
                 }
+                if (Tracing() && (m_idle_releases <= 16 || (m_idle_releases & 0xff) == 0)) {
+                    LOG_INFO(Service, "{} release of waiting image {}: sync value {} kept",
+                             GetServiceName(), image, m_values[image]);
+                }
                 return {~m_syncpoint, 0, m_values[image], 0};
+            }
+            if (release_fence) {
+                ++m_releases;
             }
             m_free.push_back(image);
             if (release_fence) {
@@ -2611,9 +2676,24 @@ private:
                 value = m_sync_base + ++m_handed;
             }
             m_values[image] = value;
+            if (Tracing()) {
+                LOG_INFO(Service, "{} {} image {}: sync value {} ({} images wait)",
+                         GetServiceName(), release_fence ? "release" : "register", image, value,
+                         m_free.size());
+            }
         }
         m_cv.notify_one();
         return {~m_syncpoint, 0, value, 0};
+    }
+
+    // 311/314 reply: the NativeSyncHandle. AV1: then two u64s of zero, as fefw replies; with the
+    // handle alone the client read the words its request left in the buffer there.
+    void ReplySyncHandle(HLERequestContext& ctx, const std::array<u32, 4>& handle) {
+        if (m_av1) {
+            TipcReplyWords(ctx, {handle[0], handle[1], handle[2], handle[3], 0, 0, 0, 0});
+            return;
+        }
+        TipcReplyWords(ctx, {handle[0], handle[1], handle[2], handle[3]});
     }
 
     // With m_mutex held: the image waits for a frame.
@@ -2634,14 +2714,14 @@ private:
     void RegisterBuffer(HLERequestContext& ctx) {
         Log(ctx, "register output");
         const auto handle = HandOut(ctx.CommandBuffer()[2], std::nullopt);
-        TipcReplyWords(ctx, {handle[0], handle[1], handle[2], handle[3]});
+        ReplySyncHandle(ctx, handle);
     }
 
     void ReleaseBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         Log(ctx, "release output");
         const auto handle = HandOut(w[2], Fence{~w[4], w[6]});
-        TipcReplyWords(ctx, {handle[0], handle[1], handle[2], handle[3]});
+        ReplySyncHandle(ctx, handle);
     }
 
     void UnregisterBuffer(HLERequestContext& ctx) {
@@ -2670,14 +2750,43 @@ private:
             input.data.assign(data.begin(), data.end());
         }
         const u64 size = input.data.size();
+        u64 id{};
+        bool busy{};
+        size_t queued{};
         {
             std::scoped_lock lk{m_mutex};
-            m_inputs.push_back(std::move(input));
-            m_stream_ended = false;
-            m_ready->room.store(!end && m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            if (m_av1 && m_inputs.size() >= MaxQueuedAv1Inputs) {
+                // AV1: at most three inputs wait, as in fefw, which tells the client to come back
+                // (0x1c266f, nothing taken); it waits for the submission event and submits the
+                // same frame again.
+                busy = true;
+                ++m_busy_submits;
+                m_ready->room.store(false, std::memory_order_relaxed);
+            } else {
+                m_inputs.push_back(std::move(input));
+                m_stream_ended = false;
+                m_ready->room.store(!end && m_inputs.size() < InputLimit(),
+                                    std::memory_order_relaxed);
+                id = ++m_submitted;
+                m_submitted_bytes += size;
+                m_last_pts_in = pts;
+            }
+            queued = m_inputs.size();
+        }
+        // Busy replies only now and then: a client may come back in a loop.
+        if (Tracing() && (!busy || (m_busy_submits & (m_busy_submits - 1)) == 0)) {
+            LOG_INFO(Service, "{} submit {} bytes, pts {} us{}: {} ({} inputs wait)",
+                     GetServiceName(), size, pts, end ? ", end of stream" : "",
+                     busy ? std::string{"busy"} : fmt::format("input {}", id), queued);
+        }
+        if (busy) {
+            IPC::ResponseBuilder rb{ctx, 4};
+            rb.PushRaw<u32>(InputBusyResult);
+            rb.Push<u32>(0);
+            rb.Push<u32>(0);
+            return;
         }
         m_cv.notify_one();
-        const u64 id = ++m_submitted;
         // AV1: the bytes taken, as fefw's decoder replies (Fortune's Weave plays with it).
         const u64 reply = m_av1 ? size : id;
         TipcReplyWords(ctx, {static_cast<u32>(reply), static_cast<u32>(reply >> 32)});
@@ -2743,20 +2852,50 @@ private:
         std::optional<Output> output;
         u32 width{};
         u32 height{};
+        bool av1{};
         {
             std::scoped_lock lk{m_mutex};
+            av1 = m_av1;
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
                 // AV1: words 1-2 hold the configured size, as fefw's decoder replies.
                 width = m_av1 ? m_width : output->width;
                 height = m_av1 ? m_height : output->height;
+                ++m_fetched;
+                if (!m_first_fetch_time) {
+                    m_first_fetch_time = std::chrono::steady_clock::now();
+                    m_first_fetch_pts = output->pts;
+                }
+                if (!output->end) {
+                    m_last_fetch_pts = std::max(m_last_fetch_pts, output->pts);
+                }
+                if (Tracing()) {
+                    LOG_INFO(Service, "{} 213: image {}, pts {} us{} after {} empty polls ({} more "
+                             "finished)",
+                             GetServiceName(), output->image, output->pts,
+                             output->end ? ", end of stream" : "", m_empty_streak,
+                             m_outputs.size());
+                }
+                m_empty_streak = 0;
+            } else {
+                ++m_empty_polls;
+                if (Tracing() && m_empty_streak++ == 0) {
+                    LOG_INFO(Service, "{} 213: none ({} decoded, {} free images, {} inputs wait)",
+                             GetServiceName(), m_decoded.size(), m_free.size(), m_inputs.size());
+                }
             }
         }
         if (!output) {
-            // Nothing finished: the code the client's own Acquire uses for an empty ring.
-            IPC::ResponseBuilder rb{ctx, 2};
-            rb.PushRaw<u32>(0x1c286f);
+            // Nothing finished: the code the client's own Acquire uses for an empty ring. AV1:
+            // with the 16 words of zero fefw replies.
+            IPC::ResponseBuilder rb{ctx, av1 ? 18U : 2U};
+            rb.PushRaw<u32>(EmptyOutputResult);
+            if (av1) {
+                for (int i = 0; i < 16; ++i) {
+                    rb.Push<u32>(0);
+                }
+            }
             return;
         }
         const u64 pts_ns = output->pts * 1000;
@@ -2773,12 +2912,22 @@ private:
         std::unique_ptr<Tegra::Host1x::Nx2VideoDecoder> decoder;
         std::vector<Tegra::Host1x::Nx2Picture> pictures;
         std::vector<u8> bytes;
+        u64 stall_reported = ~0ULL;
         std::unique_lock lk{m_mutex};
         while (true) {
-            m_cv.wait(lk, [&] {
+            const auto ready = [&] {
                 return m_quit || m_flush || (!m_decoded.empty() && !m_free.empty()) ||
                        (!m_inputs.empty() && m_decoded.size() < MaxDecodedAhead);
-            });
+            };
+            if (!m_cv.wait_for(lk, StallReport, ready)) {
+                // A movie that stops: say once what it waits on (input, a release or a frame).
+                if ((m_av1 || Tracing()) && m_frames_out != 0 && !m_stream_ended &&
+                    stall_reported != m_frames_out) {
+                    stall_reported = m_frames_out;
+                    LogState("no frame for 2 s after");
+                }
+                continue;
+            }
             if (m_quit) {
                 return;
             }
@@ -2799,6 +2948,7 @@ private:
                 m_free.pop_front();
                 m_writing = image;
                 const u64 flushes = m_flushes;
+                const bool av1 = m_av1;
                 std::optional<Fence> fence;
                 if (const auto it = m_release_fences.find(image); it != m_release_fences.end()) {
                     fence = it->second;
@@ -2808,9 +2958,15 @@ private:
                 if (fence) {
                     WaitForRelease(*fence);
                 }
-                const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes);
+                const auto write_start = std::chrono::steady_clock::now();
+                const auto [width, height] = WriteImage(decoder.get(), image, frame, bytes, av1);
+                const auto write_time = std::chrono::steady_clock::now() - write_start;
                 lk.lock();
                 m_writing.reset();
+                if (frame.picture) {
+                    m_write_time += write_time;
+                    ++m_timed_writes;
+                }
                 // Even an image written during a flush counts: the client waits for its value.
                 // An AV1 flush drops the frame, though (see Flush): the image waits again.
                 if (m_av1 && m_flushes != flushes) {
@@ -2829,13 +2985,19 @@ private:
                     LOG_INFO(Service, "{} frame {} ({}x{}, pts {} us{}) in image {}",
                              GetServiceName(), m_frames_out, width, height, frame.pts,
                              frame.end ? ", end of stream" : "", image);
+                } else if (Tracing()) {
+                    LOG_INFO(Service, "{} frame {} (pts {} us) in image {}, sync value {}",
+                             GetServiceName(), m_frames_out, frame.pts, image, m_values[image]);
+                }
+                if ((av1 || Tracing()) && (m_frames_out % SummaryFrames) == 0) {
+                    LogState("at");
                 }
                 continue;
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
             if (!m_stream_ended) {
-                m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+                m_ready->room.store(m_inputs.size() < InputLimit(), std::memory_order_relaxed);
             }
             std::string codec = m_codec;
             if (codec.empty() && Tegra::Host1x::IsH264Stream(input.data)) {
@@ -2849,13 +3011,22 @@ private:
                 decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
             }
             pictures.clear();
+            const auto decode_start = std::chrono::steady_clock::now();
             decoder->Decode(input.data, input.pts, pictures);
             if (input.end) {
                 decoder->Drain(pictures);
             }
+            const auto decode_time = std::chrono::steady_clock::now() - decode_start;
             lk.lock();
             if (m_flush) {
                 continue;
+            }
+            if (!input.end) {
+                m_decode_time += decode_time;
+                ++m_timed_decodes;
+                if (pictures.empty()) {
+                    ++m_no_picture;
+                }
             }
             for (auto& picture : pictures) {
                 const u64 pts = picture.pts;
@@ -2888,7 +3059,7 @@ private:
 
     // Writes a decoded frame into an output image; returns the size the frame reports.
     std::pair<u32, u32> WriteImage(Tegra::Host1x::Nx2VideoDecoder* decoder, u32 image_id,
-                                   const Decoded& frame, std::vector<u8>& bytes) {
+                                   const Decoded& frame, std::vector<u8>& bytes, bool av1) {
         u64 address{};
         Nx2DecoderImageLayout layout{};
         bool block_linear{};
@@ -2899,7 +3070,9 @@ private:
                 return {m_width, m_height};
             }
             layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
-            block_linear = image->second.gpu_read &&
+            // AV1 (Fortune's Weave): every RGBA image is read on the GPU, as fefw writes them,
+            // also the first frames, which come before the client's 428/426 for the image.
+            block_linear = (image->second.gpu_read || av1) &&
                            layout.format != Tegra::Host1x::Nx2PictureFormat::Nv12;
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory != m_objects->memories.end() && memory->second.address != 0) {
@@ -3041,6 +3214,22 @@ private:
     bool m_av1{};                      ///< AV1 stream: fefw's flush and release rules apply
     u64 m_flushes{};                   ///< AV1 flushes so far
     u64 m_idle_releases{};
+    // Counters for LogState.
+    u64 m_submitted_bytes{};
+    u64 m_busy_submits{};
+    u64 m_no_picture{}; ///< Inputs that showed no frame (libgav1: a hidden frame)
+    u64 m_fetched{};
+    u64 m_empty_polls{};
+    u64 m_empty_streak{};
+    u64 m_releases{};
+    u64 m_last_pts_in{};
+    u64 m_first_fetch_pts{};
+    u64 m_last_fetch_pts{};
+    std::optional<std::chrono::steady_clock::time_point> m_first_fetch_time;
+    std::chrono::steady_clock::duration m_decode_time{};
+    u64 m_timed_decodes{};
+    std::chrono::steady_clock::duration m_write_time{};
+    u64 m_timed_writes{};
     bool m_flush{};
     bool m_quit{};
     std::thread m_worker;
