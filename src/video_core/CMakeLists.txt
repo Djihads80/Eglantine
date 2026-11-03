@@ -442,10 +442,14 @@ target_include_directories(video_core PUBLIC ${FFmpeg_INCLUDE_DIR})
 target_link_libraries(video_core PRIVATE ${FFmpeg_LIBRARIES})
 target_link_options(video_core PRIVATE ${FFmpeg_LDFLAGS})
 
-# libgav1 decodes Switch 2 AV1 movies; only the nx2 video decoder sees its headers.
-set_source_files_properties(host1x/nx2_video_decoder.cpp PROPERTIES
-    INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:libgav1_static,INTERFACE_INCLUDE_DIRECTORIES>")
-target_link_libraries(video_core PRIVATE "$<LINK_ONLY:libgav1_static>")
+# libgav1 decodes Switch 2 AV1 movies on Android, whose FFmpeg has no libdav1d; only the nx2 video
+# decoder sees its headers.
+if (ANDROID)
+    set_source_files_properties(host1x/nx2_video_decoder.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:libgav1_static,INTERFACE_INCLUDE_DIRECTORIES>"
+        COMPILE_DEFINITIONS EDEN_NX2_LIBGAV1)
+    target_link_libraries(video_core PRIVATE "$<LINK_ONLY:libgav1_static>")
+endif()
 
 add_dependencies(video_core host_shaders)
 target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})

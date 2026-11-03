@@ -8,7 +8,9 @@
 #include <set>
 #include <thread>
 
+#ifdef EDEN_NX2_LIBGAV1
 #include <gav1/decoder.h>
+#endif
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -50,6 +52,7 @@ std::optional<NvdecCommon::VideoCodec> CodecFromMime(std::string_view mime) {
     return std::nullopt;
 }
 
+#ifdef EDEN_NX2_LIBGAV1
 AVPixelFormat Av1PixelFormat(const libgav1::DecoderBuffer& buffer) {
     if (buffer.bitdepth != 8 && buffer.bitdepth != 10) {
         return AV_PIX_FMT_NONE;
@@ -107,6 +110,7 @@ std::shared_ptr<FFmpeg::Frame> CopyAv1Picture(const libgav1::DecoderBuffer& buff
         buffer.color_range == kLibgav1ColorRangeFull ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
     return frame;
 }
+#endif
 
 // The stream's matrix and range for a conversion to RGB; untagged HD video is BT.709.
 void SetRgbColorspace(SwsContext* scaler, const AVFrame* f) {
@@ -173,8 +177,10 @@ struct Nx2VideoDecoder::Impl {
     std::optional<FFmpeg::Decoder> decoder;
     std::optional<FFmpeg::HardwareContext> hardware;
     std::optional<FFmpeg::DecoderContext> context;
+#ifdef EDEN_NX2_LIBGAV1
     std::unique_ptr<libgav1::Decoder> av1; ///< Instead of FFmpeg, for AV1
     u64 av1_errors{};
+#endif
     SwsContext* scaler{};
     static constexpr size_t Bands = 4;
     std::array<SwsContext*, Bands> band_scalers{}; ///< RenderBands
@@ -268,6 +274,7 @@ struct Nx2VideoDecoder::Impl {
         return true;
     }
 
+#ifdef EDEN_NX2_LIBGAV1
     // Not in frame parallel mode, libgav1 decodes one temporal unit per DequeueFrame and holds
     // no picture back, so each one is decoded right away (EnqueueFrame keeps a pointer to it).
     void DecodeAv1(std::span<const u8> data, u64 pts, std::vector<Nx2Picture>& pictures) {
@@ -300,10 +307,12 @@ struct Nx2VideoDecoder::Impl {
                             static_cast<u32>(buffer->displayed_height[0]),
                             static_cast<u64>(buffer->user_private_data), std::move(frame)});
     }
+#endif
 };
 
 Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<Impl>()} {
     impl->name = std::string{mime};
+#ifdef EDEN_NX2_LIBGAV1
     // AV1 goes to libgav1 where FFmpeg has no libdav1d (Android's FFmpeg package); FFmpeg's own
     // "av1" decoder only drives hardware decoders.
     if (Nx2IsAv1Mime(mime) && avcodec_find_decoder_by_name("libdav1d") == nullptr) {
@@ -320,6 +329,7 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
                  impl->open ? "open" : libgav1::GetErrorString(status), settings.threads);
         return;
     }
+#endif
     const auto codec = CodecFromMime(mime);
     if (!codec) {
         LOG_ERROR(HW_GPU, "nx2 video: no decoder for codec \"{}\"", mime);
@@ -353,10 +363,12 @@ void Nx2VideoDecoder::Decode(std::span<const u8> data, u64 pts, std::vector<Nx2P
     if (!impl->open || data.empty()) {
         return;
     }
+#ifdef EDEN_NX2_LIBGAV1
     if (impl->av1) {
         impl->DecodeAv1(data, pts, pictures);
         return;
     }
+#endif
     impl->packet.assign(data.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
     std::memcpy(impl->packet.data(), data.data(), data.size());
 
@@ -380,20 +392,27 @@ void Nx2VideoDecoder::Drain(std::vector<Nx2Picture>& pictures) {
     if (!impl->open) {
         return;
     }
+#ifdef EDEN_NX2_LIBGAV1
     if (impl->av1) {
         Reset(); // libgav1 holds no picture back (see DecodeAv1)
         return;
     }
+#endif
     avcodec_send_packet(impl->context->GetCodecContext(), nullptr);
     impl->Receive(pictures);
     Reset();
 }
 
 void Nx2VideoDecoder::Reset() {
+#ifdef EDEN_NX2_LIBGAV1
     if (impl->av1) {
         // Releases its frames; the next frame may start a new sequence.
         impl->av1->SignalEOS();
-    } else if (impl->open) {
+        impl->pending_pts.clear();
+        return;
+    }
+#endif
+    if (impl->open) {
         avcodec_flush_buffers(impl->context->GetCodecContext());
     }
     impl->pending_pts.clear();
