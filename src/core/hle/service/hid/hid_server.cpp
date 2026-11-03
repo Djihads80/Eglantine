@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 
 #include "common/common_types.h"
@@ -140,7 +141,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
         {213, C<&IHidServer::Unknown213>, "Unknown213"},
-        {214, &IHidServer::SendNx2VibrationValues, "SendNx2VibrationValues (guessed)"},
+        {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
         {220, C<&IHidServer::Unknown220>, "Unknown220"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
         {301, C<&IHidServer::StartConsoleSixAxisSensor>, "StartConsoleSixAxisSensor"},
@@ -1112,40 +1113,25 @@ Result IHidServer::IsVibrationDeviceMounted(
     R_SUCCEED();
 }
 
-// TEMPORARY local diagnostic for #103: dumps the request layout of 214 when it changes.
-void IHidServer::SendNx2VibrationValues(HLERequestContext& ctx) {
-    static std::string last_dump;
-    static u64 call_count = 0;
-    ++call_count;
+Result IHidServer::SendNx2VibrationValues(
+    u64 unknown, AppletResourceUserId aruid,
+    InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
+    InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values) {
+    LOG_DEBUG(Service_HID, "called, unknown={}, applet_resource_user_id={}", unknown, aruid.pid);
 
-    std::string dump = fmt::format("words(payload@{}):", ctx.GetDataPayloadOffset());
-    const u32* cmd_buf = ctx.CommandBuffer();
-    for (u32 i = 0; i < 16; ++i) {
-        dump += fmt::format(" {:08x}", cmd_buf[i]);
-    }
-    dump += fmt::format(" | X={} A={} B={} C={}", ctx.BufferDescriptorX().size(),
-                        ctx.BufferDescriptorA().size(), ctx.BufferDescriptorB().size(),
-                        ctx.BufferDescriptorC().size());
-    const auto dump_buffer = [&dump](char kind, std::size_t index, std::span<const u8> data) {
-        dump += fmt::format(" | {}{} size={}:", kind, index, data.size());
-        for (std::size_t i = 0; i < std::min<std::size_t>(data.size(), 96); ++i) {
-            dump += fmt::format("{}{:02x}", i % 4 == 0 ? " " : "", data[i]);
+    // Unlike 206 this never fails: rumble is best effort and the command is only known from
+    // captures, so an unexpected handle or layout shouldn't return an error a game may treat as
+    // fatal.
+    const auto count = (std::min)(vibration_handles.size(), vibration_values.size());
+    for (std::size_t i = 0; i < count; i++) {
+        const auto result = GetResourceManager()->SendVibrationValue(
+            aruid.pid, vibration_handles[i], vibration_values[i]);
+        if (result.IsError()) {
+            LOG_DEBUG(Service_HID, "failed to send vibration {}, result={:#x}", i, result.raw);
         }
-    };
-    for (std::size_t i = 0; i < ctx.BufferDescriptorX().size(); ++i) {
-        dump_buffer('X', i, ctx.ReadBufferX(i));
-    }
-    for (std::size_t i = 0; i < ctx.BufferDescriptorA().size(); ++i) {
-        dump_buffer('A', i, ctx.ReadBufferA(i));
     }
 
-    if (dump != last_dump) {
-        LOG_INFO(Service_HID, "214 #{}: {}", call_count, dump);
-        last_dump = std::move(dump);
-    }
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(ResultSuccess);
+    R_SUCCEED();
 }
 
 Result IHidServer::Unknown213() {
