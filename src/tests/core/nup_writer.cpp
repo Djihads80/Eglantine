@@ -18,8 +18,10 @@
 
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
+#include "core/file_sys/control_metadata.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/file_sys/vfs/vfs_vector.h"
+#include "core/loader/nup.h"
 
 namespace {
 
@@ -733,4 +735,34 @@ TEST_CASE("NUP edit propagates display version to the newest update", "[nup]") {
 
     REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
             FileSys::Nup::EditResult::NoChange);
+}
+
+TEST_CASE("NUP loader exposes title and publisher through control data", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options;
+    options.metadata.title_name = "Packed";
+    options.metadata.publisher = "Packed Inc";
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+
+    const auto check = [&](const std::string& title, const std::string& publisher) {
+        FileSys::RealVfsFilesystem real;
+        Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        FileSys::NACP control;
+        REQUIRE(loader.ReadControlData(control) == Loader::ResultStatus::Success);
+        REQUIRE(control.GetApplicationName() == title);
+        REQUIRE(control.GetDeveloperName() == publisher);
+    };
+    check("Packed", "Packed Inc");
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.title_name = "Edited";
+    edit.publisher = "Edited Inc";
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+    check("Edited", "Edited Inc");
 }

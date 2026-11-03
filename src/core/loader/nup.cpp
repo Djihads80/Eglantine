@@ -46,7 +46,8 @@ void CopyNameToEntry(FileSys::LanguageEntry& entry, std::string_view name) {
 
 std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
                                          const std::string& version) {
-    if (base.title_name.empty() && base.localized_titles.empty() && version.empty()) {
+    if (base.title_name.empty() && base.localized_titles.empty() && base.publisher.empty() &&
+        version.empty()) {
         return nullptr;
     }
     auto nacp = std::make_unique<FileSys::NACP>();
@@ -63,6 +64,13 @@ std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
     }
     if (!base.title_name.empty()) {
         CopyNameToEntry(nacp->raw.language_entries.language_entries[0], base.title_name);
+    }
+    if (!base.publisher.empty()) {
+        auto& entry = nacp->raw.language_entries.language_entries[0];
+        const std::size_t length =
+            std::min(base.publisher.size(), entry.developer_name.size() - 1);
+        std::memcpy(entry.developer_name.data(), base.publisher.data(), length);
+        entry.developer_name[length] = '\0';
     }
     if (!version.empty()) {
         const std::size_t length = std::min(version.size(), nacp->raw.version_string.size() - 1);

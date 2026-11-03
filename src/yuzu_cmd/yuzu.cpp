@@ -443,6 +443,12 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     Core::ApplyLaunchParams(lp);
 
+    // Informational options already printed by ApplyLaunchParams; handle them before any
+    // archive operation so --help/--version never packs, unpacks or edits.
+    if (lp.print_help || lp.print_version) {
+        return SDL_APP_SUCCESS;
+    }
+
     if (lp.pack_nup_source) {
         return PackNup(*lp.pack_nup_source, lp.filepath) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
     }
@@ -453,12 +459,6 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     if (lp.edit_nup_source) {
         return EditNup(lp) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
-    }
-
-    // Informational options already printed by ApplyLaunchParams; do not treat a
-    // missing ROM as a failure when the user only asked for help or version.
-    if (lp.print_help || lp.print_version) {
-        return SDL_APP_SUCCESS;
     }
 
     if (lp.filepath.empty()) {
