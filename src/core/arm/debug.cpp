@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <cstring>
+
 #include "common/demangle.h"
 #include "core/arm/debug.h"
 #include "core/arm/symbols.h"
@@ -269,16 +272,23 @@ Loader::AppLoader::Modules FindModules(Kernel::KProcess* process) {
         if (svc_mem_info.permission == Kernel::Svc::MemoryPermission::ReadExecute &&
             (svc_mem_info.state == Kernel::Svc::MemoryState::Code ||
              svc_mem_info.state == Kernel::Svc::MemoryState::AliasCode)) {
-            // Try to read the module name from its path.
+            // Try to read the module name from its path, right after the code:
+            // {u32 0, s32 length, path} on Switch 1; Switch 2 modules start with a versioned
+            // header {u32 1, u32, u32, u32 0, s32 length, path}.
             constexpr s32 PathLengthMax = 0x200;
             struct {
                 u32 zero;
                 s32 path_length;
                 std::array<char, PathLengthMax> path;
             } module_path;
+            std::array<u8, 0x10 + sizeof(module_path)> raw{};
 
-            if (memory.ReadBlock(svc_mem_info.base_address + svc_mem_info.size, &module_path,
-                                 sizeof(module_path))) {
+            if (memory.ReadBlock(svc_mem_info.base_address + svc_mem_info.size, raw.data(),
+                                 raw.size())) {
+                u32 version{};
+                std::memcpy(&version, raw.data(), sizeof(version));
+                std::memcpy(&module_path, raw.data() + (version == 1 ? 0x0C : 0),
+                            sizeof(module_path));
                 if (module_path.zero == 0 && module_path.path_length > 0) {
                     // Truncate module name.
                     module_path.path[PathLengthMax - 1] = '\0';
