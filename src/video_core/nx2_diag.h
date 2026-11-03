@@ -10,11 +10,13 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -309,11 +311,19 @@ public:
         std::error_code error;
         if (std::filesystem::remove(dir / "draw-list", error)) {
             capturing = true;
+            screenshot_request = next_capture;
             seq = 0;
             rows.clear();
             samples.clear();
             query_count = 0;
         }
+    }
+
+    // The id of a capture that just began and wants a screenshot (capture-<id>.tga in the diag
+    // folder), taken once by the present code.
+    std::optional<u32> TakeScreenshotRequest() {
+        std::scoped_lock lock{mutex};
+        return std::exchange(screenshot_request, std::nullopt);
     }
 
     u32 NextSeq() {
@@ -575,6 +585,7 @@ private:
     bool capturing{};
     u32 seq{};
     u32 next_capture{};
+    std::optional<u32> screenshot_request;
     u64 frame{};
 };
 

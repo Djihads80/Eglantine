@@ -5,7 +5,7 @@ emulator sees, hide them one by one (or in bulk, to bisect), watch which constan
 change from frame to frame, and read the disassembly.
 
 Run the emulator with EDEN_NX2_DIAG_DIR=<dir> (and EDEN_NX2_SHADER_DUMP=<dumps> for disassembly,
-EDEN_NX2_FRAME_CAPTURE=<frames> for a preview, EDEN_NX2_DIAG_SAMPLES=1 for the per-draw pixel probe), then:
+EDEN_NX2_DIAG_SAMPLES=1 for the per-draw pixel probe), then:
 
     python3 -I tools/nx2/shader_lab.py --diag-dir <dir> [--dump-dir <dumps>] [--frames <frames>]
 
@@ -158,18 +158,21 @@ class Lab:
 
     def latest_frame(self):
         """The most recently written frame capture as PNG bytes (needs ImageMagick), or None."""
-        if not self.frames_dir:
-            return None
         newest = None
-        try:
-            with os.scandir(self.frames_dir) as entries:
-                for entry in entries:
-                    if entry.name.endswith(".tga") and entry.is_file(follow_symlinks=False):
-                        stamp = entry.stat(follow_symlinks=False)
-                        if newest is None or stamp.st_mtime_ns > newest[0].st_mtime_ns:
-                            newest = (stamp, entry.path)
-        except OSError:
-            return None
+        # The screenshots of "Capture frame" (capture-<n>.tga, in the diag folder) and, if the
+        # emulator also ran with EDEN_NX2_FRAME_CAPTURE, its periodic frames.
+        for folder in (self.dir, self.frames_dir):
+            if not folder:
+                continue
+            try:
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        if entry.name.endswith(".tga") and entry.is_file(follow_symlinks=False):
+                            stamp = entry.stat(follow_symlinks=False)
+                            if newest is None or stamp.st_mtime_ns > newest[0].st_mtime_ns:
+                                newest = (stamp, entry.path)
+            except OSError:
+                continue
         if newest is None:
             return None
         stamp, source = newest
@@ -194,7 +197,7 @@ class Lab:
     # What each "clear" button deletes: only files this workflow creates, never subfolders the user
     # made, and never the toggles (ablate.txt, inspect.txt) or labels in the diag folder.
     CLEARABLE = {
-        "diag": (r"^(draw-list-\d+\.tsv|diag-state\.json(\.tmp)?|lab\.log|draw-list)$", ("dis", "preview")),
+        "diag": (r"^(draw-list-\d+\.tsv|capture-\d+\.tga|diag-state\.json(\.tmp)?|lab\.log|draw-list)$", ("dis", "preview")),
         "dumps": (r"^[0-9a-f]{16}-(gfx|cs)-[0-9a-f]+\.bin$|^rejected-[0-9a-f]+\.bin$", ()),
         "frames": (r"^nx2-(frame-\d+\.tga|dump-[0-9a-f]+\.bin)$", ()),
     }
@@ -328,7 +331,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--diag-dir", required=True, help="the emulator's EDEN_NX2_DIAG_DIR")
     parser.add_argument("--dump-dir", help="the emulator's EDEN_NX2_SHADER_DUMP (for disassembly)")
-    parser.add_argument("--frames", help="the emulator's EDEN_NX2_FRAME_CAPTURE (for the preview)")
+    parser.add_argument("--frames", help="optional: the emulator's EDEN_NX2_FRAME_CAPTURE folder, whose periodic "
+                        "frames the preview may also show (\"Capture frame\" saves its own screenshot)")
     parser.add_argument("--port", type=int, default=8765, help="first port to try (the next 19 are tried if busy)")
     parser.add_argument("--parent-pid", type=int, help="exit when this process (the emulator) is gone")
     parser.add_argument("--open", action="store_true", help="open the page in the default browser")
