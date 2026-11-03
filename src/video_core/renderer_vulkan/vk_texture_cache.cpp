@@ -498,6 +498,11 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     return host;
 }
 
+[[nodiscard]] bool IsCubeCompatible(const Device& device, const ImageInfo& info) {
+    return info.type == ImageType::e2D && info.resources.layers >= 6 &&
+           info.size.width == info.size.height && !device.HasBrokenCubeImageCompatibility();
+}
+
 [[nodiscard]] VkImageCreateInfo MakeImageCreateInfo(const Device& device, const ImageInfo& info,
                                                     std::optional<VkFormat> format_override = {}) {
     auto format_info =
@@ -508,8 +513,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         format_info.storage = true;
     }
     VkImageCreateFlags flags{};
-    if (info.type == ImageType::e2D && info.resources.layers >= 6 &&
-        info.size.width == info.size.height && !device.HasBrokenCubeImageCompatibility()) {
+    if (IsCubeCompatible(device, info)) {
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     }
     if (info.type == ImageType::e3D) {
@@ -4154,6 +4158,16 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
         create(TextureType::Color2D, 1);
         create(TextureType::ColorArray2D, std::nullopt);
         render_target = Handle(Shader::TextureType::ColorArray2D);
+        // The sampling instruction, not the header, picks the dimension: native shaders sample
+        // six layers of a 2D array as a cube (Fortune's Weave keeps point-light cubes in a
+        // layered atlas; without a cube handle they sampled the null view).
+        if (info.type == VideoCommon::ImageViewType::e2DArray && info.range.extent.layers >= 6 &&
+            image.info.num_samples == 1 && IsCubeCompatible(*device, image.info)) {
+            create(TextureType::ColorCube, 6);
+            if (info.range.extent.layers % 6 == 0) {
+                create(TextureType::ColorArrayCube, std::nullopt);
+            }
+        }
         break;
     case VideoCommon::ImageViewType::e3D:
         create(TextureType::Color3D, std::nullopt);
