@@ -1259,8 +1259,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
             return program.info.is_task || program.info.is_mesh;
         })) {
-        static bool reported{};
-        if (!std::exchange(reported, true)) {
+        // Pipelines are built on worker threads too.
+        static std::atomic_bool reported{};
+        if (!reported.exchange(true, std::memory_order_relaxed)) {
             LOG_WARNING(Render_Vulkan,
                         "Task/mesh pipeline {:016x} skipped: no VK_EXT_mesh_shader task and mesh "
                         "support",
