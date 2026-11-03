@@ -108,6 +108,20 @@ std::shared_ptr<FFmpeg::Frame> CopyAv1Picture(const libgav1::DecoderBuffer& buff
     return frame;
 }
 
+// The stream's matrix and range for a conversion to RGB; untagged HD video is BT.709.
+void SetRgbColorspace(SwsContext* scaler, const AVFrame* f) {
+    int space = SWS_CS_ITU601;
+    if (f->colorspace == AVCOL_SPC_BT709 ||
+        (f->colorspace == AVCOL_SPC_UNSPECIFIED && f->height >= 720)) {
+        space = SWS_CS_ITU709;
+    } else if (f->colorspace == AVCOL_SPC_BT2020_NCL || f->colorspace == AVCOL_SPC_BT2020_CL) {
+        space = SWS_CS_BT2020;
+    }
+    const int* coefficients = sws_getCoefficients(space);
+    sws_setColorspaceDetails(scaler, coefficients, f->color_range == AVCOL_RANGE_JPEG, coefficients,
+                             1, 0, 1 << 16, 1 << 16);
+}
+
 } // namespace
 
 bool IsH264Stream(std::span<const u8> data) {
@@ -162,6 +176,8 @@ struct Nx2VideoDecoder::Impl {
     std::unique_ptr<libgav1::Decoder> av1; ///< Instead of FFmpeg, for AV1
     u64 av1_errors{};
     SwsContext* scaler{};
+    static constexpr size_t Bands = 4;
+    std::array<SwsContext*, Bands> band_scalers{}; ///< RenderBands
     bool open{};
     H264PacketConverter h264_packets;
     /// Timestamps of submitted frames not yet output. Frames copied back from a host GPU decoder
@@ -171,6 +187,9 @@ struct Nx2VideoDecoder::Impl {
 
     ~Impl() {
         sws_freeContext(scaler);
+        for (SwsContext* band_scaler : band_scalers) {
+            sws_freeContext(band_scaler);
+        }
         context.reset();
         hardware.reset();
     }
@@ -193,6 +212,60 @@ struct Nx2VideoDecoder::Impl {
             pictures.push_back({static_cast<u32>(f->width), static_cast<u32>(f->height), pts,
                                 std::move(frame)});
         }
+    }
+
+    // Converts a frame to RGB at its own size in bands of rows, each with a context of its own, on
+    // threads (fefw converts its AV1 frames to RGBA on four). Bands start at rows the chroma
+    // subsampling divides, so no chroma row is split. Returns false if it can't.
+    bool RenderBands(const AVFrame* f, AVPixelFormat target, u32 height, u64 pitch,
+                     std::span<u8> out) {
+        const auto source = static_cast<AVPixelFormat>(f->format);
+        const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(source);
+        const int plane_count = av_pix_fmt_count_planes(source);
+        if (descriptor == nullptr || (descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL) != 0 ||
+            plane_count <= 0 || plane_count > 4) {
+            return false;
+        }
+        const u32 row_alignment = 1U << std::max<u32>(1, descriptor->log2_chroma_h);
+        std::array<u32, Bands + 1> rows{};
+        for (size_t band = 0; band < Bands; ++band) {
+            rows[band] = static_cast<u32>(u64{height} * band / Bands) & ~(row_alignment - 1);
+        }
+        rows[Bands] = height;
+        for (size_t band = 0; band < Bands; ++band) {
+            const int band_height = static_cast<int>(rows[band + 1] - rows[band]);
+            band_scalers[band] = sws_getCachedContext(band_scalers[band], f->width, band_height,
+                                                      source, f->width, band_height, target,
+                                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (band_scalers[band] == nullptr) {
+                return false;
+            }
+            SetRgbColorspace(band_scalers[band], f);
+        }
+        const auto convert = [&](size_t index) {
+            std::array<const u8*, 4> source_planes{};
+            for (int plane = 0; plane < plane_count; ++plane) {
+                const bool chroma = plane == 1 || plane == 2;
+                const u32 first_row =
+                    chroma ? rows[index] >> descriptor->log2_chroma_h : rows[index];
+                source_planes[plane] =
+                    f->data[plane] + static_cast<ptrdiff_t>(first_row) * f->linesize[plane];
+            }
+            const std::array<u8*, 4> target_planes{out.data() + rows[index] * pitch, nullptr,
+                                                   nullptr, nullptr};
+            const std::array<int, 4> target_strides{static_cast<int>(pitch), 0, 0, 0};
+            sws_scale(band_scalers[index], source_planes.data(), f->linesize, 0,
+                      static_cast<int>(rows[index + 1] - rows[index]), target_planes.data(),
+                      target_strides.data());
+        };
+        {
+            std::array<std::jthread, Bands - 1> workers;
+            for (size_t band = 1; band < Bands; ++band) {
+                workers[band - 1] = std::jthread{convert, band};
+            }
+            convert(0);
+        }
+        return true;
     }
 
     // Not in frame parallel mode, libgav1 decodes one temporal unit per DequeueFrame and holds
@@ -350,6 +423,12 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         }
         return;
     }
+    // Large RGB images at the frame's own size convert on several threads (NV12 doesn't).
+    if (format != Nx2PictureFormat::Nv12 && static_cast<u32>(f->width) == width &&
+        static_cast<u32>(f->height) == height && height >= 256 &&
+        impl->RenderBands(f, target, height, pitch, out)) {
+        return;
+    }
     impl->scaler = sws_getCachedContext(impl->scaler, f->width, f->height,
                                         static_cast<AVPixelFormat>(f->format),
                                         static_cast<int>(width), static_cast<int>(height), target,
@@ -361,17 +440,7 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         return;
     }
     if (format != Nx2PictureFormat::Nv12) {
-        // The stream's matrix and range; untagged HD video is BT.709.
-        int space = SWS_CS_ITU601;
-        if (f->colorspace == AVCOL_SPC_BT709 ||
-            (f->colorspace == AVCOL_SPC_UNSPECIFIED && f->height >= 720)) {
-            space = SWS_CS_ITU709;
-        } else if (f->colorspace == AVCOL_SPC_BT2020_NCL || f->colorspace == AVCOL_SPC_BT2020_CL) {
-            space = SWS_CS_BT2020;
-        }
-        const int* coefficients = sws_getCoefficients(space);
-        sws_setColorspaceDetails(impl->scaler, coefficients, f->color_range == AVCOL_RANGE_JPEG,
-                                 coefficients, 1, 0, 1 << 16, 1 << 16);
+        SetRgbColorspace(impl->scaler, f);
     }
     std::array<u8*, 4> planes{out.data(), nullptr, nullptr, nullptr};
     std::array<int, 4> strides{static_cast<int>(pitch), 0, 0, 0};
