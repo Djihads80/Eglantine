@@ -364,6 +364,10 @@ struct Values {
                                                     Specialization::Default,
                                                     true,
                                                     true};
+    // A Switch 2 game's own DLSS network (translated) in place of AMD FSR 3.1, where it runs and
+    // its output passes the checks.
+    SwitchableSetting<bool> game_dlss_network{linkage, true, "game_dlss_network",
+                                              Category::Renderer};
     SwitchableSetting<int, true> fsr_sharpening_slider{linkage,
 #ifdef __ANDROID__
                                                        0,
@@ -378,6 +382,8 @@ struct Values {
                                                            Specialization::Percentage,
                                                        true,
                                                        true};
+    // NVIDIA DLSS (through NVIDIA Streamline) in place of a game's DLSS.
+    SwitchableSetting<bool> nvidia_dlss{linkage, false, "nvidia_dlss", Category::Renderer};
     SwitchableSetting<AspectRatio, true> aspect_ratio{linkage,
                                                       AspectRatio::R16_9,
                                                       "aspect_ratio",
