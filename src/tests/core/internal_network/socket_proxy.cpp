@@ -21,9 +21,7 @@ void BindSocket(Network::ProxySocket& socket, Network::Protocol protocol) {
                          .portno = 35000}) == Network::Errno::SUCCESS);
 }
 
-template <std::size_t N>
-void QueuePacket(Network::ProxySocket& socket, Network::Protocol protocol,
-                 const std::array<u8, N>& payload) {
+Network::ProxyPacket MakePacket(Network::Protocol protocol) {
     Network::ProxyPacket packet{};
     packet.local_endpoint = {.family = Network::Domain::INET,
                              .ip = {192, 168, 1, 2},
@@ -32,6 +30,13 @@ void QueuePacket(Network::ProxySocket& socket, Network::Protocol protocol,
                               .ip = {192, 168, 1, 1},
                               .portno = 35000};
     packet.protocol = protocol;
+    return packet;
+}
+
+template <std::size_t N>
+void QueuePacket(Network::ProxySocket& socket, Network::Protocol protocol,
+                 const std::array<u8, N>& payload) {
+    Network::ProxyPacket packet = MakePacket(protocol);
     packet.data.assign(payload.begin(), payload.end());
     socket.HandleProxyPacket(packet);
 }
@@ -227,4 +232,30 @@ TEST_CASE("One room packet wakes every blocked peek reader", "[core][sockets]") 
         REQUIRE(results[i] == std::pair<s32, Network::Errno>{4, Network::Errno::SUCCESS});
         REQUIRE(finished[i] - queued < std::chrono::milliseconds{1000});
     }
+}
+
+TEST_CASE("Room sockets accept only packets for their port and protocol", "[core][sockets]") {
+    Network::ProxySocket socket;
+    BindSocket(socket, Network::Protocol::UDP);
+
+    REQUIRE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::TCP)));
+
+    Network::ProxyPacket other_port = MakePacket(Network::Protocol::UDP);
+    other_port.remote_endpoint.portno = 35001;
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(other_port));
+
+    Network::ProxyPacket broadcast = MakePacket(Network::Protocol::UDP);
+    broadcast.broadcast = true;
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(broadcast));
+    REQUIRE(socket.SetBroadcast(true) == Network::Errno::SUCCESS);
+    REQUIRE(socket.AcceptsProxyPacket(broadcast));
+
+    REQUIRE(socket.Close() == Network::Errno::SUCCESS);
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
+}
+
+TEST_CASE("Native sockets accept no room packets", "[core][sockets]") {
+    Network::Socket socket;
+    REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
 }
