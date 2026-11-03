@@ -610,9 +610,12 @@ private:
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
     // Async Buffers
-    Common::OverlapRangeSet<DAddr> async_downloads;
     std::deque<std::optional<Async_Buffer>> async_buffers;
     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
+    /// For each entry of pending_downloads: the ranges it still writes to guest memory when its
+    /// fence pops. A write to a range after a download was taken removes it from that download
+    /// (and every other pending one): its bytes are older than the write.
+    std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;

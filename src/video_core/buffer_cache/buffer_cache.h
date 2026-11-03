@@ -270,7 +270,9 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
 
 template <class P>
 void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
-    async_downloads.DeleteAll(device_addr, size);
+    for (auto& ranges : pending_download_ranges) {
+        ranges.Subtract(device_addr, size);
+    }
     uncommitted_gpu_modified_ranges.Subtract(device_addr, size);
     for (auto& interval_set : committed_gpu_modified_ranges) {
         interval_set.Subtract(device_addr, size);
@@ -752,6 +754,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     Nx2Profile::Add(Nx2Profile::Counter::DownloadCopies, downloads.size());
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
+    Common::RangeSet<DAddr> download_ranges;
     runtime.PreCopyBarrier();
     for (auto& [copy, buffer_id] : downloads) {
         copy.dst_offset += download_staging.offset;
@@ -773,13 +776,14 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
             }
             Nx2Profile::Add(Nx2Profile::Counter::DownloadBytesOnDmaPages, on_dma_pages);
         }
-        async_downloads.Add(orig_device_addr, copy.size);
+        download_ranges.Add(orig_device_addr, copy.size);
         buffer.MarkUsage(copy.src_offset, copy.size);
         runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
         normalized_copies.push_back(second_copy);
     }
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
+    pending_download_ranges.emplace_back(std::move(download_ranges));
     async_buffers.emplace_back(download_staging);
 }
 
@@ -803,6 +807,7 @@ void BufferCache<P>::PopAsyncBuffers() {
         return;
     }
     auto& downloads = pending_downloads.front();
+    auto& ranges = pending_download_ranges.front();
     auto& async_buffer = async_buffers.front();
     u8* base = async_buffer->mapped_span.data();
     const size_t base_offset = async_buffer->offset;
@@ -810,17 +815,18 @@ void BufferCache<P>::PopAsyncBuffers() {
         const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
         const u64 dst_offset = copy.dst_offset - base_offset;
         const u8* read_mapped_memory = base + dst_offset;
-        async_downloads.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end, s32) {
+        // Only what no write replaced since the copy was taken: the rest is older than guest
+        // memory (CPU writes) or than the GPU's copy (GPU writes, still to be downloaded).
+        ranges.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end) {
             device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
                                            end - start);
-        });
-        async_downloads.Subtract(device_addr, copy.size, [&](DAddr start, DAddr end) {
             gpu_modified_ranges.Subtract(start, end - start);
         });
     }
     async_buffers_death_ring.emplace_back(*async_buffer);
     async_buffers.pop_front();
     pending_downloads.pop_front();
+    pending_download_ranges.pop_front();
 }
 
 template <class P>
@@ -1725,6 +1731,12 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
             Buffer& buffer = slot_buffers[buffer_id];
             buffer.setWriteTick(runtime.CurrentTick());
         }
+    }
+    // The downloads already taken over this range hold older bytes: when their fences pop
+    // they must not write them over this write's result in guest memory, nor drop the range
+    // from gpu_modified_ranges (the next fence downloads it instead).
+    for (auto& ranges : pending_download_ranges) {
+        ranges.Subtract(device_addr, size);
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
