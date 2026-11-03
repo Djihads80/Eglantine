@@ -591,8 +591,9 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
 std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
 // Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
-// at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290 and this frame's
-// camera jitter (x, y; input pixels, Halton bases 2 and 3 less 0.5) at +0x1b0.
+// at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
+// input's size) at +0x298 and this frame's camera jitter (x, y; input pixels, Halton bases 2 and 3
+// less 0.5) at +0x1b0.
 void KeplerCompute::RememberDlssMotionVectors() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     if (cbuf.size.Value() < 0x294) return;
@@ -610,6 +611,14 @@ void KeplerCompute::RememberDlssMotionVectors() {
         return;
     dlss_motion_vectors = *motion;
     dlss_motion_color = color->Address();
+    const auto depth = cbuf.size.Value() >= 0x29c ? image(0x298) : std::nullopt;
+    if (depth && depth->format == Texture::TextureFormat::Z32 && depth->Address() != 0 &&
+        depth->Width() == color->Width() && depth->Height() == color->Height() &&
+        depth->IsBlockLinear()) {
+        dlss_depth = *depth;
+    } else {
+        dlss_depth.reset();
+    }
     dlss_jitter = {std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b0)),
                    std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b4))};
 }
@@ -794,8 +803,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             return false;
         Fermi2D::Surface motion = surface(*dlss_motion_vectors);
         motion.format = RTFormat::R16G16_FLOAT;
-        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion, dlss_jitter,
-                                                     {1.0f, 1.0f});
+        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
+                                                     dlss_depth ? &*dlss_depth : nullptr,
+                                                     dlss_jitter, {1.0f, 1.0f});
     };
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);

@@ -638,10 +638,13 @@ private:
                 std::ranges::find(skip, lower) != skip.end()) {
                 continue;
             }
+            // Keep the dump's own layout for anything that is not exefs/romfs, the
+            // same way the reference packer does: a root-level data/ folder stays
+            // data/, and other extras keep their name instead of moving under data/.
             if (entry.is_directory(ec)) {
-                CollectTree(index, entry.path(), "data/" + name);
+                CollectTree(index, entry.path(), name);
             } else {
-                AddFile(index, entry, "data/" + name);
+                AddFile(index, entry, name);
             }
         }
         return plan.packages.back().title_id;

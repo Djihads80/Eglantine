@@ -257,8 +257,6 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
         !pipeline_cache.IsIndirectResetShader()) {
         return false;
     }
-    using Clock = std::chrono::steady_clock;
-    const auto start_time = Clock::now();
     const auto reject = [](std::string_view reason) {
         static u32 reported_rejections{};
         if (reported_rejections++ < 8) {
@@ -266,8 +264,13 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
         }
         return false;
     };
+    const auto in_gpu_range = [this](u64 address, size_t size) {
+        return size != 0 && address <= (std::numeric_limits<u64>::max)() - size &&
+               gpu_memory->IsWithinGPUAddressRange(address) &&
+               gpu_memory->IsWithinGPUAddressRange(address + size - 1);
+    };
     const auto& cbuf = maxwell3d->state.shader_stages[0].const_buffers[0];
-    if (!cbuf.enabled || cbuf.size < 0x120 ||
+    if (!cbuf.enabled || cbuf.size < 0x120 || !in_gpu_range(cbuf.address, 0x120) ||
         !gpu_memory->IsFullyMappedRange(cbuf.address + 0x110, 16)) {
         return reject("descriptor unavailable");
     }
@@ -279,7 +282,8 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     const u64 count = draw.vertex_buffer.count;
     const auto range = VideoCommon::IndirectResetRange(list, static_cast<u32>(descriptor[1]),
                                                         first, count);
-    if (!range || !gpu_memory->IsFullyMappedRange(range->begin, range->size)) {
+    if (!range || !in_gpu_range(range->begin, range->size) ||
+        !gpu_memory->IsFullyMappedRange(range->begin, range->size)) {
         return reject("list outside mapped descriptor");
     }
     if (gpu_memory->IsMemoryDirty(range->begin, range->size, VideoCommon::CacheType::BufferCache)) {
@@ -287,13 +291,12 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     }
     std::vector<u64> pointers(count);
     gpu_memory->ReadBlockUnsafe(range->begin, pointers.data(), range->size);
-    const auto read_time = Clock::now();
     static constexpr std::array<u32, 5> record{0, 1, 0, 0, 0};
     for (const u64 pointer : pointers) {
         if (!pointer) {
             continue;
         }
-        if (pointer > (std::numeric_limits<u64>::max)() - sizeof(record) ||
+        if (!in_gpu_range(pointer, sizeof(record)) ||
             !gpu_memory->IsFullyMappedRange(pointer, sizeof(record))) {
             return reject("record not mapped");
         }
@@ -307,7 +310,6 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
         }
     }
     const std::span<const u8> bytes{reinterpret_cast<const u8*>(record.data()), sizeof(record)};
-    const auto validated_time = Clock::now();
     for (const u64 pointer : pointers) {
         if (pointer) {
             AccelerateInlineToMemory(pointer, bytes.size(), bytes);
@@ -316,37 +318,6 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     static u32 reported{};
     if (reported++ < 5) {
         LOG_INFO(HW_GPU, "Experimental indirect reset: {} records", count);
-    }
-    struct Timing {
-        u64 draws{}, read_us{}, validate_us{}, write_us{};
-    };
-    static thread_local Timing timing;
-    const auto finish_time = Clock::now();
-    const auto micros = [](auto a, auto b) -> u64 {
-        return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
-    };
-    timing.read_us += micros(start_time, read_time);
-    timing.validate_us += micros(read_time, validated_time);
-    timing.write_us += micros(validated_time, finish_time);
-    if (++timing.draws == 120) {
-        LOG_INFO(HW_GPU, "Indirect reset timing: {} records, mean read {} us, validation {} us, writes {} us",
-                 count, timing.read_us / timing.draws, timing.validate_us / timing.draws,
-                 timing.write_us / timing.draws);
-        std::vector<u64> ordered;
-        ordered.reserve(pointers.size());
-        for (const u64 pointer : pointers) {
-            if (pointer) ordered.push_back(pointer);
-        }
-        std::ranges::sort(ordered);
-        ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
-        size_t runs = 0, pages = 0;
-        for (size_t i = 0; i < ordered.size(); ++i) {
-            if (!i || ordered[i] != ordered[i - 1] + sizeof(record)) ++runs;
-            if (!i || (ordered[i] >> 12) != (ordered[i - 1] >> 12)) ++pages;
-        }
-        LOG_INFO(HW_GPU, "Indirect reset layout: {} unique records, {} contiguous runs, {} pages",
-                 ordered.size(), runs, pages);
-        timing = {};
     }
     return true;
 }
@@ -1419,10 +1390,10 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
 
 bool RasterizerVulkan::AccelerateTemporalUpscale(
     const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
-    const Tegra::Engines::Fermi2D::Surface& motion_vectors, std::array<f32, 2> jitter,
-    std::array<f32, 2> motion_scale) {
+    const Tegra::Engines::Fermi2D::Surface& motion_vectors, const Tegra::Texture::TICEntry* depth,
+    std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
     std::scoped_lock lock{texture_cache.mutex};
-    return texture_cache.TemporalUpscale(dst, src, motion_vectors, jitter, motion_scale);
+    return texture_cache.TemporalUpscale(dst, src, motion_vectors, depth, jitter, motion_scale);
 }
 
 Tegra::Engines::AccelerateDMAInterface& RasterizerVulkan::AccessAccelerateDMA() {
