@@ -26,7 +26,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     int option_index = 0;
     static struct option long_options[] = {
         // clang-format off
-        {"debug", no_argument, 0, 'd'},
+        {"debug", optional_argument, 0, 'd'},
         {"config", required_argument, 0, 'c'},
         {"fullscreen", no_argument, 0, 'f'},
         {"help", no_argument, 0, 'h'},
@@ -35,7 +35,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"program", optional_argument, 0, 'p'},
         {"user", required_argument, 0, 'u'},
         {"version", no_argument, 0, 'v'},
-        {"input-profile", no_argument, 0, 'i'},
+        {"input-profile", required_argument, 0, 'i'},
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
@@ -45,10 +45,14 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     };
 
     while (optind < argc) {
-        if (int arg = getopt_long(argc, argv, "dc:fhg:m:p:u:vinsx", long_options, &option_index); arg != -1) {
+        // -d takes an optional port (-d1234); -i takes the input profile. Both read optarg but
+        // were declared without arguments, so optarg was null and they crashed.
+        if (int arg = getopt_long(argc, argv, "d::c:fhg:m:p:u:vi:nsx", long_options, &option_index); arg != -1) {
             switch (char(arg)) {
             case 'd':
-                p.override_gdb_port = uint16_t(atoi(optarg));
+                p.override_gdb_port = optarg != nullptr
+                                          ? uint16_t(atoi(optarg))
+                                          : Settings::values.gdbstub_port.GetValue();
                 break;
             case 'c':
                 p.config_path = optarg;

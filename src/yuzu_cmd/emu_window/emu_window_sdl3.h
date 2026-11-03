@@ -49,6 +49,9 @@ public:
     /// Returns if window is shown (not minimized)
     bool IsShown() const override;
 
+    /// Advances TAS playback/recording once per presented frame, as the Qt render window does.
+    void OnFrameDisplayed() override;
+
     /// Wait for the next event on the main thread.
     void OnEvent(SDL_Event& event);
 
