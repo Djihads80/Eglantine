@@ -316,6 +316,12 @@ inline void Nx2GpuOnlyRegionDestroyed(u64 gpu_address) {
     g_nx2_gpu_only_regions.erase(gpu_address);
 }
 
+/// A new emulation session: the previous game's GPU-only regions are gone too.
+inline void Nx2ClearGpuOnlyRegions() {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions.clear();
+}
+
 inline bool Nx2InGpuOnlyRegion(u64 gpu_address, u64 size) {
     std::scoped_lock lk{g_nx2_gpu_only_mutex};
     auto it = g_nx2_gpu_only_regions.upper_bound(gpu_address);
