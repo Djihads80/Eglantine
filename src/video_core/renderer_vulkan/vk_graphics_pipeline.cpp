@@ -746,6 +746,11 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
 }
 
 void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
+    if (IsMeshPipeline() && !device.IsExtMeshShaderSupported()) {
+        // Draws using this pipeline are skipped; creating it would be invalid usage.
+        LOG_WARNING(Render_Vulkan, "Task/mesh pipeline not created: VK_EXT_mesh_shader unsupported");
+        return;
+    }
     FixedPipelineState::DynamicState dynamic{};
     if (!key.state.extended_dynamic_state) {
         dynamic = key.state.dynamic_state;
