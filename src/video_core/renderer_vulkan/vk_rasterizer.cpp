@@ -922,6 +922,11 @@ void RasterizerVulkan::DispatchCompute() {
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
+    // Command list pages the dispatch writes are copied for the split's front right after it.
+    buffer_cache.Nx2CollectListCopies(true);
+    SCOPE_EXIT {
+        buffer_cache.Nx2CollectListCopies(false);
+    };
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache)) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
@@ -944,6 +949,7 @@ void RasterizerVulkan::DispatchCompute() {
             }
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
+        SubmitNx2ListCopies();
         return;
     }
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
@@ -966,6 +972,7 @@ void RasterizerVulkan::DispatchCompute() {
         }
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
+    SubmitNx2ListCopies();
 
     // Log compute dispatch
     if (GPU::Logging::IsActive() &&
@@ -1006,6 +1013,29 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 }
 
 void RasterizerVulkan::FlushAll() {}
+
+void RasterizerVulkan::SubmitNx2ListCopies() {
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        scheduler.Flush();
+    }
+}
+
+VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenCommandList(
+    DAddr addr, std::span<u8> out) {
+    // No cache lock: the front only reads the copies, under their own lock.
+    switch (buffer_cache.Nx2ReadListCopy(addr, out)) {
+    case BufferCache::Nx2ListRead::Copied:
+        return GpuWrittenList::Copied;
+    case BufferCache::Nx2ListRead::Synced:
+        return GpuWrittenList::Synced;
+    default:
+        return GpuWrittenList::Unknown;
+    }
+}
+
+void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
+    buffer_cache.Nx2NoteListSynced(page);
+}
 
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (addr == 0 || size == 0) {
@@ -1097,12 +1127,10 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
             buffer_cache.WriteMemory(addr, size);
         }
     }
-    {
-        for (const auto& [addr, size] : sequences) {
-            query_cache.InvalidateRegion(addr, size);
-            pipeline_cache.InvalidateRegion(addr, size);
-        }
+    for (const auto& [addr, size] : sequences) {
+        query_cache.InvalidateRegion(addr, size);
     }
+    pipeline_cache.InvalidateRegions(sequences);
 }
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
@@ -1277,10 +1305,10 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
 
 bool RasterizerVulkan::AccelerateTemporalUpscale(
     const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
-    const Tegra::Engines::Fermi2D::Surface& motion_vectors, std::array<f32, 2> jitter,
-    std::array<f32, 2> motion_scale) {
+    const Tegra::Engines::Fermi2D::Surface& motion_vectors, const Tegra::Texture::TICEntry* depth,
+    std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
     std::scoped_lock lock{texture_cache.mutex};
-    return texture_cache.TemporalUpscale(dst, src, motion_vectors, jitter, motion_scale);
+    return texture_cache.TemporalUpscale(dst, src, motion_vectors, depth, jitter, motion_scale);
 }
 
 Tegra::Engines::AccelerateDMAInterface& RasterizerVulkan::AccessAccelerateDMA() {
@@ -1319,6 +1347,8 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     bool uploaded;
     {
         std::scoped_lock lock{buffer_cache.mutex};
+        // Guest memory has the words now: a command list copy of the page no longer does.
+        buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
         uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
         if (!uploaded && !defer) {
             buffer_cache.WriteMemory(*cpu_addr, copy_size);
@@ -1392,10 +1422,27 @@ void RasterizerVulkan::FlushWork() {
 #endif // __ANDROID__
 
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
-    if ((++draw_counter & CHECK_MASK) != CHECK_MASK) {
+    if ((++draw_counter & CHECK_MASK) != 0) {
         return;
     }
-    if (draw_counter < DRAWS_TO_DISPATCH) {
+    // Keep the host GPU working while native commands are still being recorded.
+    static const u32 native_flush_draws = [] {
+        constexpr u32 fallback = 128;
+        const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
+        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+            return fallback;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (*end != '\0' || parsed == 0) {
+            return fallback;
+        }
+        return static_cast<u32>(std::clamp(parsed, 32UL, 1'048'576UL));
+    }();
+    const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
+                                     ? native_flush_draws
+                                     : DRAWS_TO_DISPATCH;
+    if (draw_counter < draws_to_dispatch) {
         scheduler.DispatchWork();
         return;
     }
@@ -1414,7 +1461,13 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
 
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
     std::scoped_lock lock{buffer_cache.mutex};
-    return buffer_cache.DMACopy(src_address, dest_address, amount);
+    buffer_cache.Nx2CollectListCopies(true);
+    const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        scheduler.Flush();
+    }
+    buffer_cache.Nx2CollectListCopies(false);
+    return copied;
 }
 
 template <bool IS_IMAGE_UPLOAD>

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 
 #include "common/common_types.h"
@@ -1112,8 +1113,24 @@ Result IHidServer::IsVibrationDeviceMounted(
     R_SUCCEED();
 }
 
-Result IHidServer::SendNx2VibrationValues() {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
+Result IHidServer::SendNx2VibrationValues(
+    u64 unknown, AppletResourceUserId aruid,
+    InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
+    InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values) {
+    LOG_DEBUG(Service_HID, "called, unknown={}, applet_resource_user_id={}", unknown, aruid.pid);
+
+    // Unlike 206 this never fails: rumble is best effort and the command is only known from
+    // captures, so an unexpected handle or layout shouldn't return an error a game may treat as
+    // fatal.
+    const auto count = (std::min)(vibration_handles.size(), vibration_values.size());
+    for (std::size_t i = 0; i < count; i++) {
+        const auto result = GetResourceManager()->SendVibrationValue(
+            aruid.pid, vibration_handles[i], vibration_values[i]);
+        if (result.IsError()) {
+            LOG_DEBUG(Service_HID, "failed to send vibration {}, result={:#x}", i, result.raw);
+        }
+    }
+
     R_SUCCEED();
 }
 

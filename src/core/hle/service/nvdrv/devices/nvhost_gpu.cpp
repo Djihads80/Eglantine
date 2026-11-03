@@ -445,7 +445,10 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             const char* value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
             return value == nullptr || value[0] != '0';
         }();
-        if (snapshot && channel_state->memory_manager) {
+        if (snapshot && channel_state->memory_manager && channel_state->payload) {
+            // Before the copy: a suspension during it must count as one after it.
+            entries.snapshot_suspensions =
+                channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
             size_t words = 0;
             for (const auto& entry : entries.command_lists) {
                 words += entry.size;

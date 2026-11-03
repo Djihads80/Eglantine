@@ -3,8 +3,9 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
-#include <thread>
+#include <cstring>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -29,22 +30,35 @@ ProxySocket::~ProxySocket() {
     fd = INVALID_SOCKET;
 }
 
-void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
+bool ProxySocket::MatchesPacket(const ProxyPacket& packet) const {
     if (protocol != packet.protocol || local_endpoint.portno != packet.remote_endpoint.portno ||
         closed) {
-        return;
+        return false;
     }
-
     if (!broadcast && packet.broadcast) {
         LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
-        return;
+        return false;
     }
+    return true;
+}
 
-    auto decompressed = packet;
-    decompressed.data = Common::Compression::DecompressDataZSTD(packet.data);
-
+bool ProxySocket::AcceptsProxyPacket(const ProxyPacket& packet) {
     std::lock_guard guard(packets_mutex);
-    received_packets.push(decompressed);
+    return MatchesPacket(packet);
+}
+
+void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
+    {
+        // Runs on the room thread, while the game thread may bind, close or reconfigure the socket.
+        // Check again: the socket may have changed since AcceptsProxyPacket.
+        std::lock_guard guard(packets_mutex);
+        if (!MatchesPacket(packet)) {
+            return;
+        }
+        received_packets.push(packet);
+    }
+    // A MSG_PEEK reader leaves the packet queued, so every waiter must see it
+    packets_cv.notify_all();
 }
 
 template <typename T>
@@ -54,7 +68,11 @@ Errno ProxySocket::SetSockOpt(SOCKET fd_, int option, T value) {
 }
 
 Errno ProxySocket::Initialize(Domain domain, Type type, Protocol socket_protocol) {
-    protocol = socket_protocol;
+    {
+        std::lock_guard guard(packets_mutex);
+        socket_type = type;
+        protocol = socket_protocol;
+    }
     SetSockOpt(fd, SO_TYPE, type);
 
     return Errno::SUCCESS;
@@ -81,6 +99,7 @@ std::pair<SockAddrIn, Errno> ProxySocket::GetSockName() {
 }
 
 Errno ProxySocket::Bind(SockAddrIn addr) {
+    std::lock_guard guard(packets_mutex);
     if (is_bound) {
         LOG_WARNING(Network, "Rebinding Socket is unimplemented!");
         return Errno::SUCCESS;
@@ -102,82 +121,73 @@ Errno ProxySocket::Shutdown(ShutdownHow how) {
 }
 
 std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
-    LOG_WARNING(Network, "(STUBBED) called");
-    ASSERT(flags == 0);
-    ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
-
-    return {static_cast<s32>(0), Errno::SUCCESS};
+    if (socket_type == Type::STREAM) {
+        // Room TCP sockets have no peer (Connect and Send are stubs). Report an empty queue as the
+        // end of the stream, as before, instead of blocking the bsd service until the timeout.
+        std::lock_guard guard(packets_mutex);
+        if (received_packets.empty()) {
+            return {0, Errno::SUCCESS};
+        }
+    }
+    return RecvFrom(flags, message, nullptr);
 }
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
-    ASSERT(flags == 0);
+    ASSERT((flags & ~FLAG_MSG_PEEK) == 0);
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
 
-    // TODO (flTobi): Verify the timeout behavior and break when connection is lost
-    const auto timestamp = std::chrono::steady_clock::now();
-    // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
-    // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
-    // the timeout to 5s instead
-    const auto timeout = receive_timeout == 0 ? 5000 : receive_timeout;
-    while (true) {
-        {
-            std::lock_guard guard(packets_mutex);
-            if (received_packets.size() > 0) {
-                return ReceivePacket(flags, message, addr, message.size());
-            }
-        }
-
+    std::unique_lock lock(packets_mutex);
+    if (closed) {
+        return {-1, Errno::BADF};
+    }
+    if (received_packets.empty()) {
         if (!blocking) {
             return {-1, Errno::AGAIN};
         }
-
-        std::this_thread::yield();
-
-        const auto time_diff = std::chrono::steady_clock::now() - timestamp;
-        const auto time_diff_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(time_diff).count();
-
-        if (time_diff_ms > timeout) {
-            return {-1, Errno::TIMEDOUT};
+        // TODO (flTobi): Verify the timeout behavior and break when connection is lost
+        // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
+        // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
+        // the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
+        const u32 timeout = receive_timeout == 0 ? 5000 : receive_timeout;
+        if (!packets_cv.wait_for(lock, std::chrono::milliseconds{timeout},
+                                 [this] { return closed || !received_packets.empty(); })) {
+            return {-1, Errno::AGAIN};
+        }
+        if (closed) {
+            return {-1, Errno::BADF};
         }
     }
+
+    return ReceivePacket(flags, message, addr, message.size());
 }
 
 std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> message, SockAddrIn* addr,
                                                  std::size_t max_length) {
-    ProxyPacket& packet = received_packets.front();
+    const ProxyPacket& packet = received_packets.front();
     if (addr) {
         addr->family = Domain::INET;
         addr->ip = packet.local_endpoint.ip;         // The senders ip address
         addr->portno = packet.local_endpoint.portno; // The senders port number
     }
 
-    bool peek = (flags & FLAG_MSG_PEEK) != 0;
-    std::size_t read_bytes;
-    if (packet.data.size() > max_length) {
-        read_bytes = max_length;
-        memcpy(message.data(), packet.data.data(), max_length);
+    const std::span<const u8> unread = std::span{packet.data}.subspan(front_read_offset);
+    const std::size_t read_bytes = (std::min)(unread.size(), max_length);
+    std::memcpy(message.data(), unread.data(), read_bytes);
 
-        if (protocol == Protocol::UDP) {
-            if (!peek) {
-                received_packets.pop();
-            }
-            return {-1, Errno::MSGSIZE};
-        } else if (protocol == Protocol::TCP) {
-            std::vector<u8> numArray(packet.data.size() - max_length);
-            std::copy(packet.data.begin() + max_length, packet.data.end(),
-                      std::back_inserter(numArray));
-            packet.data = numArray;
-        }
-    } else {
-        read_bytes = packet.data.size();
-        memcpy(message.data(), packet.data.data(), read_bytes);
-        if (!peek) {
-            received_packets.pop();
-        }
+    if ((flags & FLAG_MSG_PEEK) != 0) {
+        return {static_cast<s32>(read_bytes), Errno::SUCCESS};
     }
 
-    return {static_cast<u32>(read_bytes), Errno::SUCCESS};
+    if (socket_type == Type::STREAM && read_bytes < unread.size()) {
+        // Keep the unread part of the stream for the next call
+        front_read_offset += read_bytes;
+    } else {
+        // Like BSD recv(), the rest of a datagram that does not fit is discarded
+        received_packets.pop();
+        front_read_offset = 0;
+    }
+
+    return {static_cast<s32>(read_bytes), Errno::SUCCESS};
 }
 
 std::pair<s32, Errno> ProxySocket::Send(std::span<const u8> message, int flags) {
@@ -238,8 +248,14 @@ std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message
 }
 
 Errno ProxySocket::Close() {
-    fd = INVALID_SOCKET;
-    closed = true;
+    {
+        std::lock_guard guard(packets_mutex);
+        fd = INVALID_SOCKET;
+        closed = true;
+        received_packets = {};
+        front_read_offset = 0;
+    }
+    packets_cv.notify_all();
 
     return Errno::SUCCESS;
 }
@@ -260,7 +276,10 @@ Errno ProxySocket::SetReuseAddr(bool enable) {
 }
 
 Errno ProxySocket::SetBroadcast(bool enable) {
-    broadcast = enable;
+    {
+        std::lock_guard guard(packets_mutex);
+        broadcast = enable;
+    }
     return SetSockOpt<u32>(fd, SO_BROADCAST, enable ? 1 : 0);
 }
 
@@ -282,11 +301,15 @@ Errno ProxySocket::SetSndTimeo(u32 value) {
 }
 
 Errno ProxySocket::SetRcvTimeo(u32 value) {
-    receive_timeout = value;
+    {
+        std::lock_guard guard(packets_mutex);
+        receive_timeout = value;
+    }
     return SetSockOpt(fd, SO_RCVTIMEO, static_cast<int>(value));
 }
 
 Errno ProxySocket::SetNonBlock(bool enable) {
+    std::lock_guard guard(packets_mutex);
     blocking = !enable;
     return Errno::SUCCESS;
 }

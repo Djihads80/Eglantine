@@ -79,7 +79,7 @@ struct KernelCore::Impl {
     // And we have the guarantee that the data won't move out of the way so we can safely
     // take a reference to it. This isn't always universally true but this is "global" data
     // so it will be statically given a TLS slot anyways.
-    static inline thread_local ThreadLocalData tls_data = {};
+    static thread_local ThreadLocalData tls_data;
 
     explicit Impl(Core::System& system_, KernelCore& kernel_) : system{system_} {
         tls_data.lock = true;
@@ -860,6 +860,8 @@ struct KernelCore::Impl {
     // System context
     Core::System& system;
 };
+
+thread_local ThreadLocalData KernelCore::Impl::tls_data{};
 
 KernelCore::KernelCore(Core::System& system) : impl{std::make_unique<Impl>(system, *this)} {}
 KernelCore::~KernelCore() = default;

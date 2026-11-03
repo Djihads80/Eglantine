@@ -35,6 +35,7 @@
 #include "ui_configure_graphics.h"
 #include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/configuration/configure_graphics.h"
+#include "yuzu/configuration/nvidia_dlss_panel.h"
 #include "yuzu/configuration/shared_widget.h"
 
 #ifdef HAS_RESHADE
@@ -226,6 +227,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
+#ifndef EGLANTINE_STREAMLINE
+        // Only builds with NVIDIA Streamline (Windows) can use it.
+        if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
+            continue;
+        }
+#endif
 
         ConfigurationShared::Widget* widget = [&]() {
             if (setting->Id() == Settings::values.fsr_sharpening_slider.Id()) {
@@ -322,6 +329,20 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             row->insertWidget(1, post_shader_button);
 
             hold_graphics.emplace(setting->Id(), widget);
+#endif
+#ifdef EGLANTINE_STREAMLINE
+        } else if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
+            // NVIDIA's files and a download button under the checkbox.
+            QWidget* group = new QWidget(this);
+            QVBoxLayout* group_layout = new QVBoxLayout(group);
+            group_layout->setContentsMargins(0, 0, 0, 0);
+            group_layout->setSpacing(2);
+            group_layout->addWidget(widget);
+            NvidiaDlssPanel* panel = new NvidiaDlssPanel(group);
+            group_layout->addWidget(panel);
+            panel->setVisible(widget->checkbox->isChecked());
+            connect(widget->checkbox, &QCheckBox::toggled, panel, &QWidget::setVisible);
+            hold_graphics.emplace(setting->Id(), group);
 #endif
         } else if (setting->Id() == Settings::values.frame_gen.Id()) {
             frame_gen_checkbox = widget->checkbox;

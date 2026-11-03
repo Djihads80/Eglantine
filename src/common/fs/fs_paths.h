@@ -28,6 +28,7 @@
 #define SCREENSHOTS_DIR "screenshots"
 #define SDMC_DIR "sdmc"
 #define SHADER_DIR "shader"
+#define STREAMLINE_DIR "streamline"
 #define TAS_DIR "tas"
 #define ICONS_DIR "icons"
 

@@ -603,7 +603,7 @@ CalibrationConfigurationJob::CalibrationConfigurationJob(
     const std::string& host, u16 port, std::function<void(Status)> status_callback,
     std::function<void(u16, u16, u16, u16)> data_callback) {
 
-    std::thread([=, this] {
+    worker = std::jthread([=, this] {
         u16 min_x{UINT16_MAX};
         u16 min_y{UINT16_MAX};
         u16 max_x{};
@@ -647,7 +647,7 @@ CalibrationConfigurationJob::CalibrationConfigurationJob(
         complete_event.Wait();
         socket.Stop();
         worker_thread.join();
-    }).detach();
+    });
 }
 
 CalibrationConfigurationJob::~CalibrationConfigurationJob() {

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <utility>
@@ -13,6 +14,7 @@
 
 #include "common/logging.h"
 #include "common/socket_types.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -535,32 +537,35 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     UNIMPLEMENTED_IF_MSG(unk_flag, "Unknown flag in type");
     type = static_cast<Type>(static_cast<u32>(type) & ~0x20000000);
 
+    // Checked before taking an fd. A joined room does not lift it: room TCP is only stubbed.
+    if (Settings::values.airplane_mode.GetValue() && IsConnectionBased(type)) {
+        LOG_ERROR(Service, "Airplane mode is enabled, cannot create socket");
+        return {-1, Errno::NOTCONN};
+    }
+
+    std::shared_ptr<Network::SocketBase> socket;
+    auto room_member = Network::GetRoomMember().lock();
+    if (room_member && room_member->IsConnected()) {
+        socket = std::make_shared<Network::ProxySocket>();
+    } else {
+        socket = std::make_shared<Network::Socket>();
+    }
+    socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
+
+    // Publish the socket only once it is set up, since the room thread delivers packets to it
+    std::scoped_lock lock{file_descriptors_mutex};
     const s32 fd = FindFreeFileDescriptorHandle();
     if (fd < 0) {
         LOG_ERROR(Service, "No more file descriptors available");
         return {-1, Errno::MFILE};
     }
 
-    file_descriptors[fd] = FileDescriptor{};
-    FileDescriptor& descriptor = *file_descriptors[fd];
-    // ENONMEM might be thrown here
+    file_descriptors[fd] = FileDescriptor{
+        .socket = std::move(socket),
+        .is_connection_based = IsConnectionBased(type),
+    };
 
     LOG_INFO(Service, "New socket fd={}", fd);
-
-    auto room_member = Network::GetRoomMember().lock();
-    if (room_member && room_member->IsConnected()) {
-        descriptor.socket = std::make_shared<Network::ProxySocket>();
-    } else {
-        descriptor.socket = std::make_shared<Network::Socket>();
-    }
-
-    descriptor.socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
-    descriptor.is_connection_based = IsConnectionBased(type);
-
-    if (Settings::values.airplane_mode.GetValue() && descriptor.is_connection_based) {
-        LOG_ERROR(Service, "Airplane mode is enabled, cannot create socket");
-        return {-1, Errno::NOTCONN};
-    }
 
     return {fd, Errno::SUCCESS};
 }
@@ -595,31 +600,39 @@ std::pair<s32, Errno> BSD_USA::PollImpl(std::vector<u8>& write_buffer, std::span
         return {-1, Errno::INVAL};
     }
 
-    for (PollFD& pollfd : fds) {
-        ASSERT(False(pollfd.revents));
+    // The copies keep the sockets alive while Network::Poll waits, even if another bsd thread
+    // closes one of them meanwhile
+    std::vector<std::shared_ptr<Network::SocketBase>> sockets(fds.size());
+    {
+        std::scoped_lock lock{file_descriptors_mutex};
+        for (size_t i = 0; i < fds.size(); ++i) {
+            PollFD& pollfd = fds[i];
+            ASSERT(False(pollfd.revents));
 
-        if (pollfd.fd > static_cast<s32>(MAX_FD) || pollfd.fd < 0) {
-            LOG_ERROR(Service, "File descriptor handle={} is invalid", pollfd.fd);
-            pollfd.revents = PollEvents{};
-            return {0, Errno::SUCCESS};
-        }
+            if (pollfd.fd >= static_cast<s32>(MAX_FD) || pollfd.fd < 0) {
+                LOG_ERROR(Service, "File descriptor handle={} is invalid", pollfd.fd);
+                pollfd.revents = PollEvents{};
+                return {0, Errno::SUCCESS};
+            }
 
-        const std::optional<FileDescriptor>& descriptor = file_descriptors[pollfd.fd];
-        if (!descriptor) {
-            LOG_TRACE(Service, "File descriptor handle={} is not allocated", pollfd.fd);
-            pollfd.revents = PollEvents::Nval;
-            return {0, Errno::SUCCESS};
+            const std::optional<FileDescriptor>& descriptor = file_descriptors[pollfd.fd];
+            if (!descriptor) {
+                LOG_TRACE(Service, "File descriptor handle={} is not allocated", pollfd.fd);
+                pollfd.revents = PollEvents::Nval;
+                return {0, Errno::SUCCESS};
+            }
+            sockets[i] = descriptor->socket;
         }
     }
 
     std::vector<Network::PollFD> host_pollfds(fds.size());
-    std::transform(fds.begin(), fds.end(), host_pollfds.begin(), [](PollFD pollfd) {
-        Network::PollFD result;
-        result.socket = file_descriptors[pollfd.fd]->socket.get();
-        result.events = Translate(pollfd.events);
-        result.revents = Network::PollEvents{};
-        return result;
-    });
+    for (size_t i = 0; i < fds.size(); ++i) {
+        host_pollfds[i] = Network::PollFD{
+            .socket = sockets[i].get(),
+            .events = Translate(fds[i].events),
+            .revents = Network::PollEvents{},
+        };
+    }
 
     const auto result = Network::Poll(host_pollfds, timeout);
 
@@ -633,26 +646,30 @@ std::pair<s32, Errno> BSD_USA::PollImpl(std::vector<u8>& write_buffer, std::span
 }
 
 std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
 
-    const s32 new_fd = FindFreeFileDescriptorHandle();
-    if (new_fd < 0) {
-        LOG_ERROR(Service, "No more file descriptors available");
-        return {-1, Errno::MFILE};
-    }
-
-    FileDescriptor& descriptor = *file_descriptors[fd];
-    auto [result, bsd_errno] = descriptor.socket->Accept();
+    auto [result, bsd_errno] = descriptor->socket->Accept();
     if (bsd_errno != Network::Errno::SUCCESS) {
         return {-1, Translate(bsd_errno)};
     }
 
-    file_descriptors[new_fd] = FileDescriptor{};
-    FileDescriptor& new_descriptor = *file_descriptors[new_fd];
-    new_descriptor.socket = std::move(result.socket);
-    new_descriptor.is_connection_based = descriptor.is_connection_based;
+    // Accept may block, so the fd is picked afterwards, in the same critical section as the write
+    s32 new_fd;
+    {
+        std::scoped_lock lock{file_descriptors_mutex};
+        new_fd = FindFreeFileDescriptorHandle();
+        if (new_fd < 0) {
+            LOG_ERROR(Service, "No more file descriptors available");
+            return {-1, Errno::MFILE};
+        }
+        file_descriptors[new_fd] = FileDescriptor{
+            .socket = std::move(result.socket),
+            .is_connection_based = descriptor->is_connection_based,
+        };
+    }
 
     const SockAddrIn guest_addr_in = Translate(result.sockaddr_in);
     PutValue(write_buffer, guest_addr_in);
@@ -661,34 +678,28 @@ std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer)
 }
 
 Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
     ASSERT(addr.size() >= 16);
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
 
     auto addr_in = GetValue<SockAddrIn>(addr);
 
-    return Translate(file_descriptors[fd]->socket->Bind(Translate(addr_in)));
+    return Translate(descriptor->socket->Bind(Translate(addr_in)));
 }
 
 Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
 
     ASSERT(addr.size() >= 16);
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
 
     auto addr_in = GetValue<SockAddrIn>(addr);
 
-    const Errno result = Translate(file_descriptors[fd]->socket->Connect(Translate(addr_in)));
+    const Errno result = Translate(descriptor->socket->Connect(Translate(addr_in)));
 
     if (result == Errno::ISCONN) {
         LOG_DEBUG(Service, "returned ISCONN - socket already connected");
@@ -699,16 +710,12 @@ Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
 }
 
 Errno BSD_USA::GetPeerNameImpl(s32 fd, std::vector<u8>& write_buffer) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
 
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
-
-    const auto [addr_in, bsd_errno] = file_descriptors[fd]->socket->GetPeerName();
+    const auto [addr_in, bsd_errno] = descriptor->socket->GetPeerName();
     if (bsd_errno != Network::Errno::SUCCESS) {
         return Translate(bsd_errno);
     }
@@ -721,16 +728,12 @@ Errno BSD_USA::GetPeerNameImpl(s32 fd, std::vector<u8>& write_buffer) {
 }
 
 Errno BSD_USA::GetSockNameImpl(s32 fd, std::vector<u8>& write_buffer) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
 
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
-
-    const auto [addr_in, bsd_errno] = file_descriptors[fd]->socket->GetSockName();
+    const auto [addr_in, bsd_errno] = descriptor->socket->GetSockName();
     if (bsd_errno != Network::Errno::SUCCESS) {
         return Translate(bsd_errno);
     }
@@ -743,38 +746,34 @@ Errno BSD_USA::GetSockNameImpl(s32 fd, std::vector<u8>& write_buffer) {
 }
 
 Errno BSD_USA::ListenImpl(s32 fd, s32 backlog) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
-    return Translate(file_descriptors[fd]->socket->Listen(backlog));
+    return Translate(descriptor->socket->Listen(backlog));
 }
 
 std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return {-1, Errno::BADF};
-    }
-
-    FileDescriptor& descriptor = *file_descriptors[fd];
 
     switch (cmd) {
     case FcntlCmd::GETFL:
         ASSERT(arg == 0);
-        return {descriptor.flags, Errno::SUCCESS};
+        return {descriptor->flags, Errno::SUCCESS};
     case FcntlCmd::SETFL: {
         const bool enable = (arg & Network::FLAG_O_NONBLOCK) != 0;
-        const Errno bsd_errno = Translate(descriptor.socket->SetNonBlock(enable));
+        // Set the mode and the flags together, so SetDontWait never sees one without the other
+        std::scoped_lock lock{file_descriptors_mutex};
+        const Errno bsd_errno = Translate(descriptor->socket->SetNonBlock(enable));
         if (bsd_errno != Errno::SUCCESS) {
             return {-1, bsd_errno};
         }
-        descriptor.flags = arg;
+        if (auto& entry = file_descriptors[fd]; entry && entry->socket == descriptor->socket) {
+            entry->flags = arg;
+        }
         return {0, Errno::SUCCESS};
     }
     default:
@@ -784,11 +783,8 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
 }
 
 Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8>& optval) {
-    if (!IsFileDescriptorValid(fd)) {
-        return Errno::BADF;
-    }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
 
@@ -797,7 +793,7 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         return Errno::SUCCESS;
     }
 
-    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
+    Network::SocketBase* const socket = descriptor->socket.get();
 
     switch (optname) {
     case OptName::ERROR_: {
@@ -819,11 +815,8 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
 }
 
 Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<const u8> optval) {
-    if (!IsFileDescriptorValid(fd)) {
-        return Errno::BADF;
-    }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
 
@@ -832,7 +825,7 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         return Errno::SUCCESS;
     }
 
-    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
+    Network::SocketBase* const socket = descriptor->socket.get();
 
     if (optname == OptName::LINGER) {
         ASSERT(optval.size() == sizeof(Linger));
@@ -873,39 +866,30 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
 }
 
 Errno BSD_USA::ShutdownImpl(s32 fd, s32 how) {
-    if (!IsFileDescriptorValid(fd)) {
-        return Errno::BADF;
-    }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return Errno::BADF;
     }
     const Network::ShutdownHow host_how = Translate(static_cast<ShutdownHow>(how));
-    return Translate(file_descriptors[fd]->socket->Shutdown(host_how));
+    return Translate(descriptor->socket->Shutdown(host_how));
 }
 
 std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& message) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
 
-    FileDescriptor& descriptor = *file_descriptors[fd];
-
     // Apply flags
     using Network::FLAG_MSG_DONTWAIT;
-    using Network::FLAG_O_NONBLOCK;
-    if ((flags & FLAG_MSG_DONTWAIT) != 0) {
-        flags &= ~FLAG_MSG_DONTWAIT;
-        if ((descriptor.flags & FLAG_O_NONBLOCK) == 0) {
-            descriptor.socket->SetNonBlock(true);
-        }
-    }
+    const bool dont_wait = (flags & FLAG_MSG_DONTWAIT) != 0 && SetDontWait(fd, *descriptor, true);
+    flags &= ~FLAG_MSG_DONTWAIT;
 
-    const auto [ret, bsd_errno] = Translate(descriptor.socket->Recv(flags, message));
+    const auto [ret, bsd_errno] = Translate(descriptor->socket->Recv(flags, message));
 
     // Restore original state
-    if ((descriptor.flags & FLAG_O_NONBLOCK) == 0) {
-        descriptor.socket->SetNonBlock(false);
+    if (dont_wait) {
+        SetDontWait(fd, *descriptor, false);
     }
 
     return {ret, bsd_errno};
@@ -913,15 +897,14 @@ std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& mess
 
 std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& message,
                                         std::vector<u8>& addr) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
 
-    FileDescriptor& descriptor = *file_descriptors[fd];
-
     Network::SockAddrIn addr_in{};
     Network::SockAddrIn* p_addr_in = nullptr;
-    if (descriptor.is_connection_based) {
+    if (descriptor->is_connection_based) {
         // Connection based file descriptors (e.g. TCP) zero addr
         addr.clear();
     } else {
@@ -930,19 +913,15 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
 
     // Apply flags
     using Network::FLAG_MSG_DONTWAIT;
-    using Network::FLAG_O_NONBLOCK;
-    if ((flags & FLAG_MSG_DONTWAIT) != 0) {
-        flags &= ~FLAG_MSG_DONTWAIT;
-        if ((descriptor.flags & FLAG_O_NONBLOCK) == 0) {
-            descriptor.socket->SetNonBlock(true);
-        }
-    }
+    const bool dont_wait = (flags & FLAG_MSG_DONTWAIT) != 0 && SetDontWait(fd, *descriptor, true);
+    flags &= ~FLAG_MSG_DONTWAIT;
 
-    const auto [ret, bsd_errno] = Translate(descriptor.socket->RecvFrom(flags, message, p_addr_in));
+    const auto [ret, bsd_errno] =
+        Translate(descriptor->socket->RecvFrom(flags, message, p_addr_in));
 
     // Restore original state
-    if ((descriptor.flags & FLAG_O_NONBLOCK) == 0) {
-        descriptor.socket->SetNonBlock(false);
+    if (dont_wait) {
+        SetDontWait(fd, *descriptor, false);
     }
 
     if (p_addr_in) {
@@ -959,23 +938,17 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
 }
 
 std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> message) {
-    if (!IsFileDescriptorValid(fd)) {
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return {-1, Errno::BADF};
-    }
-    return Translate(file_descriptors[fd]->socket->Send(message, flags));
+    return Translate(descriptor->socket->Send(message, flags));
 }
 
 std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
                                       std::span<const u8> addr) {
-    if (!IsFileDescriptorValid(fd)) {
-        return {-1, Errno::BADF};
-    }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
+    const auto descriptor = CopyDescriptor(fd);
+    if (!descriptor) {
         return {-1, Errno::BADF};
     }
 
@@ -988,31 +961,33 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         p_addr_in = &addr_in;
     }
 
-    return Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    return Translate(descriptor->socket->SendTo(flags, message, p_addr_in));
 }
 
 Errno BSD_USA::CloseImpl(s32 fd) {
-    if (!IsFileDescriptorValid(fd)) {
-        return Errno::BADF;
-    }
-    if (!file_descriptors[fd]->socket) {
-        LOG_WARNING(Service, "Uninitialized socket");
-        return Errno::BADF;
-    }
-
-    const Errno bsd_errno = Translate(file_descriptors[fd]->socket->Close());
-    if (bsd_errno != Errno::SUCCESS) {
-        return bsd_errno;
+    std::shared_ptr<Network::SocketBase> socket;
+    {
+        // Free the slot first, so of two threads closing the same fd only one closes the socket.
+        // Like POSIX close(), the fd is released even if closing the socket fails.
+        std::scoped_lock lock{file_descriptors_mutex};
+        if (!IsFileDescriptorValid(fd)) {
+            return Errno::BADF;
+        }
+        if (!file_descriptors[fd]->socket) {
+            LOG_WARNING(Service, "Uninitialized socket");
+            return Errno::BADF;
+        }
+        socket = std::move(file_descriptors[fd]->socket);
+        file_descriptors[fd].reset();
     }
 
     LOG_INFO(Service, "Close socket fd={}", fd);
-
-    file_descriptors[fd].reset();
-    return bsd_errno;
+    return Translate(socket->Close());
 }
 
 std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
-    if (!IsFileDescriptorValid(fd)) {
+    std::scoped_lock lock{file_descriptors_mutex};
+    if (!IsFileDescriptorValid(fd) || !file_descriptors[fd]->socket) {
         return Errno::BADF;
     }
 
@@ -1031,6 +1006,16 @@ std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
 }
 
 std::optional<std::shared_ptr<Network::SocketBase>> BSD_USA::GetSocket(s32 fd) {
+    if (auto descriptor = CopyDescriptor(fd)) {
+        return std::move(descriptor->socket);
+    }
+    return std::nullopt;
+}
+
+std::optional<BSD_USA::FileDescriptor> BSD_USA::CopyDescriptor(s32 fd) {
+    // The copy holds a reference to the socket, so a close on another bsd thread cannot destroy
+    // it while the caller uses it
+    std::scoped_lock lock{file_descriptors_mutex};
     if (!IsFileDescriptorValid(fd)) {
         return std::nullopt;
     }
@@ -1038,7 +1023,7 @@ std::optional<std::shared_ptr<Network::SocketBase>> BSD_USA::GetSocket(s32 fd) {
         LOG_WARNING(Service, "Uninitialized socket");
         return std::nullopt;
     }
-    return file_descriptors[fd]->socket;
+    return file_descriptors[fd];
 }
 
 s32 BSD_USA::FindFreeFileDescriptorHandle() noexcept {
@@ -1050,8 +1035,21 @@ s32 BSD_USA::FindFreeFileDescriptorHandle() noexcept {
     return -1;
 }
 
+bool BSD_USA::SetDontWait(s32 fd, const FileDescriptor& descriptor, bool enable) {
+    // Read the current flags, not the copy: fcntl may have changed them during the receive
+    std::scoped_lock lock{file_descriptors_mutex};
+    const auto& entry = file_descriptors[fd];
+    const s32 current_flags =
+        entry && entry->socket == descriptor.socket ? entry->flags : descriptor.flags;
+    if ((current_flags & Network::FLAG_O_NONBLOCK) != 0) {
+        return false;
+    }
+    descriptor.socket->SetNonBlock(enable);
+    return true;
+}
+
 bool BSD_USA::IsFileDescriptorValid(s32 fd) const noexcept {
-    if (fd > static_cast<s32>(MAX_FD) || fd < 0) {
+    if (fd >= static_cast<s32>(MAX_FD) || fd < 0) {
         LOG_ERROR(Service, "Invalid file descriptor handle={}", fd);
         return false;
     }
@@ -1071,12 +1069,45 @@ void BSD_USA::BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const 
 }
 
 void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
-    for (auto& optional_descriptor : file_descriptors) {
-        if (!optional_descriptor.has_value()) {
-            continue;
+    // Runs on the room thread. The copies keep each socket alive if a bsd thread closes it, so
+    // the bsd threads do not wait for the decompression below. Only sockets that accept the
+    // packet are collected, so an unwanted packet is never decompressed.
+    std::array<std::shared_ptr<Network::SocketBase>, MAX_FD> sockets{};
+    size_t num_sockets = 0;
+    {
+        std::scoped_lock lock{file_descriptors_mutex};
+        for (const auto& descriptor : file_descriptors) {
+            if (!descriptor.has_value() || !descriptor->socket) {
+                continue;
+            }
+            // A duplicated fd shares its socket, which must still get each packet only once
+            const auto sockets_end = sockets.begin() + num_sockets;
+            if (std::find(sockets.begin(), sockets_end, descriptor->socket) == sockets_end &&
+                descriptor->socket->AcceptsProxyPacket(packet)) {
+                sockets[num_sockets++] = descriptor->socket;
+            }
         }
-        FileDescriptor& descriptor = *optional_descriptor;
-        descriptor.socket.get()->HandleProxyPacket(packet);
+    }
+    if (num_sockets == 0) {
+        return;
+    }
+
+    // Decompress once for all sockets that share the port. The room does not check the frame, so
+    // drop a malformed or oversized one instead of throwing on the room thread.
+    auto data = Common::Compression::TryDecompressDataZSTD(packet.data, MAX_ROOM_PACKET_SIZE);
+    if (!data) {
+        LOG_WARNING(Service, "Dropped a room packet with an invalid or oversized payload");
+        return;
+    }
+    const Network::ProxyPacket decompressed{
+        .local_endpoint = packet.local_endpoint,
+        .remote_endpoint = packet.remote_endpoint,
+        .protocol = packet.protocol,
+        .broadcast = packet.broadcast,
+        .data = std::move(*data),
+    };
+    for (size_t i = 0; i < num_sockets; ++i) {
+        sockets[i]->HandleProxyPacket(decompressed);
     }
 }
 
@@ -1140,18 +1171,27 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
 
     RegisterHandlers(functions);
 
+    std::scoped_lock lock{proxy_binding_mutex};
+    if (proxy_binding_count++ != 0) {
+        return;
+    }
     if (auto room_member = Network::GetRoomMember().lock()) {
-        proxy_packet_received = room_member->BindOnProxyPacketReceived(
-            [this](const Network::ProxyPacket& packet) { OnProxyPacketReceived(packet); });
+        proxy_packet_received =
+            room_member->BindOnProxyPacketReceived(&BSD_USA::OnProxyPacketReceived);
     } else {
         LOG_ERROR(Service, "Network isn't initialized");
     }
 }
 
 BSD_USA::~BSD_USA() {
+    std::scoped_lock lock{proxy_binding_mutex};
+    if (--proxy_binding_count != 0) {
+        return;
+    }
     if (auto room_member = Network::GetRoomMember().lock()) {
         room_member->Unbind(proxy_packet_received);
     }
+    proxy_packet_received.reset();
 }
 
 std::unique_lock<std::mutex> BSD_USA::LockService() noexcept {
