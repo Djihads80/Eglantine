@@ -55,6 +55,7 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -326,6 +327,45 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     return true;
 }
 
+namespace {
+// EDEN_NX2_DIAG*: what the draw being prepared is (set by Draw/DrawIndirect, read by PrepareDraw).
+struct DiagDraw {
+    const char* kind{"draw"};
+    u32 vertices{};
+    u32 instances{};
+};
+thread_local DiagDraw g_diag_draw;
+
+u64 DiagShader(const Tegra::Engines::Maxwell3D& maxwell3d, size_t stage) {
+    const auto& regs = maxwell3d.regs;
+    return (u64{regs.pipelines[stage].reserved[0] & 0xff} << 32) | regs.pipelines[stage].reserved[1];
+}
+
+bool DiagAblated(const Tegra::Engines::Maxwell3D& maxwell3d) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    return diag.Ablated('v', DiagShader(maxwell3d, 1)) || diag.Ablated('p', DiagShader(maxwell3d, 5));
+}
+
+void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, const char* outcome, bool mesh) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    const u64 vs = DiagShader(maxwell3d, 1);
+    const u64 ps = DiagShader(maxwell3d, 5);
+    if (VideoCommon::Nx2Diag::CountersEnabled()) {
+        diag.Note(false, vs, ps, outcome, g_diag_draw.instances, g_diag_draw.vertices);
+    }
+    if (diag.Capturing()) {
+        const auto& regs = maxwell3d.regs;
+        diag.Row(fmt::format(
+            "{}\t{}\t{:#x}\t{:#x}\t{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}",
+            diag.NextSeq(), g_diag_draw.kind, vs, ps, outcome, g_diag_draw.vertices,
+            g_diag_draw.instances, static_cast<u32>(maxwell3d.draw_manager.draw_state.topology),
+            regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
+            static_cast<u32>(regs.rt[0].format), regs.zeta_enable, regs.blend.enable[0],
+            regs.color_mask[0].raw, mesh ? "mesh" : ""));
+    }
+}
+} // namespace
+
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
@@ -347,7 +387,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         gpu_memory->FlushCaching();
     }
 
+    const char* diag_outcome = "drawn";
     const auto report_failure = [&](std::string_view reason) {
+        diag_outcome = reason == "no pipeline" ? pipeline_cache.GraphicsMissReason()
+                       : reason == "configure failed" ? "configure-failed" : "mesh-disabled";
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
@@ -355,6 +398,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
             LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
+        }
+    };
+    SCOPE_EXIT {
+        if (VideoCommon::Nx2Diag::Active()) {
+            DiagRecordDraw(*maxwell3d, diag_outcome, mesh_draw);
         }
     };
     GraphicsPipeline* const pipeline{[&] {
@@ -658,6 +706,16 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         if (std::find(skip_list.begin(), skip_list.end(), vs) != skip_list.end()) return;
     }
+    if (VideoCommon::Nx2Diag::Active()) {
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        g_diag_draw = {is_indexed ? "indexed" : "draw",
+                       is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
+                       instance_count};
+        if (VideoCommon::Nx2Diag::Ablates() && DiagAblated(*maxwell3d)) {
+            DiagRecordDraw(*maxwell3d, "ablated", false);
+            return;
+        }
+    }
     // EDEN_NX2_RT_TRACE: log the first draw to every distinct colour target (debug aid).
     if (static const bool trace = std::getenv("EDEN_NX2_RT_TRACE") != nullptr; trace) {
         static std::set<std::tuple<GPUVAddr, u32, u32, u64, u64>> seen;
@@ -713,6 +771,13 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
 void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     const auto& params = maxwell3d->draw_manager.indirect_state;
+    if (VideoCommon::Nx2Diag::Active()) {
+        g_diag_draw = {"indirect", static_cast<u32>(params.max_draw_counts), 0};
+        if (VideoCommon::Nx2Diag::Ablates() && DiagAblated(*maxwell3d)) {
+            DiagRecordDraw(*maxwell3d, "ablated", false);
+            return;
+        }
+    }
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
         if (mesh_draw) {
@@ -1389,6 +1454,9 @@ void RasterizerVulkan::FlushCommands() {
 
 void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
+    if (VideoCommon::Nx2Diag::Active()) {
+        VideoCommon::Nx2Diag::Diagnostics::Get().TickFrame();
+    }
     pipeline_cache.TickFrame();
     guest_descriptor_queue.TickFrame();
     compute_pass_descriptor_queue.TickFrame();
