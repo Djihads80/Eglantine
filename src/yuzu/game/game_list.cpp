@@ -487,9 +487,17 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
     QAction* convert_nup = nullptr;
+    QAction* extract_nup = nullptr;
+    QAction* edit_nup = nullptr;
     if (FileSys::Nup::DumpRootFromMain(path)) {
         convert_nup = context_menu.addAction(tr("Convert to NUP..."));
         convert_nup->setEnabled(!nup_conversion_running);
+    } else if (QString::fromStdString(path).endsWith(QStringLiteral(".nup"),
+                                                     Qt::CaseInsensitive)) {
+        extract_nup = context_menu.addAction(tr("Extract NUP..."));
+        extract_nup->setEnabled(!nup_conversion_running);
+        edit_nup = context_menu.addAction(tr("Edit NUP Metadata..."));
+        edit_nup->setEnabled(!nup_conversion_running);
     }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
@@ -574,6 +582,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     if (convert_nup) {
         connect(convert_nup, &QAction::triggered, this,
                 [this, path]() { emit ConvertToNupRequested(path); });
+    }
+    if (extract_nup) {
+        connect(extract_nup, &QAction::triggered, this,
+                [this, path]() { emit ExtractNupRequested(path); });
+    }
+    if (edit_nup) {
+        connect(edit_nup, &QAction::triggered, this,
+                [this, path]() { emit EditNupMetadataRequested(path); });
     }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {

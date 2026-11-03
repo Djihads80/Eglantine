@@ -225,6 +225,10 @@ NupMetadataDialog::NupMetadataDialog(const std::filesystem::path& source,
     name_edit->setPlaceholderText(tr("Name shown in the game list"));
     name_edit->setClearButtonEnabled(true);
 
+    publisher_edit = new QLineEdit(QString::fromStdString(detected.publisher));
+    publisher_edit->setPlaceholderText(tr("Publisher shown in the game list"));
+    publisher_edit->setClearButtonEnabled(true);
+
     version_auto = new QRadioButton;
     if (detected.display_version.empty()) {
         version_auto->setText(tr("Auto-detect (nothing found in the dump)"));
@@ -252,6 +256,7 @@ NupMetadataDialog::NupMetadataDialog(const std::filesystem::path& source,
     form->setVerticalSpacing(14);
     form->addRow(tr("Icon"), icon_row);
     form->addRow(tr("Name"), name_edit);
+    form->addRow(tr("Publisher"), publisher_edit);
     form->addRow(tr("Version"), version_box);
 
     auto* paths = new QLabel(tr("<b>Source</b><br>%1<br><b>Target</b><br>%2")
@@ -305,6 +310,10 @@ FileSys::Nup::Metadata NupMetadataDialog::Metadata() const {
     // Only what differs from the dump is an override.
     if (const auto name = name_edit->text().trimmed().toStdString(); name != detected.title_name) {
         result.title_name = name;
+    }
+    if (const auto publisher = publisher_edit->text().trimmed().toStdString();
+        publisher != detected.publisher) {
+        result.publisher = publisher;
     }
     if (!custom_icon.isEmpty()) {
         result.icon.assign(custom_icon.begin(), custom_icon.end());
@@ -482,4 +491,158 @@ void NupProgressDialog::reject() {
         return;
     }
     QDialog::reject();
+}
+
+NupEditDialog::NupEditDialog(const std::filesystem::path& archive, QWidget* parent)
+    : QDialog(parent), current(FileSys::Nup::ProbeNupMetadata(archive)) {
+    setWindowTitle(tr("Edit NUP Metadata"));
+    setMinimumWidth(520);
+
+    icon_preview = new IconDropZone(PreviewSize);
+    connect(icon_preview, &IconDropZone::Clicked, this, &NupEditDialog::ChooseIcon);
+    connect(icon_preview, &IconDropZone::FileDropped, this, &NupEditDialog::SetIconFromFile);
+    icon_hint = new QLabel;
+    icon_hint->setWordWrap(true);
+    icon_hint->setEnabled(false);
+    auto* choose_icon = new QPushButton(tr("Choose Icon..."));
+    reset_icon = new QPushButton(tr("Use Current"));
+    clear_icon = new QPushButton(tr("Remove Icon"));
+    connect(choose_icon, &QPushButton::clicked, this, &NupEditDialog::ChooseIcon);
+    connect(reset_icon, &QPushButton::clicked, this, &NupEditDialog::ResetIcon);
+    connect(clear_icon, &QPushButton::clicked, this, &NupEditDialog::ClearIcon);
+
+    auto* icon_buttons = new QVBoxLayout;
+    icon_buttons->addWidget(choose_icon);
+    icon_buttons->addWidget(reset_icon);
+    icon_buttons->addWidget(clear_icon);
+    icon_buttons->addWidget(icon_hint);
+    icon_buttons->addStretch();
+    auto* icon_row = new QHBoxLayout;
+    icon_row->setSpacing(16);
+    icon_row->addWidget(icon_preview, 0, Qt::AlignTop);
+    icon_row->addLayout(icon_buttons, 1);
+
+    name_edit = new QLineEdit(QString::fromStdString(current.title_name));
+    name_edit->setPlaceholderText(tr("Name shown in the game list"));
+    name_edit->setClearButtonEnabled(true);
+
+    publisher_edit = new QLineEdit(QString::fromStdString(current.publisher));
+    publisher_edit->setPlaceholderText(tr("Publisher shown in the game list"));
+    publisher_edit->setClearButtonEnabled(true);
+
+    version_edit = new QLineEdit(QString::fromStdString(current.display_version));
+    version_edit->setPlaceholderText(tr("e.g. 1.2.0"));
+    version_edit->setClearButtonEnabled(true);
+
+    auto* form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setHorizontalSpacing(16);
+    form->setVerticalSpacing(14);
+    form->addRow(tr("Icon"), icon_row);
+    form->addRow(tr("Name"), name_edit);
+    form->addRow(tr("Publisher"), publisher_edit);
+    form->addRow(tr("Version"), version_edit);
+
+    auto* path_label = new QLabel(tr("<b>File</b><br>%1").arg(ToQString(archive).toHtmlEscaped()));
+    path_label->setTextFormat(Qt::RichText);
+    path_label->setWordWrap(true);
+    path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto* hint = new QLabel(tr("Empty fields remove that metadata. The change is written in place;"
+                               " game data is untouched."));
+    hint->setWordWrap(true);
+    hint->setEnabled(false);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(20, 20, 20, 16);
+    layout->setSpacing(14);
+    layout->addLayout(form);
+    layout->addWidget(path_label);
+    layout->addWidget(hint);
+    layout->addWidget(buttons);
+
+    UpdateIconPreview();
+}
+
+NupEditDialog::~NupEditDialog() = default;
+
+FileSys::Nup::MetadataEdit NupEditDialog::Edit() const {
+    FileSys::Nup::MetadataEdit edit;
+    if (remove_icon) {
+        edit.icon = std::vector<u8>{};
+    } else if (!custom_icon.isEmpty()) {
+        edit.icon = std::vector<u8>(custom_icon.begin(), custom_icon.end());
+    }
+    if (const auto name = name_edit->text().trimmed().toStdString(); name != current.title_name) {
+        edit.title_name = name;
+    }
+    if (const auto publisher = publisher_edit->text().trimmed().toStdString();
+        publisher != current.publisher) {
+        edit.publisher = publisher;
+    }
+    if (const auto version = version_edit->text().trimmed().toStdString();
+        version != current.display_version) {
+        edit.display_version = version;
+    }
+    return edit;
+}
+
+QString NupEditDialog::DisplayName() const {
+    return name_edit->text().trimmed();
+}
+
+QPixmap NupEditDialog::CurrentIcon() const {
+    return current_icon;
+}
+
+void NupEditDialog::ChooseIcon() {
+    const auto path = QFileDialog::getOpenFileName(
+        this, tr("Choose Icon"), {}, tr("Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"));
+    if (!path.isEmpty()) {
+        SetIconFromFile(path);
+    }
+}
+
+void NupEditDialog::SetIconFromFile(const QString& path) {
+    const auto encoded = EncodeIcon(path);
+    if (encoded.isEmpty()) {
+        icon_hint->setText(tr("That file could not be read as an image."));
+        return;
+    }
+    custom_icon = encoded;
+    remove_icon = false;
+    UpdateIconPreview();
+}
+
+void NupEditDialog::ResetIcon() {
+    custom_icon.clear();
+    remove_icon = false;
+    UpdateIconPreview();
+}
+
+void NupEditDialog::ClearIcon() {
+    custom_icon.clear();
+    remove_icon = true;
+    UpdateIconPreview();
+}
+
+void NupEditDialog::UpdateIconPreview() {
+    QPixmap pixmap;
+    if (remove_icon) {
+        icon_hint->setText(tr("Icon will be removed."));
+    } else if (!custom_icon.isEmpty()) {
+        pixmap.loadFromData(custom_icon);
+        icon_hint->setText(tr("Custom icon, stored as %1x%1 JPEG.").arg(IconSize));
+    } else if (!current.icon.empty()) {
+        pixmap = PixmapFromBytes(current.icon);
+        icon_hint->setText(tr("Current icon in the NUP."));
+    } else {
+        icon_hint->setText(tr("No icon in the NUP. Add one, or it will have none."));
+    }
+    current_icon = pixmap;
+    icon_preview->SetIcon(pixmap);
 }

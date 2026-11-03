@@ -78,10 +78,43 @@ private:
     QLabel* icon_hint;
     QPushButton* reset_icon;
     QLineEdit* name_edit;
+    QLineEdit* publisher_edit;
     QRadioButton* version_auto;
     QRadioButton* version_manual;
     QLineEdit* version_edit;
     QCheckBox* low_storage;
+};
+
+// Edits the default-language metadata of an existing NUP in place.
+class NupEditDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit NupEditDialog(const std::filesystem::path& archive, QWidget* parent = nullptr);
+    ~NupEditDialog() override;
+
+    FileSys::Nup::MetadataEdit Edit() const;
+    QString DisplayName() const;
+    QPixmap CurrentIcon() const;
+
+private:
+    void ChooseIcon();
+    void SetIconFromFile(const QString& path);
+    void ResetIcon();
+    void ClearIcon();
+    void UpdateIconPreview();
+
+    FileSys::Nup::Metadata current;
+    QByteArray custom_icon;
+    bool remove_icon = false;
+    QPixmap current_icon;
+
+    IconDropZone* icon_preview;
+    QLabel* icon_hint;
+    QPushButton* reset_icon;
+    QPushButton* clear_icon;
+    QLineEdit* name_edit;
+    QLineEdit* publisher_edit;
+    QLineEdit* version_edit;
 };
 
 // Shown while a conversion runs. The bar spans the dialog; the labels show what is being
