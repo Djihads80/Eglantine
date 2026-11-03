@@ -899,11 +899,11 @@ void EmitX64::EmitVectorCountLeadingZeros16(EmitContext& ctx, IR::Inst* inst) {
         auto const tmp0 = ctx.reg_alloc.UseScratchXmm(code, args[0]);
         auto const tmp1 = ctx.reg_alloc.ScratchXmm(code);
         // 11-latency: unpack 16-bit(128-bit) XMM into 32-bit(256-bit) YMM vector
-        // then just lzcnt that, pack it back (unsigned) to 16-bit
+        // then just lzcnt that, pack both 128-bit halves back (unsigned) to 16-bit
         // then subtract 16-bit cuz of the zext32
         /*4*/ code.vpmovzxwd(tmp0.cvt256(), tmp0);
         /*4*/ code.vplzcntd(tmp0.cvt256(), tmp0.cvt256());
-        /*1*/ code.vpxor(tmp1, tmp1, tmp1);
+        /*3*/ code.vextracti128(tmp1, tmp0.cvt256(), 1);
         /*1*/ code.vpackusdw(tmp0, tmp0, tmp1);
         /*1*/ code.vpaddw(tmp0, tmp0, code.BConst<16>(xword, 65520));
         /*4*/ code.vzeroupper();
