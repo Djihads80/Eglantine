@@ -95,6 +95,19 @@ public:
         }
     }
 
+    // The shader dump's key for the program at that address, so draw lists and dumps from different
+    // runs can be matched (addresses change between runs, the key is a hash of the code).
+    void RegisterProgram(u64 address, u64 key) {
+        std::scoped_lock lock{mutex};
+        program_keys[address] = key;
+    }
+
+    u64 ProgramKey(u64 address) {
+        std::scoped_lock lock{mutex};
+        const auto it = program_keys.find(address);
+        return it == program_keys.end() ? 0 : it->second;
+    }
+
     bool Capturing() const {
         return capturing;
     }
@@ -119,7 +132,7 @@ public:
             const auto path = dir / ("draw-list-" + std::to_string(next_capture++) + ".tsv");
             if (std::ofstream out{path}) {
                 out << "seq\tkind\tvs\tps\toutcome\tvertices\tinstances\ttopology\trt0\twidth\theight\t"
-                       "format\tzeta\tblend\tcolor_mask\textra\n"
+                       "format\tzeta\tblend\tcolor_mask\textra\tvs_key\tps_key\n"
                     << rows.str();
                 LOG_INFO(HW_GPU, "diag: wrote {} ({} rows)", path.string(), seq);
             } else {
@@ -190,6 +203,7 @@ private:
     std::mutex mutex;
     std::map<std::tuple<bool, u64, u64, std::string>, Count> counts;
     std::map<std::pair<bool, std::string>, u64> window;
+    std::map<u64, u64> program_keys;
     std::chrono::steady_clock::time_point last_summary{std::chrono::steady_clock::now()};
     std::set<std::pair<char, u64>> ablated;
     std::filesystem::file_time_type ablate_stamp{};

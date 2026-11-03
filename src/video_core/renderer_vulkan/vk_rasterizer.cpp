@@ -271,12 +271,12 @@ void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, const char* outcome, b
     if (diag.Capturing()) {
         const auto& regs = maxwell3d.regs;
         diag.Row(fmt::format(
-            "{}\t{}\t{:#x}\t{:#x}\t{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}",
+            "{}\t{}\t{:#x}\t{:#x}\t{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{}\t{:#x}\t{}\t{:016x}\t{:016x}",
             diag.NextSeq(), g_diag_draw.kind, vs, ps, outcome, g_diag_draw.vertices,
             g_diag_draw.instances, static_cast<u32>(maxwell3d.draw_manager.draw_state.topology),
             regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
             static_cast<u32>(regs.rt[0].format), regs.zeta_enable, regs.blend.enable[0],
-            regs.color_mask[0].raw, mesh ? "mesh" : ""));
+            regs.color_mask[0].raw, mesh ? "mesh" : "", diag.ProgramKey(vs), diag.ProgramKey(ps)));
     }
 }
 } // namespace
