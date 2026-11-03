@@ -137,6 +137,8 @@ enum MetaType : u16 {
     MetaIcon = 0x0003,
     MetaDisplayVersion = 0x0004,
     MetaTitleName = 0x0005,
+    MetaPublisher = 0x0006,
+    MetaSourceDump = 0x0008,
     MetaLocalizedTitles = 0x0009,
     MetaLocalizedIcons = 0x000A,
 };
@@ -619,6 +621,12 @@ bool NupContainer::ParseMeta(PackageInfo& package) {
             break;
         case MetaTitleName:
             package.title_name = std::string(reinterpret_cast<const char*>(payload), header.size);
+            break;
+        case MetaPublisher:
+            package.publisher = std::string(reinterpret_cast<const char*>(payload), header.size);
+            break;
+        case MetaSourceDump:
+            package.source_dump = std::string(reinterpret_cast<const char*>(payload), header.size);
             break;
         case MetaDisplayVersion:
             package.display_version =
