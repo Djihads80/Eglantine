@@ -475,6 +475,64 @@ TEST_CASE("A64: SQRSHL rounding right shift does not set QC", "[a64]") {
     CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
 }
 
+TEST_CASE("A64: SQRSHRN, SQRSHRUN, UQRSHRN (scalar)", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQRSHRN(B8, H0, 1);
+    code.SQRSHRN(H9, S1, 16);
+    code.SQRSHRN(S10, D2, 32);
+    code.SQRSHRUN(B11, H0, 8);
+    code.SQRSHRUN(H12, S1, 1);
+    code.UQRSHRN(B13, H0, 8);
+    code.UQRSHRN(S14, D1, 1);
+
+    jit.SetPC(0);
+    jit.SetVector(0, Vector{0x0000000000008180, 0xffffffffffffffff});
+    jit.SetVector(1, Vector{0x000000007fff8001, 0x0123456789abcdef});
+    jit.SetVector(2, Vector{0xffffffff80000001, 0x0000000000000000});
+    for (size_t i = 8; i <= 14; i++) {
+        jit.SetVector(i, Vector{0xffffffffffffffff, 0xffffffffffffffff});
+    }
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(8) == Vector{0x80, 0});
+    CHECK(jit.GetVector(9) == Vector{0x7fff, 0});
+    CHECK(jit.GetVector(10) == Vector{0, 0});
+    CHECK(jit.GetVector(11) == Vector{0, 0});
+    CHECK(jit.GetVector(12) == Vector{0xffff, 0});
+    CHECK(jit.GetVector(13) == Vector{0x82, 0});
+    CHECK(jit.GetVector(14) == Vector{0x3fffc001, 0});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == true);
+}
+
+TEST_CASE("A64: SQRSHRN (scalar) in range does not set QC", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQRSHRN(H15, S2, 16);
+
+    jit.SetPC(0);
+    jit.SetVector(2, Vector{0xffffffff80000001, 0x0000000000000000});
+    jit.SetVector(15, Vector{0xffffffffffffffff, 0xffffffffffffffff});
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(15) == Vector{0x8000, 0});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
+}
+
 TEST_CASE("A64: SQSHLU", "[a64]") {
     A64TestEnv env;
     A64::UserConfig jit_user_config{};
