@@ -1906,7 +1906,9 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     // The probe objects hold the archive open; release them before rewriting it so the
     // replace below never runs against an open handle.
     size_t target = 0;
-    std::optional<size_t> update;
+    // The newest update when it is not the target itself; NoUpdate otherwise.
+    constexpr size_t NoUpdate = std::numeric_limits<size_t>::max();
+    size_t update = NoUpdate;
     size_t package_total = 0;
     std::string cur_title;
     std::string cur_version;
@@ -1926,9 +1928,9 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
         }
         const auto& packages = nup.GetPackages();
         target = NupEditTargetIndex(packages);
-        update = NewestUpdateIndex(packages);
-        if (update && *update == target) {
-            update = std::nullopt;
+        update = NewestUpdateIndex(packages).value_or(NoUpdate);
+        if (update == target) {
+            update = NoUpdate;
         }
         package_total = packages.size();
         const auto& current = packages[target];
@@ -1937,7 +1939,7 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
         cur_publisher = current.publisher;
         cur_icon = current.icon;
         cur_update_version =
-            update ? packages[*update].display_version : current.display_version;
+            update != NoUpdate ? packages[update].display_version : current.display_version;
     }
     const auto same = [&](const std::optional<std::string>& wanted, const std::string& have) {
         return !wanted || *wanted == have;
@@ -2027,7 +2029,7 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
                 return fail(EditResult::IoError, "cannot read meta block");
             }
         }
-        if (i == target || (edit.display_version && update && i == *update)) {
+        if (i == target || (edit.display_version && update != NoUpdate && i == update)) {
             auto tlvs = ParseTlvs(block);
             if (i == target) {
                 if (edit.title_name) {
