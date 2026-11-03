@@ -382,9 +382,10 @@ void NupMetadataDialog::UpdateVersionEnabled() {
     }
 }
 
-NupProgressDialog::NupProgressDialog(const QString& title, const QPixmap& icon, QWidget* parent)
+NupProgressDialog::NupProgressDialog(const QString& operation, const QString& title,
+                                       const QPixmap& icon, QWidget* parent)
     : QDialog(parent, Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint) {
-    setWindowTitle(tr("Converting to NUP"));
+    setWindowTitle(operation);
     setModal(true);
     setMinimumWidth(480);
 
@@ -396,7 +397,7 @@ NupProgressDialog::NupProgressDialog(const QString& title, const QPixmap& icon, 
         icon_label->setPixmap(RoundedPreview(icon, 56));
         header->addWidget(icon_label);
     }
-    auto* title_label = new QLabel(title.isEmpty() ? tr("Converting to NUP") : title);
+    auto* title_label = new QLabel(title.isEmpty() ? operation : title);
     QFont font = title_label->font();
     font.setBold(true);
     font.setPointSizeF(font.pointSizeF() * 1.2);

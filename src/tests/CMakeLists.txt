@@ -18,7 +18,10 @@ add_executable(tests
     common/slot_vector.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
+    common/zstd_compression.cpp
     core/core_timing.cpp
+    core/ldn.cpp
+    core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
     core/priority_queue.cpp
     core/internal_network/network.cpp

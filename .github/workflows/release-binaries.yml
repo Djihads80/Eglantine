@@ -14,6 +14,9 @@ on:
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
+      # Test-only changes cannot change a binary: the build configures with BUILD_TESTING=OFF and
+      # YUZU_TESTS=OFF below, so a push that only touches src/tests has nothing to rebuild.
+      - "!src/tests/**"
       - "CMakeLists.txt"
       - "CMakeModules/**"
       - "externals/**"

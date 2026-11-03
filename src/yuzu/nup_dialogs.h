@@ -122,7 +122,8 @@ private:
 class NupProgressDialog : public QDialog {
     Q_OBJECT
 public:
-    NupProgressDialog(const QString& title, const QPixmap& icon, QWidget* parent = nullptr);
+    NupProgressDialog(const QString& operation, const QString& title, const QPixmap& icon,
+                      QWidget* parent = nullptr);
 
     void SetProgress(const FileSys::Nup::PackProgress& progress);
     void SetCancelling();

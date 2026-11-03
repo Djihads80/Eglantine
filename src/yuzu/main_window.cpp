@@ -4138,7 +4138,7 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
-    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    nup_progress = new NupProgressDialog(tr("Converting to NUP"), progress_title, progress_icon, this);
     connect(nup_progress, &NupProgressDialog::CancelRequested, this,
             [this, cancel = nup_cancel] {
                 cancel->store(true);
@@ -4246,7 +4246,7 @@ void MainWindow::OnGameListExtractNup(const std::string& game_path) {
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
-    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    nup_progress = new NupProgressDialog(tr("Extracting NUP"), progress_title, progress_icon, this);
     connect(nup_progress, &NupProgressDialog::CancelRequested, this,
             [this, cancel = nup_cancel] {
                 cancel->store(true);
