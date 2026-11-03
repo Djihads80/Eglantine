@@ -53,7 +53,11 @@ constexpr const char* kInstructions =
     "`timeline` (keep next_seq, pass it back as since_seq), `wait_for`, `summarize_since`; "
     "unimplemented commands and crashes arrive as events with backtraces. Debugging: memory "
     "(read/search/watch/scan, probes), threads/backtraces, IPC/SVC tracing, gpu_profile, "
-    "settings and debug knobs. State-changing tools need MCP writes (Tools > MCP Server > Allow "
+    "settings and debug knobs. To find what code touches memory or runs: breakpoint_add "
+    "(exec/read/write watchpoints through the emulator's GDB stub; hits are 'break' events with "
+    "backtraces). For rendering bugs: dump_set/dump_list/dump_read (shader and macro dumps). "
+    "For crashes: report_list/report_read (with reporting_services on). To measure what a "
+    "setting does: ab_test. State-changing tools need MCP writes (Tools > MCP Server > Allow "
     "Writes) and the control lease, granted automatically when no other agent holds it. Timing "
     "is not cycle-accurate: compare runs with tolerance.";
 
@@ -269,6 +273,40 @@ Server::Server(Core::System& system_, Host& host_, ServerConfig config_)
                 "timeline_export 'after', then compare_runs before/after and compare screenshots "
                 "and gpu_profile numbers. Report only differences that repeat.",
                 a.value("route", "to_gameplay"));
+        },
+    });
+    options.prompts.push_back({
+        .name = "find_writer",
+        .description = "Find the code that changes a value in the game's memory.",
+        .arguments = nlohmann::json::array(
+            {{{"name", "what"}, {"description", "The value, e.g. 'player health'"}, {"required", true}}}),
+        .render = [](const nlohmann::json& a) {
+            return fmt::format(
+                "Find which code changes {0}. 1) Locate it: scan_start with the current value, "
+                "change it in the game (act), scan_next, repeat until a few addresses remain; "
+                "confirm with watch_add. 2) Check debugger_status: if the GDB stub is not running, "
+                "settings_set use_gdbstub true, stop and boot the game again (route_run "
+                "'to_gameplay' if it exists) and find the address again (it can move). 3) "
+                "breakpoint_add type write on the address (mode log), make the game change it, "
+                "then wait_for kinds ['break'] or debugger_status recent_hits: report the writing "
+                "function (Module+offset and symbol), its callers, and the registers. 4) "
+                "breakpoint_remove all and debugger_detach when done.",
+                a.value("what", "the value"));
+        },
+    });
+    options.prompts.push_back({
+        .name = "render_bug",
+        .description = "Narrow down a rendering problem to shaders, validation errors or settings.",
+        .render = [](const nlohmann::json&) {
+            return std::string{
+                "Screenshot the problem. Then: 1) dump_set shaders true and spirv true, reach the "
+                "broken scene again, and dump_list since_ms_ago to see which shaders it compiled. "
+                "2) For Vulkan validation: settings_set renderer_debug true, stop and boot the "
+                "game again, reproduce, then summarize_since / timeline with source_prefix "
+                "'Render.Vulkan' for the validation messages that repeat. 3) ab_test the "
+                "graphics settings that could matter (e.g. disable_macro_jit, "
+                "disable_buffer_reorder, gpu accuracy) with a screenshot each, and report which "
+                "change the picture. Turn the debug settings back off afterwards."};
         },
     });
     options.bearer_token = config.bearer_token;
@@ -507,6 +545,25 @@ std::string Server::Start() {
             out["route"] = fmt::format("{} {}/{} {} {}", a.route, a.route_step, a.route_total,
                                        a.route_state, a.route_detail);
         }
+        // Debugger, A/B test and recent reports for the dashboard's lower panels (?extras=1,
+        // polled less often: the report listing reads directories).
+        if (req.get_param_value("extras") == "1") {
+            const auto run = [&](const char* tool, const nlohmann::json& args) -> nlohmann::json {
+                const Tool* t = registry.Find(tool);
+                if (!t) {
+                    return nullptr;
+                }
+                try {
+                    const auto r = t->handler(ctx, args);
+                    return r.structured ? *r.structured : nlohmann::json(nullptr);
+                } catch (const std::exception&) {
+                    return nullptr;
+                }
+            };
+            out["extras"] = {{"debugger", run("debugger_status", nlohmann::json::object())},
+                             {"ab_test", run("ab_test_status", nlohmann::json::object())},
+                             {"reports", run("report_list", {{"limit", 5}})}};
+        }
         res.set_content(out.dump(), "application/json");
     });
     http->Get("/screen.png", [=, this](const httplib::Request& req, httplib::Response& res) {
@@ -603,6 +660,9 @@ void Server::Stop() {
     RemoveTraceHooks();
     StopGameStateWork();
     StopMemoryWork();
+    StopAbTestWork();
+    // Leaves no breakpoints behind and lets a game the debugger paused run again.
+    StopDebuggerWork();
     std::error_code ec;
     std::filesystem::remove(DiscoveryPath(), ec);
     g_active_timeline.store(nullptr, std::memory_order_release);

@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/loader/loader.h"
@@ -100,11 +101,17 @@ ToolResult BootGame(ToolContext& ctx, const json& args) {
     if (ctx.timeline) {
         ctx.timeline->Push(EventKind::State, 0, "mcp", "boot requested: " + path);
     }
-    return ToolResult::Structured(
-        json{{"booted", path},
+    json out{{"booted", path},
              {"since_seq", since},
-             {"hint", "Use wait_for or timeline with since_seq to follow the boot; screenshot "
-                      "once frames are presented."}});
+             {"hint", "Use wait_for or timeline with since_seq to follow the boot; screenshot once "
+                      "frames are presented."}};
+    // With the GDB stub on, the game waits for a debugger before it runs: attach so it starts.
+    if (Settings::values.use_gdbstub.GetValue()) {
+        const std::string error = AttachDebuggerAfterBoot(ctx);
+        out["debugger"] = error.empty() ? "attached (the GDB stub is on; breakpoint_add works)"
+                                        : "not attached: " + error;
+    }
+    return ToolResult::Structured(std::move(out));
 }
 
 /// Shared handler for pause/resume/stop: calls the given Host action and logs a State event on

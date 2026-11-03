@@ -70,6 +70,13 @@ agent holds it, see `acquire_control`).
 | `watch_add`, `watch_list`, `watch_remove` | Values sampled every frame; changes become `watch` timeline events |
 | `scan_start`, `scan_next`, `scan_results` | Cheat-Engine-style search for an unknown address |
 | `ipc_trace`, `ipc_summary`, `svc_trace`, `list_services` | Runtime IPC/SVC tracing into the timeline, call summary, registered services |
+| `debugger_status`, `debugger_attach`, `debugger_detach` | The emulator's GDB stub as the MCP's debugger (the stub must be on when the game boots; `boot_game` attaches automatically then) |
+| `breakpoint_add` (W, L), `breakpoint_list`, `breakpoint_remove` (L) | Exec breakpoints and read/write/access watchpoints by address or `Module+0xoffset`; hits are `break` timeline events with registers and a backtrace (mode `log`), or leave the game paused (mode `stop`) |
+| `debugger_pause`, `debugger_step`, `debugger_continue` (L) | Pause through the debugger, single-step, resume |
+| `dump_set` (W, L), `dump_list`, `dump_read` | Shader (.ash), SPIR-V and macro dumps: turn on, list what was written, read part of a file |
+| `report_list`, `report_read` | Crash, svcBreak, unimplemented-function and other reports (with `reporting_services` on) |
+| `fs_access_log` | The FS access log a game writes (with `enable_fs_access_log` on before boot) |
+| `ab_test` (W, L), `ab_test_status`, `ab_test_stop` (L) | Measure 2-6 values of a setting with a route or perf sample each (reboots when the setting needs it) and restore it |
 | `unimplemented_commands` | Unimplemented service commands with counts, request words and the first caller's backtrace (also posted live as `unimpl` events) |
 | `gpu_profile` | NX2 GPU-thread profiler toggled live, per-thread zones and counters as JSON |
 | `perf_sample` | Frame pacing (fps, p95/p99 frame times, 1% low), a GPU profile of the same window and host CPU per thread, plus a baseline check or screenshot |

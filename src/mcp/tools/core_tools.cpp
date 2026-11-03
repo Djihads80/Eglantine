@@ -49,7 +49,7 @@ json FilterProperties() {
           {"items",
            {{"type", "string"},
             {"enum", {"log", "state", "input", "mark", "ipc", "svc", "unimpl", "watch", "crash",
-                      "frame"}}}},
+                      "frame", "break"}}}},
           {"description", "Event kinds to include (default: all)."}}},
         {"min_level",
          {{"type", "string"},
@@ -317,6 +317,9 @@ void RegisterTraceTools(ToolRegistry& registry);
 void RegisterSettingsTools(ToolRegistry& registry);
 void RegisterGameStateTools(ToolRegistry& registry);
 void RegisterTimelineTools(ToolRegistry& registry);
+void RegisterDebuggerTools(ToolRegistry& registry);
+void RegisterArtifactTools(ToolRegistry& registry);
+void RegisterAbTestTools(ToolRegistry& registry);
 
 void RegisterAllTools(ToolRegistry& registry) {
     RegisterTimelineTools(registry);
@@ -333,6 +336,9 @@ void RegisterAllTools(ToolRegistry& registry) {
     RegisterDebugTools(registry);
     RegisterControlTools(registry);
     RegisterActTools(registry);
+    RegisterDebuggerTools(registry);
+    RegisterArtifactTools(registry);
+    RegisterAbTestTools(registry);
 }
 
 } // namespace Mcp

@@ -52,6 +52,11 @@ std::string GameWaitScreen(ToolContext& ctx, const json& labels, std::chrono::mi
                            json& state);
 /// All saved probes of the running game with current values.
 json GameProbes(ToolContext& ctx);
+/// Runs the saved route `name` of the running game on the calling thread (same runner, checks
+/// and progress reporting as route_run). Returns {ok, results, elapsed_ms}, or null with `error`
+/// set when the route does not exist.
+json RunRouteForTool(ToolContext& ctx, const std::string& name, std::stop_token stop,
+                     std::string& error);
 // perf_tools.cpp
 /// perf_sample's measurement as JSON (for route steps that measure at a checkpoint).
 json RunPerfSample(ToolContext& ctx, const json& args);
@@ -101,5 +106,24 @@ u64 PresentedFrames();
 /// Waits until `frames` more frames are presented. Returns the number actually presented
 /// (fewer on timeout, e.g. when paused or loading).
 u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout);
+
+// game_state_tools.cpp
+/// Resolves "0x1234", "Module+0x10" or a pointer chain ("Module+0x10->0x8") to a guest address.
+/// Returns nullopt with error set.
+std::optional<u64> ResolveGuestAddress(ToolContext& ctx, const std::string& expr,
+                                       std::string& error);
+
+// abtest_tools.cpp
+/// Stops a running ab_test and waits for it (server shutdown: it uses the host).
+void StopAbTestWork();
+
+// debugger_tools.cpp
+/// Debugger state (attached, running/paused, breakpoints, recent hits) for status and dashboard.
+json DebuggerStatusJson();
+/// Removes breakpoints and detaches from the GDB stub (server shutdown).
+void StopDebuggerWork();
+/// After a boot with the GDB stub on: waits (up to 30 s) for the stub to listen and attaches,
+/// which lets the waiting game run. Returns an error message or "".
+std::string AttachDebuggerAfterBoot(ToolContext& ctx);
 
 } // namespace Mcp

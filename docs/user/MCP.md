@@ -12,6 +12,8 @@ The server is **off by default** and only listens on `127.0.0.1` (this PC).
 ## Turning it on
 
 - **Tools > MCP Server > Enabled** (remembered), or
+- **Configure > Debug**, under the GDB stub, where the port, Allow Writes and an optional token
+  are set too (changes apply when you press OK), or
 - start the emulator with `--mcp` (this run only). See [Command Line](./CommandLine.md).
 
 With the server on, agents can look at the emulator and boot, pause, resume and stop games. To let
@@ -64,6 +66,21 @@ checkpoint changes (a graphics fix or a different version), record the route aga
 
 Routes, screen labels and memory probes are stored per game under
 `<user folder>/config/mcp/` (see [Storage](./Storage.md)).
+
+## Debugging tools
+
+Agents can also use the emulator's own debugging features:
+
+- **Breakpoints and watchpoints** go through the GDB stub (Configure > Debug > Enable GDB Stub).
+  The stub has to be on when the game boots, and the game then waits until a debugger connects:
+  `boot_game` connects the MCP automatically, so it starts. Only one debugger can be connected at
+  a time, so turn the stub off again to use your own GDB. Each hit shows up in the dashboard and
+  the timeline with the registers and a backtrace.
+- **Shader and macro dumps**, **crash reports** (Enable Verbose Reporting Services) and the
+  **FS access log** are read from the files the emulator writes, so agents see what was written
+  without you sending files around.
+- **A/B tests** run a route or a measurement once per value of a setting and put the original
+  value back; the dashboard shows the results as they come in.
 
 ## Safety
 

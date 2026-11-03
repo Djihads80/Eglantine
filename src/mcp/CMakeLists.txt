@@ -21,8 +21,11 @@ add_library(mcp STATIC
     tool.h
     tool_registry.cpp
     tool_registry.h
+    tools/abtest_tools.cpp
     tools/act_tools.cpp
+    tools/artifact_tools.cpp
     tools/core_tools.cpp
+    tools/debugger_tools.cpp
     tools/emulation_tools.cpp
     tools/game_state_tools.cpp
     tools/input_tools.cpp

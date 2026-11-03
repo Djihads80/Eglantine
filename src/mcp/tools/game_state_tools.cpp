@@ -1510,6 +1510,15 @@ json RouteStepsSchema() {
 
 } // namespace
 
+std::optional<u64> ResolveGuestAddress(ToolContext& ctx, const std::string& expr,
+                                       std::string& error) {
+    if (!ctx.GameRunning()) {
+        error = "no game is running";
+        return std::nullopt;
+    }
+    return ResolveAddress(ctx, expr, error);
+}
+
 json GameScreenState(ToolContext& ctx, std::string& error) {
     return ScreenStateJson(ctx, error);
 }
@@ -1521,6 +1530,24 @@ std::string GameWaitScreen(ToolContext& ctx, const json& labels, milliseconds ti
 
 json GameProbes(ToolContext& ctx) {
     return ReadAllProbes(ctx, json::array());
+}
+
+json RunRouteForTool(ToolContext& ctx, const std::string& name, std::stop_token stop,
+                     std::string& error) {
+    const auto steps = LoadRouteSteps(ctx, json{{"name", name}}, error);
+    if (!steps) {
+        return nullptr;
+    }
+    if (!steps->is_array()) {
+        error = "route '" + name + "' has no step list (route_list)";
+        return nullptr;
+    }
+    const auto started = steady_clock::now();
+    json results = json::array();
+    const bool ok = ExecuteRoute(ctx, name, *steps, stop, results);
+    return json{{"ok", ok},
+                {"results", std::move(results)},
+                {"elapsed_ms", duration_cast<milliseconds>(steady_clock::now() - started).count()}};
 }
 
 // ---- screenshot baselines (visual regression checks) --------------------------------------

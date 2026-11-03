@@ -570,6 +570,10 @@ private:
     /// Destroys the server on a helper thread while pumping GUI events, since in-flight requests
     /// may be waiting on this thread. Blocks until it is gone.
     void StopMcpServer();
+    /// After the settings dialog: starts or stops the server, restarts it when the port or token
+    /// changed, and applies Allow Writes. Settings changed there win over the command line.
+    void ApplyMcpSettings(bool old_enabled, u16 old_port, const std::string& old_token,
+                          bool old_writes);
     /// Adds Tools > MCP Server (enable, writes, routes, dashboard and copy actions). Runs once.
     void SetupMcpMenu();
     /// Syncs the menu checkboxes and status text with the server state, without firing toggles.

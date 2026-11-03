@@ -648,6 +648,34 @@ void MainWindow::StopMcpServer() {
     mcp_stopping = false;
 }
 
+/// Applies MCP settings changed in the configuration dialog to the running server.
+void MainWindow::ApplyMcpSettings(bool old_enabled, u16 old_port, const std::string& old_token,
+                                  bool old_writes) {
+    const bool enabled = Settings::values.enable_mcp_server.GetValue();
+    const bool port_changed = Settings::values.mcp_port.GetValue() != old_port;
+    const bool token_changed = Settings::values.mcp_token.GetValue() != old_token;
+    if (port_changed) {
+        mcp_cli_port.reset(); // the settings page wins over --mcp-port
+    }
+    if (Settings::values.mcp_allow_writes.GetValue() != old_writes) {
+        mcp_cli_allow_writes = false;
+        if (mcp_server) {
+            mcp_server->SetWritesAllowed(Settings::values.mcp_allow_writes.GetValue());
+        }
+    }
+    if (old_enabled && !enabled) {
+        StopMcpServer();
+    } else if (!old_enabled && enabled) {
+        StartMcpServer();
+    } else if (mcp_server && (port_changed || token_changed)) {
+        // Port and token are fixed while serving: restart with the new ones.
+        StopMcpServer();
+        StartMcpServer();
+    }
+    UpdateMcpMenu();
+    UpdateMcpStatusLabel();
+}
+
 /// Builds the Tools > MCP Server menu once: enable, writes, routes, dashboard and copy actions.
 void MainWindow::SetupMcpMenu() {
     if (mcp_menu) {
@@ -3954,6 +3982,12 @@ void MainWindow::OnConfigure() {
 #ifdef __unix__
     const bool old_force_x11 = UISettings::values.gui_force_x11.GetValue();
 #endif
+#ifdef YUZU_ENABLE_MCP
+    const bool old_mcp_enabled = Settings::values.enable_mcp_server.GetValue();
+    const u16 old_mcp_port = Settings::values.mcp_port.GetValue();
+    const std::string old_mcp_token = Settings::values.mcp_token.GetValue();
+    const bool old_mcp_writes = Settings::values.mcp_allow_writes.GetValue();
+#endif
 
     Settings::SetConfiguringGlobal(true);
     ConfigureDialog configure_dialog(this, hotkey_registry, input_subsystem.get(),
@@ -4008,6 +4042,9 @@ void MainWindow::OnConfigure() {
         RestoreUIState();
     }
     InitializeHotkeys();
+#ifdef YUZU_ENABLE_MCP
+    ApplyMcpSettings(old_mcp_enabled, old_mcp_port, old_mcp_token, old_mcp_writes);
+#endif
 
     if (UISettings::values.theme != old_theme) {
         UpdateUITheme();

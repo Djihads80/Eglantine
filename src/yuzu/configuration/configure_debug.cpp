@@ -4,8 +4,13 @@
 // SPDX-FileCopyrightText: 2016 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <QCheckBox>
 #include <QDesktopServices>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QSpinBox>
 #include <QUrl>
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -20,6 +25,9 @@
 ConfigureDebug::ConfigureDebug(const Core::System& system_, QWidget* parent)
     : QScrollArea(parent), ui{std::make_unique<Ui::ConfigureDebug>()}, system{system_} {
     ui->setupUi(this);
+#ifdef YUZU_ENABLE_MCP
+    SetupMcpWidgets();
+#endif
     SetConfiguration();
 
     connect(ui->open_log_button, &QPushButton::clicked, []() {
@@ -33,6 +41,47 @@ ConfigureDebug::ConfigureDebug(const Core::System& system_, QWidget* parent)
 }
 
 ConfigureDebug::~ConfigureDebug() = default;
+
+#ifdef YUZU_ENABLE_MCP
+void ConfigureDebug::SetupMcpWidgets() {
+    auto* layout = ui->debug_widget->layout();
+    auto* title = new QLabel(tr("MCP server (for AI agents and scripts):"), ui->debug_widget);
+    title->setContentsMargins(0, 8, 0, 0);
+    layout->addWidget(title);
+
+    mcp_enable = new QCheckBox(tr("Enable MCP Server"), ui->debug_widget);
+    layout->addWidget(mcp_enable);
+
+    auto* port_row = new QWidget(ui->debug_widget);
+    auto* port_layout = new QHBoxLayout(port_row);
+    port_layout->setContentsMargins(0, 0, 0, 0);
+    port_layout->addWidget(new QLabel(tr("Port:"), port_row));
+    mcp_port = new QSpinBox(port_row);
+    mcp_port->setRange(1024, 65535);
+    port_layout->addWidget(mcp_port);
+    layout->addWidget(port_row);
+
+    mcp_writes = new QCheckBox(tr("Allow Writes (input, memory writes, settings)"),
+                               ui->debug_widget);
+    layout->addWidget(mcp_writes);
+
+    auto* token_row = new QWidget(ui->debug_widget);
+    auto* token_layout = new QHBoxLayout(token_row);
+    token_layout->setContentsMargins(0, 0, 0, 0);
+    token_layout->addWidget(new QLabel(tr("Token:"), token_row));
+    mcp_token = new QLineEdit(token_row);
+    mcp_token->setEchoMode(QLineEdit::Password);
+    mcp_token->setPlaceholderText(tr("Optional: clients must send it as a bearer token"));
+    token_layout->addWidget(mcp_token);
+    layout->addWidget(token_row);
+
+    connect(mcp_enable, &QCheckBox::toggled, this, [this, port_row, token_row](bool on) {
+        port_row->setEnabled(on);
+        mcp_writes->setEnabled(on);
+        token_row->setEnabled(on);
+    });
+}
+#endif
 
 void ConfigureDebug::SetConfiguration() {
     const bool runtime_lock = !system.IsPoweredOn();
@@ -48,6 +97,13 @@ void ConfigureDebug::SetConfiguration() {
     ui->use_dev_keys->setChecked(Settings::values.use_dev_keys.GetValue());
     ui->use_debug_asserts->setChecked(Settings::values.use_debug_asserts.GetValue());
     ui->use_auto_stub->setChecked(Settings::values.use_auto_stub.GetValue());
+#ifdef YUZU_ENABLE_MCP
+    mcp_enable->setChecked(Settings::values.enable_mcp_server.GetValue());
+    mcp_port->setValue(Settings::values.mcp_port.GetValue());
+    mcp_writes->setChecked(Settings::values.mcp_allow_writes.GetValue());
+    mcp_token->setText(QString::fromStdString(Settings::values.mcp_token.GetValue()));
+    emit mcp_enable->toggled(mcp_enable->isChecked());
+#endif
     ui->enable_all_controllers->setChecked(Settings::values.enable_all_controllers.GetValue());
     ui->extended_logging->setChecked(Settings::values.extended_logging.GetValue());
     ui->perform_vulkan_check->setChecked(Settings::values.perform_vulkan_check.GetValue());
@@ -123,6 +179,13 @@ void ConfigureDebug::ApplyConfiguration() {
     Settings::values.use_dev_keys = ui->use_dev_keys->isChecked();
     Settings::values.use_debug_asserts = ui->use_debug_asserts->isChecked();
     Settings::values.use_auto_stub = ui->use_auto_stub->isChecked();
+#ifdef YUZU_ENABLE_MCP
+    // The main window restarts the server if these changed (see MainWindow::OnConfigure).
+    Settings::values.enable_mcp_server = mcp_enable->isChecked();
+    Settings::values.mcp_port = static_cast<u16>(mcp_port->value());
+    Settings::values.mcp_allow_writes = mcp_writes->isChecked();
+    Settings::values.mcp_token = mcp_token->text().toStdString();
+#endif
     Settings::values.enable_all_controllers = ui->enable_all_controllers->isChecked();
     Settings::values.renderer_debug = ui->enable_graphics_debugging->isChecked();
     Settings::values.enable_renderdoc_hotkey = ui->enable_renderdoc_hotkey->isChecked();

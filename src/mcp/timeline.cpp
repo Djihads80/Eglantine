@@ -10,7 +10,7 @@
 namespace Mcp {
 
 namespace {
-constexpr std::array<std::pair<EventKind, std::string_view>, 10> kKindNames{{
+constexpr std::array<std::pair<EventKind, std::string_view>, 11> kKindNames{{
     {EventKind::Log, "log"},
     {EventKind::State, "state"},
     {EventKind::Input, "input"},
@@ -21,6 +21,7 @@ constexpr std::array<std::pair<EventKind, std::string_view>, 10> kKindNames{{
     {EventKind::Watch, "watch"},
     {EventKind::Crash, "crash"},
     {EventKind::Frame, "frame"},
+    {EventKind::Break, "break"},
 }};
 } // namespace
 

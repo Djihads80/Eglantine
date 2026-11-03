@@ -29,6 +29,7 @@ enum class EventKind : u8 {
     Watch,
     Crash,
     Frame,
+    Break, ///< Debugger breakpoint/watchpoint hits and other debugger stops.
 };
 
 /// Short lowercase name of a kind ("log", "unimpl", ...), or "unknown".
