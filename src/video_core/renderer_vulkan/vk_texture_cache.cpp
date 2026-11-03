@@ -4163,10 +4163,21 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
         // The sampling instruction, not the header, picks the dimension: native shaders sample
         // six layers of a 2D array as a cube (Fortune's Weave keeps point-light cubes in a
         // layered atlas; without a cube handle they sampled the null view).
-        // Switch 2 programs only, whose native shaders do this.
-        if (Settings::CurrentProgramIsSwitch2() &&
+        // Switch 2 programs only, whose native shaders do this. EDEN_NX2_CUBE_VIEWS=0 turns it off.
+        static const bool cube_views = [] {
+            const char* const value = std::getenv("EDEN_NX2_CUBE_VIEWS");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (cube_views && Settings::CurrentProgramIsSwitch2() &&
             info.type == VideoCommon::ImageViewType::e2DArray && info.range.extent.layers >= 6 &&
             image.info.num_samples == 1 && IsCubeCompatible(*device, image.info)) {
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_INFO(Render_Vulkan, "Cube views for 2D array {:#x}: {}x{} format {} layers {}+{}",
+                         image.gpu_addr, image.info.size.width, image.info.size.height,
+                         static_cast<int>(image.info.format), info.range.base.layer,
+                         info.range.extent.layers);
+            }
             create(TextureType::ColorCube, 6);
             if (info.range.extent.layers % 6 == 0) {
                 create(TextureType::ColorArrayCube, std::nullopt);
