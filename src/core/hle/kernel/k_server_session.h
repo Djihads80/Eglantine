@@ -26,6 +26,7 @@ class SessionRequestManager;
 namespace Kernel {
 
 class KernelCore;
+class KEvent;
 class KSession;
 class KThread;
 
@@ -51,6 +52,11 @@ public:
 
     bool IsSignaled(KernelCore& kernel) const override;
     void OnClientClosed(KernelCore& kernel);
+
+    /// For an HLE server: sets an event to signal once the client closes, so that the server
+    /// notices the close while it holds a request deferred and does not wait on the session.
+    /// The session holds a reference to the event until it is replaced or the session dies.
+    void SetClientClosedEvent(KernelCore& kernel, KEvent* event);
 
     Result OnRequest(KernelCore& kernel, KSessionRequest* request);
     Result SendReply(KernelCore& kernel, uintptr_t server_message, uintptr_t server_buffer_size,
@@ -80,6 +86,9 @@ private:
     using RequestList = Common::IntrusiveListBaseTraits<KSessionRequest>::ListType;
     RequestList m_request_list{};
     KSessionRequest* m_current_request{};
+
+    /// Signaled once the client closes; guarded by m_lock.
+    KEvent* m_client_closed_event{};
 
     KLightLock m_lock;
 };

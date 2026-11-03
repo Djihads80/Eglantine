@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <utility>
+
 #include "common/scope_exit.h"
 
 #include "core/core.h"
@@ -14,6 +16,7 @@
 #include "core/hle/kernel/k_port.h"
 #include "core/hle/kernel/k_server_port.h"
 #include "core/hle/kernel/k_server_session.h"
+#include "core/hle/kernel/k_session.h"
 #include "core/hle/kernel/k_synchronization_object.h"
 #include "core/hle/kernel/svc_results.h"
 #include "core/hle/service/hle_ipc.h"
@@ -245,6 +248,12 @@ Result ServerManager::ManageDeferral(Kernel::KEvent** out_event) {
     R_SUCCEED();
 }
 
+void ServerManager::SetDeferralCancelHandler(DeferralCancelHandler&& handler) {
+    // Server threads read the handler without a lock, so none may run yet.
+    ASSERT(m_threads.empty());
+    m_deferral_cancel_handler = std::move(handler);
+}
+
 void ServerManager::StartAdditionalHostThreads(const char* name, size_t num_threads) {
     for (size_t i = 0; i < num_threads; i++) {
         auto thread_name = fmt::format("{}:{}", name, i + 1);
@@ -374,26 +383,63 @@ Result ServerManager::CompleteSyncRequest(Session* session) {
     Result res = ResultSuccess;
     Result service_res = ResultSuccess;
 
-    // Mark the request as not deferred.
-    session->GetContext()->SetIsDeferred(false);
-
     // Complete the request. We have exclusive access to this session.
     auto* server_session = static_cast<Kernel::KServerSession*>(session->GetNativeHandle());
-    service_res =
-        session->GetManager()->CompleteSyncRequest(server_session, *session->GetContext());
+    while (true) {
+        // Mark the request as not deferred.
+        session->GetContext()->SetIsDeferred(false);
 
-    // If we've been deferred, we're done.
-    if (session->GetContext()->GetIsDeferred()) {
-        // Insert into deferred session list.
-        std::scoped_lock ll{m_deferred_list_mutex};
-        m_deferred_sessions.push_back(session);
+        // A deferral event handled while the request runs takes the deferred list before this
+        // session can join it; the epoch tells whether that happened.
+        const u64 deferral_epoch = [this] {
+            std::scoped_lock ll{m_deferred_list_mutex};
+            return m_deferral_epoch;
+        }();
 
-        // Finish.
+        service_res =
+            session->GetManager()->CompleteSyncRequest(server_session, *session->GetContext());
+        if (!session->GetContext()->GetIsDeferred()) {
+            break;
+        }
+
+        // Only the deferral event retries a deferred request.
+        ASSERT_MSG(m_deferral_event != nullptr, "Request deferred without a deferral event");
+
+        // The session is not waited on while its request is deferred, so it signals the deferral
+        // event once its client closes. Set before the check for a closed client below, the
+        // event cannot miss a close that the check does not see.
+        server_session->SetClientClosedEvent(m_system.Kernel(), m_deferral_event);
+
+        // Insert into the deferred session list, unless the client closed, which retires the
+        // request, or a deferral event was handled since the request ran: that event may have
+        // been the one to retry it, so it runs again here instead, lest its wakeup be lost.
+        // Running again signals nothing, so requests cannot keep each other running: each run
+        // again follows a deferral event signaled by something else.
+        bool retire = false;
+        bool run_again = false;
+        {
+            std::scoped_lock ll{m_deferred_list_mutex};
+            retire = server_session->GetParent()->IsClientClosed();
+            run_again = !retire && m_deferral_epoch != deferral_epoch;
+            if (!retire && !run_again) {
+                m_deferred_sessions.push_back(session);
+            }
+        }
+        if (run_again) {
+            continue;
+        }
+        if (retire) {
+            this->RetireDeferredRequest(session);
+        }
         R_SUCCEED();
     }
 
     // Send the reply.
     res = server_session->SendReplyHLE(m_system.Kernel(), service_res == IPC::ResultSessionClosed);
+
+    // The reply is written: release the context, and with it the client thread, before another
+    // thread may receive the next request on this session.
+    session->GetContext().reset();
 
     // If the session has been closed, we're done.
     if (res == Kernel::ResultSessionClosed || service_res == IPC::ResultSessionClosed) {
@@ -414,21 +460,43 @@ Result ServerManager::OnDeferralEvent() {
     // Clear event before grabbing the list.
     m_deferral_event->Clear(m_system.Kernel());
 
-    // Get and clear list.
+    // Get and clear list, counting the event handled.
     const auto deferrals = [&] {
         std::scoped_lock lk{m_deferred_list_mutex};
-        return std::move(m_deferred_sessions);
+        ++m_deferral_epoch;
+        return std::exchange(m_deferred_sessions, {});
     }();
 
-    // Relink deferral event.
-    this->LinkToDeferredList(std::addressof(*m_deferral_holder));
-
-    // For each session, try again to complete the request.
+    // For each session, try again to complete the request, unless its client closed: the
+    // request is then retired.
     for (auto* session : deferrals) {
-        R_ASSERT(this->CompleteSyncRequest(session));
+        const auto* server_session =
+            static_cast<const Kernel::KServerSession*>(session->GetNativeHandle());
+        if (server_session->GetParent()->IsClientClosed()) {
+            this->RetireDeferredRequest(session);
+        } else {
+            R_ASSERT(this->CompleteSyncRequest(session));
+        }
     }
 
+    // Relink deferral event. Not before: deferral events signaled meanwhile stay latched for the
+    // next batch, so batches never run at once, and a retry above never has to run again.
+    this->LinkToDeferredList(std::addressof(*m_deferral_holder));
+
     R_SUCCEED();
+}
+
+void ServerManager::RetireDeferredRequest(Session* session) {
+    // The client closed the session, so the request is never retried: its handler forgets it,
+    // the client gets the session closed as the result, and the session goes.
+    if (m_deferral_cancel_handler) {
+        m_deferral_cancel_handler(*session->GetContext());
+    }
+
+    auto* server_session = static_cast<Kernel::KServerSession*>(session->GetNativeHandle());
+    server_session->SendReplyHLE(m_system.Kernel(), true);
+
+    this->DestroySession(session);
 }
 
 void ServerManager::DestroySession(Session* session) {
