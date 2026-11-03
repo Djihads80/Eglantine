@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -22,11 +25,18 @@
 //   EDEN_NX2_DIAG=1          per-shader outcome counters: a summary line each second and a line for
 //                            every distinct failure (draw: vs/ps pair, dispatch: code address) the
 //                            first time and each time its count doubles.
-//   EDEN_NX2_DIAG_DIR=<dir>  create <dir>/draw-list while running and the next frame's draws and
-//                            dispatches are written to <dir>/draw-list-<n>.tsv (the file is removed).
-//   EDEN_NX2_ABLATE_FILE=<f> skip draws and dispatches named in that file, re-read when it changes.
-//                            One entry per line: "vs <hex>", "ps <hex>" or "cs <hex>" (addresses as
-//                            logged and as in the shader dump names); "#" starts a comment.
+//   EDEN_NX2_DIAG_DIR=<dir>  a control directory (see tools/nx2/shader_lab.py):
+//                            - diag-state.json: every program seen (vertex, pixel, compute) with its
+//                              draw/dispatch counts, written once a second;
+//                            - ablate.txt: programs to skip, re-read when it changes. One entry per
+//                              line: "key <hex16>" (the shader dump key, stable across runs), or
+//                              "vs|ps|cs <hex>" (an address as logged); "#" starts a comment;
+//                            - inspect.txt: one program key per line; for those the constant buffers
+//                              bound at each draw are watched and the words that change from frame
+//                              to frame are reported in diag-state.json;
+//                            - draw-list: create it and the next frame's draws and dispatches are
+//                              written to draw-list-<n>.tsv (the file is removed).
+//   EDEN_NX2_ABLATE_FILE=<f> use that file instead of <dir>/ablate.txt.
 namespace VideoCommon::Nx2Diag {
 
 inline const char* Env(const char* name) {
@@ -49,10 +59,18 @@ inline const std::filesystem::path& DrawListDir() {
 
 inline const std::filesystem::path& AblateFile() {
     static const std::filesystem::path file = [] {
-        const char* value = Env("EDEN_NX2_ABLATE_FILE");
-        return value ? std::filesystem::path{value} : std::filesystem::path{};
+        if (const char* value = Env("EDEN_NX2_ABLATE_FILE")) {
+            return std::filesystem::path{value};
+        }
+        return DrawListDir().empty() ? std::filesystem::path{} : DrawListDir() / "ablate.txt";
     }();
     return file;
+}
+
+inline std::string Hex16(u64 value) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(value));
+    return text;
 }
 
 class Diagnostics {
@@ -95,6 +113,23 @@ public:
         }
     }
 
+    // Registry of the programs seen, for diag-state.json. kind: 'v' vertex, 'p' pixel, 'c' compute.
+    void Touch(char kind, u64 address, std::string_view outcome, u64 instances, u64 vertices,
+               u32 width, u32 height) {
+        std::scoped_lock lock{mutex};
+        const u64 key = KeyOf(address);
+        auto& program = programs[{kind, key ? key : address}];
+        program.address = address;
+        program.key = key;
+        ++program.draws;
+        program.instances += instances;
+        program.vertices += vertices;
+        ++program.outcomes[std::string{outcome}];
+        program.last_frame = frame;
+        program.width = width;
+        program.height = height;
+    }
+
     // The shader dump's key for the program at that address, so draw lists and dumps from different
     // runs can be matched (addresses change between runs, the key is a hash of the code).
     void RegisterProgram(u64 address, u64 key) {
@@ -104,8 +139,7 @@ public:
 
     u64 ProgramKey(u64 address) {
         std::scoped_lock lock{mutex};
-        const auto it = program_keys.find(address);
-        return it == program_keys.end() ? 0 : it->second;
+        return KeyOf(address);
     }
 
     bool Capturing() const {
@@ -120,13 +154,20 @@ public:
         }
     }
 
-    // Frame boundary: starts a capture when <dir>/draw-list exists and ends the running one.
+    // Frame boundary: exports the state, starts a capture when <dir>/draw-list exists and ends the
+    // running one.
     void TickFrame() {
         const auto& dir = DrawListDir();
         if (dir.empty()) {
             return;
         }
         std::scoped_lock lock{mutex};
+        ++frame;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_export >= std::chrono::seconds{1}) {
+            Export(dir, std::chrono::duration<double>(now - last_export).count());
+            last_export = now;
+        }
         if (capturing) {
             capturing = false;
             const auto path = dir / ("draw-list-" + std::to_string(next_capture++) + ".tsv");
@@ -154,23 +195,49 @@ public:
         return seq++;
     }
 
-    // True when the ablation file names this address for that kind ('v' vertex, 'p' pixel, 'c' compute).
+    // True when the ablation file names this program for that kind ('v' vertex, 'p' pixel,
+    // 'c' compute), by address or by its dump key.
     bool Ablated(char kind, u64 address) {
         std::scoped_lock lock{mutex};
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_ablate_check >= std::chrono::milliseconds{250}) {
-            last_ablate_check = now;
-            std::error_code error;
-            const auto stamp = std::filesystem::last_write_time(AblateFile(), error);
-            if (!error && stamp != ablate_stamp) {
-                ablate_stamp = stamp;
-                ReloadAblation();
-            } else if (error && (!ablated.empty())) {
-                ablated.clear();
-                LOG_INFO(HW_GPU, "diag: ablation file gone, nothing ablated");
-            }
+        Poll();
+        const u64 key = KeyOf(address);
+        return ablated.contains({kind, address}) || (key != 0 && ablated_keys.contains(key));
+    }
+
+    // True when the program with this key is being inspected (inspect.txt).
+    bool Inspecting(u64 key) {
+        if (key == 0 || DrawListDir().empty()) {
+            return false;
         }
-        return ablated.contains({kind, address});
+        std::scoped_lock lock{mutex};
+        Poll();
+        return inspected.contains(key);
+    }
+
+    // The words of constant buffer `slot` bound for that program at a draw or dispatch. The first call
+    // in each frame is compared with the same slot's first call in the previous frame.
+    void Observe(u64 key, u32 slot, const std::vector<u32>& words) {
+        std::scoped_lock lock{mutex};
+        auto& watch = watches[{key, slot}];
+        if (watch.last_frame == frame && !watch.first.empty()) {
+            // Later draws of the frame: words that differ from the frame's first draw vary per draw.
+            for (size_t i = 0; i < words.size() && i < watch.first.size(); ++i) {
+                if (words[i] != watch.first[i]) {
+                    watch.per_draw.insert(static_cast<u32>(i));
+                }
+            }
+            return;
+        }
+        if (!watch.first.empty()) {
+            for (size_t i = 0; i < words.size() && i < watch.first.size(); ++i) {
+                if (words[i] != watch.first[i]) {
+                    ++watch.changes[static_cast<u32>(i)];
+                }
+            }
+            ++watch.frames_compared;
+        }
+        watch.first = words;
+        watch.last_frame = frame;
     }
 
 private:
@@ -181,37 +248,183 @@ private:
         std::string detail;
     };
 
-    void ReloadAblation() {
-        ablated.clear();
-        std::ifstream in{AblateFile()};
-        std::string line;
-        while (std::getline(in, line)) {
-            line = line.substr(0, line.find('#'));
-            std::istringstream words{line};
-            std::string kind, address;
-            if (!(words >> kind >> address)) {
-                continue;
-            }
-            const char letter = kind == "vs" ? 'v' : kind == "ps" ? 'p' : kind == "cs" ? 'c' : 0;
-            if (letter) {
-                ablated.emplace(letter, std::strtoull(address.c_str(), nullptr, 16));
-            }
+    struct Program {
+        u64 address{};
+        u64 key{};
+        u64 draws{};
+        u64 instances{};
+        u64 vertices{};
+        u64 last_frame{};
+        u32 width{};
+        u32 height{};
+        u64 exported_draws{};
+        double draws_per_second{};
+        std::map<std::string, u64> outcomes;
+    };
+
+    struct Watch {
+        std::vector<u32> first;
+        u64 last_frame{~u64{}};
+        u64 frames_compared{};
+        std::map<u32, u64> changes;
+        std::set<u32> per_draw;
+    };
+
+    u64 KeyOf(u64 address) const {
+        const auto it = program_keys.find(address);
+        return it == program_keys.end() ? 0 : it->second;
+    }
+
+    static bool Changed(const std::filesystem::path& path, std::filesystem::file_time_type& stamp) {
+        std::error_code error;
+        const auto now = std::filesystem::last_write_time(path, error);
+        if (error) {
+            const bool had = stamp != std::filesystem::file_time_type{};
+            stamp = {};
+            return had;
         }
-        LOG_INFO(HW_GPU, "diag: ablating {} shader(s) from {}", ablated.size(), AblateFile().string());
+        if (now == stamp) {
+            return false;
+        }
+        stamp = now;
+        return true;
+    }
+
+    // Re-reads the control files when they changed (checked at most every 250 ms).
+    void Poll() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_poll < std::chrono::milliseconds{250}) {
+            return;
+        }
+        last_poll = now;
+        if (!AblateFile().empty() && Changed(AblateFile(), ablate_stamp)) {
+            ablated.clear();
+            ablated_keys.clear();
+            std::ifstream in{AblateFile()};
+            std::string line;
+            while (std::getline(in, line)) {
+                line = line.substr(0, line.find('#'));
+                std::istringstream words{line};
+                std::string kind, address;
+                if (!(words >> kind >> address)) {
+                    continue;
+                }
+                const u64 value = std::strtoull(address.c_str(), nullptr, 16);
+                if (kind == "key") {
+                    ablated_keys.insert(value);
+                } else if (kind == "vs" || kind == "ps" || kind == "cs") {
+                    ablated.emplace(kind == "vs" ? 'v' : kind == "ps" ? 'p' : 'c', value);
+                }
+            }
+            LOG_INFO(HW_GPU, "diag: ablating {} program(s) from {}", ablated.size() + ablated_keys.size(),
+                     AblateFile().string());
+        }
+        if (const auto path = DrawListDir() / "inspect.txt";
+            !DrawListDir().empty() && Changed(path, inspect_stamp)) {
+            inspected.clear();
+            watches.clear();
+            std::ifstream in{path};
+            std::string line;
+            while (std::getline(in, line)) {
+                line = line.substr(0, line.find('#'));
+                if (const u64 value = std::strtoull(line.c_str(), nullptr, 16); value != 0) {
+                    inspected.insert(value);
+                }
+            }
+            LOG_INFO(HW_GPU, "diag: inspecting {} program(s)", inspected.size());
+        }
+    }
+
+    // diag-state.json, replaced atomically so a reader never sees half of it.
+    void Export(const std::filesystem::path& dir, double seconds) {
+        Poll();
+        std::ostringstream out;
+        out << "{\"frame\":" << frame << ",\"programs\":[";
+        bool first = true;
+        for (auto& [id, program] : programs) {
+            program.draws_per_second = seconds > 0 ? (program.draws - program.exported_draws) / seconds : 0;
+            program.exported_draws = program.draws;
+            out << (first ? "" : ",") << "{\"kind\":\"" << id.first << "\",\"key\":\"" << Hex16(program.key)
+                << "\",\"addr\":\"" << std::hex << program.address << std::dec << "\",\"draws\":"
+                << program.draws << ",\"per_s\":" << static_cast<u64>(program.draws_per_second)
+                << ",\"instances\":" << program.instances << ",\"vertices\":" << program.vertices
+                << ",\"last_frame\":" << program.last_frame << ",\"rt\":\"" << program.width << 'x'
+                << program.height << "\",\"outcomes\":{";
+            bool first_outcome = true;
+            for (const auto& [name, n] : program.outcomes) {
+                out << (first_outcome ? "" : ",") << '"' << name << "\":" << n;
+                first_outcome = false;
+            }
+            out << "}}";
+            first = false;
+        }
+        out << "],\"ablated\":[";
+        first = true;
+        for (const u64 key : ablated_keys) {
+            out << (first ? "" : ",") << '"' << Hex16(key) << '"';
+            first = false;
+        }
+        out << "],\"inspect\":[";
+        first = true;
+        for (const u64 key : inspected) {
+            out << (first ? "" : ",") << "{\"key\":\"" << Hex16(key) << "\",\"slots\":[";
+            bool first_slot = true;
+            for (const auto& [id, watch] : watches) {
+                if (id.first != key) {
+                    continue;
+                }
+                out << (first_slot ? "" : ",") << "{\"slot\":" << id.second << ",\"words\":"
+                    << watch.first.size() << ",\"frames\":" << watch.frames_compared << ",\"changing\":[";
+                first_slot = false;
+                size_t listed = 0;
+                for (const auto& [index, n] : watch.changes) {
+                    if (listed++ >= 96) {
+                        break;
+                    }
+                    out << (listed > 1 ? "," : "") << "{\"off\":" << index * 4 << ",\"changes\":" << n
+                        << ",\"value\":" << watch.first[index] << '}';
+                }
+                out << "],\"per_draw\":[";
+                listed = 0;
+                for (const u32 index : watch.per_draw) {
+                    if (listed++ >= 96) {
+                        break;
+                    }
+                    out << (listed > 1 ? "," : "") << index * 4;
+                }
+                out << "]}";
+            }
+            out << "]}";
+            first = false;
+        }
+        out << "]}\n";
+        const auto temporary = dir / "diag-state.json.tmp";
+        if (std::ofstream file{temporary, std::ios::trunc}) {
+            file << out.str();
+        }
+        std::error_code error;
+        std::filesystem::rename(temporary, dir / "diag-state.json", error);
     }
 
     std::mutex mutex;
     std::map<std::tuple<bool, u64, u64, std::string>, Count> counts;
     std::map<std::pair<bool, std::string>, u64> window;
+    std::map<std::pair<char, u64>, Program> programs;
     std::map<u64, u64> program_keys;
+    std::map<std::pair<u64, u32>, Watch> watches;
     std::chrono::steady_clock::time_point last_summary{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_export{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_poll{};
     std::set<std::pair<char, u64>> ablated;
+    std::set<u64> ablated_keys;
+    std::set<u64> inspected;
     std::filesystem::file_time_type ablate_stamp{};
-    std::chrono::steady_clock::time_point last_ablate_check{};
+    std::filesystem::file_time_type inspect_stamp{};
     std::ostringstream rows;
     bool capturing{};
     u32 seq{};
     u32 next_capture{};
+    u64 frame{};
 };
 
 inline bool Active() {

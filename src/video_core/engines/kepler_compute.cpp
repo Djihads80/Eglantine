@@ -562,6 +562,18 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             return;
         }
         auto& diag = Diag::Diagnostics::Get();
+        diag.Touch('c', diag_code, outcome, diag_groups, diag_threads, 0, 0);
+        if (const u64 key = diag.ProgramKey(diag_code); diag.Inspecting(key)) {
+            for (u32 slot = 0; slot < NumConstBuffers; ++slot) {
+                const auto& buffer = launch_description.const_buffer_config[slot];
+                std::vector<u32> words(std::min<u32>(buffer.size.Value(), 0x2000) / 4);
+                if ((launch_description.const_buffer_enable_mask.Value() >> slot) & 1 && !words.empty() &&
+                    memory_manager.IsFullyMappedRange(buffer.Address(), words.size() * 4)) {
+                    memory_manager.ReadBlockUnsafe(buffer.Address(), words.data(), words.size() * 4);
+                    diag.Observe(key, slot, words);
+                }
+            }
+        }
         if (Diag::CountersEnabled()) {
             diag.Note(true, diag_code, 0, outcome, diag_groups, diag_threads, detail);
         }
