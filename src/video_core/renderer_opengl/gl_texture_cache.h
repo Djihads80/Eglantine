@@ -197,6 +197,8 @@ public:
     void UploadMemory(GLuint buffer_handle, size_t buffer_offset,
                       std::span<const VideoCommon::BufferImageCopy> copies);
 
+    void ZeroRegions(std::span<const VideoCommon::BufferImageCopy> regions);
+
     void UploadMemory(const StagingBufferMap& map,
                       std::span<const VideoCommon::BufferImageCopy> copies);
 

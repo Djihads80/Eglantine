@@ -58,6 +58,17 @@ public:
         MapAt(address, address, size);
     }
 
+    std::optional<u64> CpuAddressOf(u64 gpu_address, u64 size) {
+        std::scoped_lock lk{mutex};
+        for (const auto& m : mappings) {
+            if (gpu_address >= m.gpu_address && gpu_address - m.gpu_address < m.size &&
+                size <= m.size - (gpu_address - m.gpu_address)) {
+                return m.cpu_address + (gpu_address - m.gpu_address);
+            }
+        }
+        return std::nullopt;
+    }
+
     void MapAt(u64 gpu_address, u64 cpu_address, u64 size) {
         std::scoped_lock lk{mutex};
         TrimMappings(gpu_address, size);

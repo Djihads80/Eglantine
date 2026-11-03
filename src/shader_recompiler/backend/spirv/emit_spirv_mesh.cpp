@@ -34,6 +34,12 @@ Id Clamped(EmitContext& ctx, Id index, u32 count) {
 }
 
 Id PayloadWord(EmitContext& ctx, Id index) {
+    if (ctx.mesh_info.packed_payload) {
+        const Id high{ctx.OpUGreaterThanEqual(ctx.U1, index, ctx.Const(MeshInfo::PackedHighWord))};
+        const Id packed{ctx.OpISub(ctx.U32[1], index,
+                                   ctx.Const(MeshInfo::PackedHighWord - MeshInfo::PackedLowWords))};
+        index = ctx.OpSelect(ctx.U32[1], high, packed, index);
+    }
     return ctx.OpAccessChain(ctx.mesh_payload_u32, ctx.mesh_payload,
                              Clamped(ctx, index, ctx.mesh_info.payload_words));
 }
@@ -169,8 +175,10 @@ void MeshEpilogue(EmitContext& ctx) {
 } // Anonymous namespace
 
 Id EmitIsbeRead(EmitContext& ctx, Id address) {
-    const Id workgroup{
-        ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    Id workgroup{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    if (ctx.mesh_task_split) {
+        workgroup = ctx.OpShiftRightLogical(ctx.U32[1], workgroup, ctx.Const(1U));
+    }
     if (ctx.stage == Stage::Task) {
         return workgroup; // the input region holds the workgroup index (VERTEX_ID)
     }
@@ -178,6 +186,14 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
     const Id word{ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, index))};
     return ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, address, ctx.u32_zero_value), workgroup,
                         word);
+}
+
+Id EmitIsbeReadOutput(EmitContext& ctx, Id address) {
+    if (ctx.stage != Stage::Task) {
+        throw NotImplementedException("Stage buffer output read outside task programs");
+    }
+    const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
+    return ctx.OpLoad(ctx.U32[1], PayloadWord(ctx, index));
 }
 
 void EmitIsbeWriteAttribute(EmitContext& ctx, Id address, Id value) {

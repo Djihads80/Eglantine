@@ -606,10 +606,11 @@ private:
             const u64 size = last + 1 - start;
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
-            if ((w[7] & SparseRegionFlag) == 0) {
+            const bool sparse = (w[7] & SparseRegionFlag) != 0 && !KeepsTilesInHostImage();
+            if (!sparse) {
                 m_gpu_only_ranges[start] = size; // kept out of 216, however it is backed
             }
-            if ((w[7] & SparseRegionFlag) != 0 && LazySparseRegions()) {
+            if (sparse && LazySparseRegions()) {
                 // Title 1's terrain texture arrays and layer pools (170 MB-5.8 GB, mostly empty):
                 // backed whole, they ran the pool dry and the later ones got no memory at all.
                 // The region gets a device range of its own, unbacked pages read zero, and
@@ -665,6 +666,7 @@ private:
         FreeReleasedRegions();
         if (m_gpu_only_ranges.erase(first) != 0 && last > first) {
             DropGpuOnlyTiles(first, last - first + 1, false);
+            system.GPU().RunInOrder([first] { Tegra::Nx2RemoveTileRegion(first); });
             m_shared_regions.erase(first);
             std::erase_if(m_shared_memory, [first](const auto& entry) { return entry.second == first; });
         }
@@ -1169,17 +1171,34 @@ private:
     // - Regions 214 backs as they are written: the texture cache reads an image's memory in full
     //   when it uploads it, which makes the game's pages behind it resident on the host, while
     //   unwritten blocks read as zero for free (title 1: ~1 GB less resident at 150 s).
+    bool KeepsTilesInHostImage() const {
+        constexpr u64 SwitchSportsResort = 0x04008E001F098000ULL;
+        return system.GetApplicationProcessProgramID() == SwitchSportsResort;
+    }
+
     void ApplyGpuOnlyRequest(u64 region, const SparseMapRequest& request) {
         auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
         const u64 gpu_address = request.gpu_address;
         const u64 size = request.size;
+        const auto record_tiles = [&](bool mapped) {
+            const auto range = m_gpu_only_ranges.find(region);
+            if (range == m_gpu_only_ranges.end() || m_shared_regions.contains(region)) {
+                return;
+            }
+            system.GPU().RunInOrder([region, region_size = range->second,
+                                     offset = gpu_address - region, size, mapped] {
+                Tegra::Nx2SetTilesMapped(region, region_size, offset, size, mapped);
+            });
+        };
         if (request.memory_handle == 0) {
             ++m_tile_unmaps;
+            record_tiles(false);
             DropGpuOnlyTiles(gpu_address, size, true);
             return;
         }
         ++m_tile_maps;
         if (m_sparse_regions.contains(region)) {
+            record_tiles(true);
             ++m_tile_kept;
             return;
         }
@@ -1197,6 +1216,7 @@ private:
         if (const auto other = RegionSharing(request.memory_handle, request.offset, size, region)) {
             ++m_tile_kept;
             for (const u64 shared : {region, *other}) {
+                system.GPU().RunInOrder([shared] { Tegra::Nx2RemoveTileRegion(shared); });
                 if (m_shared_regions.insert(shared).second) {
                     const auto range = m_gpu_only_ranges.find(shared);
                     if (range != m_gpu_only_ranges.end()) {
@@ -1209,6 +1229,7 @@ private:
             }
             return;
         }
+        record_tiles(true);
         DropGpuOnlyTiles(gpu_address, size, false);
         registry.MapAt(gpu_address, memory->second.address + request.offset, size);
         m_gpu_only_tiles[gpu_address] = {size, region, request.memory_handle, request.offset};
@@ -2593,6 +2614,14 @@ private:
         const u64 pts = u64{w[words]} | (u64{w[words + 1]} << 32);
         const bool end = (w[words + 2] & 0xFF) != 0;
         Log(ctx, "submit");
+        {
+            std::scoped_lock lk{m_mutex};
+            if (m_inputs.size() >= MaxQueuedInputs) {
+                IPC::ResponseBuilder rb{ctx, 2};
+                rb.PushRaw<u32>(0x1c266f);
+                return;
+            }
+        }
         Input input{{}, pts, end};
         if (!ctx.BufferDescriptorA().empty()) {
             const auto data = ctx.ReadBufferA(0);
@@ -3247,14 +3276,17 @@ private:
         if (m_syncpt_memory == nullptr) {
             return;
         }
+        const u32 words = (m_syncpt_count + 63) / 64;
+        std::array<u64, 0x40> armed{};
+        for (u32 w = 0; w < words; ++w) {
+            armed[w] = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+        }
         UpdateSyncptValues();
         bool acked = false;
-        const u32 words = (m_syncpt_count + 63) / 64;
         for (u32 w = 0; w < words; ++w) {
-            const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
-            if (m_syncpt_memory->Read64(ro_address) != rw_bits) {
-                m_syncpt_memory->Write64(ro_address, rw_bits);
+            if (m_syncpt_memory->Read64(ro_address) != armed[w]) {
+                m_syncpt_memory->Write64(ro_address, armed[w]);
                 acked = true;
             }
         }

@@ -432,6 +432,18 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
 // buffer words; false when the value depends on anything else.
 thread_local IR::Opcode g_handle_failure{IR::Opcode::Void}; // the first operation not supported
 
+bool IsVoteResult(IR::Value value) {
+    while (const IR::Inst* const inst = value.TryInstRecursive()) {
+        const IR::Opcode opcode{inst->GetOpcode()};
+        if (opcode != IR::Opcode::ConditionRef) {
+            return opcode == IR::Opcode::VoteAll || opcode == IR::Opcode::VoteAny ||
+                   opcode == IR::Opcode::VoteEqual;
+        }
+        value = inst->Arg(0);
+    }
+    return false;
+}
+
 bool IsUndefined(IR::Opcode opcode) {
     return opcode == IR::Opcode::UndefU1 || opcode == IR::Opcode::UndefU8 ||
            opcode == IR::Opcode::UndefU16 || opcode == IR::Opcode::UndefU32 ||
@@ -576,6 +588,10 @@ bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget
     case IR::Opcode::VoteAny:      // of a condition on per-draw words only, the same in every lane
     case IR::Opcode::VoteAll:
         return build(0);
+    case IR::Opcode::VoteEqual:
+        emit(Op::Immediate);
+        code.push_back(1);
+        return true;
     case IR::Opcode::GetCbufU32:
     case IR::Opcode::LoadStorage32:
         return load_word(inst, 0);
@@ -758,10 +774,23 @@ bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget
         return true;
     }
     case IR::Opcode::SelectU1:
-    case IR::Opcode::SelectU32:
-        if (!build(0) || !build(1) || !build(2)) return false;
+    case IR::Opcode::SelectU32: {
+        if (!build(0)) {
+            const IR::Value if_true{inst->Arg(1).Resolve()};
+            const IR::Value if_false{inst->Arg(2).Resolve()};
+            if (IsVoteResult(inst->Arg(0))) {
+                return build(1);
+            }
+            if (inst->GetOpcode() != IR::Opcode::SelectU32 ||
+                if_true.IsImmediate() == if_false.IsImmediate()) {
+                return false;
+            }
+            return build(if_true.IsImmediate() ? 2 : 1);
+        }
+        if (!build(1) || !build(2)) return false;
         emit(Op::Select);
         return true;
+    }
     default:
         g_handle_failure = inst->GetOpcode();
         return false;

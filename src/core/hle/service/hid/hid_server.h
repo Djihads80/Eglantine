@@ -97,6 +97,10 @@ private:
     Result IsSixAxisSensorUnalteredPassthroughEnabled(Out<bool> out_is_enabled,
                                                       Core::HID::SixAxisSensorHandle sixaxis_handle,
                                                       ClientAppletResourceUserId aruid);
+    Result StoreSixAxisSensorCalibrationParameter(
+        InLargeData<Core::HID::SixAxisSensorCalibrationParameter, BufferAttr_HipcMapAlias>
+            calibration,
+        Core::HID::SixAxisSensorHandle sixaxis_handle, ClientAppletResourceUserId aruid);
     Result LoadSixAxisSensorCalibrationParameter(
         OutLargeData<Core::HID::SixAxisSensorCalibrationParameter, BufferAttr_HipcMapAlias>
             out_calibration,
@@ -195,9 +199,18 @@ private:
         u64 unknown, AppletResourceUserId aruid,
         InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
         InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values);
-    // 213 (32 bytes, aruid): sent per controller every frame by Kirby Air Riders (tens of
-    // thousands of auto stub log lines a run); no reply data. Accepted and dropped.
-    Result Unknown213();
+    // 213 (32 bytes): one device handle and value after a u16 format, with a sent process id;
+    // sent per controller by Switch Sports Resort and Kirby Air Riders. Never fails, like 214.
+    struct Nx2VibrationParameters {
+        u16 format;
+        INSERT_PADDING_BYTES(2);
+        Core::HID::VibrationDeviceHandle vibration_device_handle;
+        Core::HID::VibrationValue vibration_value;
+    };
+    static_assert(sizeof(Nx2VibrationParameters) == 0x18,
+                  "Nx2VibrationParameters is an invalid size");
+    Result SendNx2VibrationValue(Nx2VibrationParameters parameters,
+                                 ClientAppletResourceUserId aruid);
     // 220 (16 bytes, aruid): replies one byte (meaning unknown); answer 0 instead of leaving it to
     // the message buffer's leftovers.
     Result Unknown220(Out<u8> out);
@@ -214,6 +227,9 @@ private:
                                         InCopyHandle<Kernel::KTransferMemory> t_mem_1,
                                         InCopyHandle<Kernel::KTransferMemory> t_mem_2);
     Result FinalizeSevenSixAxisSensor(ClientAppletResourceUserId aruid);
+    Result EnableNpadImu(ClientAppletResourceUserId aruid, u64 t_mem_size,
+                         InCopyHandle<Kernel::KTransferMemory> t_mem);
+    Result DisableNpadImu(ClientAppletResourceUserId aruid);
     Result ResetSevenSixAxisSensorTimestamp(ClientAppletResourceUserId aruid);
     Result IsUsbFullKeyControllerEnabled(Out<bool> out_is_enabled,
                                          ClientAppletResourceUserId aruid);

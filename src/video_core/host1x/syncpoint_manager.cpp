@@ -30,19 +30,19 @@ SyncpointManager::ActionHandle SyncpointManager::RegisterAction(
         }
         ++it;
     }
-    return action_storage.emplace(it, expected_value, std::move(action));
+    return action_storage.emplace(it, expected_value, ++last_action_id, std::move(action))->id;
 }
 
 void SyncpointManager::DeregisterAction(std::list<RegisteredAction>& action_storage,
                                         const ActionHandle& handle) {
+    if (handle == 0) {
+        return;
+    }
     std::scoped_lock lk(guard);
 
-    // We want to ensure the iterator still exists prior to erasing it
-    // Otherwise, if an invalid iterator was passed in then it could lead to UB
-    // It is important to avoid UB in that case since the deregister isn't called from a locked
-    // context
+    // The action may have run and been erased already (Increment), so it is looked up by ID.
     for (auto it = action_storage.begin(); it != action_storage.end(); it++) {
-        if (it == handle) {
+        if (it->id == handle) {
             action_storage.erase(it);
             return;
         }

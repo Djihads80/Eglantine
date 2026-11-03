@@ -403,6 +403,10 @@ std::vector<const char*> ExtensionListForVulkan(
     return output;
 }
 
+constexpr u32 NvidiaDriverVersion(u32 major, u32 minor, u32 secondary) {
+    return (major << 22) | (minor << 14) | (secondary << 6);
+}
+
 constexpr std::array<char, 8> STATIC_CACHE_MAGIC_NUMBER{'e', 'd', 'e', 'n', 's', 't', 'p', 'c'};
 constexpr u32 STATIC_CACHE_VERSION = 1;
 
@@ -1392,7 +1396,7 @@ bool Device::GetSuitability(bool requires_swapchain) {
     if (extensions.vertex_input_dynamic_state) {
         const u32 version = (properties.properties.driverVersion << 3) >> 3;
         if ((driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && version < VK_MAKE_API_VERSION(27, 20, 100, 0))
-        || (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && version < VK_MAKE_API_VERSION(580, 119, 02, 0))) {
+        || (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && properties.properties.driverVersion < NvidiaDriverVersion(580, 119, 2))) {
             LOG_WARNING(Render_Vulkan, "Disabling broken VK_EXT_vertex_input_dynamic_state");
             RemoveExtensionFeature(extensions.vertex_input_dynamic_state, features.vertex_input_dynamic_state, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         }

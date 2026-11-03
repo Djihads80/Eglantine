@@ -62,6 +62,7 @@ void EmitSetAttributeIndexed(EmitContext& ctx, Id offset, Id value, Id vertex);
 Id EmitGetPatch(EmitContext& ctx, IR::Patch patch);
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value);
 Id EmitIsbeRead(EmitContext& ctx, Id address);
+Id EmitIsbeReadOutput(EmitContext& ctx, Id address);
 void EmitIsbeWriteAttribute(EmitContext& ctx, Id address, Id value);
 void EmitIsbeWriteMapU8(EmitContext& ctx, Id address, Id value);
 void EmitIsbeWriteMapU32(EmitContext& ctx, const IR::Value& address, Id value);

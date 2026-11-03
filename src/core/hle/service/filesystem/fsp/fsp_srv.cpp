@@ -27,6 +27,7 @@
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/savedata_factory.h"
+#include "core/file_sys/system_archive/mii_model.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/hle/result.h"
@@ -514,6 +515,20 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface,
               storage_id, unknown, title_id);
 
     auto data = romfs_controller->OpenRomFS(title_id, storage_id, FileSys::ContentRecordType::Data);
+
+    // Switch 2 Mii resources (MiiResource), missing from Switch 1 firmware: built from the Switch 1
+    // Mii model archive.
+    constexpr u64 MiiResourceId = 0x0400000000000849;
+    constexpr u64 MiiModelId = 0x0100000000000802;
+    if (!data && title_id == MiiResourceId) {
+        auto mii_model =
+            romfs_controller->OpenRomFS(MiiModelId, storage_id, FileSys::ContentRecordType::Data);
+        LOG_WARNING(Service_FS, "Mii resources {:016X} not installed, using {}", title_id,
+                    mii_model != nullptr ? "the Mii model archive" : "a synthesized Mii model");
+        *out_interface = std::make_shared<IStorage>(
+            system, FileSys::SystemArchive::MiiResource(std::move(mii_model)));
+        R_SUCCEED();
+    }
 
     if (!data) {
         const auto archive = FileSys::SystemArchive::SynthesizeSystemArchive(title_id);

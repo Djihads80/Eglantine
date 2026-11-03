@@ -1595,7 +1595,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool small = mode == 0x00212800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
-            if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||
+            const bool ceiling = (mode & ~0x10100U) == 0x0020b000;
+            if ((!half && !small && !floor && !nearest && !ceiling &&
+                 (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
@@ -1626,7 +1628,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{small || nearest ? 0U : floor ? 1U : ceiling ? 2U : 3U} << 39) |
+                 (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
@@ -2838,7 +2841,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
-            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
+            if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || (write && !output) ||
                 (!write && region != 3) || (!write && dest == 255))
                 return fail(index, "native stage buffer access mode");
             emit(0xefc0000000000000ULL | predicate | (write ? u64{insn.Bits(32, 8)} : dest) |

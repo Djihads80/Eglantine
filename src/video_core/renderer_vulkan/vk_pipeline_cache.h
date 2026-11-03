@@ -188,6 +188,7 @@ private:
     /// (used_pipelines) are built at boot; the rest are built when first needed, and not stored
     /// again. Each built pipeline holds driver memory (title 1: 6.5k cached, a quarter used).
     std::unordered_set<u64> disk_pipelines;
+    bool keep_cached_pipelines{};
     std::unordered_map<u64, u8> used_pipelines; ///< Key hash -> sessions since it was last used
     std::unordered_set<const GraphicsPipeline*> used_this_session;
     std::filesystem::path used_pipelines_filename;

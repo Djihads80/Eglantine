@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdlib>
 #include <cstdio>
 
@@ -36,9 +37,21 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
     , channel_state{channel_state_}
     , signal_sync{false}
     , synced{false}
+    , keeps_snapshot_after_suspension{channel_state_.program_id == 0x04008E001F098000ULL}
 {}
 
 DmaPusher::~DmaPusher() = default;
+
+namespace {
+std::span<const u32> SubmittedWords(const CommandList& list, size_t index) {
+    if (index >= list.submitted_offsets.size() || list.submitted_offsets[index] == ~0U) {
+        return {};
+    }
+    const size_t size = list.command_lists[index].size;
+    return {reinterpret_cast<const u32*>(list.submitted_words.data()) + list.submitted_offsets[index],
+            size};
+}
+} // Anonymous namespace
 
 void DmaPusher::DispatchCalls() {
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
@@ -143,8 +156,11 @@ bool DmaPusher::Step() {
                     LOG_DEBUG(HW_GPU, "  previous entry ends {:08x}; next entry starts {:08x}",
                               fmt::join(prev_words, " "), fmt::join(next_words, " "));
                 }
-                if (park_split_methods) {
-                    ResolveSplitMethod(header.addr);
+                const bool intervening_call = dma_state.method_count != 0 &&
+                                              GPUVAddr{header.addr} != split_method_end &&
+                                              SplitMethodResumesLater(command_list);
+                if (park_split_methods || intervening_call || !parked_methods.empty()) {
+                    ResolveSplitMethod(header.addr, park_split_methods || intervening_call);
                 }
             }
             if (dma_pushbuffer_subindex < command_list.submit_hashes.size()) {
@@ -162,13 +178,18 @@ bool DmaPusher::Step() {
         // read: their words at submit time are an older frame's.
         const bool submitted = command_resume_offset == 0 &&
                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
-                               (command_list.snapshot_suspensions & 1) == 0 &&
-                               command_list.snapshot_suspensions ==
-                                   suspensions.load(std::memory_order_acquire) &&
+                               command_list.submitted_offsets[dma_pushbuffer_subindex] != ~0U &&
+                               (keeps_snapshot_after_suspension ||
+                                ((command_list.snapshot_suspensions & 1) == 0 &&
+                                 command_list.snapshot_suspensions ==
+                                     suspensions.load(std::memory_order_acquire))) &&
                                !IsGpuWrittenCommands(dma_state.dma_get,
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        if (command_resume_offset == 0) {
+            copied_prefix_words = 0;
+        }
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
@@ -176,6 +197,7 @@ bool DmaPusher::Step() {
                 header.size};
             RecordParsedEntry(header, commands);
             command_resume_offset += ProcessCommands(commands, 0);
+            copied_prefix_words = command_resume_offset;
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
@@ -188,9 +210,20 @@ bool DmaPusher::Step() {
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
-            FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            const size_t list_bytes = size_t{header.size} * sizeof(u32);
+            const bool gpu_written = IsGpuWrittenCommands(dma_state.dma_get, list_bytes);
+            FlushGpuWrittenCommands(dma_state.dma_get, list_bytes);
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            const auto submitted_list = SubmittedWords(command_list, dma_pushbuffer_subindex);
+            const bool rewritten_before_resume =
+                copied_prefix_words != 0 && submitted_list.size() == commands.size() &&
+                std::memcmp(commands.data(), submitted_list.data(),
+                            copied_prefix_words * sizeof(u32)) != 0;
+            if (!gpu_written && rewritten_before_resume) {
+                commands = {reinterpret_cast<const CommandHeader*>(submitted_list.data()),
+                            submitted_list.size()};
+            }
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -209,7 +242,7 @@ bool DmaPusher::Step() {
         // every frame, so a stale one could otherwise swallow the headers of a later entry.
         for (const auto& parked : parked_methods) {
             static std::atomic<u32> reported{};
-            if (reported.fetch_add(1) < 16) {
+            if (parked.from_previous_submission && reported.fetch_add(1) < 16) {
                 LOG_WARNING(HW_GPU,
                             "Submission ended with parked method {:#x} (sub {}, {} words left, "
                             "resume {:#x})",
@@ -217,7 +250,12 @@ bool DmaPusher::Step() {
                             parked.resume_address);
             }
         }
-        parked_methods.clear();
+        std::erase_if(parked_methods, [](const ParkedMethod& parked) {
+            return parked.from_previous_submission;
+        });
+        for (auto& parked : parked_methods) {
+            parked.from_previous_submission = true;
+        }
         dma_pushbuffer.pop();
         dma_pushbuffer_subindex = 0;
     } else {
@@ -302,7 +340,7 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
 // buffer (e.g. a compute dispatch) before the entry that carries the rest, which starts right
 // where the first one ended. An entry starting anywhere else is such a call: run it with a clean
 // method state and resume the unfinished method when the stream continues at that address.
-void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address) {
+void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address, bool park) {
     const auto continued = std::ranges::find(parked_methods, entry_address,
                                              &ParkedMethod::resume_address);
     std::optional<ParkedMethod> resume;
@@ -310,7 +348,7 @@ void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address) {
         resume = *continued;
         parked_methods.erase(continued);
     }
-    if (dma_state.method_count != 0 && entry_address != split_method_end) {
+    if (park && dma_state.method_count != 0 && entry_address != split_method_end) {
         if (parked_methods.size() == MaxParkedMethods) {
             static std::atomic<u32> reported{};
             if (reported.fetch_add(1) < 8) {
@@ -340,6 +378,74 @@ void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address) {
         dma_state.non_incrementing = resume->non_incrementing;
         dma_increment_once = resume->increment_once;
     }
+}
+
+static bool ParsesAsCommands(std::span<const u32> words, bool ends_exactly = false) {
+    size_t index = 0;
+    while (index < words.size()) {
+        if (words[index] == 0) {
+            ++index;
+            continue;
+        }
+        CommandHeader header{};
+        header.argument = words[index];
+        const SubmissionMode mode = header.mode;
+        const u32 method = header.method;
+        const u32 count = header.method_count;
+        switch (mode) {
+        case SubmissionMode::Increasing:
+        case SubmissionMode::NonIncreasing:
+        case SubmissionMode::IncreaseOnce:
+            if (count == 0 || method >= 0x1000 || (method < 0x40 && count > 0x40) ||
+                (mode == SubmissionMode::Increasing && method + count > 0x1000)) {
+                return false;
+            }
+            index += size_t{count} + 1;
+            break;
+        case SubmissionMode::Inline:
+            ++index;
+            break;
+        default:
+            return false;
+        }
+    }
+    return !ends_exactly || index == words.size();
+}
+
+bool DmaPusher::SplitMethodResumesLater(const CommandList& command_list) {
+    const auto& entries = command_list.command_lists;
+    const CommandListHeader& next = entries[dma_pushbuffer_subindex];
+    std::array<u32, 256> buffer{};
+    const size_t pending = dma_state.method_count;
+    const size_t next_size = next.size;
+    const size_t next_count = (std::min)(next_size, buffer.size());
+    memory_manager.ReadBlockUnsafe(next.addr, buffer.data(), next_count * sizeof(u32));
+    const std::span<const u32> next_words{buffer.data(), next_count};
+    if (next_count == 0 || next_words[0] == 0 || !ParsesAsCommands(next_words)) {
+        return false;
+    }
+    const bool next_is_complete = next_size <= buffer.size() && ParsesAsCommands(next_words, true);
+    const bool cannot_start_with_data =
+        next_size > pending && !ParsesAsCommands(next_words.subspan((std::min)(pending, next_count)));
+    for (size_t index = dma_pushbuffer_subindex + 1; index < entries.size(); ++index) {
+        const CommandListHeader& entry = entries[index];
+        if (GPUVAddr{entry.addr} != split_method_end || u64{entry.size} == 0) {
+            continue;
+        }
+        const size_t count = (std::min)(size_t{entry.size}, buffer.size());
+        memory_manager.ReadBlockUnsafe(entry.addr, buffer.data(), count * sizeof(u32));
+        const std::span<const u32> words{buffer.data(), count};
+        const bool rest_is_commands = ParsesAsCommands(words.subspan((std::min)(pending, count)));
+        if (next_is_complete && rest_is_commands) {
+            return true;
+        }
+        if (cannot_start_with_data) {
+            return true;
+        }
+        const bool first_is_data = words[0] == 0 || !ParsesAsCommands(words.first(1));
+        return first_is_data && rest_is_commands;
+    }
+    return cannot_start_with_data;
 }
 
 void DmaPusher::SetState(const CommandHeader& command_header) {

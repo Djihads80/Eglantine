@@ -1308,6 +1308,36 @@ VkBuffer TextureCacheRuntime::GetTemporaryBuffer(size_t needed_size) {
     return *buffers[level];
 }
 
+VkBuffer TextureCacheRuntime::GetZeroBuffer() {
+    if (zero_buffer) {
+        return *zero_buffer;
+    }
+    const VkBufferCreateInfo zero_ci = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = ZERO_BUFFER_SIZE,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    zero_buffer = memory_allocator.CreateBuffer(zero_ci, MemoryUsage::DeviceLocal);
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([buffer = *zero_buffer](vk::CommandBuffer cmdbuf) {
+        cmdbuf.FillBuffer(buffer, 0, VK_WHOLE_SIZE, 0);
+        const VkMemoryBarrier fill_barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                               fill_barrier);
+    });
+    return *zero_buffer;
+}
+
 VkImageView TextureCacheRuntime::GetOrCreateResolveShadow(VkImage msaa_image, VkFormat format,
                                                           VkExtent2D extent, u32 layers,
                                                           VkImageAspectFlags aspect_mask) {
@@ -2834,6 +2864,21 @@ void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
 
 void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
     UploadMemory(map.buffer, map.offset, copies);
+}
+
+void Image::ZeroRegions(std::span<const VideoCommon::BufferImageCopy> regions) {
+    std::vector<VideoCommon::BufferImageCopy> fitting;
+    fitting.reserve(regions.size());
+    for (const auto& region : regions) {
+        if (region.buffer_size <= TextureCacheRuntime::ZERO_BUFFER_SIZE) {
+            fitting.push_back(region);
+        }
+    }
+    if (fitting.empty()) {
+        return;
+    }
+    UploadMemory(runtime->GetZeroBuffer(), 0,
+                 std::span<const VideoCommon::BufferImageCopy>(fitting.data(), fitting.size()));
 }
 
 void Image::DownloadMemory(VkBuffer buffer, size_t offset,

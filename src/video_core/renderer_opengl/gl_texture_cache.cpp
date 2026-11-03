@@ -771,6 +771,22 @@ void Image::UploadMemory(const StagingBufferMap& map,
     UploadMemory(map.buffer, map.offset, copies);
 }
 
+void Image::ZeroRegions(std::span<const VideoCommon::BufferImageCopy> regions) {
+    if (gl_format == GL_NONE) {
+        return;
+    }
+    for (const VideoCommon::BufferImageCopy& region : regions) {
+        if (region.image_subresource.base_level >= gl_num_levels) {
+            continue;
+        }
+        glClearTexSubImage(texture.handle, region.image_subresource.base_level,
+                           region.image_offset.x, region.image_offset.y,
+                           region.image_subresource.base_layer, region.image_extent.width,
+                           region.image_extent.height, region.image_subresource.num_layers,
+                           gl_format, gl_type, nullptr);
+    }
+}
+
 void Image::DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
                            std::span<const VideoCommon::BufferImageCopy> copies) {
     std::array buffer_handles{buffer_handle};

@@ -9,4 +9,8 @@ namespace FileSys::SystemArchive {
 
 VirtualDir MiiModel();
 
+/// Switch 2's Mii resource system data, built from the Switch 1 Mii model archive's RomFS (the
+/// stand-in above when that is null).
+VirtualFile MiiResource(VirtualFile mii_model_romfs);
+
 } // namespace FileSys::SystemArchive

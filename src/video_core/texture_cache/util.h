@@ -82,6 +82,10 @@ struct OverlapResult {
                                                      u32 tile_width, u32 tile_height,
                                                      s32 tail_level);
 
+[[nodiscard]] std::vector<BufferImageCopy> UnmappedBlockRegions(
+    const ImageInfo& info, std::span<const std::pair<u64, u64>> ranges, size_t max_region_bytes,
+    u32 level_mask);
+
 /// Bytes UnswizzleImageRects writes for `rects`.
 [[nodiscard]] size_t UnswizzledRectsBytes(const ImageInfo& info, std::span<const LevelRect> rects);
 

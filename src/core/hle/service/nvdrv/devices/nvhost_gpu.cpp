@@ -446,6 +446,7 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             return value == nullptr || value[0] != '0';
         }();
         if (snapshot && channel_state->memory_manager && channel_state->payload) {
+            auto& memory_manager = *channel_state->memory_manager;
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
                 channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
@@ -456,10 +457,24 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             entries.submitted_words.resize(words);
             entries.submitted_offsets.reserve(entries.command_lists.size());
             size_t offset = 0;
+            auto& registry = Nx2GpuMemoryRegistry::Get();
             for (const auto& entry : entries.command_lists) {
+                const size_t bytes = size_t{entry.size} * sizeof(u32);
+                if (bytes == 0) {
+                    entries.submitted_offsets.push_back(~0U);
+                    continue;
+                }
+                void* const destination = entries.submitted_words.data() + offset;
+                if (memory_manager.IsFullyMappedRange(entry.addr.Value(), bytes)) {
+                    memory_manager.ReadBlockUnsafe(entry.addr.Value(), destination, bytes);
+                } else if (const auto cpu_address =
+                               registry.CpuAddressOf(entry.addr.Value(), bytes)) {
+                    system.ApplicationMemory().ReadBlockUnsafe(*cpu_address, destination, bytes);
+                } else {
+                    entries.submitted_offsets.push_back(~0U);
+                    continue;
+                }
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
-                channel_state->memory_manager->ReadBlockUnsafe(
-                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
                 offset += entry.size;
             }
         }

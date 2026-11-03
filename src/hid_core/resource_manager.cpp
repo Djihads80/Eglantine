@@ -164,6 +164,10 @@ std::shared_ptr<SevenSixAxis> ResourceManager::GetSevenSixAxis() const {
     return seven_six_axis;
 }
 
+std::shared_ptr<NpadImu> ResourceManager::GetNpadImu() const {
+    return npad_imu;
+}
+
 std::shared_ptr<SixAxis> ResourceManager::GetSixAxis() const {
     return six_axis;
 }
@@ -285,6 +289,7 @@ void ResourceManager::InitializeTouchScreenSampler() {
 void ResourceManager::InitializeConsoleSixAxisSampler() {
     console_six_axis = std::make_shared<ConsoleSixAxis>(system.HIDCore());
     seven_six_axis = std::make_shared<SevenSixAxis>(system);
+    npad_imu = std::make_shared<NpadImu>(system);
 
     console_six_axis->SetAppletResource(applet_resource, &shared_mutex);
 }
@@ -500,6 +505,7 @@ void ResourceManager::UpdateMotion(std::chrono::nanoseconds ns_late) {
     auto& core_timing = system.CoreTiming();
     six_axis->OnUpdate(core_timing);
     seven_six_axis->OnUpdate(core_timing);
+    npad_imu->OnUpdate();
     console_six_axis->OnUpdate(core_timing);
 }
 

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/common_types.h"
+#include "common/settings.h"
 #include "core/core_timing.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
@@ -219,6 +220,21 @@ Result SixAxis::IsSixAxisSensorAtRest(const Core::HID::SixAxisSensorHandle& sixa
     return ResultSuccess;
 }
 
+Result SixAxis::StoreSixAxisSensorCalibrationParameter(
+    const Core::HID::SixAxisSensorHandle& sixaxis_handle,
+    const Core::HID::SixAxisSensorCalibrationParameter& calibration) {
+    const auto is_valid = IsSixaxisHandleValid(sixaxis_handle);
+    if (is_valid.IsError()) {
+        LOG_ERROR(Service_HID, "Invalid handle, error_code={}", is_valid.raw);
+        return is_valid;
+    }
+
+    auto& sixaxis = GetSixaxisState(sixaxis_handle);
+    sixaxis.calibration = calibration;
+    sixaxis.has_calibration = true;
+    return ResultSuccess;
+}
+
 Result SixAxis::LoadSixAxisSensorCalibrationParameter(
     const Core::HID::SixAxisSensorHandle& sixaxis_handle,
     Core::HID::SixAxisSensorCalibrationParameter& calibration) const {
@@ -230,6 +246,9 @@ Result SixAxis::LoadSixAxisSensorCalibrationParameter(
 
     // TODO: Request this data to the controller. On error return 0xd8ca
     const auto& sixaxis = GetSixaxisState(sixaxis_handle);
+    if (!sixaxis.has_calibration && Settings::CurrentProgramIsSwitch2()) {
+        return ResultSixAxisCalibrationNotFound;
+    }
     calibration = sixaxis.calibration;
     return ResultSuccess;
 }

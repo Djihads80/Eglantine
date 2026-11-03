@@ -14,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "shader_recompiler/exception.h"
@@ -639,20 +640,38 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
-                                 const std::optional<Texture::TICEntry>& to) {
-        return from && to && from->format == to->format && from->Address() != 0 &&
-               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
-               to->IsBlockLinear();
+    using RTFormat = Tegra::RenderTargetFormat;
+    const auto format_of = [](const Texture::TICEntry& tic) -> std::optional<RTFormat> {
+        switch (tic.format) {
+        case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+        case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+        case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+        case Texture::TextureFormat::E5B9G9R9: return RTFormat::E5B9G9R9_FLOAT;
+        case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+        default: return std::nullopt;
+        }
+    };
+    const auto upscale_pair = [&](const std::optional<Texture::TICEntry>& from,
+                                  const std::optional<Texture::TICEntry>& to,
+                                  bool any_format = false) {
+        return from && to &&
+               (any_format ? format_of(*from) && format_of(*to) &&
+                                 to->format != Texture::TextureFormat::E5B9G9R9
+                           : from->format == to->format) &&
+               from->Address() != 0 && to->Address() != 0 && to->Width() > from->Width() &&
+               from->IsBlockLinear() && to->IsBlockLinear();
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
     bool fortunes_weave = false;
-    if (!upscale_pair(input, output)) {
+    const bool title_slots = upscale_pair(input, output, true);
+    bool found = title_slots;
+    if (!found) {
         input = image(0x328);
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
+        found = fortunes_weave;
     }
-    if (!upscale_pair(input, output)) {
+    if (!found) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
@@ -671,24 +690,34 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     }
     if (!input || !output)
         return false;
-    using RTFormat = Tegra::RenderTargetFormat;
-    RTFormat format{};
-    switch (input->format) {
-    case Texture::TextureFormat::A2B10G10R10: format = RTFormat::A2B10G10R10_UNORM; break;
-    case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
-    case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
-    case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
-    }
-    const auto surface = [&](const Texture::TICEntry& tic) {
+    const auto rect = [&](u32 offset, const Texture::TICEntry& tic) {
+        std::array<s32, 4> bounds{0, 0, static_cast<s32>(tic.Width()), static_cast<s32>(tic.Height())};
+        if (!title_slots || cbuf.size.Value() < 0x30) return bounds;
+        const u32 x = memory_manager.Read<u32>(cbuf_address + offset);
+        const u32 y = memory_manager.Read<u32>(cbuf_address + offset + 4);
+        const u64 width = u64{memory_manager.Read<u32>(cbuf_address + offset + 8)} + 1;
+        const u64 height = u64{memory_manager.Read<u32>(cbuf_address + offset + 12)} + 1;
+        if (width > 1 && height > 1 && x + width <= tic.Width() && y + height <= tic.Height()) {
+            bounds = {static_cast<s32>(x), static_cast<s32>(y), static_cast<s32>(x + width),
+                      static_cast<s32>(y + height)};
+        }
+        return bounds;
+    };
+    const auto source_rect = rect(0x10, *input);
+    const auto target_rect = rect(0x20, *output);
+    const auto input_format = format_of(*input), output_format = format_of(*output);
+    if (!input_format || !output_format || output->format == Texture::TextureFormat::E5B9G9R9)
+        return false;
+    const auto surface = [&](const Texture::TICEntry& tic, RTFormat surface_format) {
         Fermi2D::Surface result{};
-        result.format = format;
+        result.format = surface_format;
         result.linear = Fermi2D::MemoryLayout::BlockLinear;
         result.block_width.Assign(tic.block_width);
         result.block_height.Assign(tic.block_height);
         result.block_depth.Assign(tic.block_depth);
         result.depth = 1;
-        result.width = tic.Width();
+        const u32 gob_width = surface_format == RTFormat::R16G16B16A16_FLOAT ? 8 : 16;
+        result.width = title_slots ? Common::AlignUp(tic.Width(), gob_width) : tic.Width();
         result.height = tic.Height();
         result.addr_upper = static_cast<u32>(tic.Address() >> 32);
         result.addr_lower = static_cast<u32>(tic.Address());
@@ -722,14 +751,14 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                                    : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
-        .dst_x0 = 0,
-        .dst_y0 = 0,
-        .dst_x1 = static_cast<s32>(output->Width()),
-        .dst_y1 = static_cast<s32>(output->Height()),
-        .src_x0 = 0,
-        .src_y0 = 0,
-        .src_x1 = static_cast<s32>(input->Width()),
-        .src_y1 = static_cast<s32>(input->Height()),
+        .dst_x0 = target_rect[0],
+        .dst_y0 = target_rect[1],
+        .dst_x1 = target_rect[2],
+        .dst_y1 = target_rect[3],
+        .src_x0 = source_rect[0],
+        .src_y0 = source_rect[1],
+        .src_x1 = source_rect[2],
+        .src_y1 = source_rect[3],
     };
     // Debug: does the input hold anything? Download it once and count non-zero words.
     static const u32 sample_at = [] {
@@ -777,7 +806,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             (void)fake;
         }
     }
-    auto source = surface(*input);
+    auto source = surface(*input, *input_format);
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
     if (static const u64 override_source = [] {
             const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
@@ -801,14 +830,14 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
             dlss_motion_color != input->Address())
             return false;
-        Fermi2D::Surface motion = surface(*dlss_motion_vectors);
-        motion.format = RTFormat::R16G16_FLOAT;
-        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
-                                                     dlss_depth ? &*dlss_depth : nullptr,
+        Fermi2D::Surface motion = surface(*dlss_motion_vectors, RTFormat::R16G16_FLOAT);
+        return rasterizer->AccelerateTemporalUpscale(source, surface(*output, *output_format),
+                                                     motion, dlss_depth ? &*dlss_depth : nullptr,
                                                      dlss_jitter, {1.0f, 1.0f});
     };
     const bool done = upscale_temporally() ||
-                      rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
+                      rasterizer->AccelerateSurfaceCopy(source, surface(*output, *output_format),
+                                                        config);
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {

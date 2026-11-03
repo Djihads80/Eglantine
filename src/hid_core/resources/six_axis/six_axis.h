@@ -39,6 +39,9 @@ public:
         const Core::HID::SixAxisSensorHandle& sixaxis_handle, bool is_enabled);
     Result IsSixAxisSensorUnalteredPassthroughEnabled(
         const Core::HID::SixAxisSensorHandle& sixaxis_handle, bool& is_enabled) const;
+    Result StoreSixAxisSensorCalibrationParameter(
+        const Core::HID::SixAxisSensorHandle& sixaxis_handle,
+        const Core::HID::SixAxisSensorCalibrationParameter& calibration);
     Result LoadSixAxisSensorCalibrationParameter(
         const Core::HID::SixAxisSensorHandle& sixaxis_handle,
         Core::HID::SixAxisSensorCalibrationParameter& calibration) const;
@@ -65,7 +68,21 @@ private:
         bool unaltered_passthrough{false};
         Core::HID::SixAxisSensorFusionParameters fusion{};
         Core::HID::SixAxisSensorCalibrationParameter calibration{};
-        Core::HID::SixAxisSensorIcInformation ic_information{};
+        bool has_calibration{false};
+        Core::HID::SixAxisSensorIcInformation ic_information{
+            .angular_rate = 2000.0f,
+            .unknown_gyro_data1 = {-10.0f, -10.0f, -10.0f, 10.0f, 10.0f, 10.0f},
+            .unknown_gyro_data2 = {0.95f, -0.003f, -0.003f, -0.003f, 0.95f, -0.003f, -0.003f,
+                                   -0.003f, 0.95f},
+            .unknown_gyro_data3 = {1.05f, 0.003f, 0.003f, 0.003f, 1.05f, 0.003f, 0.003f, 0.003f,
+                                   1.05f},
+            .acceleration_range = 8.0f,
+            .unknown_accel_data1 = {-0.0612f, -0.0612f, -0.0612f, 0.0612f, 0.0612f, 0.0612f},
+            .unknown_accel_data2 = {0.95f, -0.003f, -0.003f, -0.003f, 0.95f, -0.003f, -0.003f,
+                                    -0.003f, 0.95f},
+            .unknown_accel_data3 = {1.05f, 0.003f, 0.003f, 0.003f, 1.05f, 0.003f, 0.003f, 0.003f,
+                                    1.05f},
+        };
         Core::HID::GyroscopeZeroDriftMode gyroscope_zero_drift_mode{
             Core::HID::GyroscopeZeroDriftMode::Standard};
     };

@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include <array>
+#include <mutex>
+
 #include "common/common_types.h"
 #include "common/vector_math.h"
 #include "common/typed_address.h"
@@ -22,6 +25,7 @@ class System;
 
 namespace Core::HID {
 class EmulatedConsole;
+struct ControllerMotion;
 } // namespace Core::HID
 
 namespace Service::HID {
@@ -67,6 +71,42 @@ private:
     Common::ProcessAddress transfer_memory{};
     Kernel::KProcess* transfer_memory_owner{};
     Core::HID::EmulatedConsole* console = nullptr;
+
+    Core::System& system;
+};
+
+class NpadImu final {
+public:
+    explicit NpadImu(Core::System& system_);
+    ~NpadImu();
+
+    void Enable(Common::ProcessAddress address, Kernel::KProcess* owner);
+    void Disable();
+    void OnUpdate();
+
+private:
+    struct Sample {
+        u64 sampling_number{};
+        u64 delta_time{};
+        Common::Vec<f32, 3> accel{};
+        Common::Vec<f32, 3> gyro{};
+    };
+    static_assert(sizeof(Sample) == 0x28, "Sample is an invalid size");
+
+    struct Ring {
+        u64 sampling_number{};
+        u64 write_index{};
+    };
+
+    void WriteSample(Common::ProcessAddress ring_address, Ring& ring,
+                     const Core::HID::ControllerMotion& motion);
+
+    std::mutex mutex;
+    std::array<Ring, 8> left_rings{};
+    std::array<Ring, 8> right_rings{};
+    Ring console_ring{};
+    Common::ProcessAddress buffer{};
+    Kernel::KProcess* buffer_owner{};
 
     Core::System& system;
 };
