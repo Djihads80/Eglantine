@@ -1188,7 +1188,7 @@ void RasterizerVulkan::UnmapMemory(DAddr addr, u64 size) {
     }
     {
         std::scoped_lock lock{buffer_cache.mutex};
-        buffer_cache.WriteMemory(addr, size);
+        buffer_cache.WriteMemory(addr, size, false);
     }
     pipeline_cache.OnCacheInvalidation(addr, size);
 }
