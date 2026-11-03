@@ -213,6 +213,8 @@ add_executable(yuzu
     util/url_request_interceptor.h
     util/util.cpp
     util/util.h
+    util/icon_search.cpp
+    util/icon_search.h
 
     user_data_migration.h user_data_migration.cpp
 

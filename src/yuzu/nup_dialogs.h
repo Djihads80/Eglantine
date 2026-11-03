@@ -4,6 +4,9 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <QByteArray>
 #include <QDialog>
@@ -14,12 +17,14 @@
 #include "common/common_types.h"
 #include "core/file_sys/nup_writer.h"
 
+class IconSearch;
 class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QPushButton;
 class QRadioButton;
+class QToolButton;
 
 // Square preview that accepts an image dropped on it or chosen with a click.
 class IconDropZone : public QWidget {
@@ -99,7 +104,8 @@ public:
 private:
     void ChooseIcon();
     void SetIconFromFile(const QString& path);
-    void ResetIcon();
+    void FindIcon();
+    void OnIconFound(const QByteArray& png, const QString& resolved_title);
     void ClearIcon();
     void UpdateIconPreview();
 
@@ -110,11 +116,15 @@ private:
 
     IconDropZone* icon_preview;
     QLabel* icon_hint;
-    QPushButton* reset_icon;
+    QPushButton* find_icon;
     QPushButton* clear_icon;
+    IconSearch* icon_search;
     QLineEdit* name_edit;
     QLineEdit* publisher_edit;
     QLineEdit* version_edit;
+    QToolButton* localized_toggle;
+    QWidget* localized_panel;
+    std::vector<std::pair<std::string, QLineEdit*>> localized_edits;
 };
 
 // Shown while a conversion runs. The bar spans the dialog; the labels show what is being

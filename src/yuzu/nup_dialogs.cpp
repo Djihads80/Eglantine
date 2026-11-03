@@ -26,10 +26,16 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QStyle>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <array>
+
 #include "common/fs/path_util.h"
+#include "yuzu/util/icon_search.h"
 
 namespace {
 
@@ -67,12 +73,7 @@ QPixmap RoundedPreview(const QPixmap& source, int size) {
 
 // The console distributes 256x256 JPEG icons. A picture that already is one is kept as is;
 // anything else is cropped to a square, scaled and re-encoded.
-QByteArray EncodeIcon(const QString& path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    const QByteArray raw = file.readAll();
+QByteArray EncodeIconData(const QByteArray& raw) {
     QImage image;
     if (!image.loadFromData(raw) || image.isNull()) {
         return {};
@@ -93,6 +94,44 @@ QByteArray EncodeIcon(const QString& path) {
     buffer.open(QIODevice::WriteOnly);
     flat.save(&buffer, "JPEG", 92);
     return out;
+}
+
+QByteArray EncodeIcon(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return EncodeIconData(file.readAll());
+}
+
+struct LocalizedLanguage {
+    const char* tag;
+    const char* name;
+};
+
+// The languages the console stores a name for; "en-us" is the Name field itself, and tags not
+// listed here are kept as stored.
+constexpr std::array<LocalizedLanguage, 15> LocalizedLanguages{{
+    {"en-gb", QT_TRANSLATE_NOOP("NupEditDialog", "English (UK)")},
+    {"ja", QT_TRANSLATE_NOOP("NupEditDialog", "Japanese")},
+    {"fr", QT_TRANSLATE_NOOP("NupEditDialog", "French")},
+    {"de", QT_TRANSLATE_NOOP("NupEditDialog", "German")},
+    {"es-419", QT_TRANSLATE_NOOP("NupEditDialog", "Spanish (Latin America)")},
+    {"es", QT_TRANSLATE_NOOP("NupEditDialog", "Spanish")},
+    {"it", QT_TRANSLATE_NOOP("NupEditDialog", "Italian")},
+    {"nl", QT_TRANSLATE_NOOP("NupEditDialog", "Dutch")},
+    {"fr-ca", QT_TRANSLATE_NOOP("NupEditDialog", "French (Canada)")},
+    {"pt", QT_TRANSLATE_NOOP("NupEditDialog", "Portuguese")},
+    {"ru", QT_TRANSLATE_NOOP("NupEditDialog", "Russian")},
+    {"ko", QT_TRANSLATE_NOOP("NupEditDialog", "Korean")},
+    {"zh-hant", QT_TRANSLATE_NOOP("NupEditDialog", "Chinese (Traditional)")},
+    {"zh-hans", QT_TRANSLATE_NOOP("NupEditDialog", "Chinese (Simplified)")},
+    {"pt-br", QT_TRANSLATE_NOOP("NupEditDialog", "Portuguese (Brazil)")},
+}};
+
+bool IsEditableLanguage(const std::string& tag) {
+    return std::ranges::any_of(LocalizedLanguages,
+                               [&](const auto& language) { return tag == language.tag; });
 }
 
 // The first dropped local file that Qt can read as an image.
@@ -506,15 +545,21 @@ NupEditDialog::NupEditDialog(const std::filesystem::path& archive, QWidget* pare
     icon_hint->setWordWrap(true);
     icon_hint->setEnabled(false);
     auto* choose_icon = new QPushButton(tr("Choose Icon..."));
-    reset_icon = new QPushButton(tr("Use Current"));
+    find_icon = new QPushButton(tr("Find Icon Online..."));
     clear_icon = new QPushButton(tr("Remove Icon"));
+    icon_search = new IconSearch(this);
     connect(choose_icon, &QPushButton::clicked, this, &NupEditDialog::ChooseIcon);
-    connect(reset_icon, &QPushButton::clicked, this, &NupEditDialog::ResetIcon);
+    connect(find_icon, &QPushButton::clicked, this, &NupEditDialog::FindIcon);
+    connect(icon_search, &IconSearch::RunningChanged, this, [this](bool running) {
+        find_icon->setEnabled(!running);
+        find_icon->setText(running ? tr("Searching...") : tr("Find Icon Online..."));
+    });
+    connect(icon_search, &IconSearch::IconSelected, this, &NupEditDialog::OnIconFound);
     connect(clear_icon, &QPushButton::clicked, this, &NupEditDialog::ClearIcon);
 
     auto* icon_buttons = new QVBoxLayout;
     icon_buttons->addWidget(choose_icon);
-    icon_buttons->addWidget(reset_icon);
+    icon_buttons->addWidget(find_icon);
     icon_buttons->addWidget(clear_icon);
     icon_buttons->addWidget(icon_hint);
     icon_buttons->addStretch();
@@ -540,7 +585,57 @@ NupEditDialog::NupEditDialog(const std::filesystem::path& archive, QWidget* pare
     form->setHorizontalSpacing(16);
     form->setVerticalSpacing(14);
     form->addRow(tr("Icon"), icon_row);
-    form->addRow(tr("Name"), name_edit);
+    localized_toggle = new QToolButton;
+    localized_toggle->setCheckable(true);
+    localized_toggle->setAutoRaise(true);
+    localized_toggle->setIcon(QIcon::fromTheme(
+        QStringLiteral("preferences-desktop-locale"),
+        QIcon::fromTheme(QStringLiteral("applications-education-language"),
+                         style()->standardIcon(QStyle::SP_FileDialogDetailedView))));
+    auto* name_row = new QHBoxLayout;
+    name_row->setSpacing(6);
+    name_row->addWidget(name_edit, 1);
+    name_row->addWidget(localized_toggle);
+
+    localized_panel = new QWidget;
+    auto* localized_form = new QFormLayout(localized_panel);
+    localized_form->setContentsMargins(0, 0, 0, 0);
+    localized_form->setVerticalSpacing(8);
+    int localized_set = 0;
+    for (const auto& language : LocalizedLanguages) {
+        auto* field = new QLineEdit;
+        field->setClearButtonEnabled(true);
+        for (const auto& [tag, name] : current.localized_titles) {
+            if (tag == language.tag) {
+                field->setText(QString::fromStdString(name));
+                ++localized_set;
+            }
+        }
+        localized_form->addRow(tr(language.name), field);
+        localized_edits.emplace_back(language.tag, field);
+    }
+    const auto update_placeholders = [this] {
+        const QString fallback = name_edit->text().trimmed();
+        for (const auto& [tag, field] : localized_edits) {
+            field->setPlaceholderText(fallback.isEmpty() ? tr("Same as Name") : fallback);
+        }
+    };
+    connect(name_edit, &QLineEdit::textChanged, this, update_placeholders);
+    update_placeholders();
+    localized_panel->setVisible(false);
+    connect(localized_toggle, &QToolButton::toggled, this, [this](bool shown) {
+        localized_panel->setVisible(shown);
+        // Recompute the layout first, otherwise the old height is kept and the extra space ends
+        // up between the rows.
+        layout()->activate();
+        resize(width(), minimumSizeHint().height());
+    });
+    localized_toggle->setToolTip(localized_set > 0
+                                     ? tr("Localized names (%1 set)").arg(localized_set)
+                                     : tr("Localized names"));
+
+    form->addRow(tr("Name"), name_row);
+    form->addRow(QString{}, localized_panel);
     form->addRow(tr("Publisher"), publisher_edit);
     form->addRow(tr("Version"), version_edit);
 
@@ -581,6 +676,25 @@ FileSys::Nup::MetadataEdit NupEditDialog::Edit() const {
     if (const auto name = name_edit->text().trimmed().toStdString(); name != current.title_name) {
         edit.title_name = name;
     }
+    // Tags the console has no field for stay as stored.
+    std::vector<std::pair<std::string, std::string>> localized;
+    for (const auto& entry : current.localized_titles) {
+        if (!IsEditableLanguage(entry.first)) {
+            localized.push_back(entry);
+        }
+    }
+    for (const auto& [tag, field] : localized_edits) {
+        if (const auto name = field->text().trimmed().toStdString(); !name.empty()) {
+            localized.emplace_back(tag, name);
+        }
+    }
+    auto stored = current.localized_titles;
+    auto wanted = localized;
+    std::ranges::sort(stored);
+    std::ranges::sort(wanted);
+    if (stored != wanted) {
+        edit.localized_titles = std::move(localized);
+    }
     if (const auto publisher = publisher_edit->text().trimmed().toStdString();
         publisher != current.publisher) {
         edit.publisher = publisher;
@@ -619,9 +733,21 @@ void NupEditDialog::SetIconFromFile(const QString& path) {
     UpdateIconPreview();
 }
 
-void NupEditDialog::ResetIcon() {
-    custom_icon.clear();
+void NupEditDialog::FindIcon() {
+    icon_search->Start(name_edit->text());
+}
+
+void NupEditDialog::OnIconFound(const QByteArray& png, const QString& resolved_title) {
+    const auto encoded = EncodeIconData(png);
+    if (encoded.isEmpty()) {
+        icon_hint->setText(tr("The icon that was found could not be read."));
+        return;
+    }
+    custom_icon = encoded;
     remove_icon = false;
+    if (!resolved_title.isEmpty()) {
+        name_edit->setText(resolved_title);
+    }
     UpdateIconPreview();
 }
 
