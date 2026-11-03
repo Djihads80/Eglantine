@@ -27,6 +27,7 @@ add_executable(tests
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
     video_core/vertex_repack.cpp
+    video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
     video_core/ampere_returns.cpp
     video_core/native_macro_fifo.cpp

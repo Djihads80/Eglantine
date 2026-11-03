@@ -46,7 +46,8 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
-inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms) {
+inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
+                                          bool geometry) {
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
     const u32 high_uniform_base = 216 - high_uniforms;
@@ -2832,12 +2833,62 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return finish(index); // the closing self-branch
             break;
         }
+        case 0x324: case 0x924: { // OUT: geometry output (register or immediate stream).
+            if (!geometry) return fail(index, "unsupported native opcode");
+            // Ampere: Rd 16-23 (the new output handle), Ra 24-31 (the old one), the stream in Rb
+            // 32-39 or the immediate 32-63; 78-79 emit (1), cut (2) or both, 0 is OUTFINAL.
+            // Maxwell OUT: Rd 0-7, Ra 8-15, stream Rb 20-27 or imm20 20-38, emit 39, cut 40. The
+            // host keeps no output handle, so OUTFINAL only passes the handle through.
+            const u32 type = insn.Bits(78, 2);
+            if (insn.Bits(80, 12) || insn.Bits(64, 14)) return fail(index, "native OUT mode");
+            const u32 a = insn.Bits(24, 8);
+            if (type == 0) {
+                if (dest != 255) emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{a} << 20));
+                break;
+            }
+            if (opcode == 0x324) {
+                emit(base(0xfbe0000000000000ULL) | (u64{a} << 8) | (u64{insn.Bits(32, 8)} << 20) |
+                     (u64{type} << 39));
+            } else {
+                if (insn.words[1] >= (1U << 19)) return fail(index, "native OUT stream immediate");
+                emit(base(0xf6e0000000000000ULL) | (u64{a} << 8) | (u64{insn.words[1]} << 20) |
+                     (u64{type} << 39));
+            }
+            break;
+        }
+        case 0x34e: { // LEPC Rd: the instruction's own address (64-bit, in Rd and Rd + 1).
+            // In geometry shaders it sets up an exit stub with 0x357; per thread nothing reads it.
+            if (!geometry) return fail(index, "unsupported native opcode");
+            if (insn.words[1] || insn.words[2]) return fail(index, "native LEPC mode");
+            if (dest != 255) {
+                emit(base(0x0100000000000000ULL) | (u64{15} << 12) | (u64{index * 16} << 20));
+                if (dest + 1 < 255) {
+                    emit(0x0100000000000000ULL | predicate | (dest + 1) | (u64{15} << 12));
+                }
+            }
+            break;
+        }
+        case 0x357: case 0x957: // Geometry exit stub: install (0x357) and finish (0x957) it.
+            // Per thread, with no output to finish, EXIT just ends the invocation.
+            if (!geometry) return fail(index, "unsupported native opcode");
+            emit(0x50b0000000000f00ULL | predicate);
+            break;
         case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
             // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
             // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
             // Kept as an nx2 pseudo instruction (Maxwell 0xefc0, free there) that the frontend
             // reads for the task or mesh stage: data/dest 0-7, Ra 8-15, offset 20-43, .32 44,
             // .ATTR 45, .SKEW 46, .O 47, write 48. Addresses are linear bytes in the region.
+            if (geometry) {
+                // A vertex's stage buffer entry, which only ALD reads: Ra passes through, as
+                // Maxwell's ISBERD does.
+                if (opcode != 0x923 || insn.Bits(75, 5) || insn.Bits(40, 24))
+                    return fail(index, "native geometry ISBERD mode");
+                if (dest != 255) {
+                    emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(24, 8)} << 20));
+                }
+                break;
+            }
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
             const bool output = insn.Bits(79, 1) != 0;
@@ -2915,11 +2966,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     return fail(static_cast<u32>(code.size()), main_exited ? "native program lacks captured library return" : "native program has no unconditional EXIT");
 }
 
-inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, bool geometry = false) {
     // Programs using uniform registers above UR27 are lowered again with mirrors for them.
     u32 high_uniforms = 0;
     for (;;) {
-        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms);
+        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms, geometry);
         if (lowered || lowered.high_uniform_registers <= high_uniforms) return lowered;
         high_uniforms = lowered.high_uniform_registers;
     }
