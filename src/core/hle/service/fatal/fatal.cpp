@@ -12,6 +12,7 @@
 #include "common/scm_rev.h"
 #include "common/swap.h"
 #include "core/core.h"
+#include "core/debugger/trace_hooks.h"
 #include "core/hle/service/fatal/fatal.h"
 #include "core/hle/service/fatal/fatal_p.h"
 #include "core/hle/service/fatal/fatal_u.h"
@@ -113,6 +114,14 @@ static void ThrowFatalError(Core::System& system, Result error_code, FatalType f
                             const FatalInfo& info) {
     LOG_ERROR(Service_Fatal, "Threw fatal error type {} with error code {:#x}", fatal_type,
               error_code.raw);
+    Core::Trace::NotifyCrash(
+        "fatal",
+        fmt::format("fatal type {} result {:#x} ({:04}-{:04d}) pc={:#x} lr/backtrace[0]={:#x}",
+                    static_cast<u32>(fatal_type), error_code.raw,
+                    2000 + static_cast<u32>(error_code.GetModule()),
+                    static_cast<u32>(error_code.GetDescription()), info.pc,
+                    info.backtrace_size != 0 ? info.backtrace[0] : 0),
+        nullptr);
 
     switch (fatal_type) {
     case FatalType::ErrorReportAndScreen:
