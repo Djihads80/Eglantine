@@ -11,6 +11,7 @@
 #include <array>
 #include <bit>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -30,6 +31,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "shader_recompiler/shader_info.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
@@ -57,11 +59,14 @@ constexpr u32 NUM_VERTEX_BUFFERS = 32;
 constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
-constexpr u32 NUM_STORAGE_BUFFERS = 16;
+// The shader recompiler can emit up to MAX_SSBOS descriptors per stage.
+constexpr u32 NUM_STORAGE_BUFFERS = static_cast<u32>(Shader::Info::MAX_SSBOS);
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
 static_assert(NUM_GRAPHICS_UNIFORM_BUFFERS <= 32, "fast bitmask must fit u32");
+static_assert(NUM_STORAGE_BUFFERS <= std::numeric_limits<u32>::digits,
+              "storage buffer masks must represent every descriptor");
 
 using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
 using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
