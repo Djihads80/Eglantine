@@ -8,6 +8,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -516,8 +517,9 @@ std::unique_ptr<Loader::AppLoader_DeconstructedRomDirectory> OpenLoader(
 
 class Discovery {
 public:
-    Discovery(const fs::path& dump_root_, std::vector<fs::path> excluded_)
-        : dump_root{dump_root_}, excluded{std::move(excluded_)} {}
+    Discovery(const fs::path& dump_root_, std::vector<fs::path> excluded_,
+              const Metadata& overrides_)
+        : dump_root{dump_root_}, excluded{std::move(excluded_)}, overrides{overrides_} {}
 
     Plan Run() {
         const auto base = FindDirectory(dump_root, "base");
@@ -678,6 +680,34 @@ private:
                 tlvs.emplace_back(TlvIcon, std::move(icon));
             }
         }
+
+        if (!overrides.title_name.empty()) {
+            SetTlv(tlvs, TlvTitleName, StringBytes(overrides.title_name));
+        }
+        if (!overrides.icon.empty()) {
+            SetTlv(tlvs, TlvIcon, overrides.icon);
+        }
+        if (!overrides.display_version.empty()) {
+            // The loader reports the newest update's version when there is one.
+            SetTlv(tlvs, TlvDisplayVersion, StringBytes(overrides.display_version));
+            std::optional<u32> newest;
+            for (u32 i = 0; i < plan.packages.size(); ++i) {
+                if (plan.packages[i].kind == KindUpdate &&
+                    (!newest || plan.packages[i].version >= plan.packages[*newest].version)) {
+                    newest = i;
+                }
+            }
+            if (newest && *newest != target) {
+                SetTlv(package_tlvs[*newest], TlvDisplayVersion,
+                       StringBytes(overrides.display_version));
+            }
+        }
+    }
+
+    static void SetTlv(std::vector<std::pair<u16, std::vector<u8>>>& tlvs, u16 type,
+                       std::vector<u8> payload) {
+        std::erase_if(tlvs, [type](const auto& tlv) { return tlv.first == type; });
+        tlvs.emplace_back(type, std::move(payload));
     }
 
     bool IsExcluded(const fs::path& path) const {
@@ -722,6 +752,7 @@ private:
 
     fs::path dump_root;
     std::vector<fs::path> excluded;
+    Metadata overrides;
     RealVfsFilesystem vfs;
     Plan plan;
     std::vector<std::vector<std::pair<u16, std::vector<u8>>>> package_tlvs;
@@ -838,7 +869,7 @@ public:
             for (const auto& path : {archive, part, journal}) {
                 excluded.push_back(fs::absolute(path).lexically_normal());
             }
-            plan = Discovery{dump_root, std::move(excluded)}.Run();
+            plan = Discovery{dump_root, std::move(excluded), options.metadata}.Run();
             layout = BuildLayout(plan);
             OpenNew();
         }
@@ -1419,6 +1450,68 @@ std::optional<fs::path> DumpRootFromMain(const fs::path& main) {
         return std::nullopt;
     }
     return root;
+}
+
+Metadata ProbeMetadata(const fs::path& dump_root) {
+    RealVfsFilesystem vfs;
+    const auto base = FindDirectory(dump_root, "base");
+    const auto updates = FindDirectory(dump_root, "updates");
+
+    // Newest update first, then the base (or a bare dump's root).
+    std::vector<std::pair<u64, fs::path>> update_dirs;
+    std::error_code ec;
+    if (!updates.empty()) {
+        for (const auto& entry : fs::directory_iterator(updates, ec)) {
+            const auto version = ParseDecimal(ToUtf8(entry.path().filename()));
+            if (version && entry.is_directory(ec)) {
+                update_dirs.emplace_back(*version, entry.path());
+            }
+        }
+    }
+    std::ranges::sort(update_dirs, std::greater<>{});
+    const fs::path base_dir = !base.empty() ? base : (updates.empty() ? dump_root : fs::path{});
+
+    Metadata result;
+    const auto probe = [&](const fs::path& dir, const std::string& label, bool names) {
+        const auto loader = OpenLoader(vfs, dir);
+        if (!loader) {
+            return;
+        }
+        if (result.display_version.empty()) {
+            std::string version;
+            if (loader->ReadDisplayVersion(version) == Loader::ResultStatus::Success &&
+                !version.empty()) {
+                result.display_version = version;
+                result.version_source = label;
+            }
+        }
+        if (names) {
+            NACP control;
+            if (result.title_name.empty() &&
+                loader->ReadControlData(control) == Loader::ResultStatus::Success) {
+                result.title_name = control.GetApplicationName();
+            }
+            std::vector<u8> icon;
+            if (result.icon.empty() &&
+                loader->ReadIcon(icon) == Loader::ResultStatus::Success) {
+                result.icon = std::move(icon);
+            }
+        }
+    };
+    for (const auto& [version, dir] : update_dirs) {
+        probe(dir, "update " + std::to_string(version), false);
+    }
+    if (!base_dir.empty()) {
+        probe(base_dir, "base", true);
+    }
+    // Names and icons fall back to the updates when the base has none.
+    for (const auto& [version, dir] : update_dirs) {
+        if (!result.title_name.empty() && !result.icon.empty()) {
+            break;
+        }
+        probe(dir, "update " + std::to_string(version), true);
+    }
+    return result;
 }
 
 fs::path DefaultArchivePath(const fs::path& dump_root) {

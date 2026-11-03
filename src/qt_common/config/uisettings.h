@@ -244,7 +244,7 @@ void SaveWindowState();
 void RestoreWindowState(std::unique_ptr<QtConfig>& qtConfig);
 
 // sync with uisettings.cpp
-extern const std::array<Shortcut, 33> default_hotkeys;
+extern const std::array<Shortcut, 32> default_hotkeys;
 
 } // namespace UISettings
 
