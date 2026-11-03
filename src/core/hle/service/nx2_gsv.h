@@ -1465,9 +1465,16 @@ struct Nx2NativeObjects {
         u32 gpu_maps{};     // outstanding 426 maps
         bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
     };
+    // Mappings 426 made for decoder images that went while the client still had them mapped,
+    // dropped a while later (INx2GraphicsSystemSession::RetireDecoderMapping).
+    struct RetiredMapping {
+        u64 address;
+        u64 size;
+    };
     std::mutex mutex;
     std::map<u32, Memory> memories;
     std::map<u32, Image> images;
+    std::deque<RetiredMapping> retired;
     u32 next_memory{1};
     u32 next_image{1};
 };
@@ -3271,6 +3278,10 @@ public:
             {905, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithFlag"},
             {906, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithVersion"},
             {1001, &INx2GraphicsSystemSession::Stub, "VideoInitialize2 (guessed)"},
+            // Their finalizers (fefw FinalizeVideoService: the result alone). The client closes
+            // its decoder sessions and destroys its pools (912) itself; nothing is left here.
+            {903, &INx2GraphicsSystemSession::Stub, "VideoFinalize"},
+            {1003, &INx2GraphicsSystemSession::Stub, "VideoFinalize2"},
             {1002, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession2 (guessed)"},
             {601, &INx2GraphicsSystemSession::Stub, "CameraInitialize (guessed)"},
             {602, &INx2GraphicsSystemSession::OpenCameraSession, "OpenCameraContext (guessed)"},
@@ -3374,6 +3385,19 @@ public:
     ~INx2GraphicsSystemSession() override {
         if (m_syncpt_poll) {
             system.CoreTiming().UnscheduleEvent(m_syncpt_poll);
+        }
+        if (m_retire_event) {
+            // Whatever is still to go goes now: the GPU thread unmaps it after its queued work.
+            system.CoreTiming().UnscheduleEvent(m_retire_event);
+            while (true) {
+                {
+                    std::scoped_lock lk{m_objects->mutex};
+                    if (m_objects->retired.empty()) {
+                        break;
+                    }
+                }
+                DropRetiredMapping(*m_objects);
+            }
         }
         for (auto* event : m_syncpt_events) {
             if (event != nullptr) {
@@ -3666,13 +3690,13 @@ private:
             std::scoped_lock lk{m_objects->mutex};
             for (auto& [image_id, image] : m_objects->images) {
                 if (image.memory == id && image.mapped_here) {
-                    unmaps.push_back(TakeDecoderMapping(image));
+                    unmaps.push_back(TakeDecoderMapping(image, id));
                 }
             }
             m_objects->memories.erase(id);
         }
         for (const auto& range : unmaps) {
-            DropDecoderMapping(range);
+            RetireDecoderMapping(range);
         }
         LOG_DEBUG(Service, "nx2:gsv 112 DestroyNativeMemory id {}", id);
         TipcReplyWords(ctx, {});
@@ -3873,13 +3897,18 @@ private:
                 unmap = TakeDecoderMapping(image->second);
             }
         }
+        if (unmap) {
+            LOG_INFO(Service, "nx2:gsv 427 decoder image {} unmapped", handle);
+        }
         LOG_DEBUG(Service, "nx2:gsv 427 image {} [{:#x}, {:#x}]", handle, Pair(w, 4), Pair(w, 6));
         DropDecoderMapping(unmap);
         TipcReplyWords(ctx, {});
     }
 
     // The range 426 mapped for an image, if it did; called with m_objects->mutex held.
-    std::optional<std::pair<u64, u64>> TakeDecoderMapping(Nx2NativeObjects::Image& image) {
+    // `freed`: the memory being destroyed (112), whose images can't keep the mapping.
+    std::optional<std::pair<u64, u64>> TakeDecoderMapping(Nx2NativeObjects::Image& image,
+                                                          std::optional<u32> freed = {}) {
         image.gpu_maps = 0;
         if (!std::exchange(image.mapped_here, false)) {
             return std::nullopt;
@@ -3888,15 +3917,91 @@ private:
         if (memory == m_objects->memories.end() || memory->second.address == 0) {
             return std::nullopt;
         }
-        return std::pair{memory->second.address + image.offset, image.size};
+        const u64 address = memory->second.address + image.offset;
+        // An image of a pool made again at the same address maps through this mapping (its 426
+        // found it in place): it keeps the mapping.
+        for (auto& [id, other] : m_objects->images) {
+            if (&other == &image || !other.decoder || other.gpu_maps == 0 || other.mapped_here ||
+                other.size != image.size || other.memory == freed) {
+                continue;
+            }
+            const auto other_memory = m_objects->memories.find(other.memory);
+            if (other_memory != m_objects->memories.end() &&
+                other_memory->second.address + other.offset == address) {
+                other.mapped_here = true;
+                return std::nullopt;
+            }
+        }
+        return std::pair{address, image.size};
     }
 
+    // Drops a mapping 426 made. The GPU thread unmaps it in order, after the command lists
+    // already submitted, and the texture cache frees its images once the GPU is past them. A
+    // mapping made since over the range owns it now and is left alone.
     static void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
-        if (range) {
-            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
-            registry.Unmap(range->first, range->second);
-            registry.ReleaseBacking(range->first, range->second);
+        if (range &&
+            !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().UnregisterIfUnchanged(range->first,
+                                                                                range->second)) {
+            LOG_INFO(Service, "nx2:gsv decoder image mapping {:#x}+{:#x} was replaced, kept",
+                     range->first, range->second);
         }
+    }
+
+    // A mapping 426 made for an image whose pool (912), memory (112) or image (430) went while the
+    // client still had it mapped: GPU work that reads it may still be queued or running (Fortune's
+    // Weave destroys its movie's pools right after its last releases, and Turnip crashed in
+    // VulkanWorker 0.7 s later when they went at once). fefw keeps such a pool until its mapping
+    // goes. Here it is dropped RetireDelay later, by then long done on the GPU, unless a pool
+    // made again at the address took it over meanwhile.
+    void RetireDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
+        if (!range) {
+            return;
+        }
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            m_objects->retired.push_back({range->first, range->second});
+        }
+        if (!m_retire_event) {
+            m_retire_event = Core::Timing::CreateEvent(
+                "nx2:gsv retire",
+                [objects = m_objects](s64, std::chrono::nanoseconds)
+                    -> std::optional<std::chrono::nanoseconds> {
+                    DropRetiredMapping(*objects);
+                    return std::nullopt;
+                });
+        }
+        // One event per mapping, in order: each drops the oldest.
+        system.CoreTiming().ScheduleEvent(RetireDelay, m_retire_event);
+        LOG_INFO(Service, "nx2:gsv decoder image mapping {:#x}+{:#x} goes in {} ms", range->first,
+                 range->second, RetireDelay.count());
+    }
+
+    static void DropRetiredMapping(Nx2NativeObjects& objects) {
+        std::optional<std::pair<u64, u64>> drop;
+        {
+            std::scoped_lock lk{objects.mutex};
+            if (objects.retired.empty()) {
+                return;
+            }
+            const auto retired = objects.retired.front();
+            objects.retired.pop_front();
+            drop = std::pair{retired.address, retired.size};
+            // A pool made again at the address maps through it (its 426 found it in place).
+            for (auto& [id, image] : objects.images) {
+                if (!image.decoder || image.gpu_maps == 0 || image.mapped_here ||
+                    image.size != retired.size) {
+                    continue;
+                }
+                const auto memory = objects.memories.find(image.memory);
+                if (memory != objects.memories.end() &&
+                    memory->second.address + image.offset == retired.address) {
+                    image.mapped_here = true;
+                    drop.reset();
+                    break;
+                }
+            }
+        }
+        DropDecoderMapping(drop);
     }
 
     // 911(preference[16], u32 count, u32 memory id) (nn::codec::InitializeDecoderImagePool):
@@ -3965,7 +4070,7 @@ private:
                 m_objects->images.erase(image);
             }
         }
-        DropDecoderMapping(unmap);
+        RetireDecoderMapping(unmap);
         TipcReplyWords(ctx, {});
     }
 
@@ -3973,6 +4078,7 @@ private:
     // NativeVideoService::DestroyImagePool, fefw 0b1ba0db76): the image and the images that follow
     // it in the same pool memory, so the decode thread no longer writes into memory the game
     // reuses. A title that frees the pool's images one by one finds the later ones gone.
+    // A GPU mapping 426 made for them goes RetireDelay later (RetireDecoderMapping).
     void DestroyDecoderImagePool(HLERequestContext& ctx) {
         const u32 first = ctx.CommandBuffer()[2];
         std::vector<std::optional<std::pair<u64, u64>>> unmaps;
@@ -3996,7 +4102,7 @@ private:
             }
         }
         for (const auto& range : unmaps) {
-            DropDecoderMapping(range);
+            RetireDecoderMapping(range);
         }
         LOG_INFO(Service, "nx2:gsv 912 decoder images {}..+{} destroyed", first, count);
         TipcReplyWords(ctx, {});
@@ -4047,6 +4153,9 @@ private:
     }
 
     static constexpr std::chrono::nanoseconds SyncptPollInterval{std::chrono::microseconds{500}};
+    static constexpr std::chrono::milliseconds RetireDelay{1000};
+
+    std::shared_ptr<Core::Timing::EventType> m_retire_event;
 
     std::shared_ptr<Nx2NativeObjects> m_objects{std::make_shared<Nx2NativeObjects>()};
     KernelHelpers::ServiceContext m_context;

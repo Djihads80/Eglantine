@@ -76,6 +76,34 @@ public:
         }
     }
 
+    // Undoes Register(address, size) if that mapping is still in place: unmaps it (on the GPU
+    // thread, after the command lists already submitted) and releases its backing unless another
+    // mapping of the same range shares it. A mapping made since over the range replaced it, and
+    // its GPU range and backing belong to that one now: then nothing is done (false).
+    bool UnregisterIfUnchanged(u64 address, u64 size) {
+        bool shared{};
+        {
+            std::scoped_lock lk{mutex};
+            const auto it = std::ranges::find_if(mappings, [&](const Mapping& m) {
+                return m.gpu_address == address && m.cpu_address == address && m.size == size;
+            });
+            if (it == mappings.end()) {
+                return false;
+            }
+            mappings.erase(it);
+            shared = std::ranges::any_of(mappings, [&](const Mapping& m) {
+                return m.cpu_address == address && m.size == size;
+            });
+            for (auto& [owner, listener] : listeners) {
+                listener.unmap(address, size);
+            }
+        }
+        if (!shared) {
+            ReleaseBacking(address, size);
+        }
+        return true;
+    }
+
     // Backing memory [cpu_address, +size) is about to be freed (its GPU mappings are gone): each
     // address space drops its SMMU mapping of it, in GPU-thread order.
     void ReleaseBacking(u64 cpu_address, u64 size) {
