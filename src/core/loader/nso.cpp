@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/common_funcs.h"
+#include "common/game_presets.h"
 #include "common/hex_util.h"
 #include "common/logging.h"
 #include "common/lz4_compression.h"
@@ -176,6 +177,71 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
+    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native
+    // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
+    // Match the instruction sequence instead of relying on a title-version-specific address.
+    const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    bool mkw_dynamic_fps_patch_applied = false;
+    if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
+        process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
+        const u32 mode = mkw_dynamic ? 0U : 2U;
+        const u32 mode_instruction = 0x52800008U | (mode << 5); // mov w8, #mode
+        const auto& text = nso_header.segments[0];
+        u8* const code = codeset.memory.data() + module_start + text.location;
+        const size_t count = text.size / sizeof(u32);
+        const auto word = [code](size_t index) {
+            u32 value;
+            std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
+            return value;
+        };
+        size_t mode_site = 0;
+        size_t mode_matches = 0;
+        for (size_t i = 2; i + 8 < count; ++i) {
+            if (word(i) != ModeLoadInsn || word(i - 2) != 0x6B01013F || // cmp w9, w1
+                (word(i - 1) & 0xFF00001F) != 0x54000001 ||             // b.ne
+                (word(i + 1) & 0xFF00001F) != 0x35000008) {             // cbnz w8
+                continue;
+            }
+            for (size_t j = i + 2; j < i + 8; ++j) {
+                if (word(j) == 0x52A84E08) { // mov w8, #60.0f
+                    mode_site = i;
+                    ++mode_matches;
+                    break;
+                }
+            }
+        }
+
+        size_t frame_time_site = 0;
+        size_t frame_time_matches = 0;
+        if (mode_matches == 1 && mkw_dynamic) {
+            for (size_t i = mode_site + 1; i < mode_site + 32 && i < count; ++i) {
+                if ((word(i) & 0xFFFFFFE0) == 0xF9409660) { // ldr xN, [x19, #0x128]
+                    frame_time_site = i;
+                    ++frame_time_matches;
+                }
+            }
+        }
+
+        if (mode_matches == 1 && (!mkw_dynamic || frame_time_matches == 1)) {
+            std::memcpy(code + mode_site * sizeof(u32), &mode_instruction,
+                        sizeof(mode_instruction));
+            if (mkw_dynamic) {
+                const u32 whole_frame_time = 0xF9407660 | (word(frame_time_site) & 0x1F);
+                std::memcpy(code + frame_time_site * sizeof(u32), &whole_frame_time,
+                            sizeof(whole_frame_time));
+                mkw_dynamic_fps_patch_applied = true;
+            }
+            LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
+                     mkw_dynamic ? "dynamic" : "30",
+                     text.location + mode_site * sizeof(u32));
+        } else {
+            LOG_WARNING(Loader,
+                        "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {})",
+                        mode_matches, frame_time_matches);
+        }
+    }
+
 #ifdef HAS_NCE
     // If we are computing the process code layout and using nce backend, patch.
     const auto& code = codeset.CodeSegment();
@@ -249,6 +315,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Load codeset for current process
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
+    if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);
+    }
     return load_base + image_size;
 }
 

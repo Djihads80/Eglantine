@@ -27,6 +27,7 @@
 
 #include "common/alignment.h"
 #include "common/div_ceil.h"
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -1818,8 +1819,17 @@ private:
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
-        const u32 swap_interval =
-            forced_interval != 0 ? forced_interval : std::clamp<u32>(timing >> 16, 1, 4);
+        const auto& process = Kernel::GetCurrentProcess(kernel);
+        const bool mkw_dynamic =
+            process.GetProgramId() == Settings::MarioKartWorldProgramId &&
+            process.IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
+        u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
+        if (mkw_dynamic) {
+            swap_interval = 1;
+        }
+        if (forced_interval != 0) {
+            swap_interval = forced_interval;
+        }
         const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
