@@ -4297,7 +4297,9 @@ void MainWindow::OnGameListExtractNup(const std::string& game_path) {
                         this, tr("Extraction Complete"),
                         tr("The NUP was extracted. You can delete the NUP file if you no longer "
                            "need it."));
-                    OnGameListRefresh();
+                    // Only a new loose dump can appear, so one rescan is enough. The full refresh
+                    // also rescans external content and the firmware on the UI thread.
+                    game_list->RefreshGameDirectory();
                     break;
                 case FileSys::Nup::ExtractResult::Cancelled:
                     break;
@@ -4387,7 +4389,10 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
                 case FileSys::Nup::EditResult::Success:
                     QMessageBox::information(this, tr("Edit Complete"),
                                              tr("The NUP metadata was updated."));
-                    OnGameListRefresh();
+                    // The cached name and icon are keyed by title, so they must go; the rest is
+                    // one rescan instead of the full refresh.
+                    QtCommon::Game::ResetMetadata(false);
+                    game_list->RefreshGameDirectory();
                     break;
                 case FileSys::Nup::EditResult::NoChange:
                 case FileSys::Nup::EditResult::Cancelled:
