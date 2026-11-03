@@ -16,6 +16,7 @@
 
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
+#include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 #include "video_core/renderer_vulkan/vk_fsr3_upscaler.h"
 #ifdef EGLANTINE_STREAMLINE
 #include "video_core/renderer_vulkan/vk_streamline_dlss.h"
@@ -117,6 +118,14 @@ public:
     /// True when TemporalUpscale would use the depth (FSR 3.1 not forced off and not failed).
     [[nodiscard]] bool WantsTemporalUpscaleDepth() const;
 
+    /// True while TemporalUpscale would use NVIDIA DLSS (on, Streamline running, not failed).
+    [[nodiscard]] bool UsesNvidiaDlss() const;
+
+    /// Records a health check of a game's DLSS network output against its input (both sampled in
+    /// the GENERAL layout) and returns an earlier check's result once the GPU has finished it.
+    [[nodiscard]] std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(ImageView& input,
+                                                                              ImageView& output);
+
     void CopyImage(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
 
     void CopyImageMSAA(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
@@ -209,6 +218,8 @@ public:
                          std::array<f32, 2> motion_scale);
     std::unique_ptr<Fsr3Upscaler> fsr3_upscaler;
     bool fsr3_unsupported{};
+    /// The game DLSS network's health check (ProbeGameDlssOutput), created on first use.
+    std::unique_ptr<DlssNetworkProbe> dlss_network_probe;
     std::optional<std::chrono::steady_clock::time_point> fsr3_last_evaluation;
 
     /// Draws an upscaler's RGBA16F output into the DLSS output and returns it to GENERAL.
