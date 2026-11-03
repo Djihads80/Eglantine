@@ -304,7 +304,9 @@ struct Nx2VideoDecoder::Impl {
 
 Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<Impl>()} {
     impl->name = std::string{mime};
-    if (Nx2IsAv1Mime(mime)) {
+    // AV1 goes to libgav1 where FFmpeg has no libdav1d (Android's FFmpeg package); FFmpeg's own
+    // "av1" decoder only drives hardware decoders.
+    if (Nx2IsAv1Mime(mime) && avcodec_find_decoder_by_name("libdav1d") == nullptr) {
         auto av1 = std::make_unique<libgav1::Decoder>();
         libgav1::DecoderSettings settings;
         settings.threads =
