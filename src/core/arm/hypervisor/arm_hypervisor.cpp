@@ -266,6 +266,14 @@ bool ArmHypervisor::EmulateSystemRegister(u64 esr) {
     return true;
 }
 
+static bool IsMapped(Kernel::KProcess* process, u64 vaddr) {
+    const auto& page_table = process->GetPageTable().GetImpl();
+    if ((vaddr >> page_table.GetAddressSpaceBits()) != 0) {
+        return false;
+    }
+    return page_table.entries[vaddr >> Memory::YUZU_PAGEBITS].Type() != Common::PageType::Unmapped;
+}
+
 static bool IsRasterizerCached(Kernel::KProcess* process, u64 vaddr) {
     const auto& page_table = process->GetPageTable().GetImpl();
     if ((vaddr >> page_table.GetAddressSpaceBits()) != 0) {
@@ -641,6 +649,13 @@ HaltReason ArmHypervisor::HandleGuestException(Kernel::KThread* thread) {
             spsr |= PstateSoftwareStep;
             retry = true;
         }
+        // The GPU thread can track or untrack the page between the checks above (protected and
+        // tracked when mapping was tried, untracked by the time it was looked up): every check
+        // failed for a mapped page and the access was skipped, so the game read a stale value.
+        // Retry while the page table says it is mapped; the state settles by the next fault.
+        if (!retry && m_fault_repeat < 64 && IsMapped(process, page)) {
+            retry = true;
+        }
         if (retry) {
             return_to(elr);
             if (!RunFlushStub()) {
@@ -656,12 +671,14 @@ HaltReason ArmHypervisor::HandleGuestException(Kernel::KThread* thread) {
         }
 
         // Like NCE, skip data accesses that can't be satisfied instead of halting the game.
+        const auto& page_table = process->GetPageTable().GetImpl();
+        const u32 page_type = (page >> page_table.GetAddressSpaceBits()) == 0
+                                  ? static_cast<u32>(page_table.entries[page >> 12].Type())
+                                  : ~0U;
         LOG_ERROR(Core_ARM,
                   "Hypervisor: unhandled data abort at pc={:#x} address={:#x} "
                   "(esr={:#x}, page type {}, attempt {}), skipping",
-                  elr, far, esr,
-                  static_cast<u32>(process->GetPageTable().GetImpl().entries[page >> 12].Type()),
-                  m_fault_repeat);
+                  elr, far, esr, page_type, m_fault_repeat);
         return_to(elr + 4);
         return {};
     }
@@ -765,6 +782,10 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
                 hr |= HandleGuestException(thread);
             } else if (ec == ExceptionClassSoftwareStepLower) {
                 FinishTrackedAccess();
+                // A stepped access that faults again completes the step on the vector's first
+                // instruction: deliver that exception before acting on an interrupt, or the
+                // thread is saved with the vector's PC and resumes there at EL0.
+                check_in_vector();
             } else if (ec == ExceptionClassBrk64) {
                 hr |= HaltReason::InstructionBreakpoint;
             } else if (ec == ExceptionClassWfx) {
