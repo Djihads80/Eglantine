@@ -9,7 +9,8 @@ EDEN_NX2_FRAME_CAPTURE=<frames> for a preview, EDEN_NX2_DIAG_SAMPLES=1 for the p
 
     python3 -I tools/nx2/shader_lab.py --diag-dir <dir> [--dump-dir <dumps>] [--frames <frames>]
 
-and open http://127.0.0.1:8765. The emulator writes <dir>/diag-state.json once a second and re-reads
+and open the address it prints (also in <dir>/lab-url.txt). With EDEN_NX2_LAB=1 the emulator starts
+it for you (EDEN_NX2_LAB=open also opens the browser) and it exits with the emulator. The emulator writes <dir>/diag-state.json once a second and re-reads
 <dir>/ablate.txt and <dir>/inspect.txt when they change; this tool only edits those files (and
 labels.json). Nothing here touches the game's own files. Programs are identified by their dump key,
 a hash of the code, which stays the same between runs (addresses do not).
@@ -23,6 +24,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -154,25 +157,109 @@ class Lab:
         return text
 
     def latest_frame(self):
-        """The newest frame capture as PNG bytes (needs ImageMagick), or None."""
+        """The most recently written frame capture as PNG bytes (needs ImageMagick), or None."""
         if not self.frames_dir:
             return None
+        newest = None
         try:
-            names = sorted(name for name in os.listdir(self.frames_dir) if name.endswith(".tga"))
+            with os.scandir(self.frames_dir) as entries:
+                for entry in entries:
+                    if entry.name.endswith(".tga") and entry.is_file(follow_symlinks=False):
+                        stamp = entry.stat(follow_symlinks=False)
+                        if newest is None or stamp.st_mtime_ns > newest[0].st_mtime_ns:
+                            newest = (stamp, entry.path)
         except OSError:
             return None
-        if not names:
+        if newest is None:
             return None
-        source = os.path.join(self.frames_dir, names[-1])
-        target = self.path(os.path.join("preview", hashlib.sha1(source.encode()).hexdigest()[:8] + ".png"))
+        stamp, source = newest
+        # Frame names repeat from run to run, so the cache key includes when the file was written.
+        key = hashlib.sha1(f"{source}:{stamp.st_mtime_ns}:{stamp.st_size}".encode()).hexdigest()[:12]
+        target = self.path(os.path.join("preview", key + ".png"))
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if not os.path.exists(target):
             try:
                 subprocess.run(["magick", source, "-resize", "960x", target], check=True, timeout=30)
             except (OSError, subprocess.SubprocessError):
                 return None
+            for name in os.listdir(os.path.dirname(target)):
+                if name != key + ".png":
+                    try:
+                        os.unlink(os.path.join(os.path.dirname(target), name))
+                    except OSError:
+                        pass
         with open(target, "rb") as file:
             return file.read()
+
+    # What each "clear" button deletes: only files this workflow creates, never subfolders the user
+    # made, and never the toggles (ablate.txt, inspect.txt) or labels in the diag folder.
+    CLEARABLE = {
+        "diag": (r"^(draw-list-\d+\.tsv|diag-state\.json(\.tmp)?|lab\.log|draw-list)$", ("dis", "preview")),
+        "dumps": (r"^[0-9a-f]{16}-(gfx|cs)-[0-9a-f]+\.bin$|^rejected-[0-9a-f]+\.bin$", ()),
+        "frames": (r"^nx2-(frame-\d+\.tga|dump-[0-9a-f]+\.bin)$", ()),
+    }
+
+    def folder(self, what):
+        return {"diag": self.dir, "dumps": self.dump_dir, "frames": self.frames_dir}.get(what)
+
+    def clear_plan(self, what):
+        """(folder, [files], [lab-owned subfolders]) a clear would remove, or an error string."""
+        folder = self.folder(what)
+        if what not in self.CLEARABLE:
+            return "unknown folder"
+        if not folder:
+            return {"diag": "no diag folder", "dumps": "start the lab with --dump-dir",
+                    "frames": "start the lab with --frames"}[what]
+        folder = os.path.realpath(folder)
+        parts = [part for part in folder.split(os.sep) if part]
+        if len(parts) < 3 or folder == os.path.realpath(os.path.expanduser("~")):
+            return f"refusing to clear {folder}"
+        if not os.path.isdir(folder):
+            return f"{folder} does not exist"
+        pattern, subfolders = self.CLEARABLE[what]
+        files = []
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if entry.is_file(follow_symlinks=False) and re.match(pattern, entry.name):
+                    files.append(entry.path)
+        return folder, files, [os.path.join(folder, name) for name in subfolders
+                               if os.path.isdir(os.path.join(folder, name))
+                               and not os.path.islink(os.path.join(folder, name))]
+
+    def clear_info(self, what):
+        plan = self.clear_plan(what)
+        if isinstance(plan, str):
+            return {"error": plan}
+        folder, files, subfolders = plan
+        size = 0
+        for path in files:
+            try:
+                size += os.path.getsize(path)
+            except OSError:
+                pass
+        return {"path": folder, "files": len(files), "bytes": size}
+
+    def clear(self, what):
+        plan = self.clear_plan(what)
+        if isinstance(plan, str):
+            return {"error": plan}
+        folder, files, subfolders = plan
+        removed = 0
+        for path in files:
+            try:
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                pass
+        for path in subfolders:
+            for name in os.listdir(path):
+                try:
+                    os.unlink(os.path.join(path, name))
+                except OSError:
+                    pass
+        self.dumps = {}
+        self.disassembly = {}
+        return {"path": folder, "removed": removed}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -203,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
             if not KEY.match(key):
                 return self.send("bad key", "text/plain", 400)
             self.send(self.lab.disassemble(key), "text/plain; charset=utf-8")
+        elif url.path == "/api/clearinfo":
+            self.send(json.dumps(self.lab.clear_info((query.get("what") or [""])[0])))
         elif url.path == "/api/frame":
             png = self.lab.latest_frame()
             if png is None:
@@ -226,6 +315,8 @@ class Handler(BaseHTTPRequestHandler):
             self.lab.set_keys("inspect.txt", keys, bool(body.get("on")), "")
         elif self.path == "/api/label" and keys:
             self.lab.set_label(keys[0], str(body.get("label") or "")[:80])
+        elif self.path == "/api/clear":
+            return self.send(json.dumps(self.lab.clear(str(body.get("what") or ""))))
         elif self.path == "/api/capture":
             open(self.lab.path("draw-list"), "a").close()
         else:
@@ -238,12 +329,36 @@ def main():
     parser.add_argument("--diag-dir", required=True, help="the emulator's EDEN_NX2_DIAG_DIR")
     parser.add_argument("--dump-dir", help="the emulator's EDEN_NX2_SHADER_DUMP (for disassembly)")
     parser.add_argument("--frames", help="the emulator's EDEN_NX2_FRAME_CAPTURE (for the preview)")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8765, help="first port to try (the next 19 are tried if busy)")
+    parser.add_argument("--parent-pid", type=int, help="exit when this process (the emulator) is gone")
+    parser.add_argument("--open", action="store_true", help="open the page in the default browser")
     args = parser.parse_args()
     os.makedirs(args.diag_dir, exist_ok=True)
     Handler.lab = Lab(args.diag_dir, args.dump_dir, args.frames)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Shader lab on http://127.0.0.1:{args.port} (diag dir {args.diag_dir})")
+    server = None
+    for port in range(args.port, args.port + 20):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            continue
+    if server is None:
+        sys.exit(f"No free port from {args.port} to {args.port + 19}")
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    with open(os.path.join(args.diag_dir, "lab-url.txt"), "w", encoding="utf-8") as file:
+        file.write(url + "\n")
+    print(f"Shader lab on {url} (diag dir {args.diag_dir})", flush=True)
+    if args.parent_pid:
+        def watch():
+            while True:
+                time.sleep(3)
+                try:
+                    os.kill(args.parent_pid, 0)
+                except OSError:
+                    os._exit(0)
+        threading.Thread(target=watch, daemon=True).start()
+    if args.open:
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -277,7 +392,10 @@ pre{background:var(--code);padding:8px;border-radius:6px;overflow:auto;max-heigh
 @media (max-width:800px){main{flex-direction:column}#left{border-right:0;border-bottom:1px solid var(--line)}}
 </style></head><body>
 <header><b>Shader lab</b><span id="meta" class="mut"></span><span class="sp"></span>
-<button id="cap" title="Write the next frame's draw list">Capture frame</button></header>
+<button id="cap" title="Write the next frame's draw list">Capture frame</button>
+<button data-clear="diag" title="Delete draw lists, the state file and caches (keeps hidden/inspect lists and labels)">Clear diag</button>
+<button data-clear="dumps" title="Delete the shader dump files">Clear dumps</button>
+<button data-clear="frames" title="Delete the frame captures">Clear frames</button></header>
 <main>
 <div id="left"><div id="tools">
  <span id="kinds"></span>
@@ -321,6 +439,14 @@ $("#hall").onclick=()=>post("/api/ablate",{keys:shown.filter(p=>p.key!=="0".repe
 $("#hhalf").onclick=()=>post("/api/ablate",{keys:shown.slice(0,Math.ceil(shown.length/2)).filter(p=>p.key!=="0".repeat(16)).map(p=>p.key),on:true});
 $("#uall").onclick=()=>post("/api/ablate",{keys:S.ablated,on:false});
 $("#cap").onclick=()=>post("/api/capture",{});
+for(const b of document.querySelectorAll("[data-clear]"))b.onclick=async()=>{const what=b.dataset.clear;
+ const i=await (await fetch("/api/clearinfo?what="+what)).json();
+ if(i.error){alert(i.error);return}
+ const mb=(i.bytes/1048576).toFixed(1);
+ const warn=what==="dumps"?"\n\nThe game writes a dump when it first translates a program, so clear dumps before launching the game, not during a run.":what==="diag"?"\n\nHidden/inspected lists and labels are kept.":"";
+ if(!confirm(`Delete ${i.files} file(s), ${mb} MB, from\n${i.path}?${warn}`))return;
+ const r=await (await fetch("/api/clear",{method:"POST",body:JSON.stringify({what})})).json();
+ alert(r.error||`Removed ${r.removed} file(s).`);disCache={};refresh()};
 function cur(){return S.programs.find(p=>p.key+p.kind===sel)}
 async function drawDetail(){const p=cur();if(!p){$("#detail").textContent="Not seen yet.";return}
  const label=S.labels[p.key]||"";
