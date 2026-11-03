@@ -143,7 +143,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
         if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896 || opcode == 0x8a5) {
-            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892)
+            // A guarded ULEA without .HI or a carry out lowers to one guarded ISCADD, which
+            // leaves R253 to hold the guest predicate (Pokemon Pokopia's fullscreen passes).
+            const bool guarded_lea = (opcode == 0x291 || opcode == 0x891) && !insn.Bits(80, 1) &&
+                                     insn.Bits(81, 3) == 7;
+            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892 && !guarded_lea)
                 return fail(index, "native uniform arithmetic predication");
             uniform_guard = insn.Bits(12, 4) != 7;
             rewritten_uniform = true;
