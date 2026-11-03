@@ -34,10 +34,22 @@ jobs:
     timeout-minutes: 10
     outputs:
       code_changed: ${{ steps.filter.outputs.code_changed }}
+      ids: ${{ steps.ids.outputs.ids }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 2
+      # TSan is slow and still noisy, so pull requests run only ASan + UBSan; TSan runs on pushes,
+      # the weekly schedule and manual dispatch.
+      - id: ids
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            echo 'ids=["asan-ubsan"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ids=["asan-ubsan","tsan"]' >> "$GITHUB_OUTPUT"
+          fi
       - id: filter
         env:
           EVENT: ${{ github.event_name }}
@@ -57,9 +69,7 @@ jobs:
   sanitize:
     name: ${{ matrix.name }}
     needs: changes
-    # TSan is slow and still noisy, so pull requests run only ASan + UBSan; TSan runs on pushes,
-    # the weekly schedule and manual dispatch.
-    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' && (matrix.id != 'tsan' || github.event_name != 'pull_request') }}
+    if: ${{ !cancelled() && needs.changes.outputs.code_changed != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -69,9 +79,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        id: ${{ fromJSON(needs.changes.outputs.ids) }}
         include:
-          - name: ASan + UBSan
-            id: asan-ubsan
+          - id: asan-ubsan
+            name: ASan + UBSan
             flags: -fsanitize=address,undefined -fno-sanitize-recover=undefined
             # Fibers switch stacks; the use-after-return fake stack does not follow them.
             control: |
@@ -80,8 +91,8 @@ jobs:
             options: >-
               ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1
               UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
-          - name: TSan
-            id: tsan
+          - id: tsan
+            name: TSan
             flags: -fsanitize=thread
             control: |
               #include <thread>
