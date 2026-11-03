@@ -1,0 +1,49 @@
+name: pr-template
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-template-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Pull request template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Reads only the pull request event, so no PR code is checked out or run. It warns instead of
+      # failing until the maintainers decide it should block.
+      - name: Check the description
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = (context.payload.pull_request.body || '').replace(/<!--[\s\S]*?-->/g, '');
+            const problems = [];
+            for (const item of body.matchAll(/^\s*[-*+]\s*\[ \]\s*(.+)$/gm)) {
+              problems.push(`Unchecked: ${item[1].trim()}`);
+            }
+            if (!/^\s*[-*+]?\s*\[[xX]\]/m.test(body)) {
+              problems.push('The template checklist is missing.');
+            }
+            if (!/AI-assisted:\s*(yes|no)\b/i.test(body)) {
+              problems.push('Answer "AI-assisted:" with yes or no.');
+            }
+            for (const name of ['Summary', 'Tested']) {
+              const match = body.match(new RegExp(`^#{1,6}\s*${name}\s*$([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))`, 'im'));
+              if (!match || !match[1].trim()) {
+                problems.push(`Fill in the "${name}" section.`);
+              }
+            }
+            for (const problem of problems) {
+              core.warning(problem);
+            }
+            await core.summary
+              .addHeading('Pull request template')
+              .addRaw(problems.length ? problems.map((p) => `- ${p}`).join('\n') : 'All template items are filled in.', true)
+              .write();
