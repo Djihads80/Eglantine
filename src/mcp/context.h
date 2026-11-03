@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <stop_token>
 #include <string>
 
 namespace Core {
@@ -26,6 +27,8 @@ struct ToolContext {
     std::string session_id; ///< MCP session making the call.
     /// The server's live Allow Writes flag, for work that outlasts the call (background routes).
     const std::atomic<bool>* live_writes = nullptr;
+    /// Set for background work (routes, A/B tests): input steps end early when it is requested.
+    std::stop_token stop;
 
     /// True when a system is set, powered on and not shutting down.
     [[nodiscard]] bool GameRunning() const;

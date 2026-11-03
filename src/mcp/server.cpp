@@ -310,6 +310,10 @@ Server::Server(Core::System& system_, Host& host_, ServerConfig config_)
         },
     });
     options.bearer_token = config.bearer_token;
+    options.on_session_end = [](const std::string& session_id) {
+        StopSessionRoutes(session_id);
+        StopSessionAbTest(session_id);
+    };
     protocol = std::make_unique<Protocol>(registry, std::move(options), [this] { return MakeContext(); });
 }
 

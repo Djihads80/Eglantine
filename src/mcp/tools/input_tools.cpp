@@ -320,6 +320,18 @@ std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps) {
     if (total_ms > 60000) {
         return "sequence longer than 60 s; split it into several calls";
     }
+    // Background work passes a stop token: a stopped route lets go of the pad within ~50 ms.
+    const auto wait = [&](int ms) {
+        const auto until = std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds{std::clamp(ms, 0, 60000)};
+        while (std::chrono::steady_clock::now() < until) {
+            if (ServerStopping() || ctx.stop.stop_requested()) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        return true;
+    };
     for (const auto& step : steps) {
         std::vector<VirtualButton> buttons;
         for (const auto& b : step.value("buttons", json::array())) {
@@ -336,7 +348,7 @@ std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps) {
             pad->SetStickPosition(npad, VirtualStick::Right, step["right"][0].get<float>(),
                                   step["right"][1].get<float>());
         }
-        SleepMs(step.value("hold_ms", 120));
+        const bool held = wait(step.value("hold_ms", 120));
         for (const auto b : buttons) {
             pad->SetButtonState(npad, b, false);
         }
@@ -346,7 +358,9 @@ std::string RunInputSteps(ToolContext& ctx, size_t npad, const json& steps) {
         if (step.contains("right")) {
             pad->SetStickPosition(npad, VirtualStick::Right, 0.0f, 0.0f);
         }
-        SleepMs(step.value("wait_ms", 0));
+        if (!held || !wait(step.value("wait_ms", 0))) {
+            return "stopped";
+        }
     }
     LogInput(ctx, fmt::format("sequence of {} steps ({} ms)", steps.size(), total_ms));
     return {};

@@ -117,6 +117,7 @@ struct AbTestJob {
     json rows = json::array(); ///< Table rows finished so far
     json result;               ///< Full result once finished
     steady_clock::time_point started{};
+    std::string session; ///< MCP session that started it
 };
 
 /// The process-wide ab_test slot.
@@ -481,6 +482,7 @@ void MeasureValue(ToolContext& ctx, const AbConfig& cfg, size_t index,
 /// reboots back when a test value was booted and the test may still drive the game). Catches
 /// everything: an exception escaping a background thread would terminate the emulator.
 json RunAbTest(ToolContext ctx, const AbConfig& cfg, std::stop_token stop) {
+    ctx.stop = stop; // routes and input steps it runs end early when it is stopped
     const auto started = steady_clock::now();
     Settings::BasicSetting* setting = FindSetting(cfg.setting);
     if (setting == nullptr) {
@@ -696,6 +698,7 @@ ToolResult AbTest(ToolContext& ctx, const json& args) {
     }
     job.state = "running";
     job.background = background;
+    job.session = ctx.session_id;
     job.setting = cfg.setting;
     job.values = cfg.values;
     job.index = 0;
@@ -786,6 +789,16 @@ ToolResult AbTestStop(ToolContext&, const json&) {
 }
 
 } // namespace
+
+void StopSessionAbTest(const std::string& session) {
+    // Not joined: the input it sends stops at once through the stop token, but restoring the
+    // setting may reboot the game, which can take a while.
+    auto& job = Job();
+    std::scoped_lock lock{job.mutex};
+    if (job.state == "running" && job.session == session) {
+        job.stop_source.request_stop();
+    }
+}
 
 void StopAbTestWork() {
     auto& job = Job();

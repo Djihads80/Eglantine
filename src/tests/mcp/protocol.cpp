@@ -307,7 +307,15 @@ TEST_CASE("MCP ending a session releases its control lease", "[mcp]") {
         .handler = [](ToolContext&, const json&) { return ToolResult::Text("driving"); },
     });
     ControlLease lease;
-    Protocol p{registry, {}, [&lease] {
+    std::string ended;
+    bool lease_held_at_end = false;
+    ProtocolOptions options;
+    // The session's background work is stopped before its lease is freed.
+    options.on_session_end = [&](const std::string& id) {
+        ended = id;
+        lease_held_at_end = lease.Current().has_value();
+    };
+    Protocol p{registry, options, [&lease] {
                    ToolContext c;
                    c.control = &lease;
                    return c;
@@ -320,6 +328,8 @@ TEST_CASE("MCP ending a session releases its control lease", "[mcp]") {
     del.path = "/mcp";
     del.headers["mcp-session-id"] = a;
     REQUIRE(p.Handle(del).status == 204);
+    REQUIRE(ended == a);
+    REQUIRE(lease_held_at_end);
     REQUIRE_FALSE(lease.Current().has_value());
 }
 
@@ -379,4 +389,15 @@ TEST_CASE("MCP every built-in tool has a valid definition", "[mcp]") {
         REQUIRE(def["name"] == tool.name);
         REQUIRE(def.contains("inputSchema"));
     });
+}
+
+TEST_CASE("MCP env_switches only lists the emulator's own variables", "[mcp]") {
+    ToolRegistry registry;
+    RegisterAllTools(registry);
+    const Tool* env = registry.Find("env_switches");
+    REQUIRE(env != nullptr);
+    ToolContext ctx;
+    REQUIRE(env->handler(ctx, json{{"prefix", ""}}).is_error);
+    REQUIRE(env->handler(ctx, json{{"prefix", "PATH"}}).is_error);
+    REQUIRE_FALSE(env->handler(ctx, json{{"prefix", "EDEN_NX2_"}}).is_error);
 }

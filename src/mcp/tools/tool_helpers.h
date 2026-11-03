@@ -116,6 +116,10 @@ std::optional<u64> ResolveGuestAddress(ToolContext& ctx, const std::string& expr
 // abtest_tools.cpp
 /// Stops a running ab_test and waits for it (server shutdown: it uses the host).
 void StopAbTestWork();
+/// Asks an ab_test started by `session` to stop (the session ended); does not wait.
+void StopSessionAbTest(const std::string& session);
+/// Stops and waits for the background route `session` started, if any (the session ended).
+void StopSessionRoutes(const std::string& session);
 
 // debugger_tools.cpp
 /// Debugger state (attached, running/paused, breakpoints, recent hits) for status and dashboard.

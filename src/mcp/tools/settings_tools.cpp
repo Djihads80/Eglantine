@@ -13,6 +13,7 @@
 
 #include "common/settings.h"
 #include "mcp/context.h"
+#include "mcp/control.h"
 #include "mcp/host.h"
 #include "mcp/timeline.h"
 #include "mcp/tool_registry.h"
@@ -187,7 +188,8 @@ ToolResult ApplyChanges(ToolContext& ctx, const json& changes, bool apply) {
         out["reboot_needed"] = true;
     }
     ToolResult r = ToolResult::Structured(std::move(out));
-    r.is_error = any_error && changes.size() == 1;
+    // Any failed entry fails the call; the per-entry results say which ones applied.
+    r.is_error = any_error;
     return r;
 }
 
@@ -213,6 +215,12 @@ ToolResult DebugKnobs(ToolContext& ctx, const json& args) {
     if (value != before) {
         if (!ctx.writes_allowed) {
             return ToolResult::Error("changing knobs needs MCP writes (Tools > MCP Server > Allow Writes)");
+        }
+        // Reading is free; changing needs the control lease like the other state changes.
+        ControlLease::Holder holder;
+        if (ctx.control != nullptr && !ctx.session_id.empty() &&
+            !ctx.control->Touch(ctx.session_id, holder)) {
+            return ToolResult::Error("another agent holds the control lease (control_status)");
         }
         knobs.SetValue(value);
         if (ctx.timeline) {
@@ -262,10 +270,14 @@ ToolResult SetDeterminism(ToolContext& ctx, const json& args) {
     return ApplyChanges(ctx, changes, true);
 }
 
-/// env_switches: environment variables of this process whose names start with prefix
-/// (case-sensitive, default "EDEN_").
+/// env_switches: the emulator's own EDEN_* environment variables, optionally narrowed by a longer
+/// prefix. Other variables are never returned (the environment can hold unrelated credentials).
 ToolResult EnvSwitches(ToolContext&, const json& args) {
     const std::string prefix = args.value("prefix", "EDEN_");
+    if (!prefix.starts_with("EDEN_")) {
+        return ToolResult::Error("prefix must start with EDEN_ (only the emulator's own "
+                                 "switches are listed)");
+    }
     json vars = json::object();
 #ifdef _WIN32
     char** env = _environ;
@@ -371,10 +383,12 @@ void RegisterSettingsTools(ToolRegistry& registry) {
     registry.Add(Tool{
         .name = "env_switches",
         .title = "Environment switches",
-        .description = "Environment variables in effect for this emulator process (default prefix "
-                       "EDEN_), i.e. which EDEN_NX2_* diagnostics and workarounds are on.",
+        .description = "The emulator's EDEN_* environment variables, i.e. which EDEN_NX2_* "
+                       "diagnostics and workarounds are on. prefix narrows the list and must start "
+                       "with EDEN_; other variables are never returned.",
         .input_schema = {{"type", "object"},
-                         {"properties", {{"prefix", {{"type", "string"}}}}},
+                         {"properties",
+                          {{"prefix", {{"type", "string"}, {"pattern", "^EDEN_"}}}}},
                          {"additionalProperties", false}},
         .annotations = {.read_only = true, .idempotent = true},
         .handler = EnvSwitches,

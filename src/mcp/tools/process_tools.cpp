@@ -278,8 +278,10 @@ void RegisterProcessTools(ToolRegistry& registry) {
         .input_schema = {{"type", "object"},
                          {"properties", {{"thread_id", {{"type", "integer"}, {"minimum", 0}}}}},
                          {"additionalProperties", false}},
-        .annotations = {.read_only = true},
+        // Pausing the game is a state change: it needs the lease (like pause), not writes.
+        .annotations = {},
         .requires_game = true,
+        .requires_control = true,
         .handler = Backtrace,
     });
 }

@@ -974,6 +974,7 @@ struct BackgroundRoute {
     json results = json::array();
     std::string state; ///< running / done / failed / stopped
     steady_clock::time_point started{};
+    std::string session; ///< MCP session that started it (empty from the frontend's menu)
 };
 
 /// The process-wide background route slot.
@@ -1041,10 +1042,11 @@ ToolResult RouteRun(ToolContext& ctx, const json& args) {
         bg.results = json::array();
         bg.state = "running";
         bg.started = steady_clock::now();
-        ToolContext copy = ctx;
-        bg.thread = std::jthread([copy, name, steps](std::stop_token stop) {
+        bg.session = ctx.session_id;
+        bg.thread = std::jthread([copy = ctx, name, steps](std::stop_token stop) mutable {
             json results = json::array();
             bool ok = false;
+            copy.stop = stop; // input steps end early when the route is stopped
             // An exception escaping this thread would terminate the emulator.
             try {
                 ok = ExecuteRoute(copy, name, steps, stop, results);
@@ -1108,12 +1110,16 @@ ToolResult RouteStatus(ToolContext&, const json&) {
     return ToolResult::Structured(std::move(out));
 }
 
-/// Stops the background route if one runs. Returns whether one did.
-bool StopBackgroundRoute() {
+/// Stops the background route (only if `session` started it, when given) and waits for it.
+/// Returns whether one was stopped.
+bool StopBackgroundRoute(const std::string* session = nullptr) {
     auto& bg = Background();
     std::jthread thread;
     {
         std::scoped_lock lock{bg.mutex};
+        if (session != nullptr && bg.session != *session) {
+            return false;
+        }
         thread = std::move(bg.thread);
     }
     if (!thread.joinable()) {
@@ -1627,6 +1633,10 @@ json BaselineCheck(ToolContext& ctx, const std::string& name, double threshold, 
                 {"threshold", threshold},
                 {"pass", score >= threshold},
                 {"baseline_png", entry.value("png", "")}};
+}
+
+void StopSessionRoutes(const std::string& session) {
+    StopBackgroundRoute(&session);
 }
 
 void StopGameStateWork() {

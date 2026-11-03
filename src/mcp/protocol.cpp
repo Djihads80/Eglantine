@@ -136,7 +136,11 @@ HttpResponse Protocol::Handle(const HttpRequest& request) {
         bool erased = false;
         {
             std::scoped_lock lock{sessions_mutex};
-            erased = sessions.erase(*id) != 0;
+            if (const auto it = sessions.find(*id); it != sessions.end()) {
+                it->second.stop.request_stop();
+                sessions.erase(it);
+                erased = true;
+            }
         }
         if (erased) {
             ReleaseLease(*id);
@@ -353,6 +357,15 @@ json Protocol::HandleToolsCall(const json& id, const json& params,
 
     ToolContext context = context_factory ? context_factory() : ToolContext{};
     context.session_id = session_id;
+    // The session's stop token: ending the session stops input this call is still sending.
+    bool session_live = session_id.empty();
+    {
+        std::scoped_lock lock{sessions_mutex};
+        if (const auto it = sessions.find(session_id); it != sessions.end()) {
+            context.stop = it->second.stop.get_token();
+            session_live = true;
+        }
+    }
     // Cheap refusals come first, so a refused call never takes the control lease.
     const auto refusal = [&](const ToolContext& c) -> std::optional<ToolResult> {
         if (tool->requires_write && !c.writes_allowed) {
@@ -366,6 +379,10 @@ json Protocol::HandleToolsCall(const json& id, const json& params,
         return std::nullopt;
     };
     const auto lease_refusal = [&]() -> std::optional<ToolResult> {
+        // A call whose session ended meanwhile must not take the freed lease.
+        if (tool->requires_control && (!session_live || context.stop.stop_requested())) {
+            return ToolResult::Error("This MCP session has ended; initialize a new one.");
+        }
         ControlLease::Holder holder;
         if (!tool->requires_control || !context.control ||
             context.control->Touch(session_id, holder)) {
@@ -425,6 +442,7 @@ std::string Protocol::CreateSession(std::string protocol_version) {
                     return a.second.last_used < b.second.last_used;
                 });
             evicted = oldest->first;
+            oldest->second.stop.request_stop();
             sessions.erase(oldest);
         }
         sessions.emplace(id,
@@ -437,6 +455,11 @@ std::string Protocol::CreateSession(std::string protocol_version) {
 }
 
 void Protocol::ReleaseLease(const std::string& session_id) {
+    // First stop work the session left running (a background route could otherwise keep
+    // sending input after another agent takes control), then free its lease.
+    if (options.on_session_end) {
+        options.on_session_end(session_id);
+    }
     if (!context_factory) {
         return;
     }

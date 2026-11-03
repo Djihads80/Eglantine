@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,6 +70,9 @@ struct ProtocolOptions {
     std::string bearer_token;
     size_t max_body_bytes = 1 << 20;
     size_t max_sessions = 16;
+    /// Called when a session ends (DELETE or eviction), before its control lease is freed, to
+    /// stop background work it started.
+    std::function<void(const std::string& session_id)> on_session_end;
 };
 
 /// Transport-independent MCP server core: Streamable HTTP request rules, sessions, version
@@ -108,6 +112,8 @@ private:
     struct Session {
         std::string protocol_version;
         std::chrono::steady_clock::time_point last_used;
+        /// Requested when the session ends: input its calls are still sending stops.
+        std::stop_source stop;
     };
 
     /// Validates a POST body and session, then dispatches requests. Notifications get 202.
