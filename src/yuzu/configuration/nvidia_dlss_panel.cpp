@@ -166,16 +166,21 @@ public:
                 .size = U32(*directory, at + 24),
                 .offset = U32(*directory, at + 42),
             };
+            const size_t extra_end = at + 46 + name_length + extra_length;
+            if (extra_end + comment_length > directory->size()) {
+                error = "bad zip directory";
+                return false;
+            }
             const std::string name = directory->substr(at + 46, name_length);
             // Zip64 sizes and offset, in this order, for the fields that overflowed.
-            const size_t extra_end = at + 46 + name_length + extra_length;
             for (size_t extra = at + 46 + name_length; extra + 4 <= extra_end;) {
                 const u16 id = U16(*directory, extra);
                 const u16 length = U16(*directory, extra + 2);
+                const size_t record_end = std::min<size_t>(extra + 4 + length, extra_end);
                 if (id == 0x0001) {
                     size_t field = extra + 4;
                     for (u64* value : {&entry.size, &entry.compressed, &entry.offset}) {
-                        if (*value == 0xFFFFFFFF) {
+                        if (*value == 0xFFFFFFFF && field + 8 <= record_end) {
                             *value = U64(*directory, field);
                             field += 8;
                         }
