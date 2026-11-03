@@ -152,8 +152,12 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
                 for (const auto& candidate : updates->GetSubdirectories()) {
                     const std::string name = candidate->GetName();
                     u64 version{0};
-                    const auto parsed = std::from_chars(name.data(), name.data() + name.size(), version);
-                    if (parsed.ec != std::errc{}) {
+                    const auto parsed =
+                        std::from_chars(name.data(), name.data() + name.size(), version);
+                    // from_chars stops at the first non digit and still reports success, so a
+                    // directory called "655360_old" or "999999.bak" would be accepted with its
+                    // leading digits. Require the whole name to be the number.
+                    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size()) {
                         continue;
                     }
                     if (version >= newest_version) {
