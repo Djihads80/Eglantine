@@ -333,6 +333,7 @@ size_t GpuSplit::Execute(const u64* entry) {
 
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
+    on_back_thread = true;
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
     system->RegisterHostThread();
@@ -348,6 +349,10 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             // The front usually sends more within microseconds: spin briefly before sleeping.
             for (u32 spins = 0; spins < 8192 && available == read_position; ++spins) {
                 Pause();
+                available = published.load(std::memory_order_acquire);
+            }
+            if (available == read_position && idle_hook != nullptr) {
+                idle_hook(idle_argument);
                 available = published.load(std::memory_order_acquire);
             }
             if (available == read_position) {
