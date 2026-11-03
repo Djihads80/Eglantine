@@ -33,6 +33,7 @@
 #include <zlib.h>
 
 #include "common/common_types.h"
+#include "common/fs/fs_util.h"
 #include "common/logging.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "yuzu/configuration/nvidia_dlss_panel.h"
@@ -441,7 +442,8 @@ void NvidiaDlssPanel::Download() {
 
     QStringList names;
     for (const std::string& entry : wanted) {
-        names << QString::fromStdString(std::filesystem::path{entry}.filename().string());
+        names << QString::fromStdString(
+            Common::FS::PathToUTF8String(std::filesystem::path{entry}.filename()));
     }
     QDialog dialog(this);
     dialog.setWindowTitle(Tr("Download NVIDIA DLSS"));
@@ -517,7 +519,7 @@ void NvidiaDlssPanel::Download() {
             file.write(contents->data(), static_cast<std::streamsize>(contents->size()));
             if (!file) {
                 progress.close();
-                fail("could not write " + partial.string());
+                fail("could not write " + Common::FS::PathToUTF8String(partial));
                 return;
             }
         }
@@ -526,18 +528,18 @@ void NvidiaDlssPanel::Download() {
         if (!signed_ok) {
             std::filesystem::remove(partial, ec);
             progress.close();
-            fail(target.filename().string() + " is not signed by NVIDIA");
+            fail(Common::FS::PathToUTF8String(target.filename()) + " is not signed by NVIDIA");
             return;
         }
         std::filesystem::rename(partial, target, ec);
         if (ec) {
             std::filesystem::remove(partial, ec);
             progress.close();
-            fail("could not save " + target.string());
+            fail("could not save " + Common::FS::PathToUTF8String(target));
             return;
         }
-        LOG_INFO(Frontend, "Downloaded {} from NVIDIA's Streamline {} release", target.string(),
-                 RELEASE_VERSION);
+        LOG_INFO(Frontend, "Downloaded {} from NVIDIA's Streamline {} release",
+                 Common::FS::PathToUTF8String(target), RELEASE_VERSION);
     }
     progress.setValue(1000);
     progress.close();

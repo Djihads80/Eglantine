@@ -15,6 +15,7 @@
 
 #include <fmt/format.h>
 
+#include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -168,7 +169,7 @@ std::filesystem::path UseAppModel(const DlssFiles& files) {
     if (!current) {
         if (!IsSignedByNvidia(files.app_model)) {
             LOG_WARNING(Render_Vulkan, "The NVIDIA app's DLSS {} is not signed by NVIDIA",
-                        files.app_model.string());
+                        Common::FS::PathToUTF8String(files.app_model));
             return {};
         }
         std::filesystem::create_directories(dir, ec);
@@ -176,7 +177,7 @@ std::filesystem::path UseAppModel(const DlssFiles& files) {
                                    std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
             LOG_WARNING(Render_Vulkan, "Could not copy the NVIDIA app's DLSS to {}: {}",
-                        target.string(), ec.message());
+                        Common::FS::PathToUTF8String(target), ec.message());
             return {};
         }
     }
@@ -186,12 +187,13 @@ std::filesystem::path UseAppModel(const DlssFiles& files) {
 bool Load(State& state, const std::filesystem::path& path) {
     if (!IsStreamlineModule(path)) {
         LOG_ERROR(Render_Vulkan, "{} is not signed by NVIDIA; not loading it",
-                  path.string());
+                  Common::FS::PathToUTF8String(path));
         return false;
     }
     state.module = LoadLibraryW(path.c_str());
     if (!state.module) {
-        LOG_ERROR(Render_Vulkan, "Could not load {} (error {})", path.string(), GetLastError());
+        LOG_ERROR(Render_Vulkan, "Could not load {} (error {})", Common::FS::PathToUTF8String(path),
+                  GetLastError());
         return false;
     }
     Api& api = state.api;
@@ -298,7 +300,7 @@ bool Start() {
             LOG_WARNING(Render_Vulkan,
                         "NVIDIA DLSS is on, but sl.interposer.dll (NVIDIA Streamline) is not in "
                         "{} (the Graphics settings can download it); using FSR 3.1",
-                        files.folder.string());
+                        Common::FS::PathToUTF8String(files.folder));
             return false;
         }
         if (!Load(state, files.interposer)) {
@@ -313,7 +315,7 @@ bool Start() {
             }
         } else if (files.model.empty()) {
             LOG_WARNING(Render_Vulkan, "No nvngx_dlss.dll in {} and no DLSS from the NVIDIA app",
-                        files.folder.string());
+                        Common::FS::PathToUTF8String(files.folder));
         }
     }
 
@@ -371,7 +373,8 @@ bool Start() {
     sl::FeatureVersion version{};
     api.get_feature_version(sl::kFeatureDLSS, version);
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline {} started from {} (DLSS {})",
-             version.versionSL.toStr(), std::filesystem::path{state.plugin_dir}.string(),
+             version.versionSL.toStr(),
+             Common::FS::PathToUTF8String(std::filesystem::path{state.plugin_dir}),
              version.versionNGX.toStr());
     state.started = true;
     return true;
