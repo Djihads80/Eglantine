@@ -28,6 +28,7 @@ add_executable(tests
     video_core/memory_tracker.cpp
     video_core/vertex_repack.cpp
     video_core/ampere_returns.cpp
+    video_core/ampere_compute_lowering.cpp
     video_core/native_macro_fifo.cpp
     video_core/uniform_stream_reuse.cpp
     video_core/shader_invalidation.cpp
