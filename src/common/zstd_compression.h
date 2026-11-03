@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -44,6 +45,18 @@ namespace Common::Compression {
  * @return the decompressed data.
  */
 [[nodiscard]] std::vector<u8> DecompressDataZSTD(std::span<const u8> compressed);
+
+/**
+ * Decompresses a single Zstandard frame that declares its content size.
+ *
+ * @param compressed the compressed source memory region.
+ * @param max_size   the largest content size to accept.
+ *
+ * @return the decompressed data, or nullopt if the frame is invalid, does not declare its size,
+ *         or declares more than max_size bytes.
+ */
+[[nodiscard]] std::optional<std::vector<u8>> TryDecompressDataZSTD(std::span<const u8> compressed,
+                                                                   std::size_t max_size);
 
 /**
  * Decompresses a single Zstandard frame into a caller-provided buffer of known size.

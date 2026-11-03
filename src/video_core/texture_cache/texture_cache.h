@@ -125,6 +125,7 @@ template <class P>
 void TextureCache<P>::RunGarbageCollector() {
     bool high_priority_mode = false;
     bool aggressive_mode = false;
+    bool evict_old_costly = false;
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
     const auto Configure = [&](bool allow_aggressive) {
@@ -139,7 +140,8 @@ void TextureCache<P>::RunGarbageCollector() {
         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
-    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode](ImageId image_id) {
+    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
+                          &evict_old_costly](ImageId image_id) {
         if (num_iterations == 0) {
             return true;
         }
@@ -149,7 +151,8 @@ void TextureCache<P>::RunGarbageCollector() {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
-        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
+        if ((!aggressive_mode && !evict_old_costly && True(image.flags & ImageFlagBits::CostlyLoad)) ||
+            (!high_priority_mode && must_download)) {
             return false;
         }
         if (must_download) {
@@ -227,6 +230,15 @@ void TextureCache<P>::RunGarbageCollector() {
         }
     };
     Configure(false);
+    static const u64 old_age = [] {
+        const char* value = std::getenv("EDEN_NX2_TC_OLD_AGE");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : 1800ULL;
+    }();
+    if (high_priority_mode && old_age != 0 && frame_tick > old_age) {
+        evict_old_costly = true;
+        lru_cache.ForEachItemBelow(frame_tick - old_age, Cleanup);
+        evict_old_costly = false;
+    }
     Collect();
     if (total_used_memory >= critical_memory) {
         Configure(true);
@@ -568,7 +580,7 @@ template <class P>
 SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_sampler_table : channel_state->graphics_sampler_table;
     if (index > table.current_limit) {
-        LOG_DEBUG(HW_GPU, "Invalid sampler index={}", index);
+        LOG_TRACE(HW_GPU, "Invalid sampler index={}", index);
         return NULL_SAMPLER_ID;
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
@@ -797,9 +809,10 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
 template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
-    index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit);
+    index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit,
+                                               gpu_memory->UsesNativeTiling());
     if (index > table.current_limit) {
-        LOG_DEBUG(HW_GPU, "Invalid image view index={}", index);
+        LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
     }
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
@@ -1079,6 +1092,124 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                           copy.operation);
     }
     return true;
+}
+
+template <class P>
+bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
+                                      const Tegra::Engines::Fermi2D::Surface& src,
+                                      const Tegra::Engines::Fermi2D::Surface& motion_vectors,
+                                      const Tegra::Texture::TICEntry* depth,
+                                      std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
+    if constexpr (FRAMEBUFFER_BLITS) {
+        return false;
+    } else {
+        const Tegra::Engines::Fermi2D::Config copy{
+            .operation = Tegra::Engines::Fermi2D::Operation::SrcCopy,
+            .filter = Tegra::Engines::Fermi2D::Filter::Bilinear,
+            .must_accelerate = true,
+            .dst_x0 = 0,
+            .dst_y0 = 0,
+            .dst_x1 = static_cast<s32>(dst.width),
+            .dst_y1 = static_cast<s32>(dst.height),
+            .src_x0 = 0,
+            .src_y0 = 0,
+            .src_x1 = static_cast<s32>(src.width),
+            .src_y1 = static_cast<s32>(src.height),
+        };
+        const auto result = GetBlitImages(dst, src, copy);
+        if (!result) {
+            return false;
+        }
+        const ImageInfo motion_info(motion_vectors);
+        has_deleted_images = false;
+        const ImageId motion_id =
+            FindOrInsertImage(motion_info, motion_vectors.Address(), RelaxedOptions{});
+        // The depth only feeds NVIDIA DLSS and FSR 3.1 (looked up only when they can run); without
+        // it the stand-in runs.
+        ImageId depth_id{};
+        if (depth && motion_id && runtime.WantsTemporalUpscaleDepth()) {
+            depth_id = FindOrInsertImage(ImageInfo(*depth), depth->Address(), RelaxedOptions{});
+        }
+        if (has_deleted_images || !motion_id) {
+            return false; // the colour and output ids may be stale; the caller blits instead
+        }
+        const ImageId dst_id = result->dst_id;
+        const ImageId src_id = result->src_id;
+        PrepareImage(src_id, false, false);
+        PrepareImage(motion_id, false, false);
+        PrepareImage(dst_id, true, false);
+        if (depth_id) {
+            PrepareImage(depth_id, false, false);
+            if (slot_images[depth_id].info.num_samples != 1 ||
+                slot_images[depth_id].info.format != PixelFormat::D32_FLOAT) {
+                depth_id = {};
+            }
+        }
+        for (const ImageId id : {src_id, motion_id, dst_id}) {
+            if (slot_images[id].info.num_samples != 1) {
+                return false;
+            }
+        }
+        // With resolution scaling, bring the images that can follow to the same scale, as BlitImage
+        // does; the stand-in reads each image at its own size, so any left behind still work.
+        const auto rescaled = [&](ImageId id) {
+            return True(slot_images[id].flags & ImageFlagBits::Rescaled);
+        };
+        if (rescaled(src_id) || rescaled(motion_id) || rescaled(dst_id) ||
+            (depth_id && rescaled(depth_id))) {
+            for (const ImageId id : {src_id, motion_id, dst_id, depth_id}) {
+                if (id && !rescaled(id) && ImageCanRescale(slot_images[id])) {
+                    ScaleUp(slot_images[id]);
+                }
+            }
+        }
+        // FSR 3.1 reads colour, motion and depth texel for texel: all at the colour's scale.
+        if (depth_id && (rescaled(depth_id) != rescaled(src_id) ||
+                         rescaled(motion_id) != rescaled(src_id))) {
+            depth_id = {};
+        }
+        const Extent3D src_size = slot_images[src_id].info.size;
+        const std::array<u32, 2> render_size =
+            rescaled(src_id)
+                ? std::array{Settings::values.resolution_info.ScaleUp(src_size.width),
+                             Settings::values.resolution_info.ScaleUp(src_size.height)}
+                : std::array{src_size.width, src_size.height};
+        // The jitter is in the input's guest pixels.
+        if (rescaled(src_id)) {
+            const f32 factor = Settings::values.resolution_info.up_factor;
+            jitter = {jitter[0] * factor, jitter[1] * factor};
+        }
+        const auto view = [&](ImageId id, const Tegra::Engines::Fermi2D::Surface& surface,
+                              PixelFormat format) -> std::optional<std::pair<FramebufferId, ImageViewId>> {
+            const std::optional base = slot_images[id].TryFindBase(surface.Address());
+            if (!base) {
+                return std::nullopt;
+            }
+            const SubresourceRange range{.base = *base, .extent = {1, 1}};
+            return RenderTargetFromImage(id, ImageViewInfo(ImageViewType::e2D, format, range));
+        };
+        const auto src_view = view(src_id, src, result->src_format);
+        const auto motion_view = view(motion_id, motion_vectors, motion_info.format);
+        const auto dst_view = view(dst_id, dst, result->dst_format);
+        if (!src_view || !motion_view || !dst_view) {
+            return false;
+        }
+        ImageViewId depth_view{};
+        if (depth_id) {
+            if (const std::optional base = slot_images[depth_id].TryFindBase(depth->Address())) {
+                const SubresourceRange range{.base = *base, .extent = {1, 1}};
+                depth_view = FindOrEmplaceImageView(
+                    depth_id, ImageViewInfo(ImageViewType::e2D, PixelFormat::D32_FLOAT, range));
+            }
+        }
+        // After the views: creating them may reallocate the framebuffer slots.
+        Framebuffer* const dst_framebuffer = &slot_framebuffers[dst_view->first];
+        return runtime.TemporalUpscale(
+            dst_framebuffer, slot_image_views[dst_view->second], slot_image_views[src_view->second],
+            slot_image_views[motion_view->second],
+            depth_view ? &slot_image_views[depth_view] : nullptr, render_size, jitter,
+            motion_scale);
+    }
 }
 
 template <class P>

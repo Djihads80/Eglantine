@@ -83,6 +83,9 @@ private:
 
     std::shared_ptr<Common::DynamicLibrary> library;
     vk::InstanceDispatch dld;
+#ifdef EGLANTINE_STREAMLINE
+    bool streamline_started; ///< NVIDIA Streamline starts before the instance.
+#endif
 
     // Keep original handles for compatibility with existing code
     vk::Instance instance;

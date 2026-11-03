@@ -35,6 +35,7 @@
 #include "ui_configure_graphics.h"
 #include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/configuration/configure_graphics.h"
+#include "yuzu/configuration/nvidia_dlss_panel.h"
 #include "yuzu/configuration/shared_widget.h"
 
 #ifdef HAS_RESHADE
@@ -218,6 +219,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
     std::map<u32, QWidget*> hold_graphics;
     std::vector<QWidget*> hold_api;
+    QCheckBox* frame_gen_checkbox = nullptr;
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
 #ifndef HAS_RESHADE
@@ -225,9 +227,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-        if (setting->Id() == Settings::values.frame_gen.Id()) {
+#ifndef EGLANTINE_STREAMLINE
+        // Only builds with NVIDIA Streamline (Windows) can use it.
+        if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
             continue;
         }
+#endif
 
         ConfigurationShared::Widget* widget = [&]() {
             if (setting->Id() == Settings::values.fsr_sharpening_slider.Id()) {
@@ -325,6 +330,23 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
             hold_graphics.emplace(setting->Id(), widget);
 #endif
+#ifdef EGLANTINE_STREAMLINE
+        } else if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
+            // NVIDIA's files and a download button under the checkbox.
+            QWidget* group = new QWidget(this);
+            QVBoxLayout* group_layout = new QVBoxLayout(group);
+            group_layout->setContentsMargins(0, 0, 0, 0);
+            group_layout->setSpacing(2);
+            group_layout->addWidget(widget);
+            NvidiaDlssPanel* panel = new NvidiaDlssPanel(group);
+            group_layout->addWidget(panel);
+            panel->setVisible(widget->checkbox->isChecked());
+            connect(widget->checkbox, &QCheckBox::toggled, panel, &QWidget::setVisible);
+            hold_graphics.emplace(setting->Id(), group);
+#endif
+        } else if (setting->Id() == Settings::values.frame_gen.Id()) {
+            frame_gen_checkbox = widget->checkbox;
+            hold_graphics.emplace(setting->Id(), widget);
         } else {
             hold_graphics.emplace(setting->Id(), widget);
         }
@@ -332,6 +354,21 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
     for (const auto& [id, widget] : hold_graphics) {
         graphics_layout.addWidget(widget);
+    }
+
+    // Hide rather than disable, a disabled widget would read as using the global value
+    if (frame_gen_checkbox != nullptr) {
+        for (const u32 id : {Settings::values.frame_gen_type.Id(),
+                             Settings::values.frame_gen_multiplier.Id(),
+                             Settings::values.frame_gen_target_rate.Id(),
+                             Settings::values.frame_gen_flow_scale_auto.Id(),
+                             Settings::values.frame_gen_flow_scale.Id(),
+                             Settings::values.frame_gen_queue_target.Id()}) {
+            if (const auto it = hold_graphics.find(id); it != hold_graphics.end()) {
+                it->second->setVisible(frame_gen_checkbox->isChecked());
+                connect(frame_gen_checkbox, &QCheckBox::toggled, it->second, &QWidget::setVisible);
+            }
+        }
     }
 
     for (auto widget : hold_api) {

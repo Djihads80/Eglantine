@@ -134,6 +134,8 @@ add_library(core STATIC
     file_sys/registered_cache.h
     file_sys/nup_container.cpp
     file_sys/nup_container.h
+    file_sys/nup_writer.cpp
+    file_sys/nup_writer.h
     file_sys/romfs.cpp
     file_sys/romfs.h
     file_sys/romfs_factory.cpp
@@ -1286,6 +1288,11 @@ if (TARGET OpenSSL::SSL)
     target_link_libraries(core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 else()
     target_sources(core PRIVATE hle/service/ssl/ssl_backend_none.cpp)
+endif()
+
+if (ENABLE_LTO AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    # Fibers can migrate between host threads; keep kernel TLS lookups outside LTO callers.
+    set_source_files_properties(hle/kernel/kernel.cpp PROPERTIES COMPILE_OPTIONS -fno-lto)
 endif()
 
 create_target_directory_groups(core)

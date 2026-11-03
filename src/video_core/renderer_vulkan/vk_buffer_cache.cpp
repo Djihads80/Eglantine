@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <span>
 #include <vector>
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+#include "video_core/renderer_vulkan/vertex_repack.h"
 
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -359,6 +361,18 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
                       compute_pass_descriptor_queue),
       multi_range_buffers(device_) {
     const VkDriverIdKHR driver_id = device.GetDriverID();
+    const bool enable_vertex_repack = VertexRepackEnabled();
+    LOG_INFO(Render_Vulkan, "69-byte vertex layout repacking {} ({})",
+             enable_vertex_repack ? "enabled" : "disabled",
+             "portable Vulkan layout fallback");
+    static_vertex_repack =
+        StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
+    LOG_INFO(Render_Vulkan, "Vertex repacking without dynamic vertex input {}",
+             static_vertex_repack ? "enabled" : "disabled");
+    if (enable_vertex_repack) {
+        vertex_repack_pass = std::make_unique<VertexRepackPass>(
+            device, scheduler, descriptor_pool, staging_pool, compute_pass_descriptor_queue);
+    }
     limit_dynamic_storage_buffers = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
                                     driver_id == VK_DRIVER_ID_ARM_PROPRIETARY;
     if (limit_dynamic_storage_buffers) {
@@ -372,6 +386,18 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
                                                                      scheduler_, staging_pool_);
     quad_strip_index_buffer = std::make_shared<QuadStripIndexBuffer>(device_, memory_allocator_,
                                                                      scheduler_, staging_pool_);
+}
+
+u32 BufferCacheRuntime::SetVertexRepackLayout(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                            bool dynamic_input) {
+    const u32 old_mask = vertex_repack_mask;
+    const bool input_supported = VertexRepackInputSupported(dynamic_input, static_vertex_repack);
+    vertex_repack_mask = vertex_repack_pass && input_supported ? VertexRepackMask(regs) : 0;
+    if (vertex_repack_mask != old_mask) {
+        LOG_DEBUG(Render_Vulkan, "Vertex repack selection: mask={:#x}, dynamic_input={}",
+                  vertex_repack_mask, dynamic_input);
+    }
+    return old_mask ^ vertex_repack_mask;
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
@@ -428,6 +454,10 @@ bool BufferCacheRuntime::IsFree(u64 tick) {
 
 void BufferCacheRuntime::Wait(u64 tick) {
     scheduler.Wait(tick);
+}
+
+void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
+    scheduler.GetMasterSemaphore().Wait(tick);
 }
 
 void BufferCacheRuntime::Finish() {
@@ -629,6 +659,17 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset
     if (index >= device.GetMaxVertexInputBindings()) {
         return;
     }
+    if (buffer != VK_NULL_HANDLE && size != 0 && IsVertexRepacked(index)) {
+        const auto repacked =
+            vertex_repack_pass->Assemble(buffer, offset, size, u64{offset} + size);
+        if (!repacked) {
+            return;
+        }
+        buffer = repacked->first;
+        offset = static_cast<u32>(repacked->second);
+        size = static_cast<u32>((u64{size} + 68) / 69 * 72);
+        stride = 72;
+    }
     if (device.IsExtExtendedDynamicStateSupported()) {
         scheduler.Record([index, buffer, offset, size, stride](vk::CommandBuffer cmdbuf) {
             const VkDeviceSize vk_offset = buffer != VK_NULL_HANDLE ? offset : 0;
@@ -661,6 +702,25 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
             }
         }
         buffer_handles[i] = handle;
+        const u32 binding = bindings.min_index + i;
+        if (handle != VK_NULL_HANDLE && IsVertexRepacked(binding) && bindings.strides[i] == 69 &&
+            bindings.sizes[i] > 0) {
+            const auto repacked = vertex_repack_pass->Assemble(
+                handle, static_cast<u32>(bindings.offsets[i]), static_cast<u32>(bindings.sizes[i]),
+                bindings.buffers[i]->SizeBytes());
+            if (!repacked) {
+                continue;
+            }
+            buffer_handles[i] = repacked->first;
+            bindings.offsets[i] = repacked->second;
+            bindings.sizes[i] = (bindings.sizes[i] + 68) / 69 * 72;
+            bindings.strides[i] = 72;
+            static bool reported = false;
+            if (!reported) {
+                LOG_INFO(Render_Vulkan, "GPU vertex repacking active: 69 -> 72 bytes");
+                reported = true;
+            }
+        }
     }
     const u32 device_max = device.GetMaxVertexInputBindings();
     const u32 min_binding = (std::min)(bindings.min_index, device_max);

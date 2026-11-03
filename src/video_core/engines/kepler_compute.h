@@ -266,7 +266,16 @@ private:
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     void ProcessNativeReportSemaphore(u32 argument);
     void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd);
+    void RememberDlssMotionVectors();
     bool UpscaleInsteadOfNativeProgram();
+
+    /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
+    /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
+    /// colour image and camera jitter they go with.
+    std::optional<Texture::TICEntry> dlss_motion_vectors;
+    std::optional<Texture::TICEntry> dlss_depth;
+    GPUVAddr dlss_motion_color{};
+    std::array<f32, 2> dlss_jitter{};
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
     std::array<u32, 0xc00>* native_data_ram{};

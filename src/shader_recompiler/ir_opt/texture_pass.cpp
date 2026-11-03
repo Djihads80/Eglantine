@@ -16,6 +16,7 @@
 #include <limits>
 #include <boost/container/small_vector.hpp>
 
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -345,7 +346,8 @@ static inline u32 GetTextureHandleCached(Environment& env, const ConstBufferAddr
 
 // Cached variants of existing helpers
 // A handle computed per draw has no descriptor to read at translation time: assume an ordinary
-// floating-point 2D texture, the instruction's own type deciding the rest.
+// floating-point 2D texture, the instruction's own type deciding the rest (see the TexturePass
+// ImageQueryDimensions case, which has none).
 static inline TextureType ReadTextureTypeCached(Environment& env, const ConstBufferAddr& cbuf) {
     if (cbuf.handle_program != ~0U) return TextureType::Color2D;
     return env.ReadTextureType(GetTextureHandleCached(env, cbuf));
@@ -436,9 +438,10 @@ bool IsUndefined(IR::Opcode opcode) {
            opcode == IR::Opcode::UndefU64;
 }
 
-// Values already emitted by the program being built, by the slot that keeps them, and how deep
-// in nested BuildHandleProgram calls the build is.
+// Values already emitted by the program being built, by the slot that keeps them, how many slots
+// are in use, and how deep in nested BuildHandleProgram calls the build is.
 thread_local std::unordered_map<const IR::Inst*, u32> g_handle_slots;
+thread_local u32 g_handle_slot_count{};
 thread_local int g_handle_depth{};
 
 bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
@@ -453,7 +456,15 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
     const bool outermost = g_handle_depth++ == 0;
     if (outermost) {
         g_handle_slots.clear();
+        g_handle_slot_count = 0;
     }
+    SCOPE_EXIT {
+        --g_handle_depth;
+        if (outermost) {
+            g_handle_slots.clear();
+            g_handle_slot_count = 0;
+        }
+    };
     const IR::Inst* const inst{value.InstRecursive()};
     bool result;
     if (const auto it = g_handle_slots.find(inst); it != g_handle_slots.end()) {
@@ -470,22 +481,24 @@ bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& bud
     } else {
         g_handle_slots.emplace(inst, ~0U);
         const size_t start = code.size();
+        const u32 first_slot = g_handle_slot_count;
         result = BuildHandleNode(value, code, budget, block);
         g_handle_slots.erase(inst);
         if (!result) {
+            // The Tee of every value the dropped code kept goes with it: a later use of one of
+            // them (another Phi input) must build it again, not load a slot nothing wrote.
             code.resize(start);
+            std::erase_if(g_handle_slots, [first_slot](const auto& entry) {
+                return entry.second != ~0U && entry.second >= first_slot;
+            });
+            g_handle_slot_count = first_slot;
         }
         if (result && inst->UseCount() > 1 && g_handle_slots.size() < 256) {
-            const u32 slot = static_cast<u32>(
-                std::ranges::count_if(g_handle_slots, [](const auto& entry) { return entry.second != ~0U; }));
+            const u32 slot = g_handle_slot_count++;
             g_handle_slots.emplace(inst, slot);
             code.push_back(static_cast<u32>(Op::Tee));
             code.push_back(slot);
         }
-    }
-    --g_handle_depth;
-    if (outermost) {
-        g_handle_slots.clear();
     }
     return result;
 }
@@ -1010,7 +1023,8 @@ public:
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
                    desc.count == existing.count && desc.size_shift == existing.size_shift &&
-                   desc.has_secondary == existing.has_secondary;
+                   desc.has_secondary == existing.has_secondary &&
+                   desc.handle_program == existing.handle_program;
         });
     }
 
@@ -1018,7 +1032,8 @@ public:
         const u32 index{Add(image_buffer_descriptors, desc, [&desc](const auto& existing) {
             return desc.format == existing.format && desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         image_buffer_descriptors[index].is_written |= desc.is_written;
         image_buffer_descriptors[index].is_read |= desc.is_read;
@@ -1036,7 +1051,8 @@ public:
                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
-                   desc.count == existing.count && desc.size_shift == existing.size_shift;
+                   desc.count == existing.count && desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
@@ -1049,7 +1065,8 @@ public:
             return desc.type == existing.type && desc.format == existing.format &&
                    desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         image_descriptors[index].is_written |= desc.is_written;
         image_descriptors[index].is_read |= desc.is_read;
@@ -1171,6 +1188,10 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     u32 last_cbuf_offset{};
     bool last_is_integer{false};
     const auto is_texture_pixel_format_integer{[&](const ConstBufferAddr& cbuf_addr) {
+        if (cbuf_addr.handle_program != ~0U) {
+            // Every handle program is at cbuf 0 offset 0: the cache below can't tell them apart.
+            return IsTexturePixelFormatIntegerCached(env, cbuf_addr);
+        }
         if (has_last_is_integer && last_cbuf_index == cbuf_addr.index &&
             last_cbuf_offset == cbuf_addr.offset) {
             return last_is_integer;
@@ -1181,6 +1202,18 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         has_last_is_integer = true;
         return last_is_integer;
     }};
+    // A handle program has no descriptor to read a type from, and ImageQueryDimensions carries
+    // none: it takes the type of another instruction using the same handle.
+    std::unordered_map<u32, TextureType> handle_program_types;
+    for (const TextureInst& texture_inst : to_replace) {
+        const IR::Opcode opcode{IndexedInstruction(*texture_inst.inst)};
+        if (texture_inst.cbuf.handle_program != ~0U && opcode != IR::Opcode::ImageQueryDimensions &&
+            !IsStorageImageOpcode(opcode)) {
+            handle_program_types.try_emplace(
+                texture_inst.cbuf.handle_program,
+                texture_inst.inst->Flags<IR::TextureInstInfo>().type.Value());
+        }
+    }
     for (TextureInst& texture_inst : to_replace) {
         // TODO: Handle arrays
         IR::Inst* const inst{texture_inst.inst};
@@ -1191,7 +1224,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         bool is_multisample{false};
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
-            flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+            if (const auto it{handle_program_types.find(cbuf.handle_program)};
+                it != handle_program_types.end()) {
+                flags.type.Assign(it->second);
+            } else {
+                flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+            }
             inst->SetFlags(flags);
             break;
         case IR::Opcode::ImageSampleImplicitLod:
@@ -1256,6 +1294,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_offset = cbuf.offset,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             } else {
                 index = descriptors.Add(ImageDescriptor{
@@ -1268,6 +1307,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_offset = cbuf.offset,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             }
             break;
@@ -1284,6 +1324,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .secondary_shift_left = cbuf.secondary_shift_left,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);

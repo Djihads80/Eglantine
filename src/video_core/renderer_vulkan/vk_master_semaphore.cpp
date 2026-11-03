@@ -104,7 +104,13 @@ void MasterSemaphore::Wait(u64 tick) {
     }
 
     // If none of the above is hit, fallback to a regular wait
-    while (!semaphore.Wait(tick)) {
+    try {
+        while (!semaphore.Wait(tick)) {
+        }
+    } catch (const vk::Exception& exception) {
+        // The throw ends the process; say why first (a device loss reached nothing else here).
+        LOG_CRITICAL(Render_Vulkan, "Waiting for GPU tick {} failed: {}", tick, exception.what());
+        throw;
     }
 
     Refresh();

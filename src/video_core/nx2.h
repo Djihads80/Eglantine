@@ -43,11 +43,43 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     }
 }
 
+// GPU-written device pages the front has read command lists from (same layout as above). The
+// buffer cache copies these pages into host memory right after the compute or copy work that
+// writes them and submits, so the front reads the copy once the GPU is done instead of draining
+// the split and flushing the caches (BufferCache::Nx2ReadListCopy).
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_command_list_pages{};
+inline std::atomic<bool> g_nx2_has_command_list_pages{false};
+
+inline void Nx2MarkCommandListPage(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    if (page >= g_nx2_command_list_pages.size() * 64) {
+        return;
+    }
+    auto& word = g_nx2_command_list_pages[page / 64];
+    const u64 bit = u64{1} << (page % 64);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+        word.fetch_or(bit, std::memory_order_relaxed);
+        g_nx2_has_command_list_pages.store(true, std::memory_order_relaxed);
+    }
+}
+
+[[nodiscard]] inline bool Nx2IsCommandListPage(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    if (page >= g_nx2_command_list_pages.size() * 64) {
+        return false;
+    }
+    return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
+}
+
 /// A new emulation session starts: no page has been written by its GPU yet.
 inline void Nx2ClearGpuWrittenPages() {
     for (auto& word : g_nx2_gpu_written_pages) {
         word.store(0, std::memory_order_relaxed);
     }
+    for (auto& word : g_nx2_command_list_pages) {
+        word.store(0, std::memory_order_relaxed);
+    }
+    g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {

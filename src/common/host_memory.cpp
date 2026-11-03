@@ -51,6 +51,7 @@
 
 #endif // ^^^ POSIX ^^^
 
+#include <cstdlib>
 #include <mutex>
 #include <random>
 
@@ -518,6 +519,14 @@ public:
         , virtual_size{virtual_size_}
     {}
 
+#ifdef __linux__
+    bool PunchHole(size_t offset, size_t length) {
+        return fd >= 0 &&
+               fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(offset),
+                         static_cast<off_t>(length)) == 0;
+    }
+#endif
+
     bool Init() {
         long page_size = sysconf(_SC_PAGESIZE);
         ASSERT_MSG(page_size == 0x1000, "page size {:#x} is incompatible with 4K paging", page_size);
@@ -827,6 +836,13 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
     // Fresh backing memory is zero and the host gives it no RAM until it's touched: clear only
     // the granules that may hold data (title 1's heap made the host commit every page of it).
     // A granule cleared in full is zero again.
+#ifdef __linux__
+    // Handing a whole granule back to the kernel frees its RAM; a memset would commit it.
+    static const bool punch = [] {
+        const char* value = std::getenv("EDEN_PUNCH_HOLE");
+        return value == nullptr || value[0] != '0';
+    }();
+#endif
     const size_t end = physical_offset + length;
     for (size_t offset = physical_offset; offset < end;) {
         const size_t index = offset >> GranuleShift;
@@ -834,8 +850,15 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
         const size_t granule_end = granule_begin + (size_t{1} << GranuleShift);
         const size_t clear_end = (std::min)(granule_end, end);
         if ((granules[index].load(std::memory_order_acquire) & GranuleDirty) != 0) {
-            std::memset(backing_base + offset, 0, clear_end - offset);
-            if (offset == granule_begin && clear_end == granule_end) {
+            const bool whole = offset == granule_begin && clear_end == granule_end;
+            bool cleared = false;
+#ifdef __linux__
+            cleared = whole && punch && impl && impl->PunchHole(granule_begin, granule_end - granule_begin);
+#endif
+            if (!cleared) {
+                std::memset(backing_base + offset, 0, clear_end - offset);
+            }
+            if (whole) {
                 granules[index].fetch_and(static_cast<u8>(~GranuleDirty), std::memory_order_release);
             }
         }
