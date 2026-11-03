@@ -105,7 +105,8 @@ public:
         last_writer_position = write_position;
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
-    void WaitForWriters();
+    /// Returns whether any of it was still queued.
+    bool WaitForWriters();
 
 private:
     enum class Kind : u64 {

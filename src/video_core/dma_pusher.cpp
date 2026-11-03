@@ -156,6 +156,17 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
+        // The split's back marks the pages GPU work writes as it runs that work: a page first
+        // written by a dispatch or copy still queued for it reads as unwritten, and its words as
+        // stale (Fast Fusion's culling fills in instanced draws' arguments; stale ones asked for
+        // billions of instances and lost the device loading a race).
+        bool gpu_written =
+            IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
+            VideoCommon::GpuSplit::Get().WaitForWriters()) {
+            gpu_written =
+                IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
         // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
@@ -165,8 +176,7 @@ bool DmaPusher::Step() {
                                (command_list.snapshot_suspensions & 1) == 0 &&
                                command_list.snapshot_suspensions ==
                                    suspensions.load(std::memory_order_acquire) &&
-                               !IsGpuWrittenCommands(dma_state.dma_get,
-                                                     size_t{header.size} * sizeof(u32)) &&
+                               !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
         if (submitted) {
