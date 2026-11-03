@@ -4329,23 +4329,58 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
     if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher) {
         return;
     }
+    const QString progress_title = dialog.DisplayName();
+    const QPixmap progress_icon = dialog.CurrentIcon();
 
     nup_running = true;
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Editing NUP Metadata"), progress_title, progress_icon,
+                                         this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress) {
+                    nup_progress->SetCancelling();
+                }
+            });
+    nup_progress->show();
 
     const auto cancel = nup_cancel;
-    nup_watcher.setFuture(QtConcurrent::run([this, archive, edit, cancel] {
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, edit, cancel, last_update] {
         std::string error;
+        const auto on_progress = [this,
+                                  last_update](const FileSys::Nup::PackProgress& progress) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, progress] {
+                    if (!nup_progress) {
+                        return;
+                    }
+                    nup_progress->SetProgress(progress);
+                },
+                Qt::QueuedConnection);
+        };
         const auto result =
-            FileSys::Nup::EditNupMetadata(archive, edit, &error, cancel.get());
+            FileSys::Nup::EditNupMetadata(archive, edit, &error, cancel.get(), on_progress);
         QMetaObject::invokeMethod(
             this,
             [this, result, error] {
                 nup_running = false;
                 nup_source_path.clear();
                 game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
                 nup_cancel.reset();
                 switch (result) {
                 case FileSys::Nup::EditResult::Success:

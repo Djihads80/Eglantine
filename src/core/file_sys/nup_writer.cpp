@@ -1882,7 +1882,8 @@ Metadata ProbeNupMetadata(const fs::path& archive) {
 }
 
 EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
-                           std::string* error_out, const std::atomic_bool* cancel) {
+                           std::string* error_out, const std::atomic_bool* cancel,
+                           const std::function<void(const PackProgress&)>& progress_cb) {
     const auto fail = [&](EditResult result, const std::string& message) {
         if (error_out) {
             *error_out = message;
@@ -2056,6 +2057,14 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     }
     const u64 new_file_size = cursor;
 
+    PackProgress eprogress{};
+    eprogress.bytes_total = new_file_size;
+    eprogress.files_total = 1;
+    u64 last_write_report = 0;
+    if (progress_cb) {
+        progress_cb(eprogress);
+    }
+
     std::vector<u8> new_toc = toc;
     pos = TocHeaderSize;
     for (size_t i = 0; i < raws.size(); ++i) {
@@ -2094,6 +2103,11 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     const auto write_all = [&](const u8* data, size_t size) {
         if (out.WriteSpan(std::span<const u8>{data, size}) != size) {
             throw std::runtime_error("write failed, the disk may be full");
+        }
+        eprogress.bytes_done += size;
+        if (eprogress.bytes_done - last_write_report >= ProgressStep && progress_cb) {
+            last_write_report = eprogress.bytes_done;
+            progress_cb(eprogress);
         }
     };
     try {
@@ -2136,6 +2150,10 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
             if (!block.empty()) {
                 write_all(block.data(), block.size());
             }
+        }
+        eprogress.files_done = 1;
+        if (progress_cb) {
+            progress_cb(eprogress);
         }
         if (!out.SetSize(new_file_size) || !out.Commit()) {
             throw std::runtime_error("cannot finish " + ToUtf8(part));

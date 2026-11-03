@@ -98,10 +98,12 @@ enum class EditResult { Success, Cancelled, InvalidSource, IoError, NoChange };
 
 // Rewrites the target package's meta TLVs (base, or the first package when there is no base).
 // Extents are copied untouched; the TOC hash and file size are updated and the replacement is
-// atomic. Returns NoChange when every field keeps its stored value.
+// atomic. Returns NoChange when every field keeps its stored value. Progress reports archive
+// bytes rewritten against the new file size.
 EditResult EditNupMetadata(const std::filesystem::path& archive, const MetadataEdit& edit,
                            std::string* error_out = nullptr,
-                           const std::atomic_bool* cancel = nullptr);
+                           const std::atomic_bool* cancel = nullptr,
+                           const std::function<void(const PackProgress&)>& progress = {});
 // Current default-language metadata of the edit target, for prefilling the UI.
 Metadata ProbeNupMetadata(const std::filesystem::path& archive);
 

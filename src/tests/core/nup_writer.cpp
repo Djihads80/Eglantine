@@ -766,3 +766,45 @@ TEST_CASE("NUP loader exposes title and publisher through control data", "[nup]"
     INFO(error);
     check("Edited", "Edited Inc");
 }
+
+TEST_CASE("NUP edit applies name/icon/version to a metadata-less dump", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    // No metadata overrides: base has no title, icon or publisher, like a bare dump.
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+    {
+        FileSys::RealVfsFilesystem real;
+        FileSys::NupContainer packed{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(packed.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(packed.GetPackages()[0].title_name.empty());
+        REQUIRE(packed.GetPackages()[0].icon.empty());
+    }
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.title_name = "Hyrule Warriors: Age of Imprisonment";
+    edit.display_version = "1.0.3";
+    edit.publisher = "Nintendo";
+    edit.icon = std::vector<u8>{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A};
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+
+    FileSys::RealVfsFilesystem real;
+    Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    std::string title;
+    REQUIRE(loader.ReadTitle(title) == Loader::ResultStatus::Success);
+    REQUIRE(title == "Hyrule Warriors: Age of Imprisonment");
+    std::vector<u8> icon;
+    REQUIRE(loader.ReadIcon(icon) == Loader::ResultStatus::Success);
+    REQUIRE(icon == std::vector<u8>{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A});
+    FileSys::NACP control;
+    REQUIRE(loader.ReadControlData(control) == Loader::ResultStatus::Success);
+    REQUIRE(control.GetApplicationName() == "Hyrule Warriors: Age of Imprisonment");
+    REQUIRE(control.GetDeveloperName() == "Nintendo");
+    std::string version;
+    REQUIRE(loader.ReadDisplayVersion(version) == Loader::ResultStatus::Success);
+    REQUIRE(version == "1.0.3");
+}
