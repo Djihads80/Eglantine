@@ -261,10 +261,41 @@ bool DiagAblated(const Tegra::Engines::Maxwell3D& maxwell3d) {
     return diag.Ablated('v', DiagShader(maxwell3d, 1)) || diag.Ablated('p', DiagShader(maxwell3d, 5));
 }
 
-void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, const char* outcome, bool mesh) {
+// Shows the constant buffers bound to a stage to the inspector (inspect.txt).
+void DiagObserveStage(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& gpu_memory,
+                      size_t stage, u64 key) {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    const auto& info = maxwell3d.state.shader_stages[stage];
+    for (u32 slot = 0; slot < Tegra::Engines::Maxwell3D::Regs::MaxConstBuffers; ++slot) {
+        const auto& buffer = info.const_buffers[slot];
+        if (!buffer.enabled || buffer.size == 0) {
+            continue;
+        }
+        std::vector<u32> words(std::min<u32>(buffer.size, 0x2000) / 4);
+        if (words.empty() || !gpu_memory.IsFullyMappedRange(buffer.address, words.size() * 4)) {
+            continue;
+        }
+        gpu_memory.ReadBlockUnsafe(buffer.address, words.data(), words.size() * 4);
+        diag.Observe(key, slot, words);
+    }
+}
+
+void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& gpu_memory,
+                    const char* outcome, bool mesh) {
     auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
     const u64 vs = DiagShader(maxwell3d, 1);
     const u64 ps = DiagShader(maxwell3d, 5);
+    {
+        const auto& rt = maxwell3d.regs.rt[0];
+        diag.Touch('v', vs, outcome, g_diag_draw.instances, g_diag_draw.vertices, rt.width, rt.height);
+        diag.Touch('p', ps, outcome, g_diag_draw.instances, g_diag_draw.vertices, rt.width, rt.height);
+        if (const u64 key = diag.ProgramKey(vs); diag.Inspecting(key)) {
+            DiagObserveStage(maxwell3d, gpu_memory, 0, key);
+        }
+        if (const u64 key = diag.ProgramKey(ps); diag.Inspecting(key)) {
+            DiagObserveStage(maxwell3d, gpu_memory, 4, key);
+        }
+    }
     if (VideoCommon::Nx2Diag::CountersEnabled()) {
         diag.Note(false, vs, ps, outcome, g_diag_draw.instances, g_diag_draw.vertices);
     }
@@ -322,7 +353,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     };
     SCOPE_EXIT {
         if (VideoCommon::Nx2Diag::Active()) {
-            DiagRecordDraw(*maxwell3d, diag_outcome, mesh_draw);
+            DiagRecordDraw(*maxwell3d, *gpu_memory, diag_outcome, mesh_draw);
         }
     };
     GraphicsPipeline* const pipeline{[&] {
@@ -610,7 +641,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                        is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
                        instance_count};
         if (VideoCommon::Nx2Diag::Ablates() && DiagAblated(*maxwell3d)) {
-            DiagRecordDraw(*maxwell3d, "ablated", false);
+            DiagRecordDraw(*maxwell3d, *gpu_memory, "ablated", false);
             return;
         }
     }
@@ -672,7 +703,7 @@ void RasterizerVulkan::DrawIndirect() {
     if (VideoCommon::Nx2Diag::Active()) {
         g_diag_draw = {"indirect", static_cast<u32>(params.max_draw_counts), 0};
         if (VideoCommon::Nx2Diag::Ablates() && DiagAblated(*maxwell3d)) {
-            DiagRecordDraw(*maxwell3d, "ablated", false);
+            DiagRecordDraw(*maxwell3d, *gpu_memory, "ablated", false);
             return;
         }
     }
