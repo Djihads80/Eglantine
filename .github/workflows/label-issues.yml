@@ -1,0 +1,86 @@
+name: Label issues from form
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+
+            // Parse "### Title\n\nanswer" sections into a map
+            const sections = {};
+            body.split(/^### /m).slice(1).forEach((block) => {
+              const [title, ...rest] = block.split("\n");
+              sections[title.trim()] = rest.join("\n").trim();
+            });
+            const get = (k) => {
+              const v = sections[k];
+              return v && v !== "_No response_" ? v : null;
+            };
+
+            const gameLabels = {
+              "Mario Kart World": "Mario Kart",
+              "Donkey Kong Bananza": "DKB",
+              "Fire Emblem": "Fire Emblem",
+              "Splatoon Raiders": "Splatoon Raiders",
+              "Pokopia": "Pokopia",
+              "Hyrule Warriors": "Hyrule Warriors",
+              "Welcome Tour": "Welcome Tour",
+            };
+
+            const labels = new Set();
+
+            // Game
+            const game = get("Game");
+            if (game && gameLabels[game]) labels.add(gameLabels[game]);
+
+            // GPU vendor
+            const gpu = get("Graphics card");
+            if (gpu) {
+              if (/nvidia/i.test(gpu)) labels.add("NVIDIA");
+              else if (/amd/i.test(gpu)) labels.add("AMD");
+              else if (/intel/i.test(gpu)) labels.add("INTEL");
+            }
+
+            // OS
+            const os = get("Operating system");
+            if (os) {
+              if (/windows/i.test(os)) labels.add("windows");
+              else if (/linux/i.test(os)) labels.add("linux");
+              else if (/macos/i.test(os)) labels.add("MacOS");
+            }
+
+            // Regression
+            if (/- \[x\] This is a regression/i.test(sections["Regression"] || "")) {
+              labels.add("regression");
+            }
+            if (get("Last known working build")) labels.add("needs-bisect");
+
+            // Crash without log
+            const isCrash = (context.payload.issue.labels || []).some(
+              (l) => l.name.toLowerCase() === "crash"
+            );
+            if (isCrash && !get("Log / crash dump")) {
+              labels.add("needs-info");
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: "Thanks for the report! Please attach the log / crash dump so we can investigate.",
+              });
+            }
+
+            if (labels.size) {
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: context.issue.number,
+                labels: [...labels],
+              });
+            }
