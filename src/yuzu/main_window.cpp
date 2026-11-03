@@ -4329,22 +4329,43 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
     if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher) {
         return;
     }
-    std::string error;
-    switch (FileSys::Nup::EditNupMetadata(archive, edit, &error)) {
-    case FileSys::Nup::EditResult::Success:
-        QMessageBox::information(this, tr("Edit Complete"),
-                                 tr("The NUP metadata was updated."));
-        OnGameListRefresh();
-        break;
-    case FileSys::Nup::EditResult::NoChange:
-        break;
-    case FileSys::Nup::EditResult::Cancelled:
-        break;
-    case FileSys::Nup::EditResult::InvalidSource:
-    case FileSys::Nup::EditResult::IoError:
-        QMessageBox::critical(this, tr("Edit Failed"), QString::fromStdString(error));
-        break;
-    }
+
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+
+    const auto cancel = nup_cancel;
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, edit, cancel] {
+        std::string error;
+        const auto result =
+            FileSys::Nup::EditNupMetadata(archive, edit, &error, cancel.get());
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup::EditResult::Success:
+                    QMessageBox::information(this, tr("Edit Complete"),
+                                             tr("The NUP metadata was updated."));
+                    OnGameListRefresh();
+                    break;
+                case FileSys::Nup::EditResult::NoChange:
+                case FileSys::Nup::EditResult::Cancelled:
+                    break;
+                case FileSys::Nup::EditResult::InvalidSource:
+                case FileSys::Nup::EditResult::IoError:
+                    QMessageBox::critical(this, tr("Edit Failed"),
+                                          QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return FileSys::Nup::PackResult::Success;
+    }));
 }
 
 void MainWindow::LaunchFirmwareApplet(u64 raw_program_id,

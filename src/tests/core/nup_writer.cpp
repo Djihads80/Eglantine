@@ -680,3 +680,57 @@ TEST_CASE("NUP edits default-language metadata in place", "[nup]") {
     REQUIRE(FileSys::Nup::EditNupMetadata(archive, noop, &error) ==
             FileSys::Nup::EditResult::NoChange);
 }
+
+TEST_CASE("NUP extract removes output it created when it fails", "[nup]") {
+    TempDir t;
+    Put(t.path / "not-a-nup.bin", "junk");
+    const auto out = t.path / "Created";
+    std::string error;
+    REQUIRE(FileSys::Nup::ExtractNup(t.path / "not-a-nup.bin", out, {}, nullptr, &error) ==
+            FileSys::Nup::ExtractResult::InvalidSource);
+    REQUIRE(!error.empty());
+    REQUIRE_FALSE(fs::exists(out));
+
+    const auto preexisting = t.path / "Preexisting";
+    fs::create_directories(preexisting);
+    REQUIRE(FileSys::Nup::ExtractNup(t.path / "not-a-nup.bin", preexisting, {}, nullptr,
+                                     &error) == FileSys::Nup::ExtractResult::InvalidSource);
+    REQUIRE(fs::exists(preexisting));
+    REQUIRE(fs::is_empty(preexisting));
+}
+
+TEST_CASE("NUP edit propagates display version to the newest update", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    FileSys::RealVfsFilesystem real;
+    {
+        FileSys::NupContainer before{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(before.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(before.GetPackages()[1].display_version == "1.1.0");
+    }
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.display_version = "7.7.7";
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+
+    FileSys::RealVfsFilesystem real2;
+    FileSys::NupContainer nup{real2.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    REQUIRE(nup.GetPackages()[0].display_version == "7.7.7");
+    REQUIRE(nup.GetPackages()[2].display_version == "7.7.7");
+    REQUIRE(nup.GetPackages()[1].display_version == "1.1.0");
+
+    const auto probed = FileSys::Nup::ProbeNupMetadata(archive);
+    REQUIRE(probed.display_version == "7.7.7");
+
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::NoChange);
+}

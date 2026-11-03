@@ -1593,6 +1593,17 @@ void CountDir(const FileSys::VirtualDir& dir, u64& files, u64& bytes) {
     }
 }
 
+// Archive member names are labels, not paths. Reject anything that is not exactly one
+// relative filename component so a crafted archive cannot escape the output directory.
+void CheckedName(const std::string& name) {
+    const auto path = FromUtf8(name);
+    if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos || name.find(':') != std::string::npos ||
+        name.find('\0') != std::string::npos || path.filename() != path) {
+        throw ExtractError(ExtractResult::InvalidSource, "invalid file name in archive: " + name);
+    }
+}
+
 void WriteDir(const FileSys::VirtualDir& dir, const fs::path& dest, PackProgress& progress,
               const std::function<void(const PackProgress&)>& progress_cb,
               const std::atomic_bool* cancel, u64& last_report) {
@@ -1608,6 +1619,7 @@ void WriteDir(const FileSys::VirtualDir& dir, const fs::path& dest, PackProgress
         if (cancel && cancel->load()) {
             throw ExtractError(ExtractResult::Cancelled, "cancelled");
         }
+        CheckedName(sub->GetName());
         WriteDir(sub, dest / FromUtf8(sub->GetName()), progress, progress_cb, cancel,
                  last_report);
     }
@@ -1616,6 +1628,7 @@ void WriteDir(const FileSys::VirtualDir& dir, const fs::path& dest, PackProgress
         if (cancel && cancel->load()) {
             throw ExtractError(ExtractResult::Cancelled, "cancelled");
         }
+        CheckedName(file->GetName());
         const auto out_path = dest / FromUtf8(file->GetName());
         Common::FS::IOFile out{out_path, Common::FS::FileAccessMode::Write};
         if (!out.IsOpen()) {
@@ -1669,6 +1682,21 @@ std::filesystem::path DefaultExtractPath(const std::filesystem::path& archive) {
 ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesystem::path& out_dir,
                          const std::function<void(const PackProgress&)>& progress_cb,
                          const std::atomic_bool* cancel, std::string* error_out) {
+    // True when this call created out_dir. Only output this call can safely claim is removed
+    // on failure: a directory that already existed (always empty here, non-empty is refused)
+    // is emptied but kept.
+    bool created = false;
+    const auto cleanup = [&] {
+        std::error_code rm_ec;
+        if (created) {
+            fs::remove_all(out_dir, rm_ec);
+        } else {
+            for (auto it = fs::directory_iterator(out_dir, rm_ec);
+                 !rm_ec && it != fs::directory_iterator{}; it.increment(rm_ec)) {
+                fs::remove_all(it->path(), rm_ec);
+            }
+        }
+    };
     try {
         std::error_code ec;
         if (!fs::is_regular_file(archive, ec)) {
@@ -1694,6 +1722,7 @@ ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesy
                 throw ExtractError(ExtractResult::IoError,
                                    "cannot create " + ToUtf8(out_dir) + ": " + ec.message());
             }
+            created = true;
         }
 
         RealVfsFilesystem vfs;
@@ -1747,11 +1776,15 @@ ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesy
         }
         return ExtractResult::Success;
     } catch (const ExtractError& e) {
+        if (e.result != ExtractResult::Success) {
+            cleanup();
+        }
         if (error_out) {
             *error_out = e.what();
         }
         return e.result;
     } catch (const std::exception& e) {
+        cleanup();
         if (error_out) {
             *error_out = e.what();
         }
@@ -1791,6 +1824,32 @@ void SetOrRemoveTlv(std::vector<std::pair<u16, std::vector<u8>>>& tlvs, u16 type
     }
 }
 
+// Highest-version Update package, if any. Pack and load treat this as the effective update.
+std::optional<size_t> NewestUpdateIndex(
+    const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
+    std::optional<size_t> best;
+    for (size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].kind != FileSys::NupContainer::PackageKind::Update) {
+            continue;
+        }
+        if (!best || packages[i].version > packages[*best].version) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// Base package, or the first package when the container has no base: the same target the
+// packer attaches application metadata to.
+size_t NupEditTargetIndex(const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
+    for (size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].kind == FileSys::NupContainer::PackageKind::Base) {
+            return i;
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 Metadata ProbeNupMetadata(const fs::path& archive) {
@@ -1805,18 +1864,19 @@ Metadata ProbeNupMetadata(const fs::path& archive) {
     if (nup.GetStatus() != Loader::ResultStatus::Success || nup.GetPackages().empty()) {
         return out;
     }
-    size_t target = 0;
-    for (size_t i = 0; i < nup.GetPackages().size(); ++i) {
-        if (nup.GetPackages()[i].kind == FileSys::NupContainer::PackageKind::Base) {
-            target = i;
-            break;
-        }
-    }
-    const auto& package = nup.GetPackages()[target];
+    const auto& packages = nup.GetPackages();
+    const size_t target = NupEditTargetIndex(packages);
+    const auto& package = packages[target];
     out.title_name = package.title_name;
     out.icon = package.icon;
-    out.display_version = package.display_version;
     out.publisher = package.publisher;
+    // Prefill the version the loader actually displays: the newest update's when one exists.
+    if (const auto update = NewestUpdateIndex(packages);
+        update && !packages[*update].display_version.empty()) {
+        out.display_version = packages[*update].display_version;
+    } else {
+        out.display_version = package.display_version;
+    }
     out.version_source = "NUP";
     return out;
 }
@@ -1836,31 +1896,49 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     if (!fs::is_regular_file(archive, ec)) {
         return fail(EditResult::InvalidSource, "not a file: " + ToUtf8(archive));
     }
-    RealVfsFilesystem vfs;
-    const auto file =
-        vfs.OpenFile(Common::FS::PathToUTF8String(archive), FileSys::OpenMode::Read);
-    if (!file) {
-        return fail(EditResult::IoError, "cannot open " + ToUtf8(archive));
-    }
-    FileSys::NupContainer nup{file};
-    if (nup.GetStatus() != Loader::ResultStatus::Success || nup.GetPackages().empty()) {
-        return fail(EditResult::InvalidSource, "not a valid NUP file: " + ToUtf8(archive));
-    }
+    // The probe objects hold the archive open; release them before rewriting it so the
+    // replace below never runs against an open handle.
     size_t target = 0;
-    for (size_t i = 0; i < nup.GetPackages().size(); ++i) {
-        if (nup.GetPackages()[i].kind == FileSys::NupContainer::PackageKind::Base) {
-            target = i;
-            break;
+    std::optional<size_t> update;
+    size_t package_total = 0;
+    std::string cur_title;
+    std::string cur_version;
+    std::string cur_update_version;
+    std::string cur_publisher;
+    std::vector<u8> cur_icon;
+    {
+        RealVfsFilesystem vfs;
+        const auto file =
+            vfs.OpenFile(Common::FS::PathToUTF8String(archive), FileSys::OpenMode::Read);
+        if (!file) {
+            return fail(EditResult::IoError, "cannot open " + ToUtf8(archive));
         }
+        FileSys::NupContainer nup{file};
+        if (nup.GetStatus() != Loader::ResultStatus::Success || nup.GetPackages().empty()) {
+            return fail(EditResult::InvalidSource, "not a valid NUP file: " + ToUtf8(archive));
+        }
+        const auto& packages = nup.GetPackages();
+        target = NupEditTargetIndex(packages);
+        update = NewestUpdateIndex(packages);
+        if (update && *update == target) {
+            update = std::nullopt;
+        }
+        package_total = packages.size();
+        const auto& current = packages[target];
+        cur_title = current.title_name;
+        cur_version = current.display_version;
+        cur_publisher = current.publisher;
+        cur_icon = current.icon;
+        cur_update_version =
+            update ? packages[*update].display_version : current.display_version;
     }
-    const auto& current = nup.GetPackages()[target];
     const auto same = [&](const std::optional<std::string>& wanted, const std::string& have) {
         return !wanted || *wanted == have;
     };
-    const bool icon_same = !edit.icon || *edit.icon == current.icon;
-    if (same(edit.title_name, current.title_name) && icon_same &&
-        same(edit.display_version, current.display_version) &&
-        same(edit.publisher, current.publisher)) {
+    const bool icon_same = !edit.icon || *edit.icon == cur_icon;
+    if (same(edit.title_name, cur_title) && icon_same &&
+        same(edit.display_version, cur_version) && same(edit.display_version, cur_update_version) &&
+        same(edit.publisher, cur_publisher)) {
         return EditResult::NoChange;
     }
 
@@ -1885,8 +1963,9 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     const u64 super_file_size = ReadLe(super, 0x40, 8);
     const u64 package_count = ReadLe(super, 0x48, 4);
     if (toc_offset != SuperblockSize || toc_size == 0 || blob_offset % ExtentAlignment != 0 ||
-        super_file_size != file_size || package_count != nup.GetPackages().size() ||
-        toc_offset + toc_size > file_size || blob_offset > file_size) {
+        super_file_size != file_size || package_count != package_total ||
+        toc_offset + toc_size > file_size || toc_offset + toc_size > blob_offset ||
+        blob_offset > file_size) {
         return fail(EditResult::InvalidSource, "NUP superblock mismatch");
     }
     if (!in.Seek(static_cast<s64>(toc_offset))) {
@@ -1941,19 +2020,21 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
                 return fail(EditResult::IoError, "cannot read meta block");
             }
         }
-        if (i == target) {
+        if (i == target || (edit.display_version && update && i == *update)) {
             auto tlvs = ParseTlvs(block);
-            if (edit.title_name) {
-                SetOrRemoveTlv(tlvs, TlvTitleName, StringBytes(*edit.title_name));
-            }
-            if (edit.publisher) {
-                SetOrRemoveTlv(tlvs, TlvPublisher, StringBytes(*edit.publisher));
+            if (i == target) {
+                if (edit.title_name) {
+                    SetOrRemoveTlv(tlvs, TlvTitleName, StringBytes(*edit.title_name));
+                }
+                if (edit.publisher) {
+                    SetOrRemoveTlv(tlvs, TlvPublisher, StringBytes(*edit.publisher));
+                }
+                if (edit.icon) {
+                    SetOrRemoveTlv(tlvs, TlvIcon, *edit.icon);
+                }
             }
             if (edit.display_version) {
                 SetOrRemoveTlv(tlvs, TlvDisplayVersion, StringBytes(*edit.display_version));
-            }
-            if (edit.icon) {
-                SetOrRemoveTlv(tlvs, TlvIcon, *edit.icon);
             }
             block = SerializeTlvs(std::move(tlvs));
         }
@@ -2018,6 +2099,19 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
     try {
         write_all(new_super.data(), new_super.size());
         write_all(new_toc.data(), new_toc.size());
+        // Extent offsets are absolute: preserve any padding between the TOC and the blob
+        // region instead of shifting the blob down.
+        const u64 toc_end = SuperblockSize + new_toc.size();
+        if (toc_end > blob_offset) {
+            throw std::runtime_error("rewritten TOC overlaps the blob region");
+        }
+        u64 gap = blob_offset - toc_end;
+        static constexpr std::array<u8, 4096> zeros{};
+        while (gap > 0) {
+            const size_t chunk = static_cast<size_t>(std::min<u64>(gap, zeros.size()));
+            write_all(zeros.data(), chunk);
+            gap -= chunk;
+        }
         std::vector<u8> buffer(ReadBufferSize);
         u64 remaining = meta_start - blob_offset;
         if (!in.Seek(static_cast<s64>(blob_offset))) {

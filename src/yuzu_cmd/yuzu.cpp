@@ -254,6 +254,7 @@ struct SdlState {
 
 static std::atomic_bool pack_nup_cancel{false};
 static std::atomic_bool unpack_nup_cancel{false};
+static std::atomic_bool edit_nup_cancel{false};
 
 // eden-cli --pack-nup <dump> [<out.nup>]; the output defaults to <dump>.nup next to the dump.
 static bool PackNup(const std::string& source, const std::string& output) {
@@ -374,8 +375,9 @@ static bool EditNup(const Core::LaunchParams& lp) {
                            "--nup-publisher (or a --clear-* flag)\n");
         return false;
     }
+    std::signal(SIGINT, [](int) { edit_nup_cancel = true; });
     std::string error;
-    switch (FileSys::Nup::EditNupMetadata(archive, edit, &error)) {
+    switch (FileSys::Nup::EditNupMetadata(archive, edit, &error, &edit_nup_cancel)) {
     case FileSys::Nup::EditResult::Success:
         fmt::print(stderr, "Updated {}\n", archive.string());
         return true;
