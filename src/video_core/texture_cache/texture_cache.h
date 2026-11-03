@@ -1124,8 +1124,8 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         has_deleted_images = false;
         const ImageId motion_id =
             FindOrInsertImage(motion_info, motion_vectors.Address(), RelaxedOptions{});
-        // The depth only feeds FSR 3.1 (looked up only when FSR can run); without it the stand-in
-        // runs.
+        // The depth only feeds NVIDIA DLSS and FSR 3.1 (looked up only when they can run); without
+        // it the stand-in runs.
         ImageId depth_id{};
         if (depth && motion_id && runtime.WantsTemporalUpscaleDepth()) {
             depth_id = FindOrInsertImage(ImageInfo(*depth), depth->Address(), RelaxedOptions{});

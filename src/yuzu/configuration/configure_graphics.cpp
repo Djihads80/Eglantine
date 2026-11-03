@@ -226,6 +226,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
+#ifndef EGLANTINE_STREAMLINE
+        // Only builds with NVIDIA Streamline (Windows) can use it.
+        if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
+            continue;
+        }
+#endif
 
         ConfigurationShared::Widget* widget = [&]() {
             if (setting->Id() == Settings::values.fsr_sharpening_slider.Id()) {

@@ -499,4 +499,22 @@ if (ANDROID AND ARCHITECTURE_arm64)
     target_link_libraries(video_core PRIVATE adrenotools)
 endif()
 
+# NVIDIA DLSS through NVIDIA Streamline, in place of a game's DLSS (before FSR 3.1) when the
+# setting is on. Only Streamline's MIT-licensed headers are compiled in and nothing of NVIDIA's is
+# linked or copied: sl.interposer.dll and the DLSS plugins are loaded at run time from the user's PC.
+set(EGLANTINE_STREAMLINE_SDK "" CACHE PATH "NVIDIA Streamline SDK directory (headers only)")
+if (EGLANTINE_STREAMLINE_SDK AND WIN32)
+    target_sources(video_core PRIVATE
+        renderer_vulkan/vk_streamline_dlss.cpp
+        renderer_vulkan/vk_streamline_dlss.h
+        vulkan_common/streamline.cpp
+        vulkan_common/streamline.h
+        vulkan_common/streamline_api.h
+    )
+    target_include_directories(video_core PRIVATE ${EGLANTINE_STREAMLINE_SDK}/include)
+    target_link_libraries(video_core PRIVATE version wintrust crypt32)
+    target_compile_definitions(video_core PUBLIC EGLANTINE_STREAMLINE)
+    message(STATUS "NVIDIA DLSS through Streamline: ${EGLANTINE_STREAMLINE_SDK}")
+endif()
+
 create_target_directory_groups(video_core)
