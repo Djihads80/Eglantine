@@ -13,6 +13,12 @@ namespace {
 struct DescriptorMemory {
     std::array<std::array<u64, 128>, 2> banks{};
 
+    // DescriptorTable::Read prefers a single-page host pointer when the memory manager offers one;
+    // these tests are about the invalidation bookkeeping on the generic read path.
+    const u8* GetPointer(GPUVAddr) const {
+        return nullptr;
+    }
+
     void ReadBlockUnsafe(GPUVAddr address, void* output, size_t size) const {
         const auto bank = (address - 0x1000) / 0x1000;
         const auto offset = (address - 0x1000) % 0x1000;
@@ -100,6 +106,10 @@ TEST_CASE("Repeated image deletion cannot reuse stale descriptor view IDs", "[de
 
 TEST_CASE("Descriptor limits clear exposed slots after shrink and growth", "[descriptor_table]") {
     struct AddressMemory {
+        const u8* GetPointer(GPUVAddr) const {
+            return nullptr;
+        }
+
         void ReadBlockUnsafe(GPUVAddr address, void* output, size_t size) const {
             std::memcpy(output, &address, size);
         }
