@@ -282,6 +282,9 @@ if (ENABLE_WEB_SERVICE OR ENABLE_UPDATE_CHECKER)
     AddJsonPackage(cpp-jwt)
 endif()
 
+# libgav1 (AV1 video decoding)
+add_subdirectory(libgav1)
+
 # FFMpeg
 if (YUZU_USE_EXTERNAL_FFMPEG OR YUZU_USE_BUNDLED_FFMPEG)
     add_subdirectory(ffmpeg)
