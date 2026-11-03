@@ -524,7 +524,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     auto result = std::make_shared<LoweredNativeCode>();
     static const bool hash_for_indirect_reset = [] {
         const char* value = std::getenv("EDEN_NX2_RESETFIX");
-        return value && std::string_view{value} == "1";
+        return !value || std::string_view{value} != "0";
     }();
     if (hash_for_indirect_reset) {
         result->diagnostic_key = Shader::Ampere::NativeProgramKey(native);
@@ -560,8 +560,11 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     const auto& regs{maxwell3d->regs};
     const bool native{maxwell3d->GetNativeMacroEngine().native_turing};
-    const bool geometry{native && program == Maxwell::ShaderType::Geometry &&
-                        std::getenv("EDEN_NX2_EXPERIMENTAL_GEOMETRY")};
+    static const bool geometry_enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_EXPERIMENTAL_GEOMETRY");
+        return !value || std::string_view{value} != "0";
+    }();
+    const bool geometry{native && program == Maxwell::ShaderType::Geometry && geometry_enabled};
     // Task and mesh programs: the task in the vertex slot, its mesh program in the tessellation
     // slot (without a task, the mesh program is in the vertex slot).
     const bool mesh_slot{native && regs.IsMeshEnabled() &&

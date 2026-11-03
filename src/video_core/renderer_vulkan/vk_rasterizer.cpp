@@ -251,7 +251,7 @@ RasterizerVulkan::~RasterizerVulkan() {
 bool RasterizerVulkan::TryNx2IndirectReset() {
     static const bool enabled = [] {
         const char* value = std::getenv("EDEN_NX2_RESETFIX");
-        return value && std::string_view{value} == "1";
+        return !value || std::string_view{value} != "0";
     }();
     if (!enabled || !maxwell3d->GetNativeMacroEngine().native_turing ||
         !pipeline_cache.IsIndirectResetShader()) {
