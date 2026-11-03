@@ -471,6 +471,22 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
             info.native_runtime_bounds = true;
             return;
         }
+        if (candidates.size() == 1) {
+            // The one pointer the address is built from. The NVN search below only takes 16-byte
+            // aligned slots, so for a pointer at an 8-byte slot it can return a dimension or stride
+            // the address arithmetic reads instead, and the access then lands in the wrong buffer.
+            const StorageBufferAddr storage_buffer{candidates.front()};
+            if (IsGlobalMemoryWrite(inst)) {
+                info.writes.insert(storage_buffer);
+            }
+            info.set.insert(storage_buffer);
+            info.to_replace.push_back(StorageInst{
+                .storage_buffer{storage_buffer},
+                .inst = &inst,
+                .block = &block,
+            });
+            return;
+        }
     }
     const auto cached_track = [&](const Bias* bias, auto& cache) {
         if (low_addr.IsImmediate()) {
