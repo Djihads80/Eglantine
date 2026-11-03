@@ -2347,7 +2347,7 @@ public:
             {8, &INx2VideoSession::Flush, "Flush"},
             {101, &INx2VideoSession::Configure, "Configure"},
             {109, &INx2VideoSession::SubmitInput, "SubmitInputBuffer"},
-            {115, &INx2VideoSession::Succeed, "Finalize"},
+            {115, &INx2VideoSession::Finalize, "Finalize"},
             {200, &INx2VideoSession::Succeed, "Initialize"},
             {201, &INx2VideoSession::Succeed, "InitializeWithFlag"},
             {202, &INx2VideoSession::Succeed, "InitializeWithFlagAndValue"},
@@ -2419,6 +2419,10 @@ private:
         if (Nx2FirstVideoCommand(GetServiceName(), ctx.GetCommand())) {
             LOG_INFO(Service, "{} TIPC {} {} (first use): words {:08x}", GetServiceName(),
                      ctx.GetCommand(), what, fmt::join(std::span<const u32>{w, 12}, " "));
+        } else if (static const bool trace = std::getenv("EDEN_NX2_VDEC_TRACE") != nullptr; trace) {
+            // EDEN_NX2_VDEC_TRACE=1: every video decoder call at Info level.
+            LOG_INFO(Service, "{} TIPC {} {}: [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x}",
+                     GetServiceName(), ctx.GetCommand(), what, w[2], w[3], w[4], w[5]);
         } else {
             LOG_DEBUG(Service, "{} TIPC {} {}: [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x}",
                       GetServiceName(), ctx.GetCommand(), what, w[2], w[3], w[4], w[5]);
@@ -2447,10 +2451,31 @@ private:
     void Configure(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         std::string codec;
+        std::span<const u8> name_buf;
         if (!ctx.BufferDescriptorA().empty()) {
-            const auto name = ctx.ReadBufferA(0);
-            codec.assign(reinterpret_cast<const char*>(name.data()),
-                         strnlen(reinterpret_cast<const char*>(name.data()), name.size()));
+            name_buf = ctx.ReadBufferA(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (name_buf.empty() && !ctx.BufferDescriptorX().empty()) {
+            name_buf = ctx.ReadBufferX(0);
+            codec.assign(reinterpret_cast<const char*>(name_buf.data()),
+                         strnlen(reinterpret_cast<const char*>(name_buf.data()), name_buf.size()));
+        }
+        if (!name_buf.empty()) {
+            if (codec.empty()) {
+                const std::string_view sv{reinterpret_cast<const char*>(name_buf.data()), name_buf.size()};
+                for (const auto& candidate : {"video/avc", "video/vp9", "video/vp8", "video/hevc"}) {
+                    if (sv.find(candidate) != std::string_view::npos) {
+                        codec = candidate;
+                        break;
+                    }
+                }
+            }
+            if (codec.empty()) {
+                LOG_INFO(Service, "{} configure: no codec name in {:02x}", GetServiceName(),
+                         fmt::join(name_buf, " "));
+            }
         }
         Log(ctx, "configure");
         LOG_INFO(Service, "{} configure codec \"{}\" {}x{} rate {}", GetServiceName(), codec, w[5],
@@ -2513,7 +2538,24 @@ private:
             if (release_fence) {
                 m_release_fences[image] = *release_fence;
             }
-            value = m_sync_base + ++m_handed;
+            // After the end of a stream nothing fills an image again, so a release completes at
+            // once: its fence is the syncpoint's current value. Mario Kart World releases its
+            // images after a movie ends and waits for the returned fences; a fence for a frame
+            // that never comes hung the game on a black screen after its title movie.
+            static const bool release_now = [] {
+                const char* value = std::getenv("EDEN_NX2_VDEC_EOS_RELEASE_NOW");
+                return value != nullptr && value[0] != '0';
+            }();
+            if (release_now && release_fence && m_stream_ended && m_inputs.empty() &&
+                m_decoded.empty()) {
+                const u32 reached = static_cast<u32>(
+                    system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(m_syncpoint));
+                m_sync_base = reached;
+                m_handed = 0;
+                value = reached;
+            } else {
+                value = m_sync_base + ++m_handed;
+            }
         }
         m_cv.notify_one();
         return {~m_syncpoint, 0, value, 0};
@@ -2559,7 +2601,8 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            m_stream_ended = false;
+            m_ready->room.store(!end && m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
         }
         m_cv.notify_one();
         const u64 id = ++m_submitted;
@@ -2574,10 +2617,39 @@ private:
             std::scoped_lock lk{m_mutex};
             m_inputs.clear();
             m_flush = true;
+            m_stream_ended = false;
             m_ready->room.store(true, std::memory_order_relaxed);
+            // Only Stop: Bananza flushes (8) after its movies end and treats every completed
+            // fence as a frame to acquire.
+            if (ctx.GetCommand() == 207) {
+                CompleteHandedFences();
+            }
         }
         m_cv.notify_one();
         TipcReplyWords(ctx, {});
+    }
+
+    void Finalize(HLERequestContext& ctx) {
+        Log(ctx, "finalize");
+        {
+            std::scoped_lock lk{m_mutex};
+            CompleteHandedFences();
+        }
+        TipcReplyWords(ctx, {});
+    }
+
+    // Advances the decoder's syncpoint to the last value handed out (m_mutex held).
+    void CompleteHandedFences() {
+        if (m_syncpoint == NoSyncpoint) {
+            return;
+        }
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        const u32 target = m_sync_base + m_handed;
+        u32 current = static_cast<u32>(syncpoints.GetGuestSyncpointValue(m_syncpoint));
+        while (static_cast<s32>(target - current) > 0) {
+            syncpoints.IncrementGuest(m_syncpoint);
+            ++current;
+        }
     }
 
     void GetOutputInfo(HLERequestContext& ctx) {
@@ -2647,6 +2719,10 @@ private:
                 lk.lock();
                 // Even an image written during a flush counts: the client waits for its value.
                 m_outputs.push_back({image, width, height, frame.pts, frame.end});
+                if (frame.end) {
+                    m_stream_ended = true;
+                    m_ready->room.store(false, std::memory_order_relaxed);
+                }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
@@ -2658,8 +2734,16 @@ private:
             }
             Input input = std::move(m_inputs.front());
             m_inputs.pop_front();
-            m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
-            const std::string codec = m_codec;
+            if (!m_stream_ended) {
+                m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            }
+            std::string codec = m_codec;
+            if (codec.empty() && Tegra::Host1x::IsH264Stream(input.data)) {
+                codec = "video/avc";
+                m_codec = codec;
+                LOG_INFO(Service, "{} empty codec, detected H.264 stream: using \"{}\"",
+                         GetServiceName(), codec);
+            }
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
                 decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
@@ -2754,6 +2838,10 @@ private:
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
                               layout.pitch * ((height + 1) / 2));
         }
+        // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
+        if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+            system.GPU().InvalidateRegion(*device, layout.size);
+        }
         return {width, height};
     }
 
@@ -2809,6 +2897,7 @@ private:
     std::deque<u32> m_free;            ///< Output images, in the order the client acquires them
     std::map<u32, Fence> m_release_fences;
     std::deque<Output> m_outputs;      ///< Finished, for 213
+    bool m_stream_ended{};             ///< End-of-stream frame handed out, nothing submitted since
     bool m_flush{};
     bool m_quit{};
     std::thread m_worker;
