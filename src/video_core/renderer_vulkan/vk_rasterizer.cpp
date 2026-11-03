@@ -1303,6 +1303,21 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
     return texture_cache.BlitImage(dst, src, copy_config);
 }
 
+bool RasterizerVulkan::UsesNvidiaDlss() const {
+    return texture_cache_runtime.UsesNvidiaDlss();
+}
+
+bool RasterizerVulkan::SupportsGameDlssNetwork() const {
+    // Compute pipelines are created 32 threads wide where the device can be told to.
+    return device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
+}
+
+std::optional<VideoCore::GameDlssProbe> RasterizerVulkan::ProbeGameDlssOutput(
+    const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst) {
+    std::scoped_lock lock{texture_cache.mutex};
+    return texture_cache.ProbeGameDlssOutput(dst, src);
+}
+
 bool RasterizerVulkan::AccelerateTemporalUpscale(
     const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
     const Tegra::Engines::Fermi2D::Surface& motion_vectors, const Tegra::Texture::TICEntry* depth,

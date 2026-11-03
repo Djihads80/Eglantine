@@ -458,7 +458,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
-    auto lowered = Shader::Ampere::LowerToMaxwell(native);
+    auto lowered = Shader::Ampere::LowerToMaxwell(native, native_tensor);
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
     if (static const std::string reject_list = [] {
@@ -732,6 +732,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     if (kepler_compute->IsNativeMode()) {
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
+        native_tensor = kepler_compute->EmulatesNativeTensorPrograms();
         InitializeNativeCode(std::move(lowered_native_), 0);
         start_address = sizeof(sph);
     }

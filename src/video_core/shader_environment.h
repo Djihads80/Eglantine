@@ -104,6 +104,8 @@ protected:
                               u32 source_header_size = 128);
     std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size);
     size_t native_source_size{};
+    /// Lower matrix multiplies too (the passes of a game DLSS evaluation; LowerToMaxwell).
+    bool native_tensor{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 
     Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
