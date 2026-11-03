@@ -347,11 +347,14 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
             // The front usually sends more within microseconds: spin briefly before sleeping.
-            for (u32 spins = 0; spins < 8192 && available == read_position; ++spins) {
+            for (u32 spins = 0; spins < 8192 && available == read_position &&
+                                !hook_requested.load(std::memory_order_relaxed);
+                 ++spins) {
                 Pause();
                 available = published.load(std::memory_order_acquire);
             }
             if (available == read_position && idle_hook != nullptr) {
+                hook_requested.store(false, std::memory_order_seq_cst);
                 idle_hook(idle_argument);
                 available = published.load(std::memory_order_acquire);
             }
@@ -361,7 +364,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 back_waiting.store(true, std::memory_order_seq_cst);
                 const u32 seen = wake.load(std::memory_order_seq_cst);
                 available = published.load(std::memory_order_seq_cst);
-                if (available == read_position && !stop_token.stop_requested()) {
+                // A request made after the hook ran (RequestIdleHook) runs it before sleeping.
+                if (available == read_position && !stop_token.stop_requested() &&
+                    !hook_requested.load(std::memory_order_seq_cst)) {
                     wake.wait(seen, std::memory_order_seq_cst);
                 }
                 back_waiting.store(false, std::memory_order_relaxed);
@@ -374,6 +379,11 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             const size_t index = read_position & RingMask;
             const size_t size = Execute(&ring[index]);
             read_position += size != 0 ? size : RingWords - index;
+            if (hook_requested.load(std::memory_order_relaxed) &&
+                idle_hook != nullptr) [[unlikely]] {
+                hook_requested.store(false, std::memory_order_seq_cst);
+                idle_hook(idle_argument);
+            }
             // Hand ring space back now and then while working through a long batch, and at once
             // when the front waits for this position (WaitForWriters).
             if ((read_position - last_store >= 4096 ||
