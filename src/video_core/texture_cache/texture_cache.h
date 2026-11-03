@@ -2311,12 +2311,14 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
         }
         return 0;
     }
-    // What the host image really takes where the runtime knows it: a trimmed image
-    // (reduce_texture_resolution) takes a quarter of its guest size. Counted at guest size, Mario
-    // Kart World's trimmed terrain arrays kept the total over the critical limit for whole races,
-    // and the collector evicted (and re-uploaded) thousands of textures every few seconds.
+    // A trimmed image (reduce_texture_resolution, or too large for the host) counts what its host
+    // image really takes, where the runtime knows it: a quarter of its guest size or less.
+    // Counted at guest size, Mario Kart World's trimmed terrain arrays kept the total over the
+    // critical limit for whole races, and the collector evicted (and re-uploaded) thousands of
+    // textures every few seconds. Other images count as before.
     if constexpr (requires { image.HostMemoryBytes(); }) {
-        if (const std::optional<u64> host_bytes = image.HostMemoryBytes()) {
+        if (const std::optional<u64> host_bytes = image.HostMemoryBytes();
+            host_bytes && True(image.flags & ImageFlagBits::TrimmedLevels)) {
             return Common::AlignUp(*host_bytes, 1024);
         }
     }

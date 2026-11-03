@@ -437,9 +437,14 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       num_translation_threads{use_async_translation ? GetTotalTranslationWorkers() : 0},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {},
-              // Draws of Switch 2 programs wait for these builds: not on background cores.
+#ifdef __ANDROID__
+              // Draws of Switch 2 programs wait for these builds: not on a phone's background
+              // cores.
               Settings::CurrentProgramIsSwitch2() ? Common::ThreadPlacement::Default
                                                   : Common::ThreadPlacement::Background),
+#else
+              Common::ThreadPlacement::Background),
+#endif
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background),
       translation_workers(num_translation_threads, "VkPipelineTranslator", {},
@@ -1146,11 +1151,13 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (Settings::CurrentProgramIsSwitch2()) {
         return pipeline;
     }
+#ifdef __ANDROID__
     // Draws that write memory wait too: skipping one leaves what later passes read (culling
-    // results, indirect arguments, counters) stale.
+    // results, indirect arguments, counters) stale, which faulted phone GPUs.
     if (pipeline->WritesMemory()) {
         return pipeline;
     }
+#endif
     return CanSkipDraw() ? nullptr : pipeline;
 }
 
