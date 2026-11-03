@@ -114,7 +114,7 @@ void CoreTiming::Pause(bool is_paused) {
     pause_event.Set();
 
     if (!is_paused) {
-        pause_end_time = GetGlobalTimeNs().count();
+        pause_end_time.store(GetGlobalTimeNs().count(), std::memory_order_relaxed);
     }
 }
 
@@ -134,7 +134,7 @@ void CoreTiming::SyncPause(bool is_paused) {
     }
 
     if (!is_paused) {
-        pause_end_time = GetGlobalTimeNs().count();
+        pause_end_time.store(GetGlobalTimeNs().count(), std::memory_order_relaxed);
     }
 }
 
@@ -283,8 +283,9 @@ std::optional<s64> CoreTiming::Advance() {
                 // If this event was scheduled into a pause, its time now is going to be way
                 // behind. Re-set this event to continue from the end of the pause.
                 auto next_time{evt.time + next_schedule_time};
-                if (evt.time < pause_end_time) {
-                    next_time = pause_end_time + next_schedule_time;
+                const s64 last_pause_end = pause_end_time.load(std::memory_order_relaxed);
+                if (evt.time < last_pause_end) {
+                    next_time = last_pause_end + next_schedule_time;
                 }
 
                 event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.type,
