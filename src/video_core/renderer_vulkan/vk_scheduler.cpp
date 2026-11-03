@@ -431,6 +431,7 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         };
         upload_cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, WRITE_BARRIER);
+#ifdef __ANDROID__
         if (device.IsIntegrated()) {
             // Buffer downloads read buffer memory directly once their tick completes
             // (BufferCacheRuntime::CanReadBuffersDirectly): make the GPU's writes visible.
@@ -443,6 +444,7 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT,
                                    0, HOST_READ_BARRIER);
         }
+#endif
         upload_cmdbuf.End();
         cmdbuf.End();
 
