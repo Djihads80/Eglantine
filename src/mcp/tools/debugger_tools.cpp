@@ -398,8 +398,15 @@ public:
         if (state == TargetState::Detached) {
             return "not attached";
         }
+        const bool was_running = state == TargetState::Running;
         Interrupt(lock);
-        paused_info = json{{"reason", "paused by request"}};
+        if (state == TargetState::Detached) {
+            return "the GDB stub stopped answering";
+        }
+        // Keep the stop description (pc, breakpoint): continue and step rely on it.
+        if (was_running && paused_info.is_object() && !paused_info.contains("breakpoint")) {
+            paused_info["reason"] = "paused by request";
+        }
         return {};
     }
 

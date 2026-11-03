@@ -508,7 +508,7 @@ std::string WaitScreen(ToolContext& ctx, const json& labels, milliseconds timeou
             }
         }
         std::this_thread::sleep_for(milliseconds{250}); // each check captures a frame
-    } while (steady_clock::now() < deadline && !ServerStopping());
+    } while (steady_clock::now() < deadline && !ServerStopping() && !ctx.stop.stop_requested());
     return {};
 }
 
@@ -525,7 +525,7 @@ bool WaitProbe(ToolContext& ctx, const json& cond, milliseconds timeout, json& v
             return true;
         }
         std::this_thread::sleep_for(milliseconds{16});
-    } while (steady_clock::now() < deadline && !ServerStopping());
+    } while (steady_clock::now() < deadline && !ServerStopping() && !ctx.stop.stop_requested());
     return false;
 }
 
@@ -674,10 +674,10 @@ bool RunStep(ToolContext& ctx, const json& step, json& result, const RouteAuthor
             }
         }
         if (step.contains("wait_frames")) {
-            WaitFrames(step["wait_frames"].get<u64>(), timeout);
+            WaitFrames(step["wait_frames"].get<u64>(), timeout, ctx.stop);
         }
         if (step.contains("wait_ms")) {
-            SleepUnlessStopping(milliseconds{step["wait_ms"].get<int>()});
+            SleepUnlessStopping(milliseconds{step["wait_ms"].get<int>()}, ctx.stop);
         }
         const auto per_try = repeats > 1 ? milliseconds{step.value("repeat_interval_ms", 1500)} : timeout;
         bool ok = true;
@@ -704,7 +704,8 @@ bool RunStep(ToolContext& ctx, const json& step, json& result, const RouteAuthor
                     break;
                 }
                 std::this_thread::sleep_for(milliseconds{250});
-            } while (steady_clock::now() < deadline && !ServerStopping());
+            } while (steady_clock::now() < deadline && !ServerStopping() &&
+                     !ctx.stop.stop_requested());
         }
         if (ok && step.contains("wait_probe")) {
             json values;
@@ -1030,6 +1031,10 @@ ToolResult RouteRun(ToolContext& ctx, const json& args) {
     if (args.value("background", false)) {
         auto& bg = Background();
         std::scoped_lock lock{bg.mutex};
+        // Checked under the lock the shutdown path takes, so no route starts after it.
+        if (ServerStopping()) {
+            return ToolResult::Error("the MCP server is stopping");
+        }
         if (bg.thread.joinable() && bg.state == "running") {
             return ToolResult::Error("route '" + bg.name + "' is already running (route_status / "
                                      "route_stop)");

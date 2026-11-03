@@ -109,11 +109,11 @@ u64 PresentedFrames() {
 
 /// Waits until `frames` more frames are presented, the timeout or a server stop.
 /// Returns the number of frames actually presented.
-u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout) {
+u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout, std::stop_token stop) {
     const u64 start = PresentedFrames();
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (PresentedFrames() - start < frames && std::chrono::steady_clock::now() < deadline &&
-           !ServerStopping()) {
+           !ServerStopping() && !stop.stop_requested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     return PresentedFrames() - start;

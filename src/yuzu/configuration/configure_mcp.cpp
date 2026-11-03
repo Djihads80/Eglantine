@@ -31,7 +31,7 @@ ConfigureMcp::ConfigureMcp(QWidget* parent) : QWidget(parent) {
     auto* form = new QFormLayout(details);
     form->setContentsMargins(0, 0, 0, 0);
     port = new QSpinBox(details);
-    port->setRange(1024, 65535);
+    port->setRange(1, 65535);
     form->addRow(tr("Port:"), port);
     writes = new QCheckBox(tr("Allow Writes (input, memory writes, settings)"), details);
     form->addRow(writes);

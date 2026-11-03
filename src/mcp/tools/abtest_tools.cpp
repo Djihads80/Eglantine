@@ -40,48 +40,16 @@ using namespace std::chrono;
 /// Guest frames to wait for after a reboot before the game counts as up.
 constexpr u64 kBootFrames = 120;
 
-// ---- settings (as settings_tools.cpp does, so values parse exactly like settings_set) ------
+// ---- settings (shared with settings_set: same hidden-settings rule and parsing) -------------
 
-/// ASCII lower-case copy of s, for case-insensitive matching.
-std::string Lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
-/// Settings agents may not read or change (same rule as settings_tools.cpp).
-bool Hidden(const Settings::BasicSetting& s) {
-    const std::string name = Lower(s.GetLabel());
-    return s.GetCategory() == Settings::Category::WebService || name.starts_with("mcp_") ||
-           name == "enable_mcp_server" || name.find("token") != std::string::npos ||
-           name.find("password") != std::string::npos || name.find("serial") != std::string::npos;
-}
-
-/// Looks up a setting by its exact config key. Returns nullptr if unknown or Hidden.
+/// Looks up a setting agents may change; nullptr if unknown or hidden.
 Settings::BasicSetting* FindSetting(const std::string& name) {
-    auto& by_key = Settings::values.linkage.by_key;
-    const auto it = by_key.find(name);
-    if (it == by_key.end() || Hidden(*it->second)) {
-        return nullptr;
-    }
-    return it->second;
+    return FindAgentSetting(name);
 }
 
-/// Sets a setting from text; enum settings also accept their names (LoadString takes indices).
+/// Sets a setting from text exactly like settings_set.
 std::string SetFromString(Settings::BasicSetting& s, const std::string& value) {
-    const std::string before = s.ToString();
-    if (s.IsEnum() && !value.empty() && !std::isdigit(static_cast<unsigned char>(value[0]))) {
-        for (int i = 0; i < 64; ++i) {
-            s.LoadString(std::to_string(i));
-            if (Lower(s.Canonicalize()) == Lower(value)) {
-                return {};
-            }
-        }
-        s.LoadString(before);
-        return fmt::format("'{}' is not a value of {}", value, s.GetLabel());
-    }
-    s.LoadString(value);
-    return {};
+    return SetSettingFromText(s, value);
 }
 
 /// The value as settings_get shows it (enum values by name).
@@ -692,6 +660,10 @@ ToolResult AbTest(ToolContext& ctx, const json& args) {
 
     const u64 since_seq = ctx.timeline ? ctx.timeline->LastSeq() : 0;
     std::unique_lock lock{job.mutex};
+    // Checked under the lock StopAbTestWork takes, so no test starts after shutdown began.
+    if (ServerStopping()) {
+        return ToolResult::Error("the MCP server is stopping");
+    }
     if (job.thread.joinable()) {
         // Not running (checked above), so the old thread has only its return left.
         job.thread.join();

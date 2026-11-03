@@ -9,12 +9,17 @@
 #include <atomic>
 #include <chrono>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "mcp/timeline.h"
 #include "mcp/tool.h"
+
+namespace Settings {
+class BasicSetting;
+}
 
 namespace Mcp {
 
@@ -86,10 +91,11 @@ inline std::atomic<bool> g_server_stopping{false};
     return g_server_stopping.load(std::memory_order_relaxed);
 }
 /// Sleeps up to `duration`, returning early (false) when the server is stopping.
-inline bool SleepUnlessStopping(std::chrono::milliseconds duration) {
+inline bool SleepUnlessStopping(std::chrono::milliseconds duration,
+                                std::stop_token stop = {}) {
     const auto until = std::chrono::steady_clock::now() + duration;
     while (std::chrono::steady_clock::now() < until) {
-        if (ServerStopping()) {
+        if (ServerStopping() || stop.stop_requested()) {
             return false;
         }
         std::this_thread::sleep_for(
@@ -105,13 +111,21 @@ inline bool SleepUnlessStopping(std::chrono::milliseconds duration) {
 u64 PresentedFrames();
 /// Waits until `frames` more frames are presented. Returns the number actually presented
 /// (fewer on timeout, e.g. when paused or loading).
-u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout);
+u64 WaitFrames(u64 frames, std::chrono::milliseconds timeout, std::stop_token stop = {});
 
 // game_state_tools.cpp
 /// Resolves "0x1234", "Module+0x10" or a pointer chain ("Module+0x10->0x8") to a guest address.
 /// Returns nullopt with error set.
 std::optional<u64> ResolveGuestAddress(ToolContext& ctx, const std::string& expr,
                                        std::string& error);
+
+// settings_tools.cpp (shared so every tool applies the same hidden-settings rule)
+/// A setting agents may use, by config key: nullptr if unknown or hidden (credentials, serials,
+/// the MCP's own access settings).
+Settings::BasicSetting* FindAgentSetting(const std::string& name);
+/// Sets a setting from text the way settings_set does (enums also by name). Returns an error
+/// message, or "" on success.
+std::string SetSettingFromText(Settings::BasicSetting& setting, const std::string& value);
 
 // abtest_tools.cpp
 /// Stops a running ab_test and waits for it (server shutdown: it uses the host).

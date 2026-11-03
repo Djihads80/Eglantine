@@ -667,8 +667,10 @@ void MainWindow::ApplyMcpSettings(bool old_enabled, u16 old_port, const std::str
         StopMcpServer();
     } else if (!old_enabled && enabled) {
         StartMcpServer();
-    } else if (mcp_server && (port_changed || token_changed)) {
-        // Port and token are fixed while serving: restart with the new ones.
+    } else if ((mcp_server || (enabled && !mcp_last_error.empty())) &&
+               (port_changed || token_changed)) {
+        // Port and token are fixed while serving: restart with the new ones. Also retries a start
+        // that failed (e.g. port in use) once the port or token was changed.
         StopMcpServer();
         StartMcpServer();
     }

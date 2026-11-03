@@ -301,6 +301,14 @@ ToolResult EnvSwitches(ToolContext&, const json& args) {
 
 } // namespace
 
+Settings::BasicSetting* FindAgentSetting(const std::string& name) {
+    return Find(name);
+}
+
+std::string SetSettingFromText(Settings::BasicSetting& setting, const std::string& value) {
+    return SetFromString(setting, value);
+}
+
 /// Registers the settings, debug knob, determinism and environment switch tools.
 void RegisterSettingsTools(ToolRegistry& registry) {
     registry.Add(Tool{
