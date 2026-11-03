@@ -407,7 +407,8 @@ endif()
 target_link_libraries(yuzu PRIVATE nlohmann_json::nlohmann_json)
 
 if (ENABLE_MCP_SERVER)
-    target_sources(yuzu PRIVATE mcp_host_qt.cpp mcp_host_qt.h)
+    target_sources(yuzu PRIVATE mcp_host_qt.cpp mcp_host_qt.h
+        configuration/configure_mcp.cpp configuration/configure_mcp.h)
     target_link_libraries(yuzu PRIVATE mcp)
     target_compile_definitions(yuzu PRIVATE YUZU_ENABLE_MCP)
 endif()

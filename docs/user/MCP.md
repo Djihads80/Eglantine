@@ -12,7 +12,7 @@ The server is **off by default** and only listens on `127.0.0.1` (this PC).
 ## Turning it on
 
 - **Tools > MCP Server > Enabled** (remembered), or
-- **Configure > Debug**, under the GDB stub, where the port, Allow Writes and an optional token
+- the **MCP** tab of **Configure > Debug**, where the port, Allow Writes and an optional token
   are set too (changes apply when you press OK), or
 - start the emulator with `--mcp` (this run only). See [Command Line](./CommandLine.md).
 

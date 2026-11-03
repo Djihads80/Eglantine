@@ -6,8 +6,6 @@
 #include <memory>
 #include <QScrollArea>
 
-class QCheckBox;
-class QLineEdit;
 class QSpinBox;
 
 namespace Core {
@@ -38,14 +36,4 @@ private:
     const Core::System& system;
 
     bool crash_dump_warning_shown{false};
-
-#ifdef YUZU_ENABLE_MCP
-    /// Adds the MCP server settings under the GDB stub in the Debugger group.
-    void SetupMcpWidgets();
-
-    QCheckBox* mcp_enable = nullptr;
-    QSpinBox* mcp_port = nullptr;
-    QCheckBox* mcp_writes = nullptr;
-    QLineEdit* mcp_token = nullptr;
-#endif
 };

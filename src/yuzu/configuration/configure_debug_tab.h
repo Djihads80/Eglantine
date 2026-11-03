@@ -8,6 +8,7 @@
 
 class ConfigureDebug;
 class ConfigureCpuDebug;
+class ConfigureMcp;
 
 namespace Core {
 class System;
@@ -38,4 +39,7 @@ private:
 
     std::unique_ptr<ConfigureDebug> debug_tab;
     std::unique_ptr<ConfigureCpuDebug> cpu_debug_tab;
+#ifdef YUZU_ENABLE_MCP
+    std::unique_ptr<ConfigureMcp> mcp_tab;
+#endif
 };
