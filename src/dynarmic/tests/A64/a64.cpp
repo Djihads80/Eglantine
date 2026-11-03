@@ -587,6 +587,58 @@ TEST_CASE("A64: SQDMLAL (scalar) in range does not set QC", "[a64]") {
     CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
 }
 
+TEST_CASE("A64: SQDMLAL, SQDMLSL, SQDMULL (scalar)", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQDMULL(S4, H0, H0);
+    code.SQDMLAL(S5, H2, H0);
+    code.SQDMLSL(D6, S1, S1);
+    code.SQDMLAL(D7, S1, S1);
+
+    jit.SetPC(0);
+    jit.SetVector(0, Vector{0x0000000000008000, 0x1111111111111111});
+    jit.SetVector(1, Vector{0x0000000080000000, 0x2222222222222222});
+    jit.SetVector(2, Vector{0x0000000000003000, 0x3333333333333333});
+    for (size_t i = 4; i <= 7; i++) {
+        jit.SetVector(i, Vector{0x7fffffff00000005, 0x4444444444444444});
+    }
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(4) == Vector{0x000000007fffffff, 0});
+    CHECK(jit.GetVector(5) == Vector{0x00000000d0000005, 0});
+    CHECK(jit.GetVector(6) == Vector{0xffffffff00000006, 0});
+    CHECK(jit.GetVector(7) == Vector{0x7fffffffffffffff, 0});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == true);
+}
+
+TEST_CASE("A64: SQDMLSL (scalar) in range does not set QC", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQDMLSL(S8, H2, H2);
+
+    jit.SetPC(0);
+    jit.SetVector(2, Vector{0x0000000000003000, 0x3333333333333333});
+    jit.SetVector(8, Vector{0x7fffffff00000005, 0x4444444444444444});
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(8) == Vector{0x00000000ee000005, 0});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
+}
+
 TEST_CASE("A64: SQSHLU", "[a64]") {
     A64TestEnv env;
     A64::UserConfig jit_user_config{};
