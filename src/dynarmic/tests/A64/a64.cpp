@@ -415,6 +415,66 @@ TEST_CASE("A64: URSHL", "[a64]") {
     CHECK(jit.GetVector(9) == Vector{0x0000000000000002, 0x12db8b8280e0ba});
 }
 
+TEST_CASE("A64: SQRSHL, UQRSHL", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQRSHL(V8.B16(), V0.B16(), V1.B16());
+    code.UQRSHL(V9.B16(), V0.B16(), V1.B16());
+    code.SQRSHL(V10.H8(), V2.H8(), V3.H8());
+    code.UQRSHL(V11.S4(), V2.S4(), V3.S4());
+    code.SQRSHL(V12.D2(), V4.D2(), V5.D2());
+    code.UQRSHL(V13.D2(), V4.D2(), V5.D2());
+    code.SQRSHL(D14, D4, D5);
+    code.UQRSHL(B15, B0, B1);
+
+    jit.SetPC(0);
+    jit.SetVector(0, Vector{0x7f800102fe01c040, 0x0110ff7f80812233});
+    jit.SetVector(1, Vector{0x01fffefd0807f8f9, 0x7f8002fe04fc0100});
+    jit.SetVector(2, Vector{0x7fff8000fffe0003, 0x123480017ffffff1});
+    jit.SetVector(3, Vector{0x00f10012fff00001, 0x000f00100000ffe1});
+    jit.SetVector(4, Vector{0x8000000000000001, 0x7fffffffffffffff});
+    jit.SetVector(5, Vector{0x00000000000000c0, 0xffffffffffffffc1});
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(8) == Vector{0x7fc00000807f0001, 0x7f00fc2080f84433});
+    CHECK(jit.GetVector(9) == Vector{0xfe400000ff800101, 0xff00ff20ff084433});
+    CHECK(jit.GetVector(10) == Vector{0x0001800000000006, 0x7fff80007fff0000});
+    CHECK(jit.GetVector(11) == Vector{0xffffffffffffffff, 0xffffffff00000001});
+    CHECK(jit.GetVector(12) == Vector{0x0000000000000000, 0x0000000000000001});
+    CHECK(jit.GetVector(13) == Vector{0x0000000000000001, 0x0000000000000001});
+    CHECK(jit.GetVector(14) == Vector{0x0000000000000000, 0x0000000000000000});
+    CHECK(jit.GetVector(15) == Vector{0x0000000000000001, 0x0000000000000000});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == true);
+}
+
+TEST_CASE("A64: SQRSHL rounding right shift does not set QC", "[a64]") {
+    A64TestEnv env;
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.SQRSHL(V16.H8(), V2.H8(), V17.H8());
+
+    jit.SetPC(0);
+    jit.SetVector(2, Vector{0x7fff8000fffe0003, 0x123480017ffffff1});
+    jit.SetVector(17, Vector{0xffffffffffffffff, 0xffffffffffffffff});
+    jit.SetFpsr(0);
+
+    env.ticks_left = env.code_mem.size();
+    CheckedRun([&]() { jit.Run(); });
+
+    CHECK(jit.GetVector(16) == Vector{0x4000c000ffff0002, 0x091ac0014000fff9});
+    CHECK(FP::FPSR{jit.GetFpsr()}.QC() == false);
+}
+
 TEST_CASE("A64: SQSHLU", "[a64]") {
     A64TestEnv env;
     A64::UserConfig jit_user_config{};
