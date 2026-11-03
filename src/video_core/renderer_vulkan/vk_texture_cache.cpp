@@ -204,6 +204,26 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
+// A huge natively sampled color array in a Switch 2 sparse region on a host that cannot leave
+// layers unbound (MoltenVK): title 1's terrain arrays (8192x8192x68, 1.4 and 5.8 GB) hold full
+// detail in a few layers and the low levels (1024x1024 and below) in all of them. Such an array
+// is backed with its low levels only (see TrimmedHostInfo, Image::CompactLayers).
+[[nodiscard]] bool UsesCompactLayers(const Device& device, const ImageInfo& info,
+                                     GPUVAddr gpu_addr) {
+    if (device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
+        info.resources.layers <= 1 || info.resources.levels <= 1 || info.num_samples != 1 ||
+        info.size.depth != 1 ||
+        VideoCore::Surface::GetFormatType(info.format) !=
+            VideoCore::Surface::SurfaceType::ColorTexture ||
+        (IsPixelFormatASTC(info.format) && !device.IsOptimalAstcSupported()) ||
+        (IsPixelFormatBCn(info.format) && !device.IsOptimalBcnSupported())) {
+        return false;
+    }
+    constexpr u32 MinSize = 256U << 20;
+    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    return size >= MinSize && Tegra::Nx2InSparseRegion(gpu_addr, size);
+}
+
 // How SparseTiles images leave the blocks without data: unbound (reads give zero), or all bound to
 // one zeroed block where the driver can't sample unbound memory (AMD) but lets blocks share
 // memory. EDEN_NX2_SPARSE_ALIASED=1 takes the shared block wherever it is supported, =0 never.
@@ -350,12 +370,59 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     return device.GetDeviceLocalMemory() < (u64{7} << 30) ? (u64{256} << 20) : (u64{512} << 20);
 }
 
+// The most a compact layered array keeps on the host: 256 MiB. EDEN_NX2_COMPACT_ARRAY_MIB=<MiB>
+// sets it.
+[[nodiscard]] u64 CompactLayersLimit() {
+    static const u64 limit = [] {
+        const char* value = std::getenv("EDEN_NX2_COMPACT_ARRAY_MIB");
+        const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 0;
+        return (mib != 0 ? mib : 256) << 20;
+    }();
+    return limit;
+}
+
+// The host shape of a UsesCompactLayers array: the mip levels from `level_offset` on, the first
+// level count that fits CompactLayersLimit. Normalized coordinates and derivative LOD still
+// address it correctly.
+[[nodiscard]] ImageInfo CompactHostInfo(const ImageInfo& info, u32& level_offset) {
+    const u64 block_bytes = VideoCore::Surface::BytesPerBlock(info.format);
+    const u32 block_width = VideoCore::Surface::DefaultBlockWidth(info.format);
+    const u32 block_height = VideoCore::Surface::DefaultBlockHeight(info.format);
+    const auto host_bytes = [&](u32 skip) {
+        u64 bytes = 0;
+        for (s32 level = static_cast<s32>(skip); level < info.resources.levels; ++level) {
+            bytes += u64{Common::DivCeil((std::max)(info.size.width >> level, 1U), block_width)} *
+                     Common::DivCeil((std::max)(info.size.height >> level, 1U), block_height) *
+                     block_bytes;
+        }
+        return bytes * info.resources.layers;
+    };
+    while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+           host_bytes(level_offset) > CompactLayersLimit()) {
+        ++level_offset;
+    }
+    ImageInfo host = info;
+    host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+    host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+    host.resources.levels -= static_cast<s32>(level_offset);
+    LOG_WARNING(Render_Vulkan,
+                "{}x{}x{} array in a sparse region is {} MiB; keeping mip levels {}+ ({}x{}, "
+                "{} MiB)",
+                info.size.width, info.size.height, info.resources.layers, host_bytes(0) >> 20,
+                level_offset, host.size.width, host.size.height, host_bytes(level_offset) >> 20);
+    return host;
+}
+
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
-[[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
+[[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info,
+                                        u32& level_offset, GPUVAddr gpu_addr) {
     level_offset = 0;
+    if (UsesCompactLayers(device, info, gpu_addr)) {
+        return CompactHostInfo(info, level_offset);
+    }
     if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
         return info;
     }
@@ -2628,7 +2695,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
     : VideoCommon::ImageBase(info_, gpu_addr_, cpu_addr_), scheduler{&runtime_.scheduler},
       runtime{&runtime_},
       original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
-                               TrimmedHostInfo(runtime_.device, info, host_level_offset),
+                               TrimmedHostInfo(runtime_.device, info, host_level_offset, gpu_addr_),
                                IsHugeAstcArray(runtime_.device, info)
                                    ? std::span<const VkFormat>{HugeAstcViewFormats}
                                : IsOpaqueBc1Astc(runtime_.device, info)
@@ -2643,7 +2710,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
-        const ImageInfo host_info = TrimmedHostInfo(runtime_.device, info, host_level_offset);
+        const ImageInfo host_info =
+            TrimmedHostInfo(runtime_.device, info, host_level_offset, gpu_addr_);
         const u64 texels = u64{host_info.size.width} * host_info.size.height *
                            host_info.size.depth * static_cast<u64>(host_info.resources.layers);
         if (UsesSparseLayers(runtime_.device, info, gpu_addr_) && InitSparseLayers()) {
@@ -2658,6 +2726,9 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
     }
     if (host_level_offset != 0) {
         flags |= VideoCommon::ImageFlagBits::TrimmedLevels;
+        if (UsesCompactLayers(runtime_.device, info, gpu_addr_) && !original_image.IsUnbacked()) {
+            flags |= VideoCommon::ImageFlagBits::CompactLayers;
+        }
     }
     if (IsHugeAstcArray(runtime->device, info)) {
         flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
@@ -3141,7 +3212,7 @@ bool Image::InitSparseLayers() {
     s.requirements = device.GetLogical().GetImageMemoryRequirements(handle);
     s.sparse = *it;
     u32 offset = host_level_offset;
-    const ImageInfo host = TrimmedHostInfo(device, info, offset);
+    const ImageInfo host = TrimmedHostInfo(device, info, offset, gpu_addr);
     s.width = host.size.width;
     s.height = host.size.height;
     s.levels = static_cast<u32>(host.resources.levels);

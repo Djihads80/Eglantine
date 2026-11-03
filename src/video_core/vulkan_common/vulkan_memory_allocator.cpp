@@ -16,6 +16,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common_types.h"
+#include "common/div_ceil.h"
 #include "common/literals.h"
 #include "common/logging.h"
 #include <ranges>
@@ -85,6 +86,42 @@ namespace {
         }
         return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     }
+
+    // Bits a texel of `format` takes, for sizing images: compressed formats at their rate,
+    // anything else at 32.
+    [[nodiscard]] u32 BitsPerTexel(VkFormat format) {
+        // Texels in an ASTC block, in format order (each shape has a UNORM and an SRGB format).
+        constexpr std::array<u32, 14> AstcBlockTexels{16, 20, 25, 30,  36,  40, 48,
+                                                      64, 50, 60, 80, 100, 120, 144};
+        const u32 value = static_cast<u32>(format);
+        if (value >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && value <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
+            const u32 texels = AstcBlockTexels[(value - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2];
+            return Common::DivCeil(128U, texels);
+        }
+        switch (format) {
+            case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+            case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+            case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+            case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+            case VK_FORMAT_BC4_UNORM_BLOCK:
+            case VK_FORMAT_BC4_SNORM_BLOCK:
+                return 4;
+            case VK_FORMAT_BC2_UNORM_BLOCK:
+            case VK_FORMAT_BC2_SRGB_BLOCK:
+            case VK_FORMAT_BC3_UNORM_BLOCK:
+            case VK_FORMAT_BC3_SRGB_BLOCK:
+            case VK_FORMAT_BC5_UNORM_BLOCK:
+            case VK_FORMAT_BC5_SNORM_BLOCK:
+            case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+            case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+            case VK_FORMAT_BC7_UNORM_BLOCK:
+            case VK_FORMAT_BC7_SRGB_BLOCK:
+                return 8;
+            default:
+                return 32;
+        }
+    }
+
 } // namespace
 
 //MemoryCommit is now VMA-backed
@@ -229,9 +266,10 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     VmaAllocationInfo alloc_info{};
     // Images this large (title 1's sparse texture arrays reach 4.5G texels, ~23 GB) are never
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
-    // unbacked sparse fallback below.
+    // unbacked sparse fallback below. 1 GiB, counted by texel size: a compressed image that
+    // fits is backed.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    const bool huge = texels * BitsPerTexel(ci.format) > (u64{1} << 33);
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {

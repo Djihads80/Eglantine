@@ -1666,6 +1666,10 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         RefreshSparseLayers(image);
         return;
     }
+    if (True(image.flags & ImageFlagBits::CompactLayers)) {
+        RefreshCompactLayers(image);
+        return;
+    }
     if (True(image.flags & ImageFlagBits::SparseTiles)) {
         RefreshSparseTiles(image);
         return;
@@ -1769,7 +1773,7 @@ bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
     // Title 1's terrain arrays (8192x8192x68 ASTC, 1.45 GB each) get a few layers streamed in at a
     // time; re-decoding all of them for each took a 2 GiB staging buffer and stalled the GPU.
     if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
-        if (True(image.flags & ImageFlagBits::SparseLayers)) {
+        if (True(image.flags & (ImageFlagBits::SparseLayers | ImageFlagBits::CompactLayers))) {
             return true;
         }
         return True(image.flags & ImageFlagBits::AcceleratedUpload) &&
@@ -1927,6 +1931,29 @@ void TextureCache<P>::RefreshSparseLayers(Image& image) {
 }
 
 template <class P>
+void TextureCache<P>::RefreshCompactLayers(Image& image) {
+    if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
+        // A new image takes every layer (what the game never wrote reads as zero from guest
+        // memory, and the host image starts undefined); later only the layers written since.
+        const u32 num_layers = static_cast<u32>(image.info.resources.layers);
+        std::vector<u32> layers;
+        for (u32 layer = 0; layer < num_layers; ++layer) {
+            if (image.dirty_layers.empty() ||
+                ((image.dirty_layers[layer / 64] >> (layer % 64)) & 1) != 0) {
+                layers.push_back(layer);
+            }
+        }
+        image.dirty_layers.clear();
+        constexpr size_t LayersPerUpload = 16;
+        for (size_t first = 0; first < layers.size(); first += LayersPerUpload) {
+            const size_t count = (std::min)(LayersPerUpload, layers.size() - first);
+            UploadLayers(image, std::span<const u32>{layers.data() + first, count});
+        }
+        runtime.InsertUploadMemoryBarrier();
+    }
+}
+
+template <class P>
 std::vector<u32> TextureCache<P>::BindSparseLayers(Image& image, std::span<const u32> layers) {
     if constexpr (requires { &Image::BindLayers; }) {
         const u64 bound_bytes = ImageMemoryBytes(image);
@@ -1945,20 +1972,32 @@ template <class P>
 void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
     if constexpr (requires { &Runtime::AccelerateImageUploadLayers; }) {
         if (False(image.flags & ImageFlagBits::AcceleratedUpload)) {
-            // Plain formats: each layer unswizzled on its own into its layer of the image.
+            // Plain formats: each layer unswizzled on its own into its layer of the image. Of a
+            // trimmed image only the levels the host keeps are read.
             ImageInfo layer_info = image.info;
             layer_info.resources.layers = 1;
-            const size_t layer_size = CalculateUnswizzledSizeBytes(layer_info);
+            const s32 first_level = static_cast<s32>(image.host_level_offset);
+            size_t level_offset = 0;
+            ImageInfo host_info = layer_info;
+            if (first_level != 0) {
+                level_offset = FullUploadSwizzles(layer_info)[first_level].buffer_offset;
+                host_info.size.width = (std::max)(layer_info.size.width >> first_level, 1U);
+                host_info.size.height = (std::max)(layer_info.size.height >> first_level, 1U);
+                host_info.resources.levels -= first_level;
+            }
+            const size_t layer_size = CalculateUnswizzledSizeBytes(host_info);
             auto staging = runtime.UploadStagingBuffer(layer_size * layers.size());
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
-                const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
+                const GPUVAddr layer_addr =
+                    image.gpu_addr + u64{layers[i]} * image.info.layer_stride + level_offset;
                 Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
-                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride - level_offset,
                                  &swizzle_data_buffer);
                 auto layer_copies =
                     UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
-                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                                   staging.mapped_span.subspan(i * layer_size, layer_size),
+                                   first_level);
                 for (BufferImageCopy copy : layer_copies) {
                     copy.buffer_offset += i * layer_size;
                     copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
@@ -1998,7 +2037,6 @@ template <typename StagingBuffer>
 void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) {
     const std::span<u8> mapped_span = staging.mapped_span;
     const GPUVAddr gpu_addr = image.gpu_addr;
-
     if (True(image.flags & ImageFlagBits::AcceleratedUpload) && image.host_level_offset != 0) {
         // Only levels >= host_level_offset exist on the host: read each layer's tail of the mip
         // chain into a compact buffer (layer stride = that tail's size) and decode those levels.
@@ -2225,6 +2263,10 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
         return 0;
     }
     u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
+    if (True(image.flags & ImageFlagBits::CompactLayers)) {
+        // Each level is a quarter of the one before.
+        tentative_size >>= 2 * image.host_level_offset;
+    }
     if ((IsPixelFormatASTC(image.info.format) &&
          True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
         True(image.flags & ImageFlagBits::Converted)) {
