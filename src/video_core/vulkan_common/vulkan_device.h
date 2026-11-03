@@ -1028,7 +1028,11 @@ FN_MAX_LIMIT_LIST
 
     /// With VK_EXT_memory_budget from the driver, or VMA's allocations without it.
     bool CanReportMemoryUsage() const {
+#ifdef __ANDROID__
         return extensions.memory_budget || allocator != nullptr;
+#else
+        return extensions.memory_budget;
+#endif
     }
 
     u64 GetDeviceMemoryUsage() const;

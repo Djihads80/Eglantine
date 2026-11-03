@@ -1727,7 +1727,8 @@ u64 Device::GetDeviceMemoryUsage() const {
     // Without VK_EXT_memory_budget (Qualcomm's driver), what VMA's allocations use. The caches'
     // own estimate counted sparse and unbacked images at their full size: Mario Kart World
     // "used" 8.5 GB with 4.7 GB allocated, and evicted textures nonstop until the phone ran out of
-    // memory.
+    // memory. Android only (CanReportMemoryUsage).
+#ifdef __ANDROID__
     if (!extensions.memory_budget) {
         u64 used{};
         if (allocator != nullptr) {
@@ -1739,6 +1740,7 @@ u64 Device::GetDeviceMemoryUsage() const {
         }
         return used;
     }
+#endif
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
