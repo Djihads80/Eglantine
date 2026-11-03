@@ -1299,6 +1299,15 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
         if (binding.segment_first + binding.segment_count > pool.size()) {
             return false;
         }
+        // A segment whose buffer was joined into another (deleted) since it was resolved: binding
+        // the dead slot put its freed LRU item back in the list, and the collector later deleted
+        // the slot again, wiping another buffer's page entries.
+        for (u32 index = 0; index < binding.segment_count; ++index) {
+            const BufferId id = pool[binding.segment_first + index].buffer_id;
+            if (!id || !slot_buffers.contains(id)) [[unlikely]] {
+                return false;
+            }
+        }
         const u64 key = (static_cast<u64>(gpu_memory->GetID()) << 48) ^ binding.gpu_addr;
         runtime.ResetMultiRange();
         for (u32 index = 0; index < binding.segment_count; ++index) {
@@ -1544,6 +1553,7 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
         if (current_draw_indirect) {
             UpdateDrawIndirect();
         }
+        RefreshMultiRangeSegments(graphics_segments);
     });
 }
 
@@ -1554,7 +1564,29 @@ void BufferCache<P>::DoUpdateComputeBuffers() {
         UpdateComputeUniformBuffers();
         UpdateComputeStorageBuffers();
         UpdateComputeTextureBuffers();
+        RefreshMultiRangeSegments(compute_segments);
     });
+}
+
+template <class P>
+void BufferCache<P>::RefreshMultiRangeSegments(std::vector<MultiRangeSegment>& pool) {
+    if constexpr (requires { runtime.BindMultiRangeStorageBuffer(u64{}, bool{}); }) {
+        // Resolving one segment can join, and so delete, the buffer of another (DeleteBuffer
+        // clears its id): repeat until every segment points at a live buffer.
+        for (int pass = 0; pass < 16; ++pass) {
+            bool resolved = false;
+            for (MultiRangeSegment& segment : pool) {
+                if (!segment.buffer_id) {
+                    segment.buffer_id = FindBuffer(segment.device_addr, segment.size,
+                                                   runtime.PrefersSparseSources());
+                    resolved = true;
+                }
+            }
+            if (!resolved) {
+                return;
+            }
+        }
+    }
 }
 
 template <class P>
@@ -2217,7 +2249,11 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
     } else {
         buffer_bytes -= Common::AlignUp(size, 1024);
         total_used_memory -= Common::AlignUp(size, 1024);
-        lru_cache.Free(buffer.getLRUID());
+        // Only a registered buffer has an LRU item (freeing SIZE_MAX crashed in Free).
+        if (buffer.getLRUID() != SIZE_MAX) {
+            lru_cache.Free(buffer.getLRUID());
+            buffer.setLRUID(SIZE_MAX);
+        }
     }
     const DAddr device_addr_begin = buffer.CpuAddr();
     const DAddr device_addr_end = device_addr_begin + size;
@@ -2226,7 +2262,8 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
     for (u64 page = page_begin; page != page_end; ++page) {
         if constexpr (insert) {
             page_table[page] = buffer_id;
-        } else {
+        } else if (page_table[page] == buffer_id) {
+            // Only its own entries: another buffer's would go stale.
             page_table[page] = BufferId{};
         }
     }
@@ -2234,7 +2271,7 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
 
 template <class P>
 void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
-    if (buffer_id != NULL_BUFFER_ID) {
+    if (buffer_id != NULL_BUFFER_ID && buffer.getLRUID() != SIZE_MAX) {
         lru_cache.Touch(buffer.getLRUID(), frame_tick);
     }
 }
@@ -2607,6 +2644,14 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     if (channel_state->index_buffer.buffer_id == buffer_id) {
         channel_state->index_buffer.buffer_id = BufferId{};
         dirty_index = true;
+    }
+    // Multi-range storage segments too: the update pass resolves them again.
+    for (auto* const pool : {&graphics_segments, &compute_segments}) {
+        for (MultiRangeSegment& segment : *pool) {
+            if (segment.buffer_id == buffer_id) {
+                segment.buffer_id = BufferId{};
+            }
+        }
     }
 
     for (u32 index = 0; index < channel_state->vertex_buffers.size(); index++) {
