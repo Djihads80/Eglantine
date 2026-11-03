@@ -1,10 +1,11 @@
-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
 
+#include <condition_variable>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -20,6 +21,8 @@ class ProxySocket : public SocketBase {
 public:
     explicit ProxySocket() noexcept;
     ~ProxySocket() override;
+
+    bool AcceptsProxyPacket(const ProxyPacket& packet) override;
 
     void HandleProxyPacket(const ProxyPacket& packet) override;
 
@@ -81,6 +84,9 @@ public:
     bool IsOpened() const override;
 
 private:
+    /// Expects packets_mutex to be held
+    bool MatchesPacket(const ProxyPacket& packet) const;
+
     bool broadcast = false;
     bool closed = false;
     u32 send_timeout = 0;
@@ -89,9 +95,12 @@ private:
     SockAddrIn local_endpoint{};
     bool blocking = true;
     std::queue<ProxyPacket> received_packets;
-    Protocol protocol;
+    std::size_t front_read_offset = 0; ///< Bytes of the front TCP packet that were already read
+    Protocol protocol{};
+    Type socket_type{}; ///< Stream checks use the type, since protocol 0 means the default protocol
 
     std::mutex packets_mutex;
+    std::condition_variable packets_cv;
 };
 
 } // namespace Network
