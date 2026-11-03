@@ -336,6 +336,12 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
     item_model->sort(tree_view->header()->sortIndicatorSection(),
                      tree_view->header()->sortIndicatorOrder());
 
+    // A repopulate (a directory removed, deep scan toggled) replaces the rows: apply the search
+    // text the user still has typed to them.
+    if (!search_field->filterText().isEmpty()) {
+        OnTextChanged(search_field->filterText());
+    }
+
     emit PopulatingCompleted();
 }
 

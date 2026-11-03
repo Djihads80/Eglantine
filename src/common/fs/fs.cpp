@@ -433,7 +433,9 @@ void IterateDirEntries(const std::filesystem::path& path, const DirEntryCallable
         if ((True(filter & DirEntryFilter::File) && type == fs::file_type::regular)
         || (True(filter & DirEntryFilter::Directory) && type == fs::file_type::directory)) {
             if (!callback(*it)) {
+                // The callback asks to stop (e.g. the game list worker is being stopped).
                 callback_error = true;
+                break;
             }
         }
     }
@@ -470,7 +472,9 @@ void IterateDirEntriesRecursively(const std::filesystem::path& path, const DirEn
         if ((True(filter & DirEntryFilter::File) && type == fs::file_type::regular)
         || (True(filter & DirEntryFilter::Directory) && type == fs::file_type::directory)) {
             if (!callback(*it)) {
+                // The callback asks to stop (e.g. the game list worker is being stopped).
                 callback_error = true;
+                break;
             }
         }
     }
