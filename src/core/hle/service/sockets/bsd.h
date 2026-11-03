@@ -180,6 +180,8 @@ private:
     bool IsFileDescriptorValid(s32 fd) const noexcept;
     /// Copies a descriptor under file_descriptors_mutex; nullopt if fd has no socket
     std::optional<FileDescriptor> CopyDescriptor(s32 fd);
+    /// Switches a blocking socket for one MSG_DONTWAIT call; false if fd is already nonblocking
+    bool SetDontWait(s32 fd, const FileDescriptor& descriptor, bool enable);
 
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 

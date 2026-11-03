@@ -89,6 +89,7 @@ public:
 
     virtual bool IsOpened() const = 0;
 
+    /// Queues a room packet whose data is already decompressed
     virtual void HandleProxyPacket(const ProxyPacket& packet) = 0;
 
     [[nodiscard]] SOCKET GetFD() const {

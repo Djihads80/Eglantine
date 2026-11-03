@@ -14,6 +14,7 @@
 
 #include "common/logging.h"
 #include "common/socket_types.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -608,7 +609,7 @@ std::pair<s32, Errno> BSD_USA::PollImpl(std::vector<u8>& write_buffer, std::span
             PollFD& pollfd = fds[i];
             ASSERT(False(pollfd.revents));
 
-            if (pollfd.fd > static_cast<s32>(MAX_FD) || pollfd.fd < 0) {
+            if (pollfd.fd >= static_cast<s32>(MAX_FD) || pollfd.fd < 0) {
                 LOG_ERROR(Service, "File descriptor handle={} is invalid", pollfd.fd);
                 pollfd.revents = PollEvents{};
                 return {0, Errno::SUCCESS};
@@ -764,11 +765,12 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
         return {descriptor->flags, Errno::SUCCESS};
     case FcntlCmd::SETFL: {
         const bool enable = (arg & Network::FLAG_O_NONBLOCK) != 0;
+        // Set the mode and the flags together, so SetDontWait never sees one without the other
+        std::scoped_lock lock{file_descriptors_mutex};
         const Errno bsd_errno = Translate(descriptor->socket->SetNonBlock(enable));
         if (bsd_errno != Errno::SUCCESS) {
             return {-1, bsd_errno};
         }
-        std::scoped_lock lock{file_descriptors_mutex};
         if (auto& entry = file_descriptors[fd]; entry && entry->socket == descriptor->socket) {
             entry->flags = arg;
         }
@@ -880,19 +882,14 @@ std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& mess
 
     // Apply flags
     using Network::FLAG_MSG_DONTWAIT;
-    using Network::FLAG_O_NONBLOCK;
-    if ((flags & FLAG_MSG_DONTWAIT) != 0) {
-        flags &= ~FLAG_MSG_DONTWAIT;
-        if ((descriptor->flags & FLAG_O_NONBLOCK) == 0) {
-            descriptor->socket->SetNonBlock(true);
-        }
-    }
+    const bool dont_wait = (flags & FLAG_MSG_DONTWAIT) != 0 && SetDontWait(fd, *descriptor, true);
+    flags &= ~FLAG_MSG_DONTWAIT;
 
     const auto [ret, bsd_errno] = Translate(descriptor->socket->Recv(flags, message));
 
     // Restore original state
-    if ((descriptor->flags & FLAG_O_NONBLOCK) == 0) {
-        descriptor->socket->SetNonBlock(false);
+    if (dont_wait) {
+        SetDontWait(fd, *descriptor, false);
     }
 
     return {ret, bsd_errno};
@@ -916,20 +913,15 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
 
     // Apply flags
     using Network::FLAG_MSG_DONTWAIT;
-    using Network::FLAG_O_NONBLOCK;
-    if ((flags & FLAG_MSG_DONTWAIT) != 0) {
-        flags &= ~FLAG_MSG_DONTWAIT;
-        if ((descriptor->flags & FLAG_O_NONBLOCK) == 0) {
-            descriptor->socket->SetNonBlock(true);
-        }
-    }
+    const bool dont_wait = (flags & FLAG_MSG_DONTWAIT) != 0 && SetDontWait(fd, *descriptor, true);
+    flags &= ~FLAG_MSG_DONTWAIT;
 
     const auto [ret, bsd_errno] =
         Translate(descriptor->socket->RecvFrom(flags, message, p_addr_in));
 
     // Restore original state
-    if ((descriptor->flags & FLAG_O_NONBLOCK) == 0) {
-        descriptor->socket->SetNonBlock(false);
+    if (dont_wait) {
+        SetDontWait(fd, *descriptor, false);
     }
 
     if (p_addr_in) {
@@ -1043,8 +1035,21 @@ s32 BSD_USA::FindFreeFileDescriptorHandle() noexcept {
     return -1;
 }
 
+bool BSD_USA::SetDontWait(s32 fd, const FileDescriptor& descriptor, bool enable) {
+    // Read the current flags, not the copy: fcntl may have changed them during the receive
+    std::scoped_lock lock{file_descriptors_mutex};
+    const auto& entry = file_descriptors[fd];
+    const s32 current_flags =
+        entry && entry->socket == descriptor.socket ? entry->flags : descriptor.flags;
+    if ((current_flags & Network::FLAG_O_NONBLOCK) != 0) {
+        return false;
+    }
+    descriptor.socket->SetNonBlock(enable);
+    return true;
+}
+
 bool BSD_USA::IsFileDescriptorValid(s32 fd) const noexcept {
-    if (fd > static_cast<s32>(MAX_FD) || fd < 0) {
+    if (fd >= static_cast<s32>(MAX_FD) || fd < 0) {
         LOG_ERROR(Service, "Invalid file descriptor handle={}", fd);
         return false;
     }
@@ -1064,22 +1069,37 @@ void BSD_USA::BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const 
 }
 
 void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
-    // Runs on the room thread. The lock keeps a socket alive while a bsd thread closes it.
-    std::scoped_lock lock{file_descriptors_mutex};
-    // A duplicated fd shares its socket, which must still get each packet only once
-    std::array<const Network::SocketBase*, MAX_FD> delivered{};
-    size_t num_delivered = 0;
-    for (auto& optional_descriptor : file_descriptors) {
-        if (!optional_descriptor.has_value() || !optional_descriptor->socket) {
-            continue;
+    // Runs on the room thread. The copies keep each socket alive if a bsd thread closes it, so
+    // the bsd threads do not wait for the decompression below.
+    std::array<std::shared_ptr<Network::SocketBase>, MAX_FD> sockets{};
+    size_t num_sockets = 0;
+    {
+        std::scoped_lock lock{file_descriptors_mutex};
+        for (const auto& descriptor : file_descriptors) {
+            if (!descriptor.has_value() || !descriptor->socket) {
+                continue;
+            }
+            // A duplicated fd shares its socket, which must still get each packet only once
+            const auto sockets_end = sockets.begin() + num_sockets;
+            if (std::find(sockets.begin(), sockets_end, descriptor->socket) == sockets_end) {
+                sockets[num_sockets++] = descriptor->socket;
+            }
         }
-        Network::SocketBase* const socket = optional_descriptor->socket.get();
-        const auto delivered_end = delivered.begin() + num_delivered;
-        if (std::find(delivered.begin(), delivered_end, socket) != delivered_end) {
-            continue;
-        }
-        delivered[num_delivered++] = socket;
-        socket->HandleProxyPacket(packet);
+    }
+    if (num_sockets == 0) {
+        return;
+    }
+
+    // Decompress once for all sockets that share the port
+    const Network::ProxyPacket decompressed{
+        .local_endpoint = packet.local_endpoint,
+        .remote_endpoint = packet.remote_endpoint,
+        .protocol = packet.protocol,
+        .broadcast = packet.broadcast,
+        .data = Common::Compression::DecompressDataZSTD(packet.data),
+    };
+    for (size_t i = 0; i < num_sockets; ++i) {
+        sockets[i]->HandleProxyPacket(decompressed);
     }
 }
 

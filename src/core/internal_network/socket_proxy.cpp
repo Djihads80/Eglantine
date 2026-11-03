@@ -43,22 +43,7 @@ void ProxySocket::HandleProxyPacket(const ProxyPacket& packet) {
             LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
             return;
         }
-    }
-
-    // Decompress without the lock, so the game thread does not wait for it
-    ProxyPacket decompressed{
-        .local_endpoint = packet.local_endpoint,
-        .remote_endpoint = packet.remote_endpoint,
-        .protocol = packet.protocol,
-        .broadcast = packet.broadcast,
-        .data = Common::Compression::DecompressDataZSTD(packet.data),
-    };
-    {
-        std::lock_guard guard(packets_mutex);
-        if (closed) {
-            return;
-        }
-        received_packets.push(std::move(decompressed));
+        received_packets.push(packet);
     }
     // A MSG_PEEK reader leaves the packet queued, so every waiter must see it
     packets_cv.notify_all();
@@ -304,11 +289,15 @@ Errno ProxySocket::SetSndTimeo(u32 value) {
 }
 
 Errno ProxySocket::SetRcvTimeo(u32 value) {
-    receive_timeout = value;
+    {
+        std::lock_guard guard(packets_mutex);
+        receive_timeout = value;
+    }
     return SetSockOpt(fd, SO_RCVTIMEO, static_cast<int>(value));
 }
 
 Errno ProxySocket::SetNonBlock(bool enable) {
+    std::lock_guard guard(packets_mutex);
     blocking = !enable;
     return Errno::SUCCESS;
 }
