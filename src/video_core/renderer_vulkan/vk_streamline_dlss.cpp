@@ -260,6 +260,40 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                       output_view_handle = *output_view](vk::CommandBuffer cmdbuf) {
         const Streamline::Api& api = Streamline::GetApi();
         const sl::ViewportHandle viewport{0u};
+        // The caller draws the output this frame even when DLSS writes nothing to it: clear it
+        // then, rather than show undefined contents (FSR 3.1 takes over from the next frame).
+        const auto clear_output = [&] {
+            const VkImageSubresourceRange range{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            };
+            const auto barrier = [&](VkAccessFlags src_access, VkAccessFlags dst_access) {
+                return VkImageMemoryBarrier{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = src_access,
+                    .dstAccessMask = dst_access,
+                    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = output_image_handle,
+                    .subresourceRange = range,
+                };
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                   barrier(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                           VK_ACCESS_TRANSFER_WRITE_BIT));
+            cmdbuf.ClearColorImage(output_image_handle, VK_IMAGE_LAYOUT_GENERAL,
+                                   VkClearColorValue{}, range);
+            cmdbuf.PipelineBarrier(
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                barrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+        };
         if (options_changed) {
             const auto set = reinterpret_cast<PFun_slDLSSSetOptions*>(set_options);
             if (const sl::Result result = set(viewport, options); result != sl::Result::eOk) {
@@ -268,6 +302,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                               "Streamline rejected the DLSS options (result {}); using FSR 3.1",
                               static_cast<int>(result));
                 }
+                clear_output();
                 return;
             }
         }
@@ -278,6 +313,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                 LOG_ERROR(Render_Vulkan, "Streamline gave no frame token (result {}); using FSR 3.1",
                           static_cast<int>(result));
             }
+            clear_output();
             return;
         }
 
@@ -377,6 +413,9 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, output_written, {},
                                to_general);
+        if (result != sl::Result::eOk) {
+            clear_output();
+        }
     });
     // DLSS binds its own pipelines and descriptors on the command buffer.
     scheduler.InvalidateState();
