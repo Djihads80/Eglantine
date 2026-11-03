@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# libgav1 decodes the AV1 movies of Switch 2 titles (nx2 video decoder). The bundled FFmpeg
-# packages have no AV1 decoder.
+# libgav1 decodes the AV1 movies of Switch 2 titles (nx2 video decoder) where the bundled FFmpeg
+# has no libdav1d (Android's package); with libdav1d, FFmpeg decodes them.
 
 include(FetchContent)
 
