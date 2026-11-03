@@ -86,6 +86,24 @@ void WakeWord(std::atomic<u32>& word) {
 #endif
 }
 
+// Phones sleep in the waits below on futexes: spinning or yielding, the front kept a big core
+// busy and the phone hot. The back parks on a raw futex too (libc++'s std::atomic::wait can miss
+// a notify). Desktop keeps the spin, yield and std::atomic waits.
+#ifdef __ANDROID__
+constexpr bool SleepingWaits = true;
+#else
+constexpr bool SleepingWaits = false;
+#endif
+
+// Wakes the back thread parked on `wake`.
+void WakeBack(std::atomic<u32>& wake) {
+    if constexpr (SleepingWaits) {
+        WakeWord(wake);
+    } else {
+        wake.notify_all();
+    }
+}
+
 [[maybe_unused]] std::atomic<u32> g_back_thread_id{};
 std::atomic<bool> g_back_busy{};
 
@@ -217,7 +235,7 @@ void GpuSplit::Stop() {
     }
     back_thread.request_stop();
     wake.fetch_add(1, std::memory_order_seq_cst);
-    WakeWord(wake);
+    WakeBack(wake);
     back_thread.join();
     active = false;
     // The split is static and outlives the emulation session. The next session's back thread
@@ -275,8 +293,7 @@ void GpuSplit::WaitForSpace(size_t words) {
 void GpuSplit::RequestIdleHook() {
     hook_requested.store(true, std::memory_order_seq_cst);
     wake.fetch_add(1, std::memory_order_seq_cst);
-    // The back parks on a raw futex (BackLoop): a std::atomic notify may not reach it.
-    WakeWord(wake);
+    WakeBack(wake);
 }
 
 void GpuSplit::SleepOnBack() {
@@ -284,7 +301,11 @@ void GpuSplit::SleepOnBack() {
     // front waiting here and the back parked).
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
-        WakeWord(wake);
+        WakeBack(wake);
+    }
+    if constexpr (!SleepingWaits) {
+        std::this_thread::yield();
+        return;
     }
     // The back bumps `drained` after storing `consumed` when it sees front_waiting: read it
     // before the last look at `consumed`, so a store in between ends the wait at once.
@@ -305,7 +326,7 @@ void GpuSplit::Publish() {
     published.store(write_position, std::memory_order_seq_cst);
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
-        WakeWord(wake);
+        WakeBack(wake);
     }
 }
 
@@ -323,13 +344,14 @@ void GpuSplit::Drain() {
             publish_every = 8;
             return;
         }
-        if (spins < 8192) {
+        if (spins < (SleepingWaits ? 8192U : 16384U)) {
             Pause();
         } else {
             // Sleep instead of spinning on: the front spent most of each frame here, keeping a big
             // core busy and the phone hot.
             SleepOnBack();
-            if (std::chrono::steady_clock::now() >= next_report) {
+            if ((SleepingWaits || (spins & 1023) == 0) &&
+                std::chrono::steady_clock::now() >= next_report) {
                 next_report += std::chrono::seconds{5};
                 LOG_WARNING(HW_GPU,
                             "GPU split drain waiting on the back thread: {} of {} words consumed, "
@@ -504,9 +526,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // A request made after the hook ran (RequestIdleHook) runs it before sleeping.
                 if (available == read_position && !stop_token.stop_requested() &&
                     !hook_requested.load(std::memory_order_seq_cst)) {
-                    // A futex, not std::atomic::wait: libc++ spins with sched_yield first,
-                    // and parks waiters in a shared table where a notify could miss this one.
-                    WaitWord(wake, seen, std::chrono::milliseconds{2});
+                    if constexpr (SleepingWaits) {
+                        // A futex, not std::atomic::wait: libc++ spins with sched_yield first,
+                        // and parks waiters in a shared table where a notify could miss this one.
+                        WaitWord(wake, seen, std::chrono::milliseconds{2});
+                    } else {
+                        wake.wait(seen, std::memory_order_seq_cst);
+                    }
                 }
                 back_waiting.store(false, std::memory_order_relaxed);
                 continue;
