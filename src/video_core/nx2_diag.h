@@ -17,6 +17,10 @@
 #include <tuple>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #include "common/common_types.h"
 #include "common/logging.h"
 
@@ -42,6 +46,12 @@
 //                            reaches the screen with real geometry but passes 0 samples is drawing
 //                            nothing visible. Draws made while the game itself counts occlusion
 //                            samples are not probed ("-").
+//   EDEN_NX2_LAB=1|open      start tools/nx2/shader_lab.py for <dir> (Linux/macOS; "open" also opens the
+//                            browser). EDEN_NX2_SHADER_DUMP and EDEN_NX2_FRAME_CAPTURE are passed on.
+//                            The script is looked up as tools/nx2/shader_lab.py from the working
+//                            directory, or EDEN_NX2_LAB_SCRIPT; EDEN_NX2_LAB_PYTHON picks the
+//                            interpreter (default python3). The address goes to <dir>/lab-url.txt
+//                            and the log; the lab exits with the emulator.
 //   EDEN_NX2_ABLATE_FILE=<f> use that file instead of <dir>/ablate.txt.
 namespace VideoCommon::Nx2Diag {
 
@@ -84,6 +94,49 @@ inline std::string Hex16(u64 value) {
     char text[17];
     std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(value));
     return text;
+}
+
+// EDEN_NX2_LAB: starts the shader lab beside the emulator.
+inline void StartLab() {
+    const char* mode = Env("EDEN_NX2_LAB");
+    if (!mode || DrawListDir().empty()) {
+        return;
+    }
+#ifdef _WIN32
+    LOG_WARNING(HW_GPU, "diag: EDEN_NX2_LAB is not supported on Windows, run tools/nx2/shader_lab.py yourself");
+#else
+    const auto script = std::filesystem::path{Env("EDEN_NX2_LAB_SCRIPT") ? Env("EDEN_NX2_LAB_SCRIPT")
+                                                                          : "tools/nx2/shader_lab.py"};
+    if (!std::filesystem::exists(script)) {
+        LOG_ERROR(HW_GPU, "diag: shader lab script {} not found (run from the repository or set EDEN_NX2_LAB_SCRIPT)",
+                  script.string());
+        return;
+    }
+    const auto quote = [](const std::string& text) {
+        std::string quoted{'\''};
+        for (const char c : text) {
+            quoted += c == '\'' ? std::string{"'\\''"} : std::string{c};
+        }
+        return quoted + '\'';
+    };
+    std::filesystem::create_directories(DrawListDir());
+    std::string command = std::string{Env("EDEN_NX2_LAB_PYTHON") ? Env("EDEN_NX2_LAB_PYTHON") : "python3"} +
+                          " -I " + quote(script.string()) + " --diag-dir " + quote(DrawListDir().string()) +
+                          " --parent-pid " + std::to_string(getpid());
+    if (const char* dumps = Env("EDEN_NX2_SHADER_DUMP")) {
+        command += " --dump-dir " + quote(dumps);
+    }
+    if (const char* frames = Env("EDEN_NX2_FRAME_CAPTURE")) {
+        command += " --frames " + quote(frames);
+    }
+    if (std::string_view{mode} == "open") {
+        command += " --open";
+    }
+    command += " >" + quote((DrawListDir() / "lab.log").string()) + " 2>&1 &";
+    const int result = std::system(command.c_str());
+    LOG_INFO(HW_GPU, "diag: shader lab {} (address in {}, log in {})", result == 0 ? "started" : "failed to start",
+             (DrawListDir() / "lab-url.txt").string(), (DrawListDir() / "lab.log").string());
+#endif
 }
 
 class Diagnostics {
@@ -293,6 +346,10 @@ public:
     }
 
 private:
+    Diagnostics() {
+        StartLab();
+    }
+
     struct Count {
         u64 n{};
         u64 instances{};
