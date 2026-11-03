@@ -11,6 +11,7 @@ on:
       - ".patch/**"
       - "cpmfile.json"
       - ".github/workflows/sanitizers.yml"
+      - ".github/sanitizer-controls/**"
   push:
     branches:
       - nx2
@@ -45,10 +46,12 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
+          asan='{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}'
+          tsan='{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}'
           if [ "$EVENT" = "pull_request" ]; then
-            echo 'ids=["asan-ubsan"]' >> "$GITHUB_OUTPUT"
+            echo "ids=[$asan]" >> "$GITHUB_OUTPUT"
           else
-            echo 'ids=["asan-ubsan","tsan"]' >> "$GITHUB_OUTPUT"
+            echo "ids=[$asan,$tsan]" >> "$GITHUB_OUTPUT"
           fi
       - id: filter
         env:
@@ -79,30 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        id: ${{ fromJSON(needs.changes.outputs.ids) }}
-        include:
-          - id: asan-ubsan
-            name: ASan + UBSan
-            flags: -fsanitize=address,undefined -fno-sanitize-recover=undefined
-            # Fibers switch stacks; the use-after-return fake stack does not follow them.
-            control: |
-              int main(int c, char**) { int* p = new int[4]; volatile int v = p[c + 4]; (void)v; return 0; }
-            diagnostic: "AddressSanitizer|runtime error"
-            options: >-
-              ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1
-              UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
-          - id: tsan
-            name: TSan
-            flags: -fsanitize=thread
-            control: |
-              #include <thread>
-              int g;
-              int main() { std::thread t([] { g = 1; }); g = 2; t.join(); return 0; }
-            diagnostic: "ThreadSanitizer"
-            options: TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
-            # Fiber code is a known source of TSan false positives until it is annotated. Only the
-            # test run is non-blocking; install, configure, build and registration still gate.
-            experimental: true
+        include: ${{ fromJSON(needs.changes.outputs.ids) }}
 
     steps:
       - name: Check out source
@@ -130,10 +110,7 @@ jobs:
       # the flags or runtime are not actually sanitizing and a green test run means nothing.
       - name: Verify sanitizer catches a known bug
         run: |
-          cat > control.cpp <<'CPP'
-          ${{ matrix.control }}
-          CPP
-          g++ -g -O1 ${{ matrix.flags }} control.cpp -o control -pthread
+          g++ -g -O1 ${{ matrix.flags }} .github/sanitizer-controls/${{ matrix.control }} -o control -pthread
           # The control returns 0 unless a sanitizer intervenes, so require the report text too.
           env ${{ matrix.options }} ./control > control.log 2>&1 || true
           cat control.log
