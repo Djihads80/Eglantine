@@ -579,6 +579,7 @@ private:
     QTimer mcp_status_timer;
     std::unique_ptr<QtMcpHost> mcp_host;
     std::unique_ptr<Mcp::Server> mcp_server;
+    bool mcp_stopping = false; ///< StopMcpServer is waiting for the old server to finish
     std::optional<u16> mcp_cli_port;
     bool mcp_cli_allow_writes = false;
     std::string mcp_last_error;

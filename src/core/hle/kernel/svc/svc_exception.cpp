@@ -109,11 +109,16 @@ void Break(Core::System& system, BreakReason reason, u64 info1, u64 info2) {
         handle_debug_buffer(info1, info2);
 
         system.CurrentPhysicalCore().LogBacktrace(system.Kernel());
-        Core::Trace::NotifyCrash(
-            "break",
-            fmt::format("svcBreak reason={:#x} info1={:#x} info2={:#x}", static_cast<u32>(reason),
-                        info1, info2),
-            system.Kernel().GetCurrentEmuThread());
+        if (Core::Trace::g_crash_hook.load(std::memory_order_relaxed)) {
+            // The observer backtraces from the thread's saved context, which is only refreshed
+            // here when a debugger is attached.
+            auto* const thread = system.Kernel().GetCurrentEmuThread();
+            system.CurrentPhysicalCore().SaveContext(thread);
+            Core::Trace::NotifyCrash("break",
+                                     fmt::format("svcBreak reason={:#x} info1={:#x} info2={:#x}",
+                                                 static_cast<u32>(reason), info1, info2),
+                                     thread);
+        }
     }
 
     const bool should_break = !notification_only;

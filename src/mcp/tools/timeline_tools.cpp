@@ -176,7 +176,9 @@ ToolResult TimelineExport(ToolContext& ctx, const json& args) {
     }
     std::error_code ec;
     std::filesystem::create_directories(path->parent_path(), ec);
-    Common::FS::WriteStringToFile(*path, Common::FS::FileType::TextFile, text);
+    if (Common::FS::WriteStringToFile(*path, Common::FS::FileType::TextFile, text) != text.size()) {
+        return ToolResult::Error("could not write " + Common::FS::PathToUTF8String(*path));
+    }
     return ToolResult::Structured(json{{"path", Common::FS::PathToUTF8String(*path)},
                                        {"events", events.size()},
                                        {"bytes", text.size()}});

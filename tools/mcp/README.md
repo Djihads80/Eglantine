@@ -89,7 +89,7 @@ MCP resources: `eglantine://tools/guide`, `eglantine://status`, `eglantine://gam
 
 Crashes (`svcBreak`, fatal) are posted as `crash` timeline events with the thread's backtrace.
 
-## Other HTTP endpoints (same port, same Origin/token checks)
+## Other HTTP endpoints (same port, same Host/Origin/token checks)
 
 | Endpoint | Use |
 |---|---|
@@ -116,4 +116,6 @@ Frontends implement `Mcp::Host`: `src/yuzu/mcp_host_qt.*` (Qt), `src/yuzu_cmd/mc
 (eden-cli). Core observers the MCP plugs into: `core/debugger/trace_hooks.h` (IPC, SVC,
 crashes), `Service::g_unimplemented_hook`, `VideoCommon::Nx2Profile` snapshots.
 Per-game data: `<config>/mcp/{screens,probes,routes}/<program id>.json`.
-Unit tests: `src/tests/mcp/`. Minimal command-line client: `tools/mcp/scripts/mcp.py <tool> [json-args]`.
+Unit tests: `src/tests/mcp/`. Minimal command-line client: `tools/mcp/scripts/mcp.py <tool> [json-args]`
+(set `EGLANTINE_MCP_TOKEN` when a token is configured, and `EGLANTINE_MCP_SID_FILE` per agent so
+each one gets its own session and control lease).

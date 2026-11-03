@@ -154,6 +154,11 @@ void Timeline::Close() {
     cv.notify_all();
 }
 
+void Timeline::Reopen() {
+    std::scoped_lock lock{mutex};
+    closed = false;
+}
+
 bool Timeline::IsClosed() const {
     std::scoped_lock lock{mutex};
     return closed;

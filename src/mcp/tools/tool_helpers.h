@@ -57,6 +57,8 @@ json BaselineCheck(ToolContext& ctx, const std::string& name, double threshold, 
                    std::vector<u8>* current_png);
 /// Stops a background route and a recording (server shutdown: they use the host).
 void StopGameStateWork();
+/// Ends memory watches and their sampling thread (server shutdown).
+void StopMemoryWork();
 /// PNG of the capture layer (works paused/hidden), scaled to max_width.
 std::optional<std::vector<u8>> RawCapturePng(ToolContext& ctx, u32 max_width, std::string& error);
 

@@ -111,7 +111,7 @@ static void GenerateErrorReport(Core::System& system, Result error_code, const F
 }
 
 static void ThrowFatalError(Core::System& system, Result error_code, FatalType fatal_type,
-                            const FatalInfo& info) {
+                            const FatalInfo& info, const Kernel::KThread* caller) {
     LOG_ERROR(Service_Fatal, "Threw fatal error type {} with error code {:#x}", fatal_type,
               error_code.raw);
     Core::Trace::NotifyCrash(
@@ -121,7 +121,7 @@ static void ThrowFatalError(Core::System& system, Result error_code, FatalType f
                     2000 + static_cast<u32>(error_code.GetModule()),
                     static_cast<u32>(error_code.GetDescription()), info.pc,
                     info.backtrace_size != 0 ? info.backtrace[0] : 0),
-        nullptr);
+        caller);
 
     switch (fatal_type) {
     case FatalType::ErrorReportAndScreen:
@@ -143,7 +143,7 @@ void Module::Interface::ThrowFatal(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const auto error_code = rp.Pop<Result>();
 
-    ThrowFatalError(system, error_code, FatalType::ErrorScreen, {});
+    ThrowFatalError(system, error_code, FatalType::ErrorScreen, {}, &ctx.GetThread());
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -154,8 +154,8 @@ void Module::Interface::ThrowFatalWithPolicy(HLERequestContext& ctx) {
     const auto error_code = rp.Pop<Result>();
     const auto fatal_type = rp.PopEnum<FatalType>();
 
-    ThrowFatalError(system, error_code, fatal_type,
-                    {}); // No info is passed with ThrowFatalWithPolicy
+    ThrowFatalError(system, error_code, fatal_type, {},
+                    &ctx.GetThread()); // No info is passed with ThrowFatalWithPolicy
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }
@@ -171,7 +171,7 @@ void Module::Interface::ThrowFatalWithCpuContext(HLERequestContext& ctx) {
     ASSERT_MSG(fatal_info.size() == sizeof(FatalInfo), "Invalid fatal info buffer size!");
     std::memcpy(&info, fatal_info.data(), sizeof(FatalInfo));
 
-    ThrowFatalError(system, error_code, fatal_type, info);
+    ThrowFatalError(system, error_code, fatal_type, info, &ctx.GetThread());
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(ResultSuccess);
 }

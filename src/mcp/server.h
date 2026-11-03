@@ -96,7 +96,7 @@ private:
     ServerConfig config;
     std::atomic<bool> writes_allowed;
 
-    Timeline timeline;
+    Timeline& timeline; ///< Process-lifetime (see ProcessTimeline in server.cpp)
     ControlLease control;
     ToolRegistry registry;
     std::unique_ptr<Protocol> protocol;

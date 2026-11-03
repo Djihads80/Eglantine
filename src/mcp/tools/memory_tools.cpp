@@ -468,6 +468,21 @@ public:
         return watches;
     }
 
+    /// Server shutdown: drops the watches and ends the sampling thread.
+    void Shutdown() {
+        std::jthread finished;
+        {
+            std::scoped_lock lock{mutex};
+            watches.clear();
+            finished = std::move(thread);
+            stopped = false;
+        }
+        if (finished.joinable()) {
+            finished.request_stop();
+            finished.join();
+        }
+    }
+
     ~WatchSampler() {
         if (thread.joinable()) {
             thread.request_stop();
@@ -715,6 +730,10 @@ json RegionSchema() {
 }
 
 } // namespace
+
+void StopMemoryWork() {
+    WatchSampler::Get().Shutdown();
+}
 
 void RegisterMemoryTools(ToolRegistry& registry) {
     registry.Add(Tool{

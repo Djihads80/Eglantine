@@ -21,6 +21,7 @@ struct LaunchParams {
     std::string program_args{};
     std::optional<std::string> config_path{};
     std::optional<int> selected_user{};
+    bool enable_gdbstub = false;
     std::optional<u16> override_gdb_port{};
     std::optional<std::string> log_filter{};
     // Built-in MCP server: --mcp, --mcp-port <port>, --mcp-allow-writes

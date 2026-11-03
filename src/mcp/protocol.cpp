@@ -72,6 +72,25 @@ bool Protocol::IsAllowedOrigin(const std::string& origin) {
     return false;
 }
 
+bool Protocol::IsAllowedHost(const std::string& host) {
+    // A DNS-rebinding page is same-origin with the server (so browsers send no Origin), but its
+    // requests still carry the attacker's host name. Browsers always send Host; other clients
+    // that omit it are not a rebinding risk.
+    if (host.empty()) {
+        return true;
+    }
+    for (const char* allowed : {"localhost", "127.0.0.1", "[::1]"}) {
+        const std::string_view name{allowed};
+        if (host.starts_with(name)) {
+            const std::string_view rest = std::string_view{host}.substr(name.size());
+            if (rest.empty() || rest[0] == ':') {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 size_t Protocol::SessionCount() const {
     std::scoped_lock lock{sessions_mutex};
     return sessions.size();
@@ -85,6 +104,10 @@ bool Protocol::HasSession(const std::string& id) const {
 HttpResponse Protocol::Handle(const HttpRequest& request) {
     if (request.path != "/mcp") {
         return Empty(404);
+    }
+    if (const auto host = request.Header("host"); host && !IsAllowedHost(*host)) {
+        LOG_WARNING(Debug_MCP, "Rejected request for host {}", *host);
+        return Empty(403);
     }
     if (const auto origin = request.Header("origin"); origin && !IsAllowedOrigin(*origin)) {
         LOG_WARNING(Debug_MCP, "Rejected request from origin {}", *origin);
@@ -304,32 +327,56 @@ json Protocol::HandleToolsCall(const json& id, const json& params,
 
     ToolContext context = context_factory ? context_factory() : ToolContext{};
     context.session_id = session_id;
-    ToolResult result;
-    ControlLease::Holder holder;
-    if (tool->requires_control && context.control &&
-        !context.control->Touch(session_id, holder)) {
+    // Cheap refusals come first, so a refused call never takes the control lease.
+    const auto refusal = [&](const ToolContext& c) -> std::optional<ToolResult> {
+        if (tool->requires_write && !c.writes_allowed) {
+            return ToolResult::Error(
+                "This tool changes emulator state and MCP writes are disabled. Ask the user to "
+                "enable Tools > MCP Server > Allow Writes, or relaunch with --mcp-allow-writes.");
+        }
+        if (tool->requires_game && !c.GameRunning()) {
+            return ToolResult::Error("No application is running. Boot a game first (boot_game).");
+        }
+        return std::nullopt;
+    };
+    const auto lease_refusal = [&]() -> std::optional<ToolResult> {
+        ControlLease::Holder holder;
+        if (!tool->requires_control || !context.control ||
+            context.control->Touch(session_id, holder)) {
+            return std::nullopt;
+        }
         const auto left = std::chrono::duration_cast<std::chrono::seconds>(
                               holder.expires - ControlLease::Clock::now())
                               .count();
-        result = ToolResult::Error(fmt::format(
+        return ToolResult::Error(fmt::format(
             "Another agent controls the emulator ({}session {}..., lease expires in {} s unless "
             "it keeps acting). Read-only tools still work. Call control_status to check, or "
             "acquire_control once it is free.",
             holder.label.empty() ? "" : holder.label + ", ", holder.session_id.substr(0, 8),
             left));
-    } else if (tool->requires_write && !context.writes_allowed) {
-        result = ToolResult::Error(
-            "This tool changes emulator state and MCP writes are disabled. Ask the user to enable "
-            "Tools > MCP Server > Allow Writes, or relaunch with --mcp-allow-writes.");
-    } else if (tool->requires_game && !context.GameRunning()) {
-        result = ToolResult::Error("No application is running. Boot a game first (boot_game).");
+    };
+    ToolResult result;
+    if (auto refused = refusal(context)) {
+        result = std::move(*refused);
+    } else if (auto refused_lease = lease_refusal()) {
+        result = std::move(*refused_lease);
     } else {
         try {
             if (tool->annotations.read_only) {
                 result = tool->handler(context, arguments);
             } else {
                 std::scoped_lock lock{mutating_tools_mutex};
-                result = tool->handler(context, arguments);
+                // Writes or the lease may have changed while this call waited for the lock.
+                if (tool->requires_write && context_factory) {
+                    context.writes_allowed = context_factory().writes_allowed;
+                }
+                if (auto late = refusal(context)) {
+                    result = std::move(*late);
+                } else if (auto late_lease = lease_refusal()) {
+                    result = std::move(*late_lease);
+                } else {
+                    result = tool->handler(context, arguments);
+                }
             }
         } catch (const std::exception& e) {
             LOG_ERROR(Debug_MCP, "Tool {} threw: {}", name, e.what());

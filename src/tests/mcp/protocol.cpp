@@ -146,6 +146,17 @@ TEST_CASE("MCP HTTP rules", "[mcp]") {
     REQUIRE(p.Handle(req).status == 200);
     REQUIRE_FALSE(Protocol::IsAllowedOrigin("http://localhost.evil.example"));
 
+    // DNS rebinding: same-origin requests carry no Origin, but Host names the attacker.
+    req.headers.erase("origin");
+    req.headers["host"] = "rebind.evil.example:6544";
+    REQUIRE(p.Handle(req).status == 403);
+    req.headers["host"] = "127.0.0.1:6544";
+    REQUIRE(p.Handle(req).status == 200);
+    REQUIRE(Protocol::IsAllowedHost("localhost"));
+    REQUIRE(Protocol::IsAllowedHost("[::1]:6544"));
+    REQUIRE_FALSE(Protocol::IsAllowedHost("localhost.evil.example"));
+    REQUIRE_FALSE(Protocol::IsAllowedHost("127.0.0.1.evil.example:6544"));
+
     HttpRequest get = req;
     get.method = "GET";
     REQUIRE(p.Handle(get).status == 405);
@@ -285,6 +296,27 @@ TEST_CASE("MCP protocol enforces the control lease", "[mcp]") {
     REQUIRE(Call(p, b, "drive", json::object())["result"]["isError"] == true);
     REQUIRE(lease.Release(a));
     REQUIRE(Call(p, b, "drive", json::object())["result"]["content"][0]["text"] == "driving");
+}
+
+TEST_CASE("MCP refused calls do not take the control lease", "[mcp]") {
+    ToolRegistry registry;
+    registry.Add(Tool{
+        .name = "poke",
+        .description = "Needs writes and control",
+        .requires_write = true,
+        .requires_control = true,
+        .handler = [](ToolContext&, const json&) { return ToolResult::Text("poked"); },
+    });
+    ControlLease lease;
+    Protocol p{registry, {}, [&lease] {
+                   ToolContext c;
+                   c.control = &lease;
+                   c.writes_allowed = false;
+                   return c;
+               }};
+    const auto a = Initialize(p);
+    REQUIRE(Call(p, a, "poke", json::object())["result"]["isError"] == true);
+    REQUIRE_FALSE(lease.Current().has_value());
 }
 
 namespace Mcp {

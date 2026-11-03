@@ -258,9 +258,11 @@ void RegisterTraceTools(ToolRegistry& registry) {
         .input_schema = {{"type", "object"},
                          {"properties",
                           {{"top", {{"type", "integer"}, {"minimum", 1}, {"maximum", 1000}}},
-                           {"reset", {{"type", "boolean"}}}}},
+                           {"reset", {{"type", "boolean"},
+                                      {"description", "Clear the counters after reading them."}}}}},
                          {"additionalProperties", false}},
-        .annotations = {.read_only = true},
+        // reset clears the MCP's own counters (no emulator state), so no Allow Writes needed.
+        .annotations = {},
         .handler = IpcSummary,
     });
     registry.Add(Tool{

@@ -595,7 +595,7 @@ void MainWindow::MaybeStartMcpServer([[maybe_unused]] bool cli_enable,
 
 #ifdef YUZU_ENABLE_MCP
 void MainWindow::StartMcpServer() {
-    if (mcp_server) {
+    if (mcp_server || mcp_stopping) {
         return;
     }
     Mcp::ServerConfig mcp_config;
@@ -630,15 +630,19 @@ void MainWindow::StopMcpServer() {
     }
     // Stopping waits for in-flight requests, and some of those (pause, boot, TAS...) wait for
     // this GUI thread: stop on a helper thread and keep handling events until it is done.
+    // The member is cleared here first, so the events handled meanwhile see no server.
+    std::unique_ptr<Mcp::Server> stopping = std::move(mcp_server);
+    mcp_stopping = true;
     std::atomic<bool> done{false};
-    std::thread stopper{[this, &done] {
-        mcp_server.reset();
+    std::thread stopper{[&stopping, &done] {
+        stopping.reset();
         done = true;
     }};
     while (!done) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
     stopper.join();
+    mcp_stopping = false;
 }
 
 void MainWindow::SetupMcpMenu() {
@@ -753,12 +757,17 @@ void MainWindow::PopulateMcpRoutesMenu() {
         }
         return false;
     };
+    // The server can be stopped while this menu is open.
+    const auto call = [this](const std::string& tool, const Mcp::json& args) {
+        return mcp_server ? mcp_server->CallTool(tool, args)
+                          : Mcp::ToolResult::Error("The MCP server is off.");
+    };
 
     if (activity.recording) {
         connect(mcp_routes_menu->addAction(
                     tr("Stop Recording \"%1\"").arg(QString::fromStdString(activity.record_name))),
-                &QAction::triggered, this, [this, show_error] {
-                    const auto r = mcp_server->CallTool("route_record_stop", Mcp::json::object());
+                &QAction::triggered, this, [this, show_error, call] {
+                    const auto r = call("route_record_stop", Mcp::json::object());
                     if (show_error(r) || !r.structured) {
                         return;
                     }
@@ -777,7 +786,7 @@ void MainWindow::PopulateMcpRoutesMenu() {
                 });
     } else {
         connect(mcp_routes_menu->addAction(tr("Record New Route...")), &QAction::triggered, this,
-                [this, show_error] {
+                [this, show_error, call] {
                     bool ok = false;
                     const QString name = QInputDialog::getText(
                         this, tr("Record Route"),
@@ -788,8 +797,7 @@ void MainWindow::PopulateMcpRoutesMenu() {
                     if (!ok || name.isEmpty()) {
                         return;
                     }
-                    const auto r = mcp_server->CallTool("route_record_start",
-                                                        {{"name", name.toStdString()}});
+                    const auto r = call("route_record_start", {{"name", name.toStdString()}});
                     if (!show_error(r)) {
                         statusBar()->showMessage(
                             tr("Recording route \"%1\"... stop it in Tools > MCP Server > Routes")
@@ -802,7 +810,7 @@ void MainWindow::PopulateMcpRoutesMenu() {
         connect(mcp_routes_menu->addAction(tr("Stop Route \"%1\"")
                                                .arg(QString::fromStdString(activity.route))),
                 &QAction::triggered, this,
-                [this] { mcp_server->CallTool("route_stop", Mcp::json::object()); });
+                [call] { call("route_stop", Mcp::json::object()); });
     }
 
     mcp_routes_menu->addSeparator();
@@ -820,15 +828,16 @@ void MainWindow::PopulateMcpRoutesMenu() {
                 .arg(qname)
                 .arg(route.value("step_count", 0))
                 .arg(route.value("recorded", false) ? tr(", recorded") : QString{}));
-        connect(sub->addAction(tr("Run")), &QAction::triggered, this, [this, name, show_error] {
-            show_error(mcp_server->CallTool(
-                "route_run", {{"name", name}, {"background", true}, {"screenshot", false}}));
+        connect(sub->addAction(tr("Run")), &QAction::triggered, this, [name, show_error, call] {
+            show_error(
+                call("route_run", {{"name", name}, {"background", true}, {"screenshot", false}}));
         });
-        connect(sub->addAction(tr("Delete...")), &QAction::triggered, this, [this, name, qname] {
+        connect(sub->addAction(tr("Delete...")), &QAction::triggered, this,
+                [this, name, qname, call] {
             if (QMessageBox::question(this, tr("Delete Route"),
                                       tr("Delete the route \"%1\"?").arg(qname)) ==
                 QMessageBox::Yes) {
-                mcp_server->CallTool("route_list", {{"remove", name}, {"summary", true}});
+                call("route_list", {{"remove", name}, {"summary", true}});
             }
         });
     }
@@ -914,7 +923,7 @@ MainWindow::~MainWindow() {
     }
     nup_watcher.waitForFinished();
 #ifdef YUZU_ENABLE_MCP
-    // Stop serving before anything the tools use is torn down.
+    // Normally stopped in closeEvent already; this is the fallback.
     mcp_server.reset();
     mcp_host.reset();
 #endif
@@ -5206,6 +5215,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         return;
     }
     LOG_INFO(Frontend, "Closing frontend after emulation cleanup");
+
+#ifdef YUZU_ENABLE_MCP
+    // While the event loop still runs: in-flight requests may be waiting for this thread.
+    StopMcpServer();
+#endif
 
     UpdateUISettings();
     game_list->SaveInterfaceLayout();

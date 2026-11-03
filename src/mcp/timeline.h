@@ -79,6 +79,8 @@ public:
 
     /// Wakes every WaitFor and makes later ones return at once (server shutting down).
     void Close();
+    /// Undoes Close when a server starts again.
+    void Reopen();
     [[nodiscard]] bool IsClosed() const;
     [[nodiscard]] size_t Capacity() const {
         return ring.size();

@@ -923,7 +923,10 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     if (global || !use_global) {
         const bool is_default = ReadBooleanSetting(std::string(key).append("\\default"), std::make_optional(true));
         if (!is_default) {
-            setting->LoadString(ReadStringSetting(key, default_value));
+            // The default path collapses "//" (meant for paths), which would change a token.
+            setting->LoadString(setting->Id() == Settings::values.mcp_token.Id()
+                                    ? ReadStringSetting(key)
+                                    : ReadStringSetting(key, default_value));
         } else {
             // Empty string resets the Setting to default
             setting->LoadString("");

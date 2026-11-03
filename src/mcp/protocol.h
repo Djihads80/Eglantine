@@ -84,6 +84,8 @@ public:
 
     /// Exposed for tests.
     [[nodiscard]] static bool IsAllowedOrigin(const std::string& origin);
+    /// Host header check against DNS rebinding (loopback names only).
+    [[nodiscard]] static bool IsAllowedHost(const std::string& host);
 
 private:
     struct Session {

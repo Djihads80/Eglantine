@@ -37,6 +37,14 @@ namespace {
 
 std::atomic<Timeline*> g_active_timeline{nullptr};
 
+// Never destroyed: the log sink, trace hooks and tool threads may have loaded the pointer just
+// before a server stopped, and must still be able to push into it.
+Timeline& ProcessTimeline() {
+    static Timeline* const instance = new Timeline{
+        65536, [] { return Core::g_nx2_present_count.load(std::memory_order_relaxed); }};
+    return *instance;
+}
+
 constexpr const char* kInstructions =
     "Eglantine is a Nintendo Switch 2 emulator. Start with `status`. Driving: `act` does input + "
     "wait + observe in one call; TAS tools give frame-exact input; per-game `route_list` / "
@@ -136,10 +144,7 @@ Server::Summary Server::GetSummary() {
 
 Server::Server(Core::System& system_, Host& host_, ServerConfig config_)
     : system{system_}, host{host_}, config{std::move(config_)},
-      writes_allowed{config.allow_writes}, timeline{65536, [] {
-                                                        return Core::g_nx2_present_count.load(
-                                                            std::memory_order_relaxed);
-                                                    }} {
+      writes_allowed{config.allow_writes}, timeline{ProcessTimeline()} {
     RegisterAllTools(registry);
     ProtocolOptions options;
     options.server_version = Common::g_build_fullname;
@@ -312,6 +317,10 @@ std::string Server::Start() {
     // exits, without holding an MCP call open.
     // Same checks as /mcp for the other routes (the token may also come as ?token= for browsers).
     const auto authorized = [this](const httplib::Request& req, httplib::Response& res) {
+        if (!Protocol::IsAllowedHost(req.get_header_value("Host"))) {
+            res.status = 403;
+            return false;
+        }
         if (const auto origin = req.get_header_value("Origin");
             !origin.empty() && !Protocol::IsAllowedOrigin(origin)) {
             res.status = 403;
@@ -532,6 +541,7 @@ std::string Server::Start() {
     }
     running = true;
     g_server_stopping.store(false, std::memory_order_relaxed);
+    timeline.Reopen();
     g_active_timeline.store(&timeline, std::memory_order_release);
     Common::Log::SetExternalSink(&LogSink);
     InstallTraceHooks();
@@ -544,8 +554,12 @@ std::string Server::Start() {
                                        {"frontend", host.FrontendName()},
                                        {"token_required", !config.bearer_token.empty()},
                                        {"writes_enabled", writes_allowed.load()}};
-        Common::FS::WriteStringToFile(DiscoveryPath(), Common::FS::FileType::TextFile,
-                                      discovery.dump(1));
+        const std::string text = discovery.dump(1);
+        if (Common::FS::WriteStringToFile(DiscoveryPath(), Common::FS::FileType::TextFile, text) !=
+            text.size()) {
+            LOG_WARNING(Debug_MCP, "Could not write the discovery file {}",
+                        Common::FS::PathToUTF8String(DiscoveryPath()));
+        }
     }
     timeline.Push(EventKind::State, 0, "mcp", "MCP server listening on " + Url());
     LOG_INFO(Debug_MCP, "MCP server listening on {}", Url());
@@ -563,6 +577,7 @@ void Server::Stop() {
     Common::Log::SetExternalSink(nullptr);
     RemoveTraceHooks();
     StopGameStateWork();
+    StopMemoryWork();
     std::error_code ec;
     std::filesystem::remove(DiscoveryPath(), ec);
     g_active_timeline.store(nullptr, std::memory_order_release);

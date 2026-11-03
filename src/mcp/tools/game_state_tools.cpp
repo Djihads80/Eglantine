@@ -30,6 +30,7 @@
 #include "hid_core/hid_core.h"
 #include "mcp/activity.h"
 #include "mcp/context.h"
+#include "mcp/control.h"
 #include "mcp/host.h"
 #include "mcp/timeline.h"
 #include "mcp/tool_registry.h"
@@ -242,12 +243,39 @@ std::string ToHex(const std::vector<u8>& v) {
     return s;
 }
 
+/// Empty on malformed input (routes and labels come from editable JSON files).
 std::vector<u8> FromHex(const std::string& s) {
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
     std::vector<u8> v;
+    v.reserve(s.size() / 2);
     for (size_t i = 0; i + 1 < s.size(); i += 2) {
-        v.push_back(static_cast<u8>(std::stoul(s.substr(i, 2), nullptr, 16)));
+        const int hi = nibble(s[i]);
+        const int lo = nibble(s[i + 1]);
+        if (hi < 0 || lo < 0) {
+            return {};
+        }
+        v.push_back(static_cast<u8>(hi << 4 | lo));
     }
     return v;
+}
+
+bool IsHexString(const json& v) {
+    if (!v.is_string()) {
+        return false;
+    }
+    const std::string& s = v.get_ref<const std::string&>();
+    return !s.empty() && s.size() % 2 == 0 && !FromHex(s).empty();
 }
 
 struct ScreenMatch {
@@ -504,8 +532,8 @@ ToolResult ScreenLabel(ToolContext& ctx, const json& args) {
                                                     {"note", "The image is the exact region "
                                                              "stored: check it shows this screen."}});
     // Preview of what was stored: the region crop of the analysed frame.
-    const u32 x0 = static_cast<u32>(region.x * frame->width);
-    const u32 y0 = static_cast<u32>(region.y * frame->height);
+    const u32 x0 = std::min(static_cast<u32>(region.x * frame->width), frame->width - 1);
+    const u32 y0 = std::min(static_cast<u32>(region.y * frame->height), frame->height - 1);
     const u32 cw = std::max<u32>(1, std::min<u32>(frame->width - x0, static_cast<u32>(region.w * frame->width)));
     const u32 ch = std::max<u32>(1, std::min<u32>(frame->height - y0, static_cast<u32>(region.h * frame->height)));
     Frame crop{.width = cw, .height = ch};
@@ -784,12 +812,30 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
         ctx.timeline->Push(EventKind::State, 0, "route", "route " + name + " started");
     }
     set_progress(0, "running", "starting");
+    // An agent's route keeps the control lease while it runs, and stops if it lost it (another
+    // agent took over). Routes the user starts from the menu have no session.
+    const auto lost_lease = [&] {
+        ControlLease::Holder holder;
+        return ctx.control != nullptr && !ctx.session_id.empty() &&
+               !ctx.control->Touch(ctx.session_id, holder);
+    };
+    const auto stop_lost_lease = [&](size_t step) {
+        set_progress(step, "stopped", "lost the control lease");
+        if (ctx.timeline) {
+            ctx.timeline->Push(EventKind::State, 0, "route",
+                               "route " + name + " stopped: lost the control lease");
+        }
+        return false;
+    };
     int last_checkpoint = -1;
     bool ok = true;
     for (size_t i = 0; i < steps.size() && ok; ++i) {
         if (stop.stop_requested() || ServerStopping()) {
             set_progress(i, "stopped", "stopped by request");
             return false;
+        }
+        if (lost_lease()) {
+            return stop_lost_lease(i);
         }
         json r{{"step", i}};
         if (steps[i].contains("label")) {
@@ -813,6 +859,10 @@ bool ExecuteRoute(ToolContext ctx, const std::string& name, const json& steps,
                 r["sample"] = RunPerfSample(ctx, steps[i]["sample"]);
             }
             if (steps[i].contains("input")) {
+                // The checkpoint wait can be long: check the lease again before sending input.
+                if (lost_lease()) {
+                    return stop_lost_lease(i);
+                }
                 if (std::string error = RunInputSteps(ctx, NpadIndex(steps[i]), steps[i]["input"]);
                     !error.empty()) {
                     r["error"] = error;
@@ -880,6 +930,21 @@ ToolResult RouteRun(ToolContext& ctx, const json& args) {
         return ToolResult::Error(error);
     }
     const json steps = *steps_opt;
+    if (!steps.is_array()) {
+        return ToolResult::Error("route steps must be an array");
+    }
+    for (size_t i = 0; i < steps.size(); ++i) {
+        if (!steps[i].is_object()) {
+            return ToolResult::Error(fmt::format("route step {} is not an object", i));
+        }
+        if (steps[i].contains("checkpoint") &&
+            !(steps[i]["checkpoint"].is_object() &&
+              IsHexString(steps[i]["checkpoint"].value("thumb", json{})))) {
+            return ToolResult::Error(fmt::format(
+                "route step {}: checkpoint.thumb must be a hex fingerprint (record the route with "
+                "route_record_start/stop)", i));
+        }
+    }
     const std::string name = args.value("name", std::string{"(inline)"});
     const u64 since_seq = ctx.timeline ? ctx.timeline->LastSeq() : 0;
 
@@ -901,7 +966,19 @@ ToolResult RouteRun(ToolContext& ctx, const json& args) {
         ToolContext copy = ctx;
         bg.thread = std::jthread([copy, name, steps](std::stop_token stop) {
             json results = json::array();
-            const bool ok = ExecuteRoute(copy, name, steps, stop, results);
+            bool ok = false;
+            // An exception escaping this thread would terminate the emulator.
+            try {
+                ok = ExecuteRoute(copy, name, steps, stop, results);
+            } catch (const std::exception& e) {
+                LOG_ERROR(Debug_MCP, "Route {} failed: {}", name, e.what());
+                results.push_back({{"error", e.what()}});
+                Activity::Get().Update([&](ActivityState& s) {
+                    s.route_state = "failed";
+                    s.route_detail = e.what();
+                    s.route_changed = steady_clock::now();
+                });
+            }
             auto& b = Background();
             std::scoped_lock l{b.mutex};
             b.results = std::move(results);
@@ -1002,8 +1079,16 @@ public:
         frames.clear();
         snapshots.clear();
         record_name = std::move(name);
+        // Taken now: the game may have closed by the time the recording is saved.
+        record_program_id = ProgramId(ctx);
         thread = std::jthread([this, ctx](std::stop_token stop) { Run(stop, ctx); });
         return true;
+    }
+
+    /// The program that was running when the last recording started.
+    [[nodiscard]] u64 RecordedProgramId() {
+        std::scoped_lock lock{mutex};
+        return record_program_id;
     }
 
     /// Stops and returns what was recorded.
@@ -1116,6 +1201,7 @@ private:
     std::mutex mutex;
     std::jthread thread;
     std::string record_name;
+    u64 record_program_id = 0;
     std::vector<InputFrame> frames;
     std::vector<Snapshot> snapshots;
 };
@@ -1255,11 +1341,12 @@ ToolResult RouteRecordStop(ToolContext& ctx, const json& args) {
     }
     if (args.value("save", true)) {
         std::scoped_lock lock{g_store_mutex};
-        json store = LoadStore("routes", ProgramId(ctx));
+        const u64 program_id = Recorder::Get().RecordedProgramId();
+        json store = LoadStore("routes", program_id);
         store["routes"][name] = {{"steps", steps},
                                  {"description", args.value("description", "recorded")},
                                  {"recorded", true}};
-        SaveStore("routes", ProgramId(ctx), store);
+        SaveStore("routes", program_id, store);
     }
     json outline = json::array();
     for (const auto& s : steps) {

@@ -53,9 +53,11 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         if (int arg = getopt_long(argc, argv, "d::c:fhg:m:p:u:vi:nsx", long_options, &option_index); arg != -1) {
             switch (char(arg)) {
             case 'd':
-                p.override_gdb_port = optarg != nullptr
-                                          ? uint16_t(atoi(optarg))
-                                          : Settings::values.gdbstub_port.GetValue();
+                // Without a port, the configured one is used (the config is not loaded yet).
+                p.enable_gdbstub = true;
+                if (optarg != nullptr) {
+                    p.override_gdb_port = uint16_t(atoi(optarg));
+                }
                 break;
             case 'c':
                 p.config_path = optarg;
@@ -73,10 +75,18 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
             case 'M':
                 p.mcp_enable = true;
                 break;
-            case 'P':
+            case 'P': {
                 p.mcp_enable = true;
-                p.mcp_port = static_cast<u16>(std::strtoul(optarg, nullptr, 10));
+                char* end = nullptr;
+                const unsigned long port = std::strtoul(optarg, &end, 10);
+                if (end == optarg || *end != '\0' || port == 0 || port > 65535) {
+                    LOG_ERROR(Frontend, "Invalid --mcp-port '{}', using the configured port",
+                              optarg);
+                } else {
+                    p.mcp_port = static_cast<u16>(port);
+                }
                 break;
+            }
             case 'W':
                 p.mcp_allow_writes = true;
                 break;
@@ -190,8 +200,10 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
     if (lp.selected_user.has_value()) {
         Settings::values.current_user = std::clamp(*lp.selected_user, 0, 7);
     }
-    if (lp.override_gdb_port.has_value()) {
+    if (lp.enable_gdbstub) {
         Settings::values.use_gdbstub = true;
+    }
+    if (lp.override_gdb_port.has_value()) {
         Settings::values.gdbstub_port = *lp.override_gdb_port;
     }
     if (lp.force_single_core) {
