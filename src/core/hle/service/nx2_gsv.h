@@ -3092,10 +3092,11 @@ public:
             {1291, &INx2GraphicsSystemSession::CalculateChatImagePoolSize,
              "CalculateChatImagePoolSize (guessed)"},
             {911, &INx2GraphicsSystemSession::CreateDecoderImage, "CreateDecoderImage"},
-            // 912(u32 image id): the video group's x12, freeing one decoder output image (Switch
-            // Sports frees its four when its movie ends). Unlisting it stops the decode thread
-            // writing frames into memory the game reuses.
-            {912, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyDecoderImage"},
+            // 912(u32 image id): the video group's x12, destroying a decoder image pool (fefw's
+            // DestroyImagePool): the image and the ones after it in the pool's memory, so the
+            // decode thread stops writing frames into memory the game reuses. Switch Sports frees
+            // its four one by one when its movie ends: the later calls find them gone.
+            {912, &INx2GraphicsSystemSession::DestroyDecoderImagePool, "DestroyDecoderImagePool"},
             {961, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetCpuUserImageDescriptor"},
             // Firmware commands without a known meaning: zeroed replies.
             {11, &INx2GraphicsSystemSession::RegisterClientHandle, "RegisterClientHandle"},
@@ -3776,6 +3777,39 @@ private:
             }
         }
         DropDecoderMapping(unmap);
+        TipcReplyWords(ctx, {});
+    }
+
+    // 912(u32 first image id): destroys a decoder image pool (fefw's
+    // NativeVideoService::DestroyImagePool, fefw 0b1ba0db76): the image and the images that follow
+    // it in the same pool memory, so the decode thread no longer writes into memory the game
+    // reuses. A title that frees the pool's images one by one finds the later ones gone.
+    void DestroyDecoderImagePool(HLERequestContext& ctx) {
+        const u32 first = ctx.CommandBuffer()[2];
+        std::vector<std::optional<std::pair<u64, u64>>> unmaps;
+        u32 count{};
+        {
+            std::scoped_lock lk{m_objects->mutex};
+            const auto pool = m_objects->images.find(first);
+            if (pool != m_objects->images.end() && pool->second.decoder) {
+                const u32 memory = pool->second.memory;
+                const u64 size = pool->second.size;
+                u64 offset = pool->second.offset;
+                for (auto image = pool; image != m_objects->images.end() &&
+                                        image->first == first + count && image->second.decoder &&
+                                        image->second.memory == memory &&
+                                        image->second.offset == offset;) {
+                    unmaps.push_back(TakeDecoderMapping(image->second));
+                    image = m_objects->images.erase(image);
+                    ++count;
+                    offset += size;
+                }
+            }
+        }
+        for (const auto& range : unmaps) {
+            DropDecoderMapping(range);
+        }
+        LOG_INFO(Service, "nx2:gsv 912 decoder images {}..+{} destroyed", first, count);
         TipcReplyWords(ctx, {});
     }
 
