@@ -137,6 +137,8 @@ enum MetaType : u16 {
     MetaIcon = 0x0003,
     MetaDisplayVersion = 0x0004,
     MetaTitleName = 0x0005,
+    MetaPublisher = 0x0006,
+    MetaSourceDump = 0x0008,
     MetaLocalizedTitles = 0x0009,
     MetaLocalizedIcons = 0x000A,
 };
@@ -620,6 +622,12 @@ bool NupContainer::ParseMeta(PackageInfo& package) {
         case MetaTitleName:
             package.title_name = std::string(reinterpret_cast<const char*>(payload), header.size);
             break;
+        case MetaPublisher:
+            package.publisher = std::string(reinterpret_cast<const char*>(payload), header.size);
+            break;
+        case MetaSourceDump:
+            package.source_dump = std::string(reinterpret_cast<const char*>(payload), header.size);
+            break;
         case MetaDisplayVersion:
             package.display_version =
                 std::string(reinterpret_cast<const char*>(payload), header.size);
@@ -758,6 +766,13 @@ VirtualDir NupContainer::GetRomFSDir(std::size_t package_index) {
         romfs_dir_cache[package_index] = BuildPackageDir(packages[package_index].romfs_dir);
     }
     return romfs_dir_cache[package_index];
+}
+
+VirtualDir NupContainer::GetPackageDir(std::size_t package_index) {
+    if (package_index >= packages.size()) {
+        return nullptr;
+    }
+    return BuildPackageDir(packages[package_index].root_dir);
 }
 
 VirtualDir NupContainer::MergeShadowDirs(const VirtualDir& base, const VirtualDir& overlay) {

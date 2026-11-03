@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -37,6 +38,9 @@ struct Metadata {
     // JPEG or PNG bytes; 256x256 JPEG as distributed on-console.
     std::vector<u8> icon;
     std::string display_version;
+    std::string publisher;
+    // Language tag ("de", "pt-br", ...) and name, as stored; the default title is separate.
+    std::vector<std::pair<std::string, std::string>> localized_titles;
     // Where ProbeMetadata found display_version, e.g. "update 458752" or "base".
     std::string version_source;
 };
@@ -72,5 +76,40 @@ PackResult PackDump(const std::filesystem::path& dump_root, const std::filesyste
                     const std::atomic_bool* cancel = nullptr, std::string* error_out = nullptr);
 
 bool HasResumableJournal(const std::filesystem::path& archive);
+
+enum class ExtractResult { Success, Cancelled, InvalidSource, IoError };
+
+// Unpacks every package back into a loose dump: base/, updates/<version>/ and
+// dlc/<titleid>/<n>/. A single base-only container is written bare, without the base/
+// wrapper, so it round-trips. An existing non-empty output directory is never overwritten.
+ExtractResult ExtractNup(const std::filesystem::path& archive,
+                         const std::filesystem::path& out_dir,
+                         const std::function<void(const PackProgress&)>& progress = {},
+                         const std::atomic_bool* cancel = nullptr,
+                         std::string* error_out = nullptr);
+std::filesystem::path DefaultExtractPath(const std::filesystem::path& archive);
+
+// Default-language metadata edit. nullopt keeps the stored value, an empty value removes it.
+struct MetadataEdit {
+    std::optional<std::string> title_name;
+    std::optional<std::vector<u8>> icon;
+    std::optional<std::string> display_version;
+    std::optional<std::string> publisher;
+    // Replaces every localized title; an empty list removes them.
+    std::optional<std::vector<std::pair<std::string, std::string>>> localized_titles;
+};
+
+enum class EditResult { Success, Cancelled, InvalidSource, IoError, NoChange };
+
+// Rewrites the target package's meta TLVs (base, or the first package when there is no base).
+// Extents are copied untouched; the TOC hash and file size are updated and the replacement is
+// atomic. Returns NoChange when every field keeps its stored value. Progress reports archive
+// bytes rewritten against the new file size.
+EditResult EditNupMetadata(const std::filesystem::path& archive, const MetadataEdit& edit,
+                           std::string* error_out = nullptr,
+                           const std::atomic_bool* cancel = nullptr,
+                           const std::function<void(const PackProgress&)>& progress = {});
+// Current default-language metadata of the edit target, for prefilling the UI.
+Metadata ProbeNupMetadata(const std::filesystem::path& archive);
 
 } // namespace FileSys::Nup

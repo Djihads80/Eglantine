@@ -26,10 +26,16 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QStyle>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <array>
+
 #include "common/fs/path_util.h"
+#include "yuzu/util/icon_search.h"
 
 namespace {
 
@@ -67,12 +73,7 @@ QPixmap RoundedPreview(const QPixmap& source, int size) {
 
 // The console distributes 256x256 JPEG icons. A picture that already is one is kept as is;
 // anything else is cropped to a square, scaled and re-encoded.
-QByteArray EncodeIcon(const QString& path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    const QByteArray raw = file.readAll();
+QByteArray EncodeIconData(const QByteArray& raw) {
     QImage image;
     if (!image.loadFromData(raw) || image.isNull()) {
         return {};
@@ -93,6 +94,44 @@ QByteArray EncodeIcon(const QString& path) {
     buffer.open(QIODevice::WriteOnly);
     flat.save(&buffer, "JPEG", 92);
     return out;
+}
+
+QByteArray EncodeIcon(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return EncodeIconData(file.readAll());
+}
+
+struct LocalizedLanguage {
+    const char* tag;
+    const char* name;
+};
+
+// The languages the console stores a name for; "en-us" is the Name field itself, and tags not
+// listed here are kept as stored.
+constexpr std::array<LocalizedLanguage, 15> LocalizedLanguages{{
+    {"en-gb", QT_TRANSLATE_NOOP("NupEditDialog", "English (UK)")},
+    {"ja", QT_TRANSLATE_NOOP("NupEditDialog", "Japanese")},
+    {"fr", QT_TRANSLATE_NOOP("NupEditDialog", "French")},
+    {"de", QT_TRANSLATE_NOOP("NupEditDialog", "German")},
+    {"es-419", QT_TRANSLATE_NOOP("NupEditDialog", "Spanish (Latin America)")},
+    {"es", QT_TRANSLATE_NOOP("NupEditDialog", "Spanish")},
+    {"it", QT_TRANSLATE_NOOP("NupEditDialog", "Italian")},
+    {"nl", QT_TRANSLATE_NOOP("NupEditDialog", "Dutch")},
+    {"fr-ca", QT_TRANSLATE_NOOP("NupEditDialog", "French (Canada)")},
+    {"pt", QT_TRANSLATE_NOOP("NupEditDialog", "Portuguese")},
+    {"ru", QT_TRANSLATE_NOOP("NupEditDialog", "Russian")},
+    {"ko", QT_TRANSLATE_NOOP("NupEditDialog", "Korean")},
+    {"zh-hant", QT_TRANSLATE_NOOP("NupEditDialog", "Chinese (Traditional)")},
+    {"zh-hans", QT_TRANSLATE_NOOP("NupEditDialog", "Chinese (Simplified)")},
+    {"pt-br", QT_TRANSLATE_NOOP("NupEditDialog", "Portuguese (Brazil)")},
+}};
+
+bool IsEditableLanguage(const std::string& tag) {
+    return std::ranges::any_of(LocalizedLanguages,
+                               [&](const auto& language) { return tag == language.tag; });
 }
 
 // The first dropped local file that Qt can read as an image.
@@ -225,6 +264,10 @@ NupMetadataDialog::NupMetadataDialog(const std::filesystem::path& source,
     name_edit->setPlaceholderText(tr("Name shown in the game list"));
     name_edit->setClearButtonEnabled(true);
 
+    publisher_edit = new QLineEdit(QString::fromStdString(detected.publisher));
+    publisher_edit->setPlaceholderText(tr("Publisher shown in the game list"));
+    publisher_edit->setClearButtonEnabled(true);
+
     version_auto = new QRadioButton;
     if (detected.display_version.empty()) {
         version_auto->setText(tr("Auto-detect (nothing found in the dump)"));
@@ -252,6 +295,7 @@ NupMetadataDialog::NupMetadataDialog(const std::filesystem::path& source,
     form->setVerticalSpacing(14);
     form->addRow(tr("Icon"), icon_row);
     form->addRow(tr("Name"), name_edit);
+    form->addRow(tr("Publisher"), publisher_edit);
     form->addRow(tr("Version"), version_box);
 
     auto* paths = new QLabel(tr("<b>Source</b><br>%1<br><b>Target</b><br>%2")
@@ -305,6 +349,10 @@ FileSys::Nup::Metadata NupMetadataDialog::Metadata() const {
     // Only what differs from the dump is an override.
     if (const auto name = name_edit->text().trimmed().toStdString(); name != detected.title_name) {
         result.title_name = name;
+    }
+    if (const auto publisher = publisher_edit->text().trimmed().toStdString();
+        publisher != detected.publisher) {
+        result.publisher = publisher;
     }
     if (!custom_icon.isEmpty()) {
         result.icon.assign(custom_icon.begin(), custom_icon.end());
@@ -373,9 +421,10 @@ void NupMetadataDialog::UpdateVersionEnabled() {
     }
 }
 
-NupProgressDialog::NupProgressDialog(const QString& title, const QPixmap& icon, QWidget* parent)
+NupProgressDialog::NupProgressDialog(const QString& operation, const QString& title,
+                                       const QPixmap& icon, QWidget* parent)
     : QDialog(parent, Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint) {
-    setWindowTitle(tr("Converting to NUP"));
+    setWindowTitle(operation);
     setModal(true);
     setMinimumWidth(480);
 
@@ -387,7 +436,7 @@ NupProgressDialog::NupProgressDialog(const QString& title, const QPixmap& icon, 
         icon_label->setPixmap(RoundedPreview(icon, 56));
         header->addWidget(icon_label);
     }
-    auto* title_label = new QLabel(title.isEmpty() ? tr("Converting to NUP") : title);
+    auto* title_label = new QLabel(title.isEmpty() ? operation : title);
     QFont font = title_label->font();
     font.setBold(true);
     font.setPointSizeF(font.pointSizeF() * 1.2);
@@ -482,4 +531,245 @@ void NupProgressDialog::reject() {
         return;
     }
     QDialog::reject();
+}
+
+NupEditDialog::NupEditDialog(const std::filesystem::path& archive, QWidget* parent)
+    : QDialog(parent), current(FileSys::Nup::ProbeNupMetadata(archive)) {
+    setWindowTitle(tr("Edit NUP Metadata"));
+    setMinimumWidth(520);
+
+    icon_preview = new IconDropZone(PreviewSize);
+    connect(icon_preview, &IconDropZone::Clicked, this, &NupEditDialog::ChooseIcon);
+    connect(icon_preview, &IconDropZone::FileDropped, this, &NupEditDialog::SetIconFromFile);
+    icon_hint = new QLabel;
+    icon_hint->setWordWrap(true);
+    icon_hint->setEnabled(false);
+    auto* choose_icon = new QPushButton(tr("Choose Icon..."));
+    find_icon = new QPushButton(tr("Find Icon Online..."));
+    clear_icon = new QPushButton(tr("Remove Icon"));
+    icon_search = new IconSearch(this);
+    connect(choose_icon, &QPushButton::clicked, this, &NupEditDialog::ChooseIcon);
+    connect(find_icon, &QPushButton::clicked, this, &NupEditDialog::FindIcon);
+    connect(icon_search, &IconSearch::RunningChanged, this, [this](bool running) {
+        find_icon->setEnabled(!running);
+        find_icon->setText(running ? tr("Searching...") : tr("Find Icon Online..."));
+    });
+    connect(icon_search, &IconSearch::IconSelected, this, &NupEditDialog::OnIconFound);
+    connect(clear_icon, &QPushButton::clicked, this, &NupEditDialog::ClearIcon);
+
+    auto* icon_buttons = new QVBoxLayout;
+    icon_buttons->addWidget(choose_icon);
+    icon_buttons->addWidget(find_icon);
+    icon_buttons->addWidget(clear_icon);
+    icon_buttons->addWidget(icon_hint);
+    icon_buttons->addStretch();
+    auto* icon_row = new QHBoxLayout;
+    icon_row->setSpacing(16);
+    icon_row->addWidget(icon_preview, 0, Qt::AlignTop);
+    icon_row->addLayout(icon_buttons, 1);
+
+    name_edit = new QLineEdit(QString::fromStdString(current.title_name));
+    name_edit->setPlaceholderText(tr("Name shown in the game list"));
+    name_edit->setClearButtonEnabled(true);
+
+    publisher_edit = new QLineEdit(QString::fromStdString(current.publisher));
+    publisher_edit->setPlaceholderText(tr("Publisher shown in the game list"));
+    publisher_edit->setClearButtonEnabled(true);
+
+    version_edit = new QLineEdit(QString::fromStdString(current.display_version));
+    version_edit->setPlaceholderText(tr("e.g. 1.2.0"));
+    version_edit->setClearButtonEnabled(true);
+
+    auto* form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setHorizontalSpacing(16);
+    form->setVerticalSpacing(14);
+    form->addRow(tr("Icon"), icon_row);
+    localized_toggle = new QToolButton;
+    localized_toggle->setCheckable(true);
+    localized_toggle->setAutoRaise(true);
+    localized_toggle->setIcon(QIcon::fromTheme(
+        QStringLiteral("preferences-desktop-locale"),
+        QIcon::fromTheme(QStringLiteral("applications-education-language"),
+                         style()->standardIcon(QStyle::SP_FileDialogDetailedView))));
+    auto* name_row = new QHBoxLayout;
+    name_row->setSpacing(6);
+    name_row->addWidget(name_edit, 1);
+    name_row->addWidget(localized_toggle);
+
+    localized_panel = new QWidget;
+    auto* localized_form = new QFormLayout(localized_panel);
+    localized_form->setContentsMargins(0, 0, 0, 0);
+    localized_form->setVerticalSpacing(8);
+    int localized_set = 0;
+    for (const auto& language : LocalizedLanguages) {
+        auto* field = new QLineEdit;
+        field->setClearButtonEnabled(true);
+        for (const auto& [tag, name] : current.localized_titles) {
+            if (tag == language.tag) {
+                field->setText(QString::fromStdString(name));
+                ++localized_set;
+            }
+        }
+        localized_form->addRow(tr(language.name), field);
+        localized_edits.emplace_back(language.tag, field);
+    }
+    const auto update_placeholders = [this] {
+        const QString fallback = name_edit->text().trimmed();
+        for (const auto& [tag, field] : localized_edits) {
+            field->setPlaceholderText(fallback.isEmpty() ? tr("Same as Name") : fallback);
+        }
+    };
+    connect(name_edit, &QLineEdit::textChanged, this, update_placeholders);
+    update_placeholders();
+    localized_panel->setVisible(false);
+    connect(localized_toggle, &QToolButton::toggled, this, [this](bool shown) {
+        localized_panel->setVisible(shown);
+        // Recompute the layout first, otherwise the old height is kept and the extra space ends
+        // up between the rows.
+        layout()->activate();
+        resize(width(), minimumSizeHint().height());
+    });
+    localized_toggle->setToolTip(localized_set > 0
+                                     ? tr("Localized names (%1 set)").arg(localized_set)
+                                     : tr("Localized names"));
+
+    form->addRow(tr("Name"), name_row);
+    form->addRow(QString{}, localized_panel);
+    form->addRow(tr("Publisher"), publisher_edit);
+    form->addRow(tr("Version"), version_edit);
+
+    auto* path_label = new QLabel(tr("<b>File</b><br>%1").arg(ToQString(archive).toHtmlEscaped()));
+    path_label->setTextFormat(Qt::RichText);
+    path_label->setWordWrap(true);
+    path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    auto* hint = new QLabel(tr("Empty fields remove that metadata. The change is written in place;"
+                               " game data is untouched."));
+    hint->setWordWrap(true);
+    hint->setEnabled(false);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(20, 20, 20, 16);
+    layout->setSpacing(14);
+    layout->addLayout(form);
+    layout->addWidget(path_label);
+    layout->addWidget(hint);
+    layout->addWidget(buttons);
+
+    UpdateIconPreview();
+}
+
+NupEditDialog::~NupEditDialog() = default;
+
+FileSys::Nup::MetadataEdit NupEditDialog::Edit() const {
+    FileSys::Nup::MetadataEdit edit;
+    if (remove_icon) {
+        edit.icon = std::vector<u8>{};
+    } else if (!custom_icon.isEmpty()) {
+        edit.icon = std::vector<u8>(custom_icon.begin(), custom_icon.end());
+    }
+    if (const auto name = name_edit->text().trimmed().toStdString(); name != current.title_name) {
+        edit.title_name = name;
+    }
+    // Tags the console has no field for stay as stored.
+    std::vector<std::pair<std::string, std::string>> localized;
+    for (const auto& entry : current.localized_titles) {
+        if (!IsEditableLanguage(entry.first)) {
+            localized.push_back(entry);
+        }
+    }
+    for (const auto& [tag, field] : localized_edits) {
+        if (const auto name = field->text().trimmed().toStdString(); !name.empty()) {
+            localized.emplace_back(tag, name);
+        }
+    }
+    auto stored = current.localized_titles;
+    auto wanted = localized;
+    std::ranges::sort(stored);
+    std::ranges::sort(wanted);
+    if (stored != wanted) {
+        edit.localized_titles = std::move(localized);
+    }
+    if (const auto publisher = publisher_edit->text().trimmed().toStdString();
+        publisher != current.publisher) {
+        edit.publisher = publisher;
+    }
+    if (const auto version = version_edit->text().trimmed().toStdString();
+        version != current.display_version) {
+        edit.display_version = version;
+    }
+    return edit;
+}
+
+QString NupEditDialog::DisplayName() const {
+    return name_edit->text().trimmed();
+}
+
+QPixmap NupEditDialog::CurrentIcon() const {
+    return current_icon;
+}
+
+void NupEditDialog::ChooseIcon() {
+    const auto path = QFileDialog::getOpenFileName(
+        this, tr("Choose Icon"), {}, tr("Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"));
+    if (!path.isEmpty()) {
+        SetIconFromFile(path);
+    }
+}
+
+void NupEditDialog::SetIconFromFile(const QString& path) {
+    const auto encoded = EncodeIcon(path);
+    if (encoded.isEmpty()) {
+        icon_hint->setText(tr("That file could not be read as an image."));
+        return;
+    }
+    custom_icon = encoded;
+    remove_icon = false;
+    UpdateIconPreview();
+}
+
+void NupEditDialog::FindIcon() {
+    icon_search->Start(name_edit->text());
+}
+
+void NupEditDialog::OnIconFound(const QByteArray& png, const QString& resolved_title) {
+    const auto encoded = EncodeIconData(png);
+    if (encoded.isEmpty()) {
+        icon_hint->setText(tr("The icon that was found could not be read."));
+        return;
+    }
+    custom_icon = encoded;
+    remove_icon = false;
+    if (!resolved_title.isEmpty()) {
+        name_edit->setText(resolved_title);
+    }
+    UpdateIconPreview();
+}
+
+void NupEditDialog::ClearIcon() {
+    custom_icon.clear();
+    remove_icon = true;
+    UpdateIconPreview();
+}
+
+void NupEditDialog::UpdateIconPreview() {
+    QPixmap pixmap;
+    if (remove_icon) {
+        icon_hint->setText(tr("Icon will be removed."));
+    } else if (!custom_icon.isEmpty()) {
+        pixmap.loadFromData(custom_icon);
+        icon_hint->setText(tr("Custom icon, stored as %1x%1 JPEG.").arg(IconSize));
+    } else if (!current.icon.empty()) {
+        pixmap = PixmapFromBytes(current.icon);
+        icon_hint->setText(tr("Current icon in the NUP."));
+    } else {
+        icon_hint->setText(tr("No icon in the NUP. Add one, or it will have none."));
+    }
+    current_icon = pixmap;
+    icon_preview->SetIcon(pixmap);
 }
