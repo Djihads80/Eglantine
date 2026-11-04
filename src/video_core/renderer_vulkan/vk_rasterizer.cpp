@@ -277,6 +277,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
     if (!pipeline) {
+        // Counted here, once per dropped draw: a rejected program stays bound, so later draws
+        // reuse the failed result. DrawTexture does not go through this path.
+        if (pipeline_cache.LastShadersRejected()) {
+            Profile::Add(Profile::Counter::SkippedDraws, 1);
+        }
         report_failure("no pipeline");
         return;
     }

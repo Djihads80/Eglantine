@@ -77,6 +77,11 @@ public:
     /// @brief Flushes delayed removal operations
     void SyncGuestHost();
 
+    /// True when the current shaders are invalid because a native program was rejected.
+    [[nodiscard]] bool LastShadersRejected() const noexcept {
+        return last_shaders_rejected;
+    }
+
 protected:
     struct GraphicsEnvironments {
         std::array<GraphicsEnvironment, NUM_PROGRAMS> envs;
@@ -104,7 +109,8 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
-    /// last_shaders_valid is false because a native program was rejected (not, say, a bad address)
+    /// last_shaders_valid is false because a native program was rejected (not, say, a bad address).
+    /// The rasterizer counts the skipped draws from it.
     bool last_shaders_rejected = false;
 
 private:

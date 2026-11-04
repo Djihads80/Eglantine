@@ -81,10 +81,6 @@ u64 ShaderCache::MeshStateHash() const {
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
-        if (last_shaders_rejected) {
-            // The same rejected program is still bound: this draw is skipped too.
-            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
-        }
         return last_shaders_valid;
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
@@ -123,7 +119,6 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         if (!shader_info && native && IsRejected(*cpu_shader_addr)) {
             // A rejected program fails the same way every time it is bound: skip its draws
             // without rethrowing (two C++ throws each time cost ~1-2% of the GPU thread).
-            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
             last_shaders_valid = false;
             last_shaders_rejected = true;
@@ -169,7 +164,6 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     native.native_execution_failed = true;
     last_shaders_valid = false;
     last_shaders_rejected = true;
-    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
     // Each rejected program is logged once (the draws that use it keep failing quietly).
     static std::unordered_set<std::string> logged;
     if (logged.insert(error.what()).second) {
