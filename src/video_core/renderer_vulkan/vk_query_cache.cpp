@@ -1643,7 +1643,9 @@ void QueryCacheRuntime::SyncValues(std::span<SyncValuesType> values, VkBuffer ba
         impl->buffers_to_upload_to.clear();
         for (auto& pair : impl->little_cache) {
             static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
-            const auto post_op = VideoCommon::ObtainBufferOperation::DoNothing;
+            // The copies below write the buffer on the GPU: marked as such, so a host read of
+            // it waits for them (GpuWriteTick) and flushes them, as after any other GPU write.
+            const auto post_op = VideoCommon::ObtainBufferOperation::MarkAsWritten;
             const auto [buffer, offset] = impl->buffer_cache.ObtainCPUBuffer(
                 pair.first, static_cast<u32>(pair.second - pair.first), sync_info, post_op);
             impl->buffers_to_upload_to.emplace_back(buffer->Handle(), offset);
