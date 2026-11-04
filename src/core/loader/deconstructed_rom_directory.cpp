@@ -374,8 +374,10 @@ void AppLoader_DeconstructedRomDirectory::ReadDumpMetadata(const FileSys::Virtua
     if (const auto title_dir = file_dir->GetParentDirectory()) {
         romfs_version = RomFSProductVersion(FindLooseRomFSDirectory(title_dir));
     } else if (LooseRomFS() != nullptr) {
-        // A packed dump (.nx2) has no parent directory: its RomFS is the game.romfs image in it.
-        romfs_version = RomFSProductVersion(FileSys::ExtractRomFS(romfs));
+        // A packed dump (.nx2) has no parent directory: its RomFS is the game.romfs image in it,
+        // extracted only if the version is asked for and the control data has none
+        // (ReadDisplayVersion): most loaders are made for the game list and never need it.
+        romfs_version_pending = true;
     }
 }
 
@@ -598,6 +600,10 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadDisplayVersion(std::string
     if (control && !control->GetVersionString().empty()) {
         version = control->GetVersionString();
         return ResultStatus::Success;
+    }
+    if (romfs_version_pending) {
+        romfs_version_pending = false;
+        romfs_version = RomFSProductVersion(FileSys::ExtractRomFS(romfs));
     }
     if (!romfs_version.empty()) {
         version = romfs_version;
