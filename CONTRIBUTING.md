@@ -1,18 +1,15 @@
 # Contributing
 
-Eden has lots of different ways that you can contribute to its efforts, even without knowing how to write code:
+Eglantine has lots of different ways that you can contribute to its efforts, even without knowing how to write code:
 
-- Donate! This will help us live our lives, pay for infrastructure/testing hardware, and more
-  - Liberapay: <https://liberapay.com/crueter>
-  - PayPal: `business@eden-emu.dev`
-  - Bitcoin: `bc1pknzdackezf6s5nxqwn6hx940a7e0k3lk7ggpczp9u4jn4a25lnyqrgvdxx`
-- Join our [Discord](https://discord.gg/HstXbPch7X) community
-- Submit [bug reports or feature requests](https://github.com/eden-emulator/Issue-Reports/issues), or on [Codeberg](https://codeberg.org/eden-emu/eden/issues)
+- Join our [Discord](https://discord.gg/jCCZ58VExk) community
+- Submit [bug reports or feature requests](https://github.com/Djihads80/Eglantine/issues)
+- Improve documentation or share reproducible testing results
 - Contribute to our [translation efforts](./dist/languages/README.md)
 
 ## Code Contributions
 
-Eden is free, open-source, copyleft software, licensed under the terms of the [GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html). You would do well to familiarize yourself with the GPL, [its FAQ](https://www.gnu.org/licenses/gpl-faq.html), and [free software as a concept](https://www.gnu.org/philosophy/free-sw.html) before contributing. If these terms are not acceptable to you, then you shouldn't contribute.
+Eglantine is free, open-source, copyleft software, licensed under the terms of the [GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html). You would do well to familiarize yourself with the GPL, [its FAQ](https://www.gnu.org/licenses/gpl-faq.html), and [free software as a concept](https://www.gnu.org/philosophy/free-sw.html) before contributing. If these terms are not acceptable to you, then you shouldn't contribute.
 
 ### Policies
 
@@ -29,52 +26,25 @@ Eden is free, open-source, copyleft software, licensed under the terms of the [G
 
 ### Where do I start?
 
-Anywhere you like! If you are facing an issue and want to fix it, go ahead. For new features, you are heavily encouraged to open a feature request on GitHub, Codeberg, or Forgejo first, discussing the motivations, potential implementation, and user flow of your desired feature. Our UI/UX designers will work with you to refine your feature before you actually choose to implement it.
+Anywhere you like! If you are facing an issue and want to fix it, go ahead. For new features, you are heavily encouraged to open a [feature request](https://github.com/Djihads80/Eglantine/issues) first, discussing the motivations, potential implementation, and user flow of your desired feature.
 
-You may also search for open issues on [GitHub](https://github.com/eden-emulator/Issue-Reports/issues), [Codeberg](https://codeberg.org/eden-emu/eden/issues), or [Forgejo](https://git.eden-emu.dev/eden-emu/eden/issues). For larger features/refactors, you should first express your interest in the issue to ensure another developer isn't already working on it.
+Search the [open issues](https://github.com/Djihads80/Eglantine/issues) and [pull requests](https://github.com/Djihads80/Eglantine/pulls) before starting to avoid duplicating work. For larger features/refactors, you should first express your interest in the issue to ensure another developer isn't already working on it.
 
 ### Great! Can I contribute already?
 
-There are five primary ways to contribute.
+Submit a pull request to [Djihads80/Eglantine](https://github.com/Djihads80/Eglantine). You need a GitHub account; the Eden Forgejo account registration process does not apply here.
 
-- Submit pull requests directly to our source tree
-  - You must first request an account on our Forgejo. See [Signup](#how-do-i-sign-up)
-- Submit pull requests to our [GitHub mirror](https://github.com/eden-emulator/Issue-Reports)
-  - Note that this is subject to being removed by DMCA, so don't rely on this.
-- Submit pull requests to our [Codeberg mirror](https://codeberg.org/eden-emu/eden)
-  - Codeberg is not subject to draconian DMCA laws, but they have been hostile to emulators such as Torzu in the past. Thus, you shouldn't rely on this either.
-- Submit patches to [`patch@eden-emu.dev`](mailto:patch@eden-emu.dev)
-  - These **must** be in `git format-patch` format. You should familiarize yourself with the [art of patching](https://www.gitkraken.com/learn/git/git-patch) beforehand.
-  - Alongside the contents of your email, please attach the patch/diff file itself for easy access and use.
-- Email our developers at [`developers@eden-emu.dev`](mailto:developers@eden-emu.dev) with any of your relevant findings or code changes.
+1. Fork the Eglantine repository to your GitHub account.
+2. Clone your fork and create a branch for your change based on Eglantine's `nx2` branch.
+3. Make a focused change, following the policies above and the [coding guidelines](docs/policies/Coding.md).
+4. Review and test your changes. For code changes, follow the [build documentation](docs/Build.md) for your platform and verify the affected behavior. For documentation changes, preview the Markdown and check the instructions and links.
+5. Commit your changes and push your branch to your fork.
+6. Open a pull request from your branch to `Djihads80/Eglantine`, selecting `nx2` as the base branch. Explain the problem, the change, and how you verified it, and link any related issue.
 
-To test your changes, ensure to read the [build documentation](./docs/Build.md) for your specific platform(s) to ensure everything compiles and works properly. You should also make sure that your branch is up-to-date with the upstream `master` branch before opening a pull request.
-
-### How do I sign up?
-
-<details>
-<summary>To sign up and begin contributing... (click to open)</summary>
-
-Email [crueter@crueter.xyz](mailto:crueter@crueter.xyz) with the following format:
-
-```txt
-Subject: [Eden Git] Registration Request
-Username: <Your Desired Username>
-Email: <Your Desired Email>
-I wish to sign up because... <your reason here>
-```
-
-Received mail that does not follow this format will be ignored.
-
-Once your request is processed, you will receive a confirmation email with your temporary password and some information on Git access and policies. If you do not receive a response within 48 hours, feel free to send another email.
-
-> [!WARNING]
-> Some email providers may place the response email in your spam/junk folder; notable offenders include Gmail and Outlook. *Always* ensure to check your Spam or Junk folder.
-
-</details>
+Before opening a pull request, make sure your branch is up-to-date with Eglantine's `nx2` branch. Follow the [AI policy](docs/policies/AI.md), including its requirements for human-written commit messages and pull request descriptions, disclosure, review, testing, and sign-off.
 
 ## Non-code Contributions
 
 Alongside the other contribution methods listed up top, you can also choose to contribute through documentation, organization, or community guides. These can be done either through the code contribution methods described above, or created externally and shared via our Discord community.
 
-If you have an external tool/page that you believe would be handy to integrate/link into Eden, please additionally email our developers at [`developers@eden-emu.dev`](mailto:developers@eden-emu.dev). **Do not submit vibe-coded or AI generated tools or applications**.
+If you have an external tool/page that you believe would be handy to integrate/link into Eglantine, please discuss it with the developers on [Discord](https://discord.gg/jCCZ58VExk). **Do not submit vibe-coded or AI generated tools or applications**.

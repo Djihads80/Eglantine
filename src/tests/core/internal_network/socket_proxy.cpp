@@ -54,7 +54,7 @@ TEST_CASE("Room UDP sockets receive queued datagrams with recv", "[core][sockets
     std::array<u8, 4> received{};
     const auto [count, error] = socket.Recv(0, received);
     REQUIRE(error == Network::Errno::SUCCESS);
-    REQUIRE(count == payload.size());
+    REQUIRE(count == static_cast<int>(payload.size()));
     REQUIRE(received == payload);
 
     const auto [empty_count, empty_error] = socket.Recv(0, received);

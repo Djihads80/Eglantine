@@ -204,7 +204,7 @@ private:
                 return ResultInvalidSocket;
             }
             socket = std::move(*sock);
-            backend->SetSocket(std::move(socket));
+            backend->SetSocket(socket);
             return ResultSuccess;
         }
         LOG_ERROR(Service_SSL, "Failed to duplicate socket with fd {}", in_fd);
@@ -455,9 +455,9 @@ private:
 
 class ISslContext final : public ServiceFramework<ISslContext> {
 public:
-    explicit ISslContext(Core::System& system_, SslVersion version)
-        : ServiceFramework{system_, "ISslContext"}, ssl_version{version},
-          shared_data{std::make_shared<SslContextSharedData>()} {
+    explicit ISslContext(Core::System& system_, SslVersion version, bool for_system)
+        : ServiceFramework{system_, for_system ? "ISslContextForSystem" : "ISslContext"},
+          ssl_version{version}, shared_data{std::make_shared<SslContextSharedData>()} {
         static const FunctionInfo functions[] = {
             {0, &ISslContext::SetOption, "SetOption"},
             {1, &ISslContext::GetOption, "GetOption"},
@@ -475,6 +475,12 @@ public:
             {13, nullptr, "GeneratePrivateKeyAndCert"},
         };
         RegisterHandlers(functions);
+        if (for_system) {
+            static const FunctionInfo system_functions[] = {
+                {100, &ISslContext::CreateConnection, "CreateConnectionEx"},
+            };
+            RegisterHandlers(system_functions);
+        }
     }
 
 private:
@@ -609,7 +615,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version);
+        rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version, false);
     }
 
     void SetInterfaceVersion(HLERequestContext& ctx) {
@@ -641,7 +647,8 @@ private:
 
 class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem> {
     public:
-        explicit ISslServiceForSystem(Core::System& system_) : ServiceFramework{system_, "ssl:s"} {
+        explicit ISslServiceForSystem(Core::System& system_)
+            : ServiceFramework{system_, "ssl:s"}, cert_store{system} {
             // clang-format off
             static const FunctionInfo functions[] = {
                 {0, &ISslServiceForSystem::CreateContext, "CreateContext"},
@@ -665,8 +672,8 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
         };
 
         // 0 and 100(SslVersion, padding, u64 pid placeholder; pid): an ISslContext, like ssl's
-        // CreateContext. The empty reply returned no object, so the caller got handle 0
-        // (Minecraft calls 100).
+        // CreateContext; 100 returns ISslContextForSystem, which adds CreateConnectionEx. The empty
+        // reply returned no object, so the caller got handle 0 (Minecraft calls 100).
         void CreateContext(HLERequestContext& ctx) {
             struct Parameters {
                 SslVersion ssl_version;
@@ -682,7 +689,8 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
 
             IPC::ResponseBuilder rb{ctx, 2, 0, 1};
             rb.Push(ResultSuccess);
-            rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version);
+            rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version,
+                                             ctx.GetCommand() == 100);
         }
 
         Result GetContextCount(Out<u32> out_count) {
@@ -691,21 +699,19 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result GetCertificates() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
+        Result GetCertificates(Out<u32> out_num_entries,
+                               OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
+                               InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            LOG_DEBUG(Service_SSL, "called");
+            R_RETURN(cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids));
+        }
 
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
-        Result GetCertificateBufSize() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
+        Result GetCertificateBufSize(
+            Out<u32> out_size, InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            LOG_DEBUG(Service_SSL, "called");
+            u32 num_entries;
+            R_RETURN(cert_store.GetCertificateBufSize(out_size, &num_entries, certificate_ids));
+        }
 
         Result DebugIoctl() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
@@ -774,6 +780,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
 
             return ResultSuccess;
         };
+
+    private:
+        CertStore cert_store;
     };
 
 void LoopProcess(Core::System& system) {
