@@ -54,6 +54,12 @@ enum class Zone : u32 {
     SplitWait,    ///< Split GPU thread: the back waits for work
     SplitWriters, ///< Split GPU thread: the front waits for queued compute/copy work (WaitForWriters)
     SplitDmaRead, ///< Split GPU thread: the front drains the back for a macro DMA read
+    UpdateIndex,  ///< Of UpdateBuffers: the index buffer
+    UpdateVertex, ///< Of UpdateBuffers: the vertex buffers
+    UpdateStages, ///< Of UpdateBuffers: uniform, storage and texture buffers of every stage
+    UboReuse,     ///< Of BindStageBuffers: small uniform buffers compared with their last stream copy
+    UboCopy,      ///< Of BindStageBuffers: small uniform buffers copied into the stream buffer
+    UboCached,    ///< Of BindStageBuffers: uniform buffers bound from the buffer cache
     Count,
 };
 
@@ -65,6 +71,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
+    "update index", "update vertex", "update stages", "ubo reuse", "ubo copy", "ubo cached",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
@@ -84,7 +91,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 16> counters{}; ///< See Counter
+    std::array<u64, 24> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -139,6 +146,11 @@ enum class Counter : u32 {
     GpfifoEntries,  ///< Command list (GPFIFO) entries started
     AcquireLedger,  ///< Of AcquireChecks: met without draining the back (semaphore ledger)
     JitSkippedWrites, ///< Of SameValueWrites: elided inside the ARM64 macro JIT
+    BackSinkWrites,   ///< Back thread: ring method entries put in the engine's method sink
+    BackMethodCalls,  ///< Back thread: ring method entries run through CallMethod (executable, direct)
+    BackDeferredCalls, ///< Back thread: deferred calls run (Defer)
+    UboReuseHits,     ///< Small uniform buffers bound to their last stream copy (bytes equal)
+    UboCopyBytes,     ///< Bytes of small uniform buffers copied into the stream buffer
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -205,6 +217,13 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window,
                         static_cast<double>(data.counters[11]) * 1e9 / window);
+    line += fmt::format(" | back entries: {:.0f} sunk, {:.0f} called, {:.0f} deferred calls",
+                        static_cast<double>(data.counters[13]) * 1e9 / window,
+                        static_cast<double>(data.counters[14]) * 1e9 / window,
+                        static_cast<double>(data.counters[15]) * 1e9 / window);
+    line += fmt::format(" | small UBOs: {:.0f} reused, {:.0f} KiB copied",
+                        static_cast<double>(data.counters[16]) * 1e9 / window,
+                        static_cast<double>(data.counters[17]) * 1e9 / 1024.0 / window);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

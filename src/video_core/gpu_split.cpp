@@ -456,12 +456,15 @@ size_t GpuSplit::Execute(const u64* entry) {
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
+            Nx2Profile::Add(Nx2Profile::Counter::BackSinkWrites, 1);
             engine->method_sink.emplace_back(method, argument);
         } else {
             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
             engine->ConsumeSink(*system);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
@@ -486,6 +489,7 @@ size_t GpuSplit::Execute(const u64* entry) {
     }
     case Kind::Call: {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
+        Nx2Profile::Add(Nx2Profile::Counter::BackDeferredCalls, 1);
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
         return 2 + payload;
     }
