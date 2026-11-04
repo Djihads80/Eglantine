@@ -1759,11 +1759,6 @@ bool TextureCache<P>::UploadInChunks(Image& image) {
         auto staging = runtime.UploadStagingBuffer(plan.total_host_bytes);
         ExecuteUnswizzlePlan(*gpu_memory, plan, staging.mapped_span);
         image.UploadMemory(staging, plan.copies);
-        if (offset + chunk_size < image.guest_size_bytes) {
-            // Submit and wait so this chunk's staging memory can be reused by the next one;
-            // without it every chunk's buffer stays alive until the next scheduler flush.
-            runtime.Finish();
-        }
     }
     runtime.InsertUploadMemoryBarrier();
     return true;
