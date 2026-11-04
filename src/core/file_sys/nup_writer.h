@@ -8,6 +8,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -24,11 +26,24 @@ struct PackProgress {
 
 enum class PackResult { Success, Cancelled, InvalidSource, IoError };
 
-// NupContainer keeps a zstd file in memory only while it fits its 512 MiB decompression cache;
-// a larger one is decompressed again in full on every read, which makes big compressed RomFS
-// files unusable. Files above this size are therefore stored raw, with headroom below the cap so
-// that one file does not evict everything else from the cache.
+// NupContainer keeps a zstd file in memory only while it fits half of its 512 MiB decompression
+// cache; a larger one is decompressed to a temporary file on first read, which costs time and
+// disk space. Files above this size are therefore stored raw.
 constexpr u64 DefaultRawThreshold = 256ULL * 1024 * 1024;
+
+// Application metadata written to the base package (or the first package when there is no base).
+// In PackOptions an empty field keeps what the dump supplies; ProbeMetadata fills all of them.
+struct Metadata {
+    std::string title_name;
+    // JPEG or PNG bytes; 256x256 JPEG as distributed on-console.
+    std::vector<u8> icon;
+    std::string display_version;
+    std::string publisher;
+    // Language tag ("de", "pt-br", ...) and name, as stored; the default title is separate.
+    std::vector<std::pair<std::string, std::string>> localized_titles;
+    // Where ProbeMetadata found display_version, e.g. "update 458752" or "base".
+    std::string version_source;
+};
 
 struct PackOptions {
     // Low-storage mode: delete each source file once its extent is synced and journaled.
@@ -37,6 +52,8 @@ struct PackOptions {
     int zstd_level = 3;
     // Files larger than this are always stored raw.
     u64 raw_threshold = DefaultRawThreshold;
+    // Overrides for the name, icon and display version found in the dump.
+    Metadata metadata;
 };
 
 // A loose dump holds exefs/main and main.npdm, directly or under base/ or updates/<version>/,
@@ -45,6 +62,9 @@ bool IsLooseDump(const std::filesystem::path& dir);
 // The dump folder a game list entry's exefs/main (or exefs folder) belongs to, if it is a loose
 // dump.
 std::optional<std::filesystem::path> DumpRootFromMain(const std::filesystem::path& main);
+// Reads the name, icon and display version a dump would be packed with. The version comes from
+// the newest update that reports one, else the base.
+Metadata ProbeMetadata(const std::filesystem::path& dump_root);
 std::filesystem::path DefaultArchivePath(const std::filesystem::path& dump_root);
 
 // Writes <archive>.part and renames it when done; an existing archive is never overwritten. A
@@ -56,5 +76,40 @@ PackResult PackDump(const std::filesystem::path& dump_root, const std::filesyste
                     const std::atomic_bool* cancel = nullptr, std::string* error_out = nullptr);
 
 bool HasResumableJournal(const std::filesystem::path& archive);
+
+enum class ExtractResult { Success, Cancelled, InvalidSource, IoError };
+
+// Unpacks every package back into a loose dump: base/, updates/<version>/ and
+// dlc/<titleid>/<n>/. A single base-only container is written bare, without the base/
+// wrapper, so it round-trips. An existing non-empty output directory is never overwritten.
+ExtractResult ExtractNup(const std::filesystem::path& archive,
+                         const std::filesystem::path& out_dir,
+                         const std::function<void(const PackProgress&)>& progress = {},
+                         const std::atomic_bool* cancel = nullptr,
+                         std::string* error_out = nullptr);
+std::filesystem::path DefaultExtractPath(const std::filesystem::path& archive);
+
+// Default-language metadata edit. nullopt keeps the stored value, an empty value removes it.
+struct MetadataEdit {
+    std::optional<std::string> title_name;
+    std::optional<std::vector<u8>> icon;
+    std::optional<std::string> display_version;
+    std::optional<std::string> publisher;
+    // Replaces every localized title; an empty list removes them.
+    std::optional<std::vector<std::pair<std::string, std::string>>> localized_titles;
+};
+
+enum class EditResult { Success, Cancelled, InvalidSource, IoError, NoChange };
+
+// Rewrites the target package's meta TLVs (base, or the first package when there is no base).
+// Extents are copied untouched; the TOC hash and file size are updated and the replacement is
+// atomic. Returns NoChange when every field keeps its stored value. Progress reports archive
+// bytes rewritten against the new file size.
+EditResult EditNupMetadata(const std::filesystem::path& archive, const MetadataEdit& edit,
+                           std::string* error_out = nullptr,
+                           const std::atomic_bool* cancel = nullptr,
+                           const std::function<void(const PackProgress&)>& progress = {});
+// Current default-language metadata of the edit target, for prefilling the UI.
+Metadata ProbeNupMetadata(const std::filesystem::path& archive);
 
 } // namespace FileSys::Nup

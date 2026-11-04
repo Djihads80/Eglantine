@@ -314,7 +314,8 @@ bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
 
 class GotoPass {
 public:
-    explicit GotoPass(Flow::CFG& cfg, ObjectPool<Statement>& stmt_pool) : pool{stmt_pool} {
+    explicit GotoPass(Flow::CFG& cfg, ObjectPool<Statement>& stmt_pool, bool converge_exits_)
+        : pool{stmt_pool}, converge_exits{converge_exits_} {
         std::vector gotos{BuildTree(cfg)};
         const auto end{gotos.rend()};
         for (auto goto_stmt = gotos.rbegin(); goto_stmt != end; ++goto_stmt) {
@@ -381,7 +382,17 @@ private:
         u32 label_id{0};
         std::vector<Node> gotos;
         Flow::Function& first_function{cfg.Functions().front()};
-        BuildTree(cfg, first_function, label_id, gotos, root_stmt.children.end(), std::nullopt);
+        Node insert_point{root_stmt.children.end()};
+        if (converge_exits) {
+            // Every EXIT jumps to one return at the end, so all invocations reach the same
+            // epilogue (task and mesh programs emit their outputs there, after a barrier).
+            Tree& root{root_stmt.children};
+            exit_label = root.insert(root.end(), *pool.Create(Label{}, label_id, &root_stmt));
+            ++label_id;
+            root.insert(root.end(), *pool.Create(Return{}, &root_stmt));
+            insert_point = *exit_label;
+        }
+        BuildTree(cfg, first_function, label_id, gotos, insert_point, std::nullopt);
         return gotos;
     }
 
@@ -454,7 +465,14 @@ private:
                 break;
             }
             case Flow::EndClass::Exit:
-                root.insert(ip, *pool.Create(Return{}, &root_stmt));
+                if (exit_label) {
+                    Statement* const always_cond{
+                        pool.Create(Identity{}, IR::Condition{true}, &root_stmt)};
+                    gotos.push_back(root.insert(
+                        ip, *pool.Create(Goto{}, always_cond, *exit_label, &root_stmt)));
+                } else {
+                    root.insert(ip, *pool.Create(Return{}, &root_stmt));
+                }
                 break;
             case Flow::EndClass::Return: {
                 Statement* const always_cond{pool.Create(Identity{}, block.cond, &root_stmt)};
@@ -618,6 +636,8 @@ private:
 
     ObjectPool<Statement>& pool;
     Statement root_stmt{FunctionTag{}};
+    bool converge_exits{};
+    std::optional<Node> exit_label;
 };
 
 [[nodiscard]] Statement* TryFindForwardBlock(Statement& stmt) {
@@ -987,7 +1007,8 @@ IR::AbstractSyntaxList BuildASL(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::
                                 Environment& env, Flow::CFG& cfg,
                                 const HostTranslateInfo& host_info) {
     ObjectPool<Statement> stmt_pool{64};
-    GotoPass goto_pass{cfg, stmt_pool};
+    const Stage stage{env.ShaderStage()};
+    GotoPass goto_pass{cfg, stmt_pool, stage == Stage::Task || stage == Stage::Mesh};
     Statement& root{goto_pass.RootStatement()};
     IR::AbstractSyntaxList syntax_list;
     TranslatePass{inst_pool, block_pool, stmt_pool, env, root, syntax_list, host_info};

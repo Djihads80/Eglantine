@@ -6,13 +6,21 @@
 
 #pragma once
 
+#include <chrono>
 #include <deque>
+#include <memory>
+#include <optional>
 #include <span>
 
 #include "video_core/texture_cache/texture_cache_base.h"
 
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
+#include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
+#include "video_core/renderer_vulkan/vk_fsr3_upscaler.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/renderer_vulkan/vk_streamline_dlss.h"
+#endif
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -67,9 +75,21 @@ public:
 
     u64 GetDeviceMemoryUsage() const;
 
+    /// GPU progress: the texture cache frees a deleted image once the GPU is past its last use.
+    [[nodiscard]] u64 CurrentTick() const noexcept;
+
+    [[nodiscard]] bool IsFree(u64 tick) const noexcept;
+
     u64 GetDeviceMemoryBudget() const;
 
+    u64 GetDeviceMemorySlack() const;
+
     bool CanReportMemoryUsage() const;
+
+    /// Images that did not fit the device memory budget so far (see MemoryAllocator).
+    u32 MemoryPressureEvents() const noexcept {
+        return memory_allocator.MemoryPressureEvents();
+    }
 
     void LogMemoryStatistics() const;
 
@@ -87,11 +107,24 @@ public:
                    Tegra::Engines::Fermi2D::Filter filter,
                    Tegra::Engines::Fermi2D::Operation operation);
 
-    /// Stands in for a DLSS evaluation: temporal upscale of input_color into dst, accumulated with
-    /// a copy of dst's previous contents (the last output). False when dst cannot take it.
+    /// Stands in for a DLSS evaluation: temporal upscale of input_color (render_size on the host)
+    /// into dst, with FSR 3.1 when given the depth, else with the temporal stand-in. False when dst
+    /// cannot take it.
     bool TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& input_color,
-                         ImageView& motion_vectors, std::array<f32, 2> jitter,
+                         ImageView& motion_vectors, ImageView* depth,
+                         std::array<u32, 2> render_size, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale);
+
+    /// True when TemporalUpscale would use the depth (FSR 3.1 not forced off and not failed).
+    [[nodiscard]] bool WantsTemporalUpscaleDepth() const;
+
+    /// True while TemporalUpscale would use NVIDIA DLSS (on, Streamline running, not failed).
+    [[nodiscard]] bool UsesNvidiaDlss() const;
+
+    /// Records a health check of a game's DLSS network output against its input (both sampled in
+    /// the GENERAL layout) and returns an earlier check's result once the GPU has finished it.
+    [[nodiscard]] std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(ImageView& input,
+                                                                              ImageView& output);
 
     void CopyImage(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
 
@@ -175,11 +208,40 @@ public:
     StagingBufferPool& staging_buffer_pool;
     BlitImageHelper& blit_image_helper;
     RenderPassCache& render_pass_cache;
+    DescriptorPool& descriptor_pool;
+    ComputePassDescriptorQueue& compute_pass_descriptor_queue;
 
-    /// TemporalUpscale's history: its previous result, copied right after drawing it.
+    /// FSR 3.1 in place of a DLSS evaluation (TemporalUpscale), created on first use.
+    bool UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
+                         ImageView& motion_vectors, ImageView& depth,
+                         std::array<u32, 2> render_size, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale);
+    std::unique_ptr<Fsr3Upscaler> fsr3_upscaler;
+    bool fsr3_unsupported{};
+    /// The game DLSS network's health check (ProbeGameDlssOutput), created on first use.
+    std::unique_ptr<DlssNetworkProbe> dlss_network_probe;
+    std::optional<std::chrono::steady_clock::time_point> fsr3_last_evaluation;
+
+    /// Draws an upscaler's RGBA16F output into the DLSS output and returns it to GENERAL.
+    void DrawUpscaledOutput(Framebuffer* dst_framebuffer, VkImageView view, VkImage image,
+                            VkSampler sampler);
+#ifdef EGLANTINE_STREAMLINE
+    /// NVIDIA's DLSS (through NVIDIA Streamline) in place of the game's,
+    /// before FSR 3.1, when the setting is on. Returns false to fall back to FSR 3.1.
+    bool UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageView& input_color,
+                         ImageView& motion_vectors, ImageView& depth,
+                         std::array<u32, 2> render_size, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale, bool reset);
+    std::unique_ptr<StreamlineDlssUpscaler> dlss_upscaler;
+    bool dlss_unsupported{};
+#endif
+
+    /// TemporalUpscale's history: its previous result (images[current]) and the image the next
+    /// result is stored to.
     struct TemporalHistory {
-        vk::Image image;
-        vk::ImageView view;
+        std::array<vk::Image, 2> images;
+        std::array<vk::ImageView, 2> views;
+        size_t current{};
         VkFormat format{};
         VkExtent2D extent{};
     } temporal_history;
@@ -192,13 +254,20 @@ public:
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
                             std::span<const VideoCommon::SwizzleParameters> swizzles);
 
-    /// Temporary decode images, freed once the GPU is past `tick`.
+    /// Temporary decode images, reusable once the GPU is past `tick`.
     struct PendingTranscode {
         u64 tick;
         vk::Image image;
         std::vector<vk::ImageView> views;
+        u32 width;
+        u32 height;
+        u32 levels;
+        u32 layers;
+        u32 unused_frames;
     };
     std::deque<PendingTranscode> pending_transcodes;
+    /// Decode images the GPU is done with, for the next texture of the same shape.
+    std::vector<PendingTranscode> free_transcodes;
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
     const Settings::ResolutionScalingInfo& resolution;
@@ -388,6 +457,11 @@ public:
 
     [[nodiscard]] VkImageUsageFlags UsageFlags() const noexcept {
         return (this->*current_image).UsageFlags();
+    }
+
+    /// Where the image's memory lies, for the collector (TextureCache::RunGarbageCollector).
+    [[nodiscard]] vk::Image::MemoryBlock MemoryBlock() const noexcept {
+        return original_image.GetMemoryBlock();
     }
 
     /// Returns true when the image is already initialized and mark it as initialized

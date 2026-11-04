@@ -87,6 +87,9 @@ enum class Class : u8 {
 /// Logs a message to the global logger, using fmt
 void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, unsigned int line_num, const char* function, fmt::string_view format, const fmt::format_args& args);
 
+/// Returns true if a message of this class and level would pass the global filter.
+[[nodiscard]] bool IsLevelEnabled(Class log_class, Level log_level);
+
 template <typename... Args>
 void FmtLogMessage(Class log_class, Level log_level, const char* filename, unsigned int line_num, const char* function, fmt::format_string<Args...> format, const Args&... args) {
     FmtLogMessageImpl(log_class, log_level, filename, line_num, function, format.get(), fmt::make_format_args(args...));

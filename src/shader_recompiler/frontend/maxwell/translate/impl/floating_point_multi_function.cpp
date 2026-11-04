@@ -18,6 +18,7 @@ enum class Operation : u64 {
     Rcp64H = 6, // 64-bit reciprocal
     Rsq64H = 7, // 64-bit reciprocal square root
     Sqrt = 8,
+    Tanh = 9, // Not a Maxwell operation: only lowered native (SM86) programs emit it.
 };
 } // Anonymous namespace
 
@@ -54,6 +55,8 @@ void TranslatorVisitor::MUFU(u64 insn) {
             throw NotImplementedException("MUFU.RSQ64H");
         case Operation::Sqrt:
             return ir.FPSqrt(op_a);
+        case Operation::Tanh:
+            return ir.FPTanh(op_a);
         default:
             throw NotImplementedException("Invalid MUFU operation {}", mufu.operation.Value());
         }

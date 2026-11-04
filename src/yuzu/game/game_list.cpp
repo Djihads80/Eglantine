@@ -160,6 +160,10 @@ void GameList::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
     item_model->PopulateAsync(game_dirs);
 }
 
+void GameList::SetScanEnabled(bool enabled) {
+    item_model->SetScanEnabled(enabled);
+}
+
 void GameList::SaveInterfaceLayout() {
     tree_view->SaveInterfaceLayout();
 }
@@ -477,6 +481,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QMenu* play_time_menu = context_menu.addMenu(tr("Manage Play Time"));
     QAction* set_play_time = play_time_menu->addAction(tr("Edit Play Time Data"));
     QAction* remove_play_time_data = play_time_menu->addAction(tr("Remove Play Time Data"));
+    const bool is_nup_archive =
+        !FileSys::Nup::DumpRootFromMain(path) &&
+        QString::fromStdString(path).endsWith(QStringLiteral(".nup"), Qt::CaseInsensitive);
+    QAction* extract_nup = nullptr;
+    if (is_nup_archive) {
+        extract_nup = context_menu.addAction(tr("Dump NUP..."));
+        extract_nup->setEnabled(!nup_conversion_running);
+    }
     QMenu* dump_romfs_menu = context_menu.addMenu(tr("Dump RomFS"));
     QAction* dump_romfs = dump_romfs_menu->addAction(tr("Dump RomFS"));
     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
@@ -494,6 +506,11 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
         shortcut_menu->addAction(tr("Add to Applications Menu"));
 #endif
     context_menu.addSeparator();
+    QAction* edit_nup = nullptr;
+    if (is_nup_archive) {
+        edit_nup = context_menu.addAction(tr("Edit NUP Metadata..."));
+        edit_nup->setEnabled(!nup_conversion_running);
+    }
     QAction* properties = context_menu.addAction(tr("Configure Game"));
 
     favorite->setVisible(program_id != 0);
@@ -570,6 +587,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     if (convert_nup) {
         connect(convert_nup, &QAction::triggered, this,
                 [this, path]() { emit ConvertToNupRequested(path); });
+    }
+    if (extract_nup) {
+        connect(extract_nup, &QAction::triggered, this,
+                [this, path]() { emit ExtractNupRequested(path); });
+    }
+    if (edit_nup) {
+        connect(edit_nup, &QAction::triggered, this,
+                [this, path]() { emit EditNupMetadataRequested(path); });
     }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {

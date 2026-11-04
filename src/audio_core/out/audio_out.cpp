@@ -8,7 +8,7 @@
 namespace AudioCore::AudioOut {
 
 Out::Out(Core::System& system_, Manager& manager_, Kernel::KEvent* event_, size_t session_id_)
-    : manager{manager_}, parent_mutex{manager.mutex}, event{event_}, system{system_, event,
+    : manager_keep_alive{manager_.shared_from_this()}, manager{manager_}, parent_mutex{manager.mutex}, event{event_}, system{system_, event,
                                                                             session_id_} {}
 
 void Out::Free() {

@@ -57,6 +57,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/div_ceil.h"
 #include "common/free_region_manager.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
@@ -716,7 +717,9 @@ private:
 HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
     : backing_size(backing_size_)
     , virtual_size(virtual_size_)
+    , num_granules(Common::DivCeil(backing_size_, size_t{1} << GranuleShift))
 {
+    granules = std::make_unique<std::atomic<u8>[]>(num_granules);
 #if defined(__OPENORBIS__) || defined(__managarm__)
     LOG_WARNING(HW_Memory, "Platform doesn't support fastmem");
     backing_base = static_cast<u8*>(mmap(nullptr, backing_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
@@ -799,21 +802,98 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #endif
 }
 
+void HostMemory::HintCold(size_t physical_offset, size_t length,
+                          std::optional<size_t> virtual_offset) const {
+    if (length == 0 || backing_base == nullptr) {
+        return;
+    }
+    const auto hint = [length](u8* address) {
+#ifdef _WIN32
+        // Unlocking pages that are not locked takes them out of the working set.
+        VirtualUnlock(address, length);
+#elif defined(__linux__) && defined(MADV_PAGEOUT)
+        madvise(address, length, MADV_PAGEOUT);
+#else
+        static_cast<void>(address);
+#endif
+    };
+    hint(backing_base + physical_offset);
+    if (virtual_offset && virtual_base != nullptr && *virtual_offset + length <= virtual_size) {
+        hint(virtual_base + *virtual_offset);
+    }
+}
+
 void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
+    if (length == 0) {
+        return;
+    }
+    MarkUsed(physical_offset, length);
+    if (fill_value != 0) {
+        std::memset(backing_base + physical_offset, fill_value, length);
+        MarkDirty(physical_offset, length);
+        return;
+    }
+    // Fresh backing memory is zero and the host gives it no RAM until it's touched: clear only
+    // the granules that may hold data (title 1's heap made the host commit every page of it).
+    // A granule cleared in full is zero again.
 #ifdef __linux__
-    const size_t first = AlignUp(physical_offset, PageAlignment);
-    const size_t last = AlignDown(physical_offset + length, PageAlignment);
+    // Handing a whole granule back to the kernel frees its RAM; a memset would commit it.
     static const bool punch = [] {
         const char* value = std::getenv("EDEN_PUNCH_HOLE");
         return value == nullptr || value[0] != '0';
     }();
-    if (punch && fill_value == 0 && impl && last > first && impl->PunchHole(first, last - first)) {
-        std::memset(backing_base + physical_offset, 0, first - physical_offset);
-        std::memset(backing_base + last, 0, physical_offset + length - last);
+#endif
+    const size_t end = physical_offset + length;
+    for (size_t offset = physical_offset; offset < end;) {
+        const size_t index = offset >> GranuleShift;
+        const size_t granule_begin = index << GranuleShift;
+        const size_t granule_end = granule_begin + (size_t{1} << GranuleShift);
+        const size_t clear_end = (std::min)(granule_end, end);
+        if ((granules[index].load(std::memory_order_acquire) & GranuleDirty) != 0) {
+            const bool whole = offset == granule_begin && clear_end == granule_end;
+            bool cleared = false;
+#ifdef __linux__
+            cleared = whole && punch && impl && impl->PunchHole(granule_begin, granule_end - granule_begin);
+#endif
+            if (!cleared) {
+                std::memset(backing_base + offset, 0, clear_end - offset);
+            }
+            if (whole) {
+                granules[index].fetch_and(static_cast<u8>(~GranuleDirty), std::memory_order_release);
+            }
+        }
+        offset = clear_end;
+    }
+}
+
+void HostMemory::MarkUsed(size_t physical_offset, size_t length) {
+    if (length == 0) {
         return;
     }
-#endif
-    std::memset(backing_base + physical_offset, fill_value, length);
+    const size_t last = (physical_offset + length - 1) >> GranuleShift;
+    for (size_t index = physical_offset >> GranuleShift; index <= last; ++index) {
+        if ((granules[index].load(std::memory_order_relaxed) & GranuleUsed) == 0) {
+            granules[index].fetch_or(GranuleUsed, std::memory_order_release);
+        }
+    }
+}
+
+void HostMemory::MarkDirty(size_t physical_offset, size_t length) {
+    if (length == 0) {
+        return;
+    }
+    const size_t last = (physical_offset + length - 1) >> GranuleShift;
+    for (size_t index = physical_offset >> GranuleShift; index <= last; ++index) {
+        granules[index].fetch_or(GranuleDirty, std::memory_order_release);
+    }
+}
+
+void HostMemory::ForgetContents() {
+    for (size_t index = 0; index < num_granules; ++index) {
+        if ((granules[index].load(std::memory_order_relaxed) & GranuleUsed) != 0) {
+            granules[index].fetch_or(GranuleDirty, std::memory_order_release);
+        }
+    }
 }
 
 void HostMemory::EnableDirectMappedAddress() {

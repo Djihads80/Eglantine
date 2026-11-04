@@ -531,6 +531,7 @@ add_library(core STATIC
     hle/service/audio/audio_out.h
     hle/service/audio/audio_renderer_manager.cpp
     hle/service/audio/audio_renderer_manager.h
+    hle/service/audio/nx2_audio_device_manager.h
     hle/service/audio/nx2_audio_user_client.h
     hle/service/audio/audio_renderer.cpp
     hle/service/audio/audio_renderer.h
@@ -1287,6 +1288,11 @@ if (TARGET OpenSSL::SSL)
     target_link_libraries(core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 else()
     target_sources(core PRIVATE hle/service/ssl/ssl_backend_none.cpp)
+endif()
+
+if (ENABLE_LTO AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+    # Fibers can migrate between host threads; keep kernel TLS lookups outside LTO callers.
+    set_source_files_properties(hle/kernel/kernel.cpp PROPERTIES COMPILE_OPTIONS -fno-lto)
 endif()
 
 create_target_directory_groups(core)

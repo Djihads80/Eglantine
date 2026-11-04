@@ -183,6 +183,7 @@ public:
 
 private:
     Common::Event complete_event;
+    std::jthread worker;
 };
 
 void TestCommunication(const std::string& host, u16 port,

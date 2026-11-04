@@ -99,6 +99,8 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out) override;
+    void NoteGpuWrittenCommandListSynced(DAddr page) override;
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
@@ -128,9 +130,18 @@ public:
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                const Tegra::Engines::Fermi2D::Surface& dst,
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
+    bool SupportsGameDlssNetwork() const override;
+    bool UsesNvidiaDlss() const override;
+    bool CanProbeGameDlssOutput() const override {
+        return true;
+    }
+    std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(
+        const Tegra::Engines::Fermi2D::Surface& src,
+        const Tegra::Engines::Fermi2D::Surface& dst) override;
     bool AccelerateTemporalUpscale(const Tegra::Engines::Fermi2D::Surface& src,
                                    const Tegra::Engines::Fermi2D::Surface& dst,
                                    const Tegra::Engines::Fermi2D::Surface& motion_vectors,
+                                   const Tegra::Texture::TICEntry* depth,
                                    std::array<f32, 2> jitter,
                                    std::array<f32, 2> motion_scale) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
@@ -162,8 +173,13 @@ private:
 
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&);
+    bool TryNx2IndirectReset();
 
     void FlushWork();
+
+    /// Records the copies of the command list pages the work just recorded wrote and submits, so
+    /// the GPU makes them now (BufferCache::Nx2CopyListPages).
+    void SubmitNx2ListCopies();
 
     void UpdateDynamicStates();
 
@@ -235,6 +251,7 @@ private:
     boost::container::static_vector<VkSampler, MAX_TEXTURES> sampler_handles;
 
     u32 draw_counter = 0;
+    bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
 };
 
 } // namespace Vulkan
