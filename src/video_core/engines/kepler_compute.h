@@ -246,7 +246,7 @@ public:
     bool IsNativeMode() const { return native_mode; }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
     /// are emulated: in a game DLSS evaluation when the game's own network may draw, elsewhere
-    /// when no upscale stands in for the program.
+    /// when no upscale stands in for the program, and always for Donkey Kong Bananza.
     [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by

@@ -647,8 +647,11 @@ bool KeplerCompute::EmulatesNativeTensorPrograms() const {
     }
     // An upscaling network keeps its upscale stand-in (emulating title 4's takes the host driver
     // minutes to compile). Other programs have none and write nothing when rejected (Donkey Kong
-    // Bananza then shows a purple screen after its mode select), so they are emulated.
-    return !FindUpscaleImages();
+    // Bananza then shows a purple screen after its mode select), so they are emulated, as are all
+    // of Donkey Kong Bananza's: in some dispatches of a third one the pair search matches two
+    // images the copy can't blit, and the screen turned purple again in gameplay.
+    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId || !FindUpscaleImages();
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
