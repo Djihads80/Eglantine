@@ -14,7 +14,8 @@
 #endif
 #include <windows.h>
 #endif
-#include <cstdio>
+#include <cstring>
+#include <string>
 
 #include "common/logging.h"
 #include "common/settings.h"
@@ -43,13 +44,13 @@ void Pause() {
 }
 
 [[maybe_unused]] std::atomic<u32> g_back_thread_id{};
-std::atomic<bool> g_back_busy{};
 
 } // Anonymous namespace
 
 void GpuSplit::CheckOwner(const char* where) {
 #ifdef _WIN32
-    if (!g_back_busy.load(std::memory_order_acquire)) {
+    // Also while the back is idle: its idle hook submits (Scheduler::FlushDeferred).
+    if (!instance.back_running.load(std::memory_order_acquire)) {
         return;
     }
     const DWORD thread = GetCurrentThreadId();
@@ -60,8 +61,7 @@ void GpuSplit::CheckOwner(const char* where) {
     if (reports.fetch_add(1) >= 12) {
         return;
     }
-    std::fprintf(stderr, "GPU split owner check: %s on thread %lu while the back runs\n", where,
-                 thread);
+    std::string stack;
     void* frames[40];
     const USHORT count = RtlCaptureStackBackTrace(1, 40, frames, nullptr);
     for (USHORT i = 0; i < count; ++i) {
@@ -73,11 +73,12 @@ void GpuSplit::CheckOwner(const char* where) {
             GetModuleFileNameA(module, name, sizeof(name));
         }
         const char* base_name = std::strrchr(name, '\\');
-        std::fprintf(stderr, "  frame %s+%#llx\n", base_name ? base_name + 1 : name,
-                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) -
-                                                     reinterpret_cast<uintptr_t>(module)));
+        stack += fmt::format(" {}+{:#x}", base_name ? base_name + 1 : name,
+                             reinterpret_cast<uintptr_t>(frames[i]) -
+                                 reinterpret_cast<uintptr_t>(module));
     }
-    std::fflush(stderr);
+    LOG_ERROR(HW_GPU, "GPU split owner check: {} on thread {} while the back runs; stack:{}",
+              where, thread, stack);
 #else
     (void)where;
 #endif
@@ -140,6 +141,7 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    last_sync_position = 0;
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -197,7 +199,7 @@ void GpuSplit::Publish() {
     }
 }
 
-void GpuSplit::Drain() {
+void GpuSplit::Drain(DrainSite site) {
     if (!active) {
         return;
     }
@@ -208,6 +210,7 @@ void GpuSplit::Drain() {
     Publish();
     hook_requested.store(true, std::memory_order_release);
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
     // from its idle hook afterwards, and the caller may use the scheduler once this returns.
     bool hook_asked = false;
@@ -216,6 +219,7 @@ void GpuSplit::Drain() {
         if (consumed_cache == write_position) {
             if (BackQuiet()) {
                 publish_every = 8;
+                Nx2Profile::AddDrain(site, start);
                 return;
             }
             if (!hook_asked) {
@@ -235,17 +239,26 @@ void GpuSplit::Drain() {
 }
 
 bool GpuSplit::WaitForWriters() {
-    const u64 target = std::min(last_writer_position, write_position);
+    return WaitFor(std::min(last_writer_position, write_position), DrainSite::ListWriters);
+}
+
+bool GpuSplit::WaitForSync() {
+    return WaitFor(std::min(last_sync_position, write_position), DrainSite::ListSync);
+}
+
+bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
         return false;
     }
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
+    const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
             wait_target.store(~u64{0}, std::memory_order_relaxed);
+            Nx2Profile::AddDrain(site, start);
             return true;
         }
         if (spins < 16384) {

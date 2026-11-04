@@ -103,9 +103,13 @@ public:
         Unknown, ///< Neither: the caller drains, flushes the page and notes it synced
         Copied,  ///< `out` (within one 4 KiB page) is filled from the copy made after its writer
         Synced,  ///< Guest memory holds the page: no GPU work wrote it since it was flushed
+        /// Draws write the page: ask again with `past_sync` once the split's back ran the work
+        /// before the last host-level wait (GpuSplit::WaitForSync)
+        NeedsSync,
     };
     virtual GpuWrittenList ReadGpuWrittenCommandList([[maybe_unused]] DAddr addr,
-                                                     [[maybe_unused]] std::span<u8> out) {
+                                                     [[maybe_unused]] std::span<u8> out,
+                                                     [[maybe_unused]] bool past_sync) {
         return GpuWrittenList::Unknown;
     }
 

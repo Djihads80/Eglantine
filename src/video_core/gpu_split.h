@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <functional>
@@ -21,6 +22,31 @@ class EngineInterface;
 }
 
 namespace VideoCommon {
+
+/// Why the split's front waited for its back (EDEN_NX2_GPU_PROFILE counts each).
+enum class DrainSite : u32 {
+    Other,
+    FetchDrain,     ///< EDEN_NX2_FETCH_DRAIN: before every entry
+    Acquire,        ///< A semaphore acquire reads the value the back may release
+    SemaphoreFlush, ///< The acquired semaphore is in the buffer cache
+    FenceRelease,   ///< The puller's acquires release the pending fences
+    ListWriters,    ///< GPU-written command lists: the dispatches and copies sent before them
+    ListSync,       ///< Command lists on draw-written pages: the work before the last host sync
+    ListFlush,      ///< Command lists on GPU-written pages: drain and flush the pages
+    MacroDmaRead,   ///< The front's macros read memory (MME DMA)
+    MacroDmaFlush,  ///< Those words are in the buffer cache
+    GpSyncFence,    ///< A GP entry's sync bit (sync_memory_operations)
+    Map,            ///< GPU memory maps before later command reads
+    FrontStart,     ///< The front takes an engine's macros over
+    FrontVerify,    ///< EDEN_NX2_FRONT_VERIFY
+    Count,
+};
+
+inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> drain_site_names{
+    "other",       "fetch drain",     "acquire",    "semaphore flush", "fence release",
+    "list writers", "list sync",      "list flush", "macro dma read",  "macro dma flush",
+    "gp sync fence", "map",           "front start", "front verify",
+};
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
 // CPU's commands, parses command lists and runs the puller; engine method calls and everything
@@ -121,13 +147,13 @@ public:
     /// cache download that records into the Vulkan scheduler. A drained back still submits from
     /// its idle hook, so the front never touches that state itself.
     template <typename Func>
-    void Run(const Func& func) {
+    void Run(const Func& func, DrainSite site = DrainSite::Other) {
         if (on_back_thread || !active) {
             func();
             return;
         }
         Defer(func);
-        Drain();
+        Drain(site);
     }
 
     /// EDEN_NX2_SPLIT_CHECK=1 (debug): reports, with its stack, a thread other than the back
@@ -138,7 +164,7 @@ public:
     /// Makes what was sent visible to the back.
     void Publish();
     /// Waits until the back executed everything sent so far.
-    void Drain();
+    void Drain(DrainSite site = DrainSite::Other);
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
@@ -147,6 +173,15 @@ public:
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
     bool WaitForWriters();
+    /// A host-level wait was just sent (a syncpoint acquire, a host WFI, a GP entry with its sync
+    /// bit; semaphore acquires drain): the guest's GPU work before it is complete before the
+    /// commands after it are fetched.
+    void NoteSync() {
+        last_sync_position = write_position;
+    }
+    /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
+    /// of it was still queued.
+    bool WaitForSync();
 
 private:
     enum class Kind : u64 {
@@ -193,6 +228,7 @@ private:
         }
     }
     void SwitchEngine(Tegra::Engines::EngineInterface* engine);
+    bool WaitFor(u64 target, DrainSite site);
 
     void BackLoop(std::stop_token stop_token);
     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
@@ -206,6 +242,7 @@ private:
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    u64 last_sync_position{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.
@@ -235,7 +272,7 @@ private:
     // always touched together by both threads, so they share a block.
     alignas(128) std::atomic<u64> published{};
     alignas(128) std::atomic<u64> consumed{};
-    /// A position the front waits for (WaitForWriters): the back stores `consumed` once past it.
+    /// A position the front waits for (WaitFor): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<u32> wake{};

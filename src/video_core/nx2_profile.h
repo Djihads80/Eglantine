@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include "common/common_types.h"
+#include "video_core/gpu_split.h"
 #include "common/logging.h"
 #include "common/cpu_features.h"
 
@@ -81,6 +82,8 @@ struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_ns{};
+    std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_count{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -145,6 +148,15 @@ inline void Add(Counter counter, u64 amount) {
     }
 }
 
+/// The front waited for the back since `start` (Now) for `site`.
+inline void AddDrain(DrainSite site, u64 start) {
+    if (Enabled()) {
+        const auto index = static_cast<size_t>(site);
+        t_data.drain_ns[index] += Now() - start;
+        ++t_data.drain_count[index];
+    }
+}
+
 /// Called by the GPU thread (and the split's back thread) between commands: logs and resets
 /// the totals every 10 s.
 inline void Report(const char* thread_name = "GPU thread") {
@@ -190,6 +202,18 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    std::string drains;
+    for (size_t i = 0; i < data.drain_count.size(); ++i) {
+        if (data.drain_count[i] != 0) {
+            drains += fmt::format(" {} {:.1f} ms ({:.0f}/s),", drain_site_names[i],
+                                  static_cast<double>(data.drain_ns[i]) * 1000.0 / window,
+                                  static_cast<double>(data.drain_count[i]) * 1e9 / window);
+        }
+    }
+    if (!drains.empty()) {
+        drains.pop_back();
+        line += " | waits for the back by site:" + drains;
+    }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

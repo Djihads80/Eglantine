@@ -23,6 +23,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
@@ -1136,7 +1137,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
     if (!front) [[unlikely]] {
         // Copy the back's state and take the macros over while it is idle (state writes it
         // still holds in its method sink first).
-        split.Drain();
+        split.Drain(VideoCommon::DrainSite::FrontStart);
         ConsumeSink(system);
         front = std::make_unique<FrontState>();
         std::memcpy(front->regs.data(), regs.reg_array.data(), sizeof(front->regs));
@@ -1407,19 +1408,27 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);
     const size_t read_bytes = size_t{words} * sizeof(u32);
+    std::vector<u32> diag_before;
+    if (Tegra::Nx2CmdPageDiag::g_enabled) {
+        diag_before.resize(words);
+        memory_manager.ReadBlockUnsafe(source, diag_before.data(), read_bytes);
+    }
+    split.Drain(VideoCommon::DrainSite::MacroDmaRead);
     if (VideoCommon::Nx2Profile::Enabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
     if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-        split.Run([memory = &memory_manager, source, read_bytes] {
-            memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
-        });
+        split.Run(
+            [memory = &memory_manager, source, read_bytes] {
+                memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+            },
+            VideoCommon::DrainSite::MacroDmaFlush);
     }
+    u32 changed{};
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
         if (method == 0x158) {
@@ -1427,11 +1436,22 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         } else if (ram + i < native_data_ram.size()) {
             native_data_ram[ram + i] = word;
         }
+        if (!diag_before.empty() && diag_before[i] != word) {
+            ++changed;
+        }
+    }
+    if (Tegra::Nx2CmdPageDiag::g_enabled) {
+        bool gpu_written = false;
+        for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes; page += 0x1000) {
+            const auto device = memory_manager.GpuToCpuAddress(page);
+            gpu_written |= device && Tegra::Nx2IsGpuWritten(*device);
+        }
+        Tegra::Nx2CmdPageDiag::RecordDmaRead(source, words, changed, gpu_written);
     }
 }
 
 void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
-    split.Drain();
+    split.Drain(VideoCommon::DrainSite::FrontVerify);
     static u64 checks{};
     static u64 differences{};
     ++checks;

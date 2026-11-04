@@ -23,6 +23,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -119,6 +120,15 @@ bool DmaPusher::Step() {
     }
 
     if (header.size > 0) {
+        if (header.sync && g_nx2_ampere.load(std::memory_order_relaxed)) {
+            VideoCommon::GpuSplit::Get().NoteSync();
+        }
+        // EDEN_NX2_FETCH_DRAIN=1: wait for the back before every entry, as before the split
+        // overlapped the two halves again.
+        static const bool fetch_drain = std::getenv("EDEN_NX2_FETCH_DRAIN") != nullptr;
+        if (fetch_drain && g_nx2_ampere.load(std::memory_order_relaxed)) {
+            VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::FetchDrain);
+        }
         if (subchannels[dma_state.subchannel] && dma_state.method_count) {
             const auto engine = subchannel_type[dma_state.subchannel];
             const bool kepler_payload = engine == Engines::EngineTypes::KeplerCompute && dma_state.method == ComputeInline && dma_state.non_incrementing;
@@ -203,17 +213,20 @@ bool DmaPusher::Step() {
             if (command_resume_offset == 0) {
                 RecordParsedEntry(header, commands);
             }
+            Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Submitted);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
+            Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Safe);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
+            Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Copy);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
@@ -221,6 +234,7 @@ bool DmaPusher::Step() {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
+            Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Slow);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         }
@@ -262,7 +276,7 @@ bool DmaPusher::Step() {
                 synced = true;
                 sync_cv.notify_all();
             });
-        });
+        }, VideoCommon::DrainSite::GpSyncFence);
     }
 
     return true;
@@ -611,9 +625,11 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     if (!written) {
         return false;
     }
-    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (split.Active()) {
         split.WaitForWriters();
     }
+    bool past_sync = !split.Active();
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
     command_headers.resize_destructive(count);
     u8* const out = reinterpret_cast<u8*>(command_headers.data());
@@ -626,7 +642,39 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         }
         GpuWrittenList where = GpuWrittenList::Synced;
         if (Tegra::Nx2IsGpuWritten(*device)) {
-            where = rasterizer->ReadGpuWrittenCommandList(*device, part);
+            where = rasterizer->ReadGpuWrittenCommandList(*device, part, past_sync);
+            if (where == GpuWrittenList::NeedsSync) {
+                const auto wait_start = Nx2CmdPageDiag::g_enabled
+                                            ? std::chrono::steady_clock::now()
+                                            : std::chrono::steady_clock::time_point{};
+                const bool waited = split.WaitForSync();
+                if (Nx2CmdPageDiag::g_enabled && waited) {
+                    Nx2CmdPageDiag::NoteSyncWait(std::chrono::steady_clock::now() - wait_start);
+                }
+                past_sync = true;
+                where = rasterizer->ReadGpuWrittenCommandList(*device, part, true);
+            }
+            if (Nx2CmdPageDiag::g_enabled) {
+                auto& diag = Nx2CmdPageDiag::Get();
+                const u64 page = *device & ~u64{0xfff};
+                if (where == GpuWrittenList::Copied) {
+                    diag.reads_copied.fetch_add(1, std::memory_order_relaxed);
+                } else if (where == GpuWrittenList::Synced) {
+                    diag.reads_synced.fetch_add(1, std::memory_order_relaxed);
+                    if (split.Active() && Nx2CmdPageDiag::IsDrawPage(page)) {
+                        // The back, at this list's place: did work sent before it write the page?
+                        split.Defer([page, begin = static_cast<u32>(*device - page),
+                                     end = static_cast<u32>(*device - page + part.size())] {
+                            Nx2CmdPageDiag::CheckMissedWrite(page, begin, end);
+                        });
+                    }
+                } else {
+                    diag.reads_unknown.fetch_add(1, std::memory_order_relaxed);
+                    if (Nx2CmdPageDiag::IsDrawPage(page)) {
+                        diag.reads_unknown_draw.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
         }
         if (where == GpuWrittenList::Unknown) {
             return false;
@@ -651,17 +699,60 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain();
+    const bool diag = Nx2CmdPageDiag::g_enabled;
+    const auto diag_start =
+        diag ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    std::vector<u32> diag_before;
+    if (diag) {
+        diag_before.resize(size / sizeof(u32));
+        memory_manager.ReadBlockUnsafe(address, diag_before.data(), diag_before.size() * sizeof(u32));
+    }
+    VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::ListFlush);
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
-    if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
-                                     VideoCommon::CacheType::BufferCache)) {
+    const bool dirty = memory_manager.IsMemoryDirty(first_page, end_page - first_page,
+                                                    VideoCommon::CacheType::BufferCache);
+    if (dirty) {
         // The download records into the Vulkan scheduler, which the split's back owns: a drained
         // back still submits from its idle hook, so the front must not flush these pages itself.
         VideoCommon::GpuSplit::Get().Run(
             [memory = &memory_manager, first_page, size = end_page - first_page] {
                 memory->FlushRegion(first_page, size, VideoCommon::CacheType::BufferCache);
-            });
+            },
+            VideoCommon::DrainSite::ListFlush);
+    }
+    if (diag) {
+        auto kind = Nx2CmdPageDiag::Kind::NoWrite;
+        Nx2CmdPageDiag::PageView first_view;
+        u64 first_device{};
+        for (GPUVAddr page = first_page; page < end_page; page += 0x1000) {
+            const auto device = memory_manager.GpuToCpuAddress(page);
+            if (!device) {
+                continue;
+            }
+            const u32 begin = static_cast<u32>((std::max)(address, page) - page);
+            const u32 end = static_cast<u32>((std::min)(address + size, page + 0x1000) - page);
+            const auto view = Nx2CmdPageDiag::TakePage(*device, begin, end);
+            if (page == first_page) {
+                first_view = view;
+                first_device = *device;
+            }
+            kind = (std::max)(kind, view.kind);
+        }
+        std::vector<u32> after(diag_before.size());
+        memory_manager.ReadBlockUnsafe(address, after.data(), after.size() * sizeof(u32));
+        u64 changed{};
+        for (size_t i = 0; i < after.size(); ++i) {
+            changed += after[i] != diag_before[i] ? 1 : 0;
+        }
+        const u64 ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::steady_clock::now() - diag_start)
+                                            .count());
+        Nx2CmdPageDiag::RecordSlow(kind, changed, dirty, ns, address, first_device,
+                                   static_cast<u32>(address - first_page),
+                                   static_cast<u32>((std::min)(address + size, first_page + 0x1000) -
+                                                    first_page),
+                                   first_view);
     }
     if (rasterizer == nullptr) {
         return;
