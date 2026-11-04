@@ -619,12 +619,14 @@ void PollThreadPolicies() {
 }
 
 #ifdef _WIN32
+/// @brief Closes the Windows wake handle; all waiters must have finished before destruction.
 Event::~Event() {
     if (timed_wait_event) {
         CloseHandle(timed_wait_event);
     }
 }
 
+/// @brief Signals the Windows wake handle if allocated. The caller must hold mutex.
 void Event::WakeTimedWaiters() {
     if (timed_wait_event) {
         SetEvent(timed_wait_event);
@@ -632,6 +634,11 @@ void Event::WakeTimedWaiters() {
 }
 #endif
 
+/**
+ * @brief Waits for and consumes a signal, returning false on timeout.
+ * Windows uses a per-thread timer and shared wake event, with blocking fallbacks.
+ * An existing signal is consumed even when time is zero or negative.
+ */
 bool Event::WaitFor(const std::chrono::nanoseconds time) {
     std::unique_lock lk{mutex};
 #ifdef _WIN32
@@ -648,6 +655,7 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
         // Each waiting host thread owns its timer, so concurrent waits cannot rearm
         // each other's deadlines. Reuse the handle across the host timing loop.
         struct Timer {
+            /// @brief Creates a high-resolution timer, falling back to a regular timer.
             Timer() {
                 handle = CreateWaitableTimerExW(nullptr, nullptr,
                     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -656,6 +664,7 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
                                                    TIMER_MODIFY_STATE | SYNCHRONIZE);
                 }
             }
+            /// @brief Closes the allocated timer when this host thread exits.
             ~Timer() {
                 if (handle) {
                     CloseHandle(handle);

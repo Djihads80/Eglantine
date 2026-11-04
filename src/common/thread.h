@@ -23,6 +23,7 @@ public:
 #ifdef _WIN32
     ~Event();
 #endif
+    /// @brief Sets a pending signal and notifies waiters; repeated sets coalesce until consumed.
     void Set() {
         std::scoped_lock lk{mutex};
         if (!is_set) {
@@ -40,6 +41,11 @@ public:
         is_set = false;
     }
 
+    /**
+     * @brief Waits for a signal and consumes it on success.
+     * @param time Relative timeout; non-positive values only consume an existing signal.
+     * @return True if a signal was consumed, or false if the wait timed out.
+     */
     bool WaitFor(const std::chrono::nanoseconds time);
 
     template<class Clock, class Duration>
