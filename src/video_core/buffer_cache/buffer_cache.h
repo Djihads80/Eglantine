@@ -1211,7 +1211,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
             // EDEN_NX2_UBOREUSE=0 turns it off.
             if (VideoCommon::UniformStreamReuseEnabled()) {
-                Nx2Profile::Scope scope{Nx2Profile::Zone::UboReuse};
+                Nx2Profile::SampledScope<3> scope{Nx2Profile::Zone::UboReuse};
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
                 if (streamed) {
@@ -1220,7 +1220,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             }
         }
         if (!streamed) {
-            Nx2Profile::Scope scope{Nx2Profile::Zone::UboCopy};
+            Nx2Profile::SampledScope<3> scope{Nx2Profile::Zone::UboCopy};
             Nx2Profile::Add(Nx2Profile::Counter::UboCopyBytes, size);
             const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
             device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
@@ -1228,7 +1228,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         return;
     }
     // Classic cached path
-    Nx2Profile::Scope cached_scope{Nx2Profile::Zone::UboCached};
+    Nx2Profile::SampledScope<3> cached_scope{Nx2Profile::Zone::UboCached};
     if (SynchronizeBuffer(buffer, device_addr, size)) {
         ++channel_state->uniform_cache_hits[0];
     }
