@@ -23,6 +23,12 @@ EDEN_NX2_FENCE_BATCH=1
 #EDEN_NX2_FRAMES_AHEAD=2
 
 # --- Workarounds / Debug ---
+
+# Star Fox: opt into a 30-60 FPS output interval without accelerating the guest clock.
+# Only the tested main build A7730D0F74D168D90422354C8317F76FF78AD938 is patched.
+# 60 FPS was tested locally; other levels and updates still need verification.
+#EDEN_STARFOX_OUTPUT_FPS=60
+
 # Terrain/indirect drawing fix for Donkey Kong Bananza: enabled by default. Set to 0 only to leave to GPU.
 #EDEN_NX2_RESETFIX=0
 
