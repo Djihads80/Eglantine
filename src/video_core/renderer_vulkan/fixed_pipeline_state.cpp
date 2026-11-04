@@ -124,7 +124,8 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     tessellation_spacing.Assign(static_cast<u32>(regs.tessellation.params.spacing.Value()));
     tessellation_clockwise.Assign(regs.tessellation.params.output_primitives.Value() ==
                                   Maxwell::Tessellation::OutputPrimitives::Triangles_CW);
-    patch_control_points_minus_one.Assign(regs.patch_vertices - 1);
+    // The field holds 1..32 points; an unset (0) or oversized register would wrap or truncate.
+    patch_control_points_minus_one.Assign(std::clamp<u32>(regs.patch_vertices, 1, 32) - 1);
     const bool can_collapse_topology_class =
         features.has_extended_dynamic_state && features.has_extended_dynamic_state_2;
     topology.Assign(can_collapse_topology_class
