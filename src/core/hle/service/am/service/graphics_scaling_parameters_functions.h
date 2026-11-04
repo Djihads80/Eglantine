@@ -21,6 +21,7 @@ public:
         // clang-format off
         static const FunctionInfo functions[] = {
             {10, D<&IGraphicsScalingParametersFunctions::GetGraphicsScalingParameters>, "GetGraphicsScalingParameters"},
+            {1050, D<&IGraphicsScalingParametersFunctions::SetGraphicsScaleChangedNotificationEnabled>, "SetGraphicsScaleChangedNotificationEnabled"},
         };
         // clang-format on
         RegisterHandlers(functions);
@@ -35,6 +36,13 @@ private:
         *out_scale = 10;
         *out_unknown1 = 0;
         *out_unknown2 = 0;
+        R_SUCCEED();
+    }
+
+    // 1050(bool): every title calls it at boot. The scale never changes here, so there is never a
+    // change message to send either way.
+    Result SetGraphicsScaleChangedNotificationEnabled(bool enabled) {
+        LOG_DEBUG(Service_AM, "called, enabled={}", enabled);
         R_SUCCEED();
     }
 };
