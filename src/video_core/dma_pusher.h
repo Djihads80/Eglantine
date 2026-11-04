@@ -123,6 +123,9 @@ struct CommandList final {
     /// executed instead of the memory, which the game may already be refilling for a later frame.
     std::vector<CommandHeader> submitted_words;
     std::vector<u32> submitted_offsets;
+    /// Entries (ascending) not copied when submitted, because a GPU map still queued covers them:
+    /// DmaPusher::Push copies them after the map, and until then they read memory.
+    std::vector<u32> deferred_entries;
     /// DmaPusher::suspensions when the words were copied. A list copied during a suspension, or
     /// that waited behind one, reads memory instead: games write the commands it runs before they
     /// release the acquire.
@@ -155,9 +158,13 @@ public:
     void Push(CommandList&& entries) {
         // Copied during a suspension, or behind one: copy again now, unless still suspended.
         const u64 now = suspensions.load(std::memory_order_acquire);
-        if (ResnapshotEnabled() && !entries.submitted_offsets.empty() && (now & 1) == 0 &&
-            entries.snapshot_suspensions != now) {
-            RefreshSnapshot(entries, now);
+        if (!entries.submitted_offsets.empty() && (now & 1) == 0) {
+            if (ResnapshotEnabled() && entries.snapshot_suspensions != now) {
+                RefreshSnapshot(entries, now);
+            } else if (!entries.deferred_entries.empty()) {
+                // Behind a GPU map when submitted: the map has run by now (GPU::MapInOrder).
+                RefreshDeferredEntries(entries);
+            }
         }
         dma_pushbuffer.push_back(std::move(entries));
     }
@@ -206,6 +213,8 @@ public:
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Copies the list's words from memory again, as of suspension count `now`.
     void RefreshSnapshot(CommandList& list, u64 now);
+    /// Copies the list's deferred entries (CommandList::deferred_entries) from memory.
+    void RefreshDeferredEntries(CommandList& list);
 
     /// EDEN_NX2_RESNAPSHOT=0 turns snapshot refreshes off.
     static bool ResnapshotEnabled() {

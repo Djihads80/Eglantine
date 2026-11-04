@@ -4,13 +4,16 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include "common/assert.h"
 #include "common/settings.h"
@@ -210,14 +213,32 @@ struct GPU::Impl {
         gpu_thread.Run(std::move(func), is_async);
     }
 
-    void MapInOrder(std::function<void()>&& func) {
-        pending_maps.fetch_add(1, std::memory_order_acq_rel);
+    void MapInOrder(GPUVAddr gpu_addr, u64 size, std::function<void()>&& func) {
+        u64 id;
+        {
+            std::scoped_lock lock{pending_maps_mutex};
+            id = ++last_pending_map;
+            pending_maps.push_back({id, gpu_addr, gpu_addr + size});
+            pending_map_count.store(pending_maps.size(), std::memory_order_release);
+        }
         gpu_thread.Run(
-            [this, func = std::move(func)] {
+            [this, id, func = std::move(func)] {
                 func();
-                pending_maps.fetch_sub(1, std::memory_order_release);
+                std::scoped_lock lock{pending_maps_mutex};
+                std::erase_if(pending_maps, [id](const PendingMap& map) { return map.id == id; });
+                pending_map_count.store(pending_maps.size(), std::memory_order_release);
             },
             is_async, true);
+    }
+
+    bool IsMapPending(GPUVAddr gpu_addr, u64 size) const {
+        if (pending_map_count.load(std::memory_order_acquire) == 0 || size == 0) {
+            return false;
+        }
+        std::scoped_lock lock{pending_maps_mutex};
+        return std::ranges::any_of(pending_maps, [&](const PendingMap& map) {
+            return gpu_addr < map.end && map.begin < gpu_addr + size;
+        });
     }
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
@@ -363,8 +384,18 @@ struct GPU::Impl {
 
     std::list<std::function<void()>> sync_requests;
     std::atomic<u64> current_sync_fence{};
-    std::atomic<u64> pending_maps{};
     u64 last_sync_fence{};
+
+    // Maps queued by MapInOrder and not run yet, by the GPU addresses they change.
+    struct PendingMap {
+        u64 id;
+        GPUVAddr begin;
+        GPUVAddr end;
+    };
+    mutable std::mutex pending_maps_mutex;
+    std::vector<PendingMap> pending_maps;
+    u64 last_pending_map{};
+    std::atomic<size_t> pending_map_count{};
     std::mutex sync_request_mutex;
     std::condition_variable sync_request_cv;
 
@@ -566,12 +597,12 @@ void GPU::RunInOrder(std::function<void()>&& func) {
     impl->RunInOrder(std::move(func));
 }
 
-void GPU::MapInOrder(std::function<void()>&& func) {
-    impl->MapInOrder(std::move(func));
+void GPU::MapInOrder(GPUVAddr gpu_addr, u64 size, std::function<void()>&& func) {
+    impl->MapInOrder(gpu_addr, size, std::move(func));
 }
 
-bool GPU::MapsPending() const {
-    return impl->pending_maps.load(std::memory_order_acquire) != 0;
+bool GPU::IsMapPending(GPUVAddr gpu_addr, u64 size) const {
+    return impl->IsMapPending(gpu_addr, size);
 }
 
 void GPU::InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
