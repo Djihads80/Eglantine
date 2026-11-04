@@ -550,11 +550,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             auto a = half_source(0);
             auto b = half_source(1);
             const auto c = half_source(2);
-            if (insn.Bits(86, 1)) { // H0_NH1: negate only the upper packed component.
+            if (insn.Bits(86, 1)) {
                 if (b.swizzle != 0 || b.absolute || b.reg >= 250)
                     return fail(index, "native half mixed-sign source mode");
-                emit(0x0400000000000000ULL | predicate | 251 | (u64{b.reg} << 8) |
-                     (u64{0x80000000} << 20) | (u64{2} << 53));
+
+                // H0_NH1 swaps the FP16 halves and negates the new low half.
+                emit(0x36f8000000000000ULL | predicate | 251 | (u64{b.reg} << 8) |
+                     (u64{16} << 20) | (u64{b.reg} << 39));
+                emit(0x0400000000000000ULL | predicate | 251 | (u64{251} << 8) |
+                     (u64{0x8000} << 20) | (u64{2} << 53));
                 b.reg = 251;
             }
             if (b.absolute || c.absolute || (a.absolute && a.reg >= 248))
