@@ -137,10 +137,21 @@ jobs:
           if [ "$KIND" = daily ] || [ "$KIND" = branch ]; then
             gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
           fi
+          # Check if the release already exists before our attempt to avoid overwriting or deleting
+          # a concurrent release created by an external publisher.
+          exists_before=false
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+            exists_before=true
+          fi
           flags=(--repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TITLE" --notes-file notes.md)
           if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
-          # If release creation fails, remove any left-behind Git tag to allow safe retries.
+          # If release creation fails, remove any left-behind Git tag to allow safe retries,
+          # but only if the release wasn't already present before our attempt.
           if ! gh release create "$TAG" release-assets/* "${flags[@]}"; then
+            if [ "$exists_before" = "true" ]; then
+              echo "Release $TAG already existed before this attempt; leaving existing release intact." >&2
+              exit 1
+            fi
             echo "Release creation failed; cleaning up tag $TAG..." >&2
             gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
             git push origin --delete "refs/tags/$TAG" 2> /dev/null || true
