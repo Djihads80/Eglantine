@@ -1,0 +1,91 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460 core
+
+// Health check of a game's own DLSS network: one workgroup per block of a coarse grid (the
+// dispatch size) takes the mean brightness of the network's input and of its output over the
+// block, and counts output samples that are NaN or infinite. A working upscaler keeps each
+// block's brightness; a frozen or corrupted network does not.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D input_image;
+layout(binding = 1) uniform sampler2D output_image;
+
+// Per block: input mean, output mean (finite samples only), non-finite output samples, unused.
+layout(binding = 2, std430) writeonly buffer Results {
+    vec4 blocks[];
+};
+
+shared float input_sums[64];
+shared float output_sums[64];
+shared uint invalid_samples;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+bool IsFinite(vec3 value) {
+    const uvec3 exponent = floatBitsToUint(value) & 0x7f800000u;
+    return all(notEqual(exponent, uvec3(0x7f800000u)));
+}
+
+void main() {
+    const uint thread = gl_LocalInvocationIndex;
+    if (thread == 0) {
+        invalid_samples = 0;
+    }
+    barrier();
+
+    const ivec2 grid = ivec2(gl_NumWorkGroups.xy);
+    const ivec2 block = ivec2(gl_WorkGroupID.xy);
+    const ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    const ivec2 input_size = textureSize(input_image, 0);
+    const ivec2 output_size = textureSize(output_image, 0);
+    const ivec2 input_begin = block * input_size / grid;
+    const ivec2 input_end = (block + 1) * input_size / grid;
+    const ivec2 output_begin = block * output_size / grid;
+    const ivec2 output_end = (block + 1) * output_size / grid;
+
+    // Every input texel; every second output texel in each direction.
+    float input_sum = 0.0;
+    for (int y = input_begin.y + local.y; y < input_end.y; y += 8) {
+        for (int x = input_begin.x + local.x; x < input_end.x; x += 8) {
+            input_sum += dot(texelFetch(input_image, ivec2(x, y), 0).rgb, LUMA);
+        }
+    }
+    float output_sum = 0.0;
+    uint invalid = 0;
+    for (int y = output_begin.y + local.y * 2; y < output_end.y; y += 16) {
+        for (int x = output_begin.x + local.x * 2; x < output_end.x; x += 16) {
+            const vec3 color = texelFetch(output_image, ivec2(x, y), 0).rgb;
+            if (IsFinite(color)) {
+                output_sum += dot(color, LUMA);
+            } else {
+                ++invalid;
+            }
+        }
+    }
+    input_sums[thread] = input_sum;
+    output_sums[thread] = output_sum;
+    if (invalid != 0) {
+        atomicAdd(invalid_samples, invalid);
+    }
+    barrier();
+    for (uint stride = 32; stride > 0; stride >>= 1) {
+        if (thread < stride) {
+            input_sums[thread] += input_sums[thread + stride];
+            output_sums[thread] += output_sums[thread + stride];
+        }
+        barrier();
+    }
+    if (thread == 0) {
+        const ivec2 input_extent = input_end - input_begin;
+        const ivec2 output_extent = (output_end - output_begin + 1) / 2;
+        const float input_count = float(max(input_extent.x * input_extent.y, 1));
+        const float output_count =
+            float(max(output_extent.x * output_extent.y - int(invalid_samples), 1));
+        blocks[block.y * grid.x + block.x] = vec4(input_sums[0] / input_count,
+                                                  output_sums[0] / output_count,
+                                                  float(invalid_samples), 0.0);
+    }
+}

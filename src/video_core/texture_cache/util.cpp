@@ -929,6 +929,346 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
     return copies;
 }
 
+namespace {
+// One level of a single-layer 2D block-linear image of 1x1-texel blocks, laid out as
+// UnswizzleImage reads it: rows of blocks, each block one GOB wide and 2^block_height GOBs tall.
+struct BlockLinearLevel {
+    u32 offset;         ///< Into the image
+    u32 width;          ///< Texels
+    u32 height;
+    u32 block_height;   ///< Log2 of the GOBs a block is tall
+    u32 block_texels;   ///< Texels across a block
+    u32 block_rows;     ///< Texel rows in a block
+    u32 block_bytes;
+    u32 blocks_per_row;
+};
+
+std::vector<BlockLinearLevel> BlockLinearLevels(const ImageInfo& info) {
+    const LevelInfo level_info = MakeLevelInfo(info);
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
+    std::vector<BlockLinearLevel> levels;
+    u32 offset = 0;
+    for (s32 level = 0; level < info.resources.levels; ++level) {
+        const Extent3D level_size = AdjustMipSize(info.size, level);
+        const Extent3D num_tiles = AdjustTileSize(level_size, level_info.tile_size);
+        const Extent3D block =
+            AdjustMipBlockSize(num_tiles, level_info.block, level, level_info.num_levels);
+        const u32 stride_alignment = StrideAlignment(num_tiles, info.block, gob, bpp_log2);
+        const u32 stride = Common::AlignUpLog2(num_tiles.width, stride_alignment) << bpp_log2;
+        levels.push_back({
+            .offset = offset,
+            .width = level_size.width,
+            .height = level_size.height,
+            .block_height = block.height,
+            .block_texels = GOB_SIZE_X >> bpp_log2,
+            .block_rows = GOB_SIZE_Y << block.height,
+            .block_bytes = GOB_SIZE << block.height,
+            .blocks_per_row = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT),
+        });
+        offset += CalculateLevelSize(level_info, level);
+    }
+    return levels;
+}
+
+// Rows of blocks a rectangle covers, and its blocks across.
+struct RectBlocks {
+    u32 first_row;
+    u32 last_row;
+    u32 first_block;
+    u32 num_blocks;
+};
+
+RectBlocks BlocksOf(const BlockLinearLevel& level, const LevelRect& rect) {
+    const u32 first_block = rect.x / level.block_texels;
+    return {
+        .first_row = rect.y / level.block_rows,
+        .last_row = (rect.y + rect.height - 1) / level.block_rows,
+        .first_block = first_block,
+        .num_blocks = (std::min)(Common::DivCeil(rect.width, level.block_texels),
+                                 level.blocks_per_row - first_block),
+    };
+}
+
+u32 BlockRowTexelRows(const BlockLinearLevel& level, u32 row) {
+    return (std::min)(level.block_rows, level.height - row * level.block_rows);
+}
+} // Anonymous namespace
+
+std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
+                                       std::span<const std::pair<u64, u64>> ranges, u32 tile_width,
+                                       u32 tile_height, s32 tail_level) {
+    std::vector<LevelRect> rects;
+    const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
+    const u64 image_end = CalculateLevelBytes(
+        CalculateLevelSizes(MakeLevelInfo(info), info.resources.levels), info.resources.levels);
+    for (s32 index = 0; index < static_cast<s32>(levels.size()); ++index) {
+        const BlockLinearLevel& level = levels[index];
+        const u64 level_end =
+            index + 1 < static_cast<s32>(levels.size()) ? levels[index + 1].offset : image_end;
+        const auto overlaps = [&](const std::pair<u64, u64>& range) {
+            return range.first < level_end && range.first + range.second > level.offset;
+        };
+        if (index >= tail_level) {
+            if (std::ranges::any_of(ranges, overlaps)) {
+                rects.push_back({index, 0, 0, level.width, level.height});
+            }
+            continue;
+        }
+        const u32 tiles_x = Common::DivCeil(level.width, tile_width);
+        const u32 tiles_y = Common::DivCeil(level.height, tile_height);
+        std::vector<bool> touched(size_t{tiles_x} * tiles_y);
+        for (const auto& range : ranges) {
+            if (!overlaps(range)) {
+                continue;
+            }
+            const u64 begin = (std::max<u64>)(range.first, level.offset) - level.offset;
+            const u64 end = (std::min<u64>)(range.first + range.second, level_end) - level.offset;
+            const u64 first = begin / level.block_bytes;
+            const u64 last = (end - 1) / level.block_bytes;
+            for (u64 row = first / level.blocks_per_row; row <= last / level.blocks_per_row; ++row) {
+                const u64 row_start = row * level.blocks_per_row;
+                const u64 low = (std::max)(first, row_start) - row_start;
+                const u64 high = (std::min)(last, row_start + level.blocks_per_row - 1) - row_start;
+                const u64 x0 = low * level.block_texels;
+                const u64 y0 = row * level.block_rows;
+                if (x0 >= level.width || y0 >= level.height) {
+                    continue;
+                }
+                const u64 x1 = (std::min<u64>)((high + 1) * level.block_texels, level.width);
+                const u64 y1 = (std::min<u64>)(y0 + level.block_rows, level.height);
+                for (u64 ty = y0 / tile_height; ty <= (y1 - 1) / tile_height; ++ty) {
+                    for (u64 tx = x0 / tile_width; tx <= (x1 - 1) / tile_width; ++tx) {
+                        touched[ty * tiles_x + tx] = true;
+                    }
+                }
+            }
+        }
+        for (u32 ty = 0; ty < tiles_y; ++ty) {
+            for (u32 tx = 0; tx < tiles_x;) {
+                if (!touched[size_t{ty} * tiles_x + tx]) {
+                    ++tx;
+                    continue;
+                }
+                const u32 first_tile = tx;
+                while (tx < tiles_x && touched[size_t{ty} * tiles_x + tx]) {
+                    ++tx;
+                }
+                const u32 x = first_tile * tile_width;
+                const u32 y = ty * tile_height;
+                rects.push_back({
+                    .level = index,
+                    .x = x,
+                    .y = y,
+                    .width = (std::min)(tx * tile_width, level.width) - x,
+                    .height = (std::min)(y + tile_height, level.height) - y,
+                });
+            }
+        }
+    }
+    return rects;
+}
+
+size_t UnswizzledRectsBytes(const ImageInfo& info, std::span<const LevelRect> rects) {
+    const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    size_t bytes = 0;
+    for (const LevelRect& rect : rects) {
+        const BlockLinearLevel& level = levels[rect.level];
+        const RectBlocks blocks = BlocksOf(level, rect);
+        for (u32 row = blocks.first_row; row <= blocks.last_row; ++row) {
+            bytes += (size_t{blocks.num_blocks * level.block_texels} << bpp_log2) *
+                     BlockRowTexelRows(level, row);
+        }
+    }
+    return bytes;
+}
+
+std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memory,
+                                                 GPUVAddr gpu_addr, const ImageInfo& info,
+                                                 std::span<const LevelRect> rects,
+                                                 std::span<u8> output) {
+    const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    std::vector<BufferImageCopy> copies;
+    std::vector<u8> swizzled;
+    size_t output_offset = 0;
+    for (const LevelRect& rect : rects) {
+        const BlockLinearLevel& level = levels[rect.level];
+        const RectBlocks blocks = BlocksOf(level, rect);
+        const u32 width = blocks.num_blocks * level.block_texels;
+        const size_t row_bytes = size_t{blocks.num_blocks} * level.block_bytes;
+        for (u32 row = blocks.first_row; row <= blocks.last_row; ++row) {
+            // A row of whole blocks is laid out like an image of that width on its own.
+            const u32 texel_rows = BlockRowTexelRows(level, row);
+            const size_t bytes = (size_t{width} << bpp_log2) * texel_rows;
+            const GPUVAddr row_addr = gpu_addr + level.offset +
+                                      u64{row} * level.blocks_per_row * level.block_bytes +
+                                      u64{blocks.first_block} * level.block_bytes;
+            swizzled.assign(row_bytes, 0);
+            gpu_memory.ReadBlockUnsafe(row_addr, swizzled.data(), row_bytes);
+            UnswizzleTexture(output.subspan(output_offset, bytes), swizzled, 1U << bpp_log2, width,
+                             texel_rows, 1, level.block_height, 0, 0,
+                             gpu_memory.UsesNativeTiling());
+            const u32 row_y = row * level.block_rows;
+            const u32 y0 = (std::max)(rect.y, row_y);
+            const u32 y1 = (std::min)(rect.y + rect.height, row_y + texel_rows);
+            copies.push_back(BufferImageCopy{
+                .buffer_offset = output_offset + ((size_t{y0 - row_y} * width) << bpp_log2),
+                .buffer_size = bytes,
+                .buffer_row_length = width,
+                .buffer_image_height = texel_rows,
+                .image_subresource =
+                    {
+                        .base_level = rect.level,
+                        .base_layer = 0,
+                        .num_layers = 1,
+                    },
+                .image_offset = {static_cast<s32>(rect.x), static_cast<s32>(y0), 0},
+                .image_extent = {rect.width, y1 - y0, 1},
+            });
+            output_offset += bytes;
+        }
+    }
+    return copies;
+}
+
+UnswizzlePlan PlanUnswizzleImageRows(
+    GPUVAddr gpu_addr, const ImageInfo& info,
+    std::span<const std::pair<u64, u64>> dirty_ranges) {
+    UnswizzlePlan plan;
+    if (info.type != ImageType::e2D || info.size.depth != 1 || info.block.depth != 0 ||
+        info.num_samples != 1 || dirty_ranges.empty()) {
+        plan.layout_valid = false;
+        return plan;
+    }
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    plan.bpp_log2 = bpp_log2;
+    const Extent2D tile_size = DefaultBlockSize(info.format);
+    const LevelInfo level_info = MakeLevelInfo(info);
+    const s32 num_levels = info.resources.levels;
+    const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
+    [[maybe_unused]] const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
+    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
+    const u32 layer_stride = AlignLayerSize(layer_size, info.size, level_info.block, tile_size.height,
+                                            info.tile_width_spacing);
+    // Tiles across one GOB (64 bytes). Runs of blocks are unswizzled one GOB aligned: tile width
+    // spacing only pads the end of each block row.
+    const u32 gob_tiles = 1U << (GOB_SIZE_X_SHIFT - bpp_log2);
+    const u32 run_alignment = GOB_SIZE_X_SHIFT - bpp_log2;
+    std::vector<bool> dirty_blocks;
+    u32 level_offset = 0;
+    size_t host_offset = 0;
+    for (s32 level = 0; level < num_levels; ++level) {
+        const Extent3D level_size = AdjustMipSize(info.size, level);
+        const Extent3D num_tiles = AdjustTileSize(level_size, tile_size);
+        const Extent3D block =
+            AdjustMipBlockSize(num_tiles, level_info.block, level, level_info.num_levels);
+        // Each block (one GOB wide, GOB height << block height tall) is contiguous, and blocks are
+        // stored left to right, one block row after the other.
+        const u32 rows_per_band = GOB_SIZE_Y << block.height;
+        const u32 block_bytes = GOB_SIZE << block.height;
+        const u32 num_bands = Common::DivCeil(num_tiles.height, rows_per_band);
+        if (num_bands == 0 || level_sizes[level] % num_bands != 0 ||
+            (level_sizes[level] / num_bands) % block_bytes != 0) {
+            plan.layout_valid = false;
+            return plan;
+        }
+        const u32 band_bytes = level_sizes[level] / num_bands;
+        const u32 blocks_per_band = band_bytes / block_bytes;
+        for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+            const u64 segment_begin = static_cast<u64>(layer) * layer_stride + level_offset;
+            const u64 segment_end = segment_begin + level_sizes[level];
+            bool any = false;
+            for (const auto& [begin, end] : dirty_ranges) {
+                if (end <= segment_begin || begin >= segment_end) {
+                    continue;
+                }
+                if (!any) {
+                    dirty_blocks.assign(size_t{num_bands} * blocks_per_band, false);
+                    any = true;
+                }
+                const u64 low = std::max(begin, segment_begin) - segment_begin;
+                const u64 high = std::min(end, segment_end) - segment_begin;
+                const u64 last = Common::DivCeil(high, u64{block_bytes});
+                for (u64 index = low / block_bytes; index < last; ++index) {
+                    dirty_blocks[index] = true;
+                }
+            }
+            if (!any) {
+                continue;
+            }
+            for (u32 band = 0; band < num_bands; ++band) {
+                const u32 first_row = band * rows_per_band;
+                const u32 tile_rows = std::min(rows_per_band, num_tiles.height - first_row);
+                for (u32 first = 0; first < blocks_per_band;) {
+                    if (!dirty_blocks[size_t{band} * blocks_per_band + first]) {
+                        ++first;
+                        continue;
+                    }
+                    u32 last = first;
+                    while (last < blocks_per_band && dirty_blocks[size_t{band} * blocks_per_band + last]) {
+                        ++last;
+                    }
+                    const u32 first_tile = first * gob_tiles;
+                    if (first_tile >= num_tiles.width) {
+                        break; // padding blocks past the image's width
+                    }
+                    // A run of consecutive blocks is laid out like an image that many GOBs wide.
+                    const u32 run_tiles = (last - first) * gob_tiles;
+                    const size_t guest_bytes = size_t{last - first} * block_bytes;
+                    const size_t host_bytes = (size_t{tile_rows} * run_tiles) << bpp_log2;
+                    plan.runs.push_back(UnswizzleRowRun{
+                        .src_addr = gpu_addr + segment_begin + u64{band} * band_bytes + u64{first} * block_bytes,
+                        .guest_bytes = guest_bytes,
+                        .host_offset = host_offset,
+                        .host_bytes = host_bytes,
+                        .run_tiles = run_tiles,
+                        .tile_rows = tile_rows,
+                        .block = block,
+                        .run_alignment = run_alignment,
+                    });
+                    const u32 x = first_tile * tile_size.width;
+                    const u32 y = first_row * tile_size.height;
+                    plan.copies.push_back(BufferImageCopy{
+                        .buffer_offset = host_offset,
+                        .buffer_size = host_bytes,
+                        .buffer_row_length = run_tiles * tile_size.width,
+                        .buffer_image_height = tile_rows * tile_size.height,
+                        .image_subresource =
+                            {
+                                .base_level = level,
+                                .base_layer = layer,
+                                .num_layers = 1,
+                            },
+                        .image_offset = {static_cast<s32>(x), static_cast<s32>(y), 0},
+                        .image_extent = {std::min(run_tiles * tile_size.width, level_size.width - x),
+                                         std::min(tile_rows * tile_size.height, level_size.height - y), 1},
+                    });
+                    host_offset += host_bytes;
+                    first = last;
+                }
+            }
+        }
+        level_offset += level_sizes[level];
+    }
+    plan.total_host_bytes = host_offset;
+    return plan;
+}
+
+void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan& plan,
+                         std::span<u8> output) {
+    std::vector<u8> run;
+    for (const auto& r : plan.runs) {
+        run.resize(r.guest_bytes);
+        gpu_memory.ReadBlockUnsafe(r.src_addr, run.data(), r.guest_bytes);
+        Tegra::Texture::UnswizzleTexture(output.subspan(r.host_offset, r.host_bytes),
+                                         run, 1U << plan.bpp_log2, r.run_tiles, r.tile_rows, 1,
+                                         r.block.height, r.block.depth, r.run_alignment,
+                                         gpu_memory.UsesNativeTiling());
+    }
+}
+
 void ConvertedLayout(const ImageInfo& info, std::span<BufferImageCopy> copies) {
     // Same offsets and sizes as ConvertImage below.
     const auto recompression = Settings::GetAstcRecompression();

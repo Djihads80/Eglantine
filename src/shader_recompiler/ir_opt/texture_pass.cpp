@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #include <bit>
 #include <optional>
 #include "common/container/unordered_map.h"
@@ -12,6 +16,7 @@
 #include <limits>
 #include <boost/container/small_vector.hpp>
 
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -340,15 +345,21 @@ static inline u32 GetTextureHandleCached(Environment& env, const ConstBufferAddr
 }
 
 // Cached variants of existing helpers
+// A handle computed per draw has no descriptor to read at translation time: assume an ordinary
+// floating-point 2D texture, the instruction's own type deciding the rest (see the TexturePass
+// ImageQueryDimensions case, which has none).
 static inline TextureType ReadTextureTypeCached(Environment& env, const ConstBufferAddr& cbuf) {
+    if (cbuf.handle_program != ~0U) return TextureType::Color2D;
     return env.ReadTextureType(GetTextureHandleCached(env, cbuf));
 }
 static inline TexturePixelFormat ReadTexturePixelFormatCached(Environment& env,
                                                                 const ConstBufferAddr& cbuf) {
+    if (cbuf.handle_program != ~0U) return TexturePixelFormat::A8B8G8R8_UNORM;
     return env.ReadTexturePixelFormat(GetTextureHandleCached(env, cbuf));
 }
 static inline bool IsTexturePixelFormatIntegerCached(Environment& env,
                                                         const ConstBufferAddr& cbuf) {
+    if (cbuf.handle_program != ~0U) return false;
     return env.IsTexturePixelFormatInteger(GetTextureHandleCached(env, cbuf));
 }
 
@@ -366,11 +377,399 @@ static inline std::optional<ConstBufferAddr> TrackCached(const IR::Value& v, Env
 
 std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block);
 
-std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
-    return IR::BreadthFirstSearch(value, [&env, &host_info, block](const IR::Inst* inst) {
-        return TryGetConstBuffer(inst, env, host_info, block);
-    }, [&](IR::Value operand) { return ResolveConditionalPhi(operand, block); });
+bool IsMemoryLoad(IR::Opcode opcode) {
+    switch (opcode) {
+    case IR::Opcode::LoadGlobalU8: case IR::Opcode::LoadGlobalS8: case IR::Opcode::LoadGlobalU16:
+    case IR::Opcode::LoadGlobalS16: case IR::Opcode::LoadGlobal32: case IR::Opcode::LoadGlobal64:
+    case IR::Opcode::LoadGlobal128: case IR::Opcode::LoadStorageU8: case IR::Opcode::LoadStorageS8:
+    case IR::Opcode::LoadStorageU16: case IR::Opcode::LoadStorageS16: case IR::Opcode::LoadStorage32:
+    case IR::Opcode::LoadStorage64: case IR::Opcode::LoadStorage128: case IR::Opcode::LoadLocal:
+    case IR::Opcode::LoadSharedU8: case IR::Opcode::LoadSharedS8: case IR::Opcode::LoadSharedU16:
+    case IR::Opcode::LoadSharedS16: case IR::Opcode::LoadSharedU32: case IR::Opcode::LoadSharedU64:
+    case IR::Opcode::LoadSharedU128:
+        return true;
+    default:
+        return false;
+    }
 }
+
+std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, const HostTranslateInfo& host_info, const IR::Block* block) {
+    // A value loaded from memory is not a constant buffer word, whatever its address is built
+    // from: the search does not look into a load's operands (a handle read from a storage
+    // buffer would otherwise be taken from the buffer's address in the constant buffer).
+    const IR::Value start{ResolveConditionalPhi(value, block)};
+    if (start.IsImmediate()) {
+        return std::nullopt;
+    }
+    std::unordered_set<const IR::Inst*> visited;
+    std::queue<const IR::Inst*> queue;
+    queue.push(start.InstRecursive());
+    visited.insert(start.InstRecursive());
+    while (!queue.empty()) {
+        const IR::Inst* const inst{queue.front()};
+        queue.pop();
+        if (const std::optional result = TryGetConstBuffer(inst, env, host_info, block)) {
+            return result;
+        }
+        if (IsMemoryLoad(inst->GetOpcode())) {
+            continue;
+        }
+        for (size_t arg = inst->NumArgs(); arg--;) {
+            const IR::Value arg_value{ResolveConditionalPhi(inst->Arg(arg), block)};
+            if (arg_value.IsImmediate()) {
+                continue;
+            }
+            const IR::Inst* const arg_inst{arg_value.InstRecursive()};
+            if (visited.insert(arg_inst).second) {
+                queue.push(arg_inst);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// Builds a handle program (shader_info.h) for a value computed from constant buffer and storage
+// buffer words; false when the value depends on anything else.
+thread_local IR::Opcode g_handle_failure{IR::Opcode::Void}; // the first operation not supported
+
+bool IsUndefined(IR::Opcode opcode) {
+    return opcode == IR::Opcode::UndefU1 || opcode == IR::Opcode::UndefU8 ||
+           opcode == IR::Opcode::UndefU16 || opcode == IR::Opcode::UndefU32 ||
+           opcode == IR::Opcode::UndefU64;
+}
+
+// Values already emitted by the program being built, by the slot that keeps them, how many slots
+// are in use, and how deep in nested BuildHandleProgram calls the build is.
+thread_local std::unordered_map<const IR::Inst*, u32> g_handle_slots;
+thread_local u32 g_handle_slot_count{};
+thread_local int g_handle_depth{};
+
+bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
+                     const IR::Block* block);
+
+bool BuildHandleProgram(const IR::Value& value, std::vector<u32>& code, int& budget,
+                        const IR::Block* block) {
+    using Op = HandleOp;
+    if (value.IsImmediate()) {
+        return BuildHandleNode(value, code, budget, block);
+    }
+    const bool outermost = g_handle_depth++ == 0;
+    if (outermost) {
+        g_handle_slots.clear();
+        g_handle_slot_count = 0;
+    }
+    SCOPE_EXIT {
+        --g_handle_depth;
+        if (outermost) {
+            g_handle_slots.clear();
+            g_handle_slot_count = 0;
+        }
+    };
+    const IR::Inst* const inst{value.InstRecursive()};
+    bool result;
+    if (const auto it = g_handle_slots.find(inst); it != g_handle_slots.end()) {
+        if (it->second == ~0U) {
+            // Reached again while building it: a loop carries the value, which no single
+            // evaluation can give.
+            g_handle_failure = IR::Opcode::Phi;
+            result = false;
+        } else {
+            code.push_back(static_cast<u32>(Op::Load));
+            code.push_back(it->second);
+            result = true;
+        }
+    } else {
+        g_handle_slots.emplace(inst, ~0U);
+        const size_t start = code.size();
+        const u32 first_slot = g_handle_slot_count;
+        result = BuildHandleNode(value, code, budget, block);
+        g_handle_slots.erase(inst);
+        if (!result) {
+            // The Tee of every value the dropped code kept goes with it: a later use of one of
+            // them (another Phi input) must build it again, not load a slot nothing wrote.
+            code.resize(start);
+            std::erase_if(g_handle_slots, [first_slot](const auto& entry) {
+                return entry.second != ~0U && entry.second >= first_slot;
+            });
+            g_handle_slot_count = first_slot;
+        }
+        if (result && inst->UseCount() > 1 && g_handle_slots.size() < 256) {
+            const u32 slot = g_handle_slot_count++;
+            g_handle_slots.emplace(inst, slot);
+            code.push_back(static_cast<u32>(Op::Tee));
+            code.push_back(slot);
+        }
+    }
+    return result;
+}
+
+bool BuildHandleNode(const IR::Value& value, std::vector<u32>& code, int& budget,
+                     const IR::Block* block) {
+    if (--budget < 0) {
+        return false;
+    }
+    using Op = HandleOp;
+    const auto emit = [&](Op op) { code.push_back(static_cast<u32>(op)); };
+    if (value.IsImmediate()) {
+        emit(Op::Immediate);
+        code.push_back(value.Type() == IR::Type::U1 ? (value.U1() ? 1U : 0U) : value.U32());
+        return true;
+    }
+    const IR::Inst* const inst{value.InstRecursive()};
+    const auto build = [&](size_t arg) { return BuildHandleProgram(inst->Arg(arg), code, budget, block); };
+    const auto binary = [&](Op op) {
+        if (!build(0) || !build(1)) return false;
+        emit(op);
+        return true;
+    };
+    const auto unary = [&](Op op) {
+        if (!build(0)) return false;
+        emit(op);
+        return true;
+    };
+    // A word of a constant buffer read or of a storage buffer load, at byte offset +extra.
+    const auto load_word = [&](const IR::Inst* source, u32 extra) {
+        const auto add_extra = [&] {
+            if (extra != 0) {
+                emit(Op::Immediate);
+                code.push_back(extra);
+                emit(Op::Add);
+            }
+        };
+        switch (source->GetOpcode()) {
+        case IR::Opcode::GetCbufU32:
+        case IR::Opcode::GetCbufU32x2: {
+            const IR::Value index{source->Arg(0)};
+            const IR::Value offset{source->Arg(1)};
+            if (!index.IsImmediate()) return false;
+            if (offset.IsImmediate()) {
+                emit(Op::Cbuf);
+                code.push_back(index.U32());
+                code.push_back(offset.U32() + extra);
+                return true;
+            }
+            if (!BuildHandleProgram(offset, code, budget, block)) return false;
+            add_extra();
+            emit(Op::CbufDynamic);
+            code.push_back(index.U32());
+            return true;
+        }
+        case IR::Opcode::LoadStorage32:
+        case IR::Opcode::LoadStorage64:
+        case IR::Opcode::LoadStorage128: {
+            const IR::Value binding{source->Arg(0)};
+            if (!binding.IsImmediate()) return false;
+            if (!BuildHandleProgram(source->Arg(1), code, budget, block)) return false;
+            add_extra();
+            emit(Op::Storage);
+            code.push_back(binding.U32());
+            return true;
+        }
+        default:
+            return false;
+        }
+    };
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::Identity:
+    case IR::Opcode::ConditionRef:
+    case IR::Opcode::ShuffleIndex: // a value made uniform (R2UR): the same in every lane
+    case IR::Opcode::VoteAny:      // of a condition on per-draw words only, the same in every lane
+    case IR::Opcode::VoteAll:
+        return build(0);
+    case IR::Opcode::GetCbufU32:
+    case IR::Opcode::LoadStorage32:
+        return load_word(inst, 0);
+    case IR::Opcode::CompositeExtractU32x2: {
+        const IR::Value element{inst->Arg(1)};
+        if (!element.IsImmediate() || inst->Arg(0).IsImmediate()) return false;
+        return load_word(inst->Arg(0).InstRecursive(), element.U32() * 4);
+    }
+    case IR::Opcode::Phi: {
+        // Keep the incoming value that is defined; of two, the one made uniform (the
+        // register-to-uniform move a conditional block makes for the handle).
+        const IR::Value resolved{ResolveConditionalPhi(value, block)};
+        if (resolved.IsImmediate() || resolved.InstRecursive() != inst) {
+            return BuildHandleProgram(resolved, code, budget, block);
+        }
+        std::optional<size_t> chosen;
+        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+            const IR::Value incoming{inst->Arg(arg)};
+            if (!incoming.IsImmediate() && IsUndefined(incoming.InstRecursive()->GetOpcode())) {
+                continue;
+            }
+            IR::Value probe{incoming};
+            bool shuffled = false;
+            for (int depth = 0; depth < 8 && !probe.IsImmediate(); ++depth) {
+                const IR::Inst* const probe_inst{probe.InstRecursive()};
+                if (probe_inst->GetOpcode() == IR::Opcode::ShuffleIndex) {
+                    shuffled = true;
+                    break;
+                }
+                if (probe_inst->GetOpcode() != IR::Opcode::Identity) break;
+                probe = probe_inst->Arg(0);
+            }
+            if (!chosen || shuffled) chosen = arg;
+        }
+        if (chosen && build(*chosen)) {
+            return true;
+        }
+        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+            const IR::Value incoming{inst->Arg(arg)};
+            if (arg == chosen || (!incoming.IsImmediate() && IsUndefined(incoming.InstRecursive()->GetOpcode()))) {
+                continue;
+            }
+            if (build(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case IR::Opcode::IAdd32: return binary(Op::Add);
+    case IR::Opcode::ISub32: return binary(Op::Sub);
+    case IR::Opcode::IMul32: return binary(Op::Mul);
+    case IR::Opcode::BitwiseAnd32: return binary(Op::And);
+    case IR::Opcode::BitwiseOr32: return binary(Op::Or);
+    case IR::Opcode::BitwiseXor32: return binary(Op::Xor);
+    case IR::Opcode::ShiftLeftLogical32: return binary(Op::Shl);
+    case IR::Opcode::ShiftRightLogical32: return binary(Op::Shr);
+    case IR::Opcode::ShiftRightArithmetic32: return binary(Op::Sar);
+    case IR::Opcode::INeg32: return unary(Op::Neg);
+    case IR::Opcode::BitwiseNot32: return unary(Op::Not);
+    case IR::Opcode::UMin32: return binary(Op::UMin);
+    case IR::Opcode::UMax32: return binary(Op::UMax);
+    case IR::Opcode::SMin32: return binary(Op::SMin);
+    case IR::Opcode::SMax32: return binary(Op::SMax);
+    case IR::Opcode::SLessThan: return binary(Op::SLt);
+    case IR::Opcode::SLessThanEqual: return binary(Op::SLe);
+    case IR::Opcode::SGreaterThan: return binary(Op::SGt);
+    case IR::Opcode::SGreaterThanEqual: return binary(Op::SGe);
+    case IR::Opcode::ULessThan: return binary(Op::ULt);
+    case IR::Opcode::ULessThanEqual: return binary(Op::ULe);
+    case IR::Opcode::UGreaterThan: return binary(Op::UGt);
+    case IR::Opcode::UGreaterThanEqual: return binary(Op::UGe);
+    case IR::Opcode::IEqual: return binary(Op::Eq);
+    case IR::Opcode::INotEqual: return binary(Op::Ne);
+    case IR::Opcode::LogicalAnd: return binary(Op::LAnd);
+    case IR::Opcode::LogicalOr: return binary(Op::LOr);
+    case IR::Opcode::LogicalXor: return binary(Op::LXor);
+    case IR::Opcode::LogicalNot: return unary(Op::LNot);
+    case IR::Opcode::GetZeroFromOp: // the flag a producing operation sets on its result
+        if (!build(0)) return false;
+        emit(Op::Immediate);
+        code.push_back(0);
+        emit(Op::Eq);
+        return true;
+    case IR::Opcode::GetSignFromOp:
+        if (!build(0)) return false;
+        emit(Op::Immediate);
+        code.push_back(0);
+        emit(Op::SLt);
+        return true;
+    case IR::Opcode::GetCarryFromOp: {
+        // The carry of a 32-bit addition: the sum below an operand.
+        const IR::Value op{inst->Arg(0)};
+        if (op.IsImmediate() || op.InstRecursive()->GetOpcode() != IR::Opcode::IAdd32) {
+            g_handle_failure = inst->GetOpcode();
+            return false;
+        }
+        const IR::Inst* const add{op.InstRecursive()};
+        if (!BuildHandleProgram(op, code, budget, block) ||
+            !BuildHandleProgram(add->Arg(0), code, budget, block)) {
+            return false;
+        }
+        emit(Op::ULt);
+        return true;
+    }
+    case IR::Opcode::BitCastU32F32:
+    case IR::Opcode::BitCastF32U32:
+        return build(0);
+    case IR::Opcode::UndefU1:
+    case IR::Opcode::UndefU32:
+        // Read before any write on some path: no value to compute, take zero.
+        emit(Op::Immediate);
+        code.push_back(0);
+        return true;
+    case IR::Opcode::BitFieldUExtract: {
+        // (base >> offset) & ((1 << count) - 1), the shift by 32 giving the all-ones mask.
+        const auto mask = [&] {
+            emit(Op::Immediate);
+            code.push_back(1);
+            if (!build(2)) return false;
+            emit(Op::Shl);
+            emit(Op::Immediate);
+            code.push_back(1);
+            emit(Op::Sub);
+            return true;
+        };
+        if (!build(0) || !build(1)) return false;
+        emit(Op::Shr);
+        if (!mask()) return false;
+        emit(Op::And);
+        return true;
+    }
+    case IR::Opcode::BitFieldSExtract: {
+        // (base << (32 - offset - count)) >> (32 - count), arithmetic.
+        if (!build(0)) return false;
+        emit(Op::Immediate);
+        code.push_back(32);
+        if (!build(1)) return false;
+        emit(Op::Sub);
+        if (!build(2)) return false;
+        emit(Op::Sub);
+        emit(Op::Shl);
+        emit(Op::Immediate);
+        code.push_back(32);
+        if (!build(2)) return false;
+        emit(Op::Sub);
+        emit(Op::Sar);
+        return true;
+    }
+    case IR::Opcode::BitFieldInsert: {
+        // (base & ~mask) | ((insert << offset) & mask), mask = ((1 << count) - 1) << offset.
+        const auto mask = [&] {
+            emit(Op::Immediate);
+            code.push_back(1);
+            if (!build(3)) return false;
+            emit(Op::Shl);
+            emit(Op::Immediate);
+            code.push_back(1);
+            emit(Op::Sub);
+            if (!build(2)) return false;
+            emit(Op::Shl);
+            return true;
+        };
+        if (!build(0) || !mask()) return false;
+        emit(Op::Not);
+        emit(Op::And);
+        if (!build(1) || !build(2)) return false;
+        emit(Op::Shl);
+        if (!mask()) return false;
+        emit(Op::And);
+        emit(Op::Or);
+        return true;
+    }
+    case IR::Opcode::UClamp32:
+    case IR::Opcode::SClamp32: {
+        const bool is_signed = inst->GetOpcode() == IR::Opcode::SClamp32;
+        if (!build(0) || !build(1)) return false;
+        emit(is_signed ? Op::SMax : Op::UMax);
+        if (!build(2)) return false;
+        emit(is_signed ? Op::SMin : Op::UMin);
+        return true;
+    }
+    case IR::Opcode::SelectU1:
+    case IR::Opcode::SelectU32:
+        if (!build(0) || !build(1) || !build(2)) return false;
+        emit(Op::Select);
+        return true;
+    default:
+        g_handle_failure = inst->GetOpcode();
+        return false;
+    }
+}
+
+// Programs built while making the texture instructions of the pass running on this thread.
+thread_local std::vector<std::vector<u32>>* g_handle_programs{};
 
 std::optional<u32> TryGetConstant(IR::Value& value, Environment& env) {
     const IR::Inst* inst = value.InstRecursive();
@@ -525,10 +924,44 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
     if (IsBindless(inst)) {
         const std::optional<ConstBufferAddr> track_addr{TrackCached(inst.Arg(0), env, host_info, block)};
 
-        if (!track_addr) {
-            throw NotImplementedException("Failed to track bindless texture constant buffer");
-        } else {
+        if (track_addr) {
             addr = *track_addr;
+        } else {
+            // Read from a storage buffer (a handle table): computed for each draw.
+            std::vector<u32> code;
+            int budget = 4096;
+            g_handle_failure = IR::Opcode::Void;
+            if (!g_handle_programs || !BuildHandleProgram(inst.Arg(0), code, budget, block)) {
+                // Not computable for a whole draw (a handle that changes in a loop): keep the
+                // earlier search through loads, which at least gives the shader a texture.
+                const std::optional<ConstBufferAddr> legacy{IR::BreadthFirstSearch(inst.Arg(0),
+                    [&env, &host_info, block](const IR::Inst* candidate) {
+                        return TryGetConstBuffer(candidate, env, host_info, block);
+                    }, [&](IR::Value operand) { return ResolveConditionalPhi(operand, block); })};
+                if (!legacy) {
+                    throw NotImplementedException("Failed to track bindless texture constant buffer (stopped at {}, budget {})",
+                                                  g_handle_failure, budget);
+                }
+                return TextureInst{.cbuf = *legacy, .inst = &inst, .block = block};
+            }
+            auto& programs{*g_handle_programs};
+            auto it{std::ranges::find(programs, code)};
+            if (it == programs.end()) {
+                programs.push_back(std::move(code));
+                it = programs.end() - 1;
+            }
+            addr = ConstBufferAddr{
+                .index = 0,
+                .offset = 0,
+                .shift_left = 0,
+                .secondary_index = 0,
+                .secondary_offset = 0,
+                .secondary_shift_left = 0,
+                .dynamic_offset = {},
+                .count = 1,
+                .has_secondary = false,
+                .handle_program = static_cast<u32>(it - programs.begin()),
+            };
         }
     } else {
         addr = ConstBufferAddr{
@@ -590,7 +1023,8 @@ public:
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
                    desc.count == existing.count && desc.size_shift == existing.size_shift &&
-                   desc.has_secondary == existing.has_secondary;
+                   desc.has_secondary == existing.has_secondary &&
+                   desc.handle_program == existing.handle_program;
         });
     }
 
@@ -598,7 +1032,8 @@ public:
         const u32 index{Add(image_buffer_descriptors, desc, [&desc](const auto& existing) {
             return desc.format == existing.format && desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         image_buffer_descriptors[index].is_written |= desc.is_written;
         image_buffer_descriptors[index].is_read |= desc.is_read;
@@ -616,7 +1051,8 @@ public:
                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
                    desc.secondary_shift_left == existing.secondary_shift_left &&
-                   desc.count == existing.count && desc.size_shift == existing.size_shift;
+                   desc.count == existing.count && desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         // TODO: Read this from TIC
         texture_descriptors[index].is_multisample |= desc.is_multisample;
@@ -629,7 +1065,8 @@ public:
             return desc.type == existing.type && desc.format == existing.format &&
                    desc.cbuf_index == existing.cbuf_index &&
                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
-                   desc.size_shift == existing.size_shift;
+                   desc.size_shift == existing.size_shift &&
+                   desc.handle_program == existing.handle_program;
         })};
         image_descriptors[index].is_written |= desc.is_written;
         image_descriptors[index].is_read |= desc.is_read;
@@ -655,11 +1092,13 @@ private:
     ImageDescriptors& image_descriptors;
 };
 
+// Expects the sample's descriptor to be assigned: the size query reads the same texture (and
+// the same element of a descriptor array).
 void PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst) {
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
     const auto info{inst.Flags<IR::TextureInstInfo>()};
     const IR::Value coord(inst.Arg(1));
-    const IR::Value handle(ir.Imm32(0));
+    const IR::Value handle(inst.Arg(0).IsEmpty() ? IR::Value{ir.Imm32(0)} : inst.Arg(0));
     const IR::U32 lod{ir.Imm32(0)};
     const IR::U1 skip_mips{ir.Imm1(true)};
     const IR::Value texture_size = ir.ImageQueryDimension(handle, lod, skip_mips, info);
@@ -724,6 +1163,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     env.handle_cache.clear();
     env.track_cache.clear();
     TextureInstVector to_replace;
+    g_handle_programs = &program.info.handle_programs;
     for (IR::Block* const block : program.post_order_blocks) {
         env.track_cache.clear();
         for (IR::Inst& inst : block->Instructions()) {
@@ -750,6 +1190,10 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     u32 last_cbuf_offset{};
     bool last_is_integer{false};
     const auto is_texture_pixel_format_integer{[&](const ConstBufferAddr& cbuf_addr) {
+        if (cbuf_addr.handle_program != ~0U) {
+            // Every handle program is at cbuf 0 offset 0: the cache below can't tell them apart.
+            return IsTexturePixelFormatIntegerCached(env, cbuf_addr);
+        }
         if (has_last_is_integer && last_cbuf_index == cbuf_addr.index &&
             last_cbuf_offset == cbuf_addr.offset) {
             return last_is_integer;
@@ -760,6 +1204,18 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         has_last_is_integer = true;
         return last_is_integer;
     }};
+    // A handle program has no descriptor to read a type from, and ImageQueryDimensions carries
+    // none: it takes the type of another instruction using the same handle.
+    std::unordered_map<u32, TextureType> handle_program_types;
+    for (const TextureInst& texture_inst : to_replace) {
+        const IR::Opcode opcode{IndexedInstruction(*texture_inst.inst)};
+        if (texture_inst.cbuf.handle_program != ~0U && opcode != IR::Opcode::ImageQueryDimensions &&
+            !IsStorageImageOpcode(opcode)) {
+            handle_program_types.try_emplace(
+                texture_inst.cbuf.handle_program,
+                texture_inst.inst->Flags<IR::TextureInstInfo>().type.Value());
+        }
+    }
     for (TextureInst& texture_inst : to_replace) {
         // TODO: Handle arrays
         IR::Inst* const inst{texture_inst.inst};
@@ -768,18 +1224,23 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         const auto& cbuf{texture_inst.cbuf};
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
+        bool is_rect_sample{false};
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
-            flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+            if (const auto it{handle_program_types.find(cbuf.handle_program)};
+                it != handle_program_types.end()) {
+                flags.type.Assign(it->second);
+            } else {
+                flags.type.Assign(ReadTextureTypeCached(env, cbuf));
+            }
             inst->SetFlags(flags);
             break;
         case IR::Opcode::ImageSampleImplicitLod:
             if (flags.type != TextureType::Color2D) {
                 break;
             }
-            if (ReadTextureTypeCached(env, cbuf) == TextureType::Color2DRect) {
-                PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst);
-            }
+            // Normalized once the descriptor is known (below).
+            is_rect_sample = ReadTextureTypeCached(env, cbuf) == TextureType::Color2DRect;
             break;
         case IR::Opcode::ImageFetch:
             if (flags.type == TextureType::Color2D || flags.type == TextureType::Color2DRect ||
@@ -835,6 +1296,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_offset = cbuf.offset,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             } else {
                 index = descriptors.Add(ImageDescriptor{
@@ -847,6 +1309,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_offset = cbuf.offset,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             }
             break;
@@ -863,6 +1326,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .secondary_shift_left = cbuf.secondary_shift_left,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
@@ -881,6 +1345,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .secondary_shift_left = cbuf.secondary_shift_left,
                     .count = count,
                     .size_shift = size_shift,
+                    .handle_program = cbuf.handle_program,
                 });
                 flags.is_integer.Assign(is_integer ? 1 : 0);
             }
@@ -896,6 +1361,9 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
         } else {
             inst->SetArg(0, IR::Value{});
+        }
+        if (is_rect_sample) {
+            PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst);
         }
 
         if (!host_info.support_snorm_render_buffer && inst->GetOpcode() == IR::Opcode::ImageFetch &&

@@ -269,10 +269,22 @@ void TranslatorVisitor::SUST(u64 insn) {
         color = MakeColor(ir, sust.data_reg, SizeInRegs(sust.size));
     } else {
         const unsigned mask{SwizzleMask(sust.swizzle)};
-        if (mask != 0xf) {
-            throw NotImplementedException("Non-full mask");
+        if (mask == 0xf) {
+            color = MakeColor(ir, sust.data_reg, 4);
+        } else {
+            // The data registers hold the masked components in order; the others keep the
+            // texel's current values.
+            const IR::Value texel{ir.ImageRead(handle, coords, info)};
+            std::array<IR::U32, 4> components;
+            IR::Reg data_reg{sust.data_reg};
+            for (size_t component = 0; component < 4; ++component) {
+                components[component] = ((mask >> component) & 1) != 0
+                                            ? X(data_reg++)
+                                            : IR::U32{ir.CompositeExtract(texel, component)};
+            }
+            color =
+                ir.CompositeConstruct(components[0], components[1], components[2], components[3]);
         }
-        color = MakeColor(ir, sust.data_reg, 4);
     }
     ir.ImageWrite(handle, coords, color, info);
 }

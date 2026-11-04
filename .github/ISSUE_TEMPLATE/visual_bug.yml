@@ -1,0 +1,99 @@
+name: Visual Bug
+description: The game doesn't render properly
+title: "[VBug] "
+labels: ["visual-bug"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and found no duplicate
+          required: true
+        - label: I'm using the latest build
+          required: true
+        - label: My game is legally dumped from my own console
+          required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: Emulator build
+      description: Version or commit hash (shown in Help > About)
+      placeholder: "e.g. build 107 or a1b2c3d"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: regression
+    attributes:
+      label: Regression
+      options:
+        - label: This is a regression (it worked in an older build)
+
+  - type: input
+    id: last_good
+    attributes:
+      label: Last known working build
+      description: Only fill this if it's a regression
+
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - Mario Kart World
+        - Donkey Kong Bananza
+        - Fire Emblem
+        - Splatoon Raiders
+        - Pokopia
+        - Hyrule Warriors
+        - Welcome Tour
+        - Other / not listed
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gpu
+    attributes:
+      label: Graphics card
+      options:
+        - NVIDIA RTX 50 series
+        - NVIDIA RTX 40 series
+        - NVIDIA RTX 30 series or older
+        - AMD RX 9000 series
+        - AMD RX 7000 series
+        - AMD RX 6000 series or older
+        - Intel Arc
+        - Integrated graphics INTEL
+        - Integrated graphics AMD
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Boot the game\n2. ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log / crash dump
+      render: shell

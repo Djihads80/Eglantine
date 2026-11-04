@@ -185,8 +185,15 @@ private:
  */
 class HLERequestContext {
 public:
+    /// Takes a reference to the requesting thread, which keeps the thread and its process from
+    /// being destroyed for as long as the context, deferred or not: the thread's TLS, where the
+    /// reply goes, and the process' memory stay valid. It does not keep the process from
+    /// terminating, which finalizes its handle table.
     explicit HLERequestContext(Kernel::KernelCore& kernel, Core::Memory::Memory& memory, Kernel::KServerSession* session, Kernel::KThread* thread);
     ~HLERequestContext();
+
+    HLERequestContext(const HLERequestContext&) = delete;
+    HLERequestContext& operator=(const HLERequestContext&) = delete;
 
     /// Returns a pointer to the IPC command buffer for this request.
     [[nodiscard]] u32* CommandBuffer() {

@@ -213,6 +213,23 @@ void SoftwareKeyboard::InitializeForeground() {
         std::memcpy(&swkbd_config_new, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
                     sizeof(SwkbdConfigNew));
         break;
+    case SwkbdAppletVersion::Version1310736:
+        // The common and 8.0.0 parts keep their layout; the 0x68 bytes after them are unknown.
+        // This revision exchanges UTF-8 text: the game's text check replies are UTF-8, and a
+        // UTF-16 result reached it as its first character only.
+        ASSERT(swkbd_config_data.size() >= sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigNew));
+        std::memcpy(&swkbd_config_new, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
+                    sizeof(SwkbdConfigNew));
+        swkbd_config_common.use_utf8 = true;
+        break;
+    case SwkbdAppletVersion::Version1441810: {
+        // Fire Emblem: Fortune's Weave asks for UTF-8 and keeps the reply up to the first NUL, so the
+        // Switch 1 layout's use_utf8 (a byte of the native initial_string_offset) left one letter.
+        const bool decoded =
+            DecodeNativeSwkbdConfig(swkbd_config_data, swkbd_config_common, swkbd_config_new);
+        ASSERT(decoded);
+        break;
+    }
     default:
         UNIMPLEMENTED_MSG("Unknown SwkbdConfig revision={} with size={}", swkbd_applet_version,
                           swkbd_config_data.size());
