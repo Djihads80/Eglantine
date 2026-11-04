@@ -66,6 +66,7 @@ struct ConstBufferAddr {
     IR::U32 dynamic_offset;
     u32 count;
     bool has_secondary;
+    u32 handle_program{~0U}; ///< index in Info::handle_programs for a handle computed per draw
 };
 
 class Environment {
@@ -75,6 +76,14 @@ public:
     [[nodiscard]] virtual u64 ReadInstruction(u32 address) = 0;
 
     [[nodiscard]] virtual u32 TranslateProgramAddress(u32 address) const { return address; }
+
+    /// A Switch 2 native program lowered to Maxwell instructions. Its storage buffer pointers are
+    /// raw 8-byte arguments in constant buffers, without the NVN descriptor layout.
+    [[nodiscard]] virtual bool IsNativeProgram() const { return false; }
+
+    /// Native programs: whether the 8-byte constant at (index, offset) is a mapped GPU address.
+    /// Native argument tables mix pointers with scalars (sizes, strides).
+    [[nodiscard]] virtual bool IsCbufStorageBufferPointer(u32, u32) { return true; }
 
     [[nodiscard]] virtual u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) = 0;
 
@@ -121,9 +130,22 @@ public:
         return is_proprietary_driver;
     }
 
+    /// Task and mesh programs: SET_MESH_SHADER_A, SET_MESH_SHADER_B and SET_MESH_INIT_SHADER.
+    [[nodiscard]] const std::array<u32, 3>& MeshRegisters() const noexcept {
+        return mesh_registers;
+    }
+
+    /// Mesh programs: the header of the pass-through geometry program bound with them, whose
+    /// output map lists the per-primitive outputs.
+    [[nodiscard]] const ProgramHeader& MeshPrimitiveHeader() const noexcept {
+        return mesh_primitive_header;
+    }
+
 protected:
     ProgramHeader sph{};
     std::array<u32, 8> gp_passthrough_mask{};
+    std::array<u32, 3> mesh_registers{};
+    ProgramHeader mesh_primitive_header{};
     Stage stage{};
     u32 start_address{};
     bool is_proprietary_driver{};

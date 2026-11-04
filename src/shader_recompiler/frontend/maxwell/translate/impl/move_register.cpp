@@ -26,6 +26,18 @@ void MOV(TranslatorVisitor& v, u64 insn, const IR::U32& src, bool is_mov32i = fa
 } // Anonymous namespace
 
 void TranslatorVisitor::MOV_reg(u64 insn) {
+    // Native register copy (lowered native programs only): a MOV with an empty write mask and
+    // 0b1010 in bits 44-47, never emitted by Maxwell compilers. Bits 8-9 / 10-11 select the
+    // destination / source bank of 256 registers.
+    if (env.IsNativeProgram() && ((insn >> 39) & 15) == 0 && ((insn >> 44) & 15) == 10) {
+        const u32 destination_bank = (insn >> 8) & 3, source_bank = (insn >> 10) & 3;
+        if (destination_bank > 2 || source_bank > 2)
+            throw NotImplementedException("Invalid native register copy bank");
+        const auto destination = static_cast<IR::Reg>((insn & 255) + destination_bank * 256);
+        const auto source = static_cast<IR::Reg>(((insn >> 20) & 255) + source_bank * 256);
+        X(destination, X(source));
+        return;
+    }
     MOV(*this, insn, GetReg20(insn));
 }
 

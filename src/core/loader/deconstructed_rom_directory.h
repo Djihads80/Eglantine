@@ -58,8 +58,13 @@ public:
     ResultStatus ReadNSOModules(Modules& out_modules) override;
 
 private:
+    /// The loose RomFS next to the ExeFS, found (and built) on first use.
+    const FileSys::VirtualFile& LooseRomFS();
+
     FileSys::ProgramMetadata metadata;
     FileSys::VirtualFile romfs;
+    FileSys::VirtualDir romfs_exefs_dir; ///< Where LooseRomFS looks
+    bool romfs_resolved{};
     FileSys::VirtualDir dir;
 
     std::vector<u8> icon_data;

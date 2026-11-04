@@ -11,6 +11,7 @@
 #include <bitset>
 #include <concepts>
 #include <cstddef>
+#include <type_traits>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -196,12 +197,7 @@ public:
         constexpr Member* GetFront(s32 core) const {
             ASSERT(IsValidCore(core));
 
-            const s32 priority = s32([](auto const& e) {
-                for (size_t i = 0; i < e.size(); ++i)
-                    if (e[i])
-                        return i;
-                return e.size();
-            }(m_available_priorities[core]));
+            const s32 priority = s32(GetNextSet(m_available_priorities[core], size_t(-1)));
             if (priority <= LowestPriority) {
                 return m_queues[priority].GetFront(core);
             } else {
@@ -222,7 +218,17 @@ public:
 
         template<size_t N>
         constexpr size_t GetNextSet(std::bitset<N> const& bit, size_t n) const {
-            for (size_t i = n + 1; i < bit.size(); i++)
+            const size_t first = n + 1;
+            if (first >= bit.size()) {
+                return bit.size();
+            }
+            if constexpr (N <= 64) {
+                if (!std::is_constant_evaluated()) {
+                    const u64 remaining = bit.to_ullong() >> first;
+                    return remaining != 0 ? first + size_t(std::countr_zero(remaining)) : bit.size();
+                }
+            }
+            for (size_t i = first; i < bit.size(); i++)
                 if (bit[i])
                     return i;
             return bit.size();

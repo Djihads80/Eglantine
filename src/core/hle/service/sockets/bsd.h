@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 #include <variant>
@@ -43,6 +44,8 @@ public:
 private:
     /// Maximum number of file descriptors
     static constexpr size_t MAX_FD = 128;
+    /// Largest decompressed room packet. A UDP datagram cannot be larger.
+    static constexpr size_t MAX_ROOM_PACKET_SIZE = 0x10000;
 
     struct FileDescriptor {
         std::shared_ptr<Network::SocketBase> socket;
@@ -177,16 +180,25 @@ private:
 
     s32 FindFreeFileDescriptorHandle() noexcept;
     bool IsFileDescriptorValid(s32 fd) const noexcept;
+    /// Copies a descriptor under file_descriptors_mutex; nullopt if fd has no socket
+    std::optional<FileDescriptor> CopyDescriptor(s32 fd);
+    /// Switches a blocking socket for one MSG_DONTWAIT call; false if fd is already nonblocking
+    bool SetDontWait(s32 fd, const FileDescriptor& descriptor, bool enable);
 
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
     static inline std::array<std::optional<FileDescriptor>, MAX_FD> file_descriptors{};
+    /// Guards file_descriptors. Calls use CopyDescriptor, so sockets outlive a concurrent close.
+    static inline std::mutex file_descriptors_mutex;
 
     /// Callback to parse and handle a received wifi packet.
-    void OnProxyPacketReceived(const Network::ProxyPacket& packet);
+    static void OnProxyPacketReceived(const Network::ProxyPacket& packet);
 
-    // Callback identifier for the OnProxyPacketReceived event.
-    Network::RoomMember::CallbackHandle<Network::ProxyPacket> proxy_packet_received;
+    // Callback identifier for the OnProxyPacketReceived event. bsd:s, bsd:u and bsd:a share
+    // file_descriptors, so they bind once; otherwise each packet is queued once per service.
+    static inline Network::RoomMember::CallbackHandle<Network::ProxyPacket> proxy_packet_received;
+    static inline std::mutex proxy_binding_mutex;
+    static inline size_t proxy_binding_count = 0;
 
 protected:
     std::unique_lock<std::mutex> LockService() noexcept override;

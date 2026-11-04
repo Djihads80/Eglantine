@@ -41,6 +41,9 @@
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_surface.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#endif
 #ifdef __ANDROID__
 #include <jni.h>
 #endif
@@ -130,6 +133,9 @@ try
     , gpu(gpu_)
     , library(OpenLibrary(context.get()))
     , dld()
+#ifdef EGLANTINE_STREAMLINE
+    , streamline_started(Streamline::Start())
+#endif
     // Create raw Vulkan instance first
     , instance(CreateInstance(*library,
                             dld,

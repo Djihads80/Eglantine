@@ -88,6 +88,11 @@ public:
     [[nodiscard]] F32 GetPatch(Patch patch);
     void SetPatch(Patch patch, const F32& value);
 
+    [[nodiscard]] U32 IsbeRead(const U32& address);
+    void IsbeWriteAttribute(const U32& address, const U32& value);
+    void IsbeWriteMapU8(const U32& address, const U32& value);
+    void IsbeWriteMapU32(const U32& address, const U32& value);
+
     void SetFragColor(u32 index, u32 component, const F32& value);
     void SetSampleMask(const U32& value);
     void SetFragDepth(const F32& value);
@@ -186,6 +191,7 @@ public:
     [[nodiscard]] F32 FPCos(const F32& value);
     [[nodiscard]] F32 FPSin(const F32& value);
     [[nodiscard]] F32 FPExp2(const F32& value);
+    [[nodiscard]] F32 FPTanh(const F32& value);
     [[nodiscard]] F32 FPLog2(const F32& value);
     [[nodiscard]] F32F64 FPRecip(const F32F64& value);
     [[nodiscard]] F32F64 FPRecipSqrt(const F32F64& value);

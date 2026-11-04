@@ -26,7 +26,8 @@ jobs:
           script: |
             const body = (context.payload.pull_request.body || '').replace(/<!--[\s\S]*?-->/g, '');
             const problems = [];
-            for (const item of body.matchAll(/^\s*[-*+]\s*\[ \]\s*(.+)$/gm)) {
+            // Only the acknowledgements are required; the type and testing boxes are optional.
+            for (const item of body.matchAll(/^\s*[-*+]\s*\[ \]\s*(I have read and followed.+)$/gm)) {
               problems.push(`Unchecked: ${item[1].trim()}`);
             }
             if (!/^\s*[-*+]?\s*\[[xX]\]/m.test(body)) {
@@ -46,7 +47,7 @@ jobs:
                 sections[current] += line + '\n';
               }
             }
-            for (const name of ['Summary', 'Tested']) {
+            for (const name of ['Summary', 'Testing']) {
               if (!(sections[name.toLowerCase()] || '').trim()) {
                 problems.push(`Fill in the "${name}" section.`);
               }

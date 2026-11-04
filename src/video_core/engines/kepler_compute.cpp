@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <bitset>
 #include <cstdlib>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <unordered_set>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
@@ -23,6 +25,7 @@
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/game_dlss_status.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_query_trace.h"
 #ifdef ARCHITECTURE_x86_64
@@ -545,6 +548,25 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     }
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
         return false;
+    // Fortune's Weave's DLSS evaluation runs from its first pass to the pass that writes the
+    // upscaled image. Its inputs are kept from the first pass for a replacement upscale.
+    if (RememberDlssMotionVectors()) {
+        dlss_chain.active = true;
+        dlss_chain.rejected = 0;
+    }
+    const bool output_pass = dlss_chain.active && IsDlssOutputPass();
+    if (dlss_chain.active) {
+        // While the network can't be shown (it failed its checks, or it is off) the passes seen
+        // before stop running, and the replacement upscale draws the output at the output pass.
+        const GPUVAddr program = regs.code_loc.Address();
+        if ((dlss_chain.failure != VideoCore::GameDlssReason::None ||
+             GameDlssBlocker() != VideoCore::GameDlssReason::None) &&
+            dlss_chain.programs.contains(program)) {
+            return output_pass ? FinishDlssEvaluation() : true;
+        }
+        dlss_chain.programs.insert(program);
+    }
+    bool dispatched = true;
     try {
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
@@ -552,14 +574,237 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         if (logged.insert(error.what()).second) {
             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
         }
-        if (std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos) {
+        dispatched = false;
+        if (dlss_chain.active) {
+            ++dlss_chain.rejected;
+        } else if (std::string_view{error.what()}.find("matrix multiply") !=
+                   std::string_view::npos) {
             DescribeNativeResources(qmd);
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
             return UpscaleInsteadOfNativeProgram();
         }
+    }
+    if (output_pass) {
+        return FinishDlssEvaluation() || dispatched;
+    }
+    return dispatched;
+}
+
+namespace {
+constexpr u32 DLSS_NETWORK_CLEAN_EVALUATIONS = 8;
+/// Health checks in a row the network must pass before it is shown (about a second: a network that
+/// goes bad does so within its first few evaluations), and fail to be dropped.
+constexpr u32 DLSS_NETWORK_GOOD_CHECKS = 30;
+constexpr u32 DLSS_NETWORK_BAD_CHECKS = 10;
+/// A check fails when more than this percentage of its blocks is mismatched (working networks:
+/// at most 0.2% on Fortune's Weave's title and Kunlun Base; frozen ones: 6-10%), or when any output
+/// sample is NaN or infinite.
+constexpr u32 DLSS_CHECK_MISMATCH_PERCENT = 3;
+} // Anonymous namespace
+
+// The game's own DLSS network (its translated programs) is shown once every pass of an
+// evaluation has run several times in a row and its output has passed several health checks in
+// a row. Until then, when any pass can't run, and for the rest of the session once the network
+// fails its checks, the replacement upscale draws over the output pass's result. The setting
+// "Use the game's own DLSS" off, NVIDIA DLSS on or EDEN_NX2_DLSS_REPLACEMENT=fsr|standin keep the
+// replacement. The network's image sizes are fixed by the game, so it is used only without
+// resolution scaling; its matrix multiplies need shaders 32 threads wide.
+VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
+    using VideoCore::GameDlssReason;
+    static const bool forced_replacement = std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr;
+    if (forced_replacement || !Settings::values.game_dlss_network.GetValue()) {
+        return GameDlssReason::TurnedOff;
+    }
+    // NVIDIA DLSS, when turned on and running, comes first.
+    if (rasterizer->UsesNvidiaDlss()) {
+        return GameDlssReason::NvidiaDlss;
+    }
+    const auto& scale = Settings::values.resolution_info;
+    if (scale.up_scale != 1 || scale.down_shift != 0) {
+        return GameDlssReason::ResolutionScaling;
+    }
+    if (!rasterizer->SupportsGameDlssNetwork()) {
+        return GameDlssReason::Unsupported;
+    }
+    return GameDlssReason::None;
+}
+
+bool KeplerCompute::EmulatesNativeTensorPrograms() const {
+    return dlss_chain.active && dlss_chain.failure == VideoCore::GameDlssReason::None &&
+           GameDlssBlocker() == VideoCore::GameDlssReason::None;
+}
+
+// Checks the network's output against its input (on the GPU; the result arrives a few frames
+// later) and drops the network for the session after DLSS_NETWORK_BAD_CHECKS failed checks in a
+// row: a network that produces NaN, freezes on an old image or draws garbage would otherwise stay
+// on screen.
+void KeplerCompute::CheckDlssNetwork() {
+    dlss_chain.checked = rasterizer->CanProbeGameDlssOutput();
+    if (!dlss_chain.checked) {
+        return;
+    }
+    const auto& cbuf = launch_description.const_buffer_config[0];
+    const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const auto surface = [&](u32 offset) -> std::optional<Fermi2D::Surface> {
+        const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
+        if (tic_index > regs.tic.limit) {
+            return std::nullopt;
+        }
+        const auto tic = GetTICEntry(tic_index);
+        using RTFormat = Tegra::RenderTargetFormat;
+        Fermi2D::Surface result{};
+        switch (tic.format) {
+        case Texture::TextureFormat::B10G11R11:
+            result.format = RTFormat::B10G11R11_FLOAT;
+            break;
+        case Texture::TextureFormat::R16G16B16A16:
+            result.format = RTFormat::R16G16B16A16_FLOAT;
+            break;
+        case Texture::TextureFormat::A8B8G8R8:
+            result.format = RTFormat::A8B8G8R8_UNORM;
+            break;
+        case Texture::TextureFormat::A2B10G10R10:
+            result.format = RTFormat::A2B10G10R10_UNORM;
+            break;
+        default:
+            return std::nullopt;
+        }
+        if (tic.Address() == 0 || !tic.IsBlockLinear()) {
+            return std::nullopt;
+        }
+        result.linear = Fermi2D::MemoryLayout::BlockLinear;
+        result.block_width.Assign(tic.block_width);
+        result.block_height.Assign(tic.block_height);
+        result.block_depth.Assign(tic.block_depth);
+        result.depth = 1;
+        result.width = tic.Width();
+        result.height = tic.Height();
+        result.addr_upper = static_cast<u32>(tic.Address() >> 32);
+        result.addr_lower = static_cast<u32>(tic.Address());
+        return result;
+    };
+    const auto input = surface(0x328);
+    const auto output = surface(0x348);
+    if (!input || !output) {
+        return;
+    }
+    const auto probe = rasterizer->ProbeGameDlssOutput(*input, *output);
+    if (!probe) {
+        return;
+    }
+    const bool invalid = probe->invalid_samples != 0;
+    const bool mismatched = probe->mismatched * 100 > probe->blocks * DLSS_CHECK_MISMATCH_PERCENT;
+    if (!invalid && !mismatched) {
+        ++dlss_chain.good_checks;
+        dlss_chain.bad_checks = 0;
+        return;
+    }
+    dlss_chain.good_checks = 0;
+    if (++dlss_chain.bad_checks < DLSS_NETWORK_BAD_CHECKS) {
+        return;
+    }
+    dlss_chain.failure = invalid ? VideoCore::GameDlssReason::InvalidOutput
+                                 : VideoCore::GameDlssReason::OutputMismatch;
+    LOG_WARNING(HW_GPU,
+                "Game DLSS network: {} in {} checks in a row (last: {}/{} blocks mismatched, worst "
+                "{:.3f}, {} invalid samples); the replacement upscale draws the output from now on",
+                VideoCore::GameDlssReasonText(dlss_chain.failure), dlss_chain.bad_checks,
+                probe->mismatched, probe->blocks, probe->worst, probe->invalid_samples);
+}
+
+// Tells the Graphics tab what draws the game's DLSS evaluation, when that changes.
+void KeplerCompute::UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker) {
+    using VideoCore::GameDlssReason;
+    using VideoCore::GameDlssState;
+    VideoCore::GameDlssStatus shown{.state = GameDlssState::Checking};
+    if (dlss_chain.native) {
+        shown.state = GameDlssState::Network;
+    } else if (dlss_chain.failure != GameDlssReason::None) {
+        shown = {.state = GameDlssState::Replacement, .reason = dlss_chain.failure};
+    } else if (blocker != GameDlssReason::None) {
+        shown = {.state = GameDlssState::Replacement, .reason = blocker};
+    } else if (!complete) {
+        shown = {.state = GameDlssState::Replacement,
+                 .reason = GameDlssReason::PassesCannotRun,
+                 .rejected_passes = dlss_chain.rejected};
+    }
+    if (shown.state == dlss_chain.status.state && shown.reason == dlss_chain.status.reason &&
+        shown.rejected_passes == dlss_chain.status.rejected_passes) {
+        return;
+    }
+    // A failed check was logged as it happened; the network's start is logged above.
+    if (shown.state == GameDlssState::Checking) {
+        LOG_INFO(HW_GPU, "Game DLSS network: checking its output; the replacement upscale draws "
+                         "meanwhile");
+    } else if (shown.reason == GameDlssReason::PassesCannotRun) {
+        LOG_INFO(HW_GPU,
+                 "Game DLSS network: {} pass(es) can't run, the replacement upscale "
+                 "draws the output",
+                 shown.rejected_passes);
+    } else if (shown.state == GameDlssState::Replacement && shown.reason != dlss_chain.failure) {
+        LOG_INFO(HW_GPU, "Game DLSS network: {}, the replacement upscale draws the output",
+                 VideoCore::GameDlssReasonText(shown.reason));
+    }
+    dlss_chain.status = shown;
+    VideoCore::SetGameDlssStatus(shown);
+}
+
+// Ends this frame's DLSS evaluation at its output pass: either the network's own result stays,
+// or the replacement upscale draws over it. Returns whether the replacement ran.
+bool KeplerCompute::FinishDlssEvaluation() {
+    dlss_chain.active = false;
+    const bool complete = dlss_chain.rejected == 0;
+    dlss_chain.clean_evaluations = complete ? dlss_chain.clean_evaluations + 1 : 0;
+    ++dlss_chain.evaluations;
+    using VideoCore::GameDlssReason;
+    const GameDlssReason blocker = GameDlssBlocker();
+    const bool can_show =
+        blocker == GameDlssReason::None && dlss_chain.failure == GameDlssReason::None;
+    // Checked before the replacement upscale draws over the output. Checks start over whenever
+    // the network can't run.
+    if (complete && can_show) {
+        CheckDlssNetwork();
+    } else {
+        dlss_chain.good_checks = 0;
+        dlss_chain.bad_checks = 0;
+    }
+    bool native = complete && can_show;
+    if (!dlss_chain.native) {
+        native = native && dlss_chain.clean_evaluations >= DLSS_NETWORK_CLEAN_EVALUATIONS &&
+                 (!dlss_chain.checked || dlss_chain.good_checks >= DLSS_NETWORK_GOOD_CHECKS);
+    }
+    if (native != dlss_chain.native) {
+        dlss_chain.native = native;
+        if (native) {
+            LOG_INFO(HW_GPU, "Game DLSS network: every pass runs{}, its own output is shown",
+                     dlss_chain.checked ? " and its output checks out" : "");
+        }
+    }
+    UpdateGameDlssStatus(complete, blocker);
+    if (native) {
         return false;
     }
-    return true;
+    return UpscaleInsteadOfNativeProgram();
+}
+
+// Fortune's Weave's last DLSS network pass: it reads the input colour (the first pass's) through
+// cbuf0+0x328 and writes the upscaled image through +0x348.
+bool KeplerCompute::IsDlssOutputPass() {
+    const auto& cbuf = launch_description.const_buffer_config[0];
+    if (cbuf.size.Value() < 0x34c) {
+        return false;
+    }
+    const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
+        const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
+        if (tic_index > regs.tic.limit) {
+            return std::nullopt;
+        }
+        return GetTICEntry(tic_index);
+    };
+    const auto input = image(0x328), output = image(0x348);
+    return input && output && input->Address() == dlss_motion_color && output->Address() != 0 &&
+           input->format == output->format && output->Width() > input->Width();
 }
 
 // Logs the images a rejected program's handles (constant bank 0, bytes 0x80-0x11c) point to, so a
@@ -588,10 +833,48 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
 
 std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
+// Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
+// at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
+// input's size) at +0x298 and this frame's camera jitter (x, y; input pixels, Halton bases 2 and 3
+// less 0.5) at +0x1b0.
+bool KeplerCompute::RememberDlssMotionVectors() {
+    const auto& cbuf = launch_description.const_buffer_config[0];
+    if (cbuf.size.Value() < 0x294) return false;
+    const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
+        const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
+        if (tic_index > regs.tic.limit) return std::nullopt;
+        return GetTICEntry(tic_index);
+    };
+    const auto color = image(0x278), motion = image(0x290);
+    if (!color || !motion || color->format != Texture::TextureFormat::B10G11R11 ||
+        motion->format != Texture::TextureFormat::R16G16 || motion->Address() == 0 ||
+        motion->Width() != color->Width() || motion->Height() != color->Height() ||
+        !motion->IsBlockLinear())
+        return false;
+    dlss_motion_vectors = *motion;
+    dlss_motion_color = color->Address();
+    const auto depth = cbuf.size.Value() >= 0x29c ? image(0x298) : std::nullopt;
+    if (depth && depth->format == Texture::TextureFormat::Z32 && depth->Address() != 0 &&
+        depth->Width() == color->Width() && depth->Height() == color->Height() &&
+        depth->IsBlockLinear()) {
+        dlss_depth = *depth;
+    } else {
+        dlss_depth.reset();
+    }
+    dlss_jitter = {std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b0)),
+                   std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b4))};
+    return true;
+}
+
 // Title 4's upscaler reads the tonemapped frame through the texture handle at cbuf0+0x90 and
 // writes the output resolution image through the surface handle at cbuf0+0xa0 (from its
-// TLD/SUST operands). Blit one to the other with bilinear filtering when both are plain 2D images
-// of the same format and the output is larger.
+// TLD/SUST operands). Kirby Air Riders' reads a 2048x1152 image at cbuf0+0x80 and writes a
+// 2560x1440 one at +0x90; Fire Emblem: Fortune's Weave's DLSS network ends with a pass that reads
+// the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
+// 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
+// images of the same format and the output is larger: title 4's slots first, then Fortune's
+// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -600,10 +883,37 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto input = image(0x90), output = image(0xa0);
-    if (!input || !output || input->format != output->format || input->Address() == 0 ||
-        output->Address() == 0 || output->Width() <= input->Width() || !input->IsBlockLinear() ||
-        !output->IsBlockLinear())
+    const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
+                                 const std::optional<Texture::TICEntry>& to) {
+        return from && to && from->format == to->format && from->Address() != 0 &&
+               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
+               to->IsBlockLinear();
+    };
+    std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
+    bool fortunes_weave = false;
+    if (!upscale_pair(input, output)) {
+        input = image(0x328);
+        output = image(0x348);
+        fortunes_weave = upscale_pair(input, output);
+    }
+    if (!upscale_pair(input, output)) {
+        input.reset();
+        output.reset();
+        for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
+            const auto from = memory_manager.Read<u32>(cbuf_address + first) != 0 ? image(first)
+                                                                                    : std::nullopt;
+            for (u32 second = first + 4; from && second < 0x120; second += 4) {
+                if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
+                const auto to = image(second);
+                if (upscale_pair(from, to)) {
+                    input = from;
+                    output = to;
+                    break;
+                }
+            }
+        }
+    }
+    if (!input || !output)
         return false;
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
@@ -628,8 +938,32 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         result.addr_lower = static_cast<u32>(tic.Address());
         return result;
     };
+    // Title 4's program ends by decoding its result from sRGB to linear (the 0.04045 threshold
+    // and the 2.4 exponent as half-precision immediates of HSETP2 and HMUL2). The copy of its
+    // sRGB input left the frame gamma-encoded twice, washed out: decode in the copy when the
+    // program does.
+    static std::unordered_map<GPUVAddr, bool> decodes_srgb;
+    const GPUVAddr program = regs.code_loc.Address();
+    const auto [known, inserted] = decodes_srgb.try_emplace(program, false);
+    if (inserted) {
+        bool threshold = false, exponent = false;
+        std::array<u32, 0x400> block{};
+        for (u64 offset = 0; offset < 0x20000 && !(threshold && exponent); offset += sizeof(block)) {
+            if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block))) break;
+            memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
+            for (size_t word = 0; word < block.size(); word += 4) {
+                const u32 opcode = block[word] & 0xfff;
+                threshold |= opcode == 0x434 && block[word + 1] == 0x292d292d;
+                exponent |= opcode == 0x832 && block[word + 1] == 0x40cc40cc;
+            }
+        }
+        known->second = threshold && exponent;
+        LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: {}", program,
+                 known->second ? "decodes sRGB like the program" : "plain copy");
+    }
     const Fermi2D::Config config{
-        .operation = Fermi2D::Operation::SrcCopy,
+        .operation = known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                   : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,
@@ -700,7 +1034,25 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             source.format = static_cast<RTFormat>(std::strtoul(value, nullptr, 16));
         }
     }
-    const bool done = rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
+    // Fortune's Weave: a temporal upscale along its motion vectors that undoes this frame's camera
+    // jitter (both from the frame's first DLSS pass) and accumulates the frames as DLSS would.
+    // EDEN_NX2_TEMPORAL_UPSCALE=0 blits instead.
+    const auto upscale_temporally = [&] {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_TEMPORAL_UPSCALE");
+            return value == nullptr || std::string_view{value} != "0";
+        }();
+        if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
+            dlss_motion_color != input->Address())
+            return false;
+        Fermi2D::Surface motion = surface(*dlss_motion_vectors);
+        motion.format = RTFormat::R16G16_FLOAT;
+        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
+                                                     dlss_depth ? &*dlss_depth : nullptr,
+                                                     dlss_jitter, {1.0f, 1.0f});
+    };
+    const bool done = upscale_temporally() ||
+                      rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
