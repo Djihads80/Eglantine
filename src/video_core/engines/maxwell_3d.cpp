@@ -947,6 +947,9 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     }
     if (Profile::Enabled()) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
+        if (from_macro) {
+            Profile::Add(Profile::Counter::MacroWrites, 1);
+        }
     }
     if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
         fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
@@ -1174,7 +1177,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
+    split.Drain(VideoCommon::Nx2Profile::Zone::SplitDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);

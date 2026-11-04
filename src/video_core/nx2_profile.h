@@ -52,6 +52,8 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    SplitWriters, ///< Split GPU thread: the front waits for queued compute/copy work (WaitForWriters)
+    SplitDmaRead, ///< Split GPU thread: the front drains the back for a macro DMA read
     Count,
 };
 
@@ -62,7 +64,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
@@ -82,7 +84,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, 16> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -132,6 +134,11 @@ enum class Counter : u32 {
     SameValueWrites, ///< Of MethodWrites: the register already held the value
     AcquireChecks,  ///< Semaphore acquires evaluated
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    MacroWrites,    ///< Of MethodWrites: made by macros running on the split's front
+    MultiWords,     ///< Words the front sent to the back as multi-method entries
+    GpfifoEntries,  ///< Command list (GPFIFO) entries started
+    AcquireLedger,  ///< Of AcquireChecks: met without draining the back (semaphore ledger)
+    JitSkippedWrites, ///< Of SameValueWrites: elided inside the ARM64 macro JIT
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -186,12 +193,18 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[1]) * 1e9 / window,
                         static_cast<double>(data.counters[3]) * 1e9 / 1024.0 / window,
                         static_cast<double>(data.counters[2]) * 1e9 / 1024.0 / window);
-    line += fmt::format(" | 3D register writes {:.0f} ({:.0f} same value)",
+    line += fmt::format(" | 3D register writes {:.0f} ({:.0f} same value, {:.0f} from macros, {:.0f} elided in JIT)",
                         static_cast<double>(data.counters[4]) * 1e9 / window,
-                        static_cast<double>(data.counters[5]) * 1e9 / window);
-    line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
+                        static_cast<double>(data.counters[5]) * 1e9 / window,
+                        static_cast<double>(data.counters[8]) * 1e9 / window,
+                        static_cast<double>(data.counters[12]) * 1e9 / window);
+    line += fmt::format(" | multi words {:.0f} | GPFIFO entries {:.0f}",
+                        static_cast<double>(data.counters[9]) * 1e9 / window,
+                        static_cast<double>(data.counters[10]) * 1e9 / window);
+    line += fmt::format(" | acquires {:.0f} ({:.0f} waited, {:.0f} met by ledger)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
-                        static_cast<double>(data.counters[7]) * 1e9 / window);
+                        static_cast<double>(data.counters[7]) * 1e9 / window,
+                        static_cast<double>(data.counters[11]) * 1e9 / window);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

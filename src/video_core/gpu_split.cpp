@@ -331,12 +331,16 @@ void GpuSplit::Publish() {
 }
 
 void GpuSplit::Drain() {
+    Drain(Nx2Profile::Zone::SplitDrain);
+}
+
+void GpuSplit::Drain(Nx2Profile::Zone zone) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
         return;
     }
     Publish();
-    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    Nx2Profile::Scope scope{zone};
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
@@ -372,6 +376,7 @@ bool GpuSplit::WaitForWriters() {
     }
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
+    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWriters};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
@@ -406,6 +411,7 @@ void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
 void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                            u32 amount, u32 methods_pending, const GPUVAddr* segment) {
     SelectEngine(engine);
+    Nx2Profile::Add(Nx2Profile::Counter::MultiWords, amount);
     // Long runs (constant buffer and inline uploads) go in pieces, as when a method's data
     // continues in the next GPFIFO entry.
     while (amount > 0) {
