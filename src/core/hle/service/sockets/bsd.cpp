@@ -1790,13 +1790,17 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
         proxy->SetRcvTimeo(descriptor->receive_timeout);
         proxy->SetSndTimeo(descriptor->send_timeout);
         proxy->SetNonBlock((descriptor->flags & Network::FLAG_O_NONBLOCK) != 0);
-        descriptor->socket->Close();
-        std::scoped_lock lock{file_descriptors_mutex};
-        for (auto& entry : file_descriptors) {
-            if (entry && entry->socket == descriptor->socket) {
-                entry->socket = proxy;
+        {
+            std::scoped_lock lock{file_descriptors_mutex};
+            for (auto& entry : file_descriptors) {
+                if (entry && entry->socket == descriptor->socket) {
+                    entry->socket = proxy;
+                }
             }
         }
+        // Deferred waits let go of the host socket before it closes.
+        select_notifier->NotifyChange(descriptor->socket.get());
+        descriptor->socket->Close();
         socket = std::move(proxy);
     }
 
