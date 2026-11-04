@@ -142,7 +142,8 @@ void StagingBufferPool::TickFrame() {
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
-    if (AreRegionsActive(Region(free_iterator) + 1,
+    // free_iterator 0: nothing is known free yet, region 0 included (see the wrap below).
+    if (AreRegionsActive(free_iterator == 0 ? 0 : Region(free_iterator) + 1,
                          (std::min)(Region(iterator + size) + 1, NUM_SYNCS))) {
         // Avoid waiting for the previous usages to be free
         return GetStagingBuffer(size, MemoryUsage::Upload);
@@ -161,7 +162,10 @@ StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
         free_iterator = size;
 
         if (AreRegionsActive(0, Region(size) + 1)) {
-            // Avoid waiting for the previous usages to be free
+            // Avoid waiting for the previous usages to be free. Region 0 is still in use: with
+            // free_iterator at `size`, a next request this size or smaller skipped the check and
+            // got offset 0 while the GPU still read it. The next request checks region 0 again.
+            free_iterator = 0;
             return GetStagingBuffer(size, MemoryUsage::Upload);
         }
     }
