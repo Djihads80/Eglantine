@@ -4,11 +4,33 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/passes.h"
+
+namespace {
+class StubEnvironment final : public Shader::Environment {
+public:
+    u64 ReadInstruction(u32) override { return 0; }
+    u32 ReadCbufValue(u32, u32) override { return 0; }
+    Shader::TextureType ReadTextureType(u32) override { return {}; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return {}; }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 0; }
+    u32 TextureBoundBuffer() const override { return 0; }
+    u32 LocalMemorySize() const override { return 0; }
+    u32 SharedMemorySize() const override { return 0; }
+    std::array<u32, 3> WorkgroupSize() const override { return {1, 1, 1}; }
+    bool HasHLEMacroState() const override { return false; }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override {
+        return std::nullopt;
+    }
+    void Dump(u64, u64) override {}
+};
+} // namespace
 
 TEST_CASE("Global address tracking stops at a memory load", "[shader_recompiler][global_memory]") {
     using namespace Shader;
@@ -27,7 +49,8 @@ TEST_CASE("Global address tracking stops at a memory load", "[shader_recompiler]
     program.post_order_blocks.push_back(&block);
     HostTranslateInfo host{};
     host.min_ssbo_alignment = 16;
-    Optimization::GlobalMemoryToStorageBufferPass(program, host);
+    StubEnvironment env;
+    Optimization::GlobalMemoryToStorageBufferPass(env, program, host);
 
     const auto has = [&](IR::Opcode opcode) {
         return std::ranges::any_of(block.Instructions(), [=](const IR::Inst& inst) {

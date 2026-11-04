@@ -641,8 +641,16 @@ VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
 }
 
 bool KeplerCompute::EmulatesNativeTensorPrograms() const {
-    return dlss_chain.active && dlss_chain.failure == VideoCore::GameDlssReason::None &&
-           GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    if (dlss_chain.active) {
+        return dlss_chain.failure == VideoCore::GameDlssReason::None &&
+               GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    }
+    // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
+    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
+    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
+    // shader cache keeps the result of a program's first dispatch.
+    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
