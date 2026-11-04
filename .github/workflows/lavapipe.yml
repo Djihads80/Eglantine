@@ -32,7 +32,7 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2000M
-      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -69,9 +69,8 @@ jobs:
         id: cpm
         uses: actions/cache/restore@v4
         with:
-          path: .cpm-cache
+          path: .cache/cpm
           key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
-          restore-keys: cpm-
 
       - name: Configure
         run: |
@@ -100,6 +99,7 @@ jobs:
 
       # A Vulkan test that skips because no driver was found must not pass as a green run.
       - name: Run Vulkan tests
+        shell: bash
         run: ./build/bin/tests "[vulkan]" --success 2>&1 | tee vulkan-tests.log
 
       - name: Check the Vulkan test ran instead of skipping
@@ -119,5 +119,5 @@ jobs:
         if: ${{ always() && github.ref == 'refs/heads/nx2' && steps.cpm.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: .cpm-cache
+          path: .cache/cpm
           key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
