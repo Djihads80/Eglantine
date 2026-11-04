@@ -557,6 +557,14 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         dlss_chain.pending.clear();
     }
     const bool output_pass = dlss_chain.active && IsDlssOutputPass();
+    // Fortune's Weave's evaluation is 13 dispatches. Without an output pass by then, the first
+    // pass was another program with a similar constant buffer: stop following it. Skipped
+    // dispatches count too, so a chain always ends.
+    constexpr u32 max_dispatches = 64;
+    if (dlss_chain.active && !output_pass && ++dlss_chain.dispatches > max_dispatches) {
+        dlss_chain.active = false;
+        dlss_chain.pending.clear();
+    }
     if (dlss_chain.active) {
         // While the network can't be shown (it failed its checks, or it is off) the passes of
         // earlier evaluations stop running, and the replacement upscale draws the output at the
@@ -568,13 +576,6 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             return output_pass ? FinishDlssEvaluation() : true;
         }
         dlss_chain.pending.insert(program);
-        // Fortune's Weave's evaluation is 13 dispatches. Without an output pass by then, the first
-        // pass was another program with a similar constant buffer: stop following it.
-        constexpr u32 max_dispatches = 64;
-        if (!output_pass && ++dlss_chain.dispatches > max_dispatches) {
-            dlss_chain.active = false;
-            dlss_chain.pending.clear();
-        }
     }
     bool dispatched = true;
     try {
