@@ -4,31 +4,20 @@ This document describes the split GitHub Actions pipeline added with this change
 
 ## What runs when
 
-| Event | What it builds | Publishes? |
-|---|---|---|
+| Event                                                  | What it builds                                                        | Publishes?                                                                 |
+| ------------------------------------------------------ | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Push to `nx2` that changes `VERSION` or `CHANGELOG.md` | Stable release or release candidate, based on the suffix in `VERSION` | Yes, unless the exact tag already exists or the changelog section is empty |
-| Scheduled run at 03:00 UTC daily | Latest `nx2` commit | Yes; skipped when the latest daily already points at that commit |
-| Actions → `ci` → Run workflow, `kind: branch` | The selected branch | Yes by default; can be disabled |
-| Actions → `ci` → Run workflow, `kind: daily` | `nx2` only, even if another branch is selected the run is rejected | Yes by default; can be disabled |
-| Same-repository PR with label `ci:build` | PR head commit; rebuilt on synchronize/reopen | Yes, as a rolling branch pre-release |
-| Fork PR | No build from the base repository | No; see “Forks” below |
+| Scheduled run at 03:00 UTC daily                       | Latest `nx2` commit                                                   | Yes; skipped when the latest daily already points at that commit           |
+| Actions → `ci` → Run workflow, `kind: branch`          | The selected branch                                                   | Yes by default; can be disabled                                            |
+| Actions → `ci` → Run workflow, `kind: daily`           | `nx2` only, even if another branch is selected the run is rejected    | Yes by default; can be disabled                                            |
+| Same-repository PR with label `ci:build`               | PR head commit; rebuilt on synchronize/reopen                         | Yes, as a rolling branch pre-release                                       |
+| Fork PR                                                | No build from the base repository                                     | No; see “Forks” below                                                      |
 
 **Important behavior change:** the previous `release-binaries.yml` built on selected source/build-file pushes to `nx2` and `nx2-experimental`. This design instead runs the release pipeline on `VERSION` or `CHANGELOG.md` changes, scheduled daily, manual requests, or explicitly labelled same-repository PRs. Ordinary source pushes do not trigger this release pipeline. A changelog-only push retries a previously blocked version release; once its tag exists, the duplicate check skips it. The `nx2-experimental` branch is not included in the new release triggers.
 
 The schedule is defined in UTC, and GitHub schedules are not guaranteed to start at the exact minute. On public repositories, GitHub can disable scheduled workflows after 60 days without repository activity; high Actions load can also delay runs. The scheduled workflow runs from the repository's default branch, then checks out `nx2` for the actual build. See the one-time setup section: the reusable workflow files must also exist on the default branch.
 
 **First-merge warning:** adding `ci.yml` and `VERSION` together to `nx2` triggers the initial version workflow. The supplied `CHANGELOG.md` intentionally leaves `[0.1.0]` empty rather than inventing release notes, so the first run fails safely at preflight until maintainers add real notes. Add the notes before the cutover merge to publish immediately, or add them in a follow-up changelog-only commit; `CHANGELOG.md` is also a push trigger for this recovery case. Confirm `VERSION`, permissions, and whether the first run should publish before merging the cutover.
-
-## One-time repository setup
-
-1. **Merge the CI files to `nx2` and the repository's default branch.** The default branch must contain `ci.yml`, `build-linux.yml`, `build-windows.yml`, `build-macos.yml`, `release.yml`, `cleanup-branch.yml`, `bump-version.yml`, and the scripts/action. This is required for scheduled runs and for the Actions “Run workflow” UI. If the default branch is `nx2`, one merge is enough. If it is different, keep the CI files synchronized on both branches.
-2. **Allow the bump workflow to open PRs.** In repository Settings → Actions → General → Workflow permissions, enable **Allow GitHub Actions to create and approve pull requests**. The workflow requests only `contents: write` and `pull-requests: write` for the version-bump job. If organization policy forbids this, use a maintainer-created PR instead of the bump workflow.
-3. **Optional Discord notification.** Add an Actions repository secret named `DISCORD_WEBHOOK_URL`. Only stable and RC releases in `Djihads80/Eglantine` use it. Without the secret, publishing still succeeds and the notification step exits successfully without sending anything.
-4. **Optional macOS runner override.** The default is `macos-15` to preserve the current release builder's OS generation and the project's macOS 15 deployment target. Set the Actions repository variable `MACOS_RUNNER` to `macos-26` to experiment with macOS 26 ARM64 instead. Both labels are currently available on GitHub-hosted ARM64 runners, but changing the runner can change Homebrew library requirements; verify the resulting bundle on the oldest macOS version you intend to support before switching the default.
-5. Ensure GitHub Actions is enabled for the repository and that the `nx2` branch is not protected in a way that prevents maintainers from merging the generated release PR.
-6. Once the new pipeline has been exercised successfully, remove or disable `.github/workflows/release-binaries.yml`. Leaving it enabled will keep the old build-number release workflow running alongside the new versioned workflow, producing duplicate builds/releases.
-
-No new GitHub token secret is required. The workflows use the built-in `GITHUB_TOKEN`; only the release and cleanup jobs receive `contents: write`. Build jobs are read-only. Fork pull requests are deliberately excluded from the publishing pipeline.
 
 ## Version and changelog rules
 
@@ -87,12 +76,12 @@ Both the scheme-preparation job and the publishing job check out CI helper scrip
 
 ## Build outputs
 
-| Platform | Default output | Optional PGO output |
-|---|---|---|
-| Linux x86_64 | AppImage and `.tar.gz` | AppImage and `.tar.gz` |
-| Linux aarch64 | AppImage and `.tar.gz` | AppImage and `.tar.gz` |
-| Windows x86_64 | MSVC `.zip` | MinGW/clang `.zip` |
-| macOS Apple Silicon | App bundle `.zip` and `.dmg` | Not built |
+| Platform            | Default output               | Optional PGO output    |
+| ------------------- | ---------------------------- | ---------------------- |
+| Linux x86_64        | AppImage and `.tar.gz`       | AppImage and `.tar.gz` |
+| Linux aarch64       | AppImage and `.tar.gz`       | AppImage and `.tar.gz` |
+| Windows x86_64      | MSVC `.zip`                  | MinGW/clang `.zip`     |
+| macOS Apple Silicon | App bundle `.zip` and `.dmg` | Not built              |
 
 The existing build steps use the repository's current CMake targets (`yuzu` and `yuzu-cmd`) and package the produced `eglantine` and `eden-cli` binaries. Linux AppImages require glibc 2.39 or newer. Linux tarballs use system Qt and other shared libraries. Windows archives contain the deployed runtime dependencies. macOS artifacts are ad-hoc signed, not notarized; Gatekeeper may require the user to approve the app on first launch.
 
@@ -100,12 +89,12 @@ Build artifacts are retained for seven days. Published GitHub Release assets rem
 
 ## Release naming
 
-| Kind | Tag | Release title | GitHub Release flag |
-|---|---|---|---|
-| Stable | `vX.Y.Z` | `Eglantine vX.Y.Z` | Not a pre-release; marked latest |
-| Release candidate | `vX.Y.Z-rcN` | `Eglantine vX.Y.Z-rcN` | Pre-release |
-| Daily | `daily-YYYYMMDD` | `Eglantine Build DD/MM/YYYY` | Pre-release; replaces same-day tag |
-| Branch / PR | `branch-<slug>-<hash>` | `Eglantine Branch: <PR title or branch>` | Pre-release; rolling |
+| Kind              | Tag                    | Release title                            | GitHub Release flag                |
+| ----------------- | ---------------------- | ---------------------------------------- | ---------------------------------- |
+| Stable            | `vX.Y.Z`               | `Eglantine vX.Y.Z`                       | Not a pre-release; marked latest   |
+| Release candidate | `vX.Y.Z-rcN`           | `Eglantine vX.Y.Z-rcN`                   | Pre-release                        |
+| Daily             | `daily-YYYYMMDD`       | `Eglantine Build DD/MM/YYYY`             | Pre-release; replaces same-day tag |
+| Branch / PR       | `branch-<slug>-<hash>` | `Eglantine Branch: <PR title or branch>` | Pre-release; rolling               |
 
 Only stable and RC publications send the optional Discord notification. Daily and branch releases do not.
 
