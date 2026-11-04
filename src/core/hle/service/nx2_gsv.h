@@ -3312,7 +3312,12 @@ private:
     // size, u64 alignment; the client raises the alignment to at least 4 KiB and rounds the size.
     void CalculateRequirements(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        const auto layout = Nx2CalculateImageLayout(w + 2);
+        auto layout = Nx2CalculateImageLayout(w + 2);
+        // Star Fox's NVN window textures use 4 KiB pool offsets. Reporting the block-linear
+        // layout's 8 KiB alignment makes NativeWindow::Acquire reject those textures.
+        if (system.GetApplicationProcessProgramID() == 0x0400E88025B1A000ULL) {
+            layout.alignment = 0x1000;
+        }
         LOG_DEBUG(Service, "nx2:gsv 1510 kind={} {}x{} block={} pitch={:#x} format={} -> size={:#x} align={:#x}",
                   w[3], layout.width, layout.height, layout.block_height_log2, layout.pitch, w[8],
                   layout.size, layout.alignment);

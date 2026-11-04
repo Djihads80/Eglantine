@@ -32,6 +32,7 @@ add_executable(tests
     video_core/ampere_lowering.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
+    video_core/ampere_gradient.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_guarded_ulea.cpp
     video_core/ampere_compute_lowering.cpp
