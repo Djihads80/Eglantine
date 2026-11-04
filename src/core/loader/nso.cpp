@@ -5,9 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "common/common_funcs.h"
@@ -33,6 +37,119 @@
 
 namespace Loader {
 namespace {
+
+// Mario Kart World: reduced detail (Settings::values.mkw_reduce_detail). Pattern-matched text
+// and rodata patches to the module before it is mapped, each applied only when its pattern
+// occurs exactly once. The default set is two shadow cascades and the LOD distance ratio key
+// renamed (the game then keeps the constructor's 1.0 instead of the loaded 2.0).
+// EDEN_NX2_MKW_DETAIL, when set, replaces the set: a comma list of "cascades=1|2|3" (3: no
+// patch), "lod=1.0|0.75|0.5" (below 1.0 the constructor default is patched too), "elink"
+// (vehicle count divisor key), "emit" (single emit key), "traffic" (mob car count and distance
+// keys), e.g. "cascades=2,lod=1.0,elink,emit,traffic".
+struct MkwDetailOptions {
+    u32 cascades{2};
+    bool lod_key{true};
+    u32 lod_default{0}; ///< 0: keep the constructor's 1.0; else the mov w8 immediate to use
+    bool elink{};
+    bool emit{};
+    bool traffic{};
+};
+
+MkwDetailOptions ParseMkwDetail(std::string_view text) {
+    MkwDetailOptions options{.cascades = 3, .lod_key = false};
+    while (!text.empty()) {
+        const size_t comma = text.find(',');
+        const std::string_view token = text.substr(0, comma);
+        text = comma == std::string_view::npos ? std::string_view{} : text.substr(comma + 1);
+        if (token.empty()) {
+            continue;
+        }
+        if (token == "elink") {
+            options.elink = true;
+        } else if (token == "emit") {
+            options.emit = true;
+        } else if (token == "traffic") {
+            options.traffic = true;
+        } else if (token.starts_with("cascades=")) {
+            const std::string_view value = token.substr(9);
+            options.cascades = value == "1" ? 1U : value == "2" ? 2U : 3U;
+        } else if (token.starts_with("lod=")) {
+            const std::string_view value = token.substr(4);
+            options.lod_key = true;
+            if (value == "1.0" || value == "1") {
+                options.lod_default = 0;
+            } else if (value == "0.75") {
+                options.lod_default = 0x52A7E808; // mov w8, #0x3f40'0000 (0.75f)
+            } else if (value == "0.5") {
+                options.lod_default = 0x52A7E008; // mov w8, #0x3f00'0000 (0.5f)
+            } else {
+                LOG_WARNING(Loader, "EDEN_NX2_MKW_DETAIL: unknown LOD ratio '{}' (1.0, 0.75, 0.5)",
+                            value);
+                options.lod_key = false;
+            }
+        } else {
+            LOG_WARNING(Loader, "EDEN_NX2_MKW_DETAIL: unknown item '{}'", token);
+        }
+    }
+    return options;
+}
+
+/// The offset of `needle` in `hay` when it occurs exactly once; `matches` gets the count.
+std::optional<size_t> FindOnce(std::span<const u8> hay, std::span<const u8> needle,
+                               size_t& matches) {
+    matches = 0;
+    std::optional<size_t> found;
+    auto it = hay.begin();
+    while (true) {
+        it = std::search(it, hay.end(), needle.begin(), needle.end());
+        if (it == hay.end()) {
+            break;
+        }
+        if (++matches == 1) {
+            found = static_cast<size_t>(it - hay.begin());
+        }
+        ++it;
+    }
+    return matches == 1 ? found : std::nullopt;
+}
+
+/// Replaces the first word of the one occurrence of `sequence` in the text segment.
+void PatchMkwWords(std::span<u8> text, u64 text_offset, std::span<const u32> sequence,
+                   u32 replacement, std::string_view what) {
+    std::array<u8, 64> needle{};
+    const size_t bytes = sequence.size() * sizeof(u32);
+    ASSERT(bytes <= needle.size());
+    std::memcpy(needle.data(), sequence.data(), bytes);
+    size_t matches = 0;
+    const auto at = FindOnce(text, std::span<const u8>{needle.data(), bytes}, matches);
+    if (!at) {
+        LOG_WARNING(Loader, "Mario Kart World: {} patch skipped ({} matches)", what, matches);
+        return;
+    }
+    std::memcpy(text.data() + *at, &replacement, sizeof(replacement));
+    LOG_INFO(Loader, "Mario Kart World: {} (main+{:#x})", what, text_offset + *at);
+}
+
+/// Overwrites the one occurrence of the NUL-framed `key` in rodata with `replacement`, of the
+/// same length (NUL padding included).
+void PatchMkwKey(std::span<u8> rodata, u64 rodata_offset, std::string_view key,
+                 std::string_view replacement, std::string_view what) {
+    ASSERT(key.size() == replacement.size());
+    std::array<u8, 64> needle{};
+    ASSERT(key.size() + 2 <= needle.size());
+    needle[0] = 0;
+    std::memcpy(needle.data() + 1, key.data(), key.size());
+    needle[key.size() + 1] = 0;
+    size_t matches = 0;
+    const auto at = FindOnce(rodata, std::span<const u8>{needle.data(), key.size() + 2}, matches);
+    if (!at) {
+        LOG_WARNING(Loader, "Mario Kart World: {} patch skipped ({} matches)", what, matches);
+        return;
+    }
+    std::memcpy(rodata.data() + *at + 1, replacement.data(), replacement.size());
+    LOG_INFO(Loader, "Mario Kart World: {} (main+{:#x})", what, rodata_offset + *at + 1);
+}
+
 struct MODHeader {
     u32_le magic;
     u32_le dynamic_offset;
@@ -243,6 +360,58 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             LOG_WARNING(Loader,
                         "Mario Kart World FPS patch skipped (mode matches {}, frame-time matches {})",
                         mode_matches, frame_time_matches);
+        }
+    }
+
+    // Mario Kart World: reduced detail (see MkwDetailOptions). The environment list applies
+    // with the setting off too, as an opt-in for testing.
+    if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
+        const char* const env = std::getenv("EDEN_NX2_MKW_DETAIL");
+        if (Settings::values.mkw_reduce_detail.GetValue() || env != nullptr) {
+            const MkwDetailOptions options =
+                env != nullptr ? ParseMkwDetail(env) : MkwDetailOptions{};
+            const auto& text = nso_header.segments[0];
+            const auto& rodata = nso_header.segments[1];
+            const std::span<u8> text_bytes{codeset.memory.data() + module_start + text.location,
+                                           text.size};
+            const std::span<u8> rodata_bytes{
+                codeset.memory.data() + module_start + rodata.location, rodata.size};
+            if (options.cascades < 3) {
+                // DepthShadow init: ldr w8, [x21, #0x1a48] (the cascade count) -> mov w8, #N.
+                static constexpr std::array<u32, 7> cascades_sequence{
+                    0xB95A4AA8, 0x6B09011F, 0x1A89B108, 0xF941B6C9,
+                    0x7100051F, 0x1A9FC508, 0xB9022AC8};
+                PatchMkwWords(text_bytes, text.location, cascades_sequence,
+                              0x52800008U | (options.cascades << 5),
+                              options.cascades == 1 ? "1 shadow cascade" : "2 shadow cascades");
+            }
+            if (options.lod_key) {
+                PatchMkwKey(rodata_bytes, rodata.location, "LODDistanceRatio", "LODDistanceQatio",
+                            "LOD distance ratio key renamed (constructor default kept)");
+            }
+            if (options.lod_default != 0) {
+                // The constructor: mov w8, #1.0f stored to the ratio field.
+                static constexpr std::array<u32, 8> lod_sequence{
+                    0x52A7F008, 0xF9001A7F, 0xF803C27F, 0xF804427F,
+                    0xF807C27F, 0xF808427F, 0x79011A7F, 0xB9003A68};
+                PatchMkwWords(text_bytes, text.location, lod_sequence, options.lod_default,
+                              options.lod_default == 0x52A7E808 ? "LOD distance ratio default 0.75"
+                                                                 : "LOD distance ratio default 0.5");
+            }
+            if (options.elink) {
+                PatchMkwKey(rodata_bytes, rodata.location, "VehicleNumNoDiv",
+                            std::string_view{"VehicleNumDiv2\0", 15}, "vehicle count divided by 2");
+            }
+            if (options.emit) {
+                PatchMkwKey(rodata_bytes, rodata.location, "NoEmitSingle",
+                            std::string_view{"NoEmitDiv2\0\0", 12}, "single emits divided by 2");
+            }
+            if (options.traffic) {
+                PatchMkwKey(rodata_bytes, rodata.location, "MobCarDispNum", "MobCarQispNum",
+                            "mob car count key renamed");
+                PatchMkwKey(rodata_bytes, rodata.location, "MobCarDispDist", "MobCarQispDist",
+                            "mob car distance key renamed");
+            }
         }
     }
 
