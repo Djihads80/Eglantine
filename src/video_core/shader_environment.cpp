@@ -553,12 +553,13 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
     }
     auto result = std::make_shared<LoweredNativeCode>();
+    result->native_key = Shader::Ampere::NativeProgramKey(native);
     static const bool hash_for_indirect_reset = [] {
         const char* value = std::getenv("EDEN_NX2_RESETFIX");
         return !value || std::string_view{value} != "0";
     }();
     if (hash_for_indirect_reset) {
-        result->diagnostic_key = Shader::Ampere::NativeProgramKey(native);
+        result->diagnostic_key = result->native_key;
     }
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;

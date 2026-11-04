@@ -789,12 +789,13 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     return CurrentGraphicsPipelineSlowPath();
 }
 
-ComputePipeline* PipelineCache::CurrentComputePipeline() {
+ComputePipeline* PipelineCache::CurrentComputePipeline(u64& native_key) {
 
     const ShaderInfo* const shader{ComputeShader()};
     if (!shader) {
         return nullptr;
     }
+    native_key = shader->lowered_native ? shader->lowered_native->native_key : 0;
     const auto& qmd{kepler_compute->launch_description};
     const ComputePipelineCacheKey key{
         .unique_hash = shader->unique_hash,
