@@ -306,7 +306,12 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             workgroups = 1; // Nothing runs: one slice keeps the binding valid
         }
         const u64 size = (std::min)(workgroups, slices) * info.emulated_shared_memory_size;
-        if (workgroups >= slices) {
+        // EDEN_NX2_SCRATCH_REUSE=0: a region per dispatch, as before.
+        static const bool reuse = [] {
+            const char* value = std::getenv("EDEN_NX2_SCRATCH_REUSE");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (reuse && workgroups >= slices) {
             // The whole range: one region per tick for this pipeline, not one per dispatch (an
             // indirect dispatch does not know its workgroup count; several in one tick took a
             // full-size region each). Dispatches that share it are ordered by a barrier.
@@ -315,6 +320,9 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 shared_scratch_tick = scheduler.CurrentTick();
                 shared_scratch_size = size;
             } else {
+                // The dispatch runs outside the render pass; so must its barrier (the
+                // rasterizer leaves the pass after Configure).
+                scheduler.RequestOutsideRenderPassOperationContext();
                 scheduler.Record([](vk::CommandBuffer cmdbuf) {
                     static constexpr VkMemoryBarrier barrier{
                         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
