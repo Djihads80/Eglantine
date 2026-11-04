@@ -2018,12 +2018,29 @@ private:
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
-        const auto& process = Kernel::GetCurrentProcess(kernel);
-        const bool mkw_dynamic =
-            process.GetProgramId() == Settings::MarioKartWorldProgramId &&
-            process.IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
+        // This runs on the vi2 service thread, whose current process is not the game's: look the
+        // application up instead.
+        const bool is_mkw =
+            system.GetApplicationProcessProgramID() == Settings::MarioKartWorldProgramId;
+        const auto* const app = is_mkw ? system.ApplicationProcess() : nullptr;
+        const bool mkw_dynamic = app != nullptr && app->IsMkwDynamicFpsPatchApplied() &&
+                                 Settings::values.mkw_dynamic_fps.GetValue();
+        // Mario Kart World runs at 60 fps and asks for two vblanks a frame only when a frame ran
+        // long, which on slower hosts is nearly every frame: honouring that holds it at 30 fps
+        // (12-15 ms of sleep a frame on an Odin 3, where frames take 18-25 ms). Its interval is
+        // honoured by default; EDEN_NX2_MKW_PACING=1 paces it at one vblank, =0 doesn't pace it.
+        static const int mkw_pacing = [] {
+            const char* value = std::getenv("EDEN_NX2_MKW_PACING");
+            if (value == nullptr) {
+                return 2;
+            }
+            return value[0] == '0' ? 0 : (value[0] == '1' ? 1 : 2);
+        }();
+        if (is_mkw && mkw_pacing == 0 && forced_interval == 0) {
+            return;
+        }
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
-        if (mkw_dynamic) {
+        if (mkw_dynamic || (is_mkw && mkw_pacing == 1)) {
             swap_interval = 1;
         }
         if (forced_interval != 0) {
