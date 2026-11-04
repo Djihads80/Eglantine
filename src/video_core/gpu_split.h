@@ -20,6 +20,10 @@ namespace Tegra::Engines {
 class EngineInterface;
 }
 
+namespace VideoCommon::Nx2Profile {
+enum class Zone : u32;
+}
+
 namespace VideoCommon {
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
@@ -113,8 +117,21 @@ public:
 
     /// Makes what was sent visible to the back.
     void Publish();
-    /// Waits until the back executed everything sent so far.
+    /// Waits until the back executed everything sent so far. `zone`: the profile zone the wait
+    /// counts as (SplitDrain, or SplitDmaRead for a macro DMA read).
     void Drain();
+    void Drain(Nx2Profile::Zone zone);
+
+    /// Front thread: the ring position after everything sent so far (an entry sent now ends
+    /// below the position returned after it is sent).
+    [[nodiscard]] u64 WritePosition() const {
+        return write_position;
+    }
+    /// Front thread: the ring position the back has executed up to (as last seen; refreshed).
+    [[nodiscard]] u64 Consumed() {
+        consumed_cache = consumed.load(std::memory_order_acquire);
+        return consumed_cache;
+    }
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {

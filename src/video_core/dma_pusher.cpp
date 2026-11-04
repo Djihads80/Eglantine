@@ -110,6 +110,9 @@ bool DmaPusher::Step() {
     auto& current_command = command_list.command_lists[dma_pushbuffer_subindex];
     const CommandListHeader& header = current_command;
     dma_state.dma_get = header.addr;
+    if (command_resume_offset == 0) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpfifoEntries, 1);
+    }
 
     if (signal_sync && !synced) {
         std::unique_lock lk(sync_mutex);
