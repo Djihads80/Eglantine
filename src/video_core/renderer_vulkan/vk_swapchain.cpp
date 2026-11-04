@@ -154,7 +154,9 @@ void Swapchain::Create(
         // MoltenVK frees the MTLEvent behind a destroyed semaphore, and the command buffer that
         // signals it then fails with an internal error, losing the device.
         std::scoped_lock lock{scheduler.submit_mutex};
-        void(device.GetLogical().WaitIdle());
+        if (device.GetLogical().WaitIdle() == VK_ERROR_DEVICE_LOST) {
+            device.ReportLoss();
+        }
     }
     Destroy();
 

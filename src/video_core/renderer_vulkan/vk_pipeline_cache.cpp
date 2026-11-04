@@ -1137,6 +1137,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if ((env.ShaderStage() == Shader::Stage::Task ||
              env.ShaderStage() == Shader::Stage::Mesh) &&
             !device.IsExtMeshShaderSupported()) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1) < 4) {
+                LOG_WARNING(Render_Vulkan, "Skipping a task/mesh pipeline: no VK_EXT_mesh_shader");
+            }
             return nullptr;
         }
 
@@ -1164,18 +1168,6 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (programs[index].info.requires_layer_emulation) {
             layer_source_program = &programs[index];
         }
-    }
-    // Task and mesh pipelines need VK_EXT_mesh_shader, and their draws are skipped without it.
-    // Don't build one anyway: MoltenVK reads the vertex input state such a pipeline leaves null.
-    if (!device.IsExtMeshShaderSupported() &&
-        std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
-            return program.info.is_task || program.info.is_mesh;
-        })) {
-        static std::atomic<u32> reported{};
-        if (reported.fetch_add(1) < 4) {
-            LOG_WARNING(Render_Vulkan, "Skipping a task/mesh pipeline: no VK_EXT_mesh_shader");
-        }
-        return nullptr;
     }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
