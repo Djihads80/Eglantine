@@ -38,6 +38,7 @@ template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
 
+    /// Marks every page CPU-dirty and counts the words that still need an upload.
     explicit WordManager(VAddr cpu_addr_, DeviceTracker& tracker_) : tracker{&tracker_}, cpu_addr{cpu_addr_} {
         std::fill_n(heap.data() + size_t(Type::CPU) * num_words, num_words, ~u64{0});
         std::fill_n(heap.data() + size_t(Type::Untracked) * num_words, num_words, ~u64{0});
@@ -271,6 +272,7 @@ struct WordManager {
             : std::make_pair<u64, u64>(0, 0);
     }
 
+    /// Promote cached CPU writes into the CPU and untracked bits and refresh the upload-word count.
     void FlushCachedWrites() noexcept {
         auto const cached_words = Span(Type::CachedCPU);
         auto const untracked_words = Span(Type::Untracked);
@@ -343,14 +345,21 @@ struct WordManager {
         });
     }
 
+    /// CPU dirty word at @p index.
     [[nodiscard]] u64& CpuWord(size_t index) noexcept {
         return heap[index];
     }
 
+    /// Untracked-page word at @p index.
     [[nodiscard]] u64& UntrackedWord(size_t index) noexcept {
         return heap[num_words * size_t(Type::Untracked) + index];
     }
 
+    /// Adjust upload_words when a word gains or loses its last CPU or untracked bit.
+    /// @param before_cpu CPU word before the update
+    /// @param before_untracked Untracked word before the update
+    /// @param after_cpu CPU word after the update
+    /// @param after_untracked Untracked word after the update
     void NoteUploadWord(u64 before_cpu, u64 before_untracked, u64 after_cpu,
                         u64 after_untracked) noexcept {
         const bool was = (before_cpu | before_untracked) != 0;
