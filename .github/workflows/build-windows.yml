@@ -38,6 +38,7 @@ jobs:
     # Might also need to upgrade that one
     runs-on: windows-2022
     env:
+      PLATFORM: windows-x86_64
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: 3G
     steps:
@@ -50,13 +51,13 @@ jobs:
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
         uses: ./.github/actions/setup-build
-         with:
-           platform: ${{ env.PLATFORM }}
-           sha: ${{ inputs.sha }}
-           refspec: ${{ inputs.refspec }}
-           tag: ${{ inputs.tag }}
-           release: ${{ inputs.release }}
-           
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
         uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
@@ -147,6 +148,7 @@ jobs:
     if: inputs.pgo == 'both'
     runs-on: windows-2022
     env:
+      PLATFORM: windows-x86_64-pgo
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
     steps:
@@ -159,12 +161,12 @@ jobs:
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
         uses: ./.github/actions/setup-build
-         with:
-           platform: ${{ env.PLATFORM }}
-           sha: ${{ inputs.sha }}
-           refspec: ${{ inputs.refspec }}
-           tag: ${{ inputs.tag }}
-           release: ${{ inputs.release }}
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
 
       - name: Setup build from compatibility pin
         if: hashFiles('.github/actions/setup-build/action.yml') == ''
