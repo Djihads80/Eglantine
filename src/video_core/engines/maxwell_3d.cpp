@@ -865,6 +865,9 @@ struct Maxwell3D::FrontState {
     /// then can it have a deferred instanced draw to issue at the end of a macro.
     bool draw_pending{true};
     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
+    /// Per bind group: the raw config and constant buffer size/address of the last bind sent;
+    /// a bind equal to it changes nothing on the back (ProcessCBBind) and is not sent.
+    std::array<std::array<u32, 4>, 5> last_bind{};
 #if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
     /// Methods whose emits the macro JIT must always call back for (TuringMacroJit::Elision):
     /// executable ones, the MME DMA reads (FrontDmaRead) and the macro range.
@@ -927,6 +930,20 @@ bool JitSkipSameEnabled() {
     return skip;
 }
 
+// EDEN_NX2_CB_BIND_SKIP=0: send a constant buffer bind even when its stage's bind group holds
+// the same configuration, buffer address and size as the last bind sent (ProcessCBBind would
+// set the same binding again).
+bool CbBindSkipEnabled() {
+    static const bool skip = [] {
+        const char* value = std::getenv("EDEN_NX2_CB_BIND_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    return skip;
+}
+
+constexpr u32 BindGroupStride = MAXWELL3D_REG_INDEX(bind_groups[1].raw_config) -
+                                MAXWELL3D_REG_INDEX(bind_groups[0].raw_config);
+
 // EDEN_NX2_CB_BATCH=0: a front macro's constant buffer data words (CB_DATA) go to the back one
 // by one (CallMethod each) instead of as one multi-method entry per run.
 bool CbBatchEnabled() {
@@ -970,6 +987,9 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+        for (auto& bind : front->last_bind) {
+            bind.fill(~u32{0});
+        }
 #if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
         for (u32 method = 0; method < front->jit_must_call.size(); ++method) {
             const bool dma_read = method == 0x157 || method == 0x158;
@@ -1062,6 +1082,26 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         case MAXWELL3D_REG_INDEX(falcon[4]):
             fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
             break;
+        case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config): {
+            // ProcessCBBind sets the stage's slot from this configuration and the constant
+            // buffer registers: the same ones as last time set the binding it already has.
+            const size_t stage = (method - MAXWELL3D_REG_INDEX(bind_groups[0].raw_config)) / BindGroupStride;
+            const std::array<u32, 4> bind{value, fs.regs[MAXWELL3D_REG_INDEX(const_buffer.size)],
+                                          fs.regs[MAXWELL3D_REG_INDEX(const_buffer.address_high)],
+                                          fs.regs[MAXWELL3D_REG_INDEX(const_buffer.address_low)]};
+            if (fs.last_bind[stage] == bind && CbBindSkipEnabled()) {
+                if (Profile::Enabled()) [[unlikely]] {
+                    Profile::Add(Profile::Counter::CbBindsSkipped, 1);
+                }
+                return;
+            }
+            fs.last_bind[stage] = bind;
+            break;
+        }
         default:
             if (method >= cb_data && method < cb_data + 16) {
                 fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
@@ -1174,6 +1214,15 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             }
             case MAXWELL3D_REG_INDEX(falcon[4]):
                 fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
+                break;
+            case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config):
+                // Bound on the back word by word, not through FrontWrite: forget the last bind.
+                fs.last_bind[(method - MAXWELL3D_REG_INDEX(bind_groups[0].raw_config)) / BindGroupStride]
+                    .fill(~u32{0});
                 break;
             default:
                 if (!FrontHandledOutsideDrawManager(method)) {
