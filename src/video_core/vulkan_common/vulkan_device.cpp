@@ -1391,7 +1391,7 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // Disable VertexInputDynamicState on old Intel Windows drivers
     if (extensions.vertex_input_dynamic_state) {
         const u32 version = (properties.properties.driverVersion << 3) >> 3;
-        if (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && version < VK_MAKE_API_VERSION(580, 119, 02, 0))) {
+        if (driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && version < VK_MAKE_API_VERSION(580, 119, 02, 0)) {
             LOG_WARNING(Render_Vulkan, "Disabling broken VK_EXT_vertex_input_dynamic_state");
             RemoveExtensionFeature(extensions.vertex_input_dynamic_state, features.vertex_input_dynamic_state, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         }
