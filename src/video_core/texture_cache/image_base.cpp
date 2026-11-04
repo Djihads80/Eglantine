@@ -82,11 +82,12 @@ std::optional<SubresourceBase> ImageBase::TryFindBase(GPUVAddr other_addr) const
         // Subresource address can't be lower than the base
         return std::nullopt;
     }
-    const u32 diff = static_cast<u32>(other_addr - gpu_addr);
-    if (diff > guest_size_bytes) {
+    const u64 diff64 = other_addr - gpu_addr;
+    if (diff64 > guest_size_bytes) {
         // This can happen when two CPU addresses are used for different GPU addresses
         return std::nullopt;
     }
+    const u32 diff = static_cast<u32>(diff64);
     if (info.type != ImageType::e3D) {
         const auto [layer, mip_offset] = LayerMipOffset(diff, info.layer_stride);
         const auto end = mip_level_offsets.begin() + info.resources.levels;
