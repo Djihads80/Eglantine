@@ -49,15 +49,16 @@ Result IAudioRendererManager::OpenAudioRenderer(
         R_THROW(Audio::ResultOutOfSessions);
     }
 
+    // Before taking a session ID: a failed open would never give it back.
+    if (!process_handle) {
+        LOG_ERROR(Service_Audio, "Invalid handles");
+        R_THROW(Audio::ResultInvalidHandle);
+    }
+
     const auto session_id{impl->GetSessionId()};
     if (session_id == -1) {
         LOG_ERROR(Service_Audio, "Tried to open a session that's already in use!");
         R_THROW(Audio::ResultOutOfSessions);
-    }
-
-    if (!process_handle) {
-        LOG_ERROR(Service_Audio, "Invalid handles");
-        R_THROW(Audio::ResultInvalidHandle);
     }
 
     LOG_DEBUG(Service_Audio, "Opened new AudioRenderer session {} sessions open {}", session_id,
