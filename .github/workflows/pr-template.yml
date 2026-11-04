@@ -28,12 +28,16 @@ jobs:
             const lines = body.split(/\r?\n/);
             const problems = [];
             const isHeading = (line) => /^#{1,6}\s*\S/.test(line);
+            // A nested heading (### under ##) stays part of its enclosing section; the section ends
+            // at the next heading of the same or a higher level.
             const sections = {};
             let current = null;
+            let currentLevel = 0;
             for (const line of lines) {
-              const heading = line.match(/^#{1,6}\s*(.+?)\s*$/);
-              if (heading) {
-                current = heading[1].toLowerCase();
+              const heading = line.match(/^(#{1,6})\s*(.+?)\s*$/);
+              if (heading && (!current || heading[1].length <= currentLevel)) {
+                current = heading[2].toLowerCase();
+                currentLevel = heading[1].length;
                 sections[current] = [];
               } else if (current) {
                 sections[current].push(line);
