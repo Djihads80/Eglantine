@@ -486,6 +486,9 @@ private:
         }
 
         void Instruction(Word pc, Word count, const Decoded& d) {
+            // Keep the failing PC available for diagnostics, as the x86-64 code does.
+            MOV(W16, pc);
+            STR(W16, st, offsetof(State, fail_pc));
             // FIFO loads, in lane order.
             for (Word i = 0; i < 2; ++i) {
                 const WReg load = i == 0 ? load0 : load1;
