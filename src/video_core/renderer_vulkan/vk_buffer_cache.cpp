@@ -462,10 +462,12 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
         return;
     }
     // The copy's submission may be deferred (Scheduler::DeferFlush): the split's front asks the
-    // back for it rather than waiting for the back's next submission.
+    // back for it rather than waiting for the back's next submission. If the back has stopped,
+    // nothing else uses the scheduler and Wait submits it.
     if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
         !VideoCommon::GpuSplit::OnBackThread() && !scheduler.WaitSubmitted(tick)) {
-        LOG_WARNING(Render_Vulkan, "Command list copy tick {} not submitted in 2 s", tick);
+        scheduler.Wait(tick);
+        return;
     }
     master.Wait(tick);
 }

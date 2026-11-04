@@ -334,6 +334,7 @@ size_t GpuSplit::Execute(const u64* entry) {
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
+    back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
     system->RegisterHostThread();
@@ -396,6 +397,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         g_back_busy.store(false, std::memory_order_release);
         consumed.store(read_position, std::memory_order_release);
     }
+    back_running.store(false, std::memory_order_release);
 }
 
 } // namespace VideoCommon

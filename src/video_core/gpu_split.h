@@ -55,6 +55,10 @@ public:
         idle_hook = hook;
         idle_argument = argument;
     }
+    /// Any thread: whether the back thread runs (false before it starts and once it stopped).
+    [[nodiscard]] bool BackRunning() const {
+        return back_running.load(std::memory_order_acquire);
+    }
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
     void RequestIdleHook() {
         hook_requested.store(true, std::memory_order_seq_cst);
@@ -195,6 +199,7 @@ private:
     void (*idle_hook)(void*){};
     void* idle_argument{};
     alignas(64) std::atomic<bool> hook_requested{};
+    std::atomic<bool> back_running{};
 
     // 128 bytes: x86 spatial prefetchers pull 64-byte lines in pairs. back_waiting and wake are
     // always touched together by both threads, so they share a block.

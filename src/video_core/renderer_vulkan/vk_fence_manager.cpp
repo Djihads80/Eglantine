@@ -42,14 +42,10 @@ void InnerFence::Wait() {
         return;
     }
     // A deferred fence flush (Scheduler::DeferFlush) may not be submitted yet. Only the
-    // split's back may submit; other threads (the fencing thread) wait for it to, which it does
-    // before it next sleeps.
+    // split's back may submit; other threads (the fencing thread) ask it to and wait. If the back
+    // has stopped, nothing else uses the scheduler and Wait below submits it.
     if (!scheduler.IsSubmitted(wait_tick) && VideoCommon::GpuSplit::Get().Active() &&
-        !VideoCommon::GpuSplit::OnBackThread()) {
-        if (!scheduler.WaitSubmitted(wait_tick)) {
-            LOG_WARNING(Render_Vulkan, "Fence tick {} not submitted in 2 s", wait_tick);
-            return;
-        }
+        !VideoCommon::GpuSplit::OnBackThread() && scheduler.WaitSubmitted(wait_tick)) {
         scheduler.GetMasterSemaphore().Wait(wait_tick);
         return;
     }

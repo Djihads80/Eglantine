@@ -15,6 +15,7 @@
 
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
+#include "common/logging.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "video_core/gpu_logging/gpu_logging.h"
@@ -96,11 +97,22 @@ bool Scheduler::WaitSubmitted(u64 tick) {
     if (IsSubmitted(tick)) {
         return true;
     }
-    VideoCommon::GpuSplit::Get().RequestIdleHook();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    auto& split = VideoCommon::GpuSplit::Get();
+    split.RequestIdleHook();
+    // No time limit: the back can spend seconds on one entry (a large shader's translation),
+    // and a fence reported as submitted before it is would release its downloads too early.
+    const auto start = std::chrono::steady_clock::now();
+    auto next_log = start + std::chrono::seconds{2};
     for (u32 spins = 0; !IsSubmitted(tick); ++spins) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return false;
+        if (!split.BackRunning()) {
+            return IsSubmitted(tick);
+        }
+        if (const auto now = std::chrono::steady_clock::now(); now >= next_log) {
+            next_log = now + std::chrono::seconds{2};
+            LOG_WARNING(Render_Vulkan, "Waited {} s for the GPU thread to submit tick {}",
+                        std::chrono::duration_cast<std::chrono::seconds>(now - start).count(),
+                        tick);
+            split.RequestIdleHook();
         }
         if (spins < 64) {
             std::this_thread::yield();
