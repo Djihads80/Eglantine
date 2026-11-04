@@ -155,7 +155,7 @@ public:
     void Push(CommandList&& entries) {
         // Copied during a suspension, or behind one: copy again now, unless still suspended.
         const u64 now = suspensions.load(std::memory_order_acquire);
-        if (!entries.submitted_offsets.empty() && (now & 1) == 0 &&
+        if (ResnapshotEnabled() && !entries.submitted_offsets.empty() && (now & 1) == 0 &&
             entries.snapshot_suspensions != now) {
             RefreshSnapshot(entries, now);
         }
@@ -206,6 +206,15 @@ public:
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Copies the list's words from memory again, as of suspension count `now`.
     void RefreshSnapshot(CommandList& list, u64 now);
+
+    /// EDEN_NX2_RESNAPSHOT=0 turns snapshot refreshes off.
+    static bool ResnapshotEnabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_RESNAPSHOT");
+            return value == nullptr || value[0] != '0';
+        }();
+        return enabled;
+    }
     /// Reads a command list on pages the GPU wrote into command_headers, from the copies the
     /// buffer cache made after the work that wrote them or from guest memory for pages flushed
     /// since. False when not all are current (or the list isn't GPU-written): the caller drains,

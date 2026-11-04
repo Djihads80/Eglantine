@@ -1279,7 +1279,11 @@ bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) return true;
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-        if (buffer_cache.IsRegionGpuModified(addr, size)) return false;
+        // WriteMemory downloads GPU-written bytes elsewhere on the written pages, which only the
+        // GPU thread may do: leave those pages to the fallback.
+        const DAddr page_begin = Common::AlignDown(addr, Core::DEVICE_PAGESIZE);
+        const DAddr page_end = Common::AlignUp(addr + size, Core::DEVICE_PAGESIZE);
+        if (buffer_cache.IsRegionGpuModified(page_begin, page_end - page_begin)) return false;
         texture_cache.WriteMemory(addr, size);
         buffer_cache.WriteMemory(addr, size);
     }

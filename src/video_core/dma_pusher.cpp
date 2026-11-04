@@ -75,11 +75,7 @@ bool DmaPusher::Step() {
     // as this frame's commands (methods on unbound subchannels, garbage QMDs, then a channel
     // waiting forever on a release it never got). The acquire is released now, so the commands
     // are written and the memory not yet reused: copy them here. EDEN_NX2_RESNAPSHOT=0: off.
-    if (static const bool resnapshot = [] {
-            const char* value = std::getenv("EDEN_NX2_RESNAPSHOT");
-            return value == nullptr || value[0] != '0';
-        }();
-        resnapshot && suspensions.load(std::memory_order_relaxed) != suspensions_before) {
+    if (ResnapshotEnabled() && suspensions.load(std::memory_order_relaxed) != suspensions_before) {
         const u64 now = suspensions.load(std::memory_order_acquire);
         for (CommandList& list : dma_pushbuffer) {
             if (!list.submitted_offsets.empty()) {
