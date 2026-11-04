@@ -6,7 +6,9 @@ on:
     paths: &paths
       - "src/dynarmic/**"
       - "CMakeLists.txt"
+      - "src/CMakeLists.txt"
       - "CMakeModules/**"
+      - ".patch/**"
       - "externals/CMakeLists.txt"
       - "cpmfile.json"
       - ".github/workflows/dynarmic-tests.yml"
@@ -49,17 +51,18 @@ jobs:
             libopus-dev libasound2-dev ccache catch2 mold
 
       # Informational only: the x64 backend picks AVX-512 code paths from the host CPU, and
-      # hosted runners vary, so record what this run actually exercised. Never fails.
+      # hosted runners vary. This lists what the host offers; it does not say what the tests ran.
+      # The A64 CLZ 16-bit path needs avx512vl and avx512cd as well as avx512f. Never fails.
       - name: Report host CPU features
         run: |
           uname -m
           grep -m1 'model name' /proc/cpuinfo || true
           echo "AVX-512 flags:"
           grep -o 'avx512[a-z_0-9]*' /proc/cpuinfo | sort -u || echo "(none)"
-          if grep -q avx512f /proc/cpuinfo; then
-            echo "AVX-512 PRESENT: AVX-512 code paths are exercised"
+          if grep -q avx512f /proc/cpuinfo && grep -q avx512vl /proc/cpuinfo && grep -q avx512cd /proc/cpuinfo; then
+            echo "::notice::host offers avx512f, avx512vl and avx512cd, the features the AVX-512 CLZ path needs"
           else
-            echo "::notice::host has no AVX-512; AVX-512 emitter paths were NOT exercised in this run"
+            echo "::notice::host lacks avx512f, avx512vl or avx512cd, so the AVX-512 CLZ path is not available to this run"
           fi
           true
 
