@@ -794,6 +794,13 @@ abstract class SettingsItem(
             )
             put(
                 SwitchSetting(
+                    BooleanSetting.RENDERER_NX2_COMMAND_LISTS,
+                    titleId = R.string.renderer_nx2_command_lists,
+                    descriptionId = R.string.renderer_nx2_command_lists_description
+                )
+            )
+            put(
+                SwitchSetting(
                     BooleanSetting.RENDERER_MKW_30FPS,
                     titleId = R.string.renderer_mkw_30fps,
                     descriptionId = R.string.renderer_mkw_30fps_description

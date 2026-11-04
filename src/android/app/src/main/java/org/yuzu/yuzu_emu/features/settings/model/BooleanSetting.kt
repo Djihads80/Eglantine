@@ -28,6 +28,7 @@ enum class BooleanSetting(override val key: String) : AbstractBooleanSetting {
     RENDERER_ASYNCHRONOUS_SHADERS("use_asynchronous_shaders"),
     RENDERER_REDUCE_TEXTURE_RESOLUTION("reduce_texture_resolution"),
     RENDERER_RELEASE_GPU_ONLY_MEMORY("release_gpu_only_memory"),
+    RENDERER_NX2_COMMAND_LISTS("nx2_command_lists"),
     RENDERER_MKW_30FPS("mkw_30fps"),
     RENDERER_MKW_60FPS("mkw_60fps"),
     RENDERER_REACTIVE_FLUSHING("use_reactive_flushing"),

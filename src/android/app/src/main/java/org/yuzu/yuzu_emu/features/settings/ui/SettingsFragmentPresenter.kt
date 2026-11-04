@@ -560,6 +560,7 @@ class SettingsFragmentPresenter(
             add(BooleanSetting.RENDERER_ASYNCHRONOUS_SHADERS.key)
             add(BooleanSetting.RENDERER_REDUCE_TEXTURE_RESOLUTION.key)
             add(BooleanSetting.RENDERER_RELEASE_GPU_ONLY_MEMORY.key)
+            add(BooleanSetting.RENDERER_NX2_COMMAND_LISTS.key)
             add(BooleanSetting.RENDERER_MKW_30FPS.key)
             add(BooleanSetting.RENDERER_MKW_60FPS.key)
             add(IntSetting.ANDROID_PIPELINE_WORKERS.key)

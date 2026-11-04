@@ -39,6 +39,17 @@ inline bool Nx2HeldWrites() {
     return g_nx2_ampere.load(std::memory_order_relaxed) && Nx2HeldWritesEnabled();
 }
 
+// nx2_command_lists, set once per game start (nvdrv's Module; EDEN_NX2_COMMAND_LISTS=0/1
+// overrides it). Off, the command list series is: no copy of a list's words at submit
+// (nvhost_gpu), and no copies or flushes of lists on GPU-written pages (DmaPusher's
+// IsGpuWrittenCommands, ReadGpuWrittenCommands). Lists are then read from guest memory when they
+// run, as before the series.
+inline std::atomic<bool> g_nx2_command_lists{true};
+
+inline bool Nx2CommandLists() {
+    return g_nx2_command_lists.load(std::memory_order_relaxed);
+}
+
 // Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
 // see, so their buffers must be copied back to guest memory at every fence
 // (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
