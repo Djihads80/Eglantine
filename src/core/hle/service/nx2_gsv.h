@@ -2051,22 +2051,20 @@ private:
             return;
         }
         // A game that waits on the vsync event between frames already runs on the vblank timer.
-        // Pacing its presents too, to a clock of another phase, made it miss that timer's next
+        // Pacing its presents to a grid too, of another phase, made it miss that timer's next
         // vblank: Mario Kart World, which binds one, ran at 27-30 fps with 4-14 ms of sleep a
-        // frame while Eden's GPU threads were idle half the time. Fortune's Weave binds none
-        // and keeps its pacing (at every vblank it ran at double speed).
-        // EDEN_NX2_PACE_VSYNC_GAMES=1 paces them anyway.
+        // frame while Eden's GPU threads were idle half the time. Not pacing it at all let it run
+        // past 60 fps on a fast PC, and its game time follows its frames. So such a game's
+        // presents are only capped at the swap interval on average, one present of slack
+        // allowed, which never sleeps a game that runs slower than that. Fortune's Weave binds no
+        // vsync event and keeps the grid (at every vblank it ran at double speed).
+        // EDEN_NX2_PACE_VSYNC_GAMES=1 paces them to the grid anyway.
         static const bool pace_vsync_games = [] {
             const char* value = std::getenv("EDEN_NX2_PACE_VSYNC_GAMES");
             return value != nullptr && value[0] == '1';
         }();
-        if (m_game_waits_for_vsync && !pace_vsync_games && forced_interval == 0 &&
-            !(is_mkw && mkw_pacing == 1)) {
-            if (!std::exchange(m_logged_vsync_pacing, true)) {
-                LOG_INFO(Service, "nx2:vi2 presents not paced: the game waits on the vsync event");
-            }
-            return;
-        }
+        const bool cap_only = m_game_waits_for_vsync && !pace_vsync_games &&
+                              forced_interval == 0 && !(is_mkw && mkw_pacing == 1);
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
         if (mkw_dynamic || (is_mkw && mkw_pacing == 1)) {
             swap_interval = 1;
@@ -2082,6 +2080,21 @@ private:
         const auto interval = std::chrono::nanoseconds{
             100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
+        if (cap_only) {
+            if (!std::exchange(m_logged_vsync_pacing, true)) {
+                LOG_INFO(Service, "nx2:vi2 the game waits on the vsync event: presents capped at "
+                                  "the swap interval, not paced to a grid");
+            }
+            // m_next_vblank is the earliest time the next present is due at the capped rate.
+            m_next_vblank = (std::max)(m_next_vblank, now);
+            if (const auto early = m_next_vblank - now; early > interval) {
+                const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(early - interval);
+                static_cast<void>(Kernel::GetCurrentThread(kernel).Sleep(
+                    kernel, kernel.HardwareTimer().GetTick() + wait.count() + 2));
+            }
+            m_next_vblank += interval;
+            return;
+        }
         if (now > m_next_vblank + interval) {
             // Running slower than the swap interval: show at once and don't bank the lost time.
             m_next_vblank = now;
