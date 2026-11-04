@@ -19,6 +19,7 @@ class IDebugFunctions;
 class IDisplayController;
 class IGraphicsScalingParametersFunctions;
 class ILibraryAppletCreator;
+class IPerformanceFunctions;
 class IProcessWindingController;
 class ISelfController;
 class IWindowController;
@@ -32,6 +33,7 @@ public:
 
 private:
     void GetNx2Interface(HLERequestContext& ctx);
+    Result GetPerformanceFunctions(Out<SharedPointer<IPerformanceFunctions>> out_functions);
     Result GetGraphicsScalingParametersFunctions(
         Out<SharedPointer<IGraphicsScalingParametersFunctions>> out_functions);
     Result GetAudioController(Out<SharedPointer<IAudioController>> out_audio_controller);

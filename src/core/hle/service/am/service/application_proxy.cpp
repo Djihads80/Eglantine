@@ -13,6 +13,7 @@
 #include "core/hle/service/am/service/display_controller.h"
 #include "core/hle/service/am/service/graphics_scaling_parameters_functions.h"
 #include "core/hle/service/am/service/library_applet_creator.h"
+#include "core/hle/service/am/service/performance_functions.h"
 #include "core/hle/service/am/service/process_winding_controller.h"
 #include "core/hle/service/am/service/self_controller.h"
 #include "core/hle/service/am/service/window_controller.h"
@@ -37,7 +38,7 @@ IApplicationProxy::IApplicationProxy(Core::System& system_, std::shared_ptr<Appl
         {20, D<&IApplicationProxy::GetApplicationFunctions>, "GetApplicationFunctions"},
         // Switch 2-only getters; see nx2_stub_interface.h. Switchbrew leaves 40 and 60 unnamed:
         // their names follow the interfaces they return.
-        {40, &IApplicationProxy::GetNx2Interface, "GetPerformanceFunctions"},
+        {40, D<&IApplicationProxy::GetPerformanceFunctions>, "GetPerformanceFunctions"},
         {50, &IApplicationProxy::GetNx2Interface, "Nx2Getter50"},
         {60, D<&IApplicationProxy::GetGraphicsScalingParametersFunctions>, "GetGraphicsScalingParametersFunctions"},
         {70, &IApplicationProxy::GetNx2Interface, "Nx2Getter70"},
@@ -51,6 +52,13 @@ IApplicationProxy::IApplicationProxy(Core::System& system_, std::shared_ptr<Appl
 }
 
 IApplicationProxy::~IApplicationProxy() = default;
+
+Result IApplicationProxy::GetPerformanceFunctions(
+    Out<SharedPointer<IPerformanceFunctions>> out_functions) {
+    LOG_DEBUG(Service_AM, "called");
+    *out_functions = std::make_shared<IPerformanceFunctions>(system);
+    R_SUCCEED();
+}
 
 Result IApplicationProxy::GetGraphicsScalingParametersFunctions(
     Out<SharedPointer<IGraphicsScalingParametersFunctions>> out_functions) {
