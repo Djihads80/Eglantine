@@ -198,9 +198,11 @@ private:
     // 213 (32 bytes, aruid): sent per controller every frame by Kirby Air Riders (tens of
     // thousands of auto stub log lines a run); no reply data. Accepted and dropped.
     Result SendVibrationValueInMode();
-    // 220 (VibrationDeviceHandle, aruid): whether the Switch 2 vibration device is mounted.
-    // Answers 0 instead of leaving it to the message buffer's leftovers.
-    Result IsOunceVibrationDeviceMounted(Out<u8> out);
+    // 220: whether the Switch 2 vibration device behind a handle is mounted, as 211 answers it for
+    // Switch 1 devices.
+    Result IsOunceVibrationDeviceMounted(Out<bool> out_is_mounted,
+                                         Core::HID::VibrationDeviceHandle vibration_device_handle,
+                                         ClientAppletResourceUserId aruid);
     Result ActivateConsoleSixAxisSensor(ClientAppletResourceUserId aruid);
     Result StartConsoleSixAxisSensor(Core::HID::ConsoleSixAxisSensorHandle console_sixaxis_handle,
                                      ClientAppletResourceUserId aruid);

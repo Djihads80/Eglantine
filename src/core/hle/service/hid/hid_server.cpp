@@ -1139,9 +1139,25 @@ Result IHidServer::SendVibrationValueInMode() {
     R_SUCCEED();
 }
 
-Result IHidServer::IsOunceVibrationDeviceMounted(Out<u8> out) {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
-    *out = 0;
+Result IHidServer::IsOunceVibrationDeviceMounted(
+    Out<bool> out_is_mounted, Core::HID::VibrationDeviceHandle vibration_device_handle,
+    ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID,
+              "called, npad_type={}, npad_id={}, device_index={}, applet_resource_user_id={}",
+              vibration_device_handle.npad_type, vibration_device_handle.npad_id,
+              vibration_device_handle.device_index, aruid.pid);
+
+    // Like IsVibrationDeviceMounted, but a handle this doesn't recognise reads as not mounted
+    // instead of failing: the Switch 2 handle layout is only known from captures (see 214).
+    *out_is_mounted = false;
+    if (IsVibrationHandleValid(vibration_device_handle).IsSuccess()) {
+        const NpadVibrationBase* device =
+            GetResourceManager()->GetVibrationDevice(vibration_device_handle);
+        if (device != nullptr) {
+            *out_is_mounted = device->IsVibrationMounted();
+        }
+    }
+
     R_SUCCEED();
 }
 
