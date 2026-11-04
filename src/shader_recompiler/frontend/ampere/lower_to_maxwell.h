@@ -3205,7 +3205,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x357: case 0x957: // Geometry exit stub: install (0x357) and finish (0x957) it.
-            // Per thread, with no output to finish, EXIT just ends the invocation.
+            // The shader's own EXIT follows; per thread there is nothing to finish.
             if (!geometry) return fail(index, "unsupported native opcode");
             emit(0x50b0000000000f00ULL | predicate);
             break;
