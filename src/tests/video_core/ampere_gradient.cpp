@@ -111,6 +111,50 @@ TEST_CASE("Ampere array gathers preserve the layer and split coordinates", "[vid
     REQUIRE(((lowered.instructions[3] >> 28) & 7) == 3);
 }
 
+TEST_CASE("Ampere gathers keep coordinate pairs below reserved registers", "[video_core][ampere]") {
+    using Shader::Ampere::Instruction;
+    struct Mode {
+        Instruction instruction;
+        u32 boundary;
+        u32 high_uniforms;
+        bool pair;
+    };
+    const std::array modes{
+        Mode{{{0x201c7b63, 0xb0000a2b, 0x041e0f16, 0x000f4200}}, 244, 0, true},
+        Mode{{{0xd61c7f63, 0xb000002b, 0x0c1e0f16, 0x000f4200}}, 216, 0, true},
+        Mode{{{0xd61c7f63, 0xb000002b, 0x0c1e0f16, 0x000f4200}}, 212, 4, true},
+        Mode{{{0x201c7b63, 0x30000a2b, 0x041e1f16, 0x000f4200}}, 244, 0, true},
+        Mode{{{0x201c7b63, 0x30000a2b, 0x041e0f16, 0x000f4200}}, 244, 0, false},
+        Mode{{{0xd61c7f63, 0x3000002b, 0x0c1e0f16, 0x000f4200}}, 216, 0, false},
+    };
+    for (const auto& mode : modes) {
+        for (const u32 source : {mode.boundary - 2, mode.boundary - 1, 255U}) {
+            CAPTURE(mode.boundary, mode.high_uniforms, mode.pair, source);
+            auto gather = mode.instruction;
+            gather.words[0] = (gather.words[0] & 0x00ffffffU) | (source << 24);
+            const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+            const auto lowered = Shader::Ampere::LowerToMaxwellWith(
+                std::array{gather, exit}, mode.high_uniforms);
+            if (mode.pair && source == mode.boundary - 1) {
+                REQUIRE_FALSE(static_cast<bool>(lowered));
+                REQUIRE(lowered.error == "native texture gather mode");
+                REQUIRE(lowered.instructions.empty());
+                continue;
+            }
+            REQUIRE(static_cast<bool>(lowered));
+            REQUIRE(lowered.instructions.size() >= 3);
+            REQUIRE(((lowered.instructions[0] >> 20) & 255) == source);
+            if (mode.pair) {
+                REQUIRE(((lowered.instructions[1] >> 20) & 255) ==
+                        (source == 255 ? 255U : source + 1));
+                REQUIRE(((lowered.instructions[2] >> 20) & 255) == 43);
+            } else {
+                REQUIRE(((lowered.instructions[1] >> 20) & 255) == 43);
+            }
+        }
+    }
+}
+
 TEST_CASE("Ampere signed high-word shifts keep sign extension", "[video_core][ampere]") {
     using Shader::Ampere::Instruction;
     const std::array<Instruction, 2> code{{
