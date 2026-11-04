@@ -15,12 +15,14 @@
 #include "video_core/fsr.h"
 #include "video_core/host_shaders/fsr3_upscaler_accumulate_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_accumulate_sharpen_comp_spv.h"
+#include "video_core/host_shaders/fsr3_upscaler_alpha_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_luma_instability_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_luma_pyramid_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_luma_pyramid_nowave_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_prepare_inputs_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_prepare_reactivity_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_rcas_comp_spv.h"
+#include "video_core/host_shaders/fsr3_upscaler_reverse_depth_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_shading_change_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_shading_change_pyramid_comp_spv.h"
 #include "video_core/host_shaders/fsr3_upscaler_shading_change_pyramid_nowave_comp_spv.h"
@@ -90,8 +92,13 @@ constexpr std::array PREPARE_REACTIVITY{T, T, T, T, T, T, T, T, T, I, I, I, U};
 constexpr std::array LUMA_INSTABILITY{T, T, T, T, T, T, T, I, I, U};
 constexpr std::array ACCUMULATE{T, T, T, T, T, T, T, T, T, I, I, I, U};
 constexpr std::array RCAS{T, T, I, U, U};
+// Not FSR's: fsr3_upscaler_reverse_depth.comp and fsr3_upscaler_alpha.comp.
+constexpr std::array REVERSE_DEPTH{T, I};
+constexpr std::array UPSCALE_ALPHA{T, T, T, I, I, U};
 
 enum PassId : size_t {
+    PassReverseDepth,
+    PassUpscaleAlpha,
     PassPrepareInputs,
     PassLumaPyramid,
     PassShadingChangePyramid,
@@ -279,6 +286,8 @@ Fsr3Upscaler::Fsr3Upscaler(const Device& device_, Scheduler& scheduler_,
         return std::make_unique<Pass>(device, scheduler, descriptor_pool, kinds, code, samplers);
     };
     passes.resize(PassCount);
+    passes[PassReverseDepth] = pass(REVERSE_DEPTH, FSR3_UPSCALER_REVERSE_DEPTH_COMP_SPV);
+    passes[PassUpscaleAlpha] = pass(UPSCALE_ALPHA, FSR3_UPSCALER_ALPHA_COMP_SPV);
     passes[PassPrepareInputs] = pass(PREPARE_INPUTS, FSR3_UPSCALER_PREPARE_INPUTS_COMP_SPV);
     passes[PassLumaPyramid] =
         pass(LUMA_PYRAMID, quads ? std::span<const u32>(FSR3_UPSCALER_LUMA_PYRAMID_COMP_SPV)
@@ -391,6 +400,7 @@ void Fsr3Upscaler::CreateResources(VkExtent2D render_size, VkExtent2D upscale_si
         // storage format qualifier does not match); allocate what the shaders store.
         luma_history[i] = CreateTexture(VK_FORMAT_R8G8B8A8_UNORM, rw, rh);
         internal_upscaled[i] = CreateTexture(VK_FORMAT_R16G16B16A16_SFLOAT, uw, uh);
+        alpha_history[i] = CreateTexture(VK_FORMAT_R16_SFLOAT, uw, uh);
     }
     farthest_depth = CreateTexture(VK_FORMAT_R16_SFLOAT, rw, rh);
     shading_change = CreateTexture(VK_FORMAT_R8_UNORM, rw / 2, rh / 2);
@@ -408,6 +418,7 @@ void Fsr3Upscaler::CreateResources(VkExtent2D render_size, VkExtent2D upscale_si
     spd_atomic = CreateTexture(VK_FORMAT_R32_UINT, 1, 1);
     lanczos_lut = CreateTexture(VK_FORMAT_R16_SNORM, 128, 1);
     default_reactive = CreateTexture(VK_FORMAT_R8_UNORM, 1, 1);
+    reversed_depth = CreateTexture(VK_FORMAT_R32_SFLOAT, rw, rh);
     output = CreateTexture(VK_FORMAT_R16G16B16A16_SFLOAT, uw, uh);
     render_extent = render_size;
     upscale_extent = upscale_size;
@@ -527,7 +538,8 @@ void Fsr3Upscaler::Upscale(const Inputs& in) {
     }
     std::vector<VkImage> initialize;
     if (first) {
-        for (const auto* textures : {&accumulation, &luma, &luma_history, &internal_upscaled}) {
+        for (const auto* textures :
+             {&accumulation, &luma, &luma_history, &internal_upscaled, &alpha_history}) {
             for (const Texture& texture : *textures) {
                 initialize.push_back(*texture.image);
             }
@@ -536,7 +548,7 @@ void Fsr3Upscaler::Upscale(const Inputs& in) {
              {&farthest_depth, &shading_change, &new_locks, &spd_mips, &farthest_depth_mip1,
               &dilated_motion_vectors, &dilated_depth, &previous_nearest_depth,
               &dilated_reactive_masks, &frame_info, &spd_atomic, &lanczos_lut, &default_reactive,
-              &output}) {
+              &reversed_depth, &output}) {
             initialize.push_back(*texture->image);
         }
         clear_zero = initialize;
@@ -629,13 +641,19 @@ void Fsr3Upscaler::Upscale(const Inputs& in) {
                                                                        spd_mips.levels.size() - 1))]};
     };
     const Resource color{.view = in.color};
-    const Resource depth{.view = in.depth};
     const Resource motion{.view = in.motion_vectors};
     const Resource exposure = tex(frame_info); // FSR's own exposure (auto exposure)
     const Resource current_luma = tex(luma[p]);
     const auto groups = [](s32 size, u32 tile) {
         return Common::DivCeil(static_cast<u32>(size), tile);
     };
+    if (!in.depth_reversed) {
+        passes[PassReverseDepth]->Dispatch(scheduler, descriptor_queue,
+                                           std::array{Resource{.view = in.depth},
+                                                      tex(reversed_depth)},
+                                           groups(rw, 8), groups(rh, 8));
+    }
+    const Resource depth{.view = in.depth_reversed ? in.depth : *reversed_depth.view};
 
     passes[PassPrepareInputs]->Dispatch(
         scheduler, descriptor_queue,
@@ -681,6 +699,13 @@ void Fsr3Upscaler::Upscale(const Inputs& in) {
             scheduler, descriptor_queue,
             std::array{exposure, tex(internal_upscaled[q]), tex(output), cb_fsr, cb_rcas},
             groups(uw, 16), groups(uh, 16));
+    }
+    if (in.upscale_alpha) {
+        passes[PassUpscaleAlpha]->Dispatch(
+            scheduler, descriptor_queue,
+            std::array{color, tex(dilated_motion_vectors), tex(alpha_history[p]),
+                       tex(alpha_history[q]), tex(output), cb_fsr},
+            groups(uw, 8), groups(uh, 8));
     }
     scheduler.Record([](vk::CommandBuffer cmdbuf) {
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

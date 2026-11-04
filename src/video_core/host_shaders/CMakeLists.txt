@@ -98,6 +98,8 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/sgsr1_shader_mobile_edge_direction.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/fsr3_optical_flow.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/fsr3_frame_interpolation.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fsr3_upscaler_alpha.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/fsr3_upscaler_reverse_depth.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/dlss_network_probe.comp
 )
 

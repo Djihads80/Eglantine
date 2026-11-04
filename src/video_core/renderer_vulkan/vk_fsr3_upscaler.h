@@ -22,13 +22,17 @@ class StagingBufferPool;
 /// AMD FidelityFX Super Resolution 3.1 (the FSR 3.1.4 upscaler from FidelityFX SDK v1.1.4, shaders
 /// in externals/FidelityFX-SDK) in place of a game's DLSS evaluation. The host side follows the
 /// SDK's ffx_fsr3upscaler.cpp: the same passes, internal images and constants, recorded through the
-/// scheduler. Inputs are taken as reversed depth, render-size motion vectors and HDR colour, and
-/// the exposure is computed by FSR itself.
+/// scheduler. Inputs are taken as render-size motion vectors and HDR colour, and the exposure is
+/// computed by FSR itself. The passes are built for reversed depth; a standard one is reversed
+/// into an image of its own first. FSR has no alpha; the colour's can be carried to the output by
+/// a pass of our own (fsr3_upscaler_alpha.comp).
 class Fsr3Upscaler {
 public:
     struct Inputs {
         VkImageView color;          ///< Jittered linear colour at the render size.
-        VkImageView depth;          ///< Device depth (reversed) at the render size.
+        bool upscale_alpha;         ///< Carry the colour's alpha to the output (else it is 1).
+        VkImageView depth;          ///< Device depth at the render size.
+        bool depth_reversed;        ///< Whether the depth is reversed (1 near, 0 far).
         VkImageView motion_vectors; ///< Motion to the previous frame at the render size.
         VkExtent2D render_size;
         VkExtent2D upscale_size;
@@ -90,6 +94,7 @@ private:
     std::array<Texture, 2> luma;
     std::array<Texture, 2> luma_history;
     std::array<Texture, 2> internal_upscaled;
+    std::array<Texture, 2> alpha_history; ///< The output's alpha (upscale_alpha)
     Texture farthest_depth; ///< Also the luma instability (the SDK aliases them).
     Texture shading_change;
     Texture new_locks;
@@ -103,6 +108,7 @@ private:
     Texture spd_atomic;
     Texture lanczos_lut;
     Texture default_reactive;
+    Texture reversed_depth; ///< A standard depth input, reversed.
     Texture output;
 
     VkExtent2D render_extent{};

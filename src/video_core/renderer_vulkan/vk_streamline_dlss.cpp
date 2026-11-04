@@ -355,7 +355,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
         constants.cameraFar = 1000.0f;
         constants.cameraFOV = 1.0f;
         constants.cameraAspectRatio = rw / rh;
-        constants.depthInverted = sl::eTrue;
+        constants.depthInverted = in.depth_reversed ? sl::eTrue : sl::eFalse;
         constants.cameraMotionIncluded = sl::eTrue;
         constants.motionVectors3D = sl::eFalse;
         constants.reset = reset ? sl::eTrue : sl::eFalse;

@@ -1188,7 +1188,7 @@ template <class P>
 bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
                                       const Tegra::Engines::Fermi2D::Surface& src,
                                       const Tegra::Engines::Fermi2D::Surface& motion_vectors,
-                                      const Tegra::Texture::TICEntry* depth,
+                                      const Tegra::Texture::TICEntry* depth, bool depth_reversed,
                                       std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
     if constexpr (FRAMEBUFFER_BLITS) {
         return false;
@@ -1230,8 +1230,12 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         PrepareImage(dst_id, true, false);
         if (depth_id) {
             PrepareImage(depth_id, false, false);
+            const PixelFormat depth_format = slot_images[depth_id].info.format;
             if (slot_images[depth_id].info.num_samples != 1 ||
-                slot_images[depth_id].info.format != PixelFormat::D32_FLOAT) {
+                (depth_format != PixelFormat::D32_FLOAT &&
+                 depth_format != PixelFormat::D24_UNORM_S8_UINT &&
+                 depth_format != PixelFormat::S8_UINT_D24_UNORM &&
+                 depth_format != PixelFormat::X8_D24_UNORM)) {
                 depth_id = {};
             }
         }
@@ -1289,7 +1293,8 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
             if (const std::optional base = slot_images[depth_id].TryFindBase(depth->Address())) {
                 const SubresourceRange range{.base = *base, .extent = {1, 1}};
                 depth_view = FindOrEmplaceImageView(
-                    depth_id, ImageViewInfo(ImageViewType::e2D, PixelFormat::D32_FLOAT, range));
+                    depth_id, ImageViewInfo(ImageViewType::e2D, slot_images[depth_id].info.format,
+                                            range));
             }
         }
         // After the views: creating them may reallocate the framebuffer slots.
@@ -1297,8 +1302,8 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         return runtime.TemporalUpscale(
             dst_framebuffer, slot_image_views[dst_view->second], slot_image_views[src_view->second],
             slot_image_views[motion_view->second],
-            depth_view ? &slot_image_views[depth_view] : nullptr, render_size, jitter,
-            motion_scale);
+            depth_view ? &slot_image_views[depth_view] : nullptr, depth_reversed, render_size,
+            jitter, motion_scale);
     }
 }
 
