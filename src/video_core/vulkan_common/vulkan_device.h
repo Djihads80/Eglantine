@@ -663,6 +663,16 @@ FN_MAX_LIMIT_LIST
         return extensions.shader_quad_control && features.shader_quad_control.shaderQuadControl;
     }
 
+    /// Returns true if the device can build tessellation pipelines.
+    bool IsTessellationSupported() const {
+        return features.features.tessellationShader;
+    }
+
+    /// Returns the largest patch size (control points, and TCS output vertices) a pipeline allows.
+    u32 GetMaxTessellationPatchSize() const {
+        return properties.properties.limits.maxTessellationPatchSize;
+    }
+
     /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).
     bool IsExtMeshShaderSupported() const {
         return extensions.mesh_shader && features.mesh_shader.taskShader &&
