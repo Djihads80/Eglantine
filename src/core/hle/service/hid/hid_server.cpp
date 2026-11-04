@@ -121,8 +121,8 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {135, C<&IHidServer::SetNpadCaptureButtonAssignment>, "SetNpadCaptureButtonAssignment"},
         {136, C<&IHidServer::ClearNpadCaptureButtonAssignment>, "ClearNpadCaptureButtonAssignment"},
         {137, &IHidServer::StubReplyZeroed, "SetNpadGcAnalogStick8bitRawValue"},
-        {138, &IHidServer::StubReplyZeroed, "SetSceneIdForPrivateApp"},
-        {139, &IHidServer::StubReplyZeroed, "GetSceneIdForPrivateApp"},
+        {138, C<&IHidServer::SetSceneIdForPrivateApp>, "SetSceneIdForPrivateApp"},
+        {139, C<&IHidServer::GetSceneIdForPrivateApp>, "GetSceneIdForPrivateApp"},
         {140, &IHidServer::StubReplyZeroed, "IsFirmwareUpdateAvailableForDebug"},
         {150, &IHidServer::StubReplyZeroed, "GetSixAxisSensorIcSettings"},
         {151, &IHidServer::StubReplyZeroed, "SetSixAxisSensorIcSettings"},
@@ -260,16 +260,16 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3112, &IHidServer::StubReplyZeroed, "StartJcms"},
         {3113, &IHidServer::StubReplyZeroed, "StopJcms"},
         {3114, &IHidServer::StubReplyZeroed, "Unknown3114"},
-        {3130, &IHidServer::StubReplyZeroed, "InitializeNmouse"},
+        {3130, C<&IHidServer::InitializeNmouse>, "InitializeNmouse"},
         {3131, &IHidServer::StubReplyZeroed, "FinalizeNmouse"},
-        {3132, &IHidServer::StubReplyZeroed, "SetNmousePointerRanges"},
-        {3133, &IHidServer::StubReplyZeroed, "GetNmousePointerRanges"},
+        {3132, C<&IHidServer::SetNmousePointerRanges>, "SetNmousePointerRanges"},
+        {3133, C<&IHidServer::GetNmousePointerRanges>, "GetNmousePointerRanges"},
         {3134, &IHidServer::StubReplyZeroed, "Unknown3134"},
         {3135, &IHidServer::StubReplyZeroed, "EnableShowingCursor"},
         {3136, &IHidServer::StubReplyZeroed, "SetNmouseButtonConfigJoyLeftJcms"},
         {3137, &IHidServer::StubReplyZeroed, "SetNmouseButtonConfigJoyRightJcms"},
         {3138, &IHidServer::StubReplyZeroed, "SetMergedNmouseSourceTypes"},
-        {3139, &IHidServer::StubReplyZeroed, "InitializeNmouse2"},
+        {3139, C<&IHidServer::InitializeNmouse2>, "InitializeNmouse2"},
         {3140, &IHidServer::StubReplyZeroed, "SetNmousePointerPosition"},
         {3141, &IHidServer::StubReplyZeroed, "EnableNmousePointer"},
         {3142, &IHidServer::StubReplyZeroed, "RestrictNmousePointer"},
@@ -1158,6 +1158,60 @@ Result IHidServer::IsOunceVibrationDeviceMounted(
         }
     }
 
+    R_SUCCEED();
+}
+
+Result IHidServer::SetSceneIdForPrivateApp(ClientAppletResourceUserId aruid, u64 scene_id) {
+    LOG_DEBUG(Service_HID, "called, scene_id={:#x}, applet_resource_user_id={}", scene_id, aruid.pid);
+    scene_id_for_private_app = scene_id;
+    R_SUCCEED();
+}
+
+Result IHidServer::GetSceneIdForPrivateApp(Out<u64> out_scene_id,
+                                           ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
+    *out_scene_id = scene_id_for_private_app;
+    R_SUCCEED();
+}
+
+Result IHidServer::InitializeNmouse(u8 pointer_type, s32 width, s32 height,
+                                    ClientAppletResourceUserId aruid, u64 t_mem_size,
+                                    InCopyHandle<Kernel::KTransferMemory> t_mem) {
+    LOG_WARNING(Service_HID,
+                "(STUBBED) called, pointer_type={}, width={}, height={}, applet_resource_user_id={}, "
+                "t_mem_size={:#x}",
+                pointer_type, width, height, aruid.pid, t_mem_size);
+    nmouse_pointer_width = width;
+    nmouse_pointer_height = height;
+    R_SUCCEED();
+}
+
+Result IHidServer::InitializeNmouse2(u32 pointer_type, s32 width, s32 height, u32 unknown,
+                                     ClientAppletResourceUserId aruid, u64 t_mem_size,
+                                     InCopyHandle<Kernel::KTransferMemory> t_mem) {
+    LOG_WARNING(Service_HID,
+                "(STUBBED) called, pointer_type={}, width={}, height={}, unknown={:#x}, "
+                "applet_resource_user_id={}, t_mem_size={:#x}",
+                pointer_type, width, height, unknown, aruid.pid, t_mem_size);
+    nmouse_pointer_width = width;
+    nmouse_pointer_height = height;
+    R_SUCCEED();
+}
+
+Result IHidServer::SetNmousePointerRanges(s32 width, s32 height,
+                                          ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, width={}, height={}, applet_resource_user_id={}", width,
+              height, aruid.pid);
+    nmouse_pointer_width = width;
+    nmouse_pointer_height = height;
+    R_SUCCEED();
+}
+
+Result IHidServer::GetNmousePointerRanges(Out<s32> out_width, Out<s32> out_height,
+                                          ClientAppletResourceUserId aruid) {
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
+    *out_width = nmouse_pointer_width;
+    *out_height = nmouse_pointer_height;
     R_SUCCEED();
 }
 
