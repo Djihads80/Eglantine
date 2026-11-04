@@ -109,8 +109,9 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
-    /// last_shaders_valid is false because a native program was rejected (not, say, a bad address).
-    /// The rasterizer counts the skipped draws from it.
+    /// The current shaders were refused because a native program was rejected. Unlike
+    /// !last_shaders_valid, it stays false for other failures such as an invalid shader GPU
+    /// address. The rasterizer counts the skipped draws from it (LastShadersRejected).
     bool last_shaders_rejected = false;
 
 private:
