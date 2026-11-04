@@ -25,6 +25,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/semaphore_ledger.h"
 
 namespace Tegra::Engines {
 
@@ -59,6 +60,69 @@ void DrainBack() {
     VideoCommon::GpuSplit::Get().Drain();
 }
 
+using Ledger = Nx2SemaphoreLedger;
+
+// Records a 32-bit puller release the front just queued for the back (semaphore_ledger.h).
+void NoteRelease(DmaPusher& dma_pusher, GPUVAddr address, u32 payload) {
+    if (!Ledger::Enabled()) {
+        return;
+    }
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+        Ledger::Get().NoteRelease(*device, payload, VideoCommon::GpuSplit::Get().WritePosition());
+    }
+}
+
+void ForgetRelease(DmaPusher& dma_pusher, GPUVAddr address) {
+    if (!Ledger::Enabled()) {
+        return;
+    }
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+        Ledger::Get().Forget(*device);
+    }
+}
+
+// Whether an acquire is met without draining the split's back (semaphore_ledger.h): the last
+// puller release queued for the word meets it and is still ahead of the back in the ring, or
+// guest memory already meets it and no queued puller release moves the word away. The word is
+// read without flushing the caches, which belong to the back: a value they hold but memory
+// does not yet is newer, and sync words count up, so memory meeting the acquire is enough.
+bool AcquireMetWithoutDrain(DmaPusher& dma_pusher, GPUVAddr address, u32 value,
+                            Ledger::Compare compare) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (!Ledger::Enabled() || !split.Active()) {
+        return false;
+    }
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (!device) {
+        return false;
+    }
+    if (const Ledger::Entry* entry = Ledger::Get().Find(*device)) {
+        const bool entry_met = Ledger::Met(compare, entry->value, value);
+        const bool queued = entry->order > split.Consumed();
+        if (queued) {
+            // The word will hold this release's value when the back passes the acquire.
+            return entry_met;
+        }
+    }
+    return Ledger::Met(compare, dma_pusher.memory_manager.Read<u32>(address), value);
+}
+
+Ledger::Compare CompareOf(u32 operation) {
+    // Puller GpuSemaphoreOperation values (PendingAcquire::Matches).
+    switch (operation) {
+    case 0x1:
+        return Ledger::Compare::Equal;
+    case 0x4:
+        return Ledger::Compare::Gequal;
+    default:
+        return Ledger::Compare::AndNonZero;
+    }
+}
+
+void CountLedgerAcquire() {
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireLedger, 1);
+}
+
 } // Anonymous namespace
 
 bool Puller::PendingAcquire::Matches(u32 current) const {
@@ -76,6 +140,11 @@ bool Puller::PendingAcquire::Matches(u32 current) const {
 
 bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
+        return true;
+    }
+    if (AcquireMetWithoutDrain(dma_pusher, pending_acquire->address, pending_acquire->value,
+                               CompareOf(pending_acquire->operation))) {
+        CountLedgerAcquire();
         return true;
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
@@ -233,6 +302,10 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
             }
         });
+        NoteRelease(dma_pusher, sequence_address, payload);
+        if (mirror != 0) {
+            NoteRelease(dma_pusher, mirror, payload);
+        }
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
@@ -250,6 +323,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
+        if (AcquireMetWithoutDrain(dma_pusher, acquire.address, acquire.value,
+                                   CompareOf(acquire.operation))) {
+            CountLedgerAcquire();
+            return;
+        }
         DrainBack();
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
@@ -307,12 +385,18 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
         rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload,
                           VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
     });
+    NoteRelease(dma_pusher, sequence_address, payload);
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
+    const auto value = regs.semaphore_acquire;
+    if (AcquireMetWithoutDrain(dma_pusher, regs.semaphore_address.SemaphoreAddress(), value,
+                               Ledger::Compare::Equal)) {
+        CountLedgerAcquire();
+        return;
+    }
     DrainBack();
     u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
-    const auto value = regs.semaphore_acquire;
     while (word != value) {
         regs.acquire_active = true;
         regs.acquire_value = value;
@@ -331,12 +415,34 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
                              (regs.reg_array[0x17] & ~3U);
     const u32 payload = regs.reg_array[0x19];
     const u32 operation = argument & 7;
+    // PAYLOAD_SIZE (bit 24): a 64-bit payload (SEM_PAYLOAD_HI, 0x1a). Only the low word is
+    // written and compared here; the ledger stays out of such words.
+    const bool payload_64 = (argument & (1U << 24)) != 0;
     if (operation == 1) { // RELEASE
         OnBack([rasterizer = dma_pusher.rasterizer, address, payload] {
             rasterizer->Query(address, VideoCommon::QueryType::Payload,
                               VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
         });
+        if (payload_64) {
+            ForgetRelease(dma_pusher, address);
+        } else {
+            NoteRelease(dma_pusher, address, payload);
+        }
         return;
+    }
+    if (operation == 6) { // REDUCTION: the word's value depends on what it held
+        ForgetRelease(dma_pusher, address);
+    }
+    if (!payload_64 && operation <= 5 && operation != 1) {
+        const Ledger::Compare compare = operation == 0   ? Ledger::Compare::Equal
+                                        : operation == 2 ? Ledger::Compare::Gequal
+                                        : operation == 3 ? Ledger::Compare::CircularGequal
+                                        : operation == 4 ? Ledger::Compare::AndNonZero
+                                                         : Ledger::Compare::Nor;
+        if (AcquireMetWithoutDrain(dma_pusher, address, payload, compare)) {
+            CountLedgerAcquire();
+            return;
+        }
     }
     // Acquires: check once after flushing pending fences; never block the GPU thread on them.
     DrainBack();
