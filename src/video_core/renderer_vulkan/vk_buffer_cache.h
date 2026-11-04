@@ -311,6 +311,14 @@ private:
 
     bool limit_dynamic_storage_buffers = false;
     u32 max_dynamic_storage_buffers = (std::numeric_limits<u32>::max)();
+
+    // Index binds survive inside one command buffer. Recording the same one on every draw
+    // is dropped until the scheduler starts a new recording epoch.
+    VkBuffer bound_index_buffer = VK_NULL_HANDLE;
+    VkDeviceSize bound_index_offset = 0;
+    VkIndexType bound_index_type = VK_INDEX_TYPE_UINT32;
+    u64 bound_index_epoch = 0;
+    bool bound_index_valid = false;
 };
 
 struct BufferCacheParams {

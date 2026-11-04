@@ -644,12 +644,23 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
         ReserveNullBuffer();
         vk_buffer = *null_buffer;
     }
+    const u64 epoch = scheduler.RecordingEpoch();
+    if (bound_index_valid && vk_buffer == bound_index_buffer && vk_offset == bound_index_offset &&
+        vk_index_type == bound_index_type && epoch == bound_index_epoch) {
+        return;
+    }
+    bound_index_valid = true;
+    bound_index_buffer = vk_buffer;
+    bound_index_offset = vk_offset;
+    bound_index_type = vk_index_type;
+    bound_index_epoch = epoch;
     scheduler.Record([vk_buffer, vk_offset, vk_index_type](vk::CommandBuffer cmdbuf) {
         cmdbuf.BindIndexBuffer(vk_buffer, vk_offset, vk_index_type);
     });
 }
 
 void BufferCacheRuntime::BindQuadIndexBuffer(PrimitiveTopology topology, u32 first, u32 count) {
+    bound_index_valid = false;
     if (count == 0) {
         ReserveNullBuffer();
         scheduler.Record([this](vk::CommandBuffer cmdbuf) {
