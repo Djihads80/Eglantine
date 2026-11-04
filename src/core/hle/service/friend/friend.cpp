@@ -560,20 +560,19 @@ public:
     }
 };
 
-// Session returned by chat:u 0 and 1. Command 1 hands back a handle the title waits on, so it gets
-// an event that is never signalled. 2-4 attach to the room info, local camera image processing
-// mode and local camera zoom change events (Switchbrew: no input, an event out); none of them
-// changes outside a GameChat room, so they never fire. Everything else falls through to the nx2
-// auto stub.
+// Session returned by chat:u 0 and 1 (nn::chat::IUserShimScopedObject). Command 1 hands back a
+// handle the title waits on; 2-4 attach to the room info, local camera image processing mode and
+// local camera zoom change events (Switchbrew: no input, an event out). None of them fires outside
+// a GameChat room, so each gets the never-signalled stub event. The other named commands answer 0;
+// everything else falls through to the nx2 auto stub.
 class IChatSession final : public ServiceFramework<IChatSession> {
 public:
-    explicit IChatSession(Core::System& system_)
-        : ServiceFramework{system_, "nx2:chat:u::0"}, service_context{system_, "IChatSession"} {
+    explicit IChatSession(Core::System& system_) : ServiceFramework{system_, "nx2:chat:u::0"} {
         static const FunctionInfo functions[] = {
-            {1, &IChatSession::GetEvent, "GetEvent (guessed)"},
-            {2, &IChatSession::AttachToChangedEvent, "AttachToRoomInfoChangedEvent"},
-            {3, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraImageProcessingModeChangedEvent"},
-            {4, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraZoomMagnificationChangedEvent"},
+            {1, &IChatSession::StubReplyEvent, "GetEvent (guessed)"},
+            {2, &IChatSession::StubReplyEvent, "AttachToRoomInfoChangedEvent"},
+            {3, &IChatSession::StubReplyEvent, "AttachToLocalCameraImageProcessingModeChangedEvent"},
+            {4, &IChatSession::StubReplyEvent, "AttachToLocalCameraZoomMagnificationChangedEvent"},
             {10, &IChatSession::StubReplyZeroed, "StartLocalCameraStreaming"},
             {11, &IChatSession::StubReplyZeroed, "StopLocalCameraStreaming"},
             {20, &IChatSession::StubReplyZeroed, "StartRemoteCameraStreaming"},
@@ -588,42 +587,7 @@ public:
             {37, &IChatSession::StubReplyZeroed, "ReadAudioStream"},
         };
         RegisterHandlers(functions);
-        event = service_context.CreateEvent("IChatSession:Event");
-        static constexpr std::array<const char*, 3> changed_event_names{
-            "IChatSession:RoomInfoChanged",
-            "IChatSession:LocalCameraImageProcessingModeChanged",
-            "IChatSession:LocalCameraZoomMagnificationChanged",
-        };
-        for (size_t i = 0; i < changed_events.size(); ++i) {
-            changed_events[i] = service_context.CreateEvent(changed_event_names[i]);
-        }
     }
-
-    ~IChatSession() override {
-        service_context.CloseEvent(event);
-        for (auto* changed_event : changed_events) {
-            service_context.CloseEvent(changed_event);
-        }
-    }
-
-private:
-    void GetEvent(HLERequestContext& ctx) {
-        LOG_WARNING(Service_Friend, "(STUBBED) chat:u::0 1 [5]={:#x}", ctx.CommandBuffer()[5]);
-        IPC::ResponseBuilder rb{ctx, 2, 1};
-        rb.Push(ResultSuccess);
-        rb.PushCopyObjects(ctx, event->GetReadableEvent());
-    }
-
-    void AttachToChangedEvent(HLERequestContext& ctx) {
-        LOG_DEBUG(Service_Friend, "chat:u::0 {}", ctx.GetCommand());
-        IPC::ResponseBuilder rb{ctx, 2, 1};
-        rb.Push(ResultSuccess);
-        rb.PushCopyObjects(ctx, changed_events[ctx.GetCommand() - 2]->GetReadableEvent());
-    }
-
-    KernelHelpers::ServiceContext service_context;
-    Kernel::KEvent* event;
-    std::array<Kernel::KEvent*, 3> changed_events{};
 };
 
 // nn::chat::IUserLayoutCustomizationShimScopedObject, returned by chat:u 2. Per Switchbrew:
@@ -635,31 +599,14 @@ class IUserLayoutCustomizationShimScopedObject final
     : public ServiceFramework<IUserLayoutCustomizationShimScopedObject> {
 public:
     explicit IUserLayoutCustomizationShimScopedObject(Core::System& system_)
-        : ServiceFramework{system_, "nx2:chat:IUserLayoutCustomizationShimScopedObject"},
-          service_context{system_, "IUserLayoutCustomizationShimScopedObject"} {
+        : ServiceFramework{system_, "nx2:chat:IUserLayoutCustomizationShimScopedObject"} {
         static const FunctionInfo functions[] = {
             {0, &IUserLayoutCustomizationShimScopedObject::StubReplyZeroed, "Initialize"},
-            {1, &IUserLayoutCustomizationShimScopedObject::GetEvent, "GetEvent (guessed)"},
+            {1, &IUserLayoutCustomizationShimScopedObject::StubReplyEvent, "GetEvent (guessed)"},
             {12, &IUserLayoutCustomizationShimScopedObject::StubReplyZeroed, "EndFullScreenWithLocalCameraAvailableSection"},
         };
         RegisterHandlers(functions);
-        event = service_context.CreateEvent("IUserLayoutCustomizationShimScopedObject:Event");
     }
-
-    ~IUserLayoutCustomizationShimScopedObject() override {
-        service_context.CloseEvent(event);
-    }
-
-private:
-    void GetEvent(HLERequestContext& ctx) {
-        LOG_DEBUG(Service_Friend, "called");
-        IPC::ResponseBuilder rb{ctx, 2, 1};
-        rb.Push(ResultSuccess);
-        rb.PushCopyObjects(ctx, event->GetReadableEvent());
-    }
-
-    KernelHelpers::ServiceContext service_context;
-    Kernel::KEvent* event;
 };
 
 // Switch 2 GameChat (chat:u, nn::chat::IUserService). 0 and 1 open the session the title keeps
