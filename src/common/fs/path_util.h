@@ -29,6 +29,7 @@ enum class EdenPath {
     PostPresetDir,
     PostShaderDir,  // Where user post-processing shaders are stored.
     SaveDir,        // Where save data is stored.
+    SaveBackupDir,  // Where automatic save-data backups are stored.
     ScreenshotsDir, // Where yuzu screenshots are stored.
     SDMCDir,        // Where the emulated SDMC is stored.
     ShaderDir,      // Where shaders are stored.

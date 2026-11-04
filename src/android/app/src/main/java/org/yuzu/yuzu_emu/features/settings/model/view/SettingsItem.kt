@@ -301,6 +301,13 @@ abstract class SettingsItem(
                 )
             )
             put(
+                SwitchSetting(
+                    BooleanSetting.AUTOMATIC_SAVE_DATA_BACKUPS,
+                    titleId = R.string.automatic_save_data_backups,
+                    descriptionId = R.string.automatic_save_data_backups_description
+                )
+            )
+            put(
                 SingleChoiceSetting(
                     IntSetting.MEMORY_LAYOUT,
                     titleId = R.string.memory_layout,

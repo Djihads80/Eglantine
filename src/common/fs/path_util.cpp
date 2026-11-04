@@ -164,6 +164,7 @@ public:
         GenerateEdenPath(EdenPath::PostPresetDir, eden_path / POST_PRESET_DIR);
         GenerateEdenPath(EdenPath::PostShaderDir, eden_path / POST_SHADER_DIR);
         GenerateEdenPath(EdenPath::SaveDir, eden_path / NAND_DIR);
+        GenerateEdenPath(EdenPath::SaveBackupDir, eden_path / "save_backups");
         GenerateEdenPath(EdenPath::ScreenshotsDir, eden_path / SCREENSHOTS_DIR);
         GenerateEdenPath(EdenPath::SDMCDir, eden_path / SDMC_DIR);
         GenerateEdenPath(EdenPath::TASDir, eden_path / TAS_DIR);

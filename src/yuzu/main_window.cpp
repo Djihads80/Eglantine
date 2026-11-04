@@ -2363,6 +2363,21 @@ void MainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
     std::filesystem::path path;
     QString open_target;
 
+    if (target == GameListOpenTarget::SaveBackups) {
+        const auto backup_path = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveBackupDir) /
+                                 fmt::format("{:016X}", program_id);
+        if (!Common::FS::Exists(backup_path)) {
+            QMessageBox::information(this, tr("Save Backups"),
+                                     tr("No save backups have been created for this game yet. "
+                                        "Enable automatic save-data backups in System settings, "
+                                        "then launch the game."));
+            return;
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(
+            Common::FS::PathToUTF8String(backup_path))));
+        return;
+    }
+
     const auto [user_save_size, device_save_size] = [&game_path, &program_id] {
         const FileSys::PatchManager pm{program_id, QtCommon::system->GetFileSystemController(),
                                        QtCommon::system->GetContentProvider()};

@@ -26,6 +26,7 @@ Before touching the settings, see the game boots with stock options. We try our 
 ## System
 
 - `System/RNG Seed`: Set to 0 (and uncheck) to disable ASLR system-wide (this makes mods like CTGP to stop working); by default it enables ASLR to replicate console behavior.
+- `System/Automatically back up save data`: Before opening an existing account or device save, Eglantine keeps up to two verified snapshots per game and profile under the Eglantine data directory. Right-click a game and choose **Open Save Backups** to access them. To restore manually, stop the game, open **Open Save Data Location**, and copy the contents of the chosen timestamped snapshot into that save folder. Backups are local and can be copied with the Eglantine data folder to another supported platform.
 - `Network/Enable Airplane Mode`: Enable this if a game is crashing before loading AND the logs mention anything related to "web" or "internet" services.
 
 ## CPU
