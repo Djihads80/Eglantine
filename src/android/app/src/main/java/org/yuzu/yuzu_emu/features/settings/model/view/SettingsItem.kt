@@ -800,6 +800,20 @@ abstract class SettingsItem(
                 )
             )
             put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_30FPS,
+                    titleId = R.string.renderer_mkw_30fps,
+                    descriptionId = R.string.renderer_mkw_30fps_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_60FPS,
+                    titleId = R.string.renderer_mkw_60fps,
+                    descriptionId = R.string.renderer_mkw_60fps_description
+                )
+            )
+            put(
                 SingleChoiceSetting(
                     IntSetting.FAST_GPU_TIME,
                     titleId = R.string.fast_gpu_time,
