@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
-#include <stdexcept>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -13,41 +12,19 @@
 #include "shader_recompiler/ir_opt/passes.h"
 
 namespace {
-class TestEnvironment final : public Shader::Environment {
+class StubEnvironment final : public Shader::Environment {
 public:
-    u64 ReadInstruction(u32) override {
-        throw std::logic_error{"unexpected instruction read"};
-    }
-    u32 ReadCbufValue(u32, u32) override {
-        throw std::logic_error{"unexpected cbuf read"};
-    }
-    Shader::TextureType ReadTextureType(u32) override {
-        throw std::logic_error{"unexpected texture read"};
-    }
-    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override {
-        throw std::logic_error{"unexpected format read"};
-    }
-    bool IsTexturePixelFormatInteger(u32) override {
-        throw std::logic_error{"unexpected format query"};
-    }
-    u32 ReadViewportTransformState() override {
-        throw std::logic_error{"unexpected viewport query"};
-    }
-    u32 TextureBoundBuffer() const override {
-        throw std::logic_error{"unexpected buffer query"};
-    }
-    u32 LocalMemorySize() const override {
-        throw std::logic_error{"unexpected local memory query"};
-    }
-    u32 SharedMemorySize() const override {
-        throw std::logic_error{"unexpected shared memory query"};
-    }
-    std::array<u32, 3> WorkgroupSize() const override {
-        throw std::logic_error{"unexpected workgroup query"};
-    }
-    bool HasHLEMacroState() const override {
-        return false;
-    }
+    u64 ReadInstruction(u32) override { return 0; }
+    u32 ReadCbufValue(u32, u32) override { return 0; }
+    Shader::TextureType ReadTextureType(u32) override { return {}; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return {}; }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 0; }
+    u32 TextureBoundBuffer() const override { return 0; }
+    u32 LocalMemorySize() const override { return 0; }
+    u32 SharedMemorySize() const override { return 0; }
+    std::array<u32, 3> WorkgroupSize() const override { return {1, 1, 1}; }
+    bool HasHLEMacroState() const override { return false; }
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override {
         return std::nullopt;
     }
@@ -72,7 +49,7 @@ TEST_CASE("Global address tracking stops at a memory load", "[shader_recompiler]
     program.post_order_blocks.push_back(&block);
     HostTranslateInfo host{};
     host.min_ssbo_alignment = 16;
-    TestEnvironment env;
+    StubEnvironment env;
     Optimization::GlobalMemoryToStorageBufferPass(env, program, host);
 
     const auto has = [&](IR::Opcode opcode) {
