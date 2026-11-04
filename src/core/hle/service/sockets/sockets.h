@@ -23,8 +23,11 @@ enum class Errno : u32 {
     INVAL = 22,
     MFILE = 24,
     PIPE = 32,
+    ACCES = 13,
     DOM = 33,
     MSGSIZE = 90,
+    NETDOWN = 100,
+    NETUNREACH = 101,
     OPNOTSUPP = 95,
     AFNOSUPPORT = 97,
     CONNABORTED = 103,
@@ -32,6 +35,7 @@ enum class Errno : u32 {
     NOTCONN = 107,
     TIMEDOUT = 110,
     CONNREFUSED = 111,
+    HOSTUNREACH = 113,
     INPROGRESS = 115,
     ISCONN = 106,
 };
@@ -194,6 +198,7 @@ enum class SocketLevel : u32 {
 
 enum class OptName : u32 {
     REUSEADDR = 0x4,
+    REUSEPORT = 0x200,
     KEEPALIVE = 0x8,
     BROADCAST = 0x20,
     LINGER = 0x80,
