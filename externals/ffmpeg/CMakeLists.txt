@@ -258,6 +258,12 @@ else()
     # `--disable-vdpau` is needed to avoid linking issues
     set(FFmpeg_CC ${CMAKE_C_COMPILER_LAUNCHER}  ${CMAKE_C_COMPILER})
     set(FFmpeg_CXX ${CMAKE_CXX_COMPILER_LAUNCHER}  ${CMAKE_CXX_COMPILER})
+    set(FFmpeg_AV1_FLAGS)
+    if (MINGW)
+        # The bundled AV1 package is built with MSVC and cannot be linked by MinGW.
+        # Use the MSYS2 dav1d package for the MinGW PGO build instead.
+        list(APPEND FFmpeg_AV1_FLAGS --enable-decoder=libdav1d --enable-libdav1d)
+    endif()
     add_custom_command(
         OUTPUT
             ${FFmpeg_MAKEFILE}
@@ -274,6 +280,7 @@ else()
                 --enable-decoder=h264
                 --enable-decoder=vp8
                 --enable-decoder=vp9
+                ${FFmpeg_AV1_FLAGS}
                 --enable-filter=yadif,scale
                 --enable-pic
                 --cc=${FFmpeg_CC}
