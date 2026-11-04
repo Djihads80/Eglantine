@@ -2295,6 +2295,17 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // A vertex, index, or storage buffer the guest has not written since its last upload
+    // has a clean dirty bitmap. Walking that bitmap on every later draw is the bulk of
+    // the "update buffers" time (#562).
+    if (!memory_tracker.HasPendingCpuUpload(device_addr, size)) {
+        static u64 skips = 0;
+        ++skips;
+        if (skips == 1 || skips == 100000 || skips % 1000000 == 0) {
+            LOG_INFO(HW_GPU, "Clean buffer uploads skipped {}", skips);
+        }
+        return true;
+    }
     // Most binds come back to a range nothing was written to since it was synchronized: skip
     // walking its pages while its region saw no CPU writes (they took 5% of Mario Kart World's
     // GPU back thread).
