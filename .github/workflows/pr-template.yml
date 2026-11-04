@@ -25,27 +25,47 @@ jobs:
         with:
           script: |
             const body = (context.payload.pull_request.body || '').replace(/<!--[\s\S]*?-->/g, '');
+            const lines = body.split(/\r?\n/);
             const problems = [];
-            // Only the acknowledgements are required; the type and testing boxes are optional.
-            for (const item of body.matchAll(/^\s*[-*+]\s*\[ \]\s*(I have read and followed.+)$/gm)) {
-              problems.push(`Unchecked: ${item[1].trim()}`);
-            }
-            if (!/^\s*[-*+]\s*\[[ xX]\]/m.test(body)) {
-              problems.push('The template checklist is missing.');
-            }
+            const isHeading = (line) => /^#{1,6}\s*\S/.test(line);
             const sections = {};
             let current = null;
-            for (const line of body.split(/\r?\n/)) {
+            for (const line of lines) {
               const heading = line.match(/^#{1,6}\s*(.+?)\s*$/);
               if (heading) {
                 current = heading[1].toLowerCase();
-                sections[current] = '';
+                sections[current] = [];
               } else if (current) {
-                sections[current] += line + '\n';
+                sections[current].push(line);
               }
             }
+            const unchecked = /^\s*[-*+]\s*\[ \]\s*(.+?)\s*$/;
+            const anyBox = /^\s*[-*+]\s*\[[ xX]\]/;
+            // The required boxes: the acknowledgements above the first heading and everything under
+            // "Checklist". The type and testing boxes are optional.
+            const required = [
+              ...lines.slice(0, lines.findIndex(isHeading) === -1 ? lines.length : lines.findIndex(isHeading)),
+              ...(sections['checklist'] || []),
+            ];
+            if (!lines.some((line) => anyBox.test(line))) {
+              problems.push('The template checklist is missing.');
+            } else {
+              for (const line of required) {
+                const item = line.match(unchecked);
+                if (item && !/HUMANMADE/.test(item[1])) {
+                  problems.push(`Unchecked: ${item[1].replace(/\*\*/g, '')}`);
+                }
+              }
+            }
+            // A section only counts as filled in once its untouched template prompts are removed.
+            const isPrompt = {
+              summary: (line) => /^What does this PR change and why\?$/.test(line.trim()),
+              testing: (line) => unchecked.test(line) || /^\*\*Games tested:\*\*$/.test(line.trim()) ||
+                                 /^E\.g\./.test(line.trim()) || /^Regression test:\s*$/.test(line.trim()),
+            };
             for (const name of ['Summary', 'Testing']) {
-              if (!(sections[name.toLowerCase()] || '').trim()) {
+              const content = (sections[name.toLowerCase()] || []).filter((line) => !isPrompt[name.toLowerCase()](line));
+              if (!content.join('').trim()) {
                 problems.push(`Fill in the "${name}" section.`);
               }
             }
@@ -59,8 +79,20 @@ jobs:
                 per_page: 100,
               });
               const hasTest = files.some((f) => f.filename.startsWith('src/tests/'));
-              const reason = body.match(/Regression test:[ \t]*(?:\r?\n)?[ \t]*(.*)$/im);
-              const stated = reason && reason[1].trim() && !/^n\/a$/i.test(reason[1].trim());
+              // The reason is on the label's line or the next non-empty line, but never a heading,
+              // a checkbox or another label.
+              let reason = '';
+              const label = lines.findIndex((line) => /^\s*Regression test:/i.test(line));
+              if (label !== -1) {
+                reason = lines[label].replace(/^\s*Regression test:/i, '').trim();
+                for (let i = label + 1; !reason && i < lines.length; i++) {
+                  const line = lines[i].trim();
+                  if (!line) continue;
+                  if (isHeading(line) || anyBox.test(line) || /^\*\*[^*]+:\*\*/.test(line)) break;
+                  reason = line;
+                }
+              }
+              const stated = reason && !/^n\/a$/i.test(reason);
               if (!hasTest && !stated) {
                 problems.push('This looks like a fix: add a test under src/tests/ or fill in "Regression test:" with why there is none.');
               }
