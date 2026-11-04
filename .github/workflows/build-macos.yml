@@ -28,6 +28,7 @@ on:
         default: true
       runner:
         type: string
+        # Might be changed to latest for more availability
         default: macos-15
 
 permissions:

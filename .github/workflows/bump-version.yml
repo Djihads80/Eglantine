@@ -7,7 +7,6 @@ name: bump-version
 #   rc                      next candidate (-rc1 -> -rc2)
 #   release                 promote the candidate to stable (drops the -rcN)
 #
-# The repository setting "Allow GitHub Actions to create and approve pull requests" must be on.
 on:
   workflow_dispatch:
     inputs:

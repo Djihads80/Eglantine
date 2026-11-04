@@ -35,6 +35,7 @@ permissions:
 jobs:
   msvc:
     name: windows-x86_64
+    # Might also need to upgrade that one
     runs-on: windows-2022
     env:
       SCCACHE_DIR: ${{ github.workspace }}/.sccache

@@ -105,6 +105,7 @@ jobs:
           modules: qtcharts
           cache: true
 
+      # TODO: Move to ubuntu 26 which has llvm-23 by default
       # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
       # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
       # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
