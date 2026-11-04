@@ -1560,11 +1560,25 @@ std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation(
 }
 
 bool PipelineCache::WaitForGraphicsTranslation(std::shared_future<void> done) {
-    // A Switch 2 program's draw is never skipped (BuiltPipeline: Mario Kart World raced in
-    // another scene's lighting after skipped draws): it waits for the translation, which still
-    // runs on a worker alongside the others. Otherwise waiting only helps when the job starts
-    // right away: behind a backlog it would spend the whole budget without getting the pipeline.
-    const bool must_wait = Settings::CurrentProgramIsSwitch2();
+    // On Android a Switch 2 program's draw is never skipped (BuiltPipeline: Mario Kart World
+    // raced in another scene's lighting after skipped draws, and flickered): it waits for the
+    // translation, which still runs on a worker alongside the others. Phone drivers build these
+    // pipelines in milliseconds. On desktop the NVIDIA driver took up to 6.8 s for one of Mario
+    // Kart World's, and waiting froze races for up to 16 s, so desktop keeps the wait budget
+    // below. EDEN_NX2_SWITCH2_TRANSLATION_WAIT=1 always waits for Switch 2 draws, =0 never.
+    // Otherwise waiting only helps when the job starts right away: behind a backlog it would
+    // spend the whole budget without getting the pipeline.
+    static const bool wait_for_switch2 = [] {
+        if (const char* value = std::getenv("EDEN_NX2_SWITCH2_TRANSLATION_WAIT")) {
+            return value[0] != '0';
+        }
+#ifdef __ANDROID__
+        return true;
+#else
+        return false;
+#endif
+    }();
+    const bool must_wait = wait_for_switch2 && Settings::CurrentProgramIsSwitch2();
     if (!must_wait && (translation_wait_budget.count() == 0 ||
                        translating_graphics.size() > num_translation_threads)) {
         return false;
