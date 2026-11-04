@@ -530,6 +530,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
     }
     auto result = std::make_shared<LoweredNativeCode>();
+    result->native_key = Shader::Ampere::NativeProgramKey(native);
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
     auto& lowered_code = result->code;
