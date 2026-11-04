@@ -1624,12 +1624,15 @@ struct Nx2NativeObjects {
         bool gpu_read{};
         u32 gpu_maps{};     // outstanding 426 maps
         bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
+        u64 map_generation{}; // that mapping's registration (Nx2GpuMemoryRegistry::Register)
     };
     // Mappings 426 made for decoder images that went while the client still had them mapped,
     // dropped a while later (INx2GraphicsSystemSession::RetireDecoderMapping).
+    // Also a mapping 426 made, taken from its image (TakeDecoderMapping) to be dropped.
     struct RetiredMapping {
         u64 address;
         u64 size;
+        u64 generation; ///< Its registration: a newer one at the address is kept when it goes
     };
     std::mutex mutex;
     std::map<u32, Memory> memories;
@@ -3888,7 +3891,7 @@ private:
 
     void DestroyNativeMemory(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::vector<std::optional<std::pair<u64, u64>>> unmaps;
+        std::vector<std::optional<Nx2NativeObjects::RetiredMapping>> unmaps;
         {
             std::scoped_lock lk{m_objects->mutex};
             for (auto& [image_id, image] : m_objects->images) {
@@ -4059,7 +4062,12 @@ private:
             }
         }
         if (register_mapping) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(address, size);
+            const u64 generation =
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(address, size);
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(handle); image != m_objects->images.end()) {
+                image->second.map_generation = generation;
+            }
         }
         LOG_INFO(Service, "nx2:gsv {} decoder image {} at {:#x}+{:#x}{}", ctx.GetCommand(), handle,
                  address, size, register_mapping ? ", mapped for the GPU" : "");
@@ -4091,7 +4099,7 @@ private:
     void UnmapNativeImage(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         const u32 handle = w[2];
-        std::optional<std::pair<u64, u64>> unmap;
+        std::optional<Nx2NativeObjects::RetiredMapping> unmap;
         {
             std::scoped_lock lk{m_objects->mutex};
             if (const auto image = m_objects->images.find(handle);
@@ -4110,8 +4118,8 @@ private:
 
     // The range 426 mapped for an image, if it did; called with m_objects->mutex held.
     // `freed`: the memory being destroyed (112), whose images can't keep the mapping.
-    std::optional<std::pair<u64, u64>> TakeDecoderMapping(Nx2NativeObjects::Image& image,
-                                                          std::optional<u32> freed = {}) {
+    std::optional<Nx2NativeObjects::RetiredMapping> TakeDecoderMapping(
+        Nx2NativeObjects::Image& image, std::optional<u32> freed = {}) {
         image.gpu_maps = 0;
         if (!std::exchange(image.mapped_here, false)) {
             return std::nullopt;
@@ -4132,21 +4140,21 @@ private:
             if (other_memory != m_objects->memories.end() &&
                 other_memory->second.address + other.offset == address) {
                 other.mapped_here = true;
+                other.map_generation = image.map_generation;
                 return std::nullopt;
             }
         }
-        return std::pair{address, image.size};
+        return Nx2NativeObjects::RetiredMapping{address, image.size, image.map_generation};
     }
 
     // Drops a mapping 426 made. The GPU thread unmaps it in order, after the command lists
     // already submitted, and the texture cache frees its images once the GPU is past them. A
     // mapping made since over the range owns it now and is left alone.
-    static void DropDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
-        if (range &&
-            !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().UnregisterIfUnchanged(range->first,
-                                                                                range->second)) {
+    static void DropDecoderMapping(const std::optional<Nx2NativeObjects::RetiredMapping>& range) {
+        if (range && !Nvidia::Devices::Nx2GpuMemoryRegistry::Get().UnregisterIfUnchanged(
+                         range->address, range->size, range->generation)) {
             LOG_INFO(Service, "nx2:gsv decoder image mapping {:#x}+{:#x} was replaced, kept",
-                     range->first, range->second);
+                     range->address, range->size);
         }
     }
 
@@ -4156,13 +4164,15 @@ private:
     // VulkanWorker 0.7 s later when they went at once). fefw keeps such a pool until its mapping
     // goes. Here it is dropped RetireDelay later, by then long done on the GPU, unless a pool
     // made again at the address took it over meanwhile.
-    void RetireDecoderMapping(const std::optional<std::pair<u64, u64>>& range) {
+    void RetireDecoderMapping(const std::optional<Nx2NativeObjects::RetiredMapping>& range) {
         if (!range) {
             return;
         }
+        // With its registration's generation: one made since at the address (a pool made again,
+        // or a 211 mapping) is a newer one and stays when this one is dropped.
         {
             std::scoped_lock lk{m_objects->mutex};
-            m_objects->retired.push_back({range->first, range->second});
+            m_objects->retired.push_back(*range);
         }
         if (!m_retire_event) {
             m_retire_event = Core::Timing::CreateEvent(
@@ -4175,12 +4185,12 @@ private:
         }
         // One event per mapping, in order: each drops the oldest.
         system.CoreTiming().ScheduleEvent(RetireDelay, m_retire_event);
-        LOG_INFO(Service, "nx2:gsv decoder image mapping {:#x}+{:#x} goes in {} ms", range->first,
-                 range->second, RetireDelay.count());
+        LOG_INFO(Service, "nx2:gsv decoder image mapping {:#x}+{:#x} goes in {} ms", range->address,
+                 range->size, RetireDelay.count());
     }
 
     static void DropRetiredMapping(Nx2NativeObjects& objects) {
-        std::optional<std::pair<u64, u64>> drop;
+        std::optional<Nx2NativeObjects::RetiredMapping> drop;
         {
             std::scoped_lock lk{objects.mutex};
             if (objects.retired.empty()) {
@@ -4188,7 +4198,7 @@ private:
             }
             const auto retired = objects.retired.front();
             objects.retired.pop_front();
-            drop = std::pair{retired.address, retired.size};
+            drop = retired;
             // A pool made again at the address maps through it (its 426 found it in place).
             for (auto& [id, image] : objects.images) {
                 if (!image.decoder || image.gpu_maps == 0 || image.mapped_here ||
@@ -4199,6 +4209,7 @@ private:
                 if (memory != objects.memories.end() &&
                     memory->second.address + image.offset == retired.address) {
                     image.mapped_here = true;
+                    image.map_generation = retired.generation;
                     drop.reset();
                     break;
                 }
@@ -4265,7 +4276,7 @@ private:
 
     void DestroyNativeImage(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
-        std::optional<std::pair<u64, u64>> unmap;
+        std::optional<Nx2NativeObjects::RetiredMapping> unmap;
         {
             std::scoped_lock lk{m_objects->mutex};
             if (const auto image = m_objects->images.find(id); image != m_objects->images.end()) {
@@ -4284,7 +4295,7 @@ private:
     // A GPU mapping 426 made for them goes RetireDelay later (RetireDecoderMapping).
     void DestroyDecoderImagePool(HLERequestContext& ctx) {
         const u32 first = ctx.CommandBuffer()[2];
-        std::vector<std::optional<std::pair<u64, u64>>> unmaps;
+        std::vector<std::optional<Nx2NativeObjects::RetiredMapping>> unmaps;
         u32 count{};
         {
             std::scoped_lock lk{m_objects->mutex};
