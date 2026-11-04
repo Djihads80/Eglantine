@@ -641,8 +641,14 @@ VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
 }
 
 bool KeplerCompute::EmulatesNativeTensorPrograms() const {
-    return dlss_chain.active && dlss_chain.failure == VideoCore::GameDlssReason::None &&
-           GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    if (dlss_chain.active) {
+        return dlss_chain.failure == VideoCore::GameDlssReason::None &&
+               GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    }
+    // An upscaling network keeps its upscale stand-in (emulating title 4's takes the host driver
+    // minutes to compile). Other programs have none and write nothing when rejected (Donkey Kong
+    // Bananza then shows a purple screen after its mode select), so they are emulated.
+    return !FindUpscaleImages();
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
@@ -888,7 +894,7 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
 // Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
-bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
+std::optional<KeplerCompute::UpscaleImages> KeplerCompute::FindUpscaleImages() const {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
@@ -927,7 +933,16 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         }
     }
     if (!input || !output)
+        return std::nullopt;
+    return UpscaleImages{*input, *output, fortunes_weave};
+}
+
+bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
+    const auto images = FindUpscaleImages();
+    if (!images)
         return false;
+    const std::optional<Texture::TICEntry> input = images->input, output = images->output;
+    const bool fortunes_weave = images->fortunes_weave;
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
     switch (input->format) {
