@@ -115,9 +115,14 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     if (!CanResumeAcquire(dma_pusher)) {
         return false;
     }
-    pending_acquire.reset();
-    dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
-    Nx2SemaphoreWaiters::Get().Remove(this);
+    // Only a resume from a suspension counts: DmaPusher::Step calls this before every entry, and
+    // counting those made the count odd ("suspended") at random, so submit-time snapshots were
+    // thrown away for about half of all entries (CommandList::snapshot_suspensions).
+    if (pending_acquire) {
+        pending_acquire.reset();
+        dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
+        Nx2SemaphoreWaiters::Get().Remove(this);
+    }
     return true;
 }
 
