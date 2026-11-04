@@ -76,6 +76,7 @@ private:
     std::string name;
     std::optional<FileSys::NACP> control; ///< control.nacp next to the dump, if it has one
     std::string romfs_version;            ///< "1.8.0" from the RomFS's Product.180 tables, if any
+    bool romfs_version_pending{};         ///< A packed dump's RomFS version, read when asked for
     u64 title_id{};
     bool override_update;
 
