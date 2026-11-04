@@ -226,9 +226,10 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         return;
     }
     // Software-decoded frames are planar: interleave U and V ourselves instead of using swscale.
-    // YUVJ420P is full range and stays on the swscale path so it is converted to limited range.
+    // Full-range frames stay on the swscale path so they are converted to limited range.
     if (target == AV_PIX_FMT_NV12 && f->format == AV_PIX_FMT_YUV420P &&
-        static_cast<u32>(f->width) == width && static_cast<u32>(f->height) == height) {
+        f->color_range != AVCOL_RANGE_JPEG && static_cast<u32>(f->width) == width &&
+        static_cast<u32>(f->height) == height) {
         for (u32 y = 0; y < height; ++y) {
             std::memcpy(out.data() + y * pitch, f->data[0] + y * f->linesize[0], width);
         }
@@ -254,8 +255,9 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
                   av_get_pix_fmt_name(target));
         return;
     }
-    if (format != Nx2PictureFormat::Nv12) {
-        // The stream's matrix and range; untagged HD video is BT.709.
+    const bool full_range_source = f->color_range == AVCOL_RANGE_JPEG;
+    if (format != Nx2PictureFormat::Nv12 || full_range_source) {
+        // The stream's matrix and range; untagged HD video is BT.709. NV12 output is limited range.
         int space = SWS_CS_ITU601;
         if (f->colorspace == AVCOL_SPC_BT709 ||
             (f->colorspace == AVCOL_SPC_UNSPECIFIED && f->height >= 720)) {
@@ -264,8 +266,8 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
             space = SWS_CS_BT2020;
         }
         const int* coefficients = sws_getCoefficients(space);
-        sws_setColorspaceDetails(impl->scaler, coefficients, f->color_range == AVCOL_RANGE_JPEG,
-                                 coefficients, 1, 0, 1 << 16, 1 << 16);
+        sws_setColorspaceDetails(impl->scaler, coefficients, full_range_source, coefficients,
+                                 format != Nx2PictureFormat::Nv12, 0, 1 << 16, 1 << 16);
     }
     std::array<u8*, 4> planes{out.data(), nullptr, nullptr, nullptr};
     std::array<int, 4> strides{static_cast<int>(pitch), 0, 0, 0};
