@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -140,7 +141,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
-        {213, C<&IHidServer::SendVibrationValueInMode>, "SendVibrationValueInMode"},
+        {213, &IHidServer::SendVibrationValueInMode, "SendVibrationValueInMode"},
         {214, C<&IHidServer::SendVibrationValuesInMode>, "SendVibrationValuesInMode"},
         {220, C<&IHidServer::IsOunceVibrationDeviceMounted>, "IsOunceVibrationDeviceMounted"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
@@ -260,7 +261,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3112, &IHidServer::StubReplyZeroed, "StartJcms"},
         {3113, &IHidServer::StubReplyZeroed, "StopJcms"},
         {3114, &IHidServer::StubReplyZeroed, "Unknown3114"},
-        {3130, C<&IHidServer::InitializeNmouse>, "InitializeNmouse"},
+        {3130, &IHidServer::StubReplyZeroed, "InitializeNmouse"},
         {3131, &IHidServer::StubReplyZeroed, "FinalizeNmouse"},
         {3132, C<&IHidServer::SetNmousePointerRanges>, "SetNmousePointerRanges"},
         {3133, C<&IHidServer::GetNmousePointerRanges>, "GetNmousePointerRanges"},
@@ -1134,9 +1135,19 @@ Result IHidServer::SendVibrationValuesInMode(
     R_SUCCEED();
 }
 
-Result IHidServer::SendVibrationValueInMode() {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
-    R_SUCCEED();
+void IHidServer::SendVibrationValueInMode(HLERequestContext& ctx) {
+    // Switchbrew names 213 but gives no layout, and two fit its 32 bytes (the mode before the
+    // handle, or after the value as in 206's padding). Log the first request so a run shows which.
+    static std::once_flag logged;
+    std::call_once(logged, [&ctx] {
+        IPC::RequestParser rp{ctx};
+        const auto w = rp.PopRaw<std::array<u32, 8>>();
+        LOG_INFO(Service_HID,
+                 "(STUBBED) first request: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                 w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    });
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(ResultSuccess);
 }
 
 Result IHidServer::IsOunceVibrationDeviceMounted(
@@ -1163,26 +1174,15 @@ Result IHidServer::IsOunceVibrationDeviceMounted(
 
 Result IHidServer::SetSceneIdForPrivateApp(ClientAppletResourceUserId aruid, u64 scene_id) {
     LOG_DEBUG(Service_HID, "called, scene_id={:#x}, applet_resource_user_id={}", scene_id, aruid.pid);
-    scene_id_for_private_app = scene_id;
+    scene_ids_for_private_app[aruid.pid] = scene_id;
     R_SUCCEED();
 }
 
 Result IHidServer::GetSceneIdForPrivateApp(Out<u64> out_scene_id,
                                            ClientAppletResourceUserId aruid) {
     LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
-    *out_scene_id = scene_id_for_private_app;
-    R_SUCCEED();
-}
-
-Result IHidServer::InitializeNmouse(u8 pointer_type, s32 width, s32 height,
-                                    ClientAppletResourceUserId aruid, u64 t_mem_size,
-                                    InCopyHandle<Kernel::KTransferMemory> t_mem) {
-    LOG_WARNING(Service_HID,
-                "(STUBBED) called, pointer_type={}, width={}, height={}, applet_resource_user_id={}, "
-                "t_mem_size={:#x}",
-                pointer_type, width, height, aruid.pid, t_mem_size);
-    nmouse_pointer_width = width;
-    nmouse_pointer_height = height;
+    const auto it = scene_ids_for_private_app.find(aruid.pid);
+    *out_scene_id = it != scene_ids_for_private_app.end() ? it->second : 0;
     R_SUCCEED();
 }
 
@@ -1193,8 +1193,7 @@ Result IHidServer::InitializeNmouse2(u32 pointer_type, s32 width, s32 height, u3
                 "(STUBBED) called, pointer_type={}, width={}, height={}, unknown={:#x}, "
                 "applet_resource_user_id={}, t_mem_size={:#x}",
                 pointer_type, width, height, unknown, aruid.pid, t_mem_size);
-    nmouse_pointer_width = width;
-    nmouse_pointer_height = height;
+    nmouse_pointer_ranges[aruid.pid] = {width, height};
     R_SUCCEED();
 }
 
@@ -1202,16 +1201,18 @@ Result IHidServer::SetNmousePointerRanges(s32 width, s32 height,
                                           ClientAppletResourceUserId aruid) {
     LOG_DEBUG(Service_HID, "called, width={}, height={}, applet_resource_user_id={}", width,
               height, aruid.pid);
-    nmouse_pointer_width = width;
-    nmouse_pointer_height = height;
+    nmouse_pointer_ranges[aruid.pid] = {width, height};
     R_SUCCEED();
 }
 
 Result IHidServer::GetNmousePointerRanges(Out<s32> out_width, Out<s32> out_height,
                                           ClientAppletResourceUserId aruid) {
     LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", aruid.pid);
-    *out_width = nmouse_pointer_width;
-    *out_height = nmouse_pointer_height;
+    const auto it = nmouse_pointer_ranges.find(aruid.pid);
+    const NmousePointerRanges ranges =
+        it != nmouse_pointer_ranges.end() ? it->second : NmousePointerRanges{};
+    *out_width = ranges.width;
+    *out_height = ranges.height;
     R_SUCCEED();
 }
 
