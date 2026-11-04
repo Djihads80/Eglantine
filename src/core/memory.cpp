@@ -554,6 +554,9 @@ struct Memory::Impl {
 #ifdef HAS_HYPERVISOR
             if (hv_vm) {
                 hv_vm->ProtectAccess(vaddr, size, perm);
+                if (cached && perm != Common::MemoryPermission{}) {
+                    ProtectArmedPages(vaddr, size);
+                }
             }
 #endif
         }
@@ -625,7 +628,7 @@ struct Memory::Impl {
             const char* value = std::getenv("EDEN_NX2_READ_TRAPS");
             return value != nullptr && value[0] == '0';
         }();
-        return !disabled && current_page_table->fastmem_arena &&
+        return !disabled && (current_page_table->fastmem_arena || HasHypervisor()) &&
                !Settings::values.use_reactive_flushing.GetValue() &&
                Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce;
     }
@@ -645,7 +648,7 @@ struct Memory::Impl {
             if (run_pages > 0) {
                 // Reads that hit a cached read area must not skip the flush of a new trap.
                 read_trap_generation.fetch_add(1, std::memory_order_release);
-                host_buffer->Protect(run_begin << YUZU_PAGEBITS, run_pages << YUZU_PAGEBITS,
+                ProtectReadTrapPages(run_begin << YUZU_PAGEBITS, run_pages << YUZU_PAGEBITS,
                                      Common::MemoryPermission{});
                 run_pages = 0;
             }
@@ -666,6 +669,19 @@ struct Memory::Impl {
         protect_run();
     }
 
+    /// Sets the access of read-trapped pages in whichever host mapping the CPU backend reads
+    /// through: the fastmem arena (Dynarmic) or the Hypervisor's guest page tables.
+    void ProtectReadTrapPages(u64 vaddr, u64 size, Common::MemoryPermission perm) {
+        if (current_page_table->fastmem_arena) {
+            host_buffer->Protect(vaddr, size, perm);
+        }
+#ifdef HAS_HYPERVISOR
+        if (hv_vm) {
+            hv_vm->ProtectAccess(vaddr, size, perm);
+        }
+#endif
+    }
+
     /// Takes read permission away again from armed pages that were just cached again.
     void ProtectArmedPages(u64 vaddr, u64 size) {
         if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
@@ -675,7 +691,7 @@ struct Memory::Impl {
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
         for (auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
              it != armed_read_traps.end() && *it < page_end; ++it) {
-            host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE, Common::MemoryPermission{});
+            ProtectReadTrapPages(*it << YUZU_PAGEBITS, YUZU_PAGESIZE, Common::MemoryPermission{});
         }
     }
 
@@ -689,7 +705,7 @@ struct Memory::Impl {
         auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
         while (it != armed_read_traps.end() && *it < page_end) {
             // Still cached (this read came through the rasterizer path): writes stay trapped.
-            host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE,
+            ProtectReadTrapPages(*it << YUZU_PAGEBITS, YUZU_PAGESIZE,
                                  Common::MemoryPermission::Read);
             it = armed_read_traps.erase(it);
             armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
