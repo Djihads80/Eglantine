@@ -368,6 +368,16 @@ struct Values {
     // its output passes the checks. Off by default on Android: compiling its emulated tensor passes
     // took Turnip from 3.1 to 7.6 GB in 4 s on a 24 GB phone and crashed it (Fire Emblem: Fortune's
     // Weave).
+    // Upstream's command list series (copies of lists at submit, and of lists the GPU writes).
+    // Off by default on Android: on an Odin 3 it cost ~45 ms of GPU-thread waiting a second in
+    // Mario Kart World and caused flicker.
+    SwitchableSetting<bool> nx2_command_lists{linkage,
+#ifdef __ANDROID__
+                                              false,
+#else
+                                              true,
+#endif
+                                              "nx2_command_lists", Category::RendererHacks};
     SwitchableSetting<bool> game_dlss_network{linkage,
 #ifdef __ANDROID__
                                               false,

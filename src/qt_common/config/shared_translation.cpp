@@ -302,6 +302,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Enables access to previous buffer states.\nThis option may improve rendering "
               "quality and performance consistency in some games."));
     INSERT(Settings, fix_bloom_effects, tr("Fix bloom effects"), tr("Removes bloom in Burnout."));
+    INSERT(Settings, nx2_command_lists, tr("Switch 2 command list fixes"),
+           tr("Upstream's fixes for Switch 2 command lists the game rewrites after submitting. Off "
+              "on phones: on an Odin 3 they cost ~45 ms of GPU-thread waiting per second in Mario "
+              "Kart World and caused flicker. Takes effect when a game starts."));
     INSERT(Settings, reduce_texture_resolution, tr("Reduce texture resolution"),
            tr("Large compressed textures keep their mip levels from the second one on: a quarter "
               "of the video memory, slightly blurrier up close."));

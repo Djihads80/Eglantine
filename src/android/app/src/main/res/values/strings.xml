@@ -614,6 +614,8 @@
     <string name="renderer_release_gpu_only_memory">Release GPU-only memory (experimental)</string>
     <string name="renderer_game_dlss_network">Use the game\'s own DLSS (experimental)</string>
     <string name="renderer_game_dlss_network_description">Runs the game\'s DLSS network instead of FSR 3.1. Needs a lot of RAM to compile and can crash on phones. Takes effect when the game starts.</string>
+    <string name="renderer_nx2_command_lists">Switch 2 command list fixes</string>
+    <string name="renderer_nx2_command_lists_description">Upstream\'s fixes for Switch 2 command lists the game rewrites after submitting. Off on phones: on an Odin 3 they cost ~45 ms of GPU-thread waiting per second in Mario Kart World and caused flicker. Takes effect when a game starts.</string>
     <string name="renderer_mkw_30fps">Mario Kart World: 30 FPS mode</string>
     <string name="renderer_mkw_30fps_description">Forces the game to use its native 30 FPS mode at normal game speed. Takes effect after restarting the game.</string>
     <string name="renderer_mkw_60fps">Mario Kart World: 60 FPS mode</string>

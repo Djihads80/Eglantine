@@ -588,7 +588,8 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
 }
 
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || !Tegra::Nx2CommandLists() ||
+        size == 0) {
         return false;
     }
     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
@@ -608,8 +609,8 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     // second in a Mario Kart World race, during which the back had nothing to do). Pages
     // FlushGpuWrittenCommands flushed whole and no GPU work wrote since are read from guest
     // memory.
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
-        rasterizer == nullptr) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || !Tegra::Nx2CommandLists() ||
+        count == 0 || rasterizer == nullptr) {
         return false;
     }
     const GPUVAddr end = address + u64{count} * sizeof(u32);
