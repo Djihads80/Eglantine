@@ -99,10 +99,12 @@ jobs:
             libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev \
             libva-dev libvdpau-dev spirv-tools spirv-headers libusb-1.0-0-dev \
             libboost-dev libboost-fiber-dev libboost-context-dev \
-            libopus-dev libasound2-dev ccache catch2
+            libopus-dev libasound2-dev ccache catch2 mold
 
+      # Pull requests only read the caches; nx2 pushes and the weekly run write them, so every PR
+      # starts from a warm nx2 cache instead of each one storing its own copy.
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: sanitizers-${{ matrix.id }}-${{ github.sha }}
@@ -122,7 +124,8 @@ jobs:
           fi
 
       - name: Restore dependency sources
-        uses: actions/cache@v4
+        id: cpm
+        uses: actions/cache/restore@v4
         with:
           path: .cache/cpm
           # Exact key only: CPMUtil does not recheck a cached source's URL or hash, so a broad
@@ -135,7 +138,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
             -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -g1 -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }} -fuse-ld=mold" \
             -DBUILD_TESTING=ON \
             -DYUZU_TESTS=ON \
             -DENABLE_QT=OFF \
@@ -151,7 +154,10 @@ jobs:
             -DUSE_CCACHE=ON
 
       - name: Build tests
-        run: cmake --build build --target tests --parallel
+        run: |
+          ccache -z
+          cmake --build build --target tests --parallel
+          ccache -s
 
       - name: Verify tests are registered
         run: |
@@ -161,3 +167,17 @@ jobs:
       - name: Run tests
         continue-on-error: ${{ matrix.experimental == true }}
         run: env ${{ matrix.options }} ctest --test-dir build --no-tests=error --output-on-failure
+
+      - name: Save ccache
+        if: ${{ always() && github.ref == 'refs/heads/nx2' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: sanitizers-${{ matrix.id }}-${{ github.sha }}
+
+      - name: Save dependency sources
+        if: ${{ always() && github.ref == 'refs/heads/nx2' && steps.cpm.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
