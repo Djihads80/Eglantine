@@ -173,6 +173,7 @@ private:
 
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&);
+    bool TryNx2IndirectReset();
 
     void FlushWork();
 

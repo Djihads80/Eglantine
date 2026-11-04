@@ -125,13 +125,13 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::siz
         if (nup.GetStatus() != Loader::ResultStatus::Success) {
             return false;
         }
+        const auto base = nup.FindBasePackage();
+        const auto update = nup.FindBestUpdatePackage();
         std::optional<std::size_t> program;
-        if (const auto base = nup.FindBasePackage();
-            base && nup.GetExeFSDir(*base) != nullptr) {
-            program = base;
-        } else if (const auto update = nup.FindBestUpdatePackage();
-                   update && nup.GetExeFSDir(*update) != nullptr) {
+        if (update && nup.GetExeFSDir(*update) != nullptr) {
             program = update;
+        } else if (base && nup.GetExeFSDir(*base) != nullptr) {
+            program = base;
         }
         const auto exefs = program ? nup.GetExeFSDir(*program) : nullptr;
         const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;

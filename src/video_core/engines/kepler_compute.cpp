@@ -553,18 +553,29 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     if (RememberDlssMotionVectors()) {
         dlss_chain.active = true;
         dlss_chain.rejected = 0;
+        dlss_chain.dispatches = 0;
+        dlss_chain.pending.clear();
     }
     const bool output_pass = dlss_chain.active && IsDlssOutputPass();
+    // Fortune's Weave's evaluation is 13 dispatches. Without an output pass by then, the first
+    // pass was another program with a similar constant buffer: stop following it. Skipped
+    // dispatches count too, so a chain always ends.
+    constexpr u32 max_dispatches = 64;
+    if (dlss_chain.active && !output_pass && ++dlss_chain.dispatches > max_dispatches) {
+        dlss_chain.active = false;
+        dlss_chain.pending.clear();
+    }
     if (dlss_chain.active) {
-        // While the network can't be shown (it failed its checks, or it is off) the passes seen
-        // before stop running, and the replacement upscale draws the output at the output pass.
+        // While the network can't be shown (it failed its checks, or it is off) the passes of
+        // earlier evaluations stop running, and the replacement upscale draws the output at the
+        // output pass.
         const GPUVAddr program = regs.code_loc.Address();
         if ((dlss_chain.failure != VideoCore::GameDlssReason::None ||
              GameDlssBlocker() != VideoCore::GameDlssReason::None) &&
             dlss_chain.programs.contains(program)) {
             return output_pass ? FinishDlssEvaluation() : true;
         }
-        dlss_chain.programs.insert(program);
+        dlss_chain.pending.insert(program);
     }
     bool dispatched = true;
     try {
@@ -630,8 +641,16 @@ VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
 }
 
 bool KeplerCompute::EmulatesNativeTensorPrograms() const {
-    return dlss_chain.active && dlss_chain.failure == VideoCore::GameDlssReason::None &&
-           GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    if (dlss_chain.active) {
+        return dlss_chain.failure == VideoCore::GameDlssReason::None &&
+               GameDlssBlocker() == VideoCore::GameDlssReason::None;
+    }
+    // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
+    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
+    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
+    // shader cache keeps the result of a program's first dispatch.
+    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
@@ -753,6 +772,8 @@ void KeplerCompute::UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReaso
 // or the replacement upscale draws over it. Returns whether the replacement ran.
 bool KeplerCompute::FinishDlssEvaluation() {
     dlss_chain.active = false;
+    dlss_chain.programs.insert(dlss_chain.pending.begin(), dlss_chain.pending.end());
+    dlss_chain.pending.clear();
     const bool complete = dlss_chain.rejected == 0;
     dlss_chain.clean_evaluations = complete ? dlss_chain.clean_evaluations + 1 : 0;
     ++dlss_chain.evaluations;
