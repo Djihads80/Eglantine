@@ -993,6 +993,16 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
                  diffs.empty() ? std::string{" nothing in the key prefix"} : diffs);
     }
 }
+
+// A render target counts as redrawn once the game has drawn on it for this many frames, with no
+// gap longer than TargetMaxGapFrames. Fast Fusion's reflection probes take turns, one every 7.
+constexpr u64 TargetRedrawnAfterFrames = 60;
+constexpr u64 TargetMaxGapFrames = 15;
+
+// Games reuse memory: the same address can be a different target from one screen to the next.
+constexpr u64 TargetKey(u64 address, u32 width, u32 height, u32 format) {
+    return address ^ (u64{width} << 40) ^ (u64{height} << 52) ^ (u64{format} << 58);
+}
 } // Anonymous namespace
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
@@ -1025,6 +1035,9 @@ void PipelineCache::TickFrame() {
     constexpr u64 EvictCheckFrames = 600;
     if (frame_count % EvictCheckFrames == 0) {
         EvictUnusedPipelines();
+        std::erase_if(target_uses, [this](const auto& entry) {
+            return frame_count - entry.second.last_frame > TargetMaxGapFrames;
+        });
     }
 }
 
@@ -1070,11 +1083,46 @@ void PipelineCache::EvictUnusedPipelines() {
              EvictAfterFrames, graphics_cache.size());
 }
 
-GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+bool PipelineCache::IsTargetRedrawn() {
+    const auto& regs = maxwell3d->regs;
+    const auto& color = regs.rt[0];
+    const bool has_color =
+        regs.rt_control.count != 0 && color.format != Tegra::RenderTargetFormat::NONE;
+    const u64 target = has_color ? TargetKey(color.Address(), color.width, color.height,
+                                             static_cast<u32>(color.format))
+                                 : TargetKey(regs.zeta.Address(), regs.zeta_size.width,
+                                             regs.zeta_size.height,
+                                             static_cast<u32>(regs.zeta.format));
+    if (target == last_target && frame_count == last_target_frame) {
+        return last_target_redrawn;
+    }
+    TargetUse& use =
+        target_uses.try_emplace(target, TargetUse{frame_count, frame_count}).first->second;
+    if (frame_count - use.last_frame > TargetMaxGapFrames) {
+        use.first_frame = frame_count;
+    }
+    use.last_frame = frame_count;
+    last_target = target;
+    last_target_frame = frame_count;
+    last_target_redrawn = frame_count - use.first_frame >= TargetRedrawnAfterFrames;
+    return last_target_redrawn;
+}
+
+GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
+    const bool target_redrawn = !use_asynchronous_shaders ||
+                                !maxwell3d->GetNativeMacroEngine().native_turing ||
+                                IsTargetRedrawn();
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
     if (!use_asynchronous_shaders) {
+        return pipeline;
+    }
+    // Skipping a draw only costs a frame if the game draws on that target again soon. On a target
+    // it has not been drawing on, the draw may be one that nothing repeats: Fast Fusion renders
+    // each track from above once when a race loads (with depth) to make its minimap, and its
+    // vehicle select thumbnails are drawn once too.
+    if (!target_redrawn) {
         return pipeline;
     }
     // If something is using depth, we can assume that games are not rendering anything which
