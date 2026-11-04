@@ -2233,13 +2233,28 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     (components > 1 && ((dest & 1) || dest >= 254)) ||
                     (components == 4 && ((second_dest & 1) || second_dest >= 254)))
                     return fail(index, "native array-cube vector sample mode");
-                result.required_texture_buffer = 2;
+                if (!bind_texture_buffer(2))
+                    return fail(index, "native texture descriptor buffer conflict");
                 // Vector coordinates already use layer,X,Y,Z order. LOD is
                 // supplied separately, matching the Maxwell TEX operand ABI.
                 emit(0xc000000000000000ULL | predicate | 250 | (u64{source_a} << 8) |
                      (u64{source_b} << 20) | (u64{7} << 28) | (u64{mask} << 31) |
                      (u64{insn.Bits(77, 1)} << 35) | (u64{insn.Bits(40, 14)} << 36) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) | (u64{lod} << 55));
+                if (insn.Bits(79, 1)) {
+                    // FP16 results, packed as the general path below does: (c0, c1) into the
+                    // first destination, (c2, c3) into the second (F2F writes the half in the
+                    // low 16 bits; ISCADD merges, op_a shifted up as the high half).
+                    const auto pack = [&](u32 target, u32 low, u32 high) {
+                        emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
+                        emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
+                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
+                    };
+                    pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
+                    if (components > 2)
+                        pack(second_dest, 252, components > 3 ? 253U : 255U);
+                    break;
+                }
                 for (u32 i = 0; i < components; ++i)
                     emit(0x5c98000000000000ULL | predicate |
                          (i < 2 ? dest + i : second_dest + i - 2) |
