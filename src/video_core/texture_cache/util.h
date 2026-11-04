@@ -70,6 +70,35 @@ struct OverlapResult {
 
 [[nodiscard]] bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config);
 
+struct UnswizzleRowRun {
+    GPUVAddr src_addr;
+    size_t guest_bytes;
+    size_t host_offset;
+    size_t host_bytes;
+    u32 run_tiles;
+    u32 tile_rows;
+    Extent3D block;
+    u32 run_alignment;
+};
+
+struct UnswizzlePlan {
+    boost::container::small_vector<BufferImageCopy, 16> copies;
+    boost::container::small_vector<UnswizzleRowRun, 16> runs;
+    size_t total_host_bytes{0};
+    u32 bpp_log2{0};
+    bool layout_valid{true};
+};
+
+/// Plans the unswizzle copies and runs for a 2D block-linear image overlapping `dirty_ranges`.
+/// Computes destination offsets and required buffer size without reading guest memory or copying.
+[[nodiscard]] UnswizzlePlan PlanUnswizzleImageRows(
+    GPUVAddr gpu_addr, const ImageInfo& info,
+    std::span<const std::pair<u64, u64>> dirty_ranges);
+
+/// Executes a precalculated unswizzle plan directly into destination memory (e.g. mapped staging span).
+void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan& plan,
+                         std::span<u8> output);
+
 [[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
     std::span<const u8> input, std::span<u8> output);

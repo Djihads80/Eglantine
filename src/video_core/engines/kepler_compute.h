@@ -293,8 +293,13 @@ private:
         u32 good_checks{};
         u32 bad_checks{};
         VideoCore::GameDlssReason failure{};
-        /// The evaluation's programs; they no longer run while the network can't be shown.
+        /// Programs of evaluations that reached their output pass; they no longer run while the
+        /// network can't be shown.
         std::unordered_set<GPUVAddr> programs;
+        /// This evaluation's programs and dispatches so far. Its programs join `programs` only
+        /// at its output pass, so compute work after a look-alike first pass keeps running.
+        std::unordered_set<GPUVAddr> pending;
+        u32 dispatches{};
         u32 evaluations{};
         /// What the Graphics tab was last told.
         VideoCore::GameDlssStatus status{};

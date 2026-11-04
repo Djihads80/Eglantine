@@ -2038,7 +2038,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (insn.words[0] != 0x791a || (insn.words[1] & ~0x7fffU) != 0x8000 || insn.words[2]) {
                 return fail(index, "native dependency barrier mode");
             }
-            if (scoreboard == 0x8000) emit(0xef98000000000000ULL | predicate); // MEMBAR.CTA
+            if (uses_async_copy && scoreboard == 0x8000) emit(0xef98000000000000ULL | predicate); // MEMBAR.CTA
             break;
         }
         case 0xfae: { // LDGSTS.E.BYPASS.128: global to shared copy, done synchronously.
@@ -3208,7 +3208,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x357: case 0x957: // Geometry exit stub: install (0x357) and finish (0x957) it.
-            // Per thread, with no output to finish, EXIT just ends the invocation.
+            // The shader's own EXIT follows; per thread there is nothing to finish.
             if (!geometry) return fail(index, "unsupported native opcode");
             emit(0x50b0000000000f00ULL | predicate);
             break;
