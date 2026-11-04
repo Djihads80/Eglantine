@@ -1773,11 +1773,13 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
     ASSERT(addr.size() >= 16);
 
     const auto addr_in = GetValue<SockAddrIn>(addr);
+    const auto translated_addr = Translate(addr_in);
     auto socket = descriptor->socket;
 
     if (descriptor->domain == Domain::INET && descriptor->type == Type::DGRAM &&
         (descriptor->protocol == Protocol::IP || descriptor->protocol == Protocol::UDP) &&
-        Translate(addr_in).portno == 12345 &&
+        translated_addr.portno == 12345 && translated_addr.ip[0] != 127 &&
+        descriptor->socket->GetFD() != Network::SocketBase::INVALID_SOCKET &&
         Network::GetRoomIPv4Address()) {
         auto proxy = std::make_shared<Network::ProxySocket>();
         const auto error =
@@ -1805,7 +1807,7 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
         socket = std::move(proxy);
     }
 
-    return Translate(socket->Bind(Translate(addr_in)));
+    return Translate(socket->Bind(translated_addr));
 }
 
 Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
@@ -2015,7 +2017,15 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         descriptor->reuse_port = value != 0;
         if (const auto error = Translate(socket->SetReusePort(descriptor->reuse_port));
             error != Errno::SUCCESS) {
-            return error;
+            const bool pending_room_socket =
+                error == Errno::OPNOTSUPP &&
+                system.GetApplicationProcessProgramID() == MarioKartWorldProgramId &&
+                descriptor->domain == Domain::INET && descriptor->type == Type::DGRAM &&
+                (descriptor->protocol == Protocol::IP || descriptor->protocol == Protocol::UDP) &&
+                Network::GetRoomIPv4Address();
+            if (!pending_room_socket) {
+                return error;
+            }
         }
         break;
     case OptName::KEEPALIVE:
