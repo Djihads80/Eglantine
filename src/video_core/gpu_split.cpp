@@ -448,6 +448,20 @@ void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, 
     }
 }
 
+void GpuSplit::ConstantRun(Tegra::Engines::EngineInterface* engine, u32 first_method,
+                           const u32* words, u32 count) {
+    SelectEngine(engine);
+    const size_t size = 1 + (size_t{count} + 1) / 2;
+    u64* const entry = Reserve(size);
+    entry[0] = static_cast<u64>(Kind::ConstantRun) | (u64{first_method & 0xffff} << 8) |
+               (u64{count} << 32);
+    entry[size - 1] = 0;
+    std::memcpy(entry + 1, words, size_t{count} * sizeof(u32));
+    Commit(size);
+    Nx2Profile::Add(Nx2Profile::Counter::CbRunWords, count);
+    Nx2Profile::Add(Nx2Profile::Counter::CbRunEntries, 1);
+}
+
 void GpuSplit::DeferFunction(std::function<void()>&& func) {
     auto* const heap = new std::function<void()>(std::move(func));
     Defer([heap] {
@@ -503,6 +517,16 @@ size_t GpuSplit::Execute(const u64* entry) {
         engine->CallMultiMethod(*system, method, reinterpret_cast<const u32*>(entry + data),
                                 amount, static_cast<u32>(entry[1]));
         return data + (amount + 1) / 2;
+    }
+    case Kind::ConstantRun: {
+        const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+        const u32 count = static_cast<u32>(head >> 32);
+        auto* const engine = back_engine;
+        Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
+        Nx2Profile::CountMethod(method, count);
+        engine->ConsumeSink(*system);
+        engine->LoadConstantRun(*system, method, reinterpret_cast<const u32*>(entry + 1), count);
+        return 1 + (size_t{count} + 1) / 2;
     }
     case Kind::Call: {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);

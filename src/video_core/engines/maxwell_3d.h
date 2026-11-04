@@ -3202,6 +3202,15 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    /// A pushbuffer run from the constant buffer offset or data registers: the offset write as
+    /// CallMethod makes it, the data words' register and shadow RAM effects, one upload.
+    void LoadConstantRun(Core::System& system, u32 first_method, const u32* words, u32 count) override;
+    /// Split front: mirrors such a run and sends it as one entry. False (nothing done) when it
+    /// must go word by word (shadow RAM replay mode).
+    bool FrontLoadConstantRun(Core::System& system, VideoCommon::GpuSplit& split, u32 first_method,
+                              const u32* words, u32 count);
+    static constexpr u32 MaxConstantRun = 32;
+
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
     /// registers and sends the register writes to the back thread.

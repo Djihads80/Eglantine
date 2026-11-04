@@ -307,6 +307,38 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            // A whole incrementing run within the 3D engine's constant buffer offset and data
+            // registers goes to the split's back as one entry (Maxwell3D::LoadConstantRun), not
+            // a method call per word. EDEN_NX2_CB_BATCH_PB=0 turns it off.
+            static const bool cb_runs = [] {
+                const char* value = std::getenv("EDEN_NX2_CB_BATCH_PB");
+                return value == nullptr || value[0] != '0';
+            }();
+            using Engines::Maxwell3D;
+            constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+            constexpr u32 cb_last = MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15;
+            if (cb_runs && !dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= cb_offset && dma_state.method <= cb_last &&
+                dma_state.method_count <= Engines::Maxwell3D::MaxConstantRun &&
+                dma_state.method_count <= cb_last - dma_state.method + 1 &&
+                index + dma_state.method_count <= commands.size() && g_semaphore_watch == 0 &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                subchannels[dma_state.subchannel] != nullptr) {
+                auto& split = VideoCommon::GpuSplit::Get();
+                auto* const maxwell3d =
+                    static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+                if (split.Active() && split.FrontMacros() &&
+                    maxwell3d->GetNativeMacroEngine().native_turing &&
+                    maxwell3d->FrontLoadConstantRun(system, split, dma_state.method,
+                                                    &commands[index].argument,
+                                                    dma_state.method_count)) {
+                    index += dma_state.method_count;
+                    dma_state.method += dma_state.method_count;
+                    dma_state.method_count = 0;
+                    dma_state.is_last_call = true;
+                    continue;
+                }
+            }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
                 dma_state.method >= non_puller_methods &&

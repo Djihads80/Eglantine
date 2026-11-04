@@ -104,6 +104,10 @@ public:
         pending_words[pending_count++] = word;
     }
     void FlushPending();
+    /// A pushbuffer run of `count` incrementing methods from `first_method` within the 3D
+    /// engine's constant buffer offset and data registers (EngineInterface::LoadConstantRun).
+    void ConstantRun(Tegra::Engines::EngineInterface* engine, u32 first_method, const u32* words,
+                     u32 count);
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
         SelectEngine(engine);
@@ -164,6 +168,7 @@ private:
         Method, ///< Bits 8-23 method, 32-63 argument; flags IsLast, HasSegment (word 1)
         Multi,  ///< Bits 8-23 method, 32-63 amount; word 1 methods pending, [segment], words
         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
+        ConstantRun, ///< Bits 8-23 first method, 32-63 count; then the words (two per u64)
     };
     static constexpr u64 IsLast = 1 << 4;
     static constexpr u64 HasSegment = 1 << 5;

@@ -95,7 +95,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 24> counters{}; ///< See Counter
+    std::array<u64, 32> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
     u64 sample_tick{}; ///< SampledScope: which constructions time themselves
@@ -218,6 +218,9 @@ enum class Counter : u32 {
     Submits,          ///< Scheduler::Flush from FlushWork
     CbBatchWords,     ///< Constant buffer words front macros sent batched (CB_DATA)
     CbBatchEntries,   ///< Ring entries those words went in
+    CbRunWords,       ///< Pushbuffer constant buffer runs (offset + data words) sent as one entry
+    CbRunEntries,     ///< Those entries
+    CbBindsSkipped,   ///< Constant buffer binds not sent: same slot, buffer and size as last time
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -297,6 +300,10 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[20]) * 1e9 / window,
                         static_cast<double>(data.counters[21]) * 1e9 / window,
                         static_cast<double>(data.counters[22]) * 1e9 / window);
+    line += fmt::format(" | CB runs {:.0f} words in {:.0f} entries, binds skipped {:.0f}",
+                        static_cast<double>(data.counters[23]) * 1e9 / window,
+                        static_cast<double>(data.counters[24]) * 1e9 / window,
+                        static_cast<double>(data.counters[25]) * 1e9 / window);
     if (data.method_calls) {
         // The ten most called engine methods (per second).
         std::array<std::pair<u32, u32>, 10> top{};
