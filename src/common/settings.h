@@ -365,9 +365,16 @@ struct Values {
                                                     true,
                                                     true};
     // A Switch 2 game's own DLSS network (translated) in place of AMD FSR 3.1, where it runs and
-    // its output passes the checks.
-    SwitchableSetting<bool> game_dlss_network{linkage, true, "game_dlss_network",
-                                              Category::Renderer};
+    // its output passes the checks. Off by default on Android: compiling its emulated tensor passes
+    // took Turnip from 3.1 to 7.6 GB in 4 s on a 24 GB phone and crashed it (Fire Emblem: Fortune's
+    // Weave).
+    SwitchableSetting<bool> game_dlss_network{linkage,
+#ifdef __ANDROID__
+                                              false,
+#else
+                                              true,
+#endif
+                                              "game_dlss_network", Category::Renderer};
     SwitchableSetting<int, true> fsr_sharpening_slider{linkage,
 #ifdef __ANDROID__
                                                        0,

@@ -560,6 +560,7 @@ class SettingsFragmentPresenter(
             add(BooleanSetting.RENDERER_ASYNCHRONOUS_SHADERS.key)
             add(BooleanSetting.RENDERER_REDUCE_TEXTURE_RESOLUTION.key)
             add(BooleanSetting.RENDERER_RELEASE_GPU_ONLY_MEMORY.key)
+            add(BooleanSetting.RENDERER_GAME_DLSS_NETWORK.key)
             add(IntSetting.ANDROID_PIPELINE_WORKERS.key)
             add(BooleanSetting.RENDERER_ASYNCHRONOUS_GPU_EMULATION.key)
             add(SettingsItem.GPU_UNSWIZZLE_COMBINED)

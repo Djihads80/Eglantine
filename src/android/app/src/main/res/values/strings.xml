@@ -612,6 +612,8 @@
     <string name="renderer_reduce_texture_resolution">Reduce texture resolution</string>
     <string name="renderer_reduce_texture_resolution_description">Keeps large compressed textures at half resolution, using about a quarter of their video memory. Helps games that run out of memory, such as Switch 2 titles. Textures look slightly blurrier up close. Takes effect when the game starts.</string>
     <string name="renderer_release_gpu_only_memory">Release GPU-only memory (experimental)</string>
+    <string name="renderer_game_dlss_network">Use the game\'s own DLSS (experimental)</string>
+    <string name="renderer_game_dlss_network_description">Runs the game\'s DLSS network instead of FSR 3.1. Needs a lot of RAM to compile and can crash on phones. Takes effect when the game starts.</string>
     <string name="renderer_release_gpu_only_memory_description">Frees the RAM copy of Switch 2 GPU-only memory once its textures are on the GPU, saving RAM. Experimental: may cause missing or corrupted textures.</string>
     <string name="gpu_unswizzle_settings">GPU Unswizzle Settings</string>
     <string name="gpu_unswizzle_settings_description">Configure GPU-based texture unswizzling parameters or disable it entirely. Adjust these settings to balance performance and texture loading quality.</string>
