@@ -1165,6 +1165,41 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             layer_source_program = &programs[index];
         }
     }
+    // A tessellation pipeline the driver would refuse is skipped like a missing mesh pipeline:
+    // the draw is dropped (see the pipeline check in the rasterizer) instead of failing the build.
+    {
+        const Shader::IR::Program* control{};
+        const Shader::IR::Program* evaluation{};
+        for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+            if (key.unique_hashes[index] == 0) {
+                continue;
+            }
+            if (programs[index].stage == Shader::Stage::TessellationControl) {
+                control = &programs[index];
+            } else if (programs[index].stage == Shader::Stage::TessellationEval) {
+                evaluation = &programs[index];
+            }
+        }
+        if (control != nullptr || evaluation != nullptr) {
+            const u32 max_patch_size = device.GetMaxTessellationPatchSize();
+            const char* reason = nullptr;
+            if (!device.IsTessellationSupported()) {
+                reason = "the device has no tessellation shaders";
+            } else if (control == nullptr || evaluation == nullptr) {
+                reason = "it has only one of the control and evaluation stages";
+            } else if (control->invocations == 0 || control->invocations > max_patch_size) {
+                reason = "the control shader's output vertex count is out of range";
+            }
+            if (reason != nullptr) {
+                LOG_WARNING(Render_Vulkan,
+                            "Skipping tessellation pipeline: {} (tcs={} tes={}, tcs output "
+                            "vertices {}, device max patch size {})",
+                            reason, control != nullptr, evaluation != nullptr,
+                            control != nullptr ? control->invocations : 0, max_patch_size);
+                return nullptr;
+            }
+        }
+    }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
 

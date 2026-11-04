@@ -330,7 +330,12 @@ GraphicsPipeline::GraphicsPipeline(
         try {
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
-            LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
+            LOG_CRITICAL(Render_Vulkan,
+                         "Graphics pipeline build failed: {} (stages: tcs={} tes={} geom={}, "
+                         "patch control points {}, device max patch size {})",
+                         exception.what(), spv_modules[1] ? 1 : 0, spv_modules[2] ? 1 : 0,
+                         spv_modules[3] ? 1 : 0, key.state.patch_control_points_minus_one.Value() + 1,
+                         device.GetMaxTessellationPatchSize());
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
@@ -860,7 +865,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .patchControlPoints = key.state.patch_control_points_minus_one.Value() + 1,
+        .patchControlPoints = std::min(key.state.patch_control_points_minus_one.Value() + 1,
+                                       device.GetMaxTessellationPatchSize()),
     };
     std::array<VkViewportSwizzleNV, Maxwell::NumViewports> swizzles;
     std::ranges::transform(key.state.viewport_swizzles, swizzles.begin(), UnpackViewportSwizzle);
