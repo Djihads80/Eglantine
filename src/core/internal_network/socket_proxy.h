@@ -26,6 +26,8 @@ public:
 
     void HandleProxyPacket(const ProxyPacket& packet) override;
 
+    std::optional<PollEvents> EmulatedPoll(PollEvents events) override;
+
     Errno Initialize(Domain domain, Type type, Protocol socket_protocol) override;
 
     Errno Close() override;
@@ -48,8 +50,11 @@ public:
 
     std::pair<s32, Errno> RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) override;
 
+    std::pair<s32, Errno> RecvMsg(int flags, std::span<u8> message, SockAddrIn* addr,
+                                  u32& msg_flags) override;
+
     std::pair<s32, Errno> ReceivePacket(int flags, std::span<u8> message, SockAddrIn* addr,
-                                        std::size_t max_length);
+                                        std::size_t max_length, u32& msg_flags);
 
     std::pair<s32, Errno> Send(std::span<const u8> message, int flags) override;
 
@@ -74,6 +79,8 @@ public:
 
     Errno SetRcvTimeo(u32 value) override;
 
+    Errno SetNoDelay(bool enable) override;
+
     Errno SetNonBlock(bool enable) override;
 
     template <typename T>
@@ -81,13 +88,24 @@ public:
 
     std::pair<Errno, Errno> GetPendingError() override;
 
+    std::pair<bool, Errno> GetReuseAddr() override;
+
+    std::pair<bool, Errno> GetNoDelay() override;
+
     bool IsOpened() const override;
 
 private:
     /// Expects packets_mutex to be held
     bool MatchesPacket(const ProxyPacket& packet) const;
 
+    /// Takes the front packet as RecvFrom does, waiting for one as the socket's mode has it unless
+    /// flags holds FLAG_MSG_DONTWAIT
+    std::pair<s32, Errno> Receive(int flags, std::span<u8> message, SockAddrIn* addr,
+                                  u32& msg_flags);
+
     bool broadcast = false;
+    bool reuse_addr = false;
+    bool no_delay = false;
     bool closed = false;
     u32 send_timeout = 0;
     u32 receive_timeout = 0;

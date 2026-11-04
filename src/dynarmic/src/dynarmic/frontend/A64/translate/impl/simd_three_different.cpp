@@ -147,6 +147,25 @@ bool WideOperation(TranslatorVisitor& v, bool Q, Imm<2> size, Vec Vm, Vec Vn, Ve
     v.V(128, Vd, result);
     return true;
 }
+
+bool SaturatingDoublingMultiplyAccumulateLong(TranslatorVisitor& v, bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd, bool subtract) {
+    if (size == 0b00 || size == 0b11) {
+        return v.ReservedValue();
+    }
+
+    const size_t esize = 8 << size.ZeroExtend();
+    const size_t part = Q ? 1 : 0;
+
+    const IR::U128 operand1 = v.Vpart(64, Vn, part);
+    const IR::U128 operand2 = v.Vpart(64, Vm, part);
+    const IR::U128 accumulator = v.V(128, Vd);
+    const IR::U128 product = v.ir.VectorSignedSaturatedDoublingMultiplyLong(esize, operand1, operand2);
+    const IR::U128 result = subtract ? v.ir.VectorSignedSaturatedSub(2 * esize, accumulator, product)
+                                     : v.ir.VectorSignedSaturatedAdd(2 * esize, accumulator, product);
+
+    v.V(128, Vd, result);
+    return true;
+}
 }  // Anonymous namespace
 
 bool TranslatorVisitor::PMULL(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
@@ -235,6 +254,14 @@ bool TranslatorVisitor::USUBW(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
 
 bool TranslatorVisitor::USUBL(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
     return LongOperation(*this, Q, size, Vm, Vn, Vd, LongOperationBehavior::Subtraction, SignednessSTD::Unsigned);
+}
+
+bool TranslatorVisitor::SQDMLAL_vec_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, Q, size, Vm, Vn, Vd, false);
+}
+
+bool TranslatorVisitor::SQDMLSL_vec_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, Q, size, Vm, Vn, Vd, true);
 }
 
 bool TranslatorVisitor::SQDMULL_vec_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {

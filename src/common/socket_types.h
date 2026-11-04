@@ -163,6 +163,8 @@ struct SockAddrIn {
 };
 
 constexpr u32 FLAG_MSG_PEEK = 0x2;
+/// Reported in msg_flags: the part of a datagram past the receive buffer was discarded.
+constexpr u32 FLAG_MSG_TRUNC = 0x10;
 constexpr u32 FLAG_MSG_DONTWAIT = 0x80;
 constexpr u32 FLAG_O_NONBLOCK = 0x800;
 
