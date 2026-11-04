@@ -815,9 +815,16 @@ abstract class SettingsItem(
             )
             put(
                 SwitchSetting(
-                    BooleanSetting.RENDERER_MKW_REDUCE_DETAIL,
-                    titleId = R.string.renderer_mkw_reduce_detail,
-                    descriptionId = R.string.renderer_mkw_reduce_detail_description
+                    BooleanSetting.RENDERER_MKW_LOD_DISTANCE,
+                    titleId = R.string.renderer_mkw_lod_distance,
+                    descriptionId = R.string.renderer_mkw_lod_distance_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_SHADOW_CASCADES,
+                    titleId = R.string.renderer_mkw_shadow_cascades,
+                    descriptionId = R.string.renderer_mkw_shadow_cascades_description
                 )
             )
             put(
