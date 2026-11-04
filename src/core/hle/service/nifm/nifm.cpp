@@ -232,6 +232,7 @@ static void ApplyRoomProfile(SfNetworkProfileData& profile) {
     profile.profile_type = static_cast<u8>(NetworkProfileType::User);
     profile.interface_type = static_cast<u8>(NetworkInterfaceType::Ethernet);
     profile.wireless_setting_data = {};
+    profile.network_name = {};
     std::copy(RoomNetworkName.begin(), RoomNetworkName.end(), profile.network_name.begin());
 }
 
