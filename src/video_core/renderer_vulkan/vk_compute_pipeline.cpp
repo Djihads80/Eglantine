@@ -291,15 +291,46 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         // Emulated shared memory, a slice per workgroup, as many as the shader may address (it
         // clamps to them). An indirect dispatch's size is only known on the GPU: all of them.
         const auto& qmd{kepler_compute.launch_description};
-        const u64 slices = Shader::EmulatedSharedMemorySlices(info.emulated_shared_memory_size);
+        // As many slices as the shader clamps to, within the host's storage buffer range (the
+        // same limit the shader was compiled with).
+        const u32 max_bytes =
+            Shader::EmulatedSharedMemoryMaxBytes(device.GetMaxStorageBufferRange());
+        const u64 slices =
+            Shader::EmulatedSharedMemorySlices(info.emulated_shared_memory_size, max_bytes);
+        const bool indirect = static_cast<bool>(kepler_compute.GetIndirectComputeAddress());
         u64 workgroups = static_cast<u64>(qmd.grid_dim_x.Value()) * qmd.grid_dim_y.Value() *
                          qmd.grid_dim_z.Value();
-        if (workgroups == 0 || kepler_compute.GetIndirectComputeAddress()) {
+        if (indirect) {
             workgroups = slices;
+        } else if (workgroups == 0) {
+            workgroups = 1; // Nothing runs: one slice keeps the binding valid
         }
         const u64 size = (std::min)(workgroups, slices) * info.emulated_shared_memory_size;
-        const StagingBufferRef scratch{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
-        guest_descriptor_queue.AddBuffer(scratch.buffer, scratch.offset, size);
+        if (workgroups >= slices) {
+            // The whole range: one region per tick for this pipeline, not one per dispatch (an
+            // indirect dispatch does not know its workgroup count; several in one tick took a
+            // full-size region each). Dispatches that share it are ordered by a barrier.
+            if (shared_scratch_tick != scheduler.CurrentTick() || shared_scratch_size < size) {
+                shared_scratch = staging_pool.Request(size, MemoryUsage::DeviceLocal);
+                shared_scratch_tick = scheduler.CurrentTick();
+                shared_scratch_size = size;
+            } else {
+                scheduler.Record([](vk::CommandBuffer cmdbuf) {
+                    static constexpr VkMemoryBarrier barrier{
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .pNext = nullptr,
+                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    };
+                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
+                });
+            }
+            guest_descriptor_queue.AddBuffer(shared_scratch.buffer, shared_scratch.offset, size);
+        } else {
+            const StagingBufferRef scratch{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
+            guest_descriptor_queue.AddBuffer(scratch.buffer, scratch.offset, size);
+        }
     }
 
     if (!is_built.load(std::memory_order::relaxed)) {

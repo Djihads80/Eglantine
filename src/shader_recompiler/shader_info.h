@@ -272,10 +272,18 @@ struct MeshInfo {
 /// and the host binds at least min(workgroups, slices that fit) slices.
 constexpr u32 EMULATED_SHARED_MEMORY_MAX_BYTES = 256U << 20;
 
-[[nodiscard]] constexpr u32 EmulatedSharedMemorySlices(u32 bytes_per_workgroup) {
-    return bytes_per_workgroup == 0
-               ? 1U
-               : (std::max)(EMULATED_SHARED_MEMORY_MAX_BYTES / bytes_per_workgroup, 1U);
+/// The limit on a host whose storage buffer range is `max_storage_buffer_range` (0: unknown,
+/// the fixed limit): the shader's clamp and the host's binding must agree on it.
+[[nodiscard]] constexpr u32 EmulatedSharedMemoryMaxBytes(u64 max_storage_buffer_range) {
+    return max_storage_buffer_range == 0
+               ? EMULATED_SHARED_MEMORY_MAX_BYTES
+               : static_cast<u32>((std::min)(u64{EMULATED_SHARED_MEMORY_MAX_BYTES},
+                                              max_storage_buffer_range));
+}
+
+[[nodiscard]] constexpr u32 EmulatedSharedMemorySlices(u32 bytes_per_workgroup,
+                                                       u32 max_bytes = EMULATED_SHARED_MEMORY_MAX_BYTES) {
+    return bytes_per_workgroup == 0 ? 1U : (std::max)(max_bytes / bytes_per_workgroup, 1U);
 }
 
 struct Info {
