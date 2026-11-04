@@ -855,6 +855,12 @@ struct Maxwell3D::FrontState {
     /// then can it have a deferred instanced draw to issue at the end of a macro.
     bool draw_pending{true};
     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+    /// Methods whose emits the macro JIT must always call back for (TuringMacroJit::Elision):
+    /// executable ones, the MME DMA reads (FrontDmaRead) and the macro range.
+    std::array<u8, TuringMacroJit::MustCallMethods> jit_must_call{};
+    TuringMacroJit::Elision elision{};
+#endif
 };
 
 namespace {
@@ -901,6 +907,16 @@ bool FrontHandledOutsideDrawManager(u32 method) {
     }
 }
 
+// EDEN_NX2_JIT_SKIP_SAME=0: the ARM64 macro JIT calls back for every emit; the same-value
+// writes are then skipped in FrontWrite as before (A/B switch for the in-JIT elision).
+bool JitSkipSameEnabled() {
+    static const bool skip = [] {
+        const char* value = std::getenv("EDEN_NX2_JIT_SKIP_SAME");
+        return value == nullptr || value[0] != '0';
+    }();
+    return skip;
+}
+
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -923,6 +939,13 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        for (u32 method = 0; method < front->jit_must_call.size(); ++method) {
+            const bool dma_read = method == 0x157 || method == 0x158;
+            front->jit_must_call[method] =
+                method >= Regs::NUM_REGS || execution_mask[method] || dma_read ? 1 : 0;
+        }
+#endif
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -1148,10 +1171,38 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         // call (or could not be compiled): the front interprets the macros then. With macros
         // on the front the back never runs them, so the interpreter is the front's.
         const bool jit = engine.native_jit->Usable();
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        // Same-value state writes are elided inside the compiled code, as FrontWrite would skip
+        // them (never when the front sends them all, EDEN_NX2_SPLIT_SKIP=0).
+        if (jit && fs.skip_same && JitSkipSameEnabled()) {
+            fs.elision = TuringMacroJit::Elision{
+                .must_call = fs.jit_must_call.data(),
+                .regs = fs.regs.data(),
+                .shadow = fs.shadow.data(),
+                .control = reinterpret_cast<const u32*>(&fs.control),
+                .skipped = 0,
+            };
+            engine.native_jit->SetElision(&fs.elision);
+        } else {
+            engine.native_jit->SetElision(nullptr);
+        }
+#endif
         const auto result =
             jit ? engine.native_jit->Execute(start, fs.parameters, std::span<u32>{native_data_ram}, read,
                                              emit)
                 : engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        if (const u32 skipped = fs.elision.skipped; skipped != 0) {
+            fs.elision.skipped = 0;
+            if (VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
+                namespace Profile = VideoCommon::Nx2Profile;
+                Profile::Add(Profile::Counter::MethodWrites, skipped);
+                Profile::Add(Profile::Counter::MacroWrites, skipped);
+                Profile::Add(Profile::Counter::SameValueWrites, skipped);
+                Profile::Add(Profile::Counter::JitSkippedWrites, skipped);
+            }
+        }
+#endif
         if (!result.success) {
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME ({}, split front) failed: start={:#x}, consumed={}/{}, error={}",
