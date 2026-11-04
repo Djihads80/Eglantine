@@ -211,7 +211,13 @@ struct GPU::Impl {
     }
 
     void MapInOrder(std::function<void()>&& func) {
-        gpu_thread.Run(std::move(func), is_async, true);
+        pending_maps.fetch_add(1, std::memory_order_acq_rel);
+        gpu_thread.Run(
+            [this, func = std::move(func)] {
+                func();
+                pending_maps.fetch_sub(1, std::memory_order_release);
+            },
+            is_async, true);
     }
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
@@ -357,6 +363,7 @@ struct GPU::Impl {
 
     std::list<std::function<void()>> sync_requests;
     std::atomic<u64> current_sync_fence{};
+    std::atomic<u64> pending_maps{};
     u64 last_sync_fence{};
     std::mutex sync_request_mutex;
     std::condition_variable sync_request_cv;
@@ -561,6 +568,10 @@ void GPU::RunInOrder(std::function<void()>&& func) {
 
 void GPU::MapInOrder(std::function<void()>&& func) {
     impl->MapInOrder(std::move(func));
+}
+
+bool GPU::MapsPending() const {
+    return impl->pending_maps.load(std::memory_order_acquire) != 0;
 }
 
 void GPU::InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {

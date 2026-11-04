@@ -446,9 +446,15 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             return value == nullptr || value[0] != '0';
         }();
         if (snapshot && channel_state->memory_manager && channel_state->payload) {
+            // GMMU maps are applied on the GPU thread (GPU::MapInOrder): with one still queued, the
+            // lists may lie on addresses it maps and would copy as zeros (Pokopia's first lists).
+            // DmaPusher::Push copies them after the maps instead: an odd count is never current.
+            const bool maps_pending = system.GPU().MapsPending();
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
-                channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
+                maps_pending
+                    ? ~u64{0}
+                    : channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
             size_t words = 0;
             for (const auto& entry : entries.command_lists) {
                 words += entry.size;
@@ -458,8 +464,11 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             size_t offset = 0;
             for (const auto& entry : entries.command_lists) {
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
-                channel_state->memory_manager->ReadBlockUnsafe(
-                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                if (!maps_pending) {
+                    channel_state->memory_manager->ReadBlockUnsafe(
+                        entry.addr, entries.submitted_words.data() + offset,
+                        entry.size * sizeof(u32));
+                }
                 offset += entry.size;
             }
         }
