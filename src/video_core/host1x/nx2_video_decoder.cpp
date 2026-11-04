@@ -148,6 +148,8 @@ Nx2VideoDecoder::Nx2VideoDecoder(std::string_view mime) : impl{std::make_unique<
         // frame is ready. Frame threads add a few frames of latency, covered by the client's
         // queued inputs.
         AVCodecContext* codec_context = impl->context->GetCodecContext();
+        // The context is opened for low delay, which stops FFmpeg from choosing frame threads.
+        codec_context->flags &= ~AV_CODEC_FLAG_LOW_DELAY;
         codec_context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         codec_context->thread_count = 4;
     }
