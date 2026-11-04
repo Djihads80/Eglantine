@@ -89,6 +89,8 @@ struct Binding {
     DAddr device_addr{};
     GPUVAddr gpu_addr{};
     u32 size{};
+    /// Bytes from device_addr marked GPU-written when the binding is written; 0: all of size.
+    u32 written_size{};
     BufferId buffer_id;
     u32 segment_first{};
     u32 segment_count{};

@@ -1443,7 +1443,9 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
         buffer.MarkUsage(offset, size);
 
         if (is_written) {
-            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, size, true);
+            const u32 written_size =
+                binding.written_size != 0 ? (std::min)(binding.written_size, size) : size;
+            MarkWrittenBuffer(binding.buffer_id, binding.device_addr, written_size, true);
         }
 
         if constexpr (NEEDS_BIND_STORAGE_INDEX) {
@@ -2549,6 +2551,18 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         // a written one isn't split into separate ranges without sparse sources.
         size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
     }
+    // A native binding runs to the end of its mapping so no access is dropped, but the buffer
+    // behind the pointer is often far smaller. When the word after the pointer reads as a size,
+    // mark only that much GPU-written: marking all of it (up to 8 MiB) also marked the CPU-written
+    // data after the buffer, and Pokopia lost the device within a minute.
+    u32 written_extent = 0;
+    if (native_pointer && is_written) {
+        const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
+        const u32 packed_size = static_cast<u32>(next_qword);
+        if (static_cast<u32>(next_qword >> 32) == 0 && packed_size != 0 && packed_size < size) {
+            written_extent = packed_size;
+        }
+    }
 
     // Alignment only applies to the offset of the buffer
     const u32 alignment = runtime.GetStorageBufferAlignment();
@@ -2574,6 +2588,9 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         .device_addr = *aligned_device_addr,
         .gpu_addr = aligned_gpu_addr,
         .size = binding_size,
+        .written_size = written_extent != 0
+                            ? static_cast<u32>(gpu_addr - aligned_gpu_addr) + written_extent
+                            : 0,
         .buffer_id = BufferId{},
     };
     return binding;
