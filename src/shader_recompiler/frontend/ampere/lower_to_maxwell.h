@@ -1646,26 +1646,19 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(0xf0c8000000000000ULL | predicate | target | (u64{special} << 20));
             break;
         }
-        case 0x28c: case 0x88c: { // UISETP, signed (bit 73) or unsigned, with predicate accumulation.
+        case 0x28c: case 0x88c: { // UISETP, signed (bit 73) or unsigned, with UPT accumulation.
             const u32 output = insn.Bits(81, 3);
-            const u32 accum = insn.Bits(87, 3);
-            const u32 accum_neg = insn.Bits(90, 1);
-            const u32 set_op = insn.Bits(74, 2);
             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x88c ? 252U : uniform_register(insn.Bits(32, 8));
-            if (output > 6 || insn.Bits(84, 3) != 7 || insn.Bits(68, 4) != 7 ||
-                insn.Bits(72, 1) || set_op == 3 || insn.Bits(12, 4) != 7 || a == ~0U || b == ~0U)
+            if (output > 6 || insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 ||
+                (insn.Bits(72, 4) & ~2U) || insn.Bits(12, 4) != 7 || a == ~0U || b == ~0U)
                 return fail(index, "native uniform comparison mode");
-            const u32 temporary = 6 - output;
-            const u32 accum_pred = accum == 7 ? 7U : 6 - accum;
-            const u32 mask = (1U << temporary) | (accum == 7 ? 0U : (1U << accum_pred));
+            const u32 temporary = 6 - output, mask = 1U << temporary;
             if (opcode == 0x88c) mov_imm(252, insn.words[1]);
             emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
-            if (accum != 7) emit(0x38f0000000070000ULL | (u64{239} << 8) | (u64{1U << accum_pred} << 20));
             emit(0x5b60000000070000ULL | 7 | (u64{temporary} << 3) |
-                (u64{a} << 8) | (u64{b} << 20) | (u64{accum_pred} << 39) | (u64{accum_neg} << 42) |
-                (u64{set_op} << 45) | (u64{insn.Bits(73, 1)} << 48) |
+                (u64{a} << 8) | (u64{b} << 20) | (u64{7} << 39) | (u64{insn.Bits(73, 1)} << 48) |
                 (u64{insn.Bits(76, 3)} << 49));
-            emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{1U << temporary} << 20));
+            emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
             emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
             break;
         }
@@ -2760,21 +2753,19 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x217: case 0x817: case 0xa17: case 0xc17: { // IMNMX register, immediate, cbuf or uniform operand.
             if ((insn.words[2] & ~(0x04000200U | (opcode == 0xc17 ? 0x08000000U : 0U))) != 0x03800000 ||
+                (opcode == 0x817 && insn.words[1] > 0x7ffffU && insn.words[1] < 0xfff80000U) ||
                 (opcode != 0xa17 && opcode != 0x817 && insn.words[1] > 255U) ||
                 (opcode == 0xa17 && (!valid_cbuf() || insn.Bits(62, 2))))
                 return fail(index, "native integer min/max mode");
-            // An immediate is a signed 20-bit value: 19 bits at 20, the sign in bit 56. Wider ones
-            // (Yoshi and the Mysterious Book: IMNMX.U32 R3, R11, 0x1fffffff) go through R251.
-            const bool short_immediate = opcode == 0x817 && (insn.words[1] <= 0x7ffffU || insn.words[1] >= 0xfff80000U);
-            if (opcode == 0x817 && !short_immediate) mov_imm(251, insn.words[1]);
+            // An immediate is a signed 20-bit value: 19 bits at 20, the sign in bit 56.
             const u32 source = opcode == 0xc17   ? uniform_register(insn.words[1])
                                : opcode == 0xa17 ? operand(1, false)
-                               : opcode == 0x817 ? (short_immediate ? insn.words[1] & 0x7ffffU : 251U)
+                               : opcode == 0x817 ? insn.words[1] & 0x7ffffU
                                                  : insn.words[1];
             if (source == ~0U) return fail(index, "native uniform min/max operand");
-            emit(base(short_immediate ? 0x3820000000000000ULL : 0x5c20000000000000ULL) |
+            emit(base(opcode == 0x817 ? 0x3820000000000000ULL : 0x5c20000000000000ULL) |
                  (u64{insn.Bits(24, 8)} << 8) | (u64{source} << 20) |
-                 (u64{short_immediate ? insn.words[1] >> 31 : 0U} << 56) |
+                 (u64{opcode == 0x817 ? insn.words[1] >> 31 : 0U} << 56) |
                  (u64{insn.Bits(87, 4)} << 39) | (u64{insn.Bits(73, 1)} << 48));
             break;
         }

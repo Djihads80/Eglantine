@@ -171,7 +171,6 @@ private:
 
     bool m_isTreeMode = true;
     bool nup_conversion_running{};
-    bool m_populating = false;
     QAbstractItemView* m_currentView = nullptr;
 };
 
