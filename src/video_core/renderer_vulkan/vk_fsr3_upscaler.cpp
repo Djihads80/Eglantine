@@ -32,6 +32,11 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 
+// winnt.h defines a MemoryBarrier macro on Windows ARM64, which clashes with the helper below.
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+#undef MemoryBarrier
+#endif
+
 namespace Vulkan {
 namespace {
 

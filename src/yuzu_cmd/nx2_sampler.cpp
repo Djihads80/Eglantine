@@ -119,26 +119,41 @@ std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
 
 // Walks a suspended thread's stack from its context. Nothing here may allocate: the thread
 // could be paused holding the heap lock.
+DWORD64& ProgramCounter(CONTEXT& context) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    return context.Pc;
+#else
+    return context.Rip;
+#endif
+}
+
 unsigned Walk(CONTEXT context, std::array<DWORD64, MaxDepth>& frames) {
     unsigned depth = 0;
-    while (depth < MaxDepth && context.Rip != 0) {
-        frames[depth++] = context.Rip;
+    while (depth < MaxDepth && ProgramCounter(context) != 0) {
+        frames[depth++] = ProgramCounter(context);
         DWORD64 image_base{};
-        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+        const PRUNTIME_FUNCTION function =
+            RtlLookupFunctionEntry(ProgramCounter(context), &image_base, nullptr);
         if (function == nullptr) {
-            // A leaf function (no unwind data): its return address is on top of the stack. JIT
-            // code has none either; past the first frame, stop there.
+            // A leaf function (no unwind data): its return address is on top of the stack (x86-64)
+            // or in the link register (ARM64). JIT code has none either; past the first frame,
+            // stop there.
             if (depth != 1) {
                 break;
             }
-            context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+#if defined(_M_ARM64) || defined(__aarch64__)
+            ProgramCounter(context) = context.Lr;
+            context.Lr = 0;
+#else
+            ProgramCounter(context) = *reinterpret_cast<const DWORD64*>(context.Rsp);
             context.Rsp += 8;
+#endif
             continue;
         }
         PVOID handler_data{};
         DWORD64 establisher_frame{};
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
-                         &handler_data, &establisher_frame, nullptr);
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ProgramCounter(context), function,
+                         &context, &handler_data, &establisher_frame, nullptr);
     }
     return depth;
 }
