@@ -1574,7 +1574,20 @@ void RasterizerVulkan::FlushWork() {
 #endif // __ANDROID__
 
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
-    if ((++draw_counter & CHECK_MASK) != 0) {
+    // EDEN_NX2_DISPATCH_DRAWS=<power of two, 1-1024>: draws between dispatches to the worker
+    // (each is a chunk hand-over and, when it sleeps, a wake-up).
+    static const u32 check_mask = [] {
+        const char* value = std::getenv("EDEN_NX2_DISPATCH_DRAWS");
+        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+            return CHECK_MASK;
+        }
+        const unsigned long parsed = std::strtoul(value, nullptr, 10);
+        if (parsed == 0 || parsed > 1024 || (parsed & (parsed - 1)) != 0) {
+            return CHECK_MASK;
+        }
+        return static_cast<u32>(parsed - 1);
+    }();
+    if ((++draw_counter & check_mask) != 0) {
         return;
     }
     // Keep the host GPU working while native commands are still being recorded.
@@ -1598,6 +1611,8 @@ void RasterizerVulkan::FlushWork() {
         scheduler.DispatchWork();
         return;
     }
+    VideoCommon::Nx2Profile::Scope submit_scope{VideoCommon::Nx2Profile::Zone::FlushSubmit};
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Submits, 1);
     scheduler.Flush();
     draw_counter = 0;
 }
@@ -1611,8 +1626,6 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
     return buffer_cache.DMAClear(src_address, amount, value);
 }
 
-    VideoCommon::Nx2Profile::Scope submit_scope{VideoCommon::Nx2Profile::Zone::FlushSubmit};
-    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Submits, 1);
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.Nx2CollectListCopies(true);
