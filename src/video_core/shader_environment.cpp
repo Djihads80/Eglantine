@@ -744,7 +744,11 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
         return ReadTextureInfo(regs.tex_header.Address(), regs.tex_header.limit,
                                via_header_index, handle);
     }
-    const u32 index{Tegra::Texture::TexturePair(handle, snapshot->via_header_index).first};
+    // The same conversion as the live path (ReadTextureInfo): a Switch 2 handle may hold the
+    // header's byte offset instead of its index.
+    const u32 index{Tegra::Texture::TextureHeaderIndex(
+        Tegra::Texture::TexturePair(handle, snapshot->via_header_index).first,
+        snapshot->texture_pool_limit, snapshot->native_tiling)};
     ASSERT(index <= snapshot->texture_pool_limit);
     Tegra::Texture::TICEntry entry{};
     if (index <= snapshot->texture_pool_limit) {
@@ -795,6 +799,7 @@ bool GraphicsEnvironment::Detach(Tegra::MaxwellDeviceMemoryManager& device_memor
     copy.texture_pool = *pool_device_address;
     copy.texture_pool_limit = regs.tex_header.limit;
     copy.via_header_index = regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding;
+    copy.native_tiling = gpu_memory->UsesNativeTiling();
     copy.viewport_scale_offset_enabled = regs.viewport_scale_offset_enabled;
     if (has_hle_engine_state) {
         copy.replace_table = maxwell3d->replace_table;
