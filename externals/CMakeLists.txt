@@ -141,7 +141,26 @@ if(ENABLE_CUBEB)
     endif()
 endif()
 
-if (NOT YUZU_USE_BUNDLED_SDL3)
+if (ENABLE_LIBUSB)
+    add_subdirectory(libusb)
+    if (NOT TARGET libusb::usb)
+        find_package(libusb REQUIRED)
+    endif()
+endif()
+
+if (WIN32 AND ENABLE_LIBUSB AND YUZU_USE_BUNDLED_SDL3)
+    message(STATUS "Building SDL3 with libusb for wired Switch 2 controllers")
+    AddJsonPackage(NAME sdl3 FORCE_BUNDLED_PACKAGE ON OPTIONS
+        "SDL_SHARED OFF"
+        "SDL_STATIC ON"
+        "SDL_INSTALL OFF"
+        "SDL_TEST_LIBRARY OFF"
+        "SDL_HIDAPI ON"
+        "SDL_HIDAPI_JOYSTICK ON"
+        "SDL_HIDAPI_LIBUSB ON"
+        "SDL_JOYSTICK ON"
+        "SDL_SENSOR ON")
+elseif (NOT YUZU_USE_BUNDLED_SDL3)
     if (NOT WIN32)
         # Yuzu itself needs: Atomic Audio Events Joystick Haptic Sensor Threads Timers
         # Since 2.0.18 Atomic+Threads required for HIDAPI/libusb (see https://github.com/libsdl-org/SDL/issues/5095)
@@ -162,7 +181,7 @@ if (NOT YUZU_USE_BUNDLED_SDL3)
         set(SDL_FILE ON)
     endif()
 
-    AddJsonPackage(sdl3)
+    AddJsonPackage(NAME sdl3 OPTIONS "SDL_INSTALL OFF")
 else()
     message(STATUS "Using bundled SDL3")
     AddJsonPackage(sdl3-ci)
@@ -256,11 +275,6 @@ endif()
 
 # Glad
 add_subdirectory(glad)
-
-# libusb
-if (ENABLE_LIBUSB)
-    add_subdirectory(libusb)
-endif()
 
 # VMA
 AddJsonPackage(vulkan-memory-allocator)

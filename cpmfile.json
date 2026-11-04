@@ -252,11 +252,14 @@
         "version": "v6.8.0"
     },
     "sdl3": {
-        "hash": "df5a323af7ac366661a3c0e887969c72584d232f3cc211419d59b0487b620b6b2859d4549c9e8df002ee489290062e466fcfddf7edc0872a37b1f2845e81c0f3",
-        "min_version": "3.2.10",
+        "hash": "8b2c4596f51a2e49e0b54629f440b17952562ec0d403e7852b0148487c89a0f2a28cfe0e700a6bb3278b0191d3eff30b5e0cddc2498783180c16806d4b943173",
+        "min_version": "3.4.12",
         "package": "SDL3",
+        "patches": [
+            "0001-use-parent-libusb.patch"
+        ],
         "repo": "libsdl-org/SDL",
-        "version": "release-3.4.8"
+        "version": "release-3.4.20"
     },
     "sdl3-ci": {
         "ci": true,
