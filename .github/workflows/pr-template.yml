@@ -30,7 +30,7 @@ jobs:
             for (const item of body.matchAll(/^\s*[-*+]\s*\[ \]\s*(I have read and followed.+)$/gm)) {
               problems.push(`Unchecked: ${item[1].trim()}`);
             }
-            if (!/^\s*[-*+]?\s*\[[xX]\]/m.test(body)) {
+            if (!/^\s*[-*+]\s*\[[ xX]\]/m.test(body)) {
               problems.push('The template checklist is missing.');
             }
             const sections = {};
@@ -59,7 +59,7 @@ jobs:
                 per_page: 100,
               });
               const hasTest = files.some((f) => f.filename.startsWith('src/tests/'));
-              const reason = body.match(/Regression test:[ \t]*(.*)$/im);
+              const reason = body.match(/Regression test:[ \t]*(?:\r?\n)?[ \t]*(.*)$/im);
               const stated = reason && reason[1].trim() && !/^n\/a$/i.test(reason[1].trim());
               if (!hasTest && !stated) {
                 problems.push('This looks like a fix: add a test under src/tests/ or fill in "Regression test:" with why there is none.');
