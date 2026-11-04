@@ -34,9 +34,19 @@ jobs:
             if (!/AI-assisted:\s*(yes|no)\b/i.test(body)) {
               problems.push('Answer "AI-assisted:" with yes or no.');
             }
+            const sections = {};
+            let current = null;
+            for (const line of body.split(/\r?\n/)) {
+              const heading = line.match(/^#{1,6}\s*(.+?)\s*$/);
+              if (heading) {
+                current = heading[1].toLowerCase();
+                sections[current] = '';
+              } else if (current) {
+                sections[current] += line + '\n';
+              }
+            }
             for (const name of ['Summary', 'Tested']) {
-              const match = body.match(new RegExp(`^#{1,6}\s*${name}\s*$([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))`, 'im'));
-              if (!match || !match[1].trim()) {
+              if (!(sections[name.toLowerCase()] || '').trim()) {
                 problems.push(`Fill in the "${name}" section.`);
               }
             }
