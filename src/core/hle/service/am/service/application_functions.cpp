@@ -122,7 +122,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {200, &IApplicationFunctions::StubReplyZeroed, "GetLastApplicationExitReason"},
         {210, D<&IApplicationFunctions::GetOperationModeRefreshEvent>, "GetOperationModeRefreshEvent (guessed)"},
         {220, &IApplicationFunctions::StubReplyZeroed, "Unknown220"}, // [20.0.0+]
-        {230, &IApplicationFunctions::StubReplyZeroed, "Unknown230"},
+        {230, &IApplicationFunctions::StubReplyZeroed, "IsTensorRtSupported"},
         {300, &IApplicationFunctions::StubReplyInterface, "CreateMovieWriter"}, // [19.0.0+]
         {310, &IApplicationFunctions::StubReplyZeroed, "Unknown310"}, // [20.0.0+]
         {320, D<&IApplicationFunctions::Unknown320>, "Unknown320"}, // [20.0.0+]
