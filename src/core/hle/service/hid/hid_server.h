@@ -203,6 +203,22 @@ private:
     Result IsOunceVibrationDeviceMounted(Out<bool> out_is_mounted,
                                          Core::HID::VibrationDeviceHandle vibration_device_handle,
                                          ClientAppletResourceUserId aruid);
+    // 138/139 (Switch 2): a scene id the title stores and reads back.
+    Result SetSceneIdForPrivateApp(ClientAppletResourceUserId aruid, u64 scene_id);
+    Result GetSceneIdForPrivateApp(Out<u64> out_scene_id, ClientAppletResourceUserId aruid);
+    // Switch 2 mouse mode (Nmouse). The pointer ranges (the screen size the pointer moves in) set by
+    // InitializeNmouse, InitializeNmouse2 and SetNmousePointerRanges are what
+    // GetNmousePointerRanges reads back. No mouse is ever attached, so the shared memory the title
+    // hands over stays as it is.
+    Result InitializeNmouse(u8 pointer_type, s32 width, s32 height,
+                            ClientAppletResourceUserId aruid, u64 t_mem_size,
+                            InCopyHandle<Kernel::KTransferMemory> t_mem);
+    Result InitializeNmouse2(u32 pointer_type, s32 width, s32 height, u32 unknown,
+                             ClientAppletResourceUserId aruid, u64 t_mem_size,
+                             InCopyHandle<Kernel::KTransferMemory> t_mem);
+    Result SetNmousePointerRanges(s32 width, s32 height, ClientAppletResourceUserId aruid);
+    Result GetNmousePointerRanges(Out<s32> out_width, Out<s32> out_height,
+                                  ClientAppletResourceUserId aruid);
     Result ActivateConsoleSixAxisSensor(ClientAppletResourceUserId aruid);
     Result StartConsoleSixAxisSensor(Core::HID::ConsoleSixAxisSensorHandle console_sixaxis_handle,
                                      ClientAppletResourceUserId aruid);
@@ -281,6 +297,9 @@ private:
 
     std::shared_ptr<ResourceManager> resource_manager;
     std::shared_ptr<HidFirmwareSettings> firmware_settings;
+    u64 scene_id_for_private_app{};
+    s32 nmouse_pointer_width{};
+    s32 nmouse_pointer_height{};
 };
 
 } // namespace Service::HID
