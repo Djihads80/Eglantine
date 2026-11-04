@@ -33,6 +33,7 @@ constexpr u32 RescaleHeightThreshold = 288;
 constexpr u32 DownscaleHeightThreshold = 512;
 
 ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+    legacy_sector_layout = config.load_store_hint != 0;
     forced_flushed = config.IsPitchLinear() && !Settings::values.use_reactive_flushing.GetValue();
     dma_downloaded = forced_flushed;
     format = PixelFormatFromTextureInfo(config.format, config.r_type, config.g_type, config.b_type,

@@ -36,6 +36,10 @@ struct ImageInfo {
     explicit ImageInfo(const Tegra::Engines::Fermi2D::Surface& config) noexcept;
     explicit ImageInfo(const Tegra::DMA::ImageOperand& config) noexcept;
 
+    [[nodiscard]] bool UsesNativeSectorLayout(bool native) const noexcept {
+        return native && !legacy_sector_layout;
+    }
+
     PixelFormat format = PixelFormat::Invalid;
     ImageType type = ImageType::e1D;
     SubresourceExtent resources;
@@ -49,6 +53,8 @@ struct ImageInfo {
     u32 num_samples = 1;
     u32 tile_width_spacing = 0;
     bool native_tiling = false;
+    // Native TIC header bit 88 selects the legacy Tegra sector order.
+    bool legacy_sector_layout = false;
     bool rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;
