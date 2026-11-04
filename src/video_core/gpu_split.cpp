@@ -471,6 +471,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         if ((head & Direct) != 0) {
             Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
             Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
+            Nx2Profile::CountMethod(method);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
@@ -479,22 +480,22 @@ size_t GpuSplit::Execute(const u64* entry) {
         } else {
             Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
             Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
+            Nx2Profile::CountMethod(method);
             engine->ConsumeSink(*system);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
             }
             engine->CallMethod(*system, method, argument, (head & IsLast) != 0);
         }
-            Nx2Profile::CountMethod(method);
         return (head & HasSegment) != 0 ? 2 : 1;
     }
     case Kind::Multi: {
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
+        Nx2Profile::CountMethod(method, amount);
         auto* const engine = back_engine;
         Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
-            Nx2Profile::CountMethod(method);
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -507,7 +508,6 @@ size_t GpuSplit::Execute(const u64* entry) {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
         Nx2Profile::Add(Nx2Profile::Counter::BackDeferredCalls, 1);
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
-        Nx2Profile::CountMethod(method, amount);
         return 2 + payload;
     }
     }
