@@ -46,7 +46,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
-          asan='{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}'
+          asan='{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}'
           tsan='{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer.*data race","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}'
           if [ "$EVENT" = "pull_request" ]; then
             echo "ids=[$asan]" >> "$GITHUB_OUTPUT"
@@ -84,7 +84,7 @@ jobs:
       matrix:
         # Falls back to the same event-dependent choice the ids step makes when its output is
         # empty (checkout failed before it ran), so fromJSON never gets an empty string.
-        include: ${{ fromJSON(needs.changes.outputs.ids || (github.event_name == 'pull_request' && '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}]' || '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false},{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer.*data race","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}]')) }}
+        include: ${{ fromJSON(needs.changes.outputs.ids || (github.event_name == 'pull_request' && '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false}]' || '[{"id":"asan-ubsan","name":"ASan + UBSan","flags":"-fsanitize=address,undefined -fno-sanitize-recover=undefined -DZSTD_ASAN_DONT_POISON_WORKSPACE","control":"asan.cpp","diagnostic":"AddressSanitizer|runtime error","options":"ASAN_OPTIONS=detect_stack_use_after_return=0:strict_string_checks=1:detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1","experimental":false},{"id":"tsan","name":"TSan","flags":"-fsanitize=thread","control":"tsan.cpp","diagnostic":"ThreadSanitizer.*data race","options":"TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1","experimental":true}]')) }}
 
     steps:
       - name: Check out source
