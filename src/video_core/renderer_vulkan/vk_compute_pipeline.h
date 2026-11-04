@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -68,6 +69,12 @@ private:
     u32 num_descriptor_entries{};
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};
+
+    /// Emulated shared memory for the dispatches that need every slice (indirect, or at least
+    /// as many workgroups as slices): one region per tick, reused with a barrier between them.
+    StagingBufferRef shared_scratch{};
+    u64 shared_scratch_tick{};
+    u64 shared_scratch_size{};
 
     vk::ShaderModule spv_module;
     vk::DescriptorSetLayout descriptor_set_layout;

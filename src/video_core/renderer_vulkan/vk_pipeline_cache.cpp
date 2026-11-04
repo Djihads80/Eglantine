@@ -566,7 +566,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .has_broken_robust =
             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
-        .max_user_clip_distances = device.GetMaxUserClipDistances()
+        .max_user_clip_distances = device.GetMaxUserClipDistances(),
+        .emulated_shared_memory_max_bytes =
+            Shader::EmulatedSharedMemoryMaxBytes(device.GetMaxStorageBufferRange())
     };
 
     host_info = Shader::HostTranslateInfo{
