@@ -2006,6 +2006,10 @@ private:
     // next vblank instead (title 4 ran at up to 160 fps, its timing and audio with it).
     std::chrono::steady_clock::time_point m_next_vblank{};
     u32 m_swap_word{};
+    // The game bound a native event to vsync (261) and waits on it between frames: it paces
+    // itself, so PaceToVblank leaves its presents alone.
+    bool m_game_waits_for_vsync{};
+    bool m_logged_vsync_pacing{};
 
     // timing: present word 12, (swap interval << 16) | refresh rate. Fire Emblem: Fortune's Weave
     // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
@@ -2037,6 +2041,23 @@ private:
             return value[0] == '0' ? 0 : (value[0] == '1' ? 1 : 2);
         }();
         if (is_mkw && mkw_pacing == 0 && forced_interval == 0) {
+            return;
+        }
+        // A game that waits on the vsync event between frames already runs on the vblank timer.
+        // Pacing its presents too, to a clock of another phase, made it miss that timer's next
+        // vblank: Mario Kart World, which binds one, ran at 27-30 fps with 4-14 ms of sleep a
+        // frame while Eden's GPU threads were idle half the time. Fortune's Weave binds none
+        // and keeps its pacing (at every vblank it ran at double speed).
+        // EDEN_NX2_PACE_VSYNC_GAMES=1 paces them anyway.
+        static const bool pace_vsync_games = [] {
+            const char* value = std::getenv("EDEN_NX2_PACE_VSYNC_GAMES");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (m_game_waits_for_vsync && !pace_vsync_games && forced_interval == 0 &&
+            !(is_mkw && mkw_pacing == 1)) {
+            if (!std::exchange(m_logged_vsync_pacing, true)) {
+                LOG_INFO(Service, "nx2:vi2 presents not paced: the game waits on the vsync event");
+            }
             return;
         }
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
@@ -2434,6 +2455,7 @@ private:
         LOG_INFO(Service, "nx2:vi2 261 native event {} -> vsync", index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, true);
+            m_game_waits_for_vsync = true;
         }
         TipcReplyWords(ctx, {});
     }
