@@ -507,7 +507,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     }
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
-    DefineGlobalMemoryFunctions(program.info);
+    DefineGlobalMemoryFunctions(program);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
 }
@@ -1015,7 +1015,8 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     write_storage_cas_loop_func = func;
 }
 
-void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
+void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
+    const Info& info{program.info};
     if (!info.uses_global_memory || !profile.support_int64) {
         return;
     }
@@ -1120,6 +1121,31 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2], sizeof(u32[2]));
     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
+
+    if (!std::ranges::any_of(program.blocks, [](const IR::Block* block) {
+            return std::ranges::any_of(block->Instructions(), [](const IR::Inst& inst) {
+                return inst.GetOpcode() == IR::Opcode::GlobalAtomicIAdd32;
+            });
+        })) {
+        return;
+    }
+    if (!std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& descriptor) {
+            return info.native_global_bounds || UsesNvnStorageDescriptor(info, descriptor);
+        })) {
+        return;
+    }
+    const Id function_type{TypeFunction(U32[1], U64, U32[1])};
+    atomic_add_global_func_u32 =
+        OpFunction(U32[1], spv::FunctionControlMask::MaskNone, function_type);
+    const Id address{OpFunctionParameter(U64)};
+    const Id value{OpFunctionParameter(U32[1])};
+    const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+    define_body(&StorageDefinitions::U32, address, storage_types.U32.element, 2,
+                [&](Id pointer) {
+                    OpReturnValue(OpAtomicIAdd(U32[1], pointer, scope, u32_zero_value, value));
+                });
+    OpReturnValue(u32_zero_value);
+    OpFunctionEnd();
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
