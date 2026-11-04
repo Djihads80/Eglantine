@@ -459,8 +459,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     // SPH shader type 4 is a geometry program (compute programs have no SPH).
-    auto lowered =
-        Shader::Ampere::LowerToMaxwell(native, sph.common0.shader_type == 4, native_tensor);
+    auto lowered = Shader::Ampere::LowerToMaxwell(native, sph.common0.shader_type == 4, native_tensor);
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
     if (static const std::string reject_list = [] {

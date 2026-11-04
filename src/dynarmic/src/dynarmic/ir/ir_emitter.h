@@ -1955,6 +1955,20 @@ public:
         UNREACHABLE();
     }
 
+    U128 VectorSignedSaturatedRoundingShiftLeft(size_t esize, const U128& a, const U128& b) {
+        switch (esize) {
+        case 8:
+            return Inst<U128>(Opcode::VectorSignedSaturatedRoundingShiftLeft8, a, b);
+        case 16:
+            return Inst<U128>(Opcode::VectorSignedSaturatedRoundingShiftLeft16, a, b);
+        case 32:
+            return Inst<U128>(Opcode::VectorSignedSaturatedRoundingShiftLeft32, a, b);
+        case 64:
+            return Inst<U128>(Opcode::VectorSignedSaturatedRoundingShiftLeft64, a, b);
+        }
+        UNREACHABLE();
+    }
+
     U128 VectorSignedSaturatedShiftLeft(size_t esize, const U128& a, const U128& b) {
         switch (esize) {
         case 8:
@@ -2076,6 +2090,20 @@ public:
             return Inst<U128>(Opcode::VectorUnsignedSaturatedNarrow32, a);
         case 64:
             return Inst<U128>(Opcode::VectorUnsignedSaturatedNarrow64, a);
+        }
+        UNREACHABLE();
+    }
+
+    U128 VectorUnsignedSaturatedRoundingShiftLeft(size_t esize, const U128& a, const U128& b) {
+        switch (esize) {
+        case 8:
+            return Inst<U128>(Opcode::VectorUnsignedSaturatedRoundingShiftLeft8, a, b);
+        case 16:
+            return Inst<U128>(Opcode::VectorUnsignedSaturatedRoundingShiftLeft16, a, b);
+        case 32:
+            return Inst<U128>(Opcode::VectorUnsignedSaturatedRoundingShiftLeft32, a, b);
+        case 64:
+            return Inst<U128>(Opcode::VectorUnsignedSaturatedRoundingShiftLeft64, a, b);
         }
         UNREACHABLE();
     }

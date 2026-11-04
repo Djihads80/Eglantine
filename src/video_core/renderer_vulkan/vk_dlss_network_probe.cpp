@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+
+// Before any Vulkan header: those pull in Xlib, whose Success macro breaks nvdata.h.
+#include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 
 #include "video_core/host_shaders/dlss_network_probe_comp_spv.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
-#include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_device.h"

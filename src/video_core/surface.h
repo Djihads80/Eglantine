@@ -7,6 +7,7 @@
 
 #undef PIXEL_FORMAT_LIST
 
+#include <optional>
 #include <climits>
 #include <utility>
 #include "common/assert.h"
@@ -209,6 +210,11 @@ SurfaceTarget SurfaceTargetFromTextureType(Tegra::Texture::TextureType texture_t
 bool SurfaceTargetIsLayered(SurfaceTarget target);
 bool SurfaceTargetIsArray(SurfaceTarget target);
 PixelFormat PixelFormatFromDepthFormat(Tegra::DepthFormat format);
+// Returns nullopt when the format is not decoded. Callers that compute a byte size from the
+// result must use this and skip the work, because the fallback below guesses 4 bytes per
+// pixel and a wrong guess makes a pitch linear copy read past the end of the source.
+[[nodiscard]] std::optional<PixelFormat> TryPixelFormatFromRenderTargetFormat(
+    Tegra::RenderTargetFormat format);
 PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format);
 PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format);
 SurfaceType GetFormatType(PixelFormat pixel_format);
