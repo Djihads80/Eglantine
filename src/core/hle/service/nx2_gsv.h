@@ -148,7 +148,7 @@ public:
     explicit INx2SyncptSession(Core::System& system_)
         : ServiceFramework{system_, "nx2:syncpt"}, m_context{system_, "nx2:syncpt"} {
         RegisterHandlersTipc({
-            {0, &INx2SyncptSession::Handshake, "Handshake"},
+            {0, &INx2SyncptSession::Handshake, "Ping"},
             {1, &INx2SyncptSession::GetCount, "GetCount (guessed)"},
             {22, &INx2SyncptSession::GetSlotEvent, "GetSlotEvent (guessed)"},
             {103, &INx2SyncptSession::QueryCounter, "QueryCounter"},
