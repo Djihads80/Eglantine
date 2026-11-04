@@ -6,6 +6,7 @@
 
 #include "common/common_types.h"
 
+#include "video_core/host_shaders/hdr_pq_encode_frag_spv.h"
 #include "video_core/host_shaders/hdr_tonemap_frag_spv.h"
 #include "video_core/host_shaders/fxaa_vert_spv.h"
 #include "video_core/renderer_vulkan/present/hdr_tonemap.h"
@@ -16,9 +17,10 @@
 
 namespace Vulkan {
 
-HdrTonemap::HdrTonemap(const Device& device, MemoryAllocator& allocator, size_t image_count, VkExtent2D extent)
+HdrTonemap::HdrTonemap(const Device& device, MemoryAllocator& allocator, size_t image_count, VkExtent2D extent, bool to_pq)
     : m_extent(extent)
     , m_image_count(u32(image_count))
+    , m_to_pq(to_pq)
 {
     CreateImages(device, allocator);
     CreateRenderPasses(device);
@@ -56,7 +58,8 @@ void HdrTonemap::CreateSampler(const Device& device) {
 
 void HdrTonemap::CreateShaders(const Device& device) {
     m_vertex_shader = CreateWrappedShaderModule(device, FXAA_VERT_SPV);
-    m_fragment_shader = CreateWrappedShaderModule(device, HDR_TONEMAP_FRAG_SPV);
+    m_fragment_shader = m_to_pq ? CreateWrappedShaderModule(device, HDR_PQ_ENCODE_FRAG_SPV)
+                                : CreateWrappedShaderModule(device, HDR_TONEMAP_FRAG_SPV);
 }
 
 void HdrTonemap::CreateDescriptorPool(const Device& device) {

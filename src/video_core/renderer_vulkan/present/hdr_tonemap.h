@@ -18,7 +18,7 @@ class StagingBufferPool;
 
 class HdrTonemap final : public AntiAliasPass {
 public:
-    explicit HdrTonemap(const Device& device, MemoryAllocator& allocator, size_t image_count, VkExtent2D extent);
+    explicit HdrTonemap(const Device& device, MemoryAllocator& allocator, size_t image_count, VkExtent2D extent, bool to_pq);
     ~HdrTonemap() override;
 
     void Draw(const Device& device, Scheduler& scheduler, size_t image_index, VkImage* inout_image, VkImageView* inout_image_view) override;
@@ -45,6 +45,7 @@ private:
     std::vector<Image> m_dynamic_images{};
     const VkExtent2D m_extent;
     const u32 m_image_count;
+    const bool m_to_pq;
     vk::ShaderModule m_vertex_shader{};
     vk::ShaderModule m_fragment_shader{};
     vk::DescriptorPool m_descriptor_pool{};

@@ -54,7 +54,7 @@ public:
     explicit Layer(const Device& device, MemoryAllocator& memory_allocator, Scheduler& scheduler,
                    Tegra::MaxwellDeviceMemoryManager& device_memory, size_t image_count,
                    VkExtent2D output_size, VkDescriptorSetLayout layout,
-                   const PresentFilters& filters);
+                   const PresentFilters& filters, bool hdr_output);
     ~Layer();
 
     void ConfigureDraw(const Device& device, PresentPushConstants* out_push_constants,
@@ -90,6 +90,7 @@ private:
     Tegra::MaxwellDeviceMemoryManager& device_memory;
     const PresentFilters& filters;
     const size_t image_count{};
+    const bool hdr_output;
     vk::DescriptorPool descriptor_pool{};
     vk::DescriptorSets descriptor_sets{};
 

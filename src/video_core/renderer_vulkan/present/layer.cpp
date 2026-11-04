@@ -63,12 +63,13 @@ VkFormat GetFormat(const Tegra::FramebufferConfig& framebuffer) {
 
 } // Anonymous namespace
 
-Layer::Layer(const Device& device, MemoryAllocator& memory_allocator_, Scheduler& scheduler_, Tegra::MaxwellDeviceMemoryManager& device_memory_, size_t image_count_, VkExtent2D output_size, VkDescriptorSetLayout layout, const PresentFilters& filters_)
+Layer::Layer(const Device& device, MemoryAllocator& memory_allocator_, Scheduler& scheduler_, Tegra::MaxwellDeviceMemoryManager& device_memory_, size_t image_count_, VkExtent2D output_size, VkDescriptorSetLayout layout, const PresentFilters& filters_, bool hdr_output_)
     : memory_allocator(memory_allocator_)
     , scheduler(scheduler_)
     , device_memory(device_memory_)
     , filters(filters_)
     , image_count(image_count_)
+    , hdr_output(hdr_output_)
 {
     CreateDescriptorPool(device);
     CreateDescriptorSets(device, layout);
@@ -217,10 +218,13 @@ void Layer::RefreshResources(const Device& device, const Tegra::FramebufferConfi
     pixel_format = framebuffer.pixel_format;
     anti_alias.emplace<std::monostate>();
     hdr_tonemap.reset();
-    if (pixel_format == Service::android::PixelFormat::Rgba1010102) {
+    // RGB10A2 is PQ: tone map it for SDR output, pass it through on HDR10. SDR goes up to PQ there.
+    const bool is_pq = pixel_format == Service::android::PixelFormat::Rgba1010102;
+    if (is_pq != hdr_output) {
         hdr_tonemap.emplace(device, memory_allocator, image_count,
                             VkExtent2D{Settings::values.resolution_info.ScaleUp(raw_width),
-                                       Settings::values.resolution_info.ScaleUp(raw_height)});
+                                       Settings::values.resolution_info.ScaleUp(raw_height)},
+                            hdr_output);
     }
 
     ReleaseRawImages();
