@@ -17,3 +17,13 @@ description = "Nintendo Switch key material (prod.keys / title.keys). These keys
 # The m flag makes ^ and $ match at every line, not only at the start and end of the file.
 regex       = '''(?im)(master_key_[0-9a-f]{2}|titlekek_source|key_area_key_(application|ocean|system)_[0-9a-f]{2}|aes_kek_generation_source|header_key)\s*=\s*[0-9a-f]{32,}|^[0-9a-f]{32}\s*=\s*[0-9a-f]{32}\s*$'''
 tags        = ["switch", "keys"]
+
+[[allowlists]]
+description = "A 64-bit constant named reset_key in the Vulkan pipeline cache (measured false positive)"
+targetRules = ["generic-api-key"]
+paths = [
+    '''src/video_core/renderer_vulkan/vk_pipeline_cache\.cpp''',
+]
+regexes = [
+    '''constexpr u64 reset_key = 0x[0-9a-fA-F]+ULL;''',
+]
