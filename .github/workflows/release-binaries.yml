@@ -70,6 +70,13 @@ jobs:
             runner: windows-2022
             pgo: true
             mingw: true
+            msystem: UCRT64
+          # Native Windows on ARM64 (Snapdragon X): the same MinGW PGO recipe on MSYS2's CLANGARM64.
+          - platform: windows-aarch64-pgo
+            runner: windows-11-arm
+            pgo: true
+            mingw: true
+            msystem: CLANGARM64
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
           - platform: linux-aarch64-pgo
@@ -201,7 +208,7 @@ jobs:
         if: matrix.mingw
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.msystem }}
           update: true
           cache: true
           install: >-
@@ -317,6 +324,14 @@ jobs:
           set -euo pipefail
           profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          # CLANGARM64 uses libc++, where some sources miss a transitive <cstdlib>, and Opus's
+          # NEON intrinsics do not build for aarch64 MinGW.
+          arch_flags=()
+          cxx_extra=""
+          if [ '${{ matrix.msystem }}' = 'CLANGARM64' ]; then
+            arch_flags=(-DOPUS_MAY_HAVE_NEON=OFF -DOPUS_DISABLE_INTRINSICS=ON)
+            cxx_extra=" -include cstdlib"
+          fi
           cmake -S . -B build/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
@@ -335,8 +350,9 @@ jobs:
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "${arch_flags[@]}" \
             "-DCMAKE_C_FLAGS=$profile" \
-            "-DCMAKE_CXX_FLAGS=$profile"
+            "-DCMAKE_CXX_FLAGS=$profile$cxx_extra"
 
       - name: Build
         if: ${{ ! matrix.mingw }}
@@ -427,7 +443,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          export PATH="/ucrt64/bin:$PATH"
+          export PATH="$MINGW_PREFIX/bin:$PATH"
           cd build/release/bin
           test -f eglantine.exe
           test -f eden-cli.exe
@@ -631,6 +647,7 @@ jobs:
           | --- | --- | --- | --- |
           | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
           | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
+          | ARM64 (MinGW) | | [PGO zip](${base}/eglantine-windows-aarch64-pgo.zip) | Native build for Windows on ARM (Snapdragon X); bundles its own DLLs |
 
           ## macOS
 
