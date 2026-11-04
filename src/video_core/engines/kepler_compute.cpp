@@ -645,13 +645,12 @@ bool KeplerCompute::EmulatesNativeTensorPrograms() const {
         return dlss_chain.failure == VideoCore::GameDlssReason::None &&
                GameDlssBlocker() == VideoCore::GameDlssReason::None;
     }
-    // An upscaling network keeps its upscale stand-in (emulating title 4's takes the host driver
-    // minutes to compile). Other programs have none and write nothing when rejected (Donkey Kong
-    // Bananza then shows a purple screen after its mode select), so they are emulated, as are all
-    // of Donkey Kong Bananza's: in some dispatches of a third one the pair search matches two
-    // images the copy can't blit, and the screen turned purple again in gameplay.
+    // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
+    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
+    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
+    // shader cache keeps the result of a program's first dispatch.
     constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId || !FindUpscaleImages();
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
@@ -897,7 +896,7 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
 // Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
-std::optional<KeplerCompute::UpscaleImages> KeplerCompute::FindUpscaleImages() const {
+bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
@@ -936,16 +935,7 @@ std::optional<KeplerCompute::UpscaleImages> KeplerCompute::FindUpscaleImages() c
         }
     }
     if (!input || !output)
-        return std::nullopt;
-    return UpscaleImages{*input, *output, fortunes_weave};
-}
-
-bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
-    const auto images = FindUpscaleImages();
-    if (!images)
         return false;
-    const std::optional<Texture::TICEntry> input = images->input, output = images->output;
-    const bool fortunes_weave = images->fortunes_weave;
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
     switch (input->format) {

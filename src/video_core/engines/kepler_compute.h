@@ -245,8 +245,8 @@ public:
 
     bool IsNativeMode() const { return native_mode; }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
-    /// are emulated: in a game DLSS evaluation when the game's own network may draw, elsewhere
-    /// when no upscale stands in for the program, and always for Donkey Kong Bananza.
+    /// are emulated: in a game DLSS evaluation when the game's own network may draw, and always
+    /// for Donkey Kong Bananza.
     [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
@@ -278,14 +278,6 @@ private:
     void CheckDlssNetwork();
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
-    struct UpscaleImages {
-        Texture::TICEntry input;
-        Texture::TICEntry output;
-        bool fortunes_weave{};
-    };
-    /// The input and larger output image an upscale can stand in for the dispatched tensor-core
-    /// program with, if its handles have such a pair.
-    [[nodiscard]] std::optional<UpscaleImages> FindUpscaleImages() const;
     bool UpscaleInsteadOfNativeProgram();
 
     /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether

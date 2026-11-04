@@ -1474,8 +1474,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // (checked against a CPU reference of the console's results) does.
             // The expansion is correct but large: title 4's 372-HMMA network takes the host driver
             // minutes to compile, so it is only lowered when the caller asks (`tensor`: a game
-            // DLSS evaluation the game's own network may draw, or a program no upscale stands in
-            // for), or with EDEN_NX2_TENSOR set (the QMD still completes when rejected).
+            // DLSS evaluation the game's own network may draw, or Donkey Kong Bananza's programs),
+            // or with EDEN_NX2_TENSOR set (the QMD still completes when rejected).
             // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C.
             static const char* const forced_mode = std::getenv("EDEN_NX2_TENSOR");
             const char* const mode = forced_mode ? forced_mode : tensor ? "1" : nullptr;
