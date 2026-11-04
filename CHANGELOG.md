@@ -7,3 +7,5 @@ New entries go under `## [Unreleased]`; `tools/ci/bump-version.sh` turns them in
 ## [Unreleased]
 
 ## [0.1.0]
+
+- Initial release candidate

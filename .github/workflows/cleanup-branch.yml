@@ -50,10 +50,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Capture and check the complete branch list first. If gh api fails, 
+          # set -e ensures the script exits before any deletions can occur.
+          branches=$(gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name')
+
           slugs=" "
           while read -r name; do
+            [ -n "$name" ] || continue
             slugs+="$(bash tools/ci/slugify.sh "$name") "
-          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name')
+          done <<< "$branches"
+
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' |
             { grep '^branch-' || true; } |
             while read -r tag; do

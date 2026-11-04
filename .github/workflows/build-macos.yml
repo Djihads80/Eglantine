@@ -48,6 +48,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
+          persist-credentials: false
 
       - name: Setup build
         uses: ./.github/actions/setup-build
@@ -112,7 +113,7 @@ jobs:
           # Qt's virtual keyboard input plugin pulls in the QML stack, which the emulator doesn't use.
           rm -f "$app/Contents/PlugIns/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
           binaries=$(find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) \
-            -exec sh -c 'file -b "$1" | grep -q Mach-O' _ {} ; -print)
+            -exec sh -c 'file -b "$1" | grep -q Mach-O' _ {} \; -print)
           for binary in $binaries; do
             otool -l "$binary" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' |
               { grep -E '^/(opt/homebrew|usr/local)/' || true; } | while read -r rpath; do

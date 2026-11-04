@@ -45,6 +45,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
+          persist-credentials: false
 
       - name: Setup build
         uses: ./.github/actions/setup-build
@@ -142,6 +143,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha }}
+          persist-credentials: false
 
       - name: Setup build
         uses: ./.github/actions/setup-build

@@ -139,7 +139,14 @@ jobs:
           fi
           flags=(--repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TITLE" --notes-file notes.md)
           if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
-          gh release create "$TAG" release-assets/* "${flags[@]}"
+          # If release creation fails, remove any left-behind Git tag to allow safe retries.
+          if ! gh release create "$TAG" release-assets/* "${flags[@]}"; then
+            echo "Release creation failed; cleaning up tag $TAG..." >&2
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
+            git push origin --delete "$TAG" 2> /dev/null || true
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" 2> /dev/null || true
+            exit 1
+          fi
 
       # Keep the seven newest daily builds.
       - name: Prune old daily builds
