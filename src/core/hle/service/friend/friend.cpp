@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <queue>
 #include "common/logging.h"
 #include "common/uuid.h"
@@ -14,6 +15,7 @@
 #include "core/hle/service/friend/friend_interface.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
+#include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/server_manager.h"
 
 namespace Service::Friend {
@@ -558,21 +560,38 @@ public:
     }
 };
 
-// Session returned by chat:u 0. Command 1 hands back a handle the title waits on, so it gets an
-// event that is never signalled; everything else falls through to the nx2 auto stub.
+// Session returned by chat:u 0 and 1. Command 1 hands back a handle the title waits on, so it gets
+// an event that is never signalled. 2-4 attach to the room info, local camera image processing
+// mode and local camera zoom change events (Switchbrew: no input, an event out); none of them
+// changes outside a GameChat room, so they never fire. Everything else falls through to the nx2
+// auto stub.
 class IChatSession final : public ServiceFramework<IChatSession> {
 public:
     explicit IChatSession(Core::System& system_)
         : ServiceFramework{system_, "nx2:chat:u::0"}, service_context{system_, "IChatSession"} {
         static const FunctionInfo functions[] = {
             {1, &IChatSession::GetEvent, "GetEvent (guessed)"},
+            {2, &IChatSession::AttachToChangedEvent, "AttachToRoomInfoChangedEvent"},
+            {3, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraImageProcessingModeChangedEvent"},
+            {4, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraZoomMagnificationChangedEvent"},
         };
         RegisterHandlers(functions);
         event = service_context.CreateEvent("IChatSession:Event");
+        static constexpr std::array<const char*, 3> changed_event_names{
+            "IChatSession:RoomInfoChanged",
+            "IChatSession:LocalCameraImageProcessingModeChanged",
+            "IChatSession:LocalCameraZoomMagnificationChanged",
+        };
+        for (size_t i = 0; i < changed_events.size(); ++i) {
+            changed_events[i] = service_context.CreateEvent(changed_event_names[i]);
+        }
     }
 
     ~IChatSession() override {
         service_context.CloseEvent(event);
+        for (auto* changed_event : changed_events) {
+            service_context.CloseEvent(changed_event);
+        }
     }
 
 private:
@@ -583,27 +602,55 @@ private:
         rb.PushCopyObjects(ctx, event->GetReadableEvent());
     }
 
+    void AttachToChangedEvent(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_Friend, "chat:u::0 {}", ctx.GetCommand());
+        IPC::ResponseBuilder rb{ctx, 2, 1};
+        rb.Push(ResultSuccess);
+        rb.PushCopyObjects(ctx, changed_events[ctx.GetCommand() - 2]->GetReadableEvent());
+    }
+
     KernelHelpers::ServiceContext service_context;
     Kernel::KEvent* event;
+    std::array<Kernel::KEvent*, 3> changed_events{};
 };
 
-// Switch 2 GameChat (chat:u). Command 0 opens a session the title keeps using, so it has to
-// return an interface; everything else falls through to the nx2 auto stub.
+// Switch 2 GameChat (chat:u). 0 and 1 open the session the title keeps using. 2-4 return objects
+// nothing here implements yet (layout customization, virtual camera, selective talk), so each
+// gets an nx2 stub whose commands all succeed empty; MKW calls 3 at boot. Switchbrew leaves 0-4
+// unnamed: 2-4 are named after what they return. Everything else falls through to the nx2 auto
+// stub.
 class IChatService final : public ServiceFramework<IChatService> {
 public:
     explicit IChatService(Core::System& system_) : ServiceFramework{system_, "nx2:chat:u"} {
         static const FunctionInfo functions[] = {
             {0, &IChatService::OpenSession, "OpenSession"},
+            {1, &IChatService::OpenSession, "OpenSession (u32)"},
+            {2, &IChatService::OpenStubObject, "OpenUserLayoutCustomizationShimScopedObject"},
+            {3, &IChatService::OpenStubObject, "OpenVirtualCameraShimScopedObject"},
+            {4, &IChatService::OpenStubObject, "OpenUserSelectiveTalkShimScopedObject"},
         };
         RegisterHandlers(functions);
     }
 
 private:
     void OpenSession(HLERequestContext& ctx) {
-        LOG_WARNING(Service_Friend, "(STUBBED) chat:u 0, returning a chat session");
+        LOG_WARNING(Service_Friend, "(STUBBED) chat:u {}, returning a chat session", ctx.GetCommand());
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
         rb.PushIpcInterface<IChatSession>(ctx, system);
+    }
+
+    void OpenStubObject(HLERequestContext& ctx) {
+        static constexpr std::array<const char*, 3> names{
+            "nx2:chat:IUserLayoutCustomizationShimScopedObject",
+            "nx2:chat:IVirtualCameraShimScopedObject",
+            "nx2:chat:IUserSelectiveTalkShimScopedObject",
+        };
+        const char* name = names[ctx.GetCommand() - 2];
+        LOG_WARNING(Service_Friend, "(STUBBED) chat:u {}, returning {}", ctx.GetCommand(), name);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<INx2StubInterface>(ctx, system, name);
     }
 };
 
