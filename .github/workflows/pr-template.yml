@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: pr-template-${{ github.event.pull_request.number }}
@@ -48,6 +49,22 @@ jobs:
             for (const name of ['Summary', 'Tested']) {
               if (!(sections[name.toLowerCase()] || '').trim()) {
                 problems.push(`Fill in the "${name}" section.`);
+              }
+            }
+            // A fix should ship the test that proves it, or say why it cannot.
+            const pr = context.payload.pull_request;
+            if (/\bfix(es|ed)?\b/i.test(pr.title)) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const hasTest = files.some((f) => f.filename.startsWith('src/tests/'));
+              const reason = body.match(/Regression test:[ \t]*(.*)$/im);
+              const stated = reason && reason[1].trim() && !/^n\/a$/i.test(reason[1].trim());
+              if (!hasTest && !stated) {
+                problems.push('This looks like a fix: add a test under src/tests/ or fill in "Regression test:" with why there is none.');
               }
             }
             for (const problem of problems) {
