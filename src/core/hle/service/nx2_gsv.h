@@ -1499,7 +1499,9 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     }
     const u64 block_rows = u64{1} << layout.block_height_log2;
     layout.size = layout.pitch * Common::AlignUp(u64{layout.height}, block_rows);
-    layout.alignment = std::max<u64>(64 * block_rows, 0x1000);
+    // Native image offsets are page-aligned, independently of the block height. Requiring
+    // a whole block rejects Star Fox's 4 KiB-aligned window buffers at 3840x2160.
+    layout.alignment = 0x1000;
     return layout;
 }
 

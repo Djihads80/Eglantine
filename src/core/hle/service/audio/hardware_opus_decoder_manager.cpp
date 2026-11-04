@@ -6,6 +6,7 @@
 
 #include "core/hle/service/audio/hardware_opus_decoder.h"
 #include "core/hle/service/audio/hardware_opus_decoder_manager.h"
+#include "core/hle/service/audio/nx2_hardware_audio_codec_client.h"
 #include "core/hle/service/cmif_serialization.h"
 
 namespace Service::Audio {
@@ -26,12 +27,19 @@ IHardwareOpusDecoderManager::IHardwareOpusDecoderManager(Core::System& system_)
         {7, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamEx>, "GetWorkBufferSizeForMultiStreamEx"},
         {8, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeExEx>, "GetWorkBufferSizeExEx"},
         {9, D<&IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStreamExEx>, "GetWorkBufferSizeForMultiStreamExEx"},
+        {100, D<&IHardwareOpusDecoderManager::OpenHardwareAudioCodecClient>, "OpenHardwareAudioCodecClient"},
     };
     // clang-format on
     RegisterHandlers(functions);
 }
 
 IHardwareOpusDecoderManager::~IHardwareOpusDecoderManager() = default;
+
+Result IHardwareOpusDecoderManager::OpenHardwareAudioCodecClient(
+    Out<SharedPointer<INx2HardwareAudioCodecClient>> out_client) {
+    *out_client = std::make_shared<INx2HardwareAudioCodecClient>(system);
+    R_SUCCEED();
+}
 
 Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoder(
     Out<SharedPointer<IHardwareOpusDecoder>> out_decoder, OpusParameters params, u32 tmem_size,

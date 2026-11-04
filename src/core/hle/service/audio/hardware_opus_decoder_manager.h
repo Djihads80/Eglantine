@@ -13,6 +13,7 @@
 namespace Service::Audio {
 
 class IHardwareOpusDecoder;
+class INx2HardwareAudioCodecClient;
 
 using AudioCore::OpusDecoder::OpusMultiStreamParameters;
 using AudioCore::OpusDecoder::OpusMultiStreamParametersEx;
@@ -25,6 +26,8 @@ public:
     ~IHardwareOpusDecoderManager() override;
 
 private:
+    Result OpenHardwareAudioCodecClient(
+        Out<SharedPointer<INx2HardwareAudioCodecClient>> out_client);
     Result OpenHardwareOpusDecoder(Out<SharedPointer<IHardwareOpusDecoder>> out_decoder,
                                    OpusParameters params, u32 tmem_size,
                                    InCopyHandle<Kernel::KTransferMemory> tmem_handle);

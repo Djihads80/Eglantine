@@ -903,11 +903,23 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
-                                 const std::optional<Texture::TICEntry>& to) {
-        return from && to && from->format == to->format && from->Address() != 0 &&
-               to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
-               to->IsBlockLinear();
+    using RTFormat = Tegra::RenderTargetFormat;
+    const auto rt_format = [](Texture::TextureFormat format) -> std::optional<RTFormat> {
+        switch (format) {
+        case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+        case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+        case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+        case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+        default: return std::nullopt;
+        }
+    };
+    const auto upscale_pair = [&](const std::optional<Texture::TICEntry>& from,
+                                  const std::optional<Texture::TICEntry>& to, bool convert = false) {
+        return from && to &&
+               (from->format == to->format ||
+                (convert && rt_format(from->format) && rt_format(to->format))) &&
+               from->Address() != 0 && to->Address() != 0 && to->Width() > from->Width() &&
+               from->IsBlockLinear() && to->IsBlockLinear();
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
     bool fortunes_weave = false;
@@ -933,20 +945,18 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
         }
     }
-    if (!input || !output)
-        return false;
-    using RTFormat = Tegra::RenderTargetFormat;
-    RTFormat format{};
-    switch (input->format) {
-    case Texture::TextureFormat::A2B10G10R10: format = RTFormat::A2B10G10R10_UNORM; break;
-    case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
-    case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
-    case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
+    if (!input || !output) {
+        // Star Fox's upscaler reads an R16G16B16A16 frame at title 4's slots and writes an
+        // A8B8G8R8 one: with no same-format pair, convert between them in the blit.
+        input = image(0x90);
+        output = image(0xa0);
+        if (!upscale_pair(input, output, true)) return false;
     }
+    if (!rt_format(input->format) || !rt_format(output->format))
+        return false;
     const auto surface = [&](const Texture::TICEntry& tic) {
         Fermi2D::Surface result{};
-        result.format = format;
+        result.format = rt_format(tic.format).value_or(RTFormat{});
         result.linear = Fermi2D::MemoryLayout::BlockLinear;
         result.block_width.Assign(tic.block_width);
         result.block_height.Assign(tic.block_height);

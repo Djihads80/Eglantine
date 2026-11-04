@@ -546,6 +546,11 @@ add_library(core STATIC
     hle/service/audio/hardware_opus_decoder_manager.h
     hle/service/audio/hardware_opus_decoder.cpp
     hle/service/audio/hardware_opus_decoder.h
+    hle/service/audio/nx2_hardware_audio_codec_client.cpp
+    hle/service/audio/nx2_hardware_audio_codec_client.h
+    hle/service/audio/nx2_hardware_audio_codec_manager.cpp
+    hle/service/audio/nx2_hardware_audio_codec_manager.h
+    hle/service/audio/nx2_hardware_audio_codec_types.h
     hle/service/bcat/backend/backend.cpp
     hle/service/bcat/backend/backend.h
     hle/service/bcat/bcat.cpp
