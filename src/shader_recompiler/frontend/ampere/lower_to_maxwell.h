@@ -1647,7 +1647,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 accum_neg = insn.Bits(90, 1);
             const u32 set_op = insn.Bits(74, 2);
             const u32 a = uniform_register(insn.Bits(24, 8)), b = opcode == 0x88c ? 252U : uniform_register(insn.Bits(32, 8));
-            if (output > 6 || insn.Bits(84, 3) != 7 || insn.Bits(68, 4) != 7 ||
+            if (output > 6 || insn.Bits(84, 3) != 7 ||
                 insn.Bits(72, 1) || set_op == 3 || insn.Bits(12, 4) != 7 || a == ~0U || b == ~0U)
                 return fail(index, "native uniform comparison mode");
             const u32 temporary = 6 - output;
