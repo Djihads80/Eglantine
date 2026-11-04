@@ -44,9 +44,15 @@ FileSys::VirtualFile FindPackageSidecar(const FileSys::VirtualFile& package,
         return nullptr;
     }
     const auto stem = PackageStem(package);
+    // One listing of the directory for all the extensions (a content directory on Android is
+    // listed by every lookup).
+    const auto files = dir->GetFiles();
     for (const auto extension : extensions) {
-        if (auto sidecar = dir->GetFile(stem + '.' + std::string{extension})) {
-            return sidecar;
+        const std::string wanted = stem + '.' + std::string{extension};
+        for (const auto& file : files) {
+            if (file != nullptr && file->GetName() == wanted) {
+                return file;
+            }
         }
     }
     return nullptr;
