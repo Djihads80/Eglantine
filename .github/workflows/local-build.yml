@@ -1,0 +1,77 @@
+name: local-build
+
+# Runs only when started by hand (Actions tab or `gh workflow run local-build.yml`), on the
+# self-hosted runner from tools/local-runner. Each OS gets its own release for the commit
+# (<sha10>-linux, -windows, -android), published as soon as that OS is built; macOS comes from
+# release-binaries on GitHub's runners and lands in the same releases. Desktop builds are PGO only.
+on:
+  workflow_dispatch:
+    inputs:
+      linux_pgo:
+        description: Linux x86_64 PGO (tar.gz and AppImage)
+        type: boolean
+        default: true
+      windows:
+        description: Windows x86_64 PGO (llvm-mingw)
+        type: boolean
+        default: true
+      android:
+        description: Android APK
+        type: boolean
+        default: true
+      android_app_id:
+        description: Android application id
+        type: string
+        default: dev.eglantine.eglantine
+      release:
+        description: Publish the results as releases
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: local-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: [self-hosted, eglantine-local]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-pgo
+            os: linux
+            enabled: ${{ inputs.linux_pgo }}
+          - platform: windows-x86_64-pgo
+            os: windows
+            enabled: ${{ inputs.windows }}
+          - platform: android-arm64
+            os: android
+            enabled: ${{ inputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+        if: matrix.enabled
+
+      - name: Build
+        if: matrix.enabled
+        run: |
+          rm -rf out
+          tools/local-runner/build.sh "${{ matrix.platform }}" "${{ inputs.android_app_id }}"
+          ccache --show-stats || true
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.enabled
+        with:
+          name: ${{ matrix.platform }}
+          path: out/*
+          compression-level: 0
+
+      - name: Publish
+        if: matrix.enabled && inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/local-runner/publish.sh "${{ matrix.os }}" out/*
