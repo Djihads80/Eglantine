@@ -56,7 +56,7 @@ IApplicationProxy::~IApplicationProxy() = default;
 Result IApplicationProxy::GetPerformanceFunctions(
     Out<SharedPointer<IPerformanceFunctions>> out_functions) {
     LOG_DEBUG(Service_AM, "called");
-    *out_functions = std::make_shared<IPerformanceFunctions>(system);
+    *out_functions = std::make_shared<IPerformanceFunctions>(system, m_applet);
     R_SUCCEED();
 }
 

@@ -4,7 +4,6 @@
 #pragma once
 
 #include "core/hle/service/cmif_types.h"
-#include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/service.h"
 
 namespace Service::AM {
