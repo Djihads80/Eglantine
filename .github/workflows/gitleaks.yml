@@ -28,23 +28,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Pull requests: scan exactly base..head. gitleaks-action only looks at the first page of the
-      # PR's commits through the API, so a long PR could skip commits.
-      - name: Run gitleaks on the pull request commits
-        if: github.event_name == 'pull_request'
+      # The CLI scans an explicit commit range. gitleaks-action only follows the first parent of a
+      # push and reads the first page of a pull request's commits, so it can skip commits.
+      # --diff-merges=first-parent also scans what each merge commit brought in.
+      - name: Run gitleaks
         env:
+          EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
-          docker run --rm -v "$PWD:/repo"\
-            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo\
-            ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo\
-            --config /repo/.github/gitleaks.toml --log-opts="${BASE_SHA}..${HEAD_SHA}"\
+          # Pull requests: base..head. Pushes: the pushed range. Scheduled and manual runs, a new
+          # branch, or a force push whose old tip is gone: the whole history.
+          if [ "$EVENT" = "pull_request" ]; then
+            LOG_OPTS="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}"
+          elif [ "$EVENT" = "push" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            LOG_OPTS="--diff-merges=first-parent ${BEFORE_SHA}..${AFTER_SHA}"
+          else
+            LOG_OPTS="--diff-merges=first-parent --all"
+          fi
+          echo "git log options: ${LOG_OPTS}"
+          docker run --rm -v "$PWD:/repo" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo \
+            --config /repo/.github/gitleaks.toml --log-opts="${LOG_OPTS}" \
             --redact --verbose
-
-      - name: Run gitleaks
-        if: github.event_name != 'pull_request'
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .github/gitleaks.toml
