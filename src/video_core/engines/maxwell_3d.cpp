@@ -917,6 +917,17 @@ bool JitSkipSameEnabled() {
     return skip;
 }
 
+// EDEN_NX2_MACRO_SINK=0: the back runs every write a front macro makes through CallMethod at
+// once (GpuSplit::MacroWrite), instead of putting state writes in its method sink like the
+// pushbuffer's and applying them before the next executable method.
+bool MacroSinkEnabled() {
+    static const bool sink = [] {
+        const char* value = std::getenv("EDEN_NX2_MACRO_SINK");
+        return value == nullptr || value[0] != '0';
+    }();
+    return sink;
+}
+
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -1025,9 +1036,12 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             break;
         }
     }
-    if (from_macro) {
+    if (from_macro && (execution_mask[method] || !MacroSinkEnabled())) {
         split.MacroWrite(this, method, argument);
     } else {
+        // A state write: the back sinks it and applies it (shadow RAM, same-value skip, dirty
+        // flags) before the next executable method, as CallMethod would have at once. The
+        // macro's end consumes the sink too (FinishFrontMacro).
         split.Method(this, method, argument, is_last_call, nullptr);
     }
 }
