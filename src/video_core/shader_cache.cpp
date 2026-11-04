@@ -81,6 +81,10 @@ u64 ShaderCache::MeshStateHash() const {
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
+        if (last_shaders_rejected) {
+            // The same rejected program is still bound: this draw is skipped too.
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
+        }
         return last_shaders_valid;
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
@@ -112,6 +116,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         if (!cpu_shader_addr) {
             LOG_ERROR(HW_GPU, "Invalid GPU address for shader {:#016x}", shader_addr);
             last_shaders_valid = false;
+            last_shaders_rejected = false;
             return false;
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
@@ -121,6 +126,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
             VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
             maxwell3d->GetNativeMacroEngine().native_execution_failed = true;
             last_shaders_valid = false;
+            last_shaders_rejected = true;
             return false;
         }
         if (!shader_info) {
@@ -155,12 +161,15 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         }
     }
     last_shaders_valid = true;
+    last_shaders_rejected = false;
     return true;
 } catch (const Shader::Exception& error) {
     auto& native = maxwell3d->GetNativeMacroEngine();
     if (!native.native_turing) throw;
     native.native_execution_failed = true;
     last_shaders_valid = false;
+    last_shaders_rejected = true;
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::SkippedDraws, 1);
     // Each rejected program is logged once (the draws that use it keep failing quietly).
     static std::unordered_set<std::string> logged;
     if (logged.insert(error.what()).second) {

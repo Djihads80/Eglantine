@@ -104,6 +104,8 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
+    /// last_shaders_valid is false because a native program was rejected (not, say, a bad address)
+    bool last_shaders_rejected = false;
 
 private:
     friend struct ShaderCacheTestAccess;
