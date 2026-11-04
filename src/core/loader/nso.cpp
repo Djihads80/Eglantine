@@ -177,15 +177,19 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
-    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native
-    // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
-    // Match the instruction sequence instead of relying on a title-version-specific address.
-    const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop (mode 0: dynamic, from
+    // the CPU frame time at [x19, #0x128]; 1: one vblank; 2: two vblanks). Force its native 30 FPS
+    // mode, its 60 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU
+    // wait), in that order of precedence. Match the instruction sequence instead of relying on a
+    // title-version-specific address.
+    const bool mkw_30 = Settings::values.mkw_30fps.GetValue();
+    const bool mkw_60 = !mkw_30 && Settings::values.mkw_60fps.GetValue();
+    const bool mkw_dynamic = !mkw_30 && !mkw_60 && Settings::values.mkw_dynamic_fps.GetValue();
     bool mkw_dynamic_fps_patch_applied = false;
-    if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
+    if ((mkw_30 || mkw_60 || mkw_dynamic) && name == "main" &&
         process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
-        const u32 mode = mkw_dynamic ? 0U : 2U;
+        const u32 mode = mkw_dynamic ? 0U : (mkw_60 ? 1U : 2U);
         const u32 mode_instruction = 0x52800008U | (mode << 5); // mov w8, #mode
         const auto& text = nso_header.segments[0];
         u8* const code = codeset.memory.data() + module_start + text.location;
@@ -233,7 +237,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 mkw_dynamic_fps_patch_applied = true;
             }
             LOG_INFO(Loader, "Mario Kart World: {} FPS mode enabled (main+{:#x})",
-                     mkw_dynamic ? "dynamic" : "30",
+                     mkw_dynamic ? "dynamic" : (mkw_60 ? "60" : "30"),
                      text.location + mode_site * sizeof(u32));
         } else {
             LOG_WARNING(Loader,

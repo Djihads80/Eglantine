@@ -612,6 +612,10 @@
     <string name="renderer_reduce_texture_resolution">Reduce texture resolution</string>
     <string name="renderer_reduce_texture_resolution_description">Keeps large compressed textures at half resolution, using about a quarter of their video memory. Helps games that run out of memory, such as Switch 2 titles. Textures look slightly blurrier up close. Takes effect when the game starts.</string>
     <string name="renderer_release_gpu_only_memory">Release GPU-only memory (experimental)</string>
+    <string name="renderer_mkw_30fps">Mario Kart World: 30 FPS mode</string>
+    <string name="renderer_mkw_30fps_description">Forces the game to use its native 30 FPS mode at normal game speed. Takes effect after restarting the game.</string>
+    <string name="renderer_mkw_60fps">Mario Kart World: 60 FPS mode</string>
+    <string name="renderer_mkw_60fps_description">Always renders at 60 fps. Slower hardware runs the game in slow motion. Takes effect after restarting the game; the 30 FPS mode takes precedence.</string>
     <string name="renderer_release_gpu_only_memory_description">Frees the RAM copy of Switch 2 GPU-only memory once its textures are on the GPU, saving RAM. Experimental: may cause missing or corrupted textures.</string>
     <string name="gpu_unswizzle_settings">GPU Unswizzle Settings</string>
     <string name="gpu_unswizzle_settings_description">Configure GPU-based texture unswizzling parameters or disable it entirely. Adjust these settings to balance performance and texture loading quality.</string>
