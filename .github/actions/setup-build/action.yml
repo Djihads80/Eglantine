@@ -1,0 +1,65 @@
+name: Setup build
+description: >-
+  Writes the GIT-* files GetSCMRev reads (so the build embeds the version this run was given instead
+  of asking git), and restores the CPM and compiler-object caches. Run after actions/checkout.
+
+inputs:
+  platform:
+    description: Platform name, used in the compiler cache key (for example linux-x86_64-pgo)
+    required: true
+  sha:
+    description: Full commit SHA being built
+    required: true
+  refspec:
+    description: Value for GIT-REFSPEC (the version label of a daily or branch build)
+    required: true
+  tag:
+    description: Value for GIT-TAG
+    required: true
+  release:
+    description: "true for stable and rc builds: writes GIT-RELEASE, which makes the build a release build"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Write SCM files
+      shell: bash
+      env:
+        SCM_SHA: ${{ inputs.sha }}
+        SCM_REFSPEC: ${{ inputs.refspec }}
+        SCM_TAG: ${{ inputs.tag }}
+        SCM_RELEASE: ${{ inputs.release }}
+      run: |
+        set -euo pipefail
+        printf '%s\n' "$SCM_SHA" > GIT-COMMIT
+        printf '%s\n' "$SCM_REFSPEC" > GIT-REFSPEC
+        printf '%s\n' "$SCM_TAG" > GIT-TAG
+        if [ "$SCM_RELEASE" = true ]; then
+          printf '%s\n' "$SCM_TAG" > GIT-RELEASE
+        else
+          rm -f GIT-RELEASE
+        fi
+        echo "GetSCMRev inputs:"
+        head -v GIT-COMMIT GIT-REFSPEC GIT-TAG GIT-RELEASE 2> /dev/null || true
+
+    - name: Cache CPM downloads
+      uses: actions/cache@v6
+      with:
+        path: .cache/cpm
+        key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+        restore-keys: |
+          cpm-${{ runner.os }}-
+
+    # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
+    # exact hit), and restore-keys seeds it from the newest one of the same platform.
+    - name: Cache compiler objects
+      uses: actions/cache@v6
+      with:
+        path: |
+          .ccache
+          .sccache
+        key: objects-${{ inputs.platform }}-${{ inputs.sha }}
+        restore-keys: |
+          objects-${{ inputs.platform }}-

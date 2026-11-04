@@ -1,0 +1,283 @@
+name: build-windows
+
+# Reusable: builds the Windows binaries. The MSVC build always runs; with pgo=both the MinGW clang
+# PGO build runs too (MSVC cannot read an LLVM .profdata file, so Windows PGO uses MSYS2's clang
+# like Eden does).
+on:
+  workflow_call:
+    inputs:
+      sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      refspec:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      release:
+        type: boolean
+        default: false
+      nightly:
+        type: boolean
+        default: true
+      pgo:
+        description: none or both
+        type: string
+        default: none
+
+permissions:
+  contents: read
+
+jobs:
+  msvc:
+    name: windows-x86_64
+    # Might also need to upgrade that one
+    runs-on: windows-2022
+    env:
+      PLATFORM: windows-x86_64
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 3G
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Setup build from checked-out source
+        if: hashFiles('.github/actions/setup-build/action.yml') != ''
+        uses: ./.github/actions/setup-build
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      - name: Setup build from compatibility pin
+        if: hashFiles('.github/actions/setup-build/action.yml') == ''
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt on Windows
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      # MSVC is not something ccache handles well, so this job uses sccache.
+      - name: Install sccache on Windows
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
+          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
+          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install Vulkan SDK on Windows
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Verify Vulkan tools on Windows
+        shell: pwsh
+        run: glslangValidator --version
+
+      - name: Configure
+        shell: bash
+        run: >-
+          cmake -S . -B build/release -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DYUZU_TESTS=OFF
+          -DYUZU_CMD=ON
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          sccache --show-stats
+
+      - name: Package Windows binary
+        shell: pwsh
+        run: |
+          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/release/bin/$exe")) {
+              throw "build/release/bin/$exe was not produced"
+            }
+          }
+          windeployqt --release --no-translations build/release/bin/eglantine.exe
+
+      # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
+      # zip gave a zip inside a zip. The release job zips it once for the release.
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-windows-x86_64-${{ inputs.sha }}
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
+
+  mingw-pgo:
+    name: windows-x86_64-pgo
+    if: inputs.pgo == 'both'
+    runs-on: windows-2022
+    env:
+      PLATFORM: windows-x86_64-pgo
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3000M
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Setup build from checked-out source
+        if: hashFiles('.github/actions/setup-build/action.yml') != ''
+        uses: ./.github/actions/setup-build
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      - name: Setup build from compatibility pin
+        if: hashFiles('.github/actions/setup-build/action.yml') == ''
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      # The profile is in the source tree, where the configure step reads it.
+      - name: Check PGO profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s eglantine.profdata
+
+      # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
+      # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            git make autoconf libtool automake-wrapper patch jq pactoys ninja
+          pacboy: >-
+            toolchain:p clang:p lld:p cmake:p python-pip:p
+            qt6-base:p qt6-charts:p qt6-tools:p qt6-translations:p qt6-svg:p
+            openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
+            vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
+            libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
+
+      # MinGW build: system Qt and libraries from MSYS2, clang plus the repo's PGO profile. The profile
+      # path is converted to its Windows form because clang runs with the MSYS mount underneath.
+      - name: Configure
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
+            -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          cmake -S . -B build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DYUZU_USE_BUNDLED_FFMPEG=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_CCACHE=ON \
+            -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }} \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            "-DCMAKE_C_FLAGS=$profile" \
+            "-DCMAKE_CXX_FLAGS=$profile"
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          ccache --show-stats
+
+      # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
+      # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
+      # them (docs/Caveats.md#msys2).
+      - name: Package MinGW binary
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          cd build/release/bin
+          test -f eglantine.exe
+          test -f eden-cli.exe
+          windeployqt6 --no-translations --no-compiler-runtime --no-opengl-sw \
+            --no-system-dxc-compiler --no-system-d3d-compiler eglantine.exe
+          deps() {
+            objdump -p "$1" | awk '/DLL Name:/ {print $3}' | while read -r dll; do
+              [ -z "$dll" ] && continue
+              source=$(command -v "$dll" 2>/dev/null || true)
+              [ -z "$source" ] && continue
+              # The system DLLs ship with Windows, so they never need bundling.
+              case "$source" in
+                *System32* | *SysWOW64*) continue ;;
+              esac
+              if [ ! -f "$dll" ]; then
+                cp "$source" "$dll"
+                deps "$source"
+              fi
+            done
+          }
+          for exe in eglantine.exe eden-cli.exe; do
+            deps "$exe"
+          done
+          find . -name '*.dll' | while read -r dll; do
+            deps "$dll"
+          done
+
+      - name: Upload MinGW binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-windows-x86_64-pgo-${{ inputs.sha }}
+          path: build/release/bin/
+          if-no-files-found: error
+          retention-days: 7
