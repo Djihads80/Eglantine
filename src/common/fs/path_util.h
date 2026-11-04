@@ -34,6 +34,7 @@ enum class EdenPath {
     ShaderDir,      // Where shaders are stored.
     TASDir,         // Where TAS scripts are stored.
     IconsDir,       // Where Icons for Windows shortcuts are stored.
+    StreamlineDir,  // Where the user-supplied NVIDIA Streamline loader is stored.
 };
 
 // migration/compat dirs

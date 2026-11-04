@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
@@ -12,6 +13,19 @@ using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 using Shader::Ampere::LoweringOptions;
 constexpr Instruction exit_inst{{0x0000794d, 0, 0x03800000, 0}};
+
+bool Contains(const Shader::Ampere::LoweredProgram& lowered, u64 instruction) {
+    return std::find(lowered.instructions.begin(), lowered.instructions.end(), instruction) !=
+           lowered.instructions.end();
+}
+
+constexpr std::array<Instruction, 5> geometry_program{{
+    {{0x0004734e, 0, 0, 0}},          // LEPC R4
+    {{0x00017923, 0, 0, 0}},          // ISBERD R1, [R0]
+    {{0x00027324, 0xff, 0x4000, 0}},  // OUT.EMIT R2, R0, RZ
+    {{0x02037924, 0, 0x8000, 0}},     // OUT.CUT R3, R2, 0
+    exit_inst,
+}};
 } // namespace
 
 TEST_CASE("Ampere geometry program counter uses the native address", "[video_core][ampere]") {
@@ -67,4 +81,21 @@ TEST_CASE("Ampere F2I supports 16-bit truncation", "[video_core][ampere]") {
     }
     const Instruction unsupported{{0x00067305, 9, 0x0021e801, 0}};
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit_inst})));
+}
+
+TEST_CASE("Ampere geometry programs lower their output instructions", "[video_core][ampere]") {
+    const auto lowered = LowerToMaxwell(geometry_program, {.geometry = true});
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(Contains(lowered, 0x010000000007f004ULL)); // MOV32I R4, 0 (its own address)
+    REQUIRE(Contains(lowered, 0x010000000007f005ULL)); // MOV32I R5, 0
+    REQUIRE(Contains(lowered, 0x5c98078000070001ULL)); // MOV R1, R0
+    REQUIRE(Contains(lowered, 0xfbe000800ff70002ULL)); // OUT.EMIT R2, R0, RZ
+    REQUIRE(Contains(lowered, 0xf6e0010000070203ULL)); // OUT.CUT R3, R2, 0
+}
+
+TEST_CASE("Ampere output instructions stay rejected outside geometry programs",
+          "[video_core][ampere]") {
+    const auto lowered = LowerToMaxwell(geometry_program);
+    REQUIRE(!static_cast<bool>(lowered));
+    REQUIRE(lowered.error == "unsupported native opcode");
 }

@@ -151,9 +151,9 @@ public:
                   const std::array<VkSampler, 2>& samplers)
         : Pass(device_, scheduler, descriptor_pool, MakeLayout(kinds, samplers), code) {}
 
-    void Dispatch(Scheduler& scheduler, ComputePassDescriptorQueue& queue,
+    void Dispatch(Scheduler& scheduler_, ComputePassDescriptorQueue& queue,
                   std::span<const Resource> resources, u32 groups_x, u32 groups_y) {
-        queue.Acquire(scheduler, resources.size());
+        queue.Acquire(scheduler_, resources.size());
         for (const Resource& resource : resources) {
             if (resource.buffer) {
                 queue.AddBuffer(resource.buffer, resource.offset, resource.size);
@@ -162,7 +162,7 @@ public:
             }
         }
         const void* const descriptor_data{queue.UpdateData()};
-        scheduler.Record([this, descriptor_data, groups_x, groups_y](vk::CommandBuffer cmdbuf) {
+        scheduler_.Record([this, descriptor_data, groups_x, groups_y](vk::CommandBuffer cmdbuf) {
             const VkDescriptorSet set = descriptor_allocator.Commit();
             device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);

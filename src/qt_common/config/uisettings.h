@@ -172,6 +172,9 @@ struct Values {
     QStringList recent_files;
     Setting<std::string> language{linkage, {}, "language", Category::Paths};
 
+    // Optional key that enables the SteamGridDB icon fallback
+    Setting<std::string> steamgriddb_api_key{linkage, {}, "steamgriddb_api_key", Category::Ui};
+
     std::string theme;
 
     // Shortcut name <Shortcut, context>

@@ -289,6 +289,11 @@ public:
         return physical;
     }
 
+    /// Returns the instance the device was created from.
+    VkInstance GetInstance() const {
+        return instance;
+    }
+
     VkPipelineCache StaticPipelineCache() const noexcept {
         return *static_pipeline_cache;
     }
@@ -429,6 +434,11 @@ FN_MAX_LIMIT_LIST
 
     bool IsOptimalAstcSupported() const {
         return is_optimal_astc_supported;
+    }
+
+    /// Returns true if geometry shaders are supported.
+    bool IsGeometryShaderSupported() const {
+        return features.features.geometryShader;
     }
 
     /// Returns true if BCn is natively supported.
@@ -1326,6 +1336,8 @@ private:
     // Telemetry parameters
     std::set<std::string, std::less<>> supported_extensions; ///< Reported Vulkan extensions.
     std::set<std::string, std::less<>> loaded_extensions;    ///< Loaded Vulkan extensions.
+    bool streamline_extensions{}; ///< NVIDIA DLSS's extensions are loaded.
+    bool streamline_attached{};   ///< Streamline has this device.
     std::vector<size_t> valid_heap_memory;                   ///< Heaps used.
     size_t main_heap{};       ///< Largest device-local heap, where images live.
     u64 heap_size_limit{};    ///< EDEN_NX2_VRAM_LIMIT_MIB for device-local heaps, 0 if unset.

@@ -103,6 +103,9 @@ public:
 
 void CancelPendingSocketOperations();
 void RestartSocketOperations();
+/// Whether socket operations are cancelled, as on emulation shutdown. Waits that no host socket
+/// operation wakes, such as deferred bsd requests, check this to end.
+bool SocketOperationsCancelled();
 
 #ifdef _WIN32
 constexpr IPv4Address TranslateIPv4(in_addr addr) {
@@ -120,6 +123,10 @@ constexpr IPv4Address TranslateIPv4(in_addr addr) {
 /// @brief Returns host's IPv4 address
 /// @return human ordered IPv4 address (e.g. 192.168.0.1) as an array
 std::optional<IPv4Address> GetHostIPv4Address();
+
+/// @brief Returns the fake IPv4 address of the joined room, the emulated network while in a room
+/// @return nullopt outside a room and while still joining it
+std::optional<IPv4Address> GetRoomIPv4Address();
 
 std::string IPv4AddressToString(IPv4Address ip_addr);
 u32 IPv4AddressToInteger(IPv4Address ip_addr);

@@ -43,7 +43,7 @@ private:
         AudioCore::AudioOut::AudioOutParameter parameter,
         InCopyHandle<Kernel::KProcess> process_handle, ClientAppletResourceUserId aruid);
 
-    std::optional<AudioCore::AudioOut::Manager> impl;
+    std::shared_ptr<AudioCore::AudioOut::Manager> impl;
 };
 
 } // namespace Service::Audio

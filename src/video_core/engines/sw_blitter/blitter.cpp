@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <mutex>
+#include <set>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -218,8 +220,32 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
 
     const u32 dst_extent_x = config.dst_x1 - config.dst_x0;
     const u32 dst_extent_y = config.dst_y1 - config.dst_y0;
-    const auto src_bytes_per_pixel = BytesPerBlock(PixelFormatFromRenderTargetFormat(src.format));
-    const auto dst_bytes_per_pixel = BytesPerBlock(PixelFormatFromRenderTargetFormat(dst.format));
+    // Both sizes below drive the row arithmetic of this software copy, and the destination ones
+    // are used for writes. Guessing four bytes per pixel for an undecodable format makes a copy
+    // write past the end of the bounded span, so refuse the blit instead of guessing. The
+    // accelerated path does not use these and is not affected.
+    const auto src_pixel_format = VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(src.format);
+    const auto dst_pixel_format = VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(dst.format);
+    if (!src_pixel_format || !dst_pixel_format) {
+        static std::mutex mutex;
+        static std::set<u32> logged;
+        bool should_log = false;
+        {
+            const std::scoped_lock lock{mutex};
+            const u32 undecoded = src_pixel_format ? static_cast<u32>(dst.format)
+                                                  : static_cast<u32>(src.format);
+            should_log = logged.size() < 8 && logged.emplace(undecoded).second;
+        }
+        if (should_log) {
+            LOG_CRITICAL(HW_GPU,
+                         "SoftwareBlit: undecodable {} format, skipping the copy instead of "
+                         "guessing a pixel size",
+                         src_pixel_format ? "destination" : "source");
+        }
+        return false;
+    }
+    const auto src_bytes_per_pixel = BytesPerBlock(*src_pixel_format);
+    const auto dst_bytes_per_pixel = BytesPerBlock(*dst_pixel_format);
     const size_t src_size = get_surface_size(src, src_bytes_per_pixel);
     const SubSurface src_part = CoveredRows(src, src_bytes_per_pixel, config.src_x0, config.src_y0,
                                             src_extent_x, src_extent_y, src_size);
