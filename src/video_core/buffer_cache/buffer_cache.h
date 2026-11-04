@@ -2293,6 +2293,8 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
     }
 }
 
+/// Upload CPU-dirty pages in the range. A range with no pending CPU or
+/// untracked bits is already synchronized.
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
     // A vertex, index, or storage buffer the guest has not written since its last upload
