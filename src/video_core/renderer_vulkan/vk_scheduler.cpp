@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_command_pool.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -160,7 +161,9 @@ void Scheduler::DispatchWork() {
             work_queue.push(std::move(chunk));
             wake = worker_waiting;
         }
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Dispatches, 1);
         if (wake) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::WorkerWakes, 1);
             event_cv.notify_all();
         }
         AcquireNewChunk();

@@ -455,7 +455,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
             Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
@@ -463,7 +463,7 @@ size_t GpuSplit::Execute(const u64* entry) {
             Nx2Profile::Add(Nx2Profile::Counter::BackSinkWrites, 1);
             engine->method_sink.emplace_back(method, argument);
         } else {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
             Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
             engine->ConsumeSink(*system);
             if ((head & HasSegment) != 0) {
@@ -471,6 +471,7 @@ size_t GpuSplit::Execute(const u64* entry) {
             }
             engine->CallMethod(*system, method, argument, (head & IsLast) != 0);
         }
+            Nx2Profile::CountMethod(method);
         return (head & HasSegment) != 0 ? 2 : 1;
     }
     case Kind::Multi: {
@@ -478,7 +479,8 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
         auto* const engine = back_engine;
-        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+        Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::CountMethod(method);
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -491,6 +493,7 @@ size_t GpuSplit::Execute(const u64* entry) {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
         Nx2Profile::Add(Nx2Profile::Counter::BackDeferredCalls, 1);
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
+        Nx2Profile::CountMethod(method, amount);
         return 2 + payload;
     }
     }

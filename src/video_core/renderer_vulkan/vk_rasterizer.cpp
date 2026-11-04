@@ -1611,6 +1611,8 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
     return buffer_cache.DMAClear(src_address, amount, value);
 }
 
+    VideoCommon::Nx2Profile::Scope submit_scope{VideoCommon::Nx2Profile::Zone::FlushSubmit};
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Submits, 1);
 bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.Nx2CollectListCopies(true);
