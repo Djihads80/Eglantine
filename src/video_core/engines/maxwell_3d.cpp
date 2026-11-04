@@ -319,12 +319,22 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const auto control = shadow_state.shadow_ram_control;
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
-    // CallMethod does.
+    // CallMethod does. A deferred instanced draw is issued before the first write that is not
+    // part of its loop (ProcessDirtyRegisters); without one when the sink is consumed, none can
+    // appear while it is (only draw methods make one), so the check is made once.
     const bool skip_same = SkipSameValueWrites();
+    const bool deferred_draw = draw_manager.HasDeferredDraw();
     const auto process = [&](u32 method, u32 value) {
-        if (!skip_same || regs.reg_array[method] != value) {
-            ProcessDirtyRegisters(method, value);
+        if (skip_same && regs.reg_array[method] == value) {
+            return;
         }
+        if (deferred_draw) [[unlikely]] {
+            ProcessDirtyRegisters(method, value);
+            return;
+        }
+        regs.reg_array[method] = value;
+        for (auto const& table : dirty.tables)
+            dirty.flags[table[method]] = true;
     };
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
