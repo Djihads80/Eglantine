@@ -1060,15 +1060,24 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     auto it{graphics_cache.find(graphics_key)};
     if (it == graphics_cache.end()) {
-        if (translating_graphics.contains(graphics_key)) {
-            // Its translation is still running on a worker thread.
-            return nullptr;
-        }
-        ReportNewPipelineKey(graphics_key);
-        if (!BuildNewGraphicsPipeline()) {
-            return nullptr;
+        if (const auto translating = translating_graphics.find(graphics_key);
+            translating != translating_graphics.end()) {
+            // Its translation is still running on a worker thread: a Switch 2 draw waits for
+            // it (BuiltPipeline keeps those draws too), others are skipped meanwhile.
+            const std::shared_future<void> done = translating->second;
+            if (!WaitForGraphicsTranslation(done)) {
+                return nullptr;
+            }
+        } else {
+            ReportNewPipelineKey(graphics_key);
+            if (!BuildNewGraphicsPipeline()) {
+                return nullptr;
+            }
         }
         it = graphics_cache.find(graphics_key);
+        if (it == graphics_cache.end()) {
+            return nullptr;
+        }
     }
     auto& pipeline{it->second};
     if (!pipeline) {
@@ -1181,7 +1190,7 @@ bool PipelineCache::CanSkipDraw() const noexcept {
 
 bool PipelineCache::BuildNewGraphicsPipeline() {
     if (CanTranslateAsynchronously()) {
-        if (std::optional<std::future<void>> done{QueueGraphicsTranslation()}) {
+        if (std::optional<std::shared_future<void>> done{QueueGraphicsTranslation()}) {
             return WaitForGraphicsTranslation(*done);
         }
     }
@@ -1522,7 +1531,7 @@ bool PipelineCache::CanTranslateAsynchronously() const {
     return true;
 }
 
-std::optional<std::future<void>> PipelineCache::QueueGraphicsTranslation() {
+std::optional<std::shared_future<void>> PipelineCache::QueueGraphicsTranslation() {
     const auto begin = std::chrono::steady_clock::now();
     GraphicsEnvironments environments;
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
@@ -1540,8 +1549,8 @@ std::optional<std::future<void>> PipelineCache::QueueGraphicsTranslation() {
     }
 
     std::promise<void> done;
-    std::future<void> result{done.get_future()};
-    translating_graphics.insert(graphics_key);
+    std::shared_future<void> result{done.get_future().share()};
+    translating_graphics.emplace(graphics_key, result);
     translation_workers.QueueWork([this, key = graphics_key, envs = std::move(environments.envs),
                                    done = std::move(done)]() mutable {
         TranslateGraphicsPipeline(key, std::move(envs), std::move(done));
@@ -1550,15 +1559,23 @@ std::optional<std::future<void>> PipelineCache::QueueGraphicsTranslation() {
     return result;
 }
 
-bool PipelineCache::WaitForGraphicsTranslation(std::future<void>& done) {
-    // Waiting only helps when the job starts right away: behind a backlog it would spend the
-    // whole budget without getting the pipeline.
-    if (translation_wait_budget.count() == 0 ||
-        translating_graphics.size() > num_translation_threads) {
+bool PipelineCache::WaitForGraphicsTranslation(std::shared_future<void> done) {
+    // A Switch 2 program's draw is never skipped (BuiltPipeline: Mario Kart World raced in
+    // another scene's lighting after skipped draws): it waits for the translation, which still
+    // runs on a worker alongside the others. Otherwise waiting only helps when the job starts
+    // right away: behind a backlog it would spend the whole budget without getting the pipeline.
+    const bool must_wait = Settings::CurrentProgramIsSwitch2();
+    if (!must_wait && (translation_wait_budget.count() == 0 ||
+                       translating_graphics.size() > num_translation_threads)) {
         return false;
     }
     const auto begin = std::chrono::steady_clock::now();
-    const bool in_time = done.wait_for(translation_wait_budget) == std::future_status::ready;
+    bool in_time = true;
+    if (must_wait) {
+        done.wait();
+    } else {
+        in_time = done.wait_for(translation_wait_budget) == std::future_status::ready;
+    }
     GetTranslationReport().Waited(std::chrono::steady_clock::now() - begin, in_time);
     if (!in_time) {
         return false;
