@@ -564,6 +564,7 @@ class SettingsFragmentPresenter(
             add(BooleanSetting.RENDERER_NX2_COMMAND_LISTS.key)
             add(BooleanSetting.RENDERER_MKW_30FPS.key)
             add(BooleanSetting.RENDERER_MKW_60FPS.key)
+            add(BooleanSetting.RENDERER_MKW_REDUCE_DETAIL.key)
             add(IntSetting.ANDROID_PIPELINE_WORKERS.key)
             add(BooleanSetting.RENDERER_ASYNCHRONOUS_GPU_EMULATION.key)
             add(SettingsItem.GPU_UNSWIZZLE_COMBINED)

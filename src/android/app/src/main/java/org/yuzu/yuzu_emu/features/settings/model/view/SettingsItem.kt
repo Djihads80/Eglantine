@@ -821,6 +821,13 @@ abstract class SettingsItem(
                 )
             )
             put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_REDUCE_DETAIL,
+                    titleId = R.string.renderer_mkw_reduce_detail,
+                    descriptionId = R.string.renderer_mkw_reduce_detail_description
+                )
+            )
+            put(
                 SingleChoiceSetting(
                     IntSetting.FAST_GPU_TIME,
                     titleId = R.string.fast_gpu_time,

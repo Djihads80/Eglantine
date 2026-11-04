@@ -296,6 +296,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain "
               "normal game speed. Takes effect after restarting the game; the 30 and 60 FPS modes "
               "take precedence."));
+    INSERT(Settings, mkw_reduce_detail, tr("Mario Kart World: reduced detail (performance)"),
+           tr("Fewer shadow cascades and shorter LOD distances to cut draw calls. Takes effect "
+              "after restarting the game."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),

@@ -633,6 +633,9 @@ struct Values {
     SwitchableSetting<bool> mkw_60fps{linkage, false, "mkw_60fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
+    // Mario Kart World: fewer shadow cascades and shorter LOD distances (loader/nso.cpp).
+    SwitchableSetting<bool> mkw_reduce_detail{linkage, false, "mkw_reduce_detail",
+                                              Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__

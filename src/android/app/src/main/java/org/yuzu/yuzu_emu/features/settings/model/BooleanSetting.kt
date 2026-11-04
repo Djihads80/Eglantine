@@ -32,6 +32,7 @@ enum class BooleanSetting(override val key: String) : AbstractBooleanSetting {
     RENDERER_NX2_COMMAND_LISTS("nx2_command_lists"),
     RENDERER_MKW_30FPS("mkw_30fps"),
     RENDERER_MKW_60FPS("mkw_60fps"),
+    RENDERER_MKW_REDUCE_DETAIL("mkw_reduce_detail"),
     RENDERER_REACTIVE_FLUSHING("use_reactive_flushing"),
     ENABLE_BUFFER_HISTORY("enable_buffer_history"),
     USE_OPTIMIZED_VERTEX_BUFFERS("use_optimized_vertex_buffers"),
