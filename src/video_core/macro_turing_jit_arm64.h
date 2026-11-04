@@ -41,6 +41,26 @@ public:
     using Word = std::uint32_t;
     using Result = TuringMacroInterpreter::Result;
 
+    /// Same-value elision (Maxwell3D::FrontRunMacro): an emit of a method whose `must_call`
+    /// byte is 0 (a state register without side effects) is skipped inside the compiled code
+    /// when `regs[method]` already holds the value and, with the shadow RAM tracking
+    /// (`*control` 0 or 1), `shadow[method]` does too; mode 3 (replay) never elides. Exactly
+    /// the writes Maxwell3D::FrontWrite would return from without sending; `skipped` counts
+    /// them. Set per call with SetElision; the checked calls (ExecuteChecked) never elide, so
+    /// the comparison with the interpreter sees every emit.
+    struct Elision {
+        const std::uint8_t* must_call;
+        const Word* regs;
+        const Word* shadow;
+        const Word* control;
+        Word skipped;
+    };
+    static constexpr Word MustCallMethods = 0x1000; ///< Entries in Elision::must_call
+
+    void SetElision(Elision* elision_) {
+        elision = elision_;
+    }
+
     struct State {
         std::array<Word, 24> regs;
         Word carry;
@@ -67,6 +87,7 @@ public:
         bool (*emit)(State*, Word method, Word value);
         Word (*read)(State*, Word address);
         const std::vector<Word>* fifo;
+        const Elision* elision; ///< Null: every emit calls back
     };
 
     enum Error : Word {
@@ -151,7 +172,7 @@ public:
             --left;
             return ExecuteChecked(start, parameters, data_ram, read, emit);
         }
-        return Run(start, parameters, data_ram, read, emit);
+        return Run(start, parameters, data_ram, read, emit, elision);
     }
 
     /// The code for `code` without its jump table (see Relocate), for tests.
@@ -199,8 +220,9 @@ private:
 
     template <typename Read, typename Emit>
     Result Run(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read& read,
-               Emit& emit) {
+               Emit& emit, const Elision* elide) {
         State state;
+        state.elision = elide;
         state.regs.fill(0);
         state.carry = state.method = state.increment = 0;
         state.loop_count = state.loop_start = state.loop_end = 0;
@@ -557,11 +579,40 @@ private:
                 if (d.out_emit[lane]) {
                     Output(W2, d, d.out_emit[lane]);
                     LDR(W1, st, offsetof(State, method));
+                    // Same-value elision (State::elision): skip the callback for a state write
+                    // that changes nothing. W1 (x1, zero-extended) is the method, < 0x1000.
+                    Label call_emit, elided, after_emit;
+                    LDR(X16, st, offsetof(State, elision));
+                    CBZ(X16, call_emit);
+                    LDR(X0, X16, offsetof(Elision, must_call));
+                    LDRB(W17, X0, X1);
+                    CBNZ(W17, call_emit);
+                    LDR(X0, X16, offsetof(Elision, regs));
+                    LDR(W17, X0, X1, oaknut::IndexExt::LSL, 2);
+                    CMP(W17, W2);
+                    B(Cond::NE, call_emit);
+                    LDR(X0, X16, offsetof(Elision, control));
+                    LDR(W17, X0, 0);
+                    CMP(W17, 3); // Replay: the value written comes from the shadow RAM
+                    B(Cond::EQ, call_emit);
+                    CMP(W17, 2); // Passthrough: the shadow RAM is not involved
+                    B(Cond::EQ, elided);
+                    LDR(X0, X16, offsetof(Elision, shadow));
+                    LDR(W17, X0, X1, oaknut::IndexExt::LSL, 2);
+                    CMP(W17, W2);
+                    B(Cond::NE, call_emit);
+                    l(elided);
+                    LDR(W17, X16, offsetof(Elision, skipped));
+                    ADD(W17, W17, 1);
+                    STR(W17, X16, offsetof(Elision, skipped));
+                    B(after_emit);
+                    l(call_emit);
                     MOV(X0, st);
                     LDR(X16, st, offsetof(State, emit));
                     BLR(X16);
                     TST(W0, 0xff);
                     B(Cond::EQ, Far(fail_emit));
+                    l(after_emit);
                     LDR(W0, st, offsetof(State, increment));
                     LDR(W1, st, offsetof(State, method));
                     ADD(W1, W1, W0);
@@ -887,7 +938,7 @@ private:
     Result ExecuteChecked(Word start, std::vector<Word>& parameters, std::span<Word> data_ram,
                           Read& read, Emit& emit) {
         if (data_ram.size() != std::tuple_size_v<TuringMacroInterpreter::DataRam>) {
-            return Run(start, parameters, data_ram, read, emit);
+            return Run(start, parameters, data_ram, read, emit, nullptr);
         }
         if (!check) {
             check = std::make_unique<Check>();
@@ -926,7 +977,8 @@ private:
             c.emits.push_back({method, value, ok, c.words.size(), c.changes.size()});
             return ok;
         };
-        const Result result = Run(start, parameters, data_ram, recording_read, recording_emit);
+        const Result result =
+            Run(start, parameters, data_ram, recording_read, recording_emit, nullptr);
         if (c.comparable) {
             Compare(start, result, data_ram);
         }
@@ -1065,6 +1117,7 @@ private:
 
     std::unique_ptr<Program> program;
     std::uint64_t compiled_generation{~std::uint64_t{0}};
+    Elision* elision{};
     bool diverged{};
     // The compiled code (the interpreter's input when checking) and the checks left per entry
     // (the last one counts entries outside the code).
