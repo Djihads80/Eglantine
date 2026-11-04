@@ -230,6 +230,34 @@ TEST_CASE("Network::PrivateServerMalformedSettings", "[core][network]") {
     }
 }
 
+TEST_CASE("Network::PrivateServerGatewayPort", "[core][network]") {
+    Network::NetworkInstance network_instance;
+    Network::Socket listener;
+    REQUIRE(listener.Initialize(Network::Domain::INET, Network::Type::STREAM,
+                                Network::Protocol::TCP) == Network::Errno::SUCCESS);
+    REQUIRE(listener.Bind({Network::Domain::INET, {127, 0, 0, 1}, 0}) ==
+            Network::Errno::SUCCESS);
+    REQUIRE(listener.Listen(1) == Network::Errno::SUCCESS);
+    const auto [address, error] = listener.GetSockName();
+    REQUIRE(error == Network::Errno::SUCCESS);
+
+    const ScopedPrivateServer settings{{true, Domains, Gateway, Relay}};
+    const auto old_port = Settings::values.private_server_gateway_port.GetValue();
+    Settings::values.private_server_gateway_port.SetValue(address.portno);
+    Network::Socket client;
+    const auto initialized = client.Initialize(Network::Domain::INET, Network::Type::STREAM,
+                                               Network::Protocol::TCP);
+    const auto connected = initialized == Network::Errno::SUCCESS
+                               ? client.Connect({Network::Domain::INET, {127, 0, 0, 1}, 443})
+                               : initialized;
+    Settings::values.private_server_gateway_port.SetValue(old_port);
+    REQUIRE(initialized == Network::Errno::SUCCESS);
+    REQUIRE(connected == Network::Errno::SUCCESS);
+    const auto [peer, peer_error] = client.GetPeerName();
+    CHECK(peer_error == Network::Errno::SUCCESS);
+    CHECK(peer.portno == address.portno);
+}
+
 TEST_CASE("Network::PrivateServerSocketEgress", "[core][sockets]") {
     Network::NetworkInstance network_instance;
     const Network::SockAddrIn blocked{Network::Domain::INET, {192, 0, 2, 1}, 443};

@@ -1178,6 +1178,10 @@ Errno Socket::Connect(SockAddrIn addr_in) {
         }
         return *error;
     }
+    if (routing.route == PrivateServerRoute::Routed && addr_in.ip == routing.gateway &&
+        addr_in.portno == 443) {
+        addr_in.portno = Settings::values.private_server_gateway_port.GetValue();
+    }
 
     const sockaddr host_addr_in = TranslateFromSockAddrIn(addr_in);
     if (connect(fd, &host_addr_in, sizeof(host_addr_in)) != SOCKET_ERROR) {

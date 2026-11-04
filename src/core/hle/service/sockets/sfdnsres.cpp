@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/settings.h"
 #include "common/string_util.h"
 #include "common/swap.h"
 #include "core/core.h"
@@ -115,8 +116,19 @@ static std::variant<std::vector<Network::AddrInfo>, Network::GetAddrInfoError> R
     case Network::PrivateServerRoute::Routed:
         LOG_INFO(Network, "Resolving hostname {} to the private-server gateway", host);
         return Network::GetAddressInfo(Network::IPv4AddressToString(routing.gateway), service);
+    case Network::PrivateServerRoute::Unrouted: {
+        // These settings were validated above as numeric IPv4 addresses, so resolving them
+        // cannot send a hostname to DNS. The socket policy still enforces destination ports.
+        const std::string& gateway = Settings::values.private_server_gateway.GetValue();
+        const std::string& relay = Settings::values.private_server_relay.GetValue();
+        const std::string_view relay_address = std::string_view{relay}.substr(0, relay.find(':'));
+        if (host == gateway || (!relay.empty() && host == relay_address)) {
+            return Network::GetAddressInfo(host, service);
+        }
+        LOG_WARNING(Network, "Resolution of hostname {} blocked in private-server mode", host);
+        return Network::GetAddrInfoError::AGAIN;
+    }
     case Network::PrivateServerRoute::Disabled:
-    case Network::PrivateServerRoute::Unrouted:
         break;
     }
 

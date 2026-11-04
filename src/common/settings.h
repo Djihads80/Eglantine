@@ -942,6 +942,8 @@ struct Values {
     Setting<bool> private_server_enabled{linkage, false, "private_server_enabled", Category::Network};
     Setting<std::string> private_server_domains{linkage, "", "private_server_domains", Category::Network};
     Setting<std::string> private_server_gateway{linkage, "", "private_server_gateway", Category::Network};
+    Setting<u16> private_server_gateway_port{linkage, 443, "private_server_gateway_port",
+                                             Category::Network};
     Setting<std::string> private_server_ca{linkage, "", "private_server_ca", Category::Network};
     Setting<std::string> private_server_relay{linkage, "", "private_server_relay", Category::Network};
 

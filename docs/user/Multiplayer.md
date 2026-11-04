@@ -19,8 +19,12 @@ domains and `private_server_gateway` to a loopback IPv4 address; those domains a
 resolve to that gateway. Set `private_server_ca` to the path of a single DER certificate, and
 `private_server_relay` to the server's IPv4 address and allowed ports, for example
 `203.0.113.10:3478,49160-49200`. Set a corresponding `\default=false` entry for each value.
-An empty relay permits no external relay. Invalid network settings block guest DNS and outgoing
-connections instead of falling back to unrestricted networking.
+An empty relay permits no external relay. In private-server mode, names outside the configured
+domains are not sent to the host DNS resolver; the configured numeric gateway and relay addresses
+remain usable. Invalid network settings block guest DNS and outgoing connections instead of falling
+back to unrestricted networking.
+Connections to the gateway on guest port 443 use `private_server_gateway_port` on the host
+(default 443), allowing a local gateway to listen on an unprivileged port.
 
 This mode supplies an unsigned, emulator-generated identity, not a Nintendo credential. The server
 must authenticate players separately. The configured CA is trusted by guest TLS for every hostname;
