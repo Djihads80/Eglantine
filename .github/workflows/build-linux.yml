@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup build
-        uses: ./.github/actions/setup-build
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
         with:
           platform: ${{ env.PLATFORM }}
           sha: ${{ inputs.sha }}

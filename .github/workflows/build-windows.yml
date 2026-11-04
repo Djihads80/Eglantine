@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup build
-        uses: ./.github/actions/setup-build
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
         with:
           platform: windows-x86_64
           sha: ${{ inputs.sha }}
@@ -146,7 +146,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup build
-        uses: ./.github/actions/setup-build
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
         with:
           platform: windows-x86_64-pgo
           sha: ${{ inputs.sha }}

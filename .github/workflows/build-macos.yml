@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup build
-        uses: ./.github/actions/setup-build
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
         with:
           platform: macos-arm64
           sha: ${{ inputs.sha }}
@@ -106,6 +106,9 @@ jobs:
           app=build/release/bin/eglantine.app
           test -x "$app/Contents/MacOS/eglantine"
           test -x build/release/bin/eden-cli
+          for binary in "$app/Contents/MacOS/eglantine" build/release/bin/eden-cli; do
+            test "$(lipo -archs "$binary")" = arm64
+          done
           cp build/release/bin/eden-cli "$app/Contents/MacOS/eden-cli"
           "$(brew --prefix qt@6)/bin/macdeployqt" "$app" \
             -executable="$app/Contents/MacOS/eden-cli" -libpath="$(brew --prefix)/lib" \
