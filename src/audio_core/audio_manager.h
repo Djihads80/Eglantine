@@ -11,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "common/polyfill_thread.h"
 
@@ -45,7 +46,8 @@ public:
     void Shutdown();
 
     /**
-     * Register the out manager, keeping a function to be called when the out event is signalled.
+     * Register an out manager, keeping a function to be called when the out event is signalled.
+     * Every registered out manager is called.
      *
      * @param owner       - The registering manager, kept to tell its registration apart.
      * @param buffer_func - Function to be called on signal.
@@ -88,9 +90,10 @@ private:
         const void* owner{};
         BufferEventFunc func{};
     };
-    /// Callbacks for each manager. Read by the manager thread with the event lock held, so they
-    /// are only written with that lock held too.
-    std::array<Registration, 3> buffer_events{};
+    /// Callbacks for each manager type, one per registered manager (several output managers can
+    /// exist at once). Read by the manager thread with the event lock held, so they are only
+    /// written with that lock held too.
+    std::array<std::vector<Registration>, 3> buffer_events{};
     /// General lock
     std::mutex lock{};
     /// Main thread for waiting and callbacks
