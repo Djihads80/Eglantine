@@ -280,7 +280,10 @@ void DumpFailedPipeline(const GraphicsPipelineCacheKey& key,
             continue;
         }
         const u64 hash = key.unique_hashes[stage + 1];
-        const auto path = dir / fmt::format("{:016x}_{}.spv", hash, stage_names[stage]);
+        // The pipeline's hash first: pipelines sharing a stage's program (Vertex B with another
+        // Vertex A) would otherwise overwrite each other's dump.
+        const auto path =
+            dir / fmt::format("{:016x}_{:016x}_{}.spv", key.Hash(), hash, stage_names[stage]);
         Common::FS::IOFile file{path, Common::FS::FileAccessMode::Write,
                                 Common::FS::FileType::BinaryFile};
         if (file.IsOpen()) {
