@@ -2776,10 +2776,10 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
                               HostImageBytes(runtime_.device, host_info, 0) <=
                                   SparseLayersCap(runtime_.device);
         const bool layered_sparse = UsesSparseLayers(runtime_.device, info, gpu_addr_);
+        const bool unwritten = IsUnwrittenSparse(runtime_.device, info, gpu_addr_);
         if (layered_sparse && InitSparseLayers()) {
             flags |= VideoCommon::ImageFlagBits::SparseLayers;
-        } else if (layered_sparse && !backable &&
-                   !IsUnwrittenSparse(runtime_.device, info, gpu_addr_)) {
+        } else if (layered_sparse && !backable && !unwritten) {
             // The driver's sparse block can't be bound by: back it as before SparseLayers (on a
             // phone, the `backable` path below does, past the size other images are capped at).
             original_image = MakeImage(
@@ -2794,10 +2794,11 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             }
         } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
             flags |= VideoCommon::ImageFlagBits::SparseTiles;
-        } else if (texels <= (u64{1} << 28) ||
-                   (backable && IsUnwrittenSparse(runtime_.device, info, gpu_addr_))) {
+        } else if ((texels <= (u64{1} << 28) && (!layered_sparse || unwritten)) ||
+                   (backable && unwritten)) {
             // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
-            // was written there yet, so the first write gets it replaced.
+            // was written there yet, so the first write gets it replaced. A layered-sparse image
+            // already written (its sparse layers could not be set up) is backed below instead.
             flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
         } else if (backable) {
             vk::Image backed = MakeImage(
