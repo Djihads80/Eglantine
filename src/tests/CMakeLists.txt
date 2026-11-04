@@ -11,6 +11,7 @@ add_executable(tests
     common/fibers.cpp
     common/game_presets.cpp
     common/host_memory.cpp
+    common/page_table.cpp
     common/param_package.cpp
     common/range_map.cpp
     common/ring_buffer.cpp
@@ -26,8 +27,14 @@ add_executable(tests
     core/priority_queue.cpp
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
+    video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
+    video_core/ampere_lowering.cpp
+    video_core/ampere_geometry.cpp
+    video_core/ampere_i2f.cpp
     video_core/ampere_returns.cpp
+    video_core/ampere_guarded_ulea.cpp
+    video_core/ampere_compute_lowering.cpp
     video_core/native_macro_fifo.cpp
     video_core/uniform_stream_reuse.cpp
     video_core/shader_invalidation.cpp

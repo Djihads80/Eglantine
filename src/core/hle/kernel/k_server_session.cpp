@@ -7,6 +7,10 @@
 #include <tuple>
 #include <utility>
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -1083,7 +1087,24 @@ KServerSession::~KServerSession() = default;
 void KServerSession::Destroy(KernelCore& kernel) {
     m_parent->OnServerClosed(kernel);
     this->CleanupRequests(kernel);
+    this->SetClientClosedEvent(kernel, nullptr);
     m_parent->Close(kernel);
+}
+
+void KServerSession::SetClientClosedEvent(KernelCore& kernel, KEvent* event) {
+    if (event != nullptr) {
+        event->Open(kernel);
+    }
+
+    KEvent* previous;
+    {
+        KScopedLightLock lk{m_lock};
+        previous = std::exchange(m_client_closed_event, event);
+    }
+
+    if (previous != nullptr) {
+        previous->Close(kernel);
+    }
 }
 
 Result KServerSession::ReceiveRequest(KernelCore& kernel, uintptr_t server_message, uintptr_t server_buffer_size,
@@ -1215,6 +1236,40 @@ Result KServerSession::ReceiveRequest(KernelCore& kernel, uintptr_t server_messa
     R_RETURN(result);
 }
 
+namespace {
+// On hardware a synchronous request to a service takes microseconds to answer, and while the
+// client waits its core runs the next ready thread. HLE services answer almost at once, so that
+// thread gets preempted before it executes anything. Mario Tennis Fever relies on the hardware
+// behaviour: its main thread (priority 44, core 0) starts a priority-47 core 0 worker whose
+// arguments live in the caller's stack frame, and the worker has to read them during one of the
+// main thread's next IPC waits, before that frame is reused (otherwise it reads zeros and crashes).
+// When another guest thread got the client's core, give it up to this long before the reply
+// wakes the client. EDEN_NX2_IPC_MIN_US=<n> changes it; 0 turns it off.
+void HoldHleReply(KernelCore& kernel, KThread* client_thread) {
+    static const auto hold = std::chrono::microseconds{[] {
+        const char* text = std::getenv("EDEN_NX2_IPC_MIN_US");
+        return text ? std::strtoll(text, nullptr, 10) : 50LL;
+    }()};
+    if (hold.count() <= 0) {
+        return;
+    }
+    const s32 core = client_thread->GetActiveCore();
+    if (core < 0 || core >= static_cast<s32>(Core::Hardware::NUM_CPU_CORES)) {
+        return;
+    }
+    const auto& scheduler = kernel.Scheduler(core);
+    const auto deadline = std::chrono::steady_clock::now() + hold;
+    while (std::chrono::steady_clock::now() < deadline) {
+        // Stop as soon as the core has nothing else to run.
+        const KThread* running = scheduler.GetSchedulerCurrentThread();
+        if (running == client_thread || running == scheduler.GetIdleThread()) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+}
+} // namespace
+
 Result KServerSession::SendReply(KernelCore& kernel, uintptr_t server_message, uintptr_t server_buffer_size,
                                  KPhysicalAddress server_message_paddr, bool is_hle, bool session_closed) {
     // Lock the session.
@@ -1309,6 +1364,10 @@ Result KServerSession::SendReply(KernelCore& kernel, uintptr_t server_message, u
             // Signal the event.
             event->Signal(kernel);
         } else {
+            if (is_hle) {
+                HoldHleReply(kernel, client_thread);
+            }
+
             // End the client thread's wait.
             KScopedSchedulerLock sl{kernel};
 
@@ -1534,6 +1593,11 @@ void KServerSession::OnClientClosed(KernelCore& kernel) {
 
     // Notify.
     this->NotifyAvailable(kernel, ResultSessionClosed);
+
+    // Tell an HLE server, which does not wait on the session while it holds a request deferred.
+    if (m_client_closed_event != nullptr) {
+        m_client_closed_event->Signal(kernel);
+    }
 }
 
 } // namespace Kernel

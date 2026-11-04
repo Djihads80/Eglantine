@@ -604,9 +604,9 @@ struct TranslatorVisitor final {
     bool FMINP_pair_2(bool sz, Vec Vn, Vec Vd);
 
     // Data Processing - FP and SIMD - SIMD Scalar three different
-    bool SQDMLAL_vec_1(Imm<2> size, Reg Rm, Reg Rn, Vec Vd);
-    bool SQDMLSL_vec_1(Imm<2> size, Reg Rm, Reg Rn, Vec Vd);
-    bool SQDMULL_vec_1(Imm<2> size, Reg Rm, Reg Rn, Vec Vd);
+    bool SQDMLAL_vec_1(Imm<2> size, Vec Vm, Vec Vn, Vec Vd);
+    bool SQDMLSL_vec_1(Imm<2> size, Vec Vm, Vec Vn, Vec Vd);
+    bool SQDMULL_vec_1(Imm<2> size, Vec Vm, Vec Vn, Vec Vd);
 
     // Data Processing - FP and SIMD - SIMD Scalar three same
     bool SQADD_1(Imm<2> size, Vec Vm, Vec Vn, Vec Vd);

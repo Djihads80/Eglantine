@@ -41,6 +41,12 @@ void Manager::ReleaseSessionId(const size_t session_id) {
     applet_resource_user_ids[session_id] = 0;
 }
 
+Manager::~Manager() {
+    if (linked_to_manager) {
+        system.AudioCore().GetAudioManager().ClearManager(Event::Type::AudioInManager);
+    }
+}
+
 Result Manager::LinkToManager() {
     std::scoped_lock l{mutex};
     if (!linked_to_manager) {

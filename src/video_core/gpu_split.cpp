@@ -217,11 +217,11 @@ void GpuSplit::Drain() {
     }
 }
 
-void GpuSplit::WaitForWriters() {
+bool GpuSplit::WaitForWriters() {
     const u64 target = std::min(last_writer_position, write_position);
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
-        return;
+        return false;
     }
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
@@ -229,7 +229,7 @@ void GpuSplit::WaitForWriters() {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
             wait_target.store(~u64{0}, std::memory_order_relaxed);
-            return;
+            return true;
         }
         if (spins < 16384) {
             Pause();
