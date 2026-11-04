@@ -161,10 +161,10 @@ private:
     /// Queues the translation of graphics_key's pipeline on a worker thread. Returns a future
     /// that becomes ready when the result is waiting to be adopted, or nothing when the
     /// environments could not be detached from the engine.
-    std::optional<std::future<void>> QueueGraphicsTranslation();
+    std::optional<std::shared_future<void>> QueueGraphicsTranslation();
 
     /// Waits up to the wait budget for a queued translation. True if it was adopted in time.
-    bool WaitForGraphicsTranslation(std::future<void>& done);
+    bool WaitForGraphicsTranslation(std::shared_future<void> done);
 
     /// Runs on a translation worker thread.
     void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
@@ -254,7 +254,8 @@ private:
     DynamicFeatures dynamic_features;
 
     /// Keys whose pipeline is being translated on a worker (GPU thread only).
-    ::Common::unordered_set<GraphicsPipelineCacheKey> translating_graphics;
+    /// Keys whose translation runs on a worker, with what to wait on for them.
+    ::Common::unordered_map<GraphicsPipelineCacheKey, std::shared_future<void>> translating_graphics;
     /// Finished translations, handed from the workers to the GPU thread.
     std::mutex translated_mutex;
     std::vector<TranslatedGraphicsPipeline> translated_graphics;
