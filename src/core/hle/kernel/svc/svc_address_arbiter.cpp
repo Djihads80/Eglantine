@@ -32,6 +32,7 @@ constexpr bool IsValidArbitrationType(Svc::ArbitrationType type) {
     case Svc::ArbitrationType::WaitIfLessThan:
     case Svc::ArbitrationType::DecrementAndWaitIfLessThan:
     case Svc::ArbitrationType::WaitIfEqual:
+    case Svc::ArbitrationType::WaitIfEqual64:
         return true;
     default:
         return false;
@@ -41,14 +42,15 @@ constexpr bool IsValidArbitrationType(Svc::ArbitrationType type) {
 } // namespace
 
 // Wait for an address (via Address Arbiter)
-Result WaitForAddress(Core::System& system, u64 address, ArbitrationType arb_type, s32 value,
+Result WaitForAddress(Core::System& system, u64 address, ArbitrationType arb_type, s64 value,
                       s64 timeout_ns) {
     LOG_TRACE(Kernel_SVC, "called, address={:#x}, arb_type={:#x}, value={:#x}, timeout_ns={}",
               address, arb_type, value, timeout_ns);
 
     // Validate input.
     R_UNLESS(!IsKernelAddress(address), ResultInvalidCurrentMemory);
-    R_UNLESS(Common::IsAligned(address, sizeof(s32)), ResultInvalidAddress);
+    const size_t alignment = arb_type == ArbitrationType::WaitIfEqual64 ? sizeof(s64) : sizeof(s32);
+    R_UNLESS(Common::IsAligned(address, alignment), ResultInvalidAddress);
     R_UNLESS(IsValidArbitrationType(arb_type), ResultInvalidEnumValue);
 
     // Convert timeout from nanoseconds to ticks.
@@ -86,7 +88,7 @@ Result SignalToAddress(Core::System& system, u64 address, SignalType signal_type
                  .SignalAddressArbiter(address, signal_type, value, count));
 }
 
-Result WaitForAddress64(Core::System& system, u64 address, ArbitrationType arb_type, s32 value,
+Result WaitForAddress64(Core::System& system, u64 address, ArbitrationType arb_type, s64 value,
                         s64 timeout_ns) {
     R_RETURN(WaitForAddress(system, address, arb_type, value, timeout_ns));
 }
