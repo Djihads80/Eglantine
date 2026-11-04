@@ -436,6 +436,11 @@ FN_MAX_LIMIT_LIST
         return is_optimal_astc_supported;
     }
 
+    /// Returns true if geometry shaders are supported.
+    bool IsGeometryShaderSupported() const {
+        return features.features.geometryShader;
+    }
+
     /// Returns true if BCn is natively supported.
     bool IsOptimalBcnSupported() const {
         return features.features.textureCompressionBC;

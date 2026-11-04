@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <mutex>
 
 #include "audio_core/renderer/audio_device.h"
@@ -19,9 +20,11 @@ constexpr size_t MaxOutSessions = 12;
 /**
  * Manages all audio out sessions.
  */
-class Manager {
+/// Shared with every open session, so a session closed after the service still finds it.
+class Manager : public std::enable_shared_from_this<Manager> {
 public:
     explicit Manager(Core::System& system);
+    ~Manager();
 
     /**
      * Acquire a free session id for opening a new audio out.

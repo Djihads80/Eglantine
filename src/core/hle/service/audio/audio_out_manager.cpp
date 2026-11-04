@@ -15,7 +15,7 @@ using namespace AudioCore::AudioOut;
 
 IAudioOutManager::IAudioOutManager(Core::System& system_)
     : ServiceFramework{system_, "audout:u"}
-    , impl(system_)
+    , impl(std::make_shared<AudioCore::AudioOut::Manager>(system_))
 {
     // clang-format off
     static const FunctionInfo functions[] = {
