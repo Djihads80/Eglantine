@@ -47,24 +47,28 @@ public:
     /**
      * Register the out manager, keeping a function to be called when the out event is signalled.
      *
+     * @param owner       - The registering manager, kept to tell its registration apart.
      * @param buffer_func - Function to be called on signal.
      * @return Result code.
      */
-    Result SetOutManager(BufferEventFunc buffer_func);
+    Result SetOutManager(const void* owner, BufferEventFunc buffer_func);
 
     /**
      * Register the in manager, keeping a function to be called when the in event is signalled.
      *
+     * @param owner       - The registering manager, kept to tell its registration apart.
      * @param buffer_func - Function to be called on signal.
      * @return Result code.
      */
-    Result SetInManager(BufferEventFunc buffer_func);
+    Result SetInManager(const void* owner, BufferEventFunc buffer_func);
 
     /**
      * Unregister a manager before it is destroyed. Waits for any callback to it in progress, so the
      * thread never calls into a destroyed manager (services shut down before the audio core).
+     * Only removes the registration made by `owner`: another manager of the same type that holds
+     * the slot keeps its callback.
      */
-    void ClearManager(Event::Type type);
+    void ClearManager(Event::Type type, const void* owner);
 
     /**
      * Set an event to signalled, and signal the thread.
@@ -79,8 +83,14 @@ private:
     bool needs_update{};
     /// Events to be set and signalled
     Event events{};
-    /// Callbacks for each manager
-    std::array<BufferEventFunc, 3> buffer_events{};
+    /// A manager's callback and the manager that registered it
+    struct Registration {
+        const void* owner{};
+        BufferEventFunc func{};
+    };
+    /// Callbacks for each manager. Read by the manager thread with the event lock held, so they
+    /// are only written with that lock held too.
+    std::array<Registration, 3> buffer_events{};
     /// General lock
     std::mutex lock{};
     /// Main thread for waiting and callbacks
