@@ -2408,12 +2408,24 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                         const auto& def = code[--cursor];
                         if (def.Bits(12, 4) == 15) continue;
                         const u32 op = def.Bits(0, 12), target = def.Bits(16, 8);
-                        if (op == 0x947 || op == 0x94d || op == 0x950 || op == 0x944 ||
-                            op == 0x943) {
+                        if (op == 0x94d || op == 0x950 || op == 0x944 || op == 0x943) {
                             break;
                         }
-                        if (op == 0x945 || op == 0x918 || op == 0x91a ||
+                        if (op == 0x947 || op == 0x945 || op == 0x918 || op == 0x91a ||
                             (op & 0x1ff) == 0x00c || (op & 0x1ff) == 0x00b) {
+                            continue;
+                        }
+                        if (op == 0xb63) {
+                            const u32 count = static_cast<u32>(std::popcount(def.Bits(72, 4)));
+                            const u32 high = def.Bits(64, 8);
+                            const bool packed = def.Bits(79, 1) != 0;
+                            const u32 first_count = packed ? (high == 255 ? (count + 1) / 2 : 1U)
+                                                           : (high == 255 ? count : (std::min)(count, 2U));
+                            const u32 second_count = packed ? (count > 2 ? 1U : 0U)
+                                                            : (count > 2 ? count - 2 : 0U);
+                            if ((target != 255 && reg >= target && reg < target + first_count) ||
+                                (high != 255 && reg >= high && reg < high + second_count))
+                                return fail(index, "native per-tap gather offset clobber");
                             continue;
                         }
                         const u32 count = (op == 0x225 || op == 0x625 || op == 0x825 || op == 0x805) ? 2U : 1U;

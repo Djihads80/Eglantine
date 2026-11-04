@@ -1013,7 +1013,11 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         const u64 from_width = from->Width(), from_height = from->Height();
         const u64 to_width = to->Width(), to_height = to->Height();
         const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;
-        return from_width >= 64 && to_width > from_width && to_width <= from_width * 4 &&
+        const bool rgb9e5_to_b10g11r11 = !same_format &&
+                                         from->format == Texture::TextureFormat::E5B9G9R9 &&
+                                         to->format == Texture::TextureFormat::B10G11R11;
+        const bool valid_scale = rgb9e5_to_b10g11r11 ? (to_width >= from_width) : (to_width > from_width);
+        return from_width >= 64 && valid_scale && to_width <= from_width * 4 &&
                (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);

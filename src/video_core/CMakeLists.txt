@@ -100,6 +100,7 @@ add_library(video_core STATIC
     fence_manager.h
     gpu.cpp
     gpu.h
+    gpu_timestamp.h
     gpu_split.cpp
     gpu_split.h
     gpu_thread.cpp
