@@ -85,6 +85,7 @@ private:
     Result GetHealthWarningDisappearedSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
     Result CreateApplicationAndRequestToStart(u64 application_id);
     Result GetOperationModeRefreshEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
+    Result IsTensorRtSupported(Out<bool> out_is_supported);
     Result Unknown320(Out<u16> out);
     Result Unknown321(Out<u8> out);
     Result Unknown330(Out<u8> out);
