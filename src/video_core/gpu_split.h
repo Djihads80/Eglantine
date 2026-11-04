@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <functional>
@@ -88,6 +89,21 @@ public:
     }
     void MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                      u32 amount, u32 methods_pending, const GPUVAddr* segment);
+    /// A word of a run of one engine method (a macro's constant buffer data): goes with the
+    /// words queued before it as one multi-method entry, sent before anything else enters the
+    /// ring (Reserve, Publish, Drain and WaitForWriters flush it), so the order is kept.
+    void QueueWord(Tegra::Engines::EngineInterface* engine, u32 method, u32 word) {
+        if (pending_count != 0 && (engine != pending_engine || method != pending_method ||
+                                   pending_count == PendingWords)) [[unlikely]] {
+            FlushPending();
+        }
+        if (pending_count == 0) {
+            pending_engine = engine;
+            pending_method = method;
+        }
+        pending_words[pending_count++] = word;
+    }
+    void FlushPending();
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
         SelectEngine(engine);
@@ -165,6 +181,9 @@ private:
 
     /// Room for an entry of `words` at the write position (never across the ring's end).
     u64* Reserve(size_t words) {
+        if (pending_count != 0) [[unlikely]] {
+            FlushPending();
+        }
         const size_t index = write_position & RingMask;
         if (index + words <= RingWords && write_position + words - consumed_cache <= RingWords)
             [[likely]] {
@@ -207,6 +226,12 @@ private:
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// QueueWord: a run not yet sent.
+    static constexpr u32 PendingWords = 256;
+    std::array<u32, PendingWords> pending_words{};
+    u32 pending_count{};
+    u32 pending_method{};
+    Tegra::Engines::EngineInterface* pending_engine{};
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
