@@ -32,6 +32,7 @@ namespace VideoCommon {
 /// A native (Switch 2) program after capture and lowering to Maxwell code. The shader cache keeps
 /// it so the environments built for the program's pipelines don't capture and lower it again.
 struct LoweredNativeCode {
+    u64 diagnostic_key{};
     /// Shader header, lowered instructions with Maxwell scheduling words, then the native
     /// address map (what the environment's `code` used to be filled with).
     std::vector<u64> code;
@@ -101,10 +102,11 @@ protected:
 
     /// Adopts an already lowered native program, or captures and lowers it when there is none.
     void InitializeNativeCode(std::shared_ptr<const LoweredNativeCode> lowered,
-                              u32 source_header_size = 128);
-    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size);
+                              u32 source_header_size = 128, bool geometry = false);
+    std::shared_ptr<const LoweredNativeCode> LowerNativeCode(u32 source_header_size,
+                                                              bool geometry = false);
     size_t native_source_size{};
-    /// Lower matrix multiplies too (the passes of a game DLSS evaluation; LowerToMaxwell).
+    /// Lower matrix multiplies too (KeplerCompute::EmulatesNativeTensorPrograms).
     bool native_tensor{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 

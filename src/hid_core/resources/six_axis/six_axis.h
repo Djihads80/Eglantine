@@ -63,26 +63,23 @@ public:
 private:
     static constexpr std::size_t NPAD_COUNT = 10;
 
+    // The IC information isn't read from the controller. Report the ranges of the Joy-Con and Pro
+    // Controller sensors (2000 dps, 8 g): games set up sensor fusion from them, and Nintendo Switch
+    // Sports aborts in nerd::GyroPointingStateDetector when they are 0.
+    static constexpr Core::HID::SixAxisSensorIcInformation DefaultIcInformation() {
+        Core::HID::SixAxisSensorIcInformation info{};
+        info.angular_rate = 2000.0f;
+        info.acceleration_range = 8.0f;
+        return info;
+    }
+
     struct SixaxisParameters {
         bool is_fusion_enabled{true};
         bool unaltered_passthrough{false};
         Core::HID::SixAxisSensorFusionParameters fusion{};
         Core::HID::SixAxisSensorCalibrationParameter calibration{};
         bool has_calibration{false};
-        Core::HID::SixAxisSensorIcInformation ic_information{
-            .angular_rate = 2000.0f,
-            .unknown_gyro_data1 = {-10.0f, -10.0f, -10.0f, 10.0f, 10.0f, 10.0f},
-            .unknown_gyro_data2 = {0.95f, -0.003f, -0.003f, -0.003f, 0.95f, -0.003f, -0.003f,
-                                   -0.003f, 0.95f},
-            .unknown_gyro_data3 = {1.05f, 0.003f, 0.003f, 0.003f, 1.05f, 0.003f, 0.003f, 0.003f,
-                                   1.05f},
-            .acceleration_range = 8.0f,
-            .unknown_accel_data1 = {-0.0612f, -0.0612f, -0.0612f, 0.0612f, 0.0612f, 0.0612f},
-            .unknown_accel_data2 = {0.95f, -0.003f, -0.003f, -0.003f, 0.95f, -0.003f, -0.003f,
-                                    -0.003f, 0.95f},
-            .unknown_accel_data3 = {1.05f, 0.003f, 0.003f, 0.003f, 1.05f, 0.003f, 0.003f, 0.003f,
-                                    1.05f},
-        };
+        Core::HID::SixAxisSensorIcInformation ic_information{DefaultIcInformation()};
         Core::HID::GyroscopeZeroDriftMode gyroscope_zero_drift_mode{
             Core::HID::GyroscopeZeroDriftMode::Standard};
     };
