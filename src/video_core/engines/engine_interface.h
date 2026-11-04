@@ -37,6 +37,15 @@ public:
     /// Write multiple values to the register identified by method.
     virtual void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) = 0;
 
+    /// A run of `count` incrementing methods from `first_method`, each with its word, as the
+    /// pushbuffer would call them one by one (GpuSplit::ConstantRun). Engines with a cheaper
+    /// equivalent override it.
+    virtual void LoadConstantRun(Core::System& system, u32 first_method, const u32* words, u32 count) {
+        for (u32 i = 0; i < count; ++i) {
+            CallMethod(system, first_method + i, words[i], i + 1 == count);
+        }
+    }
+
     void ConsumeSink(Core::System& system) {
         if (!method_sink.empty()) {
             ConsumeSinkImpl(system);

@@ -1356,6 +1356,62 @@ void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
     }
 }
 
+bool Maxwell3D::FrontLoadConstantRun(Core::System& system, VideoCommon::GpuSplit& split,
+                                     u32 first_method, const u32* words, u32 count) {
+    namespace Profile = VideoCommon::Nx2Profile;
+    constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+    auto& fs = Front(system, split);
+    if (fs.control == Regs::ShadowRamControl::Replay) {
+        return false; // A word written is then the shadow RAM's: word by word (FrontWrite)
+    }
+    const bool tracked = fs.control == Regs::ShadowRamControl::Track ||
+                         fs.control == Regs::ShadowRamControl::TrackWithFilter;
+    // What FrontWrite mirrors for each word: the shadow RAM, the register, the offset the data
+    // words advance. The back makes the same changes in LoadConstantRun.
+    for (u32 i = 0; i < count; ++i) {
+        const u32 method = first_method + i;
+        const u32 word = words[i];
+        if (tracked) {
+            fs.shadow[method] = word;
+        }
+        fs.regs[method] = word;
+        if (method != cb_offset) {
+            fs.regs[cb_offset] += sizeof(u32);
+        }
+    }
+    if (Profile::Enabled()) [[unlikely]] {
+        Profile::Add(Profile::Counter::MethodWrites, count);
+    }
+    split.ConstantRun(this, first_method, words, count);
+    return true;
+}
+
+void Maxwell3D::LoadConstantRun(Core::System& system, u32 first_method, const u32* words,
+                                u32 count) {
+    constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+    u32 index = 0;
+    if (first_method == cb_offset) {
+        // The offset: a state write, as CallMethod applies it (shadow RAM, same-value skip,
+        // dirty flags).
+        CallMethod(system, cb_offset, words[0], count == 1);
+        index = 1;
+    }
+    const u32 data_count = count - index;
+    if (data_count == 0) {
+        return;
+    }
+    // The data words: the shadow RAM, register and dirty flags per word as CallMethod makes
+    // them, then one upload from the offset (ProcessCBData per word advances it the same).
+    std::array<u32, MaxConstantRun> values;
+    for (u32 i = 0; i < data_count; ++i) {
+        const u32 method = first_method + index + i;
+        const u32 value = ProcessShadowRam(method, words[index + i]);
+        ProcessDirtyRegisters(method, value);
+        values[i] = value;
+    }
+    ProcessCBMultiData(values.data(), data_count);
+}
+
 void Maxwell3D::FinishFrontMacro(Core::System& system) {
     // What ProcessMacro and CallMacroMethod do around the macro.
     ConsumeSink(system);
