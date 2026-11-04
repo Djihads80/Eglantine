@@ -493,7 +493,9 @@ void DmaPusher::CallMethod(u32 argument) {
                       dma_state.subchannel, remaining);
         }
         dma_state.skip_words = remaining;
-        dma_state.method_count = 1;
+        // The caller's decrement then ends the block. An inline header (no block active,
+        // method_count 0) must stay at 0: at 1 its next word would be read as data.
+        dma_state.method_count = dma_state.method_count > 0 ? 1 : 0;
         dma_state.non_incrementing = false;
         return;
     }
