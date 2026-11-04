@@ -437,8 +437,14 @@ Id EmitGlobalAtomicSMax32(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicUMax32(EmitContext&) {
-    throw NotImplementedException("SPIR-V Instruction");
+Id EmitGlobalAtomicUMax32(EmitContext& ctx, const IR::Value& address, Id value) {
+    if (!ctx.profile.support_int64) {
+        throw NotImplementedException("Global atomic addressing requires 64-bit integers");
+    }
+    if (!Sirit::ValidId(ctx.atomic_umax_global_func_u32)) {
+        throw NotImplementedException("Global atomic max with no routable storage buffer");
+    }
+    return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_umax_global_func_u32, ctx.Def(address), value);
 }
 
 Id EmitGlobalAtomicInc32(EmitContext&) {

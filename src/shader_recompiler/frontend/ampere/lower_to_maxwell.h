@@ -83,17 +83,19 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x805: operand(16, 2); break;
     case 0x308: case 0x245: case 0x305: case 0x306: case 0x307: operand(16); operand(32); break;
     case 0x433: case 0x633: case 0x807: case 0x820: case 0x421: case 0xc17: case 0x817: case 0x81a:
+    case 0xa20: case 0x621:
         operand(16); operand(24); break;
     case 0x233: case 0x207: case 0x208: case 0x220: case 0x221:
         operand(16); operand(24); operand(32); break;
     case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
-    case 0xa24: case 0x810: case 0xa10: case 0xc10: case 0x823: case 0x419:
+    case 0xa24: case 0x810: case 0xa10: case 0xc10: case 0x823: case 0x419: case 0xa23:
         operand(16); operand(24); operand(64); break;
     case 0x230: case 0x231: case 0x211: case 0x224: case 0x223: case 0x210:
         operand(16); operand(24); operand(32); operand(64); break;
     case 0x819: case 0xa11:
         operand(16); operand(24); operand(64); break;
     case 0x59f: operand(24, 2); operand(32); break;
+    case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break; // ALD
     case 0x98e:
         operand(24, input.Bits(72, 1) ? 2 : 1);
         operand(32, input.Bits(73, 3) == 2 || input.Bits(73, 3) == 5 ? 2 : 1); break;
@@ -1160,21 +1162,22 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
-            if ((insn.words[2] & ~0x0380003fU) == 0x0c10e100 && insn.Bits(24, 8) == 255) {
-                // [URa + offset]: a uniform 64-bit address with a signed byte offset.
-                const u32 address = uniform_register(insn.Bits(64, 6));
-                const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
-                if (address == ~0U || (address & 1) || offset < -0x80000 || offset > 0x7ffff)
-                    return fail(index, "native global reduction uniform address");
-                emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
-                     (u64{insn.Bits(87, 3)} << 23) | (u64{static_cast<u32>(offset) & 0xfffff} << 28) |
-                     (u64{1} << 48));
-                break;
-            }
-            if ((insn.words[2] & ~0x03800000U) != 0x0010e100 || insn.Bits(40, 24) || (insn.Bits(24, 8) & 1))
+            const u32 type = insn.Bits(73, 3);
+            const u32 operation = insn.Bits(87, 3);
+            const bool uniform_address = insn.Bits(24, 8) == 255;
+            const u32 variable = 0x03800e00U | (uniform_address ? 0x3fU : 0U);
+            const u32 mode = uniform_address ? 0x0c10e100U : 0x0010e100U;
+            const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
+            if ((insn.words[2] & ~variable) != mode ||
+                (type != 0 && type != 3) || (type == 3 && operation != 0))
                 return fail(index, "native global reduction mode");
-            emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) |
-                (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(87, 3)} << 23) | (u64{1} << 48));
+            const u32 address = uniform_address ? uniform_register(insn.Bits(64, 6))
+                                                : insn.Bits(24, 8);
+            if (address == ~0U || (address & 1) || offset < -0x80000 || offset > 0x7ffff)
+                return fail(index, "native global reduction address");
+            emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
+                 (u64{type} << 20) | (u64{operation} << 23) |
+                 (u64{static_cast<u32>(offset) & 0xfffff} << 28) | (u64{1} << 48));
             break;
         }
         case 0x2bd: // UFLO.U32, the highest set-bit index (.SH, bit 74: its shift amount).
@@ -2768,18 +2771,25 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 // result comes in as the predicate at bits 68-70 (negated by 71), e.g.
                 // ISETP.NE P0 = lo != 0, then ISETP.NE.EX P0 = (hi != 0) OR P0. EQ: high equal
                 // AND low; NE: high different OR low; the orderings: high strictly ordered OR
-                // (high equal AND low). One or two Maxwell ISETPs into the destination; only
-                // the plain form (no second destination, AND with PT) is handled.
+                // (high equal AND low).
                 const u32 compare = insn.Bits(76, 3);
                 const u32 destination = insn.Bits(81, 3);
+                const u32 destination_b = insn.Bits(84, 3);
                 const u32 low = insn.Bits(68, 4);
-                if (insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 || insn.Bits(74, 2) != 0 ||
-                    compare == 0 || compare == 7 ||
-                    (destination != 7 && insn.Bits(12, 3) == destination))
+                const u32 accumulate = insn.Bits(87, 4);
+                const u32 combine = insn.Bits(74, 2);
+                if (compare == 0 || compare == 7 || combine == 3)
                     return fail(index, "native extended integer comparison mode");
                 const u32 a = operand(0, false), b = operand(1, false);
+                u32 temporary = 0;
+                while (temporary == destination || temporary == destination_b ||
+                       temporary == (low & 7) || temporary == (accumulate & 7) ||
+                       temporary == insn.Bits(12, 3))
+                    ++temporary;
+                const u32 mask = 1U << temporary;
+                emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
                 const auto isetp = [&](u32 op, u32 input, u32 combine) {
-                    return 0x5b60000000000000ULL | predicate | 7 | (u64{destination} << 3) |
+                    return 0x5b60000000000000ULL | predicate | 7 | (u64{temporary} << 3) |
                            (u64{a} << 8) | (u64{b} << 20) | (u64{input & 7} << 39) |
                            (u64{input >> 3} << 42) | (u64{combine} << 45) |
                            (u64{insn.Bits(73, 1)} << 48) | (u64{op} << 49);
@@ -2791,8 +2801,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     emit(isetp(Ne, low, Or));
                 } else {
                     emit(isetp(Eq, low, And));
-                    emit(isetp(compare <= 3 ? Lt : Gt, destination, Or));
+                    emit(isetp(compare <= 3 ? Lt : Gt, temporary, Or));
                 }
+                emit(0x5090000000000000ULL | predicate | destination_b |
+                     (u64{destination} << 3) | (u64{temporary} << 12) | (u64{7} << 29) |
+                     (u64{accumulate & 7} << 39) | (u64{accumulate >> 3} << 42) |
+                     (u64{combine} << 45));
+                emit(0x38f0000000070000ULL | (u64{253} << 8) | (u64{mask} << 20));
                 break;
             }
             const u32 a = operand(0, floating), b = operand(1, floating);
