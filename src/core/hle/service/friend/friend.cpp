@@ -574,6 +574,18 @@ public:
             {2, &IChatSession::AttachToChangedEvent, "AttachToRoomInfoChangedEvent"},
             {3, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraImageProcessingModeChangedEvent"},
             {4, &IChatSession::AttachToChangedEvent, "AttachToLocalCameraZoomMagnificationChangedEvent"},
+            {10, &IChatSession::StubReplyZeroed, "StartLocalCameraStreaming"},
+            {11, &IChatSession::StubReplyZeroed, "StopLocalCameraStreaming"},
+            {20, &IChatSession::StubReplyZeroed, "StartRemoteCameraStreaming"},
+            {21, &IChatSession::StubReplyZeroed, "StopRemoteCameraStreaming"},
+            {30, &IChatSession::StubReplyZeroed, "CreateAudioStreamWorkBuffer"},
+            {31, &IChatSession::StubReplyZeroed, "DestroyAudioStreamWorkBuffer"},
+            {32, &IChatSession::StubReplyZeroed, "GetAudioStreamCapacityFrameCount"},
+            {33, &IChatSession::StubReplyZeroed, "StartAudioStreamRecording"},
+            {34, &IChatSession::StubReplyZeroed, "StopAudioStreamRecording"},
+            {35, &IChatSession::StubReplyZeroed, "GetAudioStreamFreeFrameCount"},
+            {36, &IChatSession::StubReplyZeroed, "GetAudioStreamFilledFrameCount"},
+            {37, &IChatSession::StubReplyZeroed, "ReadAudioStream"},
         };
         RegisterHandlers(functions);
         event = service_context.CreateEvent("IChatSession:Event");
@@ -614,20 +626,68 @@ private:
     std::array<Kernel::KEvent*, 3> changed_events{};
 };
 
-// Switch 2 GameChat (chat:u). 0 and 1 open the session the title keeps using. 2-4 return objects
-// nothing here implements yet (layout customization, virtual camera, selective talk), so each
-// gets an nx2 stub whose commands all succeed empty; MKW calls 3 at boot. Switchbrew leaves 0-4
-// unnamed: 2-4 are named after what they return. Everything else falls through to the nx2 auto
-// stub.
+// nn::chat::IUserLayoutCustomizationShimScopedObject, returned by chat:u 2. Per Switchbrew:
+// 0 Initialize(pid, u64), then 1 hands back an event official software takes right after it;
+// 10, 11 (u64 out), 13 (u8 and 16 bytes out) and 20 (u8 out) are unnamed, 12 ends the full-screen
+// section. Outside a GameChat room the layout never changes: the event never fires and the rest
+// answer 0.
+class IUserLayoutCustomizationShimScopedObject final
+    : public ServiceFramework<IUserLayoutCustomizationShimScopedObject> {
+public:
+    explicit IUserLayoutCustomizationShimScopedObject(Core::System& system_)
+        : ServiceFramework{system_, "nx2:chat:IUserLayoutCustomizationShimScopedObject"},
+          service_context{system_, "IUserLayoutCustomizationShimScopedObject"} {
+        static const FunctionInfo functions[] = {
+            {0, &IUserLayoutCustomizationShimScopedObject::StubReplyZeroed, "Initialize"},
+            {1, &IUserLayoutCustomizationShimScopedObject::GetEvent, "GetEvent (guessed)"},
+            {12, &IUserLayoutCustomizationShimScopedObject::StubReplyZeroed, "EndFullScreenWithLocalCameraAvailableSection"},
+        };
+        RegisterHandlers(functions);
+        event = service_context.CreateEvent("IUserLayoutCustomizationShimScopedObject:Event");
+    }
+
+    ~IUserLayoutCustomizationShimScopedObject() override {
+        service_context.CloseEvent(event);
+    }
+
+private:
+    void GetEvent(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_Friend, "called");
+        IPC::ResponseBuilder rb{ctx, 2, 1};
+        rb.Push(ResultSuccess);
+        rb.PushCopyObjects(ctx, event->GetReadableEvent());
+    }
+
+    KernelHelpers::ServiceContext service_context;
+    Kernel::KEvent* event;
+};
+
+// Switch 2 GameChat (chat:u, nn::chat::IUserService). 0 and 1 open the session the title keeps
+// using, 2 the layout customization object. 3 and 4 return objects nothing here implements yet
+// (virtual camera, selective talk), so each gets an nx2 stub whose commands all succeed empty; MKW
+// calls 3 at boot. Switchbrew leaves 0-4 unnamed: 2-4 are named after what they return. The named
+// settings commands answer 0, which is what a console outside a GameChat room reports; everything
+// else falls through to the nx2 auto stub.
 class IChatService final : public ServiceFramework<IChatService> {
 public:
     explicit IChatService(Core::System& system_) : ServiceFramework{system_, "nx2:chat:u"} {
         static const FunctionInfo functions[] = {
             {0, &IChatService::OpenSession, "OpenSession"},
             {1, &IChatService::OpenSession, "OpenSession (u32)"},
-            {2, &IChatService::OpenStubObject, "OpenUserLayoutCustomizationShimScopedObject"},
+            {2, &IChatService::OpenUserLayoutCustomizationShimScopedObject, "OpenUserLayoutCustomizationShimScopedObject"},
             {3, &IChatService::OpenStubObject, "OpenVirtualCameraShimScopedObject"},
             {4, &IChatService::OpenStubObject, "OpenUserSelectiveTalkShimScopedObject"},
+            {11, &IChatService::GetRoomInfo, "GetRoomInfo"},
+            {14, &IChatService::StubReplyZeroed, "GetLocalCameraImageProcessingMode"},
+            {15, &IChatService::StubReplyZeroed, "SetLocalCameraZoomMagnification"},
+            {16, &IChatService::StubReplyZeroed, "GetLocalCameraZoomMagnification"},
+            {21, &IChatService::StubReplyZeroed, "SetScreenSharingDisallowList"},
+            {22, &IChatService::StubReplyZeroed, "ClearScreenSharingDisallowList"},
+            {23, &IChatService::StubReplyZeroed, "SetScreenSharingMode"},
+            {40, &IChatService::StubReplyZeroed, "GetRealtimeAudioLevels"},
+            {51, &IChatService::StubReplyZeroed, "CalculateRequiredAudioStreamWorkBufferSize"},
+            {60, &IChatService::StubReplyZeroed, "SetSharingKey"},
+            {61, &IChatService::StubReplyZeroed, "ClearSharingKey"},
         };
         RegisterHandlers(functions);
     }
@@ -640,13 +700,30 @@ private:
         rb.PushIpcInterface<IChatSession>(ctx, system);
     }
 
+    void OpenUserLayoutCustomizationShimScopedObject(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_Friend, "called");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<IUserLayoutCustomizationShimScopedObject>(ctx, system);
+    }
+
+    // 11: the nn::chat::RoomInfo (0xF0 bytes) of the room the user chats in. Nobody is ever in a
+    // room here, so it is all zeroes, ChattingUid (0x18) included. The auto stub left the title's
+    // buffer as it was.
+    void GetRoomInfo(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_Friend, "called");
+        constexpr std::array<u8, 0xF0> room_info{};
+        ctx.WriteBuffer(room_info);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
     void OpenStubObject(HLERequestContext& ctx) {
-        static constexpr std::array<const char*, 3> names{
-            "nx2:chat:IUserLayoutCustomizationShimScopedObject",
+        static constexpr std::array<const char*, 2> names{
             "nx2:chat:IVirtualCameraShimScopedObject",
             "nx2:chat:IUserSelectiveTalkShimScopedObject",
         };
-        const char* name = names[ctx.GetCommand() - 2];
+        const char* name = names[ctx.GetCommand() - 3];
         LOG_WARNING(Service_Friend, "(STUBBED) chat:u {}, returning {}", ctx.GetCommand(), name);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
