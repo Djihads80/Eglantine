@@ -804,6 +804,9 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
         cmdbuf.Draw(3, 1, 0, 0);
         cmdbuf.EndRenderPass();
     });
+    // Like BlitImpl: the game's draws that follow set their dynamic state again (Fast Fusion's
+    // menu composited nothing after an FSR 3.1 output was drawn here).
+    scheduler.InvalidateState();
 }
 
 void BlitImageHelper::TemporalUpscale(const Framebuffer* dst_framebuffer,
