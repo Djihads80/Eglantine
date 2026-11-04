@@ -279,7 +279,10 @@
             "SIRIT_USE_SYSTEM_SPIRV_HEADERS ON"
         ],
         "repo": "eden-emulator/sirit",
-        "version": "v1.0.5"
+        "version": "v1.0.5",
+        "patches": [
+            "0001-include-cstdlib.patch"
+        ]
     },
     "sirit-ci": {
         "ci": true,
