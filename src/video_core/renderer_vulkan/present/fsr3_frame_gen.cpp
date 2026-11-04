@@ -150,7 +150,7 @@ struct InterpPushConstants {
 Fsr3FrameGen::Fsr3FrameGen(const Device& device, MemoryAllocator& memory_allocator,
                            VkExtent2D extent, VkFormat format)
     : m_allocator{memory_allocator}, m_extent{extent},
-      m_flow_extent{std::max(1u, extent.width / 2), std::max(1u, extent.height / 2)},
+      m_flow_extent{(std::max)(1u, extent.width / 2), (std::max)(1u, extent.height / 2)},
       m_format{format} {
     CreateResources(device);
     CreateShaders(device);

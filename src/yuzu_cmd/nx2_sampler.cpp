@@ -76,7 +76,7 @@ bool Matches(const std::string& thread_name, const std::vector<std::string>& pat
 std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
     using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
     const auto get_description = reinterpret_cast<GetThreadDescriptionFn>(
-        GetProcAddress(GetModuleHandleA("KernelBase.dll"), "GetThreadDescription"));
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleA("KernelBase.dll"), "GetThreadDescription")));
     std::vector<Target> targets;
     if (get_description == nullptr) {
         return targets;
@@ -154,10 +154,10 @@ struct Symbolizer {
             return;
         }
         const auto set_options =
-            reinterpret_cast<SymSetOptionsFn>(GetProcAddress(dbghelp, "SymSetOptions"));
+            reinterpret_cast<SymSetOptionsFn>(reinterpret_cast<void*>(GetProcAddress(dbghelp, "SymSetOptions")));
         const auto initialize =
-            reinterpret_cast<SymInitializeFn>(GetProcAddress(dbghelp, "SymInitialize"));
-        from_address = reinterpret_cast<SymFromAddrFn>(GetProcAddress(dbghelp, "SymFromAddr"));
+            reinterpret_cast<SymInitializeFn>(reinterpret_cast<void*>(GetProcAddress(dbghelp, "SymInitialize")));
+        from_address = reinterpret_cast<SymFromAddrFn>(reinterpret_cast<void*>(GetProcAddress(dbghelp, "SymFromAddr")));
         if (set_options == nullptr || initialize == nullptr || from_address == nullptr) {
             from_address = nullptr;
             return;
