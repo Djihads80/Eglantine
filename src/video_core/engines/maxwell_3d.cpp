@@ -927,6 +927,16 @@ bool JitSkipSameEnabled() {
     return skip;
 }
 
+// EDEN_NX2_CB_BATCH=0: a front macro's constant buffer data words (CB_DATA) go to the back one
+// by one (CallMethod each) instead of as one multi-method entry per run.
+bool CbBatchEnabled() {
+    static const bool batch = [] {
+        const char* value = std::getenv("EDEN_NX2_CB_BATCH");
+        return value == nullptr || value[0] != '0';
+    }();
+    return batch;
+}
+
 // EDEN_NX2_MACRO_SINK=0: the back runs every write a front macro makes through CallMethod at
 // once (GpuSplit::MacroWrite), instead of putting state writes in its method sink like the
 // pushbuffer's and applying them before the next executable method.
@@ -979,6 +989,21 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    // A macro's constant buffer data: a run of words goes as one multi-method entry, which the
+    // back uploads with ProcessCBMultiData as it does the pushbuffer's runs: the same bytes at
+    // the same offsets, without touching the data register or its shadow copy (nor does the
+    // front then). Not in replay mode, where a word written is the shadow RAM's.
+    constexpr u32 cb_data_first = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    if (from_macro && method >= cb_data_first && method < cb_data_first + 16 &&
+        fs.control != Regs::ShadowRamControl::Replay && CbBatchEnabled()) {
+        if (Profile::Enabled()) [[unlikely]] {
+            Profile::Add(Profile::Counter::MethodWrites, 1);
+            Profile::Add(Profile::Counter::MacroWrites, 1);
+        }
+        fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
+        split.QueueWord(this, cb_data_first, argument);
+        return;
+    }
     // As ProcessShadowRam does on the back.
     u32 value = argument;
     bool shadow_kept = true;

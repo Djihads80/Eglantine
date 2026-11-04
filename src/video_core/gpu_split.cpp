@@ -317,7 +317,19 @@ void GpuSplit::SleepOnBack() {
     front_waiting.store(false, std::memory_order_relaxed);
 }
 
+void GpuSplit::FlushPending() {
+    const u32 count = pending_count;
+    if (count == 0) {
+        return;
+    }
+    pending_count = 0;
+    Nx2Profile::Add(Nx2Profile::Counter::CbBatchWords, count);
+    Nx2Profile::Add(Nx2Profile::Counter::CbBatchEntries, 1);
+    MultiMethod(pending_engine, pending_method, pending_words.data(), count, count, nullptr);
+}
+
 void GpuSplit::Publish() {
+    FlushPending();
     if (published_local == write_position) {
         return;
     }
@@ -335,6 +347,7 @@ void GpuSplit::Drain() {
 }
 
 void GpuSplit::Drain(Nx2Profile::Zone zone) {
+    FlushPending();
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
         return;
@@ -369,6 +382,7 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
 }
 
 bool GpuSplit::WaitForWriters() {
+    FlushPending();
     const u64 target = std::min(last_writer_position, write_position);
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
