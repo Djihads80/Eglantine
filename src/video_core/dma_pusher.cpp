@@ -181,7 +181,11 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
+        // Only with the command list series on (nx2_command_lists): without it no page is ever
+        // marked, IsGpuWrittenCommands is always false, and the wait (for every compute dispatch
+        // or copy queued for the back) ran for every entry, ~130,000 times a second, for nothing.
+        if (!gpu_written && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+            Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
