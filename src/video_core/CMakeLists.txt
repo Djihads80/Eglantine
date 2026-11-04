@@ -141,6 +141,8 @@ add_library(video_core STATIC
     renderer_vulkan/present/fsr3.h
     renderer_vulkan/present/fxaa.cpp
     renderer_vulkan/present/fxaa.h
+    renderer_vulkan/present/hdr_tonemap.cpp
+    renderer_vulkan/present/hdr_tonemap.h
     renderer_vulkan/present/layer.cpp
     renderer_vulkan/present/layer.h
     renderer_vulkan/present/present_push_constants.h

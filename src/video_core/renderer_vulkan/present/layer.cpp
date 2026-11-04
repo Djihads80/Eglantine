@@ -124,6 +124,10 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     VkImageView source_image_view =
         texture_info ? texture_info->image_view : *raw_image_views[image_index];
 
+    if (hdr_tonemap.has_value()) {
+        hdr_tonemap->Draw(device, scheduler, image_index, &source_image, &source_image_view);
+    }
+
     if (auto* fxaa = std::get_if<FXAA>(&anti_alias)) {
         fxaa->Draw(device, scheduler, image_index, &source_image, &source_image_view);
     } else if (auto* smaa = std::get_if<SMAA>(&anti_alias)) {
@@ -212,6 +216,12 @@ void Layer::RefreshResources(const Device& device, const Tegra::FramebufferConfi
     raw_height = framebuffer.height;
     pixel_format = framebuffer.pixel_format;
     anti_alias.emplace<std::monostate>();
+    hdr_tonemap.reset();
+    if (pixel_format == Service::android::PixelFormat::Rgba1010102) {
+        hdr_tonemap.emplace(device, memory_allocator, image_count,
+                            VkExtent2D{Settings::values.resolution_info.ScaleUp(raw_width),
+                                       Settings::values.resolution_info.ScaleUp(raw_height)});
+    }
 
     ReleaseRawImages();
     CreateStagingBuffer(device, framebuffer);

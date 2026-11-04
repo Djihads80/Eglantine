@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/present/fsr3.h"
 #include "video_core/renderer_vulkan/present/sgsr.h"
 #include "video_core/renderer_vulkan/present/fxaa.h"
+#include "video_core/renderer_vulkan/present/hdr_tonemap.h"
 #ifdef HAS_RESHADE
 #include "video_core/renderer_vulkan/present/post_process.h"
 #endif
@@ -100,6 +101,7 @@ private:
     Service::android::PixelFormat pixel_format{};
 
     Settings::AntiAliasing anti_alias_setting{};
+    std::optional<HdrTonemap> hdr_tonemap{};
     std::variant<std::monostate, FXAA, SMAA> anti_alias{};
     std::variant<std::monostate, SGSR, FSR, FSR3> sr_filter{};
 #ifdef HAS_RESHADE
