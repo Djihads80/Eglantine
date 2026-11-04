@@ -203,7 +203,9 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
     const u64 needed = format == Nx2PictureFormat::Nv12
                            ? chroma_offset + pitch * ((u64{height} + 1) / 2)
                            : pitch * height;
-    if (width == 0 || height == 0 || out.size() < needed) {
+    // NV12 chroma rows hold interleaved U/V pairs, so odd widths write one extra byte.
+    const u64 min_pitch = format == Nx2PictureFormat::Nv12 ? u64{(width + 1) / 2} * 2 : 0;
+    if (width == 0 || height == 0 || pitch < min_pitch || out.size() < needed) {
         return;
     }
     const AVPixelFormat target = format == Nx2PictureFormat::Nv12    ? AV_PIX_FMT_NV12
@@ -224,8 +226,8 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         return;
     }
     // Software-decoded frames are planar: interleave U and V ourselves instead of using swscale.
-    if (target == AV_PIX_FMT_NV12 &&
-        (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) &&
+    // YUVJ420P is full range and stays on the swscale path so it is converted to limited range.
+    if (target == AV_PIX_FMT_NV12 && f->format == AV_PIX_FMT_YUV420P &&
         static_cast<u32>(f->width) == width && static_cast<u32>(f->height) == height) {
         for (u32 y = 0; y < height; ++y) {
             std::memcpy(out.data() + y * pitch, f->data[0] + y * f->linesize[0], width);
