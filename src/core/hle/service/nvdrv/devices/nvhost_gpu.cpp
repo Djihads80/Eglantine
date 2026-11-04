@@ -446,15 +446,9 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             return value == nullptr || value[0] != '0';
         }();
         if (snapshot && channel_state->memory_manager && channel_state->payload) {
-            // GMMU maps are applied on the GPU thread (GPU::MapInOrder): with one still queued, the
-            // lists may lie on addresses it maps and would copy as zeros (Pokopia's first lists).
-            // DmaPusher::Push copies them after the maps instead: an odd count is never current.
-            const bool maps_pending = system.GPU().MapsPending();
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
-                maps_pending
-                    ? ~u64{0}
-                    : channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
+                channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
             size_t words = 0;
             for (const auto& entry : entries.command_lists) {
                 words += entry.size;
@@ -462,9 +456,16 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             entries.submitted_words.resize(words);
             entries.submitted_offsets.reserve(entries.command_lists.size());
             size_t offset = 0;
-            for (const auto& entry : entries.command_lists) {
+            for (u32 i = 0; i < entries.command_lists.size(); ++i) {
+                const auto& entry = entries.command_lists[i];
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
-                if (!maps_pending) {
+                // GMMU maps run on the GPU thread (GPU::MapInOrder): an entry on addresses a
+                // queued map changes would copy as zeros (Pokopia's first lists). DmaPusher::Push
+                // copies it after the map instead.
+                const u64 bytes = static_cast<u64>(entry.size) * sizeof(u32);
+                if (system.GPU().IsMapPending(entry.addr, bytes)) {
+                    entries.deferred_entries.push_back(i);
+                } else {
                     channel_state->memory_manager->ReadBlockUnsafe(
                         entry.addr, entries.submitted_words.data() + offset,
                         entry.size * sizeof(u32));
