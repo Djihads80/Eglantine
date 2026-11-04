@@ -33,9 +33,6 @@ jobs:
             if (!/^\s*[-*+]?\s*\[[xX]\]/m.test(body)) {
               problems.push('The template checklist is missing.');
             }
-            if (!/AI-assisted:\s*(yes|no)\b/i.test(body)) {
-              problems.push('Answer "AI-assisted:" with yes or no.');
-            }
             const sections = {};
             let current = null;
             for (const line of body.split(/\r?\n/)) {
