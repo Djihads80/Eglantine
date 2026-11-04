@@ -1279,7 +1279,7 @@ Errno Socket::SetReusePort(bool enable) {
 #ifdef SO_REUSEPORT
     return SetSockOpt<u32>(fd, SOL_SOCKET, SO_REUSEPORT, enable ? 1 : 0);
 #else
-    return SetReuseAddr(enable);
+    return Errno::OPNOTSUPP;
 #endif
 }
 

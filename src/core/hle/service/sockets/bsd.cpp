@@ -1776,7 +1776,8 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
     auto socket = descriptor->socket;
 
     if (descriptor->domain == Domain::INET && descriptor->type == Type::DGRAM &&
-        descriptor->protocol == Protocol::UDP && Translate(addr_in).portno == 12345 &&
+        (descriptor->protocol == Protocol::IP || descriptor->protocol == Protocol::UDP) &&
+        Translate(addr_in).portno == 12345 &&
         Network::GetRoomIPv4Address()) {
         auto proxy = std::make_shared<Network::ProxySocket>();
         const auto error =
@@ -1892,8 +1893,10 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
         if (bsd_errno != Errno::SUCCESS) {
             return {-1, bsd_errno};
         }
-        if (auto& entry = file_descriptors[fd]; entry && entry->socket == descriptor->socket) {
-            entry->flags = arg;
+        for (auto& entry : file_descriptors) {
+            if (entry && entry->socket == descriptor->socket) {
+                entry->flags = arg;
+            }
         }
         return {0, Errno::SUCCESS};
     }

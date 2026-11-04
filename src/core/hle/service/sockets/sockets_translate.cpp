@@ -51,6 +51,8 @@ Errno Translate(Network::Errno value) {
         return Errno::INPROGRESS;
     case Network::Errno::ISCONN:
         return Errno::ISCONN;
+    case Network::Errno::OPNOTSUPP:
+        return Errno::OPNOTSUPP;
     case Network::Errno::OTHER:
         return Errno::ACCES;
     default:
