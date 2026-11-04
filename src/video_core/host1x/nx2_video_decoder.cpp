@@ -221,7 +221,7 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         }
         for (u32 y = 0; y < (height + 1) / 2; ++y) {
             std::memcpy(out.data() + chroma_offset + y * pitch, f->data[1] + y * f->linesize[1],
-                        width);
+                        min_pitch);
         }
         return;
     }
