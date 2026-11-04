@@ -223,6 +223,25 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
         }
         return;
     }
+    // Software-decoded frames are planar: interleave U and V ourselves instead of using swscale.
+    if (target == AV_PIX_FMT_NV12 &&
+        (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) &&
+        static_cast<u32>(f->width) == width && static_cast<u32>(f->height) == height) {
+        for (u32 y = 0; y < height; ++y) {
+            std::memcpy(out.data() + y * pitch, f->data[0] + y * f->linesize[0], width);
+        }
+        const u32 chroma_width = (width + 1) / 2;
+        for (u32 y = 0; y < (height + 1) / 2; ++y) {
+            const u8* u = f->data[1] + y * f->linesize[1];
+            const u8* v = f->data[2] + y * f->linesize[2];
+            u8* dst = out.data() + chroma_offset + y * pitch;
+            for (u32 x = 0; x < chroma_width; ++x) {
+                dst[x * 2] = u[x];
+                dst[x * 2 + 1] = v[x];
+            }
+        }
+        return;
+    }
     impl->scaler = sws_getCachedContext(impl->scaler, f->width, f->height,
                                         static_cast<AVPixelFormat>(f->format),
                                         static_cast<int>(width), static_cast<int>(height), target,
