@@ -1211,17 +1211,24 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             // stream allocation again instead of allocating and copying (uniform_stream_reuse.h).
             // EDEN_NX2_UBOREUSE=0 turns it off.
             if (VideoCommon::UniformStreamReuseEnabled()) {
+                Nx2Profile::Scope scope{Nx2Profile::Zone::UboReuse};
                 streamed = VideoCommon::BindSmallUniformReusing(
                     runtime, device_memory, stage, index, binding_index, device_addr, size);
+                if (streamed) {
+                    Nx2Profile::Add(Nx2Profile::Counter::UboReuseHits, 1);
+                }
             }
         }
         if (!streamed) {
+            Nx2Profile::Scope scope{Nx2Profile::Zone::UboCopy};
+            Nx2Profile::Add(Nx2Profile::Counter::UboCopyBytes, size);
             const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
             device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
         }
         return;
     }
     // Classic cached path
+    Nx2Profile::Scope cached_scope{Nx2Profile::Zone::UboCached};
     if (SynchronizeBuffer(buffer, device_addr, size)) {
         ++channel_state->uniform_cache_hits[0];
     }
@@ -1541,14 +1548,21 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
     graphics_segments.clear();
     BufferOperations([&]() {
         if (is_indexed) {
+            Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateIndex};
             UpdateIndexBuffer();
         }
-        UpdateVertexBuffers();
+        {
+            Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateVertex};
+            UpdateVertexBuffers();
+        }
         UpdateTransformFeedbackBuffers();
-        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
-            UpdateUniformBuffers(stage);
-            UpdateStorageBuffers(stage);
-            UpdateTextureBuffers(stage);
+        {
+            Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateStages};
+            for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+                UpdateUniformBuffers(stage);
+                UpdateStorageBuffers(stage);
+                UpdateTextureBuffers(stage);
+            }
         }
         if (current_draw_indirect) {
             UpdateDrawIndirect();
