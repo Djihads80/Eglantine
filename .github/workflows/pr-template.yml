@@ -39,7 +39,8 @@ jobs:
                 current = heading[2].toLowerCase();
                 currentLevel = heading[1].length;
                 sections[current] = [];
-              } else if (current) {
+              } else if (current && !heading) {
+                // A nested heading itself is not an answer; the text under it is.
                 sections[current].push(line);
               }
             }
