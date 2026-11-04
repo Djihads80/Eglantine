@@ -620,8 +620,10 @@
     <string name="renderer_mkw_30fps_description">Forces the game to use its native 30 FPS mode at normal game speed. Takes effect after restarting the game.</string>
     <string name="renderer_mkw_60fps">Mario Kart World: 60 FPS mode</string>
     <string name="renderer_mkw_60fps_description">Always renders at 60 fps. Slower hardware runs the game in slow motion. Takes effect after restarting the game; the 30 FPS mode takes precedence.</string>
-    <string name="renderer_mkw_reduce_detail">Mario Kart World: reduced detail (performance)</string>
-    <string name="renderer_mkw_reduce_detail_description">Fewer shadow cascades and shorter LOD distances to cut draw calls. Takes effect after restarting the game.</string>
+    <string name="renderer_mkw_lod_distance">Mario Kart World: shorter LOD distance</string>
+    <string name="renderer_mkw_lod_distance_description">Objects switch to lower detail at half the distance (the game\'s default ratio instead of 2.0). Fewer, lighter draws. Takes effect after restarting the game.</string>
+    <string name="renderer_mkw_shadow_cascades">Mario Kart World: fewer shadow cascades</string>
+    <string name="renderer_mkw_shadow_cascades_description">Drops the farthest dynamic shadow cascade (160-250 m). Takes effect after restarting the game.</string>
     <string name="renderer_release_gpu_only_memory_description">Frees the RAM copy of Switch 2 GPU-only memory once its textures are on the GPU, saving RAM. Experimental: may cause missing or corrupted textures.</string>
     <string name="gpu_unswizzle_settings">GPU Unswizzle Settings</string>
     <string name="gpu_unswizzle_settings_description">Configure GPU-based texture unswizzling parameters or disable it entirely. Adjust these settings to balance performance and texture loading quality.</string>

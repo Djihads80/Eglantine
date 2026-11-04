@@ -38,17 +38,17 @@
 namespace Loader {
 namespace {
 
-// Mario Kart World: reduced detail (Settings::values.mkw_reduce_detail). Pattern-matched text
-// and rodata patches to the module before it is mapped, each applied only when its pattern
-// occurs exactly once. The default set is two shadow cascades and the LOD distance ratio key
-// renamed (the game then keeps the constructor's 1.0 instead of the loaded 2.0).
-// EDEN_NX2_MKW_DETAIL, when set, replaces the set: a comma list of "cascades=1|2|3" (3: no
+// Mario Kart World: reduced detail (Settings::values.mkw_lod_distance, mkw_shadow_cascades).
+// Pattern-matched text and rodata patches to the module before it is mapped, each applied only
+// when its pattern occurs exactly once. The settings select two shadow cascades and the LOD
+// distance ratio key renamed (the game then keeps the constructor's 1.0 instead of the loaded
+// 2.0). EDEN_NX2_MKW_DETAIL, when set, replaces the set: a comma list of "cascades=1|2|3" (3: no
 // patch), "lod=1.0|0.75|0.5" (below 1.0 the constructor default is patched too), "elink"
 // (vehicle count divisor key), "emit" (single emit key), "traffic" (mob car count and distance
 // keys), e.g. "cascades=2,lod=1.0,elink,emit,traffic".
 struct MkwDetailOptions {
-    u32 cascades{2};
-    bool lod_key{true};
+    u32 cascades{3};
+    bool lod_key{};
     u32 lod_default{0}; ///< 0: keep the constructor's 1.0; else the mov w8 immediate to use
     bool elink{};
     bool emit{};
@@ -363,13 +363,17 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
-    // Mario Kart World: reduced detail (see MkwDetailOptions). The environment list applies
-    // with the setting off too, as an opt-in for testing.
+    // Mario Kart World: reduced detail (see MkwDetailOptions). The environment list, when set,
+    // replaces the settings (with both off too, as an opt-in for testing).
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         const char* const env = std::getenv("EDEN_NX2_MKW_DETAIL");
-        if (Settings::values.mkw_reduce_detail.GetValue() || env != nullptr) {
+        const bool lod_setting = Settings::values.mkw_lod_distance.GetValue();
+        const bool cascades_setting = Settings::values.mkw_shadow_cascades.GetValue();
+        if (lod_setting || cascades_setting || env != nullptr) {
             const MkwDetailOptions options =
-                env != nullptr ? ParseMkwDetail(env) : MkwDetailOptions{};
+                env != nullptr ? ParseMkwDetail(env)
+                               : MkwDetailOptions{.cascades = cascades_setting ? 2U : 3U,
+                                                  .lod_key = lod_setting};
             const auto& text = nso_header.segments[0];
             const auto& rodata = nso_header.segments[1];
             const std::span<u8> text_bytes{codeset.memory.data() + module_start + text.location,
