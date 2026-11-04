@@ -10,7 +10,6 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
-#include <QCoreApplication>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
@@ -18,7 +17,6 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QStringLiteral>
-#include <QTimer>
 #include <QtCore/qobjectdefs.h>
 #include <qabstractbutton.h>
 #include <qboxlayout.h>
@@ -35,7 +33,6 @@
 #include "qt_common/config/uisettings.h"
 #include "qt_common/util/vk.h"
 #include "ui_configure_graphics.h"
-#include "video_core/game_dlss_status.h"
 #include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/configuration/configure_graphics.h"
 #include "yuzu/configuration/nvidia_dlss_panel.h"
@@ -211,72 +208,6 @@ ConfigureGraphics::~ConfigureGraphics() = default;
 
 void ConfigureGraphics::SetConfiguration() {}
 
-namespace {
-// The status line under "Use the game's own DLSS": what draws the game's DLSS in this session,
-// with a glyph like the NVIDIA DLSS panel's.
-void ShowGameDlssStatus(QLabel* icon, QLabel* text) {
-    const auto tr = [](const char* source) {
-        return QCoreApplication::translate("ConfigureGraphics", source);
-    };
-    const QString good = QStringLiteral("<span style=\"color:#2ea043\">&#10004;</span>");
-    const QString waiting = QStringLiteral("<span style=\"color:#8b949e\">&#9679;</span>");
-    const QString warning = QStringLiteral("<span style=\"color:#d29922\">&#9888;</span>");
-    using VideoCore::GameDlssReason;
-    using VideoCore::GameDlssState;
-    const VideoCore::GameDlssStatus status = VideoCore::GetGameDlssStatus();
-    switch (status.state) {
-    case GameDlssState::None:
-        icon->setText(waiting);
-        text->setText(tr("Shown here while a game that uses DLSS runs."));
-        return;
-    case GameDlssState::Checking:
-        icon->setText(waiting);
-        text->setText(tr("Checking the game's own DLSS; AMD FSR 3.1 draws meanwhile."));
-        return;
-    case GameDlssState::Network:
-        icon->setText(good);
-        text->setText(tr("The game's own DLSS is running."));
-        return;
-    case GameDlssState::Replacement:
-        break;
-    }
-    icon->setText(warning);
-    switch (status.reason) {
-    case GameDlssReason::TurnedOff:
-        text->setText(tr("AMD FSR 3.1 draws in place of the game's DLSS (turned off)."));
-        return;
-    case GameDlssReason::NvidiaDlss:
-        icon->setText(good);
-        text->setText(tr("NVIDIA DLSS draws in place of the game's DLSS (turned on below)."));
-        return;
-    case GameDlssReason::ResolutionScaling:
-        text->setText(tr("AMD FSR 3.1 draws: the game's own DLSS only makes the game's own "
-                         "resolution, and resolution scaling is on."));
-        return;
-    case GameDlssReason::Unsupported:
-        text->setText(tr("AMD FSR 3.1 draws: the game's own DLSS can't run here (it needs Vulkan "
-                         "and compute shaders 32 threads wide)."));
-        return;
-    case GameDlssReason::PassesCannotRun:
-        text->setText(QCoreApplication::translate(
-            "ConfigureGraphics", "AMD FSR 3.1 draws: %n of the game's DLSS passes can't run here.",
-            nullptr, static_cast<int>(status.rejected_passes)));
-        return;
-    case GameDlssReason::InvalidOutput:
-        text->setText(tr("AMD FSR 3.1 took over: the game's own DLSS produced invalid values "
-                         "(NaN)."));
-        return;
-    case GameDlssReason::OutputMismatch:
-        text->setText(tr("AMD FSR 3.1 took over: the game's own DLSS stopped matching the game's "
-                         "image (frozen or corrupted)."));
-        return;
-    case GameDlssReason::None:
-        break;
-    }
-    text->setText(tr("AMD FSR 3.1 draws in place of the game's DLSS."));
-}
-} // Anonymous namespace
-
 void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     QLayout* api_layout = ui->api_widget->layout();
     QWidget* api_grid_widget = new QWidget(this);
@@ -413,32 +344,6 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             connect(widget->checkbox, &QCheckBox::toggled, panel, &QWidget::setVisible);
             hold_graphics.emplace(setting->Id(), group);
 #endif
-        } else if (setting->Id() == Settings::values.game_dlss_network.Id()) {
-            // What draws the game's DLSS right now, under the checkbox.
-            QWidget* group = new QWidget(this);
-            QVBoxLayout* group_layout = new QVBoxLayout(group);
-            group_layout->setContentsMargins(0, 0, 0, 0);
-            group_layout->setSpacing(2);
-            group_layout->addWidget(widget);
-            QHBoxLayout* status_row = new QHBoxLayout;
-            status_row->setContentsMargins(24, 0, 0, 6);
-            status_row->setSpacing(8);
-            QLabel* status_icon = new QLabel(group);
-            status_icon->setTextFormat(Qt::RichText);
-            status_icon->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
-            status_icon->setFixedWidth(16);
-            QLabel* status_text = new QLabel(group);
-            status_text->setTextFormat(Qt::PlainText);
-            status_text->setWordWrap(true);
-            status_row->addWidget(status_icon);
-            status_row->addWidget(status_text, 1);
-            group_layout->addLayout(status_row);
-            ShowGameDlssStatus(status_icon, status_text);
-            QTimer* status_timer = new QTimer(group);
-            connect(status_timer, &QTimer::timeout, group,
-                    [status_icon, status_text] { ShowGameDlssStatus(status_icon, status_text); });
-            status_timer->start(1000);
-            hold_graphics.emplace(setting->Id(), group);
         } else if (setting->Id() == Settings::values.frame_gen.Id()) {
             frame_gen_checkbox = widget->checkbox;
             hold_graphics.emplace(setting->Id(), widget);
