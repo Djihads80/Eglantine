@@ -1181,6 +1181,26 @@ void EmitIR<IR::Opcode::VectorSignedSaturatedNeg64>(biscuit::Assembler&, EmitCon
 }
 
 template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft16>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft32>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorSignedSaturatedRoundingShiftLeft64>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
 void EmitIR<IR::Opcode::VectorSignedSaturatedShiftLeft8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
     ASSERT(false && "Unimplemented instruction");
 }
@@ -1342,6 +1362,26 @@ void EmitIR<IR::Opcode::VectorUnsignedSaturatedNarrow32>(biscuit::Assembler&, Em
 
 template<>
 void EmitIR<IR::Opcode::VectorUnsignedSaturatedNarrow64>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft16>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft32>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT(false && "Unimplemented instruction");
+}
+
+template<>
+void EmitIR<IR::Opcode::VectorUnsignedSaturatedRoundingShiftLeft64>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
     ASSERT(false && "Unimplemented instruction");
 }
 

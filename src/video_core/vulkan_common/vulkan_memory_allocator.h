@@ -6,8 +6,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "common/common_types.h"
@@ -113,10 +116,22 @@ namespace Vulkan {
         vk::Image CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased = false) const;
 
         /// Device memory to bind to part of a sparse resource. Null when there is none left.
+        /// Device-local buffers in their own VMA pool; false when it doesn't apply or failed.
+        bool CreateBufferInSeparatePool(const VkBufferCreateInfo& ci, MemoryUsage usage,
+                                        const VmaAllocationCreateInfo& alloc_ci, VkBuffer& handle,
+                                        VmaAllocation& allocation,
+                                        VmaAllocationInfo& alloc_info) const;
+
         VmaAllocation AllocateSparseMemory(const VkMemoryRequirements &requirements,
                                            VkDeviceMemory &memory, VkDeviceSize &offset) const;
 
         void FreeSparseMemory(VmaAllocation allocation) const;
+
+        /// Counts the images that did not fit the device memory budget (made anyway, in host
+        /// memory or with nothing bound): the texture cache collects harder when it grows.
+        u32 MemoryPressureEvents() const noexcept {
+            return pressure_events.load(std::memory_order_relaxed);
+        }
 
         vk::Buffer CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const;
 
@@ -153,6 +168,10 @@ namespace Vulkan {
         const VkPhysicalDeviceMemoryProperties properties; ///< Physical device memory properties.
         VkDeviceSize buffer_image_granularity;            ///< Adjacent buffer/image granularity
         u32 valid_memory_types{~0u};
+        mutable std::atomic<u32> pressure_events{0};
+        mutable std::mutex buffer_type_mutex;
+        /// Memory type of device-local buffers by usage and flags (CreateBufferInSeparatePool).
+        mutable std::unordered_map<u64, u32> buffer_memory_types;
     };
 
     /// Logs VMA's blocks and allocations per memory type, and each heap's budget.

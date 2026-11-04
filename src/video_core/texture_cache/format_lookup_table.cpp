@@ -150,6 +150,7 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
     case Hash(TextureFormat::X8Z24, UNORM):
         return PixelFormat::X8_D24_UNORM;
     case Hash(TextureFormat::X8Z24, UNORM, UINT, UINT, UINT, LINEAR):
+    case Hash(TextureFormat::X8Z24, UNORM, UINT, UNORM, UNORM, LINEAR):
         return PixelFormat::X8_D24_UNORM;
     case Hash(TextureFormat::Z24S8, UINT, UNORM, UNORM, UNORM, LINEAR):
         return PixelFormat::S8_UINT_D24_UNORM;
@@ -159,6 +160,8 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
         return PixelFormat::S8_UINT_D24_UNORM;
     case Hash(TextureFormat::S8Z24, UNORM, UINT, UNORM, UNORM, LINEAR):
     case Hash(TextureFormat::S8Z24, UNORM, UINT, UINT, UINT, LINEAR):
+    case Hash(TextureFormat::G8R24, UNORM, UINT, UNORM, UNORM, LINEAR):
+    case Hash(TextureFormat::G8R24, UNORM, UINT, UINT, UINT, LINEAR):
         return PixelFormat::D24_UNORM_S8_UINT;
     case Hash(TextureFormat::Z32_X24S8, FLOAT, UINT, UNORM, UNORM, LINEAR):
         return PixelFormat::D32_FLOAT_S8_UINT;

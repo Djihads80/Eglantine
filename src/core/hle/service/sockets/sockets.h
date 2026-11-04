@@ -17,12 +17,16 @@ namespace Service::Sockets {
 
 enum class Errno : u32 {
     SUCCESS = 0,
+    INTR = 4,
     BADF = 9,
     AGAIN = 11,
     INVAL = 22,
     MFILE = 24,
     PIPE = 32,
+    DOM = 33,
     MSGSIZE = 90,
+    OPNOTSUPP = 95,
+    AFNOSUPPORT = 97,
     CONNABORTED = 103,
     CONNRESET = 104,
     NOTCONN = 107,
@@ -203,6 +207,11 @@ enum class OptName : u32 {
     BINTIME = 0x2000,
     NO_OFFLOAD = 0x4000,
     NO_DDP = 0x8000,
+};
+
+/// Option names at SocketLevel::TCP.
+enum class TcpOptName : u32 {
+    NODELAY = 0x1,
 };
 
 enum class ShutdownHow : s32 {

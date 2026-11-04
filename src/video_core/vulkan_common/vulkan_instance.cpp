@@ -18,6 +18,11 @@
 #include "core/frontend/emu_window.h"
 #include "video_core/vulkan_common/vulkan_instance.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef EGLANTINE_STREAMLINE
+#include <algorithm>
+#include <string>
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 namespace Vulkan {
 namespace {
@@ -82,6 +87,21 @@ namespace {
 #endif
     if (enable_validation && AreExtensionsSupported(dld, properties, std::array{VK_EXT_DEBUG_UTILS_EXTENSION_NAME}))
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+#ifdef EGLANTINE_STREAMLINE
+    // What NVIDIA's DLSS asks for through Streamline, where available. Static: the returned
+    // pointers must outlive this call.
+    static std::vector<std::string> streamline;
+    streamline = Streamline::InstanceExtensions();
+    for (const std::string& name : streamline) {
+        const bool available = std::ranges::any_of(properties, [&](const VkExtensionProperties& p) {
+            return name == p.extensionName;
+        });
+        const bool listed = std::ranges::any_of(extensions, [&](const char* e) { return name == e; });
+        if (available && !listed) {
+            extensions.push_back(name.c_str());
+        }
+    }
+#endif
     return extensions;
 }
 

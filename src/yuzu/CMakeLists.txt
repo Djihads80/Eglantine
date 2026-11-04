@@ -74,6 +74,8 @@ add_executable(yuzu
     configuration/configure_general.ui
     configuration/configure_graphics.cpp
     configuration/configure_graphics.h
+    configuration/nvidia_dlss_panel.cpp
+    configuration/nvidia_dlss_panel.h
     configuration/configure_graphics.ui
     configuration/configure_graphics_advanced.cpp
     configuration/configure_graphics_advanced.h
@@ -213,12 +215,15 @@ add_executable(yuzu
     util/url_request_interceptor.h
     util/util.cpp
     util/util.h
+    util/icon_search.cpp
+    util/icon_search.h
 
     user_data_migration.h user_data_migration.cpp
 
     yuzu.qrc
     yuzu.rc
     migration_dialog.h migration_dialog.cpp
+    nup_dialogs.h nup_dialogs.cpp
     migration_worker.h migration_worker.cpp
     libqt_common.h libqt_common.cpp
 
@@ -240,6 +245,13 @@ add_executable(yuzu
 )
 
 set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
+
+# Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
+# startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
+add_custom_command(TARGET yuzu POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
+    VERBATIM)
 
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
@@ -406,6 +418,8 @@ endif()
 target_link_libraries(yuzu PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(yuzu PRIVATE common core input_common frontend_common network video_core qt_common)
 target_link_libraries(yuzu PRIVATE Boost::headers Qt6::Widgets Qt6::Charts Qt6::Concurrent)
+# Unpacks NVIDIA's files from the Streamline release (nvidia_dlss_panel.cpp).
+target_link_libraries(yuzu PRIVATE ZLIB::ZLIB)
 target_link_libraries(yuzu PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
 if (ENABLE_OPENGL)
     target_link_libraries(yuzu PRIVATE glad)

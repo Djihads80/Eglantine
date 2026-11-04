@@ -72,6 +72,10 @@ void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::str
                              std::string_view vertex);
 void EmitGetPatch(EmitContext& ctx, IR::Inst& inst, IR::Patch patch);
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, std::string_view value);
+void EmitIsbeRead(EmitContext& ctx);
+void EmitIsbeWriteAttribute(EmitContext& ctx);
+void EmitIsbeWriteMapU8(EmitContext& ctx);
+void EmitIsbeWriteMapU32(EmitContext& ctx);
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, std::string_view value);
 void EmitSetSampleMask(EmitContext& ctx, std::string_view value);
 void EmitSetFragDepth(EmitContext& ctx, std::string_view value);
@@ -278,6 +282,7 @@ void EmitFPNeg64(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPSin(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPCos(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPExp2(EmitContext& ctx, IR::Inst& inst, std::string_view value);
+void EmitFPTanh(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPLog2(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPRecip32(EmitContext& ctx, IR::Inst& inst, std::string_view value);
 void EmitFPRecip64(EmitContext& ctx, IR::Inst& inst, std::string_view value);

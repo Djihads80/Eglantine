@@ -193,6 +193,27 @@ bool MultiplyLong(TranslatorVisitor& v, bool Q, Imm<2> size, Imm<1> L, Imm<1> M,
     v.V(2 * datasize, Vd, result);
     return true;
 }
+
+bool SaturatingDoublingMultiplyAccumulateLong(TranslatorVisitor& v, bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd, bool subtract) {
+    if (size == 0b00 || size == 0b11) {
+        return v.ReservedValue();
+    }
+
+    const size_t part = Q ? 1 : 0;
+    const size_t idxsize = H == 1 ? 128 : 64;
+    const size_t esize = 8 << size.ZeroExtend();
+    const auto [index, Vm] = CombineVector(size, H, L, M, Vmlo);
+
+    const IR::U128 operand1 = v.Vpart(64, Vn, part);
+    const IR::U128 operand2 = v.ir.VectorBroadcastElement(esize, v.V(idxsize, Vm), index);
+    const IR::U128 accumulator = v.V(128, Vd);
+    const IR::U128 product = v.ir.VectorSignedSaturatedDoublingMultiplyLong(esize, operand1, operand2);
+    const IR::U128 result = subtract ? v.ir.VectorSignedSaturatedSub(2 * esize, accumulator, product)
+                                     : v.ir.VectorSignedSaturatedAdd(2 * esize, accumulator, product);
+
+    v.V(128, Vd, result);
+    return true;
+}
 }  // Anonymous namespace
 
 bool TranslatorVisitor::MLA_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
@@ -326,6 +347,14 @@ bool TranslatorVisitor::SMLSL_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4
 
 bool TranslatorVisitor::SMULL_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
     return MultiplyLong(*this, Q, size, L, M, Vmlo, H, Vn, Vd, ExtraBehaviorSVXIE::None, SignednessSVXIE::Signed);
+}
+
+bool TranslatorVisitor::SQDMLAL_elt_2(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, Q, size, L, M, Vmlo, H, Vn, Vd, false);
+}
+
+bool TranslatorVisitor::SQDMLSL_elt_2(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {
+    return SaturatingDoublingMultiplyAccumulateLong(*this, Q, size, L, M, Vmlo, H, Vn, Vd, true);
 }
 
 bool TranslatorVisitor::SQDMULL_elt_2(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4> Vmlo, Imm<1> H, Vec Vn, Vec Vd) {

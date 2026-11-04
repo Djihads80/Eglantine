@@ -80,6 +80,9 @@ EmitContext::EmitContext(IR::Program& program, Bindings& bindings, const Profile
     case Stage::Compute:
         stage_name = "invocation";
         break;
+    case Stage::Task:
+    case Stage::Mesh:
+        throw NotImplementedException("GLASM task and mesh programs");
     }
     const std::string_view attr_stage{stage == Stage::Fragment ? "fragment" : "vertex"};
     const VaryingState loads{info.loads.mask | info.passthrough.mask};

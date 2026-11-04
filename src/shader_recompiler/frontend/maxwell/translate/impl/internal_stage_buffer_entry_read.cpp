@@ -125,4 +125,40 @@ void TranslatorVisitor::ISBERD(u64 insn) {
     X(isberd.dest_reg.Value(), X(isberd.src_reg.Value()));
 }
 
+// nx2 pseudo instruction for the ISBERD/ISBEWR of Switch 2 task and mesh programs (see
+// frontend/ampere/lower_to_maxwell.h). Addresses are linear bytes in the stage buffer: reads come
+// from the input attribute region, writes go to the output attribute or map region.
+void TranslatorVisitor::ISBE_nx2(u64 insn) {
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> reg;
+        BitField<8, 8, IR::Reg> address_reg;
+        BitField<20, 24, u64> offset;
+        BitField<44, 1, u64> is_32;
+        BitField<45, 1, u64> attribute;
+        BitField<48, 1, u64> write;
+    } const isbe{insn};
+
+    const Stage stage{env.ShaderStage()};
+    if (stage != Stage::Task && stage != Stage::Mesh) {
+        throw NotImplementedException("Stage buffer access outside task and mesh programs");
+    }
+    const IR::U32 address{ir.IAdd(X(isbe.address_reg), ir.Imm32(static_cast<u32>(isbe.offset)))};
+    if (isbe.write == 0) {
+        X(isbe.reg, ir.IsbeRead(address));
+        return;
+    }
+    const IR::U32 value{X(isbe.reg)};
+    if (isbe.attribute != 0) {
+        if (isbe.is_32 == 0) {
+            throw NotImplementedException("U8 stage buffer attribute write");
+        }
+        ir.IsbeWriteAttribute(address, value);
+    } else if (isbe.is_32 != 0) {
+        ir.IsbeWriteMapU32(address, value);
+    } else {
+        ir.IsbeWriteMapU8(address, value);
+    }
+}
+
 } // namespace Shader::Maxwell

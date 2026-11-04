@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <mutex>
+#include <set>
 #include <cstdlib>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -92,7 +94,28 @@ void Fermi2D::Blit() {
     const auto& args = regs.pixels_from_memory;
     constexpr s64 null_derivative = 1ULL << 32;
     Surface src = regs.src;
-    const auto bytes_per_pixel = BytesPerBlock(PixelFormatFromRenderTargetFormat(src.format));
+    // The byte size below drives both the delegation decision and the pitch alignment arithmetic,
+    // and the software blitter copies rows using it. Guessing four bytes for an undecodable
+    // format makes a pitch linear copy read past the end of the source, so refuse the blit
+    // instead of guessing.
+    const auto src_pixel_format = VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(src.format);
+    if (!src_pixel_format) {
+        static std::mutex mutex;
+        static std::set<u32> logged;
+        bool should_log = false;
+        {
+            const std::scoped_lock lock{mutex};
+            should_log = logged.size() < 8 && logged.emplace(static_cast<u32>(src.format)).second;
+        }
+        if (should_log) {
+            LOG_CRITICAL(HW_GPU,
+                         "Fermi2D: undecodable source format {:#x}, skipping the blit instead of "
+                         "guessing a pixel size",
+                         static_cast<u32>(src.format));
+        }
+        return;
+    }
+    const auto bytes_per_pixel = BytesPerBlock(*src_pixel_format);
     const bool delegate_to_gpu = src.width > 512 && src.height > 512 && bytes_per_pixel <= 8 &&
                                  src.format != regs.dst.format;
 

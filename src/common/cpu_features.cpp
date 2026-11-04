@@ -227,8 +227,10 @@ const CPUCaps g_cpu_caps = [] {
 
     // AMD CPUs have no leaf 0x15 (Zen 4 stops at 0x10): measure their invariant TSC too, or every
     // guest clock read (CNTPCT, which games read thousands of times a frame) goes through the
-    // host's much slower QueryPerformanceCounter.
-    if (caps.invariant_tsc && caps.tsc_frequency == 0) {
+    // host's much slower QueryPerformanceCounter. Intel CPUs that have the leaf but report no
+    // crystal frequency (e.g. Coffee Lake) keep the OS clock: an i5-9400F crashed at launch on the
+    // measured RDTSC clock.
+    if (max_std_fn < 0x15 && caps.invariant_tsc && caps.tsc_frequency == 0) {
         caps.tsc_frequency = X64::EstimateRDTSCFrequency();
     }
 

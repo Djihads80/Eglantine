@@ -36,11 +36,25 @@ constexpr VkDeviceSize MAX_ALIGNMENT = 256;
 #if defined(__FreeBSD__)
 constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
 #else
-constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 256_MiB;
+// 128 MiB on Windows too: 256 MiB sat mostly unused in device memory on Switch 2 titles.
+constexpr VkDeviceSize MAX_STREAM_BUFFER_SIZE = 128_MiB;
 #endif
 
 size_t GetStreamBufferSize(const Device& device) {
     if (!device.HasDebuggingToolAttached()) {
+        if (device.IsIntegrated()) {
+            // An integrated GPU's device-local host-visible heap can be no bigger than the stream
+            // buffer (Radeon 780M: 256 MiB, 243 MiB budget), which then sat over that budget.
+            // Leave a quarter of it free.
+            VkDeviceSize heap_size = 0;
+            ForEachDeviceLocalHostVisibleHeap(
+                device, [&heap_size](size_t, VkMemoryHeap& heap) {
+                    heap_size = (std::max)(heap_size, heap.size);
+                });
+            if (heap_size != 0 && heap_size <= MAX_STREAM_BUFFER_SIZE) {
+                return Common::AlignUp(heap_size * 3 / 4, MAX_ALIGNMENT);
+            }
+        }
         return MAX_STREAM_BUFFER_SIZE;
     }
 

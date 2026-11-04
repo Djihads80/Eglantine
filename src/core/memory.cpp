@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
@@ -308,10 +309,28 @@ struct Memory::Impl {
     }
 
     [[nodiscard]] inline const u8* GetSpan(const VAddr addr, const std::size_t size) const noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
+        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
+        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
+            return GetPointerSilent(addr);
+        }
+        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
+            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+            return nullptr;
+        }
+        return GetContiguousSpan(addr, size);
     }
     [[nodiscard]] inline u8* GetSpan(const VAddr addr, const std::size_t size) noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        const auto first = current_page_table->entries[addr >> YUZU_PAGEBITS].Block();
+        const auto last = current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block();
+        if (Common::PageTable::PageEntryData::CanFastSpan(first, last)) {
+            return GetPointerSilent(addr);
+        }
+        if (first != Common::PageTable::PageEntryData::INVALID_BLOCK_ID &&
+            last != Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+            return nullptr;
+        }
+        return GetContiguousSpan(addr, size);
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
@@ -464,7 +483,16 @@ struct Memory::Impl {
 
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
-            if (!Settings::values.use_reactive_flushing.GetValue() || !cached) {
+            // EDEN_NX2_NO_REACTIVE=1 drops the read traps on Switch 2 programs. Opt-in: without
+            // them a CPU read of GPU-written memory can see stale data.
+            static const bool nx2_no_reactive = [] {
+                const char* value = std::getenv("EDEN_NX2_NO_REACTIVE");
+                return value != nullptr && value[0] == '1';
+            }();
+            const bool reactive_flushing =
+                Settings::values.use_reactive_flushing.GetValue() &&
+                !(nx2_no_reactive && Settings::CurrentProgramIsSwitch2());
+            if (!reactive_flushing || !cached) {
                 perm |= Common::MemoryPermission::Read;
             }
             if (!cached) {
@@ -549,6 +577,8 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
+        // Clean cached read areas also need invalidation when reactive flushing is enabled.
+        read_trap_generation.fetch_add(1, std::memory_order_release);
         if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
             !ReadTrapsEnabled()) {
             return;
@@ -637,8 +667,19 @@ struct Memory::Impl {
 
             page_table.entries.ZeroRegion(base, end);
         } else {
-            auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
-            ASSERT(current_block != 65535);
+            u64 mapping_id = block_count.load(std::memory_order_relaxed);
+            constexpr u64 exhausted_count =
+                u64{Common::PageTable::PageEntryData::INVALID_BLOCK_ID} + 1;
+            while (mapping_id < exhausted_count &&
+                   !block_count.compare_exchange_weak(mapping_id, mapping_id + 1,
+                                                      std::memory_order_relaxed)) {
+            }
+            const u16 current_block =
+                Common::PageTable::PageEntryData::BlockIdForMapping(mapping_id);
+            if (mapping_id == Common::PageTable::PageEntryData::INVALID_BLOCK_ID) {
+                LOG_WARNING(HW_Memory,
+                            "Page table block ids are exhausted; validating spans page by page");
+            }
 
             page_table.entries.CommitRegion(base, end);
             while (base != end) {
@@ -703,6 +744,24 @@ struct Memory::Impl {
     [[nodiscard]] u8* GetPointerSilent(const Common::ProcessAddress vaddr) const {
         return GetPointerImpl(
             GetInteger(vaddr), []() {}, []() {});
+    }
+
+    [[nodiscard]] u8* GetContiguousSpan(VAddr addr, std::size_t size) const noexcept {
+        u8* const base = GetPointerSilent(addr);
+        if (base == nullptr) {
+            return nullptr;
+        }
+
+        const VAddr end = addr + size;
+        const VAddr first_page = ((addr >> YUZU_PAGEBITS) + 1) << YUZU_PAGEBITS;
+        const std::uintptr_t base_ptr = reinterpret_cast<std::uintptr_t>(base);
+        for (VAddr page = first_page; page < end; page += YUZU_PAGESIZE) {
+            const std::uintptr_t expected = base_ptr + (page - addr);
+            if (reinterpret_cast<std::uintptr_t>(GetPointerSilent(page)) != expected) {
+                return nullptr;
+            }
+        }
+        return base;
     }
 
     /// @brief Reads a particular data type out of memory at the given virtual address.
@@ -781,6 +840,19 @@ struct Memory::Impl {
             gpu_device_memory = &system.Host1x().MemoryManager();
         }
         const size_t core = system.GetCurrentHostThreadID();
+        if (core >= Core::Hardware::NUM_CPU_CORES) {
+            // A service thread has no slot in the arrays below, and it does not use a slot of a
+            // core. It keeps no area, so it asks on each read.
+            if (static std::atomic_flag logged; !logged.test_and_set(std::memory_order_relaxed)) {
+                LOG_INFO(HW_Memory, "Read of cached guest memory from a thread that is not a core");
+            }
+            Common::ScratchBuffer<u32> scratch;
+            gpu_device_memory->ApplyOpOnPointer(p, scratch, [&](DAddr address) {
+                DisarmReadTraps(v_address, size);
+                (void)system.GPU().OnCPURead(address, size);
+            });
+            return;
+        }
         auto& current_area = rasterizer_read_areas[core];
         if (const u64 generation = read_trap_generation.load(std::memory_order_acquire);
             read_area_generations[core] != generation) {
@@ -882,7 +954,7 @@ struct Memory::Impl {
 #else
     Common::HostMemory* host_buffer{};
 #endif
-    std::atomic<u16> block_count = 0;
+    std::atomic<u64> block_count = 0;
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {

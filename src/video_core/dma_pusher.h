@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <optional>
 #include <span>
@@ -117,6 +118,14 @@ struct CommandList final {
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
     /// EDEN_NX2_PB_CHECK: hash of each entry's words when it was submitted.
     std::vector<u64> submit_hashes;
+    /// The entries' words when they were submitted (NX2), each entry's at submitted_offsets[i]:
+    /// executed instead of the memory, which the game may already be refilling for a later frame.
+    std::vector<CommandHeader> submitted_words;
+    std::vector<u32> submitted_offsets;
+    /// DmaPusher::suspensions when the words were copied. A list copied during a suspension, or
+    /// that waited behind one, reads memory instead: games write the commands it runs before they
+    /// release the acquire.
+    u64 snapshot_suspensions = 0;
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
@@ -135,6 +144,10 @@ inline u64 HashPushbufferWords(std::span<const u32> words) {
 /// details on this implementation.
 class DmaPusher final {
 public:
+    /// Counts suspensions on a semaphore acquire and the resumes after them, so it is odd while
+    /// the channel is suspended (see CommandList::snapshot_suspensions).
+    std::atomic<u64> suspensions{0};
+
     explicit DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_);
     ~DmaPusher();
 
@@ -182,6 +195,15 @@ public:
     void DumpCurrentEntry(const char* reason);
     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
+    /// Whether the entry lies on device pages the GPU has written (NX2).
+    bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
+    /// Reads a command list on pages the GPU wrote into command_headers, from the copies the
+    /// buffer cache made after the work that wrote them or from guest memory for pages flushed
+    /// since. False when not all are current (or the list isn't GPU-written): the caller drains,
+    /// flushes and reads guest memory.
+    bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);
+    /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
+    void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
 
 private:
 

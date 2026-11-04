@@ -64,11 +64,19 @@ public:
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
 
+    // Selects, Polls and blocking eventfd reads and writes that have to wait are deferred, so they
+    // hold none of the server's threads. The notifier signals the deferral event once they may be
+    // done, which retries them; it has to be set up before the server manager takes requests.
+    const auto select_notifier = BSD_USA::CreateSelectNotifier(system, *server_manager);
+
     server_manager->RegisterNamedService("ethc:c", std::make_shared<ETHC_C>(system), 5);
     server_manager->RegisterNamedService("ethc:i", std::make_shared<ETHC_I>(system), 5);
-    server_manager->RegisterNamedService("bsd:s", std::make_shared<BSD_USA>(system, "bsd:s", false), 0x7E);
-    server_manager->RegisterNamedService("bsd:u", std::make_shared<BSD_USA>(system, "bsd:u", true), 0x0f);
-    server_manager->RegisterNamedService("bsd:a", std::make_shared<BSD_USA>(system, "bsd:a", true), 0x17);
+    server_manager->RegisterNamedService(
+        "bsd:s", std::make_shared<BSD_USA>(system, "bsd:s", false, select_notifier), 0x7E);
+    server_manager->RegisterNamedService(
+        "bsd:u", std::make_shared<BSD_USA>(system, "bsd:u", true, select_notifier), 0x0f);
+    server_manager->RegisterNamedService(
+        "bsd:a", std::make_shared<BSD_USA>(system, "bsd:a", true, select_notifier), 0x17);
     server_manager->RegisterNamedService("bsd:nu", std::make_shared<BSD_NU>(system), 4);
     server_manager->RegisterNamedService("bsdcfg", std::make_shared<BSDCFG>(system, "bsdcfg"));
     server_manager->RegisterNamedService("ifcfg", std::make_shared<BSDCFG>(system, "ifcfg"));

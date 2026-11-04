@@ -64,6 +64,8 @@ void SetupDirtyRenderTargets(Maxwell3D::DirtyState::Tables& tables) {
 void SetupDirtyShaders(Maxwell3D::DirtyState::Tables& tables) {
     FillBlock(tables[0], OFF(pipelines), NUM(pipelines[0]) * Maxwell3D::Regs::MaxShaderProgram,
               Shaders);
+    // Task and mesh programs are translated with the mesh registers.
+    FillBlock(tables[1], Maxwell3D::Regs::MeshControl, 4, Shaders);
 }
 } // Anonymous namespace
 

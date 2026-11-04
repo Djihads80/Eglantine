@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <span>
@@ -21,6 +23,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 VK_DEFINE_HANDLE(VmaAllocator)
+VK_DEFINE_HANDLE(VmaPool)
 
 // Define all features which may be used by the implementation here.
 // Vulkan version in the macro describes the minimum version required for feature availability.
@@ -66,6 +69,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
     FEATURE(EXT, 4444Formats, 4444_FORMATS, format_a4b4g4r4)                                       \
     FEATURE(EXT, IndexTypeUint8, INDEX_TYPE_UINT8, index_type_uint8)                               \
     FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \
+    FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)                                             \
     FEATURE(EXT, PrimitiveTopologyListRestart, PRIMITIVE_TOPOLOGY_LIST_RESTART,                    \
             primitive_topology_list_restart)                                                       \
     FEATURE(EXT, ProvokingVertex, PROVOKING_VERTEX, provoking_vertex)                              \
@@ -264,6 +268,17 @@ public:
         return allocator;
     }
 
+    /// Allocations kept out of the default blocks, which then hold images only: churned buffers
+    /// and long-lived sparse pages left holes the texture cache's collector couldn't drain.
+    enum class SeparatePool : u32 {
+        SparsePages,
+        DeviceBuffers,
+    };
+    static constexpr VkDeviceSize SeparatePoolBlockSize = 16ULL << 20;
+
+    /// The pool of that kind for a memory type, created on first use (null if that failed).
+    VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type) const;
+
     /// Returns the logical device.
     const vk::Device& GetLogical() const {
         return logical;
@@ -272,6 +287,11 @@ public:
     /// Returns the physical device.
     vk::PhysicalDevice GetPhysical() const {
         return physical;
+    }
+
+    /// Returns the instance the device was created from.
+    VkInstance GetInstance() const {
+        return instance;
     }
 
     VkPipelineCache StaticPipelineCache() const noexcept {
@@ -416,6 +436,11 @@ FN_MAX_LIMIT_LIST
         return is_optimal_astc_supported;
     }
 
+    /// Returns true if geometry shaders are supported.
+    bool IsGeometryShaderSupported() const {
+        return features.features.geometryShader;
+    }
+
     /// Returns true if BCn is natively supported.
     bool IsOptimalBcnSupported() const {
         return features.features.textureCompressionBC;
@@ -546,6 +571,11 @@ FN_MAX_LIMIT_LIST
         return features.features.shaderStorageImageReadWithoutFormat;
     }
 
+    /// Returns true if storage images of the extended formats (e.g. R16F, RG16F, R8) are supported.
+    bool IsStorageImageExtendedFormatsSupported() const {
+        return features.features.shaderStorageImageExtendedFormats;
+    }
+
     /// Returns true if shader int64 is supported.
     bool IsShaderInt64Supported() const {
         return features.features.shaderInt64;
@@ -631,6 +661,12 @@ FN_MAX_LIMIT_LIST
     /// Returns true if the device supports VK_KHR_shader_quad_control.
     bool IsKhrShaderQuadControlSupported() const {
         return extensions.shader_quad_control && features.shader_quad_control.shaderQuadControl;
+    }
+
+    /// Returns true if the device supports task and mesh shaders (VK_EXT_mesh_shader).
+    bool IsExtMeshShaderSupported() const {
+        return extensions.mesh_shader && features.mesh_shader.taskShader &&
+               features.mesh_shader.meshShader;
     }
 
     /// Returns true if the device supports VK_KHR_image_format_list.
@@ -951,6 +987,11 @@ FN_MAX_LIMIT_LIST
         return 0x00010300U;
     }
 
+    /// Returns true for an integrated GPU (its device-local memory is system memory).
+    bool IsIntegrated() const {
+        return is_integrated;
+    }
+
     /// Returns true when a known debugging tool is attached.
     bool HasDebuggingToolAttached() const {
         return has_renderdoc || has_nsight_graphics || has_radeon_gpu_profiler;
@@ -993,8 +1034,14 @@ FN_MAX_LIMIT_LIST
 
     /// The driver's current memory budget for this process (VK_EXT_memory_budget), in
     /// GetDeviceMemoryUsage() terms: the usage at which the main device-local heap reaches its
-    /// budget. 0 without the extension.
+    /// budget. 0 without the extension. The unused part of the allocator's blocks is not
+    /// subtracted: see GetDeviceMemorySlack().
     u64 GetDeviceMemoryBudget() const;
+
+    /// Memory the allocator holds from the driver in the main device-local heap but has no
+    /// allocation in (the unused part of its blocks). GetDeviceMemoryUsage() does not count it,
+    /// yet the driver does: with the heap at its budget it is not available to new images.
+    u64 GetDeviceMemorySlack() const;
 
     u32 GetSetsPerPool() const {
         return sets_per_pool;
@@ -1129,6 +1176,12 @@ FN_MAX_LIMIT_LIST
         return properties.driver.driverID == VK_DRIVER_ID_MOLTENVK;
     }
 
+    /// The multiple vertex input binding strides must be. Metal needs 4 bytes, which MoltenVK
+    /// reports as minVertexInputBindingStrideAlignment through VK_KHR_portability_subset.
+    u32 GetMinVertexInputBindingStrideAlignment() const noexcept {
+        return IsMoltenVK() ? 4 : 1;
+    }
+
     NvidiaArchitecture GetNvidiaArch() const noexcept {
         return nvidia_arch;
     }
@@ -1179,6 +1232,8 @@ private:
 private:
     VkInstance instance;         ///< Vulkan instance.
     VmaAllocator allocator{};    ///< VMA allocator.
+    mutable std::mutex separate_pools_mutex;
+    mutable std::array<std::array<VmaPool, VK_MAX_MEMORY_TYPES>, 2> separate_pools{};
     vk::DeviceDispatch dld;      ///< Device function pointers.
     vk::PhysicalDevice physical; ///< Physical device.
     vk::Device logical;          ///< Logical device.
@@ -1281,6 +1336,8 @@ private:
     // Telemetry parameters
     std::set<std::string, std::less<>> supported_extensions; ///< Reported Vulkan extensions.
     std::set<std::string, std::less<>> loaded_extensions;    ///< Loaded Vulkan extensions.
+    bool streamline_extensions{}; ///< NVIDIA DLSS's extensions are loaded.
+    bool streamline_attached{};   ///< Streamline has this device.
     std::vector<size_t> valid_heap_memory;                   ///< Heaps used.
     size_t main_heap{};       ///< Largest device-local heap, where images live.
     u64 heap_size_limit{};    ///< EDEN_NX2_VRAM_LIMIT_MIB for device-local heaps, 0 if unset.
