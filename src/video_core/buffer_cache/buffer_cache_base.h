@@ -81,6 +81,9 @@ enum class ObtainBufferOperation : u32 {
     MarkAsWritten = 1,
     DiscardWrite = 2,
     MarkQuery = 3,
+    /// The buffer is written on the GPU by what follows: record the write tick (a direct host
+    /// read waits for it) without marking the range modified or trapping its reads.
+    NoteGpuWrite = 4,
 };
 
 static constexpr BufferId NULL_BUFFER_ID{0};

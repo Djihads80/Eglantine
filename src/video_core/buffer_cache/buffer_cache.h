@@ -448,6 +448,9 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
     case ObtainBufferOperation::MarkAsWritten:
         MarkWrittenBuffer(buffer_id, device_addr, size);
         break;
+    case ObtainBufferOperation::NoteGpuWrite:
+        NoteGpuWrite(slot_buffers[buffer_id]);
+        break;
     case ObtainBufferOperation::DiscardWrite: {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
