@@ -44,6 +44,13 @@ struct LoweredProgram {
     explicit operator bool() const { return error.empty(); }
 };
 
+struct LoweringOptions {
+    bool geometry{};
+    /// Lower matrix multiplies (HMMA) too; see LowerToMaxwellWith.
+    bool tensor{};
+    u64 native_code_address{};
+};
+
 // A MOV form the Maxwell frontend reads, for lowered native programs only, as a copy between
 // register banks of 256 (bank 0 = R0-R254; banks 1 and 2 exist only in the IR).
 inline u64 NativeRegisterCopy(u32 destination_bank, u32 destination, u32 source_bank, u32 source) {
@@ -153,7 +160,8 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
-                                          bool geometry, bool tensor = false) {
+                                          LoweringOptions options = {}) {
+    const bool geometry = options.geometry, tensor = options.tensor;
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
     const u32 high_uniform_base = 216 - high_uniforms;
@@ -876,7 +884,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x886: { // VOTEU ballot and independent uniform predicate output.
             const u32 output = insn.Bits(81, 3), target = insn.Bits(16, 8);
-            if ((target >= 16 && target != 63) || insn.words[1] ||
+            if ((target >= 28 && target != 63) || insn.words[1] ||
                 insn.Bits(72, 2) > 2 || native_predicate != 7)
                 return fail(index, "native uniform vote mode");
             const u32 temporary = output == 7 ? 7 : 6 - output;
@@ -1030,11 +1038,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{high_result ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
             break;
         }
-        case 0xb82: { // LDC.U8/32/64 indexed byte offset; bits 78-79 the mode as Maxwell's (2 = IS)
+        case 0xb82: { // LDC indexed byte offset; bits 78-79 the mode as Maxwell's (2 = IS)
             // .IS: Ra + offset addresses all constant buffers as one space, the buffer in its high
             // half (Kirby Air Riders' vertex shaders), which Eden's Maxwell LDC implements.
             const u32 width = insn.Bits(73, 3), mode = insn.Bits(78, 2);
-            if ((width != 0 && width != 4 && width != 5) || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
+            if (width > 5 || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
                 bank() >= 18 ||
                 (width == 5 && ((dest & 1) || dest >= 254)))
                 return fail(index, fmt::format("native indexed constant load mode: width={} mode={} bit91={} bank={}", width, mode, insn.Bits(91, 1), bank()));
@@ -1803,7 +1811,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool small = mode == 0x00212800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
-            if ((!half && !small && !floor && !nearest && (mode & ~0x10100U) != 0x0020f000) ||
+            const bool round_up = (mode & ~0x10100U) == 0x0020b000;
+            const bool signed_byte = opcode == 0x305 && mode == 0x0021e100;
+            const bool short_trunc = opcode == 0x305 && (mode & ~0x100U) == 0x0021e800;
+            if ((!half && !small && !floor && !nearest && !round_up && !signed_byte && !short_trunc &&
+                 (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
@@ -1822,7 +1834,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                      (u64{source} << 20) | (u64{7} << 39) | (u64{7} << 48));
                 emit(0x5c40000000000000ULL | predicate | 250 | (u64{source} << 8) |
                      (u64{250} << 20) | (u64{7} << 48));
-                if (!small) {
+                if (!small && !short_trunc) {
                 mov_imm(252, 0x4f800000);
                 emit(0x5800000000000000ULL | predicate | 251 | (u64{250} << 8) |
                      (u64{252} << 20) | (u64{7} << 39) | (u64{6} << 48));
@@ -1832,10 +1844,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 }
                 source = 250;
             }
-            emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
+            emit(base(0x5cb0000000000000ULL) | (u64{small || signed_byte || short_trunc ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
-            if (!is_signed && !small) {
+                 (u64{small || nearest ? 0U : floor ? 1U : round_up ? 2U : 3U} << 39) |
+                 (u64{insn.Bits(80, 1)} << 44));
+            if (signed_byte) {
+                // Convert to signed 16 bits, then saturate to the signed 8-bit range.
+                emit(base(0x5ce0000000000000ULL) | (u64{1} << 10) | (u64{1} << 12) |
+                     (u64{1} << 13) | (dest << 20) | (u64{1} << 50));
+            }
+            if (!is_signed && !small && !short_trunc) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
             }
@@ -3192,20 +3210,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             break;
         }
-        case 0x34e: { // LEPC Rd: the instruction's own address (64-bit, in Rd and Rd + 1).
-            // In geometry shaders it sets up an exit stub with 0x357; per thread nothing reads it.
+        case 0x34e: { // LEPC: load this native instruction's address as a register pair.
             if (!geometry) return fail(index, "unsupported native opcode");
-            if (insn.words[1] || insn.words[2]) return fail(index, "native LEPC mode");
-            if (dest != 255) {
-                emit(base(0x0100000000000000ULL) | (u64{15} << 12) | (u64{index * 16} << 20));
-                if (dest + 1 < 255) {
-                    emit(0x0100000000000000ULL | predicate | (dest + 1) | (u64{15} << 12));
-                }
-            }
+            if (insn.Bits(24, 8) || insn.words[1] || insn.words[2] || dest == 254 ||
+                native_predicate != 7)
+                return fail(index, "native program counter load mode");
+            if (dest == 255) break;
+            const u64 address = options.native_code_address + u64{index} * sizeof(Instruction);
+            mov_imm(static_cast<u32>(dest), static_cast<u32>(address));
+            mov_imm(static_cast<u32>(dest) + 1, static_cast<u32>(address >> 32));
             break;
         }
-        case 0x357: case 0x957: // Geometry exit stub: install (0x357) and finish (0x957) it.
-            // The shader's own EXIT follows; per thread there is nothing to finish.
+        case 0x357: // Set the native geometry exit stub; host geometry invocations need no stub.
+            if (!geometry) return fail(index, "unsupported native opcode");
+            if (insn.Bits(16, 8) || insn.words[1] || insn.words[2] || native_predicate != 7)
+                return fail(index, "native geometry exit setup mode");
+            break;
+        case 0x957: // Finish the geometry exit stub; the shader's own EXIT follows.
             if (!geometry) return fail(index, "unsupported native opcode");
             emit(0x50b0000000000f00ULL | predicate);
             break;
@@ -3323,13 +3344,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     return fail(static_cast<u32>(code.size()), main_exited ? "native program lacks captured library return" : "native program has no unconditional EXIT");
 }
 
-/// `tensor` lowers matrix multiplies (HMMA) too; see LowerToMaxwellWith.
-inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, bool geometry = false,
-                                     bool tensor = false) {
+inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
+                                      LoweringOptions options = {}) {
     // Programs using uniform registers above UR27 are lowered again with mirrors for them.
     u32 high_uniforms = 0;
     for (;;) {
-        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms, geometry, tensor);
+        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms, options);
         if (lowered || lowered.high_uniform_registers <= high_uniforms) return lowered;
         high_uniforms = lowered.high_uniform_registers;
     }

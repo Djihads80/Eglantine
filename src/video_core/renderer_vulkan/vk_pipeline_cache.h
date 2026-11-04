@@ -116,6 +116,7 @@ public:
     ~PipelineCache();
 
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
+    [[nodiscard]] bool IsIndirectResetShader() const;
 
     void TickFrame();
 
