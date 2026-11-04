@@ -15,6 +15,7 @@
 
 #include "common/common_types.h"
 #include "common/div_ceil.h"
+#include "shader_recompiler/backend/nvn_storage_descriptor.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
@@ -1000,7 +1001,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             return;
         }
         for (size_t index = 0; index < num_buffers; ++index) {
-            if (!info.nvn_buffer_used[index]) {
+            if (!UsesNvnStorageDescriptor(info, info.storage_buffers_descriptors[index])) {
                 continue;
             }
             const auto& ssbo{info.storage_buffers_descriptors[index]};

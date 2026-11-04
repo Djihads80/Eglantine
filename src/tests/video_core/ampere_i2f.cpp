@@ -18,7 +18,7 @@ bool Contains(const Shader::Ampere::LoweredProgram& lowered, u64 instruction) {
            lowered.instructions.end();
 }
 
-TEST_CASE("Ampere I2F converts signed 16-bit sources", "[video_core][ampere]") {
+TEST_CASE("Ampere I2F.F32.S16 lowers to a signed 16-bit Maxwell I2F", "[video_core][ampere]") {
     // I2F.F32.S16 R1, R1 and R3, R3 (Mario Tennis Fever's text pixel shaders).
     const std::array<Instruction, 3> code{{
         {{0x00017306, 0x00000001, 0x00101400, 0x020ea200}},
