@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <limits>
 #include <map>
 #include <type_traits>
 
@@ -26,6 +27,7 @@ public:
     ~RangeMap() = default;
 
     void Map(KeyTBase address, KeyTBase address_end, ValueT value) {
+        cached_begin = cached_end = 0;
         KeyT new_address = static_cast<KeyT>(address);
         KeyT new_address_end = static_cast<KeyT>(address_end);
         if (new_address < 0) {
@@ -41,10 +43,13 @@ public:
         Map(address, address_end, null_value);
     }
 
-    [[nodiscard]] size_t GetContinuousSizeFrom(KeyTBase address) const {
+    [[nodiscard]] size_t GetContinuousSizeFrom(KeyTBase address) {
         const KeyT new_address = static_cast<KeyT>(address);
         if (new_address < 0) {
             return 0;
+        }
+        if (new_address >= cached_begin && new_address < cached_end) {
+            return cached_end - new_address;
         }
         return ContinuousSizeInternal(new_address);
     }
@@ -62,16 +67,15 @@ private:
     using IteratorType = typename MapType::iterator;
     using ConstIteratorType = typename MapType::const_iterator;
 
-    size_t ContinuousSizeInternal(KeyT address) const {
+    size_t ContinuousSizeInternal(KeyT address) {
         const auto it = GetFirstElementBeforeOrOn(address);
         if (it == container.end() || it->second == null_value) {
             return 0;
         }
         const auto it_end = std::next(it);
-        if (it_end == container.end()) {
-            return (std::numeric_limits<KeyT>::max)() - address;
-        }
-        return it_end->first - address;
+        cached_begin = it->first;
+        cached_end = it_end == container.end() ? (std::numeric_limits<KeyT>::max)() : it_end->first;
+        return cached_end - address;
     }
 
     ValueT GetValueInternal(KeyT address) const {
@@ -137,6 +141,8 @@ private:
 
     ValueT null_value;
     MapType container;
+    KeyT cached_begin{};
+    KeyT cached_end{};
 };
 
 } // namespace Common
