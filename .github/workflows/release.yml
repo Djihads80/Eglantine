@@ -143,7 +143,7 @@ jobs:
           if ! gh release create "$TAG" release-assets/* "${flags[@]}"; then
             echo "Release creation failed; cleaning up tag $TAG..." >&2
             gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
-            git push origin --delete "$TAG" 2> /dev/null || true
+            git push origin --delete "refs/tags/$TAG" 2> /dev/null || true
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" 2> /dev/null || true
             exit 1
           fi
