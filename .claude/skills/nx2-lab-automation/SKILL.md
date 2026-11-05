@@ -54,7 +54,8 @@ $L stop
 
 - Live keys: `eden-cli` polls `<EDEN_NX2_DIAG_DIR>/keys.txt` (`<scancode> [ms]` lines; it renames
   and deletes the file). `EDEN_NX2_KEY_SCRIPT` is the timed, at-launch alternative;
-  `EDEN_NX2_KEY_RECORD=<file>` records a session in the same format.
+  `EDEN_NX2_KEY_RECORD=<file>` records a session in the same format. A `gpu low` / `gpu high`
+  line sets the GPU accuracy mid-game and applies it, like the Qt app's Change GPU Mode hotkey.
 - `EDEN_NX2_HIDE_WINDOW=1` (set by `--hidden`) creates the window hidden and unfocusable.
 - Screenshots are 1280x720 TGA, the presented frame. `capture` converts to PNG without Pillow; look
   at it with vision, not just the stats.
@@ -84,6 +85,11 @@ $L stop
 - **Stale results across runs:** capture numbers restart per process. `launch` clears the old
   `capture-*.tga`/`draw-list-*.tsv`, and `capture` matches by mtime.
 - **Hidden runs still use the GPU fully:** keep `--max-seconds`.
+- **Reproducing a hang after a mid-game settings switch:** accurate GPU mode stops the GPU split
+  and fast mode restarts it. Write `gpu high`, then `gpu low`, to `keys.txt`, and run with
+  `--env EDEN_NX2_SPLIT_VERIFY=1`: "Split front register" warnings right after the restart mean the
+  front's macro state went stale. The verifier resyncs what it finds, so verified runs don't hang;
+  compare the difference counts instead.
 - The shader lab browser UI (`EDEN_NX2_LAB=open`) and `lab_ctl` share the same files and can run
   together.
 
