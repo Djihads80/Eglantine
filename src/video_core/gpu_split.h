@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -160,6 +161,39 @@ public:
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
     bool WaitForWriters();
+    /// Waits until the back executed what was sent before `position`. Returns whether it waited.
+    bool WaitForPosition(u64 position);
+    /// Front thread: the ring position after the last compute or copy work sent.
+    [[nodiscard]] u64 WriterPosition() const {
+        return last_writer_position;
+    }
+
+    /// Front thread: the entry just sent writes this device range when the back runs it (a
+    /// report, an inline upload), not through the GPU. MME DMA reads of it wait for it.
+    void NotePendingWrite(u64 device_address, u64 size) {
+        if (size == 0) {
+            return;
+        }
+        for (u64 page = device_address >> PendingPageBits;
+             page <= (device_address + size - 1) >> PendingPageBits; ++page) {
+            u64& slot = pending_writes[PendingSlot(page)];
+            slot = (std::max)(slot, write_position);
+        }
+    }
+    /// Front thread: as NotePendingWrite, for a range too large to list: every read waits for it.
+    void NotePendingWriteAnywhere() {
+        pending_anywhere = write_position;
+    }
+    /// Front thread: the ring position after the last such write to the range sent (pages may
+    /// share a slot: never less than the true one), 0 for none.
+    [[nodiscard]] u64 PendingWrite(u64 device_address, u64 size) const {
+        u64 position = pending_anywhere;
+        for (u64 page = device_address >> PendingPageBits;
+             size != 0 && page <= (device_address + size - 1) >> PendingPageBits; ++page) {
+            position = (std::max)(position, pending_writes[PendingSlot(page)]);
+        }
+        return position;
+    }
 
 private:
     enum class Kind : u64 {
@@ -231,6 +265,13 @@ private:
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    static constexpr u64 PendingPageBits = 12;
+    static constexpr size_t PendingSlots = 4096;
+    [[nodiscard]] static size_t PendingSlot(u64 page) {
+        return static_cast<size_t>((page * 0x9e3779b97f4a7c15ULL) >> 52);
+    }
+    std::array<u64, PendingSlots> pending_writes{};
+    u64 pending_anywhere{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.

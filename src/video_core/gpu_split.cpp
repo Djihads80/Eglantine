@@ -246,6 +246,8 @@ void GpuSplit::Stop() {
     ring.reset();
     write_position = 0;
     last_writer_position = 0;
+    pending_writes.fill(0);
+    pending_anywhere = 0;
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -392,8 +394,12 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
 }
 
 bool GpuSplit::WaitForWriters() {
+    return WaitForPosition(last_writer_position);
+}
+
+bool GpuSplit::WaitForPosition(u64 position) {
     FlushPending();
-    const u64 target = std::min(last_writer_position, write_position);
+    const u64 target = std::min(position, write_position);
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
         return false;

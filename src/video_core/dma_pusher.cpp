@@ -525,10 +525,12 @@ void DmaPusher::CallMethod(u32 argument) {
             ReportUnboundSubchannel();
             return;
         }
-        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        // Compute dispatches, DMA copies and inline uploads write what the front reads (the
+        // command lists ReadGpuWrittenCommands reads, MME DMA reads).
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+                            engine_type == Engines::EngineTypes::MaxwellDMA ||
+                            engine_type == Engines::EngineTypes::KeplerMemory;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -584,10 +586,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             ReportUnboundSubchannel();
             return;
         }
-        // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
+        // Compute dispatches, DMA copies and inline uploads write what the front reads (the
+        // command lists ReadGpuWrittenCommands reads, MME DMA reads).
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+                            engine_type == Engines::EngineTypes::MaxwellDMA ||
+                            engine_type == Engines::EngineTypes::KeplerMemory;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();

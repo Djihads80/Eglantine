@@ -62,8 +62,18 @@ void DrainBack() {
 
 using Ledger = Nx2SemaphoreLedger;
 
+// A semaphore write the front just queued for the back: MME DMA reads of it wait for it.
+void NotePendingSemaphore(DmaPusher& dma_pusher, GPUVAddr address) {
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+            split.NotePendingWrite(*device, 16);
+        }
+    }
+}
+
 // Records a 32-bit puller release the front just queued for the back (semaphore_ledger.h).
 void NoteRelease(DmaPusher& dma_pusher, GPUVAddr address, u32 payload) {
+    NotePendingSemaphore(dma_pusher, address);
     if (!Ledger::Enabled()) {
         return;
     }
@@ -73,6 +83,7 @@ void NoteRelease(DmaPusher& dma_pusher, GPUVAddr address, u32 payload) {
 }
 
 void ForgetRelease(DmaPusher& dma_pusher, GPUVAddr address) {
+    NotePendingSemaphore(dma_pusher, address);
     if (!Ledger::Enabled()) {
         return;
     }
