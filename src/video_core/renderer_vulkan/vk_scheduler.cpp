@@ -79,7 +79,7 @@ bool Scheduler::DeferFlush() {
         const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
         return value == nullptr ? s64{500} : static_cast<s64>(std::atoll(value));
     }();
-    if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
+    if (interval_us <= 0 || !defer_flush_allowed || !VideoCommon::GpuSplit::OnBackThread() ||
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
         return false;
     }

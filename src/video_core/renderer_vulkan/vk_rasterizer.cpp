@@ -1470,7 +1470,16 @@ void RasterizerVulkan::SignalReference() {
 }
 
 void RasterizerVulkan::ReleaseFences(bool force) {
+    if (!force || !VideoCommon::GpuSplit::OnBackThread()) {
+        fence_manager.WaitPendingFences(force);
+        return;
+    }
+    // The fence thread waits for the back to submit the fences it defers (DeferFlush), which it
+    // does when idle, not while it waits here for them.
+    scheduler.FlushDeferred();
+    const bool allowed = scheduler.AllowDeferFlush(false);
     fence_manager.WaitPendingFences(force);
+    scheduler.AllowDeferFlush(allowed);
 }
 
 void RasterizerVulkan::FlushAndInvalidateRegion(DAddr addr, u64 size,
