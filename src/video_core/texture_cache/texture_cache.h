@@ -2907,6 +2907,11 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
 
 template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
+    if (info.size.width == 0 || info.size.height == 0 || info.size.depth == 0 ||
+        info.size.width > 65536 || info.size.height > 65536 || info.size.depth > 2048 ||
+        info.resources.layers <= 0 || info.resources.layers > 2048) {
+        return NULL_IMAGE_VIEW_ID;
+    }
     ImageId image_id{};
     bool delete_state = has_deleted_images;
     do {

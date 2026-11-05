@@ -66,7 +66,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 {
                     Profile::Scope scope{Profile::Zone::ResumePending};
-                    scheduler.ResumePending(system.GPU());
+                    if (scheduler.ResumePending(system.GPU())) {
+                        last_progress = std::chrono::steady_clock::now();
+                    }
                 }
                 if (!state.queue.TryPop(next)) {
                     // The CPU usually releases the semaphore soon after: poll for half a
