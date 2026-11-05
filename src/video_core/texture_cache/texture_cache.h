@@ -3032,7 +3032,9 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
 template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
     if (info.size.width == 0 || info.size.height == 0 || info.size.depth == 0) {
-        return NULL_IMAGE_VIEW_ID;
+        // No render target, as for a garbage one below: NULL_IMAGE_VIEW_ID is the null view
+        // (slot 0, a valid id), which BindRenderTarget would attach, and it has no format.
+        return ImageViewId{};
     }
     // Render target registers filled by garbage commands (sizes like 2147487260x2147485323, or
     // 0x0 with 36232 layers): creating the image would abort.
