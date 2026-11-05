@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <numbers>
+#include <string>
 
 #include "common/logging.h"
 #include "input_common/helpers/dualsense_haptics.h"
@@ -50,6 +51,24 @@ f32 SanitizeAmplitude(f32 amplitude) {
     return std::sqrt(std::clamp(amplitude, 0.0f, 1.0f));
 }
 
+int CountWiredDualSenses() {
+    int gamepad_count = 0;
+    SDL_JoystickID* gamepads = SDL_GetGamepads(&gamepad_count);
+    int count = 0;
+    for (int i = 0; gamepads != nullptr && i < gamepad_count; ++i) {
+        if (SDL_GetGamepadTypeForID(gamepads[i]) != SDL_GAMEPAD_TYPE_PS5) {
+            continue;
+        }
+        SDL_Gamepad* gamepad = SDL_GetGamepadFromID(gamepads[i]);
+        if (gamepad != nullptr &&
+            SDL_GetGamepadConnectionState(gamepad) == SDL_JOYSTICK_CONNECTION_WIRED) {
+            ++count;
+        }
+    }
+    SDL_free(gamepads);
+    return count;
+}
+
 f32 SanitizeFrequency(f32 frequency, f32 fallback) {
     if (!(frequency > 0.0f)) {
         return fallback;
@@ -80,6 +99,7 @@ bool DualSenseHaptics::Open() {
     int device_count = 0;
     SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&device_count);
     SDL_AudioDeviceID haptics_device = 0;
+    std::string haptics_device_name;
     int candidate_count = 0;
     for (int i = 0; devices != nullptr && i < device_count; ++i) {
         const char* name = SDL_GetAudioDeviceName(devices[i]);
@@ -92,22 +112,26 @@ bool DualSenseHaptics::Open() {
             continue;
         }
         haptics_device = devices[i];
+        haptics_device_name = name;
         ++candidate_count;
     }
     SDL_free(devices);
 
     // SDL doesn't tell which audio device belongs to which gamepad. With more than one wired
     // DualSense the haptics could end up on the wrong controller, so use standard rumble instead.
-    if (candidate_count != 1) {
-        if (candidate_count > 1) {
-            LOG_DEBUG(Input, "Found {} DualSense audio devices, using standard rumble",
-                      candidate_count);
+    // Gamepads are counted too, since a second controller's audio device can show up late.
+    const int gamepad_count = CountWiredDualSenses();
+    if (candidate_count != 1 || gamepad_count != 1) {
+        if (candidate_count > 1 || gamepad_count > 1) {
+            LOG_DEBUG(Input,
+                      "Found {} DualSense audio devices and {} wired DualSense controllers, "
+                      "using standard rumble",
+                      candidate_count, gamepad_count);
         }
         device_in_use = false;
         return false;
     }
-    LOG_INFO(Input, "Using audio device \"{}\" for DualSense haptics",
-             SDL_GetAudioDeviceName(haptics_device));
+    LOG_INFO(Input, "Using audio device \"{}\" for DualSense haptics", haptics_device_name);
 
     const SDL_AudioSpec spec{
         .format = SDL_AUDIO_F32,
