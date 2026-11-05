@@ -389,11 +389,12 @@ void BufferCache<P>::DownloadRangesMemory(std::span<const std::pair<DAddr, u64>>
     }
     runtime.Finish();
     const u8* const mapped_memory = download_staging.mapped_span.data();
+    const Common::RangeSet<DAddr> cpu_written = PendingCpuWriteRanges();
     for (const Download& download : downloads) {
         const DAddr device_addr = slot_buffers[download.buffer_id].CpuAddr() + download.copy.src_offset;
-        device_memory.WriteBlockUnsafe(
-            device_addr, mapped_memory + (download.copy.dst_offset - download_staging.offset),
-            download.copy.size);
+        WriteDownloadedMemory(cpu_written, device_addr,
+                              mapped_memory + (download.copy.dst_offset - download_staging.offset),
+                              download.copy.size);
     }
 }
 
@@ -1334,13 +1335,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     }();
     // Native programs keep tables next to their code in uniform banks read with indirect offsets
     // (Splatoon Raiders: the dialogue box corners in c1). Writes to that memory can go unnoticed by
-    // the memory tracker, leaving stale host contents, so upload such a bank again on every bind:
-    // once per frame left Ocarina of Time's per-draw material data stale for a frame now and then
-    // (white flashes). EDEN_NX2_BANK_REUPLOAD: 0 off, 1 once per frame, 2 every bind of a 64 KiB
-    // bank (the default), 3 every bind of any native bank (to test banks of other sizes).
+    // the memory tracker, leaving stale host contents, so upload such a bank again once per frame
+    // by default (with 4 KiB page-level shadow diffing so unchanged pages stay clean).
+    // EDEN_NX2_BANK_REUPLOAD: 0 off, 1 once per frame (the default), 2 every bind of a 64 KiB
+    // bank, 3 every bind of any native bank.
     static const char bank_mode = [] {
         const char* v = std::getenv("EDEN_NX2_BANK_REUPLOAD");
-        return v != nullptr ? v[0] : '2';
+        return v != nullptr ? v[0] : '1';
     }();
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
                              gpu_memory->UsesNativeTiling() &&

@@ -55,7 +55,9 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/memory_manager.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -1358,7 +1360,10 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
+    // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
+    // the longer DeferFlush interval (#161).
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
+        (VideoCommon::Nx2Perf::Enabled() || !scheduler.DeferFlush())) {
         scheduler.Flush();
     }
 }
@@ -1633,6 +1638,12 @@ void RasterizerVulkan::WaitForIdle() {
 }
 
 void RasterizerVulkan::FragmentBarrier() {
+    // The next draw breaks the render pass only if it reads what this one wrote (#161): Ocarina
+    // ended ~5,900 render passes a second here.
+    if (VideoCommon::Nx2Perf::Enabled()) {
+        scheduler.DeferFragmentBarrier();
+        return;
+    }
     // We already put barriers when a render pass finishes
     scheduler.RequestOutsideRenderPassOperationContext();
 }
@@ -1857,14 +1868,14 @@ void RasterizerVulkan::FlushWork() {
     static constexpr u32 DRAWS_TO_DISPATCH = 4096;
     static constexpr u32 CHECK_MASK = 31;
 #endif // __ANDROID__
-
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
     if ((++draw_counter & CHECK_MASK) != 0) {
         return;
     }
     // Keep the host GPU working while native commands are still being recorded.
+    // The 128-draw native budget is tuned for MoltenVK; desktop Vulkan takes the legacy 4096 (#161).
     static const u32 native_flush_draws = [] {
-        constexpr u32 fallback = 128;
+        const u32 fallback = VideoCommon::Nx2Perf::Enabled() ? 4096U : 128U;
         const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
         if (value == nullptr || value[0] < '0' || value[0] > '9') {
             return fallback;

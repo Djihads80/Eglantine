@@ -18,6 +18,15 @@ inline bool Enabled() {
     return enabled;
 }
 
+/// Ocarina of Time presents a frame ahead (EDEN_NX2_PERF_FRAMES_AHEAD=0 turns only this off).
+inline bool FramesAhead() {
+    static const bool frames_ahead = [] {
+        const char* value = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD");
+        return Enabled() && (value == nullptr || value[0] != '0');
+    }();
+    return frames_ahead;
+}
+
 inline bool Verify() {
     static const bool verify = [] {
         const char* value = std::getenv("EDEN_NX2_PERF_VERIFY");

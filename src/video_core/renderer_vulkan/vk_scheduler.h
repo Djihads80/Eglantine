@@ -90,6 +90,22 @@ public:
     /// of a renderpass.
     void RequestOutsideRenderPassOperationContext();
 
+    void DeferFragmentBarrier() {
+        fragment_barrier_pending = state.renderpass != VK_NULL_HANDLE;
+    }
+
+    bool TakeFragmentBarrier() {
+        return std::exchange(fragment_barrier_pending, false);
+    }
+
+    void NoteRenderPassStores() {
+        render_pass_has_stores = true;
+    }
+
+    bool RenderPassHasStores() const {
+        return render_pass_has_stores;
+    }
+
     /// Returns true when a render pass is currently active in the scheduler state.
     bool IsRenderPassActive() const {
         return state.renderpass != VK_NULL_HANDLE;
@@ -348,6 +364,8 @@ private:
     StateTracker& state_tracker;
 
     std::unique_ptr<MasterSemaphore> master_semaphore;
+    bool fragment_barrier_pending{};
+    bool render_pass_has_stores{};
     bool graphics_pipeline_missing{};
     std::unique_ptr<CommandPool> command_pool;
 
