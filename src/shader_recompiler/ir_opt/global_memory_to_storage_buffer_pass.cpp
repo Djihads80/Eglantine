@@ -29,6 +29,8 @@ struct StorageBufferAddr {
 
     u32 index;
     u32 offset;
+    /// Offset of the buffer pointer in the memory the constant buffer pointer points to
+    u32 indirect{~0U};
 };
 
 /// Block iterator to a global memory instruction and the storage buffer it uses
@@ -64,6 +66,8 @@ struct StorageInfo {
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> biased_tracks;
     std::unordered_map<const IR::Inst*, std::optional<StorageBufferAddr>> unbiased_tracks;
     std::unordered_map<const IR::Inst*, small_vector<StorageBufferAddr, 4>> native_candidates;
+    /// Native accesses whose candidates include slots of a dynamically indexed pointer array.
+    std::unordered_set<const IR::Inst*> native_dynamic;
     /// A native access with several candidate pointers was left global.
     bool native_runtime_bounds{};
 };
@@ -389,11 +393,82 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
     return BreadthFirstSearch(value, pred, stop_at_memory);
 }
 
+/// The first slot and stride of a pointer array read at a dynamic constant buffer offset:
+/// (index << shift) + base or index * stride + base.
+std::optional<std::pair<u32, u32>> DynamicPointerSlots(const IR::Value& offset) {
+    const auto stride_of = [](const IR::Value& value) -> std::optional<u32> {
+        if (value.IsImmediate()) {
+            return std::nullopt;
+        }
+        const IR::Inst* const inst{value.InstRecursive()};
+        if (inst->GetOpcode() == IR::Opcode::ShiftLeftLogical32 && inst->Arg(1).IsImmediate() &&
+            inst->Arg(1).U32() < 16) {
+            return 1U << inst->Arg(1).U32();
+        }
+        if (inst->GetOpcode() == IR::Opcode::IMul32 && inst->Arg(1).IsImmediate()) {
+            return inst->Arg(1).U32();
+        }
+        return std::nullopt;
+    };
+    u32 base{};
+    std::optional<u32> stride{stride_of(offset)};
+    if (!stride && !offset.IsImmediate() &&
+        offset.InstRecursive()->GetOpcode() == IR::Opcode::IAdd32) {
+        const IR::Inst* const add{offset.InstRecursive()};
+        for (size_t arg = 0; arg < 2 && !stride; ++arg) {
+            if (add->Arg(arg ^ 1).IsImmediate()) {
+                base = add->Arg(arg ^ 1).U32();
+                stride = stride_of(add->Arg(arg));
+            }
+        }
+    }
+    if (!stride || *stride < 8 || !Common::IsAligned(*stride, 8)) {
+        return std::nullopt;
+    }
+    return std::pair{base, *stride};
+}
+
+/// Slots of a pointer array read at a dynamic offset, following phis and selects of the offset.
+/// A stride of zero is a single slot.
+void CollectPointerSlots(const IR::Value& offset, small_vector<std::pair<u32, u32>, 4>& slots,
+                         std::unordered_set<const IR::Inst*>& visited) {
+    if (offset.IsImmediate()) {
+        if (std::ranges::find(slots, std::pair{offset.U32(), 0U}) == slots.end()) {
+            slots.emplace_back(offset.U32(), 0U);
+        }
+        return;
+    }
+    const IR::Inst* const inst{offset.InstRecursive()};
+    if (!visited.insert(inst).second) {
+        return;
+    }
+    if (const auto pattern{DynamicPointerSlots(offset)}) {
+        if (std::ranges::find(slots, *pattern) == slots.end()) {
+            slots.push_back(*pattern);
+        }
+        return;
+    }
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::Phi:
+        for (size_t arg = 0; arg < inst->NumArgs(); ++arg) {
+            CollectPointerSlots(inst->Arg(arg), slots, visited);
+        }
+        break;
+    case IR::Opcode::SelectU32:
+        CollectPointerSlots(inst->Arg(1), slots, visited);
+        CollectPointerSlots(inst->Arg(2), slots, visited);
+        break;
+    default:
+        break;
+    }
+}
+
 /// Native programs: every constant buffer pointer the low address can come from, following only
 /// additions, selects and phis. A predicated address assignment becomes a phi whose other input
-/// can point into a different buffer, so the search does not stop at the first pointer.
+/// can point into a different buffer, so the search does not stop at the first pointer. A pointer
+/// read from an array at a dynamic offset contributes every mapped slot of the array.
 small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_addr,
-                                                           Environment& env) {
+                                                           Environment& env, bool& dynamic) {
     small_vector<StorageBufferAddr, 4> candidates;
     small_vector<const IR::Inst*, 16> pending{low_addr.InstRecursive()};
     std::unordered_set<const IR::Inst*> visited{pending.front()};
@@ -409,6 +484,25 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
         case IR::Opcode::GetCbufU32x2: {
             const IR::Value index{inst->Arg(0)};
             const IR::Value offset{inst->Arg(1)};
+            if (index.IsImmediate() && !offset.IsImmediate()) {
+                static constexpr u32 max_slots{16};
+                small_vector<std::pair<u32, u32>, 4> slots;
+                std::unordered_set<const IR::Inst*> slot_visited;
+                CollectPointerSlots(offset, slots, slot_visited);
+                for (const auto& [first, stride] : slots) {
+                    for (u32 slot = 0; slot < (stride ? max_slots : 1U); ++slot) {
+                        const StorageBufferAddr pointer{.index = index.U32(),
+                                                        .offset = first + slot * stride};
+                        if (Common::IsAligned(pointer.offset, 8) &&
+                            std::ranges::find(candidates, pointer) == candidates.end() &&
+                            env.IsCbufStorageBufferPointer(pointer.index, pointer.offset)) {
+                            candidates.push_back(pointer);
+                            dynamic = true;
+                        }
+                    }
+                }
+                break;
+            }
             if (!index.IsImmediate() || !offset.IsImmediate()) {
                 break;
             }
@@ -435,6 +529,38 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
                 enqueue(inst->Arg(0));
             }
             break;
+        case IR::Opcode::LoadGlobal64: {
+            // A pointer loaded from the memory a constant buffer pointer points to (compute only,
+            // the binding reads it again for every dispatch).
+            if (env.ShaderStage() != Stage::Compute) {
+                break;
+            }
+            const auto holder_addr{TrackLowAddress(const_cast<IR::Inst*>(inst))};
+            if (!holder_addr || holder_addr->imm_offset < 0 || holder_addr->value.IsImmediate()) {
+                break;
+            }
+            const IR::Inst* holder{holder_addr->value.InstRecursive()};
+            if (holder->GetOpcode() == IR::Opcode::CompositeExtractU32x2 &&
+                holder->Arg(1).IsImmediate() && holder->Arg(1).U32() == 0 &&
+                !holder->Arg(0).IsImmediate()) {
+                holder = holder->Arg(0).InstRecursive();
+            }
+            if ((holder->GetOpcode() != IR::Opcode::GetCbufU32 &&
+                 holder->GetOpcode() != IR::Opcode::GetCbufU32x2) ||
+                !holder->Arg(0).IsImmediate() || !holder->Arg(1).IsImmediate()) {
+                break;
+            }
+            const StorageBufferAddr pointer{.index = holder->Arg(0).U32(),
+                                            .offset = holder->Arg(1).U32(),
+                                            .indirect = static_cast<u32>(holder_addr->imm_offset)};
+            if (Common::IsAligned(pointer.offset, 8) && Common::IsAligned(pointer.indirect, 8) &&
+                std::ranges::find(candidates, pointer) == candidates.end() &&
+                env.IsCbufStorageBufferPointer(pointer.index, pointer.offset)) {
+                candidates.push_back(pointer);
+                dynamic = true;
+            }
+            break;
+        }
         default:
             break;
         }
@@ -464,16 +590,26 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         const IR::Inst* const start{low_addr.InstRecursive()};
         auto it{info.native_candidates.find(start)};
         if (it == info.native_candidates.end()) {
-            it = info.native_candidates.emplace(start, NativePointerCandidates(low_addr, env)).first;
+            bool dynamic{};
+            it = info.native_candidates.emplace(start, NativePointerCandidates(low_addr, env, dynamic))
+                     .first;
+            if (dynamic) {
+                info.native_dynamic.insert(start);
+            }
         }
         const auto& candidates{it->second};
-        if (candidates.size() > 1) {
+        if (candidates.size() > 1 || (!candidates.empty() && info.native_dynamic.contains(start))) {
             // Bind every candidate and keep the access global; the backend picks the buffer at
             // run time. Rebasing on one of them drops the other path's accesses.
             for (const StorageBufferAddr& candidate : candidates) {
                 info.set.insert(candidate);
                 if (IsGlobalMemoryWrite(inst)) {
                     info.writes.insert(candidate);
+                }
+                if (candidate.indirect != ~0U) {
+                    // The backend reads the pointer through the buffer that holds it.
+                    info.set.insert(StorageBufferAddr{.index = candidate.index,
+                                                      .offset = candidate.offset});
                 }
             }
             info.native_runtime_bounds = true;
@@ -662,6 +798,7 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
             .cbuf_offset = storage_buffer.offset,
             .count = 1,
             .is_written = info.writes.contains(storage_buffer),
+            .indirect_offset = storage_buffer.indirect,
         });
     }
     for (const StorageInst& storage_inst : info.to_replace) {
@@ -682,7 +819,8 @@ void JoinStorageInfo(Info& base, Info& source) {
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {
             return desc.cbuf_index == existing.cbuf_index &&
-                   desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count;
+                   desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
+                   desc.indirect_offset == existing.indirect_offset;
         })};
         if (it != descriptors.end()) {
             it->is_written |= desc.is_written;
