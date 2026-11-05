@@ -614,6 +614,41 @@ private:
         return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
     }
 
+    /// Queues a GPU write for download at the next fence where DownloadsAtFence holds. With only
+    /// Preflushable marks, just the marked pages are queued: a write that covers one marked page
+    /// of a large buffer would otherwise copy the whole buffer back at every fence.
+    void QueueFenceDownload(DAddr device_addr, u64 size) {
+        static const bool exact = [] {
+            const char* value = std::getenv("EDEN_NX2_EXACT_PREFLUSH");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(device_addr, size);
+            return;
+        }
+        if (!exact) {
+            if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
+                uncommitted_gpu_modified_ranges.Add(device_addr, size);
+            } else {
+                ArmReadTraps(device_addr, size);
+            }
+            return;
+        }
+        const DAddr end = device_addr + size;
+        u64 queued = 0;
+        memory_tracker.ForEachPreflushableRange(device_addr, size, [&](DAddr begin, u64 length) {
+            const DAddr lower = (std::max)(begin, device_addr);
+            const DAddr upper = (std::min)(begin + length, end);
+            if (lower < upper) {
+                uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
+                queued += upper - lower;
+            }
+        });
+        if (queued < size) {
+            ArmReadTraps(device_addr, size);
+        }
+    }
+
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
     /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
     void ArmReadTraps(DAddr device_addr, u64 size) {
