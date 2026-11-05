@@ -8,6 +8,7 @@ add_executable(tests
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
+    common/event.cpp
     common/fibers.cpp
     common/game_presets.cpp
     common/host_memory.cpp
