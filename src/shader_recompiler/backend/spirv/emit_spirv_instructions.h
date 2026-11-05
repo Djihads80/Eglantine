@@ -435,7 +435,8 @@ Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value);
 Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value);
-Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx);
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, const IR::Value& address, Id comparator,
+                                     Id value);
 Id EmitGlobalAtomicIAdd64(EmitContext& ctx);
 Id EmitGlobalAtomicSMin64(EmitContext& ctx);
 Id EmitGlobalAtomicUMin64(EmitContext& ctx);

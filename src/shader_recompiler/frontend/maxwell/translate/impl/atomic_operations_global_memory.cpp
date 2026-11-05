@@ -213,8 +213,11 @@ void TranslatorVisitor::ATOM_cas(u64 insn) {
         throw NotImplementedException("ATOM.CAS size {}", atom.size.Value());
     }
     const IR::U64 offset{AtomOffset(*this, insn)};
-    X(atom.dest_reg, ir.GlobalAtomicCompareExchange(offset, X(atom.compare_reg),
-                                                    X(atom.compare_reg + 1)));
+    // The register after R254 is RZ; IR::Reg arithmetic refuses to step onto it.
+    const IR::Reg value_reg{atom.compare_reg == IR::Reg::R254 ? IR::Reg::RZ
+                                                               : atom.compare_reg + 1};
+    X(atom.dest_reg,
+      ir.GlobalAtomicCompareExchange(offset, X(atom.compare_reg), X(value_reg)));
 }
 
 void TranslatorVisitor::RED(u64 insn) {

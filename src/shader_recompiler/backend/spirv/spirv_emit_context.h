@@ -348,6 +348,7 @@ public:
         IAdd, SMin, UMin, SMax, UMax, Inc, Dec, And, Or, Xor, Exchange, AddF32, Count,
     };
     std::array<Id, static_cast<size_t>(GlobalAtomic::Count)> global_atomic_funcs{};
+    Id atomic_cas_global_func_u32{};
 
     bool need_input_position_indirect{};
     Id input_position{};

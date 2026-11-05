@@ -1151,6 +1151,28 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         OpFunctionEnd();
         global_atomic_funcs[index] = func_id;
     }
+    if (std::ranges::any_of(program.blocks, [](const IR::Block* block) {
+            return std::ranges::any_of(block->Instructions(), [](const IR::Inst& inst) {
+                return inst.GetOpcode() == IR::Opcode::GlobalAtomicCompareExchange32;
+            });
+        })) {
+        const Id function_type{TypeFunction(U32[1], U64, U32[1], U32[1])};
+        atomic_cas_global_func_u32 =
+            OpFunction(U32[1], spv::FunctionControlMask::MaskNone, function_type);
+        const Id address{OpFunctionParameter(U64)};
+        const Id comparator{OpFunctionParameter(U32[1])};
+        const Id value{OpFunctionParameter(U32[1])};
+        const Id scope{Const(static_cast<u32>(spv::Scope::Device))};
+        define_body(&StorageDefinitions::U32, address, storage_types.U32.element, 2,
+                    [&](Id pointer, Id, Id) {
+                        OpReturnValue(OpAtomicCompareExchange(U32[1], pointer, scope,
+                                                              zero, zero,
+                                                              value, comparator));
+                    });
+        // No buffer matched: report success so a guest CAS retry loop cannot spin forever.
+        OpReturnValue(comparator);
+        OpFunctionEnd();
+    }
 }
 
 void EmitContext::DefineRescalingInput(const Info& info) {
