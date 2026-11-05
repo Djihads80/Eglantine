@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <set>
 #include <vector>
 #include <optional>
 #include <bit>
@@ -25,6 +27,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/texture_cache/formatter.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
@@ -47,6 +50,42 @@ using VideoCore::Surface::GetFormatType;
 using VideoCore::Surface::PixelFormat;
 using VideoCore::Surface::SurfaceType;
 using namespace Common::Literals;
+
+// A colour target sampled in another format is viewed in place (its bits reinterpreted), as
+// Ocarina of Time's 32-bit scene colour read as E5B9G9R9. Logs each address once, with the render
+// target format code it was drawn with, so a wrong mapping of that code shows up.
+inline void LogColorTargetRead(const ImageBase& image, const TICEntry& config, PixelFormat view) {
+    const auto target = static_cast<Tegra::RenderTargetFormat>(image.color_target_format);
+    const PixelFormat drawn = VideoCore::Surface::PixelFormatFromRenderTargetFormat(target);
+    if (drawn == view) {
+        return;
+    }
+    static std::mutex mutex;
+    static std::set<GPUVAddr> logged;
+    const std::scoped_lock lock{mutex};
+    if (logged.size() >= 64 || !logged.insert(image.gpu_addr).second) {
+        return;
+    }
+    LOG_INFO(HW_GPU,
+             "Colour target {:#x} {}x{} drawn as RT format {:#x} ({}, image {}) is sampled as TIC "
+             "format {:#x}{} ({})",
+             image.gpu_addr, image.info.size.width, image.info.size.height,
+             image.color_target_format, drawn, image.info.format,
+             static_cast<u32>(config.format.Value()), config.srgb_conversion ? " sRGB" : "", view);
+}
+
+// The other order: a colour target drawn into an image made for another format (a texture first).
+inline void LogColorTargetDraw(const ImageBase& image, u32 target, PixelFormat drawn) {
+    static std::mutex mutex;
+    static std::set<GPUVAddr> logged;
+    const std::scoped_lock lock{mutex};
+    if (logged.size() >= 64 || !logged.insert(image.gpu_addr).second) {
+        return;
+    }
+    LOG_INFO(HW_GPU, "Colour target {:#x} {}x{} drawn as RT format {:#x} ({}) into an image made as {}",
+             image.gpu_addr, image.info.size.width, image.info.size.height, target, drawn,
+             image.info.format);
+}
 
 // A host image that keeps only mip levels >= host_level_offset (TrimmedLevels) takes the plain
 // upload copies of those levels, renumbered so host level 0 is guest level host_level_offset.
@@ -2188,6 +2227,9 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
         return NULL_IMAGE_VIEW_ID;
     }
     ImageBase& image = slot_images[image_id];
+    if (image.color_target_format != 0) {
+        LogColorTargetRead(image, config, info.format);
+    }
     const SubresourceBase base = image.TryFindBase(config.Address()).value();
     ASSERT(base.level == 0);
     const ImageViewInfo view_info(config, base.layer);
@@ -3051,7 +3093,15 @@ ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
         return ImageViewId{};
     }
     const ImageInfo info(regs.rt[index], regs.anti_alias_samples_mode);
-    return FindRenderTargetView(info, gpu_addr);
+    const ImageViewId view_id = FindRenderTargetView(info, gpu_addr);
+    if (view_id && view_id != NULL_IMAGE_VIEW_ID) {
+        ImageBase& image = slot_images[slot_image_views[view_id].image_id];
+        image.color_target_format = static_cast<u32>(rt.format);
+        if (image.info.format != info.format) {
+            LogColorTargetDraw(image, image.color_target_format, info.format);
+        }
+    }
+    return view_id;
 }
 
 template <class P>

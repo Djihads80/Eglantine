@@ -109,6 +109,8 @@ struct ImageBase {
     u32 converted_size_bytes = 0;
     u32 scale_rating = 0;
     u32 host_level_offset = 0; ///< Guest mip level held by host mip 0 (see TrimmedLevels).
+    /// Render target format code it was last drawn with as a colour target (0: never); diagnostics.
+    u32 color_target_format = 0;
     /// Large layered images uploaded by layer: one bit per layer written since the last upload
     /// while CpuModified. Empty while CpuModified means the whole image.
     std::vector<u64> dirty_layers;

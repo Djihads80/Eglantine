@@ -683,6 +683,14 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
         if (mesh_draw) {
+            // NVN launches workgroups [first, first + count); DrawMeshTasksEXT starts at 0.
+            if (draw_params.base_vertex != 0) {
+                static std::atomic<u32> logged{};
+                if (logged++ < 16) {
+                    LOG_INFO(Render_Vulkan, "Mesh draw of {} workgroups from {}: drawn from 0",
+                             draw_params.num_vertices, draw_params.base_vertex);
+                }
+            }
             scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
             });
