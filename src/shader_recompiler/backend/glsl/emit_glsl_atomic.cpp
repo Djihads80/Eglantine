@@ -175,6 +175,13 @@ void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Val
                ctx.var_alloc.Consume(offset), value);
 }
 
+void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                                        const IR::Value& offset, std::string_view comparator,
+                                        std::string_view value) {
+    ctx.AddU32("{}=atomicCompSwap({}_ssbo{}[{}>>2],{},{});", inst, ctx.stage_name, binding.U32(),
+               ctx.var_alloc.Consume(offset), comparator, value);
+}
+
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                              const IR::Value& offset, std::string_view value) {
     LOG_WARNING(Shader_GLSL, "Int64 atomics not supported, fallback to non-atomic");
@@ -438,6 +445,10 @@ void EmitGlobalAtomicXor32(EmitContext&) {
 }
 
 void EmitGlobalAtomicExchange32(EmitContext&) {
+    throw NotImplementedException("GLSL Instruction");
+}
+
+void EmitGlobalAtomicCompareExchange32(EmitContext&) {
     throw NotImplementedException("GLSL Instruction");
 }
 

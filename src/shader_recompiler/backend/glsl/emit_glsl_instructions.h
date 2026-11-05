@@ -478,6 +478,9 @@ void EmitStorageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& b
                             const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                  const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
+                                        const IR::Value& offset, std::string_view comparator,
+                                        std::string_view value);
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                              const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicSMin64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -539,6 +542,7 @@ void EmitGlobalAtomicAnd32(EmitContext& ctx);
 void EmitGlobalAtomicOr32(EmitContext& ctx);
 void EmitGlobalAtomicXor32(EmitContext& ctx);
 void EmitGlobalAtomicExchange32(EmitContext& ctx);
+void EmitGlobalAtomicCompareExchange32(EmitContext& ctx);
 void EmitGlobalAtomicIAdd64(EmitContext& ctx);
 void EmitGlobalAtomicSMin64(EmitContext& ctx);
 void EmitGlobalAtomicUMin64(EmitContext& ctx);

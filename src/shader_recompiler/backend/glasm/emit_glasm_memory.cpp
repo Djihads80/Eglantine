@@ -557,6 +557,14 @@ void EmitGlobalAtomicExchange32(EmitContext&) {
     throw NotImplementedException("GLASM instruction");
 }
 
+void EmitGlobalAtomicCompareExchange32(EmitContext&) {
+    throw NotImplementedException("GLASM instruction");
+}
+
+void EmitStorageAtomicCompareExchange32(EmitContext&) {
+    throw NotImplementedException("GLASM instruction");
+}
+
 void EmitGlobalAtomicIAdd64(EmitContext&) {
     throw NotImplementedException("GLASM instruction");
 }
