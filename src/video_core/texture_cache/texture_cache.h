@@ -263,11 +263,23 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     minimum_memory =
         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB override the collector's thresholds.
-    for (const auto& [name, target] : {std::pair{"EDEN_NX2_TC_EXPECTED_MIB", &expected_memory},
-                                       std::pair{"EDEN_NX2_TC_CRITICAL_MIB", &critical_memory}}) {
-        if (const char* value = std::getenv(name)) {
-            *target = std::strtoull(value, nullptr, 10) << 20;
+    static const std::optional<u64> forced_expected = []() -> std::optional<u64> {
+        if (const char* value = std::getenv("EDEN_NX2_TC_EXPECTED_MIB")) {
+            return std::strtoull(value, nullptr, 10) << 20;
         }
+        return std::nullopt;
+    }();
+    static const std::optional<u64> forced_critical = []() -> std::optional<u64> {
+        if (const char* value = std::getenv("EDEN_NX2_TC_CRITICAL_MIB")) {
+            return std::strtoull(value, nullptr, 10) << 20;
+        }
+        return std::nullopt;
+    }();
+    if (forced_expected) {
+        expected_memory = *forced_expected;
+    }
+    if (forced_critical) {
+        critical_memory = *forced_critical;
     }
     if (log) {
         LOG_INFO(HW_GPU, "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",
@@ -346,14 +358,17 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
                     const bool log = budget_check_frames == 1 || change >= 256_MiB;
-                    ApplyThresholdOverrides(log);
                     if (log) {
+                        LOG_INFO(HW_GPU,
+                                 "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",
+                                 expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20);
                         LOG_INFO(HW_GPU,
                                  "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
                                  margin >> 20, pressure_margin >> 20, slack_margin >> 20);

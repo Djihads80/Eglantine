@@ -195,8 +195,8 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     if (const ShaderInfo* const shader = TryGet(*cpu_shader_addr)) {
         return shader;
     }
+    RethrowIfRejected(*cpu_shader_addr);
     try {
-        RethrowIfRejected(*cpu_shader_addr);
         ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
         return MakeShaderInfo(env, *cpu_shader_addr);
     } catch (const Shader::Exception&) {

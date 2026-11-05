@@ -958,7 +958,7 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
 // The cbuf0 byte offsets of the texture handles a native program reads (TEX, TLD, TLD4, TXD) and
 // the surface handles it stores to (SUST.P), from its code up to the first unconditional EXIT.
-std::pair<std::vector<u32>, std::vector<u32>> KeplerCompute::NativeImageHandles(GPUVAddr program) {
+const std::pair<std::vector<u32>, std::vector<u32>>& KeplerCompute::NativeImageHandles(GPUVAddr program) {
     static std::unordered_map<GPUVAddr, std::pair<std::vector<u32>, std::vector<u32>>> cache;
     if (const auto it = cache.find(program); it != cache.end()) {
         return it->second;
@@ -1027,11 +1027,13 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
     }
+    bool has_program_handles = false;
     if (!upscale_pair(input, output)) {
         // The images the program itself uses: textures it reads and the surface it stores to
         // through cbuf0 handles (Ocarina of Time's gameplay network reads +0xc0, writes +0xd0).
         // The input is the largest read image that the output upscales, the output's format first.
-        const auto [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+        const auto& [reads, stores] = NativeImageHandles(regs.code_loc.Address());
+        has_program_handles = !reads.empty() || !stores.empty();
         input.reset();
         output.reset();
         for (const u32 store : stores) {
@@ -1050,7 +1052,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             if (input) break;
         }
     }
-    if (!upscale_pair(input, output, false)) {
+    if (!has_program_handles && !upscale_pair(input, output, false)) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {

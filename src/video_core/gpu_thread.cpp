@@ -6,6 +6,9 @@
 
 #include <chrono>
 #include <thread>
+#if defined(ARCHITECTURE_x86_64)
+#include <immintrin.h>
+#endif
 
 #include "common/assert.h"
 #include "common/scope_exit.h"
@@ -77,7 +80,12 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // (title 1 waits ~25 times a second).
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     if (std::chrono::steady_clock::now() - last_progress <
-                        std::chrono::microseconds{500}) {
+                        std::chrono::microseconds{100}) {
+#if defined(ARCHITECTURE_x86_64)
+                        for (int i = 0; i < 32; ++i) {
+                            _mm_pause();
+                        }
+#endif
                         std::this_thread::yield();
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -91,7 +99,9 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
             if (stop_token.stop_requested()) {
                 break;
             }
-            last_progress = std::chrono::steady_clock::now();
+            if (!std::holds_alternative<GPUTickCommand>(next.data)) {
+                last_progress = std::chrono::steady_clock::now();
+            }
             if (split.Active()) {
                 // Only command lists are parsed here; everything else runs on the back thread
                 // in order, and so does the signal that the command ran.
