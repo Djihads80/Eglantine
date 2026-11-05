@@ -29,6 +29,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/dirty_flags.h"
+#include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
@@ -1438,6 +1439,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                         if (++flushes % 2000 == 1) {
                             LOG_INFO(HW_GPU, "Native MME DMA read flushed GPU-written memory ({} times)", flushes);
                         }
+                    }
+                    // Accurate GPU mode holds report and semaphore writes in the query cache until a
+                    // fence: write them out, or occlusion predicates read stale values. The split only
+                    // runs with immediate payload writes, and the query cache belongs to its back.
+                    if (!VideoCommon::GpuSplit::Get().Active()) {
+                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
                     }
                     static u32 dma_logs{};
                     if (dma_logs < 400) {
