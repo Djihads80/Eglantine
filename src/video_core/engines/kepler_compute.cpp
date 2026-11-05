@@ -10,6 +10,7 @@
 #include <bitset>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -906,6 +907,36 @@ bool KeplerCompute::RememberDlssMotionVectors() {
     return true;
 }
 
+namespace {
+/// The colour formats the upscale stand-in blits (not motion vectors, depth or single channels).
+std::optional<Tegra::RenderTargetFormat> UpscaleFormat(const Texture::TICEntry& tic) {
+    using RTFormat = Tegra::RenderTargetFormat;
+    switch (tic.format) {
+    case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+    case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+    case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+    case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+    default: return std::nullopt;
+    }
+}
+
+/// What the upscale stand-in found in a rejected program's code, and the pair it chose last.
+struct UpscaleProgram {
+    bool decodes_srgb{};
+    bool announced{};
+    std::bitset<256> stored; ///< cbuf0 handle slots (offset / 4) it stores to (SUST)
+    std::bitset<256> read;   ///< and reads (TEX, TLD, TLD4, SULD)
+    u32 input{};             ///< cbuf0 offsets of the generic search's last pair, 0 for none
+    u32 output{};
+    u32 reports{};
+};
+
+struct UpscaleCandidate {
+    u32 offset{};
+    Texture::TICEntry tic{};
+};
+} // Anonymous namespace
+
 // Title 4's upscaler reads the tonemapped frame through the texture handle at cbuf0+0x90 and
 // writes the output resolution image through the surface handle at cbuf0+0xa0 (from its
 // TLD/SUST operands). Kirby Air Riders' reads a 2048x1152 image at cbuf0+0x80 and writes a
@@ -913,7 +944,11 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
-// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
+// Weave's. Else, among the 2D colour images of cbuf0+0x80..0x11c (within the buffer), the pair
+// with the most evidence: the input is the frame's scene colour (LastSceneColor: its address,
+// else its size) and read by the program, the output is what the program stores to, both have
+// one format; then the largest output and input. A game's ping-ponged history keeps its slot,
+// so the slots chosen last stay unless another pair reads the scene's colour instead.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -928,6 +963,40 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
                to->IsBlockLinear();
     };
+    // Title 4's program ends by decoding its result from sRGB to linear (the 0.04045 threshold
+    // and the 2.4 exponent as half-precision immediates of HSETP2 and HMUL2). The copy of its
+    // sRGB input left the frame gamma-encoded twice, washed out: decode in the copy when the
+    // program does. Up to its closing self-branch, the bound handles (cbuf0 + 4 * bits 40-53,
+    // bits 54-58 zero) of its SUST and of its TEX, TLD4, TLD and SULD are noted too.
+    static std::unordered_map<GPUVAddr, UpscaleProgram> programs;
+    const GPUVAddr program = regs.code_loc.Address();
+    const auto [known, inserted] = programs.try_emplace(program);
+    UpscaleProgram& info = known->second;
+    if (inserted) {
+        bool threshold = false, exponent = false, ended = false;
+        std::array<u32, 0x400> block{};
+        for (u64 offset = 0; offset < 0x20000 && !(threshold && exponent && ended);
+             offset += sizeof(block)) {
+            if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block))) break;
+            memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
+            for (size_t word = 0; word < block.size(); word += 4) {
+                const u32 opcode = block[word] & 0xfff;
+                threshold |= opcode == 0x434 && block[word + 1] == 0x292d292d;
+                exponent |= opcode == 0x832 && block[word + 1] == 0x40cc40cc;
+                if (ended) continue;
+                const u32 slot = (block[word + 1] >> 8) & 0x3fff;
+                if (((block[word + 1] >> 22) & 0x1f) == 0 && slot < info.stored.size()) {
+                    if (opcode == 0xb9b) info.stored.set(slot);
+                    if (opcode == 0xb60 || opcode == 0xb63 || opcode == 0xb66 || opcode == 0xb97)
+                        info.read.set(slot);
+                }
+                ended = opcode == 0x947 && ((block[word] >> 12) & 0xf) == 7 &&
+                        (block[word + 1] & ~3U) == 0xfffffff0U &&
+                        (block[word + 2] & 0x3ffff) == 0x3ffff;
+            }
+        }
+        info.decodes_srgb = threshold && exponent;
+    }
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
     bool fortunes_weave = false;
     if (!upscale_pair(input, output)) {
@@ -935,35 +1004,139 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
     }
+    const auto choose_pair = [&] {
+        const u32 cbuf_size = static_cast<u32>(cbuf.size.Value());
+        const u32 end = cbuf_size != 0 ? std::min(0x120U, cbuf_size & ~3U) : 0x120U;
+        std::array<UpscaleCandidate, 40> candidates{};
+        size_t count = 0;
+        u32 handles = 0;
+        bool any_stored = false;
+        for (u32 offset = 0x80; offset < end; offset += 4) {
+            const u32 handle = memory_manager.Read<u32>(cbuf_address + offset);
+            handles += handle != 0;
+            if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) continue;
+            const auto tic = GetTICEntry(handle & 0xfffff);
+            const auto type = tic.texture_type.Value();
+            if (tic.Address() == 0 || !tic.IsBlockLinear() || !UpscaleFormat(tic) ||
+                (type != Texture::TextureType::Texture2D &&
+                 type != Texture::TextureType::Texture2DNoMipmap &&
+                 (type != Texture::TextureType::Texture2DArray || tic.Depth() != 1)))
+                continue;
+            any_stored |= info.stored[offset / 4];
+            candidates[count++] = {.offset = offset, .tic = tic};
+        }
+        const VideoCore::SceneColorTarget scene = rasterizer->LastSceneColor();
+        // A pair's evidence, nothing when it isn't one. An output the size of its input only
+        // from the scene's colour into what the program stores (a network at one resolution).
+        const auto evidence = [&](const UpscaleCandidate& in,
+                                  const UpscaleCandidate& out) -> std::optional<u32> {
+            const u32 in_width = in.tic.Width(), in_height = in.tic.Height();
+            const u32 out_width = out.tic.Width(), out_height = out.tic.Height();
+            const bool scene_input = scene.address != 0 && in.tic.Address() == scene.address;
+            const bool stored_output = info.stored[out.offset / 4];
+            if (in.offset == out.offset || in.tic.Address() == out.tic.Address() ||
+                out_width < in_width || out_height < in_height ||
+                (any_stored && (!stored_output || info.stored[in.offset / 4])) ||
+                (out_width == in_width && out_height == in_height &&
+                 !(scene_input && stored_output)))
+                return std::nullopt;
+            u32 result = 0;
+            if (scene_input) {
+                result += 16;
+            } else if (scene.address != 0 && in_width == scene.width && in_height == scene.height) {
+                result += 8;
+            }
+            result += info.read[in.offset / 4] ? 4 : 0;
+            result += stored_output ? 2 : 0;
+            result += in.tic.format == out.tic.format ? 1 : 0;
+            return result;
+        };
+        struct Choice {
+            const UpscaleCandidate* in;
+            const UpscaleCandidate* out;
+            u32 evidence;
+        };
+        const auto area = [](const UpscaleCandidate* candidate) {
+            return u64{candidate->tic.Width()} * candidate->tic.Height();
+        };
+        const auto better = [&](const Choice& a, const Choice& b) {
+            if (a.evidence != b.evidence) return a.evidence > b.evidence;
+            if (area(a.out) != area(b.out)) return area(a.out) > area(b.out);
+            return area(a.in) > area(b.in);
+        };
+        std::optional<Choice> best, kept;
+        for (size_t in = 0; in < count; ++in) {
+            for (size_t out = 0; out < count; ++out) {
+                const auto value = evidence(candidates[in], candidates[out]);
+                if (!value) continue;
+                const Choice choice{&candidates[in], &candidates[out], *value};
+                if (candidates[in].offset == info.input && candidates[out].offset == info.output) {
+                    kept = choice;
+                }
+                if (!best || better(choice, *best)) best = choice;
+            }
+        }
+        // The last pair stays unless another reads the scene's colour (or its size) instead.
+        if (kept && kept->evidence + 8 > best->evidence) best = kept;
+        const u32 in_offset = best ? best->in->offset : 0;
+        const u32 out_offset = best ? best->out->offset : 0;
+        const bool changed = in_offset != info.input || out_offset != info.output;
+        info.input = in_offset;
+        info.output = out_offset;
+        // Once per program, then when the pair changes (8 times at most): the pair and every
+        // handle (r: the program reads it, w: stores to it).
+        if (handles != 0 && (info.reports == 0 || (changed && info.reports < 8))) {
+            ++info.reports;
+            std::string listed;
+            for (u32 offset = 0x80; offset < end; offset += 4) {
+                const u32 handle = memory_manager.Read<u32>(cbuf_address + offset);
+                if (handle == 0) continue;
+                if ((handle & 0xfffff) > regs.tic.limit) {
+                    fmt::format_to(std::back_inserter(listed), " @{:#x}={:#x}", offset, handle);
+                    continue;
+                }
+                const auto tic = GetTICEntry(handle & 0xfffff);
+                fmt::format_to(std::back_inserter(listed), " @{:#x} {:#x} {}x{} f{:#x}{}{}", offset,
+                               tic.Address(), tic.Width(), tic.Height(),
+                               static_cast<u32>(tic.format.Value()),
+                               info.read[offset / 4] ? " r" : "",
+                               info.stored[offset / 4] ? " w" : "");
+            }
+            if (best) {
+                LOG_INFO(HW_GPU,
+                         "Upscale stand-in for program {:#x}: @{:#x} {:#x} {}x{} f{:#x} -> @{:#x} "
+                         "{:#x} {}x{} f{:#x} (evidence {}); scene colour {:#x} {}x{}; cbuf0 size "
+                         "{:#x}, handles:{}",
+                         program, in_offset, best->in->tic.Address(), best->in->tic.Width(),
+                         best->in->tic.Height(), static_cast<u32>(best->in->tic.format.Value()),
+                         out_offset, best->out->tic.Address(), best->out->tic.Width(),
+                         best->out->tic.Height(), static_cast<u32>(best->out->tic.format.Value()),
+                         best->evidence, scene.address, scene.width, scene.height, cbuf_size,
+                         listed);
+            } else {
+                LOG_INFO(HW_GPU,
+                         "Upscale stand-in for program {:#x}: no pair; scene colour {:#x} {}x{}; "
+                         "cbuf0 size {:#x}, handles:{}",
+                         program, scene.address, scene.width, scene.height, cbuf_size, listed);
+            }
+        }
+        if (best) {
+            input = best->in->tic;
+            output = best->out->tic;
+        }
+    };
     if (!upscale_pair(input, output)) {
         input.reset();
         output.reset();
-        for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
-            const auto from = memory_manager.Read<u32>(cbuf_address + first) != 0 ? image(first)
-                                                                                    : std::nullopt;
-            for (u32 second = first + 4; from && second < 0x120; second += 4) {
-                if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
-                const auto to = image(second);
-                if (upscale_pair(from, to)) {
-                    input = from;
-                    output = to;
-                    break;
-                }
-            }
-        }
+        choose_pair();
     }
     if (!input || !output)
         return false;
     using RTFormat = Tegra::RenderTargetFormat;
-    RTFormat format{};
-    switch (input->format) {
-    case Texture::TextureFormat::A2B10G10R10: format = RTFormat::A2B10G10R10_UNORM; break;
-    case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
-    case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
-    case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
-    }
-    const auto surface = [&](const Texture::TICEntry& tic) {
+    const auto input_format = UpscaleFormat(*input), output_format = UpscaleFormat(*output);
+    if (!input_format || !output_format)
+        return false;
+    const auto surface = [&](const Texture::TICEntry& tic, RTFormat format) {
         Fermi2D::Surface result{};
         result.format = format;
         result.linear = Fermi2D::MemoryLayout::BlockLinear;
@@ -977,32 +1150,14 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         result.addr_lower = static_cast<u32>(tic.Address());
         return result;
     };
-    // Title 4's program ends by decoding its result from sRGB to linear (the 0.04045 threshold
-    // and the 2.4 exponent as half-precision immediates of HSETP2 and HMUL2). The copy of its
-    // sRGB input left the frame gamma-encoded twice, washed out: decode in the copy when the
-    // program does.
-    static std::unordered_map<GPUVAddr, bool> decodes_srgb;
-    const GPUVAddr program = regs.code_loc.Address();
-    const auto [known, inserted] = decodes_srgb.try_emplace(program, false);
-    if (inserted) {
-        bool threshold = false, exponent = false;
-        std::array<u32, 0x400> block{};
-        for (u64 offset = 0; offset < 0x20000 && !(threshold && exponent); offset += sizeof(block)) {
-            if (!memory_manager.IsFullyMappedRange(program + offset, sizeof(block))) break;
-            memory_manager.ReadBlock(program + offset, block.data(), sizeof(block));
-            for (size_t word = 0; word < block.size(); word += 4) {
-                const u32 opcode = block[word] & 0xfff;
-                threshold |= opcode == 0x434 && block[word + 1] == 0x292d292d;
-                exponent |= opcode == 0x832 && block[word + 1] == 0x40cc40cc;
-            }
-        }
-        known->second = threshold && exponent;
+    if (!info.announced) {
+        info.announced = true;
         LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: {}", program,
-                 known->second ? "decodes sRGB like the program" : "plain copy");
+                 info.decodes_srgb ? "decodes sRGB like the program" : "plain copy");
     }
     const Fermi2D::Config config{
-        .operation = known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
-                                   : Fermi2D::Operation::SrcCopy,
+        .operation = info.decodes_srgb ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                       : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,
@@ -1060,7 +1215,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             (void)fake;
         }
     }
-    auto source = surface(*input);
+    auto source = surface(*input, *input_format);
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
     if (static const u64 override_source = [] {
             const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
@@ -1084,14 +1239,14 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
             dlss_motion_color != input->Address())
             return false;
-        Fermi2D::Surface motion = surface(*dlss_motion_vectors);
-        motion.format = RTFormat::R16G16_FLOAT;
-        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
-                                                     dlss_depth ? &*dlss_depth : nullptr,
-                                                     dlss_jitter, {1.0f, 1.0f});
+        const Fermi2D::Surface motion = surface(*dlss_motion_vectors, RTFormat::R16G16_FLOAT);
+        return rasterizer->AccelerateTemporalUpscale(
+            source, surface(*output, *output_format), motion, dlss_depth ? &*dlss_depth : nullptr,
+            dlss_jitter, {1.0f, 1.0f});
     };
     const bool done = upscale_temporally() ||
-                      rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
+                      rasterizer->AccelerateSurfaceCopy(source, surface(*output, *output_format),
+                                                        config);
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {

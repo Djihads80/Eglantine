@@ -347,6 +347,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         FlushWork();
         gpu_memory->FlushCaching();
     }
+    NoteSceneColor();
 
     const auto report_failure = [&](std::string_view reason) {
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
@@ -1426,8 +1427,26 @@ void RasterizerVulkan::FlushCommands() {
     }
 }
 
+// Keeps the frame's largest colour target drawn with depth testing (the latest of equal ones):
+// what a game's DLSS evaluation upscales, for its stand-in (KeplerCompute).
+void RasterizerVulkan::NoteSceneColor() {
+    const auto& regs = maxwell3d->regs;
+    if (!regs.zeta_enable || !regs.depth_test_enable || regs.rt_control.count == 0) {
+        return;
+    }
+    const auto& target = regs.rt[regs.rt_control.target0];
+    if (target.format == Tegra::RenderTargetFormat::NONE || target.tile_mode.is_pitch_linear ||
+        target.Address() == 0 ||
+        u64{target.width} * target.height < u64{scene_color.width} * scene_color.height) {
+        return;
+    }
+    scene_color = {.address = target.Address(), .width = target.width, .height = target.height};
+}
+
 void RasterizerVulkan::TickFrame() {
     draw_counter = 0;
+    last_scene_color = scene_color;
+    scene_color = {};
     pipeline_cache.TickFrame();
     guest_descriptor_queue.TickFrame();
     compute_pass_descriptor_queue.TickFrame();

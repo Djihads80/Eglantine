@@ -222,6 +222,11 @@ public:
         return std::nullopt;
     }
 
+    /// This frame's scene colour so far, else the last frame's (zero address when unknown).
+    [[nodiscard]] virtual VideoCore::SceneColorTarget LastSceneColor() const {
+        return {};
+    }
+
     [[nodiscard]] virtual Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() = 0;
 
     virtual void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,

@@ -139,6 +139,9 @@ public:
     std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(
         const Tegra::Engines::Fermi2D::Surface& src,
         const Tegra::Engines::Fermi2D::Surface& dst) override;
+    VideoCore::SceneColorTarget LastSceneColor() const override {
+        return scene_color.address != 0 ? scene_color : last_scene_color;
+    }
     bool AccelerateTemporalUpscale(const Tegra::Engines::Fermi2D::Surface& src,
                                    const Tegra::Engines::Fermi2D::Surface& dst,
                                    const Tegra::Engines::Fermi2D::Surface& motion_vectors,
@@ -174,6 +177,7 @@ private:
 
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&);
+    void NoteSceneColor();
     bool TryNx2IndirectReset();
 
     void FlushWork();
@@ -253,6 +257,9 @@ private:
 
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    /// The scene's colour target this frame so far and the last frame's (LastSceneColor).
+    VideoCore::SceneColorTarget scene_color{};
+    VideoCore::SceneColorTarget last_scene_color{};
 };
 
 } // namespace Vulkan

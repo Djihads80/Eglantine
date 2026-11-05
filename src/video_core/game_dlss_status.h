@@ -45,4 +45,12 @@ struct GameDlssProbe {
     f32 worst{};           ///< The largest relative brightness difference of a block.
 };
 
+/// The largest colour target drawn to with depth testing in a frame (ties: the latest): the
+/// scene's colour, which a game's DLSS evaluation upscales.
+struct SceneColorTarget {
+    u64 address{};
+    u32 width{};
+    u32 height{};
+};
+
 } // namespace VideoCore
