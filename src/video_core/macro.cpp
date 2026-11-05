@@ -1433,6 +1433,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                             }
                         }
                     }
+                    // Accurate GPU mode holds report and semaphore writes in the query cache until a
+                    // fence: write them out, or occlusion predicates read stale values. The split only
+                    // runs with immediate payload writes, and the query cache belongs to its back.
+                    if (!VideoCommon::GpuSplit::Get().Active()) {
+                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+                    }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
