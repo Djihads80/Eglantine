@@ -364,7 +364,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
     if (!pipeline) {
-        report_failure("no pipeline");
+        // Without VK_EXT_mesh_shader no task/mesh pipeline is built (CreateGraphicsPipeline).
+        const bool mesh = maxwell3d->GetNativeMacroEngine().native_turing &&
+                          maxwell3d->regs.IsMeshEnabled() && !device.IsExtMeshShaderSupported();
+        report_failure(mesh ? "no pipeline, task/mesh without VK_EXT_mesh_shader" : "no pipeline");
         return;
     }
     if (!is_indexed && TryNx2IndirectReset()) {
