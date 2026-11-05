@@ -43,6 +43,12 @@ all without the user. Built on `eden-cli` (SDL frontend) and the shader lab's di
 - **Lab-run every port before the user gets the build**, at least boot-to-save plus a walk.
   Sync and fence-timing changes from forks can deadlock in this tree's GPU split even when they
   work in the fork; the user should never be the first to boot an untested change.
+- **A "capped at 30 fps" report is often `gpu_fence_behavior=Balanced` (value 2) in the user's
+  `qt-config.ini`, not a code regression.** Balanced costs ~11 ms of front-thread time here:
+  same 50.4 ms GPU-bound lab frame, front 16.7 ms with Default (fence 33.8 ms) against 28.2 ms with
+  Balanced (fence 20–24 ms), which is exactly what turns a ~17 ms frame into two-vblank 33 ms
+  frames. Check the setting before bisecting commits; the lab is GPU-bound, so measure the front as
+  `frame - fence - pacing` rather than by frame time.
 
 ## Tooling (repo `tools/nx2/lab_ctl.py`, branch `scratch/oot-shader-lab`)
 
