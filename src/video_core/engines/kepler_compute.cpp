@@ -930,8 +930,18 @@ std::optional<UpscaleImageFormat> UpscaleFormat(const Texture::TICEntry& tic) {
         return UpscaleImageFormat{PixelFormat::B10G11R11_FLOAT, RTFormat::B10G11R11_FLOAT};
     case Texture::TextureFormat::R16G16B16A16:
         return UpscaleImageFormat{PixelFormat::R16G16B16A16_FLOAT, RTFormat::R16G16B16A16_FLOAT};
-    case Texture::TextureFormat::E5B9G9R9:
-        return UpscaleImageFormat{PixelFormat::E5B9G9R9_FLOAT, RTFormat::NONE};
+    case Texture::TextureFormat::E5B9G9R9: {
+        // Ocarina draws its scene as B10G11R11 (RT format 0xe0) and its network samples it as
+        // E5B9G9R9; read as E5B9G9R9 the frame is a washed-out haze. Test: view it as drawn.
+        // EDEN_NX2_UPSCALE_E5=1 keeps the sampled format.
+        static const bool as_sampled = [] {
+            const char* const value = std::getenv("EDEN_NX2_UPSCALE_E5");
+            return value != nullptr && value[0] == '1';
+        }();
+        return UpscaleImageFormat{as_sampled ? PixelFormat::E5B9G9R9_FLOAT
+                                             : PixelFormat::B10G11R11_FLOAT,
+                                  RTFormat::NONE};
+    }
     default:
         return std::nullopt;
     }
