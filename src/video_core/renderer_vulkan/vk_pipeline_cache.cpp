@@ -864,7 +864,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
             ShaderPools pools;
-            auto pipeline{CreateComputePipeline(pools, key, env_, state.statistics.get(), false)};
+            std::unique_ptr<ComputePipeline> pipeline;
+            // Shader errors are handled inside; anything else would end the process from here.
+            try {
+                pipeline = CreateComputePipeline(pools, key, env_, state.statistics.get(), false);
+            } catch (const std::exception& exception) {
+                LOG_ERROR(Render_Vulkan, "Cached compute pipeline {:016x} failed: {}",
+                          key.unique_hash, exception.what());
+            }
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
                 compute_cache.emplace(key, std::move(pipeline));
@@ -929,12 +936,19 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
         workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
             ShaderPools pools;
-            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
-            for (auto& env : envs_) {
-                env_ptrs.push_back(&env);
+            std::unique_ptr<GraphicsPipeline> pipeline;
+            // Shader errors are handled inside; anything else would end the process from here.
+            try {
+                boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+                for (auto& env : envs_) {
+                    env_ptrs.push_back(&env);
+                }
+                pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
+                                                  state.statistics.get(), false);
+            } catch (const std::exception& exception) {
+                LOG_ERROR(Render_Vulkan, "Cached graphics pipeline {:016x} failed: {}",
+                          key.Hash(), exception.what());
             }
-            auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
-                                                 state.statistics.get(), false)};
 
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
