@@ -23,6 +23,7 @@
 #include "core/core.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2.h"
 #include "video_core/engines/fermi_2d.h"
@@ -347,7 +348,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
         return true;
     case 0xae: case 0xaf: case 0xb0: {
         const GPUVAddr qmd_address = GPUVAddr{native_registers[0xad]} << 8;
-        const bool trace_queries = VideoCommon::NativeQueryTraceEnabled();
+        const bool trace_queries =
+            !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::QueryDiagnostics) ||
+            VideoCommon::NativeQueryTraceEnabled();
         if (trace_queries) {
             VideoCommon::TraceNativeQuery(9, memory_manager.GetID(), qmd_address,
                 memory_manager.GpuToCpuAddress(qmd_address).value_or(0), method, argument, 0);
@@ -403,7 +406,8 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                         if (watch != 0 && (address & ~u64{0xf}) == watch) {
                             LOG_INFO(HW_GPU, "Semaphore watch: QMD release add {:#x} -> {:#x}", address, value);
                         }
-                        if (VideoCommon::NativeQueryTraceEnabled()) {
+                        if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::QueryDiagnostics) ||
+                            VideoCommon::NativeQueryTraceEnabled()) {
                             VideoCommon::TraceNativeQuery(1, memory_manager.GetID(), address,
                                 memory_manager.GpuToCpuAddress(address).value_or(0), 0, value, 1U << 26);
                         }

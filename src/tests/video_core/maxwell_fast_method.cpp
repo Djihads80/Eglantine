@@ -637,12 +637,12 @@ TEST_CASE("Maxwell3D fast method dispatch cost", "[.][maxwell_fast_method_bench]
         stream.emplace_back(CbData + 1, 0);
         stream.emplace_back(CbData + 2, draw * 3);
         for (const u32 stage : {0u, 2u, 4u}) {
-            stream.emplace_back(MAXWELL3D_REG_INDEX(bind_groups[0].raw_config) + stage * 8,
+            stream.emplace_back(static_cast<u32>(MAXWELL3D_REG_INDEX(bind_groups[0].raw_config)) + stage * 8,
                                 1 | (rng() % 8) << 4);
         }
         stream.emplace_back(DrawBegin, 0);
-        stream.emplace_back(MAXWELL3D_REG_INDEX(vertex_buffer.first), rng() % 4);
-        stream.emplace_back(MAXWELL3D_REG_INDEX(vertex_buffer.count), 3 + rng() % 4);
+        stream.emplace_back(static_cast<u32>(MAXWELL3D_REG_INDEX(vertex_buffer.first)), rng() % 4);
+        stream.emplace_back(static_cast<u32>(MAXWELL3D_REG_INDEX(vertex_buffer.count)), 3 + rng() % 4);
         stream.emplace_back(DrawEnd, 0);
     }
     const auto run = [&](Maxwell3D& engine) {

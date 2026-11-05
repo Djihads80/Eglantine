@@ -24,6 +24,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/query_cache/bank_base.h"
 #include "video_core/query_cache/query_base.h"
 #include "video_core/query_cache/query_cache_base.h"
@@ -67,7 +68,10 @@ public:
         if (pending_sync.empty()) {
             return;
         }
-        auto& sync_values = sync_values_stash;
+        std::vector<SyncValuesStruct> local_values;
+        auto& sync_values = Nx2Perf::On(Nx2Perf::Opt::QueryUploadScratch) && !Nx2Perf::Verify()
+                                ? sync_values_stash
+                                : local_values;
         sync_values.clear();
         sync_values.reserve(pending_sync.size());
         for (size_t pending_id : pending_sync) {

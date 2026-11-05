@@ -36,6 +36,10 @@ enum class Opt : unsigned {
     PipelineRetention, ///< Sixteen sessions of used pipelines, saved every 15 s
     WriteIntersections,
     SortedPageBatches,
+    QmdScratch,
+    QueryDiagnostics,
+    ImmediateCallbacks,
+    QueryUploadScratch,
     Count,
 };
 
@@ -44,6 +48,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "usage_tracker",  "bank_check",      "split_overlap", "front_sleep", "submit_budget",
     "fragment_barrier", "fence_flush",   "frames_ahead", "pipeline_retention",
     "write_intersections", "sorted_page_batches",
+    "qmd_scratch", "query_diagnostics", "immediate_callbacks", "query_upload_scratch",
 };
 
 inline bool Enabled() {

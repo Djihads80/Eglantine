@@ -21,7 +21,7 @@ public:
     struct RejectShaderDispatch { bool operator()(const Descriptor&) const { return false; } };
     // Optional diagnostics: called with "load"/"count"/"defer"/"run" events.
     std::function<void(std::string_view, Address, std::int32_t)> trace;
-    bool nx2_perf = VideoCommon::Nx2Perf::Enabled();
+    bool nx2_perf = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::QmdScratch);
     template <typename Read, typename Release>
     std::string_view Signal(Address address, Word argument, Read read, Release release) {
         return Signal(address, argument, read, release, RejectShaderDispatch{});
@@ -31,9 +31,7 @@ public:
         struct Pending { Address address; Word action; Word count; };
         std::string_view error;
         std::array<Pending, 256> pending;
-        if (!nx2_perf || VideoCommon::Nx2Perf::Verify()) {
-            pending = {};
-        }
+        if (!nx2_perf || VideoCommon::Nx2Perf::Verify()) pending = {};
         std::size_t count = 1;
         pending[0] = {address, argument & 15, ((argument >> 14) & 0x3ff) + 1};
         for (std::size_t i = 0; i < count; ++i) {
