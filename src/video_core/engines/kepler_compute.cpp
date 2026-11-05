@@ -1048,7 +1048,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
             result += info.read[in.offset / 4] ? 4 : 0;
             result += stored_output ? 2 : 0;
-            result += in.tic.format == out.tic.format ? 1 : 0;
+            // One format outweighs a read the scan saw: the scan misses some reads (title 4's
+            // movie frame at 0xa8), and without a scene the read-only 0xa0 image won, black.
+            result += in.tic.format == out.tic.format ? 6 : 0;
             return result;
         };
         struct Choice {
