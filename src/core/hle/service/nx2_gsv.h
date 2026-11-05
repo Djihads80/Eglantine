@@ -32,6 +32,7 @@
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -2047,15 +2048,26 @@ private:
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
+    // With EDEN_NX2_DIAG_DIR a draw-list capture also saves the next present as capture-<n>.tga there.
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        if (m_capture_pending->load()) {
+            return;
+        }
+        std::string path;
+        if (VideoCommon::Nx2Diag::Active() && !VideoCommon::Nx2Diag::DrawListDir().empty()) {
+            if (const auto id = VideoCommon::Nx2Diag::Diagnostics::Get().TakeScreenshotRequest()) {
+                path = fmt::format("{}/capture-{}.tga", VideoCommon::Nx2Diag::DrawListDir().string(), *id);
+            }
+        }
+        if (path.empty() && directory != nullptr && (m_presents % 120) == 1) {
+            path = fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
+        }
+        if (path.empty() || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
         auto pixels = std::make_shared<std::vector<u8>>(layout.width * layout.height * 4);
-        const std::string path =
-            fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
         auto pending = m_capture_pending; // the screenshot callback can outlive the session
         system.GPU().Renderer().RequestScreenshot(
             pixels->data(),
