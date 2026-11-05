@@ -296,7 +296,9 @@ void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputVertices, program.mesh.max_vertices);
         ctx.AddExecutionMode(main, spv::ExecutionMode::OutputPrimitivesEXT,
                              program.mesh.max_primitives);
-        ctx.AddExecutionMode(main, spv::ExecutionMode::OutputTrianglesEXT);
+        ctx.AddExecutionMode(main, program.mesh.topology == 0   ? spv::ExecutionMode::OutputPoints
+                                   : program.mesh.topology == 1 ? spv::ExecutionMode::OutputLinesEXT
+                                                                : spv::ExecutionMode::OutputTrianglesEXT);
         break;
     case Stage::TessellationControl:
         execution_model = spv::ExecutionModel::TessellationControl;

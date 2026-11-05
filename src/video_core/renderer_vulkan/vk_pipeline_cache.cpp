@@ -241,6 +241,9 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         break;
     case Shader::Stage::Mesh:
         info.convert_depth_mode = gl_ndc;
+        if (program.mesh.topology == 0) {
+            info.fixed_state_point_size = point_size;
+        }
         break;
     case Shader::Stage::Geometry:
         if (program.output_topology == Shader::OutputTopology::PointList) {
