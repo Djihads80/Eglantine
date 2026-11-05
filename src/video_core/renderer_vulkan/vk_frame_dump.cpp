@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <map>
 #include <string_view>
 
 #include <fmt/format.h>
@@ -44,6 +45,8 @@ constexpr size_t STAGING_BUDGET = size_t{256} << 20;
 constexpr size_t MAX_READBACK = size_t{64} << 20;
 constexpr u32 MAX_SKIPPED_LINES = 512;
 constexpr u32 MAX_DRAW_STATE_LINES = 8192;
+/// Two per timed draw or dispatch.
+constexpr u32 MAX_TIMESTAMPS = 32768;
 
 template <typename T>
 T Load(const u8* pixel, int index) {
@@ -593,6 +596,87 @@ void FrameDump::Written(GPUVAddr gpu_addr) {
                   [gpu_addr](const FrameReadback& readback) { return readback.key.first == gpu_addr; });
 }
 
+void FrameDump::TimeBegin() {
+    if (!capturing || !timing || next_query + 2 > MAX_TIMESTAMPS) {
+        pending_begin = ~0U;
+        return;
+    }
+    pending_begin = next_query++;
+    scheduler.Record([pool = *timestamps, query = pending_begin](vk::CommandBuffer cmdbuf) {
+        cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, query);
+    });
+}
+
+void FrameDump::TimeEnd(bool dispatch) {
+    if (pending_begin == ~0U || !capturing) {
+        return;
+    }
+    const u32 end = next_query++;
+    scheduler.Record([pool = *timestamps, query = end](vk::CommandBuffer cmdbuf) {
+        cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, query);
+    });
+    timed.push_back({.begin = pending_begin,
+                     .end = end,
+                     .number = dispatch ? dispatches : draws - 1,
+                     .pass = pass_index,
+                     .dispatch = dispatch});
+    pending_begin = ~0U;
+}
+
+void FrameDump::ReportTimes() {
+    if (!timing || timed.empty()) {
+        return;
+    }
+    scheduler.Finish();
+    std::vector<u64> ticks(next_query);
+    const VkResult result = device.GetLogical().GetQueryResults(
+        *timestamps, 0, next_query, ticks.size() * sizeof(u64), ticks.data(), sizeof(u64),
+        VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS) {
+        LOG_WARNING(Render_Vulkan, "Frame dump: GPU timestamps unavailable ({})",
+                    static_cast<int>(result));
+        return;
+    }
+    const double ns_per_tick = device.GetTimestampPeriod();
+    struct PassTime {
+        double us{};
+        u32 draws{};
+        u32 dispatches{};
+    };
+    std::map<u32, PassTime> passes;
+    std::vector<std::pair<double, const Timed*>> items;
+    double total_us{};
+    for (const Timed& item : timed) {
+        const u64 begin = ticks[item.begin];
+        const u64 end = ticks[item.end];
+        const double us = end > begin ? static_cast<double>(end - begin) * ns_per_tick / 1000.0 : 0.0;
+        PassTime& pass = passes[item.pass];
+        pass.us += us;
+        ++(item.dispatch ? pass.dispatches : pass.draws);
+        total_us += us;
+        items.emplace_back(us, &item);
+    }
+    for (const auto& [index, pass] : passes) {
+        Enqueue({.tags = fmt::format(
+                     R"({{"kind":"gpu_pass","pass":{},"us":{:.1f},"draws":{},"dispatches":{}}})",
+                     index, pass.us, pass.draws, pass.dispatches)});
+    }
+    std::ranges::sort(items, [](const auto& a, const auto& b) { return a.first > b.first; });
+    items.resize((std::min<size_t>)(items.size(), 64));
+    for (const auto& [us, item] : items) {
+        Enqueue({.tags = fmt::format(
+                     R"({{"kind":"gpu_item","what":"{}","number":{},"pass":{},"us":{:.1f}}})",
+                     item->dispatch ? "dispatch" : "draw", item->number, item->pass, us)});
+    }
+    std::string top;
+    for (size_t i = 0; i < (std::min<size_t>)(items.size(), 8); ++i) {
+        top += fmt::format(" {} {} (pass {}) {:.0f} us;", items[i].second->dispatch ? "dispatch" : "draw",
+                           items[i].second->number, items[i].second->pass, items[i].first);
+    }
+    LOG_INFO(Render_Vulkan, "Frame dump: {:.1f} ms of GPU time in {} draws and dispatches; most:{}",
+             total_us / 1000.0, timed.size(), top);
+}
+
 void FrameDump::CapturePresent(ImageView& view) {
     if (const auto target = MakeTarget(view, 0)) {
         Record(*target, fmt::format("{:04}_present", sequence++),
@@ -922,6 +1006,23 @@ void FrameDump::Start() {
     draw_states = 0;
     pass_framebuffer = nullptr;
     frame_readbacks.clear();
+    timed.clear();
+    next_query = 0;
+    pending_begin = ~0U;
+    timing = device.GetTimestampPeriod() > 0.0f && device.IsHostQueryResetSupported();
+    if (timing) {
+        if (!timestamps) {
+            timestamps = device.GetLogical().CreateQueryPool({
+                .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                .queryCount = MAX_TIMESTAMPS,
+                .pipelineStatistics = 0,
+            });
+        }
+        device.GetLogical().ResetQueryPool(*timestamps, 0, MAX_TIMESTAMPS);
+    }
     if (!writer.joinable()) {
         writer = std::thread{[this] { WriterLoop(); }};
     }
@@ -940,6 +1041,7 @@ void FrameDump::TickFrame() {
     if (capturing) {
         EndPass();
         Drain();
+        ReportTimes();
         Enqueue({.tags = fmt::format(R"("passes":{},"draws":{},"dispatches":{},"skipped":{})",
                                      pass_index, draws, dispatches, skipped),
                  .summary = true,

@@ -449,7 +449,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
-        draw_func();
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.TimeBegin();
+            draw_func();
+            frame_dump.TimeEnd(false);
+        } else {
+            draw_func();
+        }
     }
     submitted = true;
     static u32 native_capture_count{};
@@ -1140,6 +1146,7 @@ void RasterizerVulkan::DispatchCompute() {
         if (!frame_dump.Capturing()) {
             return;
         }
+        frame_dump.TimeEnd(true);
         boost::container::small_vector<ImageView*, 8> written;
         for (const VideoCommon::ImageViewId id : pipeline->WrittenImages()) {
             written.push_back(id ? &texture_cache.GetImageView(id) : nullptr);
@@ -1171,6 +1178,9 @@ void RasterizerVulkan::DispatchCompute() {
         const u32 index = Tegra::Texture::TexturePair(handle, qmd.linked_tsc != 0).first;
         texture_cache.PublishComputeCollisionImage(index);
     };
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.TimeBegin();
+    }
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
     if (indirect_address) {
         // DispatchIndirect

@@ -405,13 +405,6 @@ struct System::Impl {
                 LOG_INFO(Core, "env.txt: {}={}", key, value);
             }
         }
-        // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
-        // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE, for Android).
-        if (Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
-                               "gpu_profile")) {
-            VideoCommon::Nx2Profile::g_enabled.store(true, std::memory_order_relaxed);
-            LOG_INFO(Core, "GPU thread profile on (gpu_profile file)");
-        }
         // Switch 2 titles build thousands of pipelines while they play: build them asynchronously
         // (a hitch-free frame instead of a GPU thread stall), unless set for this game itself.
         if (switch2_program && Settings::values.use_asynchronous_shaders.UsingGlobal() &&
@@ -421,6 +414,13 @@ struct System::Impl {
             Settings::values.use_asynchronous_shaders.SetValue(true);
         }
 #endif
+        // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
+        // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE without an environment).
+        if (Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
+                               "gpu_profile")) {
+            VideoCommon::Nx2Profile::g_enabled.store(true, std::memory_order_relaxed);
+            LOG_INFO(Core, "GPU thread profile on (gpu_profile file)");
+        }
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz

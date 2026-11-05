@@ -88,6 +88,9 @@ public:
     void CaptureDispatch(u64 shader_hash, u64 program, std::span<const u32, 3> groups,
                          std::span<ImageView* const> written);
     void CapturePresent(ImageView& view);
+    /// GPU time: timestamps around each draw and dispatch recorded while capturing ("gpu_*" lines).
+    void TimeBegin();
+    void TimeEnd(bool dispatch);
     /// Waits for pending readbacks and writes them once they pass the staging budget.
     void DrainIfFull();
     void TickFrame();
@@ -138,6 +141,8 @@ private:
     void Start();
     void Drain();
     void Enqueue(Job job);
+    /// Waits for the GPU and writes the timed draws and dispatches.
+    void ReportTimes();
     void WriterLoop();
     void Write(const Job& job);
     void WriteFile(const std::string& name, std::span<const u8> data);
@@ -186,6 +191,19 @@ private:
     u32 dispatches{};
     u32 skipped{};
     u32 draw_states{};
+
+    struct Timed {
+        u32 begin; ///< Query of the timestamp before it; the one after is `end`
+        u32 end;
+        u32 number; ///< Draw or dispatch number
+        u32 pass;
+        bool dispatch;
+    };
+    vk::QueryPool timestamps;
+    std::vector<Timed> timed;
+    u32 next_query{};
+    u32 pending_begin{~0U};
+    bool timing{};
 
     std::thread writer;
     std::mutex queue_mutex;

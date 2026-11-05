@@ -409,6 +409,12 @@ public:
         return properties.properties.limits.maxPushConstantsSize;
     }
 
+    /// Nanoseconds per timestamp tick; 0 when graphics and compute queues have no timestamps.
+    float GetTimestampPeriod() const {
+        const auto& limits = properties.properties.limits;
+        return limits.timestampComputeAndGraphics ? limits.timestampPeriod : 0.0f;
+    }
+
 #define FN_MAX_LIMIT_LIST \
     FN_MAX_LIMIT_ELEM(ComputeSharedMemorySize) \
     FN_MAX_LIMIT_ELEM(PerStageDescriptorSampledImages) \
