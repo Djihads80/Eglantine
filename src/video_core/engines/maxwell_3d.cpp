@@ -1173,6 +1173,13 @@ VideoCommon::GpuSplit::Effect FrontMethodEffect(u32 method) {
     case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
     case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config):
     case MAXWELL3D_REG_INDEX(report_semaphore.query):
+    case MAXWELL3D_REG_INDEX(wait_for_idle):
+    case MAXWELL3D_REG_INDEX(render_enable.mode):
+    case MAXWELL3D_REG_INDEX(clear_report_value):
+    case MAXWELL3D_REG_INDEX(sync_info):
+    case MAXWELL3D_REG_INDEX(fragment_barrier):
+    case MAXWELL3D_REG_INDEX(invalidate_texture_data_cache):
+    case MAXWELL3D_REG_INDEX(tiled_cache_barrier):
         return Effect::None;
     default:
         return FrontHandledOutsideDrawManager(method) ? Effect::Unknown : Effect::Gpu;

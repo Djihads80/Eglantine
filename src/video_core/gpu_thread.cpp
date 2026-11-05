@@ -124,9 +124,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                         rasterizer_ptr->FlushRegion(addr, size);
                     });
                 } else if (const auto* invalidate = std::get_if<InvalidateRegionCommand>(&next.data)) {
-                    split.Defer([rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
-                        rasterizer_ptr->OnCacheInvalidation(addr, size);
-                    });
+                    split.Defer(
+                        [rasterizer_ptr, addr = invalidate->addr, size = invalidate->size] {
+                            rasterizer_ptr->OnCacheInvalidation(addr, size);
+                        },
+                        VideoCommon::GpuSplit::Effect::None);
                 } else {
                     ASSERT(false);
                 }

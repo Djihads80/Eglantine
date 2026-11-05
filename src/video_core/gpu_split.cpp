@@ -362,6 +362,10 @@ void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u
 
 u64 GpuSplit::SettleWrites() {
     WaitFor((std::min)(last_function_position, write_position), DrainSite::Map);
+    return RetireWrites();
+}
+
+u64 GpuSplit::RetireWrites() {
     consumed_cache = consumed.load(std::memory_order_acquire);
     writes.Retire(consumed_cache);
     return consumed_cache;

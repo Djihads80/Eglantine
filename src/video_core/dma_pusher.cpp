@@ -24,6 +24,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -200,10 +201,14 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
-            VideoCommon::GpuSplit::Get().WaitForWriters()) {
-            gpu_written =
-                IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        if (auto& split = VideoCommon::GpuSplit::Get(); !gpu_written && split.Active()) {
+            if (VideoCommon::Nx2Perf::Enabled() && g_nx2_ampere.load(std::memory_order_relaxed)) {
+                gpu_written =
+                    WaitForListWriters(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            } else if (split.WaitForWriters()) {
+                gpu_written =
+                    IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            }
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
@@ -621,6 +626,70 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
         }
     }
     return false;
+}
+
+bool DmaPusher::WaitForListWriters(GPUVAddr address, size_t size) {
+    namespace Profile = VideoCommon::Nx2Profile;
+    auto& split = VideoCommon::GpuSplit::Get();
+    const bool sparse = address < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+                        Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size;
+    u64 target = 0;
+    if (size == 0 || sparse) {
+        target = ~u64{0};
+    } else {
+        split.RetireWrites();
+        for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+            const auto device = memory_manager.GpuToCpuAddress(page);
+            if (!device) {
+                target = ~u64{0};
+                break;
+            }
+            const u64 device_page = *device & ~u64{0xfff};
+            target = (std::max)(target, split.ListTarget(device_page, device_page + 0x1000));
+        }
+    }
+    if (target == ~u64{0}) {
+        split.WaitForWriters();
+        return IsGpuWrittenCommands(address, size);
+    }
+    const bool unknown = target == split.Writes().LastUnknown();
+    const bool waited = split.WaitUntil(target, VideoCommon::DrainSite::ListWriters);
+    if (Profile::Enabled()) {
+        Profile::Add(Profile::Counter::ListChecks, 1);
+        Profile::Add(Profile::Counter::ListWaits, waited ? 1 : 0);
+        Profile::Add(Profile::Counter::ListWaitsUnknown, waited && unknown ? 1 : 0);
+    }
+    const bool written = IsGpuWrittenCommands(address, size);
+    if (!VideoCommon::Nx2Perf::Verify()) {
+        return written;
+    }
+    // The old wait for every queued writer, and the words before and after it.
+    std::vector<u32> early(size / sizeof(u32));
+    memory_manager.ReadBlockUnsafe(address, early.data(), early.size() * sizeof(u32));
+    split.WaitForWriters();
+    const bool old_written = IsGpuWrittenCommands(address, size);
+    static u32 logged{};
+    if (old_written != written) {
+        if (logged < 64) {
+            ++logged;
+            LOG_ERROR(HW_GPU, "Nx2Perf split: command list at {:#x} ({} words) became GPU-written "
+                      "after the wait for its writers",
+                      address, early.size());
+        }
+        return old_written;
+    }
+    std::vector<u32> drained(early.size());
+    memory_manager.ReadBlockUnsafe(address, drained.data(), drained.size() * sizeof(u32));
+    for (size_t i = 0; i < early.size() && logged < 64; ++i) {
+        if (early[i] != drained[i]) {
+            ++logged;
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf split: command list at {:#x} ({} words): word {} is {:#x} before "
+                      "the wait for every writer, {:#x} after it",
+                      address, early.size(), i, early[i], drained[i]);
+        }
+    }
+    return old_written;
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
