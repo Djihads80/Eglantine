@@ -421,6 +421,15 @@ target_link_libraries(yuzu PRIVATE Boost::headers Qt6::Widgets Qt6::Charts Qt6::
 # Unpacks NVIDIA's files from the Streamline release (nvidia_dlss_panel.cpp).
 target_link_libraries(yuzu PRIVATE ZLIB::ZLIB)
 target_link_libraries(yuzu PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+
+# The status codes are shared with the bridge, so the frontend can report them either way.
+target_include_directories(yuzu PRIVATE ${PROJECT_SOURCE_DIR}/externals/ebridge/common)
+if (ENABLE_EBRIDGE)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/externals/ebridge ${PROJECT_BINARY_DIR}/externals/ebridge)
+    target_sources(yuzu PRIVATE ebridge_service.h ebridge_service.cpp)
+    target_link_libraries(yuzu PRIVATE ebridge)
+    target_compile_definitions(yuzu PRIVATE YUZU_EBRIDGE)
+endif()
 if (ENABLE_OPENGL)
     target_link_libraries(yuzu PRIVATE glad)
 endif()

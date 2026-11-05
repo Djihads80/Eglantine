@@ -16,6 +16,7 @@
 #include "audio_core/common/common.h"
 #include "audio_core/sink/sink_stream.h"
 #include "common/common_types.h"
+#include "common/ebridge_hooks.h"
 #include "common/fixed_point.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -214,6 +215,12 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
     }
 
     std::memcpy(last_frame.data(), &output_buffer[(frames_written - 1) * frame_size], frame_size_bytes);
+
+    if (Common::EBridge::WantsAudio()) {
+        Common::EBridge::SubmitAudio(this, output_buffer.data(), num_frames, num_channels);
+        // The console plays it: keep the PC quiet while one is connected.
+        std::memset(output_buffer.data(), 0, num_frames * frame_size_bytes);
+    }
 
     // EDEN_NX2_AUDIO_LEVEL: log the output peak about every two seconds (is a game audible?).
     if (static const bool meter = std::getenv("EDEN_NX2_AUDIO_LEVEL") != nullptr; meter) {

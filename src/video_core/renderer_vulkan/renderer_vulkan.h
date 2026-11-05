@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <variant>
@@ -74,6 +75,7 @@ private:
                               VkDeviceSize buffer_size);
     void RenderScreenshot(std::span<const Tegra::FramebufferConfig> framebuffers);
     void RenderAppletCaptureLayer(std::span<const Tegra::FramebufferConfig> framebuffers);
+    void RenderBridgeCapture(std::span<const Tegra::FramebufferConfig> framebuffers);
 
     std::vector<Tegra::FramebufferConfig> applet_capture_layers;
     std::vector<Tegra::FramebufferConfig> screenshot_layer_scratch;
@@ -103,6 +105,7 @@ private:
     BlitScreen blit_swapchain;
     BlitScreen blit_capture;
     BlitScreen blit_applet;
+    BlitScreen blit_bridge;
     RasterizerVulkan rasterizer;
 #ifdef HAS_LSFG
     FrameGen frame_gen;
@@ -110,6 +113,21 @@ private:
     std::optional<TurboMode> turbo_mode;
 
     Frame applet_frame;
+
+    // Eglantine Bridge: the picture is drawn into bridge_frame and copied to one of a
+    // few readback buffers; a buffer is read on a later frame, once the GPU is done
+    // with it, so streaming never waits for the GPU.
+    struct BridgeSlot {
+        vk::Buffer buffer;
+        u64 tick{};
+        bool pending{};
+    };
+    static constexpr u32 BridgeWidth = 1280;
+    static constexpr u32 BridgeHeight = 720;
+    static constexpr std::size_t BridgeSlotCount = 3;
+    Frame bridge_frame{};
+    std::array<BridgeSlot, BridgeSlotCount> bridge_slots{};
+    std::size_t bridge_next{};
 };
 
 } // namespace Vulkan

@@ -42,6 +42,14 @@
 #include "ryujinx_dialog.h"
 #include "set_play_time_dialog.h"
 #include "util/util.h"
+#include <cstring>
+#include <QImage>
+#include <QPainter>
+#include "ebridge_protocol.h"
+#include "qt_common/game_list/game_list_p.h"
+#ifdef YUZU_EBRIDGE
+#include "yuzu/ebridge_service.h"
+#endif
 #include "yuzu/game/game_list.h"
 #include "yuzu/nup_dialogs.h"
 
@@ -426,6 +434,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     play_time_manager = std::make_unique<PlayTime::PlayTimeManager>();
 
     InitializeWidgets();
+    StartEBridge();
     InitializeDebugWidgets();
     InitializeRecentFileMenuActions();
     InitializeHotkeys();
@@ -560,7 +569,165 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     }
 }
 
+#ifdef YUZU_EBRIDGE
+void MainWindow::StartEBridge() {
+    ebridge = std::make_unique<EBridge::BridgeService>(input_subsystem);
+    ebridge->SetEventCallback([this](ebridge::Event e, const std::string& detail) {
+        const auto text = QString::fromStdString(detail);
+        QMetaObject::invokeMethod(
+            this, [this, e, text] { OnEBridgeEvent(static_cast<int>(e), text); },
+            Qt::QueuedConnection);
+    });
+    // A game picked on the console starts as if double-clicked in the game list.
+    ebridge->SetLaunchCallback([this](const ebridge::GameInfo& game) {
+        const auto path = QString::fromStdString(game.id);
+        const u64 program_id = game.title_id;
+        QMetaObject::invokeMethod(
+            this, [this, path, program_id] { OnGameListLoadFile(path, program_id); },
+            Qt::QueuedConnection);
+    });
+    // The console asks for the list from a network thread: keep a fresh copy ready.
+    auto* games_timer = new QTimer(this);
+    connect(games_timer, &QTimer::timeout, this, &MainWindow::UpdateEBridgeGames);
+    games_timer->start(2000);
+    QTimer::singleShot(0, this, &MainWindow::UpdateEBridgeGames);
+
+    ebridge::HostConfig host_config;
+    host_config.name = "Eglantine";
+    host_config.state_file = Common::FS::GetEdenPathString(Common::FS::EdenPath::ConfigDir) +
+                             "/ebridge_paired.txt";
+    std::string error;
+    if (ebridge->Start(host_config, &error)) {
+        LOG_INFO(Frontend, "Eglantine Bridge listening on port {}", host_config.port);
+        SetEBridgeStatus(EB_STATUS_IDLE, 0, 0, "No game is running on the PC");
+    } else {
+        LOG_WARNING(Frontend, "Eglantine Bridge could not start: {}", error);
+        ebridge.reset();
+    }
+}
+
+void MainWindow::SetEBridgeStatus(int state, u32 value, u32 total, const char* text,
+                                  const QString& path) {
+    if (!ebridge) {
+        return;
+    }
+    if (!path.isEmpty()) {
+        ebridge_game_name = ebridge->NameForPath(path.toStdString());
+        if (ebridge_game_name.empty()) {
+            ebridge_game_name = QFileInfo(path).completeBaseName().toStdString();
+        }
+    }
+    ebridge->SetStatus(state, value, total, text, ebridge_game_name);
+}
+
+void MainWindow::UpdateEBridgeGames() {
+    if (!ebridge || !game_list) {
+        return;
+    }
+    std::vector<ebridge::GameInfo> games;
+    std::function<void(const QStandardItem*)> walk = [&](const QStandardItem* parent) {
+        for (int row = 0; row < parent->rowCount(); ++row) {
+            const QStandardItem* item = parent->child(row, 0);
+            if (!item) {
+                continue;
+            }
+            if (item->data(GameListItem::TypeRole).value<GameListItemType>() ==
+                GameListItemType::Game) {
+                const QString path = item->data(GameListItemPath::FullPathRole).toString();
+                if (path.isEmpty()) {
+                    continue;
+                }
+                ebridge::GameInfo game;
+                game.name = item->data(GameListItemPath::TitleRole).toString().toStdString();
+                if (game.name.empty()) {
+                    game.name = QFileInfo(path).completeBaseName().toStdString();
+                }
+                game.title_id = item->data(GameListItemPath::ProgramIdRole).toULongLong();
+                game.running = emulation_running && path == current_game_path;
+                game.id = path.toStdString();
+                // Same columns as the list on the PC, already formatted.
+                const auto column = [&](int col) {
+                    const QStandardItem* cell = parent->child(row, col);
+                    return cell ? cell->text().toStdString() : std::string{};
+                };
+                game.file_type = column(GameListModel::COLUMN_FILE_TYPE);
+                game.size = column(GameListModel::COLUMN_SIZE);
+                game.play_time = column(GameListModel::COLUMN_PLAY_TIME);
+                // Icon, on the console's row colour since the stream has no transparency.
+                const auto pixmap = item->data(Qt::DecorationRole).value<QPixmap>();
+                if (!pixmap.isNull()) {
+                    QImage icon(EB_ICON_SIZE, EB_ICON_SIZE, QImage::Format_RGB888);
+                    icon.fill(QColor(0x2b, 0x30, 0x35));
+                    QPainter painter(&icon);
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+                    painter.drawPixmap(icon.rect(), pixmap);
+                    painter.end();
+                    game.icon_rgb.resize(EB_ICON_BYTES);
+                    for (int y = 0; y < EB_ICON_SIZE; ++y) {
+                        std::memcpy(game.icon_rgb.data() + y * EB_ICON_SIZE * 3, icon.constScanLine(y),
+                                    EB_ICON_SIZE * 3);
+                    }
+                }
+                games.push_back(std::move(game));
+            }
+            walk(item);
+        }
+    };
+    if (const auto* model = game_list->GetModel()) {
+        walk(model->invisibleRootItem());
+    }
+    std::ranges::sort(games, [](const auto& a, const auto& b) {
+        return a.name != b.name ? a.name < b.name : a.id < b.id;
+    });
+    // The same game can appear under several folders (favorites, recently played).
+    games.erase(std::unique(games.begin(), games.end(),
+                            [](const auto& a, const auto& b) { return a.id == b.id; }),
+                games.end());
+    ebridge->SetGames(std::move(games));
+}
+
+void MainWindow::OnEBridgeEvent(int event, const QString& detail) {
+    switch (static_cast<ebridge::Event>(event)) {
+    case ebridge::Event::PairingPin:
+        if (ebridge_pin_box) {
+            ebridge_pin_box->close();
+        }
+        ebridge_pin_box = new QMessageBox(
+            QMessageBox::Information, tr("Eglantine Bridge"),
+            tr("A Nintendo Switch wants to connect.\nEnter this PIN on the console:\n\n%1")
+                .arg(detail),
+            QMessageBox::Ok, this);
+        ebridge_pin_box->setAttribute(Qt::WA_DeleteOnClose);
+        ebridge_pin_box->setModal(false);
+        ebridge_pin_box->show();
+        break;
+    case ebridge::Event::Connected:
+        if (ebridge_pin_box) {
+            ebridge_pin_box->close();
+        }
+        LOG_INFO(Frontend, "Eglantine Bridge: {} connected", detail.toStdString());
+        statusBar()->showMessage(tr("Eglantine Bridge: %1 connected").arg(detail), 8000);
+        break;
+    case ebridge::Event::Disconnected:
+        LOG_INFO(Frontend, "Eglantine Bridge: disconnected ({})", detail.toStdString());
+        statusBar()->showMessage(tr("Eglantine Bridge: console disconnected (%1)").arg(detail),
+                                 8000);
+        break;
+    case ebridge::Event::Log:
+        LOG_INFO(Frontend, "Eglantine Bridge: {}", detail.toStdString());
+        break;
+    }
+}
+#else
+void MainWindow::StartEBridge() {}
+void MainWindow::UpdateEBridgeGames() {}
+void MainWindow::SetEBridgeStatus(int, u32, u32, const char*, const QString&) {}
+#endif
+
 MainWindow::~MainWindow() {
+#ifdef YUZU_EBRIDGE
+    ebridge.reset();
+#endif
     if (nup_cancel) {
         nup_cancel->store(true);
     }
@@ -1936,6 +2103,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         return;
     }
     LOG_INFO(Frontend, "Eglantine starting...");
+    SetEBridgeStatus(EB_STATUS_BOOTING, 0, 0, "Starting the game", filename);
 
     if (params.program_id == 0 ||
         params.program_id > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
@@ -2042,6 +2210,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     load_timer.start();
     if (!LoadROM(filename, params)) {
         LOG_ERROR(Frontend, "Core load failed: elapsed_ms={}", load_timer.elapsed());
+        SetEBridgeStatus(EB_STATUS_ERROR, 0, 0, "The game could not start: see the PC for details");
         return;
     }
     LOG_INFO(Frontend, "Core load completed: elapsed_ms={}", load_timer.elapsed());
@@ -2077,6 +2246,24 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
 
     connect(QtCommon::emu_thread.get(), &EmuThread::LoadProgress, loading_screen,
             &LoadingScreen::OnLoadProgress, Qt::QueuedConnection);
+    // Same progress, for the console's loading screen.
+    connect(
+        QtCommon::emu_thread.get(), &EmuThread::LoadProgress, this,
+        [this](VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total) {
+            switch (stage) {
+            case VideoCore::LoadCallbackStage::Prepare:
+                SetEBridgeStatus(EB_STATUS_LOADING, 0, static_cast<u32>(total), "Preparing shaders");
+                break;
+            case VideoCore::LoadCallbackStage::Build:
+                SetEBridgeStatus(EB_STATUS_LOADING, static_cast<u32>(value), static_cast<u32>(total),
+                                 "Loading shaders");
+                break;
+            case VideoCore::LoadCallbackStage::Complete:
+                SetEBridgeStatus(EB_STATUS_BOOTING, 0, 0, "Starting the game");
+                break;
+            }
+        },
+        Qt::QueuedConnection);
 
     connect(
         QtCommon::emu_thread.get(), &EmuThread::ShaderCacheReloadStarted, this,
@@ -2255,6 +2442,8 @@ void MainWindow::TerminateEmulationThread() {
 }
 
 void MainWindow::OnEmulationStopped() {
+    SetEBridgeStatus(EB_STATUS_IDLE, 0, 0, "No game is running on the PC");
+    ebridge_game_name.clear();
     if (!emulation_running) {
         return;
     }
@@ -3224,6 +3413,7 @@ bool MainWindow::ConfirmShutdownGame() {
 
 void MainWindow::OnLoadComplete() {
     loading_screen->OnLoadComplete();
+    SetEBridgeStatus(EB_STATUS_RUNNING, 0, 0, "");
 
     perf_overlay = new PerformanceOverlay(this);
     perf_overlay->setVisible(ui->action_Show_Performance_Overlay->isChecked());

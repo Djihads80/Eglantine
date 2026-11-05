@@ -45,6 +45,8 @@ add_library(
     div_ceil.h
     dynamic_library.cpp
     dynamic_library.h
+    ebridge_hooks.cpp
+    ebridge_hooks.h
     elf.h
     error.cpp
     error.h

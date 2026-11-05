@@ -11,6 +11,7 @@
 #include <ranges>
 #include "common/thread.h"
 #include "common/assert.h"
+#include "common/ebridge_hooks.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/frontend/input_converter.h"
 #include "hid_core/hid_util.h"
@@ -1236,6 +1237,10 @@ bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationV
         return false;
     }
     const std::size_t index = static_cast<std::size_t>(device_index);
+    // Forwarded before the output device checks: the console may be the only "real" controller.
+    Common::EBridge::SubmitRumble(Service::HID::NpadIdTypeToIndex(npad_id_type),
+                                  vibration.low_amplitude, vibration.low_frequency,
+                                  vibration.high_amplitude, vibration.high_frequency);
     if (!output_devices[index]) {
         return false;
     }
