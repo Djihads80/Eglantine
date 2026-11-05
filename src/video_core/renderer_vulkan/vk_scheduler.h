@@ -182,6 +182,12 @@ public:
         return master_semaphore->CurrentTick();
     }
 
+    /// Changes whenever recorded command buffer state may have been reset (InvalidateState, the
+    /// end of a render pass), so a binding recorded at the same epoch is still bound.
+    [[nodiscard]] u64 RecordingEpoch() const noexcept {
+        return recording_epoch;
+    }
+
     /// Returns true when a tick has been triggered by the GPU.
     [[nodiscard]] bool IsFree(u64 tick) const noexcept {
         return master_semaphore->IsFree(tick);
@@ -380,6 +386,7 @@ private:
     std::function<void()> on_submit;
 
     State state;
+    u64 recording_epoch = 0;
 
     u32 num_renderpass_images = 0;
     std::array<VkImage, 9> renderpass_images{};

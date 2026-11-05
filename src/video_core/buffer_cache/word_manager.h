@@ -37,6 +37,7 @@ enum class Type {
 template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
+    static_assert(num_words <= 64, "clean_words holds a bit per word");
 
     explicit WordManager(VAddr cpu_addr_, DeviceTracker& tracker_) : tracker{&tracker_}, cpu_addr{cpu_addr_} {
         std::fill_n(heap.data() + size_t(Type::CPU) * num_words, num_words, ~u64{0});
@@ -48,6 +49,9 @@ struct WordManager {
         u64 const last_word = (~u64{0} << shift) >> shift;
         heap[num_words * size_t(Type::CPU) + num_words - 1] = last_word;
         heap[num_words * size_t(Type::Untracked) + num_words - 1] = last_word;
+        for (size_t index = 0; index < num_words; ++index) {
+            NoteCleanWord(index);
+        }
     }
     explicit WordManager() = default;
 
@@ -137,6 +141,9 @@ struct WordManager {
                 if (type == Type::CPU || type == Type::CachedCPU)
                     untracked_words[index] &= ~mask;
             }
+            if (type == Type::CPU || type == Type::CachedCPU) {
+                NoteCleanWord(index);
+            }
         });
         if (!ranges.empty()) {
             ApplyCollectedRanges(ranges, (!enable) ? 1 : -1);
@@ -178,6 +185,8 @@ struct WordManager {
                     untracked_words[index] &= ~mask;
                 if (type == Type::CPU)
                     cached_words[index] &= ~word;
+                if (type == Type::CPU || type == Type::CachedCPU)
+                    NoteCleanWord(index);
             }
             const size_t base_offset = index * PAGES_PER_WORD;
             IteratePages(word, [&](size_t pages_offset, size_t pages_size) {
@@ -254,6 +263,7 @@ struct WordManager {
             untracked_words[word_index] |= cached_bits;
             cpu_words[word_index] |= cached_bits;
             cached_words[word_index] = 0;
+            NoteCleanWord(word_index);
         }
         if (!ranges.empty()) {
             ApplyCollectedRanges(ranges, -1);
@@ -319,7 +329,35 @@ struct WordManager {
         return std::span<const u64>(heap.data() + num_words * size_t(type), num_words);
     }
 
+    /// Words of [first_word, last_word] that are not clean, one bit each. A clean word has no CPU
+    /// or Untracked page, so an upload over it finds and changes nothing.
+    [[nodiscard]] u64 DirtyWords(size_t first_word, size_t last_word) const noexcept {
+        const u64 mask = (~u64{0} >> (63 - (last_word - first_word))) << first_word;
+        return mask & ~clean_words;
+    }
+
+    /// Recounts the clean words: true when clean_words matches the CPU and Untracked words.
+    [[nodiscard]] bool CleanWordsHold() const noexcept {
+        const std::span<const u64> cpu_words = Span(Type::CPU);
+        const std::span<const u64> untracked_words = Span(Type::Untracked);
+        for (size_t index = 0; index < num_words; ++index) {
+            const bool clean = (cpu_words[index] | untracked_words[index]) == 0;
+            if (((clean_words >> index) & 1) != u64{clean}) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void NoteCleanWord(size_t index) noexcept {
+        const bool clean = (heap[index] | heap[num_words * size_t(Type::Untracked) + index]) == 0;
+        clean_words = (clean_words & ~(u64{1} << index)) | (u64{clean} << index);
+    }
+
     std::array<u64, size_t(Type::Max) * num_words> heap = {};
+    /// Bit per word, set while the word has no CPU and no Untracked page (DirtyWords). Every
+    /// change to those words updates it: a per-word form of PR #161's upload_words count.
+    u64 clean_words = 0;
     DeviceTracker* tracker = nullptr;
     VAddr cpu_addr = 0;
 };
