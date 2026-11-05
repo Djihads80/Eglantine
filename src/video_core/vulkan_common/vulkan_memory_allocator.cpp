@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <type_traits>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -87,25 +88,33 @@ namespace {
         return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     }
 
-    // Bits a texel of `format` takes, for sizing images: compressed formats at their rate,
-    // anything else at 32.
-    [[nodiscard]] u32 BitsPerTexel(VkFormat format) {
-        // Texels in an ASTC block, in format order (each shape has a UNORM and an SRGB format).
-        constexpr std::array<u32, 14> AstcBlockTexels{16, 20, 25, 30,  36,  40, 48,
-                                                      64, 50, 60, 80, 100, 120, 144};
-        const u32 value = static_cast<u32>(format);
+    // The bytes an image's first level takes over all its layers, for sizing: compressed formats
+    // by their blocks, anything else at 4 bytes a texel.
+    [[nodiscard]] u64 LevelZeroBytes(const VkImageCreateInfo& ci) {
+        // ASTC block shapes, in format order (each shape has a UNORM and an SRGB format).
+        constexpr std::array<std::pair<u32, u32>, 14> AstcBlocks{{{4, 4}, {5, 4}, {5, 5}, {6, 5},
+                                                                  {6, 6}, {8, 5}, {8, 6}, {8, 8},
+                                                                  {10, 5}, {10, 6}, {10, 8},
+                                                                  {10, 10}, {12, 10}, {12, 12}}};
+        u32 block_width = 1;
+        u32 block_height = 1;
+        u64 block_bytes = 4;
+        const u32 value = static_cast<u32>(ci.format);
         if (value >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && value <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) {
-            const u32 texels = AstcBlockTexels[(value - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2];
-            return Common::DivCeil(128U, texels);
-        }
-        switch (format) {
+            std::tie(block_width, block_height) =
+                AstcBlocks[(value - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2];
+            block_bytes = 16;
+        } else {
+            switch (ci.format) {
             case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
             case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
             case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
             case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
             case VK_FORMAT_BC4_UNORM_BLOCK:
             case VK_FORMAT_BC4_SNORM_BLOCK:
-                return 4;
+                block_width = block_height = 4;
+                block_bytes = 8;
+                break;
             case VK_FORMAT_BC2_UNORM_BLOCK:
             case VK_FORMAT_BC2_SRGB_BLOCK:
             case VK_FORMAT_BC3_UNORM_BLOCK:
@@ -116,10 +125,16 @@ namespace {
             case VK_FORMAT_BC6H_SFLOAT_BLOCK:
             case VK_FORMAT_BC7_UNORM_BLOCK:
             case VK_FORMAT_BC7_SRGB_BLOCK:
-                return 8;
+                block_width = block_height = 4;
+                block_bytes = 16;
+                break;
             default:
-                return 32;
+                break;
+            }
         }
+        return u64{Common::DivCeil(ci.extent.width, block_width)} *
+               Common::DivCeil(ci.extent.height, block_height) * ci.extent.depth * ci.arrayLayers *
+               block_bytes;
     }
 
 } // namespace
@@ -266,10 +281,9 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     VmaAllocationInfo alloc_info{};
     // Images this large (title 1's sparse texture arrays reach 4.5G texels, ~23 GB) are never
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
-    // unbacked sparse fallback below. 1 GiB, counted by texel size: a compressed image that
-    // fits is backed.
-    const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels * BitsPerTexel(ci.format) > (u64{1} << 33);
+    // unbacked sparse fallback below. 1 GiB, counted by its blocks: a compressed image that fits
+    // is backed.
+    const bool huge = LevelZeroBytes(ci) > (u64{1} << 30);
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
