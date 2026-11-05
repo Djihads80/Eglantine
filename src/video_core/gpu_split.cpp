@@ -309,9 +309,19 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
+            static const bool method_fast = [] {
+                const char* value = std::getenv("EDEN_NX2_METHOD_FAST");
+                return value == nullptr || value[0] != '0';
+            }();
             Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
-            engine->ConsumeSink(*system);
-            engine->CallMethod(*system, method, argument, true);
+            if (!engine->method_sink.empty()) {
+                engine->ConsumeSink(*system);
+            }
+            if (method_fast && !engine->execution_mask[method]) {
+                engine->CallStateMethod(*system, method, argument);
+            } else {
+                engine->CallMethod(*system, method, argument, true);
+            }
         } else if (!engine->execution_mask[method]) {
             engine->method_sink.emplace_back(method, argument);
         } else {
