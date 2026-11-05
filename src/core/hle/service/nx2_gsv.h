@@ -1470,6 +1470,13 @@ struct Nx2NativeObjects {
     u32 next_image{1};
 };
 
+// Pixel format IDs in InterModuleUserImagePreference word 6.
+enum class Nx2NativeImageFormat : u32 {
+    Rgba8 = 1,
+    Rgb10A2 = 4,
+    Rgba16Float = 5,
+};
+
 // Block-linear layout of an InterModuleUserImagePreference (16 words): word 2 holds
 // (width - 1) | (height - 1) << 16, word 4 the block height (log2 of GOB rows), word 5 the row
 // pitch in 64-byte GOBs. Formula from changes.patch (native_image_layout.h); preferences outside
@@ -1489,7 +1496,8 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     layout.height = (preference[2] >> 16) + 1;
     const u64 pitch_gobs = preference[5];
     const u32 block_height_log2 = preference[4];
-    const u32 bytes_per_pixel = preference[6] == 5 ? 8 : 4;
+    const u32 bytes_per_pixel =
+        static_cast<Nx2NativeImageFormat>(preference[6]) == Nx2NativeImageFormat::Rgba16Float ? 8 : 4;
     if (block_height_log2 <= 8 && pitch_gobs >= (u64{layout.width} * bytes_per_pixel + 63) / 64 &&
         pitch_gobs <= 4096) {
         layout.pitch = pitch_gobs * 64;
@@ -1953,7 +1961,7 @@ private:
     void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
         u64 address{};
         Nx2ImageLayout layout{};
-        u32 image_format{};
+        Nx2NativeImageFormat image_format{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -1966,7 +1974,7 @@ private:
             }
             address = memory->second.address;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
-            image_format = image->second.preference[6];
+            image_format = static_cast<Nx2NativeImageFormat>(image->second.preference[6]);
         }
         const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
         if (!device) {
@@ -2025,11 +2033,14 @@ private:
             .offset = 0,
             .width = layout.width,
             .height = layout.height,
-            .stride = static_cast<u32>(layout.pitch / (image_format == 5 ? 8 : 4)),
-            // Preference word 6: 1 = RGBA8, 4 = RGB10A2/HDR10 (PQ), 5 = RGBA16F/scRGB.
-            .pixel_format = image_format == 5 ? android::PixelFormat::RgbaFp16
-                          : image_format == 4 ? android::PixelFormat::Rgba1010102
-                                              : android::PixelFormat::Rgba8888,
+            .stride = static_cast<u32>(
+                layout.pitch / (image_format == Nx2NativeImageFormat::Rgba16Float ? 8 : 4)),
+            // Native RGB10A2 carries HDR10 (PQ); RGBA16F carries scRGB.
+            .pixel_format = image_format == Nx2NativeImageFormat::Rgba16Float
+                                ? android::PixelFormat::RgbaFp16
+                            : image_format == Nx2NativeImageFormat::Rgb10A2
+                                ? android::PixelFormat::Rgba1010102
+                                : android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
@@ -2260,7 +2271,7 @@ private:
     }
 
     // 263/265/267/269/271(u64 display name, u32 index): fire the slot when the display's refresh
-    // rate, HDR status, HDR reference white, buffer max resolution or mode capability changes, so the
+    // rate, HDR status, HDR paper white, buffer max resolution or mode capability changes, so the
     // game re-queries it. None of them change here: fire once so the game reads the current
     // state, then leave the slot quiet. Kirby Air Riders re-queried its HDR status on every
     // present while this slot fired with vsync.

@@ -243,9 +243,8 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
-                               render_window.GetFramebufferLayout(),
-                               present_manager.SwapchainImageCount(),
-                               output_format);
+                              render_window.GetFramebufferLayout(),
+                              present_manager.SwapchainImageCount(), output_format);
 
 #ifdef HAS_LSFG
     if (output_format != VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&

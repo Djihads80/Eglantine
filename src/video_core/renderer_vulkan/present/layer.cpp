@@ -101,7 +101,8 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     const u32 scaled_width = texture_info ? texture_info->scaled_width : texture_width;
     const u32 scaled_height = texture_info ? texture_info->scaled_height : texture_height;
     const bool use_accelerated = texture_info.has_value();
-    const bool native_hdr = framebuffer.native_tiling &&
+    const bool native_hdr =
+        framebuffer.native_tiling &&
         (framebuffer.pixel_format == Service::android::PixelFormat::Rgba1010102 ||
          framebuffer.pixel_format == Service::android::PixelFormat::RgbaFp16);
     const bool is_applet =
