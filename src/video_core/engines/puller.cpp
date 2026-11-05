@@ -157,6 +157,16 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
         CountLedgerAcquire();
         return true;
     }
+    // A release latched the wait (Nx2SemaphoreWaiters): the back has run it, so resume without
+    // draining (from sylvieistaken/selevet-eglantine d8c95fef47). EDEN_NX2_ACQUIRE_PEEK=0: drain.
+    static const bool peek_latched = [] {
+        const char* value = std::getenv("EDEN_NX2_ACQUIRE_PEEK");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (peek_latched && VideoCommon::GpuSplit::Get().Active() &&
+        Nx2SemaphoreWaiters::Get().Latched(this)) {
+        return true;
+    }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
     DrainBack();
@@ -456,6 +466,17 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
         }
     }
     // Acquires: check once after flushing pending fences; never block the GPU thread on them.
+    // The check only logs: with the split the back releases the fences in order instead of the
+    // front draining it (from sylvieistaken/selevet-eglantine d8c95fef47).
+    // EDEN_NX2_SEMEXEC_DRAIN=1 drains and checks as before.
+    static const bool semexec_drain = [] {
+        const char* value = std::getenv("EDEN_NX2_SEMEXEC_DRAIN");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!semexec_drain && VideoCommon::GpuSplit::Get().Active()) {
+        OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
+        return;
+    }
     DrainBack();
     dma_pusher.rasterizer->ReleaseFences();
     const u32 word = dma_pusher.memory_manager.Read<u32>(address);
