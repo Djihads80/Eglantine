@@ -160,8 +160,9 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
     }
     if (VideoCommon::Nx2Perf::Enabled()) {
         UpdateContinuousRuns(gpu_addr, size);
+    } else {
+        map_serial.fetch_add(1, std::memory_order_release);
     }
-    map_serial.fetch_add(1, std::memory_order_release);
     return gpu_addr;
 }
 
@@ -219,8 +220,9 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
     }
     if (VideoCommon::Nx2Perf::Enabled()) {
         UpdateContinuousRuns(gpu_addr, size);
+    } else {
+        map_serial.fetch_add(1, std::memory_order_release);
     }
-    map_serial.fetch_add(1, std::memory_order_release);
     return gpu_addr;
 }
 
@@ -670,6 +672,7 @@ void MemoryManager::UpdateContinuousRuns(GPUVAddr gpu_addr, size_t size) {
     const GPUVAddr end =
         (std::min)(Common::AlignUp(gpu_addr + size, big_page_size), address_space_size);
     if (size == 0 || begin >= end) {
+        map_serial.fetch_add(1, std::memory_order_release);
         return;
     }
     std::vector<std::pair<GPUVAddr, ContinuousRun>> rebuilt;
@@ -719,6 +722,7 @@ void MemoryManager::UpdateContinuousRuns(GPUVAddr gpu_addr, size_t size) {
     for (const auto& run : rebuilt) {
         continuous_runs.insert(continuous_runs.end(), run);
     }
+    map_serial.fetch_add(1, std::memory_order_release);
 }
 
 const MemoryManager::MappingSnapshot& MemoryManager::CurrentSnapshot() const {
@@ -729,11 +733,12 @@ const MemoryManager::MappingSnapshot& MemoryManager::CurrentSnapshot() const {
     };
     thread_local std::array<View, 4> views{};
     View& view = views[unique_identifier % views.size()];
-    const u64 serial = map_serial.load(std::memory_order_acquire);
+    u64 serial = map_serial.load(std::memory_order_acquire);
     if (view.owner == unique_identifier + 1 && view.serial == serial) {
         return *view.snapshot;
     }
     std::scoped_lock lock{runs_guard};
+    serial = map_serial.load(std::memory_order_acquire);
     if (!snapshot || snapshot_serial != serial) {
         auto next = std::make_shared<MappingSnapshot>();
         next->runs.reserve(continuous_runs.size());
