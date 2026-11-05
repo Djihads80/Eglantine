@@ -2168,7 +2168,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
             const bool offsets = insn.Bits(76, 1) != 0;
-            if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+            if ((insn.Bits(61, 3) != 1 && insn.Bits(61, 3) != 5) || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 ||
+                insn.Bits(59, 1) || (insn.Bits(61, 3) == 5 && offsets) ||
                 (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
@@ -2178,20 +2179,25 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (!bindless) result.required_texture_buffer = binding;
             // Two coordinates: x in Ra, y in Rb (the coordinate list splits evenly across them);
             // with an offset, x and y in Ra, Ra+1 and the offset in Rb.
-            const u32 y = !offsets ? source_b : source_a == 255 ? 255U : source_a + 1;
+            const bool array = insn.Bits(61, 3) == 5;
+            const u32 y = !offsets ? (array ? (source_a == 255 ? 255U : source_a + 1) : source_b)
+                                   : source_a == 255 ? 255U : source_a + 1;
             emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
             emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{y} << 20));
+            if (array) {
+                emit(0x5c98000000000000ULL | predicate | 252 | (u64{15} << 39) | (u64{source_b} << 20));
+            }
             if (offsets) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
             }
             if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
-                     (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
+                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
             } else {
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) |
-                 (u64{offsets ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                 (u64{offsets ? 246U : 255U} << 20) | (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
                  (u64{offsets ? 1U : 0U} << 54) | (u64{insn.Bits(87, 2)} << 56));
             }
@@ -2714,7 +2720,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 const u32 compare = insn.Bits(76, 3);
                 const u32 destination = insn.Bits(81, 3);
                 const u32 low = insn.Bits(68, 4);
-                if (insn.Bits(84, 3) != 7 || insn.Bits(87, 4) != 7 || insn.Bits(74, 2) != 0 ||
+                const u32 tail_pred = insn.Bits(87, 3) != 7 ? insn.Bits(87, 4) : destination;
+                if (insn.Bits(84, 3) != 7 || insn.Bits(74, 2) != 0 ||
                     compare == 0 || compare == 7 ||
                     (destination != 7 && insn.Bits(12, 3) == destination))
                     return fail(index, "native extended integer comparison mode");
@@ -2732,7 +2739,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     emit(isetp(Ne, low, Or));
                 } else {
                     emit(isetp(Eq, low, And));
-                    emit(isetp(compare <= 3 ? Lt : Gt, destination, Or));
+                    emit(isetp(compare <= 3 ? Lt : Gt, tail_pred, Or));
                 }
                 break;
             }
