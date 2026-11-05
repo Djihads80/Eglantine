@@ -20,7 +20,7 @@ Common::ThreadWorker& GetThreadWorkers() {
             return (std::max)(static_cast<u32>(std::strtoul(text, nullptr, 10)), 1U);
         }
         return (std::max)(std::thread::hardware_concurrency() / 4, 2U);
-    }(), "ImageTranscode"};
+    }(), "ImageTranscode", {}, Common::ThreadPlacement::Efficiency};
     return workers;
 }
 
