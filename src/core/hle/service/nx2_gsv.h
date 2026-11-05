@@ -3752,6 +3752,7 @@ private:
     static constexpr u32 SyncptRoBitsOffset = 0x1100; // RO, up to 0x40 u64 words
     static constexpr u32 SyncptRwSummaryOffset = 0x0;
     static constexpr u32 SyncptRwBitsOffset = 0x100;  // RW, up to 0x40 u64 words
+    static constexpr u32 SyncptMaxBitWords = 0x40;
     static constexpr u32 HostSyncpoints = 192;        // Tegra::Host1x::SyncpointManager
 
     void AttachSyncptMemory(HLERequestContext& ctx) {
@@ -3822,23 +3823,53 @@ private:
     // Answers every armed wait: the value page is current, so the client rechecks its threshold
     // and rearms if it still has to wait. Acknowledging without a value change costs the client a
     // wakeup per poll, which keeps waits whose syncpoint we never see from hanging.
+    // nn::gs::TryWaitNativeSync refreshes once and takes the value it then reads as the answer;
+    // nn::movie aborts when that says its fence (whose event fired) isn't reached (Ocarina of
+    // Time's title movie on Android, subsdk0+0x45cc). So only bits armed before the values are
+    // read are acknowledged, and only after the values are visible: a wait armed mid-poll is
+    // answered by the next poll, and a weakly ordered host can't show the acknowledgement first.
+    // EDEN_NX2_SYNCPT_FRESH_ACK=0 acknowledges as before.
     void PollSyncpts() {
         if (m_syncpt_memory == nullptr) {
             return;
         }
+        static const bool fresh_ack = [] {
+            const char* env_value = std::getenv("EDEN_NX2_SYNCPT_FRESH_ACK");
+            return env_value == nullptr || env_value[0] != '0';
+        }();
+        const u32 words = std::min<u32>((m_syncpt_count + 63) / 64, SyncptMaxBitWords);
+        std::array<u64, SyncptMaxBitWords> armed{};
+        u64 armed_summary{};
+        if (fresh_ack) {
+            for (u32 w = 0; w < words; ++w) {
+                armed[w] = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+            }
+            armed_summary = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset);
+            std::atomic_thread_fence(std::memory_order_acquire);
+        }
         UpdateSyncptValues();
+        if (fresh_ack) {
+            std::atomic_thread_fence(std::memory_order_release);
+        }
         bool acked = false;
-        const u32 words = (m_syncpt_count + 63) / 64;
         for (u32 w = 0; w < words; ++w) {
             const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+            const u64 bits = fresh_ack ? armed[w] : rw_bits;
+            if (bits != rw_bits && !m_syncpt_late_arm_logged) {
+                m_syncpt_late_arm_logged = true;
+                LOG_INFO(Service, "nx2:gsv syncpt: a wait armed during a poll is answered by the "
+                                  "next one (EDEN_NX2_SYNCPT_FRESH_ACK=0: by this one)");
+            }
             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
-            if (m_syncpt_memory->Read64(ro_address) != rw_bits) {
-                m_syncpt_memory->Write64(ro_address, rw_bits);
+            if (m_syncpt_memory->Read64(ro_address) != bits) {
+                m_syncpt_memory->Write64(ro_address, bits);
                 acked = true;
             }
         }
         m_syncpt_memory->Write64(m_syncpt_ro + SyncptRoSummaryOffset,
-                                 m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwSummaryOffset));
+                                 fresh_ack ? armed_summary
+                                           : m_syncpt_memory->Read64(m_syncpt_rw +
+                                                                     SyncptRwSummaryOffset));
         if (acked) {
             m_syncpt_events[1]->Signal(system.Kernel());
         }
@@ -4394,6 +4425,7 @@ private:
     u64 m_syncpt_rw{};
     u64 m_syncpt_ro{};
     u32 m_syncpt_count{};
+    bool m_syncpt_late_arm_logged{}; ///< PollSyncpts (HostTiming thread)
     std::shared_ptr<Core::Timing::EventType> m_syncpt_poll;
 };
 
