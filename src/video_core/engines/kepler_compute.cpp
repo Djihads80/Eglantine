@@ -628,7 +628,20 @@ constexpr u32 DLSS_CHECK_MISMATCH_PERCENT = 3;
 // shaders 32 threads wide.
 VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
     using VideoCore::GameDlssReason;
-    static const bool forced_replacement = std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr;
+    // On Android the replacement is the default: compiling the network's emulated tensor passes
+    // took Turnip from 3.1 to 7.6 GB in 4 s on a 24 GB phone and crashed it (Fire Emblem:
+    // Fortune's Weave). EDEN_NX2_GAME_DLSS=1 tries the game's network there.
+    static const bool forced_replacement = [] {
+        if (std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr) {
+            return true;
+        }
+#ifdef __ANDROID__
+        const char* const game = std::getenv("EDEN_NX2_GAME_DLSS");
+        return game == nullptr || game[0] != '1';
+#else
+        return false;
+#endif
+    }();
     if (forced_replacement) {
         return GameDlssReason::TurnedOff;
     }
