@@ -16,6 +16,7 @@
 #include "common/settings.h"
 #include "video_core/cache_types.h"
 #include "video_core/engines/fermi_2d.h"
+#include "video_core/game_dlss_status.h"
 #include "video_core/gpu.h"
 #include "video_core/query_cache/types.h"
 #include "video_core/rasterizer_download_area.h"
@@ -190,6 +191,29 @@ public:
         const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
         std::array<f32, 2> motion_scale) {
         return false;
+    }
+
+    /// Whether a game's own DLSS network can run here: its matrix multiplies are emulated with
+    /// 32-wide shuffles, and its output must be checkable (ProbeGameDlssOutput).
+    [[nodiscard]] virtual bool SupportsGameDlssNetwork() const {
+        return false;
+    }
+
+    /// Whether NVIDIA DLSS (the "Use NVIDIA DLSS" setting) would draw a game's DLSS evaluation.
+    [[nodiscard]] virtual bool UsesNvidiaDlss() const {
+        return false;
+    }
+
+    /// Whether ProbeGameDlssOutput checks anything on this backend.
+    [[nodiscard]] virtual bool CanProbeGameDlssOutput() const {
+        return false;
+    }
+
+    /// Records a health check of a game's DLSS network output (dst) against its input (src) and
+    /// returns the result of an earlier check once the GPU has finished it.
+    [[nodiscard]] virtual std::optional<VideoCore::GameDlssProbe> ProbeGameDlssOutput(
+        const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst) {
+        return std::nullopt;
     }
 
     [[nodiscard]] virtual Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() = 0;

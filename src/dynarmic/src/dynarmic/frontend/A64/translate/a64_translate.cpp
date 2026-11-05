@@ -104,6 +104,7 @@ bool TranslateSingleInstruction(IR::Block& block, LocationDescriptor descriptor,
 #include "dynarmic/frontend/A64/translate/impl/simd_permute.cpp"
 #include "dynarmic/frontend/A64/translate/impl/simd_scalar_pairwise.cpp"
 #include "dynarmic/frontend/A64/translate/impl/simd_scalar_shift_by_immediate.cpp"
+#include "dynarmic/frontend/A64/translate/impl/simd_scalar_three_different.cpp"
 #include "dynarmic/frontend/A64/translate/impl/simd_scalar_three_same.cpp"
 #include "dynarmic/frontend/A64/translate/impl/simd_scalar_two_register_misc.cpp"
 #include "dynarmic/frontend/A64/translate/impl/simd_scalar_x_indexed_element.cpp"

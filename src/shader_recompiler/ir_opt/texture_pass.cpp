@@ -1092,11 +1092,13 @@ private:
     ImageDescriptors& image_descriptors;
 };
 
+// Expects the sample's descriptor to be assigned: the size query reads the same texture (and
+// the same element of a descriptor array).
 void PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst) {
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
     const auto info{inst.Flags<IR::TextureInstInfo>()};
     const IR::Value coord(inst.Arg(1));
-    const IR::Value handle(ir.Imm32(0));
+    const IR::Value handle(inst.Arg(0).IsEmpty() ? IR::Value{ir.Imm32(0)} : inst.Arg(0));
     const IR::U32 lod{ir.Imm32(0)};
     const IR::U1 skip_mips{ir.Imm1(true)};
     const IR::Value texture_size = ir.ImageQueryDimension(handle, lod, skip_mips, info);
@@ -1222,6 +1224,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         const auto& cbuf{texture_inst.cbuf};
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
+        bool is_rect_sample{false};
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
             if (const auto it{handle_program_types.find(cbuf.handle_program)};
@@ -1236,9 +1239,8 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             if (flags.type != TextureType::Color2D) {
                 break;
             }
-            if (ReadTextureTypeCached(env, cbuf) == TextureType::Color2DRect) {
-                PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst);
-            }
+            // Normalized once the descriptor is known (below).
+            is_rect_sample = ReadTextureTypeCached(env, cbuf) == TextureType::Color2DRect;
             break;
         case IR::Opcode::ImageFetch:
             if (flags.type == TextureType::Color2D || flags.type == TextureType::Color2DRect ||
@@ -1359,6 +1361,9 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
         } else {
             inst->SetArg(0, IR::Value{});
+        }
+        if (is_rect_sample) {
+            PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst);
         }
 
         if (!host_info.support_snorm_render_buffer && inst->GetOpcode() == IR::Opcode::ImageFetch &&

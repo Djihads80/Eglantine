@@ -66,7 +66,7 @@ using VideoCommon::FileEnvironment;
 using VideoCommon::GenericEnvironment;
 using VideoCommon::GraphicsEnvironment;
 
-constexpr u32 CACHE_VERSION = 19;
+constexpr u32 CACHE_VERSION = 21;
 constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
 constexpr size_t VULKAN_CACHE_FLUSH_MIN_SECONDS = 30;
 constexpr std::array<char, 8> VULKAN_CACHE_MAGIC_NUMBER{'y', 'u', 'z', 'u', 'v', 'k', 'c', 'h'};
@@ -354,7 +354,12 @@ size_t GraphicsPipelineCacheKey::Hash() const noexcept {
 }
 
 bool GraphicsPipelineCacheKey::operator==(const GraphicsPipelineCacheKey& rhs) const noexcept {
-    return std::memcmp(&rhs, this, Size()) == 0;
+    if (unique_hashes != rhs.unique_hashes) {
+        return false;
+    }
+    return std::memcmp(reinterpret_cast<const char*>(this) + sizeof(unique_hashes),
+                       reinterpret_cast<const char*>(&rhs) + sizeof(unique_hashes),
+                       state.Size()) == 0;
 }
 
 namespace {
@@ -692,6 +697,15 @@ void PipelineCache::SaveUsedPipelines() {
         file.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
         file.write(reinterpret_cast<const char*>(&age), sizeof(age));
     }
+}
+
+bool PipelineCache::IsIndirectResetShader() const {
+    constexpr size_t vertex_b = static_cast<size_t>(Maxwell::ShaderType::VertexB);
+    constexpr u64 reset_key = 0x72fd62555e7196cdULL;
+    const auto* info = shader_infos[vertex_b];
+    return maxwell3d->regs.IsShaderConfigEnabled(vertex_b) && info && info->lowered_native &&
+           info->lowered_native->source_size == 128 + 11 * 16 &&
+           info->lowered_native->diagnostic_key == reset_key;
 }
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
@@ -1104,8 +1118,27 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (key.unique_hashes[index] == 0) {
             continue;
         }
+        if (index == static_cast<size_t>(Maxwell::ShaderType::Geometry) &&
+            !device.IsGeometryShaderSupported() && maxwell3d != nullptr &&
+            maxwell3d->GetNativeMacroEngine().native_turing) {
+            // A native (Switch 2) geometry program on a device without geometry shaders: the
+            // pipeline cannot run it, so its draws are skipped.
+            static std::atomic<bool> logged{};
+            if (!logged.exchange(true)) {
+                LOG_WARNING(Render_Vulkan, "Skipping native geometry shader pipelines: the device has no geometry shaders");
+            }
+            return nullptr;
+        }
         Shader::Environment& env{*envs[env_index]};
         ++env_index;
+
+        // Without VK_EXT_mesh_shader the driver cannot build a task/mesh pipeline; the draw is
+        // skipped (see the pipeline check in the rasterizer).
+        if ((env.ShaderStage() == Shader::Stage::Task ||
+             env.ShaderStage() == Shader::Stage::Mesh) &&
+            !device.IsExtMeshShaderSupported()) {
+            return nullptr;
+        }
 
         const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);

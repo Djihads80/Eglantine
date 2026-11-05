@@ -27,6 +27,7 @@
 
 #include "common/alignment.h"
 #include "common/div_ceil.h"
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -849,6 +850,22 @@ private:
 
     // Records a mapped backing for the region at gpu_address. Needs m_region_mutex.
     void RegisterGpuOnlyBacking(u64 gpu_address, MappedBacking&& backing) {
+        // A title may create the same region again from the same start with a different size
+        // (Mario Kart World walks 300 MB -> 600 MB -> 1 GB on the same address). Overwriting the
+        // entry used to drop the previous mapping without undoing it: the backing stayed mapped
+        // in the alias code region and its pages never went back to the pool, so the GPU-only
+        // total grew without bound (250 MiB -> 6.5 GiB in one session) until the process died.
+        // Release the old backing the same way 215 does, i.e. only once the GPU thread is past it.
+        if (const auto it = m_gpu_only_regions.find(gpu_address); it != m_gpu_only_regions.end()) {
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(gpu_address, it->second.size);
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ReleaseBacking(it->second.cpu_address,
+                                                                        it->second.size);
+            auto done = std::make_shared<std::atomic<bool>>(false);
+            system.GPU().RunInOrder([done] { done->store(true, std::memory_order_release); });
+            m_gpu_only_bytes -= it->second.size;
+            m_released_regions.push_back({std::move(it->second), done});
+            m_gpu_only_regions.erase(it);
+        }
         m_gpu_only_regions[gpu_address] = {backing.address, backing.size, std::move(backing.pages)};
         m_gpu_only_bytes += backing.size;
         m_gpu_only_peak = (std::max)(m_gpu_only_peak, m_gpu_only_bytes);
@@ -1718,10 +1735,19 @@ private:
         // previous frame's fence instead and let the game prepare frame N+1 meanwhile (waiting
         // for this frame there cost 8-56 ms of every 34-105 ms frame, or never finished).
         // EDEN_NX2_FRAMES_AHEAD=1 always waits for the previous frame, =0 always for this one.
-        static const int frames_ahead = [] {
+        static const int frames_ahead_setting = [] {
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
             return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
         }();
+        // Donkey Kong Bananza's channels wait on each other every frame, so it always ran a frame
+        // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
+        // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
+        constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+        int frames_ahead = frames_ahead_setting;
+        if (frames_ahead == -1 &&
+            system.GetApplicationProcessProgramID() == DonkeyKongBananzaProgramId) {
+            frames_ahead = 0;
+        }
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
@@ -1763,6 +1789,11 @@ private:
             m_stats.composite_us += to_us(composited - waited);
             m_stats.pace_us += to_us(paced - composited);
             m_stats.max_fence_us = (std::max<long long>)(m_stats.max_fence_us, static_cast<long long>(to_us(waited - entered)));
+            // Counted at the reply: the game gets its buffers back with this frame unfinished.
+            if (const u32 fence_id = ~w[22]; fence_id < 192 &&
+                !system.Host1x().GetSyncpointManager().IsReadyGuest(fence_id, w[24])) {
+                ++m_stats.ran_ahead;
+            }
             if (m_stats.last_present != std::chrono::steady_clock::time_point{}) {
                 const long long frame = to_us(entered - m_stats.last_present);
                 m_stats.frame_us += frame;
@@ -1774,10 +1805,10 @@ private:
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us",
+                         "pacing {} us, {} ran a frame ahead",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600);
+                         m_stats.pace_us / 600, m_stats.ran_ahead);
                 m_stats = {.last_present = entered};
             }
         }
@@ -1795,7 +1826,7 @@ private:
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
-        u32 presents{};
+        u32 presents{}, ran_ahead{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
@@ -1818,8 +1849,17 @@ private:
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
-        const u32 swap_interval =
-            forced_interval != 0 ? forced_interval : std::clamp<u32>(timing >> 16, 1, 4);
+        const auto& process = Kernel::GetCurrentProcess(kernel);
+        const bool mkw_dynamic =
+            process.GetProgramId() == Settings::MarioKartWorldProgramId &&
+            process.IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
+        u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
+        if (mkw_dynamic) {
+            swap_interval = 1;
+        }
+        if (forced_interval != 0) {
+            swap_interval = forced_interval;
+        }
         const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
@@ -2543,8 +2583,8 @@ private:
             // images after a movie ends and waits for the returned fences; a fence for a frame
             // that never comes hung the game on a black screen after its title movie.
             static const bool release_now = [] {
-                const char* value = std::getenv("EDEN_NX2_VDEC_EOS_RELEASE_NOW");
-                return value != nullptr && value[0] != '0';
+                const char* env_value = std::getenv("EDEN_NX2_VDEC_EOS_RELEASE_NOW");
+                return env_value != nullptr && env_value[0] != '0';
             }();
             if (release_now && release_fence && m_stream_ended && m_inputs.empty() &&
                 m_decoded.empty()) {

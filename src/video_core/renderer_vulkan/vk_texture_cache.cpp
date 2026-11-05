@@ -1189,12 +1189,12 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
     const u64 budget = device.GetDeviceMemoryBudget();
     const u64 memory = budget != 0 ? budget : device.GetDeviceLocalMemory();
     const char* keep = std::getenv("EDEN_NX2_KEEP_ASTC");
-    if (memory >= 12_GiB || (keep != nullptr && keep[0] == '1')) {
+    if (memory >= 20_GiB || (keep != nullptr && keep[0] == '1')) {
         return;
     }
     LOG_WARNING(Render_Vulkan,
                 "Switch 2 program with a {} MiB video memory budget: ASTC textures are "
-                "re-compressed to BC3 for this session (uncompressed ASTC needs a 12 GiB budget). "
+                "re-compressed to BC3 for this session (uncompressed ASTC needs a 20 GiB budget). "
                 "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
                 memory >> 20);
     Settings::SetAstcRecompressionOverride(Settings::AstcRecompression::Bc3);
@@ -1549,6 +1549,28 @@ bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
         return value && std::string_view{value} == "standin";
     }();
     return !force_standin && !fsr3_unsupported;
+}
+
+bool TextureCacheRuntime::UsesNvidiaDlss() const {
+#ifdef EGLANTINE_STREAMLINE
+    static const bool force_fsr = [] {
+        const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
+        return value && std::string_view{value} == "fsr";
+    }();
+    return !force_fsr && !dlss_unsupported && Streamline::IsDlssAvailable();
+#else
+    return false;
+#endif
+}
+
+std::optional<VideoCore::GameDlssProbe> TextureCacheRuntime::ProbeGameDlssOutput(
+    ImageView& input, ImageView& output) {
+    if (!dlss_network_probe) {
+        dlss_network_probe = std::make_unique<DlssNetworkProbe>(
+            device, scheduler, descriptor_pool, compute_pass_descriptor_queue, memory_allocator);
+    }
+    return dlss_network_probe->Probe(input.Handle(Shader::TextureType::Color2D),
+                                     output.Handle(Shader::TextureType::Color2D));
 }
 
 bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
@@ -2601,31 +2623,23 @@ void TextureCacheRuntime::TickFrame() {
     });
 }
 
-namespace {
-
-// The host image of a texture; unbacked images are created without memory (see MakeImage).
-[[nodiscard]] vk::Image MakeHostImage(TextureCacheRuntime& runtime, const ImageInfo& info,
-                                      u32 host_level_offset, GPUVAddr gpu_addr, bool backed) {
-    const Device& device = runtime.device;
-    const bool sparse_tiles = !backed && UsesSparseTiles(device, info, gpu_addr);
-    return MakeImage(
-        device, runtime.memory_allocator, TrimmedHostInfo(device, info, host_level_offset),
-        IsHugeAstcArray(device, info)   ? std::span<const VkFormat>{HugeAstcViewFormats}
-        : IsOpaqueBc1Astc(device, info) ? std::span<const VkFormat>{OpaqueAstcViewFormats}
-                                        : runtime.ViewFormats(info.format),
-        AstcHostFormat(device, info),
-        !backed && (UsesSparseLayers(device, info, gpu_addr) || sparse_tiles ||
-                    IsUnwrittenSparse(device, info, gpu_addr)),
-        sparse_tiles && SparseTilesModeOf(device) == SparseTilesMode::Aliased);
-}
-
-} // Anonymous namespace
-
 Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu_addr_,
              VAddr cpu_addr_)
     : VideoCommon::ImageBase(info_, gpu_addr_, cpu_addr_), scheduler{&runtime_.scheduler},
       runtime{&runtime_},
-      original_image(MakeHostImage(runtime_, info, host_level_offset, gpu_addr_, false)),
+      original_image(MakeImage(runtime_.device, runtime_.memory_allocator,
+                               TrimmedHostInfo(runtime_.device, info, host_level_offset),
+                               IsHugeAstcArray(runtime_.device, info)
+                                   ? std::span<const VkFormat>{HugeAstcViewFormats}
+                               : IsOpaqueBc1Astc(runtime_.device, info)
+                                   ? std::span<const VkFormat>{OpaqueAstcViewFormats}
+                                   : runtime->ViewFormats(info.format),
+                               AstcHostFormat(runtime_.device, info),
+                               UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
+                                   UsesSparseTiles(runtime_.device, info, gpu_addr_) ||
+                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_),
+                               UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
+                                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased)),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
@@ -2636,17 +2650,6 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             flags |= VideoCommon::ImageFlagBits::SparseLayers;
         } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) && InitSparseTiles()) {
             flags |= VideoCommon::ImageFlagBits::SparseTiles;
-        } else if (UsesSparseTiles(runtime_.device, info, gpu_addr_) &&
-                   SparseTilesModeOf(runtime_.device) == SparseTilesMode::Aliased) {
-            // The driver can't sample unbound memory (that is why the blocks were to share one),
-            // so an image whose tiles could not be set up is backed whole like any other.
-            LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: backing it whole", gpu_addr_);
-            original_image = MakeHostImage(runtime_, info, host_level_offset, gpu_addr_, true);
-            if (!original_image.IsUnbacked()) {
-                flags &= ~VideoCommon::ImageFlagBits::Unbacked;
-            } else if (texels <= (u64{1} << 28)) {
-                flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
-            }
         } else if (texels <= (u64{1} << 28)) {
             // Not too big to back (see MemoryAllocator::CreateImage): unbacked because nothing
             // was written there yet, so the first write gets it replaced.
@@ -4407,7 +4410,9 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                     ImageView* depth_buffer, bool is_rescaled_) {
     boost::container::small_vector<VkImageView, NUM_RT * 2 + 2> attachments;
     RenderPassKey renderpass_key{};
-    s32 num_layers = 1;
+    // A framebuffer can't have more layers than any of its attachments: one with more layers
+    // than a color target makes the driver write the extra layers past that image's memory.
+    s32 num_layers = (std::numeric_limits<s32>::max)();
 
     is_rescaled = is_rescaled_;
     const auto& resolution = runtime.resolution;
@@ -4426,7 +4431,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : color_buffer->size.height);
         attachments.push_back(color_buffer->RenderTarget());
         renderpass_key.color_formats[index] = color_buffer->format;
-        num_layers = (std::max)(num_layers, color_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, color_buffer->range.extent.layers);
         images[num_images] = color_buffer->ImageHandle();
         image_ranges[num_images] = MakeSubresourceRange(color_buffer);
         rt_map[index] = num_images;
@@ -4443,7 +4448,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : depth_buffer->size.height);
         attachments.push_back(depth_buffer->RenderTarget());
         renderpass_key.depth_format = depth_buffer->format;
-        num_layers = (std::max)(num_layers, depth_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, depth_buffer->range.extent.layers);
         images[num_images] = depth_buffer->ImageHandle();
         const VkImageSubresourceRange subresource_range = MakeSubresourceRange(depth_buffer);
         image_ranges[num_images] = subresource_range;
@@ -4455,6 +4460,9 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         depth_aspect_mask = subresource_range.aspectMask;
     } else {
         renderpass_key.depth_format = PixelFormat::Invalid;
+    }
+    if (num_layers == (std::numeric_limits<s32>::max)()) {
+        num_layers = 1;
     }
     renderpass_key.samples = samples;
     const bool do_resolve_color = ENABLE_MSAA_TILER_RESOLVE &&
