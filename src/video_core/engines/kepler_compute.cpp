@@ -1464,7 +1464,45 @@ void KeplerCompute::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit&
         return;
     }
     FrontApply(fs, method, argument);
-    split.Method(this, method, argument, is_last_call, segment);
+    split.Method(this, method, argument, is_last_call, segment, FrontEffect(method));
+    FrontNoteWrites(split, fs, method);
+}
+
+VideoCommon::SplitWriteTracker::Effect KeplerCompute::FrontEffect(u32 method) const {
+    using Effect = VideoCommon::SplitWriteTracker::Effect;
+    if (method < native_plain_methods.size() && native_plain_methods[method]) {
+        return Effect::None;
+    }
+    switch (method) {
+    case 0x45:
+    case 0x46:
+    case 0x47:
+    case 0x48:
+        return Effect::None; // Macros: loaded and bound by the front
+    case 0xae:
+    case 0xaf:
+    case 0xb0:
+    case 0x107:
+    case 0x6c3:
+        return Effect::Gpu; // QMD launches and the semaphore releases after them
+    default:
+        return Effect::Unknown; // Inline uploads among them
+    }
+}
+
+void KeplerCompute::FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& fs, u32 method) {
+    if (method == 0x107) {
+        // An inline QMD is written to memory before it launches.
+        const GPUVAddr qmd = ((GPUVAddr{fs.registers[0xc6]} << 32) | fs.registers[0xc7]) << 8;
+        split.NoteWrite(memory_manager, qmd, 256);
+    } else if (method == 0x6c3) {
+        split.NoteWrite(memory_manager,
+                        (GPUVAddr{fs.registers[0x6c0] & 0x1ffffff} << 32) | fs.registers[0x6c1],
+                        16);
+    } else if (method == 0x44) {
+        // WAIT_FOR_IDLE: the dispatches before it are done for the reads after it.
+        split.NoteEngineSync();
+    }
 }
 
 void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1477,12 +1515,16 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
         }
         return;
     }
-    if (method < fs.registers.size()) {
-        for (u32 i = 0; i < amount; ++i) {
-            FrontApply(fs, method, base_start[i]);
-        }
+    if (method >= fs.registers.size() || amount == 0) {
+        split.MultiMethod(this, method, base_start, amount, methods_pending, segment);
+        return;
     }
-    split.MultiMethod(this, method, base_start, amount, methods_pending, segment);
+    for (u32 i = 0; i < amount; ++i) {
+        FrontApply(fs, method, base_start[i]);
+    }
+    split.MultiMethod(this, method, base_start, amount, methods_pending, segment,
+                      FrontEffect(method));
+    FrontNoteWrites(split, fs, method);
 }
 
 void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1496,23 +1538,24 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         macro.native_interpreter.active_dram = native_data_ram;
     }
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+    const auto read = [&fs](u32 address) {
+        return address < fs.registers.size() ? fs.registers[address] : 0U;
+    };
+    const auto emit = [&](u32 address, u32 value) {
+        if (address >= 0xe00) {
+            return false;
+        }
+        FrontApply(fs, address, value);
+        split.MacroWrite(this, address, value, FrontEffect(address));
+        FrontNoteWrites(split, fs, address);
+        return true;
+    };
     if (!macro.native_jit) {
         macro.native_jit = std::make_shared<TuringMacroJit>();
     }
     macro.native_jit->Prepare(macro.native_code, macro.native_code_generation);
     const auto result = macro.native_jit->Execute(
-        start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram},
-        [&fs](u32 address) {
-            return address < fs.registers.size() ? fs.registers[address] : 0U;
-        },
-        [&](u32 address, u32 value) {
-            if (address >= 0xe00) {
-                return false;
-            }
-            FrontApply(fs, address, value);
-            split.MacroWrite(this, address, value);
-            return true;
-        });
+        start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram}, read, emit);
     if (!result.success) {
         macro.native_execution_failed = true;
         LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: compute start={:#x}, consumed={}, error={}",

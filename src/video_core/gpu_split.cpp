@@ -24,7 +24,9 @@
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu_split.h"
+#include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 
 namespace VideoCommon {
@@ -142,6 +144,11 @@ void GpuSplit::Stop() {
     write_position = 0;
     last_writer_position = 0;
     last_sync_position = 0;
+    last_read_sync_position = 0;
+    last_function_position = 0;
+    writes.Reset();
+    note_memory = nullptr;
+    note_page = ~GPUVAddr{0};
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -151,6 +158,7 @@ void GpuSplit::Stop() {
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
+    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -230,11 +238,7 @@ void GpuSplit::Drain(DrainSite site) {
         if (consumed_cache == write_position && !hook_requested.load(std::memory_order_relaxed)) {
             hook_requested.store(true, std::memory_order_release);
         }
-        if (spins < 16384) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
+        Backoff(spins, write_position);
     }
 }
 
@@ -261,12 +265,27 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
             Nx2Profile::AddDrain(site, start);
             return true;
         }
-        if (spins < 16384) {
-            Pause();
-        } else {
-            std::this_thread::yield();
-        }
+        Backoff(spins, target);
     }
+}
+
+void GpuSplit::Backoff(u32 spins, u64 target) {
+    if (spins < 16384) {
+        Pause();
+        return;
+    }
+    if (!Nx2Perf::Enabled() || !back_running.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+        return;
+    }
+    // A long wait sleeps until the back stores a new position (port of #161's front_wake): the
+    // back checks front_waiting after each store, the front checks the position after setting it.
+    front_waiting.store(true, std::memory_order_seq_cst);
+    const u32 seen = front_wake.load(std::memory_order_seq_cst);
+    if (consumed.load(std::memory_order_seq_cst) < target) {
+        front_wake.wait(seen, std::memory_order_seq_cst);
+    }
+    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
@@ -274,11 +293,12 @@ void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
     u64* const entry = Reserve(2);
     entry[0] = static_cast<u64>(Kind::Engine);
     entry[1] = reinterpret_cast<u64>(engine);
-    Commit(2);
+    Commit(2, Effect::None);
 }
 
 void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
-                           u32 amount, u32 methods_pending, const GPUVAddr* segment) {
+                           u32 amount, u32 methods_pending, const GPUVAddr* segment,
+                           Effect effect) {
     SelectEngine(engine);
     // Long runs (constant buffer and inline uploads) go in pieces, as when a method's data
     // continues in the next GPFIFO entry.
@@ -295,7 +315,7 @@ void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, 
         }
         entry[size - 1] = 0;
         std::memcpy(entry + head, words, size_t{piece} * sizeof(u32));
-        Commit(size);
+        Commit(size, effect);
         words += piece;
         amount -= piece;
         methods_pending -= piece;
@@ -308,6 +328,44 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
         (*heap)();
         delete heap;
     });
+    last_function_position = write_position;
+}
+
+void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) {
+    if (size == 0 || !Nx2Perf::Enabled()) {
+        return;
+    }
+    // While a queued function may still change the GPU mappings, the back may translate the
+    // address differently. Sparse pages are written through their own backing.
+    const bool sparse = address < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+                        Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size;
+    if (last_function_position > consumed_cache || sparse) {
+        writes.Entry(Effect::Unknown, write_position);
+        return;
+    }
+    constexpr GPUVAddr page_mask = ~GPUVAddr{0xfff};
+    for (GPUVAddr page = address & page_mask; page < address + size; page += 0x1000) {
+        if (&memory != note_memory || page != note_page || note_function != last_function_position) {
+            const std::optional<DAddr> device = memory.GpuToCpuAddress(page);
+            if (!device) {
+                note_memory = nullptr;
+                writes.Entry(Effect::Unknown, write_position);
+                return;
+            }
+            note_memory = &memory;
+            note_page = page;
+            note_device = *device & page_mask;
+            note_function = last_function_position;
+        }
+        writes.Write(note_device, note_device + 0x1000, write_position);
+    }
+}
+
+u64 GpuSplit::SettleWrites() {
+    WaitFor((std::min)(last_function_position, write_position), DrainSite::Map);
+    consumed_cache = consumed.load(std::memory_order_acquire);
+    writes.Retire(consumed_cache);
+    return consumed_cache;
 }
 
 size_t GpuSplit::Execute(const u64* entry, size_t words) {
@@ -496,17 +554,21 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     read_position >= wait_target.load(std::memory_order_relaxed)) {
                     idle_hook(idle_argument);
                 }
-                consumed.store(read_position, std::memory_order_release);
+                consumed.store(read_position, std::memory_order_seq_cst);
                 last_store = read_position;
+                NotifyFront();
             }
         }
         if (idle_hook != nullptr) {
             idle_hook(idle_argument);
         }
-        consumed.store(read_position, std::memory_order_release);
+        consumed.store(read_position, std::memory_order_seq_cst);
+        NotifyFront();
     }
     g_back_busy.store(false, std::memory_order_release);
-    back_running.store(false, std::memory_order_release);
+    back_running.store(false, std::memory_order_seq_cst);
+    front_wake.fetch_add(1, std::memory_order_seq_cst);
+    front_wake.notify_all();
 }
 
 } // namespace VideoCommon

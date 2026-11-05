@@ -130,9 +130,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 } else {
                     ASSERT(false);
                 }
-                split.Defer([state_ptr = &state, fence = next.fence, block = next.block] {
-                    SignalCommand(*state_ptr, fence, block);
-                });
+                split.Defer(
+                    [state_ptr = &state, fence = next.fence, block = next.block] {
+                        SignalCommand(*state_ptr, fence, block);
+                    },
+                    VideoCommon::GpuSplit::Effect::None);
                 split.Publish();
                 continue;
             }

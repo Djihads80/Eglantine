@@ -50,10 +50,13 @@ void DmaPusher::DispatchCalls() {
         }
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.Defer([gpu = &system.GPU()] {
-            gpu->FlushCommands();
-            gpu->OnCommandListEnd();
-        });
+        // Submits and releases signaled fences: their writes belong to the entries that queued them.
+        split.Defer(
+            [gpu = &system.GPU()] {
+                gpu->FlushCommands();
+                gpu->OnCommandListEnd();
+            },
+            VideoCommon::GpuSplit::Effect::None);
         split.Publish();
         return;
     }
@@ -138,10 +141,12 @@ bool DmaPusher::Step() {
                 auto* const engine_state = subchannels[dma_state.subchannel];
                 if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
                     // The caches behind IsMemoryDirty belong to the split's back thread.
-                    split.Defer([engine_state, memory = &memory_manager, address = GPUVAddr{dma_state.dma_get},
-                                 bytes = words * sizeof(u32)] {
-                        engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
-                    });
+                    split.Defer(
+                        [engine_state, memory = &memory_manager,
+                         address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
+                            engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
+                        },
+                        VideoCommon::GpuSplit::Effect::None);
                 } else {
                     engine_state->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
                 }
@@ -474,6 +479,11 @@ void DmaPusher::CallMethod(u32 argument) {
             (dma_state.method >= MacroRegistersStart ||
              (dma_state.method < subchannel->execution_mask.size() &&
               subchannel->execution_mask[dma_state.method]));
+        // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
+        const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                    engine_type == Engines::EngineTypes::Fermi2D
+                                ? VideoCommon::GpuSplit::Effect::Gpu
+                                : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -501,7 +511,7 @@ void DmaPusher::CallMethod(u32 argument) {
                 }
             }
             split.Method(subchannel, dma_state.method, argument, dma_state.is_last_call,
-                         opt_segment);
+                         opt_segment, effect);
             return;
         }
         if (!subchannel->execution_mask[dma_state.method]) {
@@ -538,6 +548,11 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             (dma_state.method >= MacroRegistersStart ||
              (dma_state.method < subchannel->execution_mask.size() &&
               subchannel->execution_mask[dma_state.method]));
+        // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
+        const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                    engine_type == Engines::EngineTypes::Fermi2D
+                                ? VideoCommon::GpuSplit::Effect::Gpu
+                                : VideoCommon::GpuSplit::Effect::Unknown;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -565,7 +580,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 }
             }
             split.MultiMethod(subchannel, dma_state.method, base_start, num_methods,
-                              dma_state.method_count, opt_segment);
+                              dma_state.method_count, opt_segment, effect);
             return;
         }
         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
