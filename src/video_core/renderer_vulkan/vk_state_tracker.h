@@ -290,6 +290,10 @@ public:
 
     void ChangeChannel(Tegra::Control::ChannelState& channel_state);
 
+    void ResetChannel() {
+        flags = &default_flags;
+    }
+
     void InvalidateState();
 
 private:

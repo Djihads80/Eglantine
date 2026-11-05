@@ -114,7 +114,13 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
                               : reduction == 6 ? (old_value | payload)
                                                : (old_value ^ payload);
             memory_manager.Write<u32>(address, value);
+            if (const auto device = memory_manager.GpuToCpuAddress(address)) {
+                Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*device, value);
+            }
         });
+        return;
+    }
+    if (address == 0) {
         return;
     }
     rasterizer->Query(address, VideoCommon::QueryType::Payload,

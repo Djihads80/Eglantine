@@ -308,7 +308,10 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
         return;
     }
 
-    ASSERT(false);
+    static std::atomic<u32> reported{};
+    if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_ERROR(HW_GPU, "Write{} of unmapped GPU address {:#x}", sizeof(T) * 8, addr);
+    }
 }
 
 template u8 MemoryManager::Read<u8>(GPUVAddr addr) const;
