@@ -245,6 +245,10 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
+    buffer_cache.SetPendingCpuWrites(
+        [this](const std::function<void(DAddr, size_t)>& callback) {
+            gpu.ForEachPendingCpuWrite(callback);
+        });
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<RasterizerVulkan*>(argument)->FlushSplitIdle(); },
         this);
@@ -1525,6 +1529,16 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
         buffer_cache.WriteMemory(addr, size);
     }
     pipeline_cache.InvalidateRegion(addr, size);
+}
+
+void RasterizerVulkan::OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) {
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.ClaimCpuWrites(ranges);
+    }
+    for (const auto& [addr, size] : ranges) {
+        OnCacheInvalidation(addr, size);
+    }
 }
 
 bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
