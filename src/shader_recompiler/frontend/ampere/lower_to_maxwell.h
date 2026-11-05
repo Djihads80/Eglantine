@@ -40,6 +40,9 @@ struct LoweredProgram {
     u32 high_uniform_registers{};
     u32 error_offset{};
     std::string_view error;
+    /// Opcodes with bits 32-39 at or above the shadow boundary in a form the shadow check skips
+    /// (an immediate, or a register it doesn't know, as ISBEWR's data was): diagnostics only.
+    std::vector<u32> unchecked_high_operands;
 
     explicit operator bool() const { return error.empty(); }
 };
@@ -269,6 +272,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 opcode != 0x927) continue; // ISBEWR: data register in 32-39
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
+        }
+        if (!requires_shadow && opcode != 0x81c && insn.Bits(32, 8) >= shadow_boundary &&
+            insn.Bits(32, 8) < 255 &&
+            std::ranges::find(result.unchecked_high_operands, opcode) ==
+                result.unchecked_high_operands.end()) {
+            result.unchecked_high_operands.push_back(opcode);
         }
         if (requires_shadow) {
             pressure = PrepareRegisterPressure(insn, shadow_boundary);

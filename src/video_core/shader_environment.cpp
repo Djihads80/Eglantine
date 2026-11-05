@@ -492,6 +492,21 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         native, {.geometry = geometry,
                  .tensor = native_tensor,
                  .native_code_address = program_base + native_header_size});
+    // Once per opcode: bits 32-39 name a register at or above the lowering's scratch and mirror
+    // boundary in a form the shadow check skips. Harmless for an immediate; a register there reads
+    // the lowering's own values (ISBEWR's data did: NaN attributes).
+    if (lowered && !lowered.unchecked_high_operands.empty()) {
+        static std::mutex mutex;
+        static std::unordered_set<u32> logged;
+        const std::scoped_lock lock{mutex};
+        for (const u32 opcode : lowered.unchecked_high_operands) {
+            if (logged.size() < 128 && logged.insert(opcode).second) {
+                LOG_INFO(Shader, "Native opcode {:#05x} has a high register-like field at bits "
+                                 "32-39 the shadow check skips (program {:#x}, {})",
+                         opcode, program_base, source_header_size == 0 ? "compute" : "graphics");
+            }
+        }
+    }
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).
     if (static const std::string reject_list = [] {
