@@ -602,7 +602,8 @@ void BufferCache<P>::UnbindGraphicsStorageBuffers(size_t stage) {
 
 template <class P>
 bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index,
-                                               u32 cbuf_offset, bool is_written) {
+                                               u32 cbuf_offset, bool is_written,
+                                               u32 indirect_offset) {
     const bool already_enabled =
         ((channel_state->enabled_storage_buffers[stage] >> ssbo_index) & 1U) != 0;
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
@@ -625,9 +626,17 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
     }
 
     const auto& cbufs = maxwell3d->state.shader_stages[stage];
-    const GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
+    GPUVAddr ssbo_addr = cbufs.const_buffers[cbuf_index].address + cbuf_offset;
+    if (indirect_offset != ~0U) {
+        const GPUVAddr holder = gpu_memory->Read<u64>(ssbo_addr);
+        if (holder == 0) {
+            channel_state->storage_buffers[stage][ssbo_index] = NULL_BINDING;
+            return false;
+        }
+        ssbo_addr = holder + indirect_offset;
+    }
     channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written);
+        StorageBufferBinding(ssbo_addr, cbuf_index, is_written, indirect_offset != ~0U);
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 

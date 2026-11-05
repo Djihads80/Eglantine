@@ -530,11 +530,8 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
             }
             break;
         case IR::Opcode::LoadGlobal64: {
-            // A pointer loaded from the memory a constant buffer pointer points to (compute only,
-            // the binding reads it again for every dispatch).
-            if (env.ShaderStage() != Stage::Compute) {
-                break;
-            }
+            // A pointer loaded from the memory a constant buffer pointer points to. The binding
+            // reads it again for every dispatch or draw.
             const auto holder_addr{TrackLowAddress(const_cast<IR::Inst*>(inst))};
             if (!holder_addr || holder_addr->imm_offset < 0 || holder_addr->value.IsImmediate()) {
                 break;
