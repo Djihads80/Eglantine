@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <numbers>
+#include <optional>
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/param_package.h"
@@ -245,16 +246,15 @@ public:
         std::scoped_lock lock{haptics_mutex};
         if (!Settings::values.enable_dualsense_haptics.GetValue()) {
             haptics.Close();
-            haptics_open_attempted = false;
+            last_haptics_open_attempt.reset();
             return false;
         }
         if (haptics.IsOpen()) {
             return true;
         }
-        if (haptics_open_attempted || !sdl_controller) {
+        if (!sdl_controller) {
             return false;
         }
-        haptics_open_attempted = true;
 
         // The haptics audio device is only available over USB
         if (SDL_GetGamepadType(sdl_controller.get()) != SDL_GAMEPAD_TYPE_PS5 ||
@@ -262,6 +262,15 @@ public:
                 SDL_JOYSTICK_CONNECTION_WIRED) {
             return false;
         }
+
+        // The audio device can show up after the gamepad, so retry occasionally instead of
+        // enumerating audio devices on every rumble call
+        constexpr u64 retry_interval_ms = 5000;
+        const u64 now = SDL_GetTicks();
+        if (last_haptics_open_attempt && now - *last_haptics_open_attempt < retry_interval_ms) {
+            return false;
+        }
+        last_haptics_open_attempt = now;
         if (!haptics.Open()) {
             return false;
         }
@@ -348,7 +357,7 @@ public:
         {
             std::scoped_lock lock{haptics_mutex};
             haptics.Close();
-            haptics_open_attempted = false;
+            last_haptics_open_attempt.reset();
         }
         sdl_joystick.reset(joystick);
         sdl_controller.reset(controller);
@@ -466,7 +475,7 @@ private:
 
     std::mutex haptics_mutex;
     DualSenseHaptics haptics;
-    bool haptics_open_attempted{false};
+    std::optional<u64> last_haptics_open_attempt;
 };
 
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID& guid, int port) {

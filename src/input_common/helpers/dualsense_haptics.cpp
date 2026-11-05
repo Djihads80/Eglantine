@@ -114,7 +114,11 @@ bool DualSenseHaptics::Open() {
         return false;
     }
 
-    SDL_ResumeAudioStreamDevice(stream);
+    if (!SDL_ResumeAudioStreamDevice(stream)) {
+        LOG_ERROR(Input, "Failed to start DualSense haptics stream: {}", SDL_GetError());
+        Close();
+        return false;
+    }
     return true;
 }
 
