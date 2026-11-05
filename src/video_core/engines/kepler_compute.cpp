@@ -101,6 +101,9 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
         LOG_WARNING(HW_GPU, "Native compute report semaphore operation {} not supported", operation);
         return;
     }
+    if (address == 0) {
+        return;
+    }
     if ((argument >> 3) & 1) {
         const u32 reduction = (argument >> 9) & 7;
         rasterizer->SignalFence([this, address, payload, reduction] {
@@ -118,9 +121,6 @@ void KeplerCompute::ProcessNativeReportSemaphore(u32 argument) {
                 Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*device, value);
             }
         });
-        return;
-    }
-    if (address == 0) {
         return;
     }
     rasterizer->Query(address, VideoCommon::QueryType::Payload,
