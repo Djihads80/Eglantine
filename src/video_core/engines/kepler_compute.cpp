@@ -11,7 +11,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include "common/assert.h"
@@ -982,8 +984,16 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
         }
     }
-    if (!input || !output)
+    const auto skip = [&](std::string_view reason) {
+        static std::unordered_set<GPUVAddr> reported;
+        if (reported.insert(regs.code_loc.Address()).second && reported.size() <= 64) {
+            LOG_INFO(HW_GPU, "Upscale fallback for program {:#x} skipped: {}", regs.code_loc.Address(),
+                     reason);
+        }
         return false;
+    };
+    if (!input || !output)
+        return skip("no input/output image pair in cbuf0+0x80..0x11c");
     using RTFormat = Tegra::RenderTargetFormat;
     RTFormat format{};
     switch (input->format) {
@@ -991,7 +1001,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
     case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
     case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
+    default: return skip(fmt::format("input format {}", static_cast<u32>(input->format.Value())));
     }
     const auto surface = [&](const Texture::TICEntry& tic) {
         Fermi2D::Surface result{};
@@ -1144,10 +1154,11 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 30U;
     }();
     if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
-    static u32 logged{};
-    if (logged++ < 4) {
-        LOG_INFO(HW_GPU, "Upscale fallback {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",
-                 input->Address(), input->Width(), input->Height(), input->block_width.Value(),
+    // Once per program and image pair (gameplay brings programs and targets the title has not).
+    static std::set<std::tuple<GPUVAddr, GPUVAddr, GPUVAddr>> logged;
+    if (logged.emplace(program, input->Address(), output->Address()).second && logged.size() <= 64) {
+        LOG_INFO(HW_GPU, "Upscale fallback {:#x}: {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",
+                 program, input->Address(), input->Width(), input->Height(), input->block_width.Value(),
                  input->block_height.Value(), input->block_depth.Value(), output->Address(),
                  output->Width(), output->Height(), output->block_width.Value(),
                  output->block_height.Value(), output->block_depth.Value(), output->max_mip_level.Value(),
