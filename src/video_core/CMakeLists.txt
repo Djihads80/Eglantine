@@ -114,6 +114,7 @@ add_library(video_core STATIC
     nx2.h
     nx2_diag.h
     nx2_profile.h
+    nx2_perf.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
