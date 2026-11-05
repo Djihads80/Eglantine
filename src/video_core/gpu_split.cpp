@@ -351,17 +351,23 @@ void GpuSplit::Drain() {
 }
 
 void GpuSplit::Drain(Nx2Profile::Zone zone) {
+    if (!active) {
+        return;
+    }
     FlushPending();
     consumed_cache = consumed.load(std::memory_order_acquire);
-    if (consumed_cache == write_position) {
+    if (consumed_cache == write_position && back_waiting.load(std::memory_order_acquire)) {
         return;
     }
     Publish();
+    // The back runs the idle hook (the rasterizer submits its deferred work) before the front
+    // waits on it: what the drain waits for may need that submission to finish (#593).
+    RequestIdleHook();
     Nx2Profile::Scope scope{zone};
     auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
-        if (consumed_cache == write_position) {
+        if (consumed_cache == write_position && back_waiting.load(std::memory_order_acquire)) {
             publish_every = 8;
             return;
         }
@@ -555,6 +561,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     g_back_thread_id.store(static_cast<u32>(gettid()), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
+    g_back_busy.store(true, std::memory_order_relaxed);
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
@@ -573,6 +580,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 available = published.load(std::memory_order_acquire);
             }
             if (available == read_position) {
+                g_back_busy.store(false, std::memory_order_release);
                 // Publish bumps `wake` when it sees back_waiting: read it before the last look
                 // at `published`, so a publish in between ends the wait at once.
                 back_waiting.store(true, std::memory_order_seq_cst);
@@ -589,12 +597,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                         wake.wait(seen, std::memory_order_seq_cst);
                     }
                 }
-                back_waiting.store(false, std::memory_order_relaxed);
+                back_waiting.store(false, std::memory_order_seq_cst);
+                g_back_busy.store(true, std::memory_order_seq_cst);
                 continue;
             }
         }
         u64 last_store = read_position;
-        g_back_busy.store(true, std::memory_order_relaxed);
         while (read_position != available) {
             const size_t index = read_position & RingMask;
             const size_t size = Execute(&ring[index]);
@@ -616,6 +624,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         g_back_busy.store(false, std::memory_order_release);
         HandBack(read_position);
     }
+    g_back_busy.store(false, std::memory_order_release);
     back_running.store(false, std::memory_order_release);
 }
 
