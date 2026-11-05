@@ -13,6 +13,7 @@
 #include "common/thread.h"
 #include "common/vector_math.h"
 #include "input_common/drivers/sdl_driver.h"
+#include "input_common/helpers/dualsense_haptics.h"
 
 namespace InputCommon {
 
@@ -196,6 +197,14 @@ public:
     }
 
     bool RumblePlay(const Common::Input::VibrationStatus vibration) {
+        if (UseDualSenseHaptics()) {
+            constexpr f32 max_amplitude = 0xFFFF;
+            haptics.SetVibration(vibration.low_amplitude / max_amplitude, vibration.low_frequency,
+                                 vibration.high_amplitude / max_amplitude,
+                                 vibration.high_frequency);
+            return true;
+        }
+
         constexpr u32 rumble_max_duration_ms = 2000;
         constexpr f32 low_start_sensitivity_limit = 140.0f;
         constexpr f32 low_width_sensitivity_limit = 400.0f;
@@ -230,6 +239,36 @@ public:
         }
 
         return false;
+    }
+
+    bool UseDualSenseHaptics() {
+        std::scoped_lock lock{haptics_mutex};
+        if (!Settings::values.enable_dualsense_haptics.GetValue()) {
+            haptics.Close();
+            haptics_open_attempted = false;
+            return false;
+        }
+        if (haptics.IsOpen()) {
+            return true;
+        }
+        if (haptics_open_attempted || !sdl_controller) {
+            return false;
+        }
+        haptics_open_attempted = true;
+
+        // The haptics audio device is only available over USB
+        if (SDL_GetGamepadType(sdl_controller.get()) != SDL_GAMEPAD_TYPE_PS5 ||
+            SDL_GetGamepadConnectionState(sdl_controller.get()) !=
+                SDL_JOYSTICK_CONNECTION_WIRED) {
+            return false;
+        }
+        if (!haptics.Open()) {
+            return false;
+        }
+
+        // Stop any rumble emulation so it doesn't play on top of the haptics stream
+        SDL_RumbleGamepad(sdl_controller.get(), 0, 0, 0);
+        return true;
     }
 
     bool HasHDRumble() const {
@@ -306,6 +345,11 @@ public:
     }
 
     void SetSDLJoystick(SDL_Joystick* joystick, SDL_Gamepad* controller) {
+        {
+            std::scoped_lock lock{haptics_mutex};
+            haptics.Close();
+            haptics_open_attempted = false;
+        }
         sdl_joystick.reset(joystick);
         sdl_controller.reset(controller);
     }
@@ -419,6 +463,10 @@ private:
     bool has_vibration{false};
     bool is_vibration_tested{false};
     BasicMotion motion;
+
+    std::mutex haptics_mutex;
+    DualSenseHaptics haptics;
+    bool haptics_open_attempted{false};
 };
 
 std::shared_ptr<SDLJoystick> SDLDriver::GetSDLJoystickByGUID(const Common::UUID& guid, int port) {
