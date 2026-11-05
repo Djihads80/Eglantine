@@ -1439,7 +1439,13 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // Accurate GPU mode holds report and semaphore writes in the query cache until a
                     // fence: write them out, or occlusion predicates read stale values. The split only
                     // runs with immediate payload writes, and the query cache belongs to its back.
-                    if (!VideoCommon::GpuSplit::Get().Active()) {
+                    // EDEN_NX2_DMA_QUERY_FLUSH=1 only: suspected of the garbage commands Ocarina of
+                    // Time crashed on with a phone build that had it (also releases fences here).
+                    static const bool query_flush = [] {
+                        const char* const value = std::getenv("EDEN_NX2_DMA_QUERY_FLUSH");
+                        return value != nullptr && value[0] == '1';
+                    }();
+                    if (query_flush && !VideoCommon::GpuSplit::Get().Active()) {
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
                     }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
