@@ -108,9 +108,9 @@ void BufferCache<P>::TickFrame() {
     }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
-    if (native_indirect_uniform_shadow.size() > 4096) {
+    if (native_indirect_uniform_shadow.size() > 256) {
         native_indirect_uniform_shadow.clear();
-        native_indirect_uniform_last_page = ~DAddr{0};
+        native_indirect_uniform_last_bank = ~DAddr{0};
         native_indirect_uniform_last_ptr = nullptr;
     }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
@@ -606,6 +606,9 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
 
 template <class P>
 void BufferCache<P>::BindHostStageBuffers(size_t stage) {
+    if (stage == 0) {
+        ++native_indirect_uniform_draw_ticket;
+    }
     BindHostGraphicsUniformBuffers(stage);
     if (channel_state->enabled_storage_buffers[stage] != 0) {
         BindHostGraphicsStorageBuffers(stage);
@@ -1309,39 +1312,53 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         // The bank size is only an upper limit: stop at the end of the mapped memory.
         // Only mark 4 KiB pages whose guest bytes actually changed since the last upload so
         // unchanged banks do not toggle VirtualProtect or break the Vulkan render pass on every draw.
-        u64 offset_in_bank = 0;
-        while (offset_in_bank < size) {
-            const DAddr cur_addr = device_addr + offset_in_bank;
-            const u8* const ptr = device_memory.template GetPointer<u8>(cur_addr);
-            if (ptr == nullptr) {
-                break;
-            }
-            const u64 page_offset = cur_addr & Core::DEVICE_PAGEMASK;
-            const u64 chunk_size =
-                (std::min<u64>)(Core::DEVICE_PAGESIZE - page_offset, size - offset_in_bank);
-            const DAddr page_addr = cur_addr - page_offset;
-            const bool already_cpu_modified =
-                memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
-            std::array<u8, Core::DEVICE_PAGESIZE>* shadow_page = nullptr;
-            bool inserted = false;
-            if (page_addr == native_indirect_uniform_last_page &&
-                native_indirect_uniform_last_ptr != nullptr) {
-                shadow_page = native_indirect_uniform_last_ptr;
-            } else {
-                auto [it, is_new] = native_indirect_uniform_shadow.try_emplace(page_addr);
-                shadow_page = &it->second;
-                inserted = is_new;
-                native_indirect_uniform_last_page = page_addr;
-                native_indirect_uniform_last_ptr = shadow_page;
-            }
-            if (inserted || already_cpu_modified ||
-                std::memcmp(shadow_page->data() + page_offset, ptr, chunk_size) != 0) {
-                std::memcpy(shadow_page->data() + page_offset, ptr, chunk_size);
-                if (!already_cpu_modified) {
-                    memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+        NativeUniformBankShadow* shadow = nullptr;
+        if (device_addr == native_indirect_uniform_last_bank &&
+            native_indirect_uniform_last_ptr != nullptr) [[likely]] {
+            shadow = native_indirect_uniform_last_ptr;
+        } else {
+            shadow = &native_indirect_uniform_shadow[device_addr];
+            native_indirect_uniform_last_bank = device_addr;
+            native_indirect_uniform_last_ptr = shadow;
+        }
+        if (shadow->last_draw_ticket != native_indirect_uniform_draw_ticket) {
+            shadow->last_draw_ticket = native_indirect_uniform_draw_ticket;
+            const u32 check_size = (std::min<u32>)(size, 0x10000U);
+            const u8* const base_ptr = device_memory.template GetPointer<u8>(device_addr);
+            const bool contiguous =
+                base_ptr != nullptr &&
+                (check_size <= Core::DEVICE_PAGESIZE ||
+                 base_ptr + (check_size - 1) ==
+                     device_memory.template GetPointer<u8>(device_addr + check_size - 1));
+            u32 offset_in_bank = 0;
+            u32 page_idx = 0;
+            while (offset_in_bank < check_size) {
+                const DAddr cur_addr = device_addr + offset_in_bank;
+                const u64 page_offset = cur_addr & Core::DEVICE_PAGEMASK;
+                const u32 chunk_size = static_cast<u32>(
+                    (std::min<u64>)(Core::DEVICE_PAGESIZE - page_offset, check_size - offset_in_bank));
+                const u8* const ptr = contiguous
+                                          ? (base_ptr + offset_in_bank)
+                                          : device_memory.template GetPointer<u8>(cur_addr);
+                if (ptr == nullptr) {
+                    break;
                 }
+                const u32 page_bit = 1U << (page_idx & 31);
+                const bool page_initialized = (shadow->initialized_mask & page_bit) != 0;
+                const bool already_cpu_modified =
+                    memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
+                u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
+                if (!page_initialized || already_cpu_modified ||
+                    std::memcmp(shadow_dst, ptr, chunk_size) != 0) {
+                    std::memcpy(shadow_dst, ptr, chunk_size);
+                    shadow->initialized_mask |= page_bit;
+                    if (!already_cpu_modified) {
+                        memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+                    }
+                }
+                offset_in_bank += chunk_size;
+                ++page_idx;
             }
-            offset_in_bank += chunk_size;
         }
     }
     const bool use_fast_buffer = needs_alignment_stream

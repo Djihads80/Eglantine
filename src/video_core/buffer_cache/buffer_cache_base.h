@@ -391,9 +391,15 @@ public:
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
-    std::unordered_map<DAddr, std::array<u8, Core::DEVICE_PAGESIZE>> native_indirect_uniform_shadow;
-    DAddr native_indirect_uniform_last_page = ~DAddr{0};
-    std::array<u8, Core::DEVICE_PAGESIZE>* native_indirect_uniform_last_ptr = nullptr;
+    struct NativeUniformBankShadow {
+        u64 last_draw_ticket{};
+        u32 initialized_mask{};
+        std::array<u8, 0x10000> bytes{};
+    };
+    std::unordered_map<DAddr, NativeUniformBankShadow> native_indirect_uniform_shadow;
+    DAddr native_indirect_uniform_last_bank = ~DAddr{0};
+    NativeUniformBankShadow* native_indirect_uniform_last_ptr = nullptr;
+    u64 native_indirect_uniform_draw_ticket = 0;
 
     static constexpr size_t ResolvedStorageAddrCacheSize = 512;
     struct ResolvedStorageAddrCacheEntry {
