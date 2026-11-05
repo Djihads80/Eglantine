@@ -2396,8 +2396,39 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) | (u64{source} << 20));
             }
             for (u32 i = 0; i < meta; ++i) {
-                emit(0x5c98000000000000ULL | predicate | (246 + i) | (u64{15} << 39) |
-                     (u64{element(source_b, i)} << 20));
+                const u32 reg = element(source_b, i);
+                std::optional<u32> imm;
+                if (offset_mode == 2 && i < 2) {
+                    for (u32 cursor = index; cursor > 0 && !control_entries[cursor];) {
+                        const auto& def = code[--cursor];
+                        if (def.Bits(12, 4) == 15) continue;
+                        const u32 op = def.Bits(0, 12), target = def.Bits(16, 8);
+                        auto count = write_count(def);
+                        if (op == 0x211 || op == 0x811 || op == 0xa11 || op == 0x224 || op == 0x624)
+                            count = 1;
+                        if (!count || target == 255 || reg < target || reg >= target + *count)
+                            continue;
+                        const bool move = op == 0x802 && !def.Bits(24, 8) && def.words[2] == 0xf00;
+                        const bool imad = op == 0x424 && def.Bits(24, 8) == 255 && def.words[2] == 0x078e00ff;
+                        if ((!move && !imad) ||
+                            (def.Bits(12, 4) != 7 && def.Bits(12, 4) != native_predicate) ||
+                            (def.words[3] & 0xc00001ffU))
+                            return fail(index, "native per-tap gather nonconstant offsets");
+                        for (u32 shift = 0; shift < 32; shift += 8) {
+                            const u32 value = (def.words[1] >> shift) & 255;
+                            if (value > 31 && value < 224)
+                                return fail(index, "native per-tap gather offset range");
+                        }
+                        imm = def.words[1];
+                        break;
+                    }
+                }
+                if (imm) {
+                    emit(0x010000000007f000ULL | (246 + i) | (u64{*imm} << 20));
+                } else {
+                    emit(0x5c98000000000000ULL | predicate | (246 + i) | (u64{15} << 39) |
+                         (u64{reg} << 20));
+                }
             }
             if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
