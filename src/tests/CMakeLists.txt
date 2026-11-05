@@ -7,6 +7,7 @@
 add_executable(tests
     core/builtin_patches.cpp
     video_core/gpu_timestamp.cpp
+    video_core/oot_visual_workaround.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
