@@ -239,7 +239,7 @@ private:
     inline void SetEntry(size_t position, EntryType entry, bool is_big_page);
 
     Common::MultiLevelPageTable<u32> page_table;
-    Common::RangeMap<GPUVAddr, PTEKind> kind_map;
+    mutable Common::RangeMap<GPUVAddr, PTEKind> kind_map;
     Common::SparseLargeVector<u32> big_page_table_dev;
 
     std::vector<u64> big_page_continuous;

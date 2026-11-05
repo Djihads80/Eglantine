@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cstdlib>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -587,25 +589,66 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
 }
 
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
-    // Native storage buffers ask this for up to 8 MiB on each bind, ~70,000 times a second in
-    // title 1's forest (17% of the GPU thread walking pages): keep answers per thread until the
-    // page table changes.
-    struct Entry {
-        size_t owner;
-        GPUVAddr gpu_addr;
-        size_t size;
-        u64 serial;
-        size_t result;
-    };
-    thread_local std::array<Entry, 64> cache{};
+    // Native storage buffers ask this for up to 8 MiB on each bind: ~90,000 times a second in
+    // Ocarina's Kokiri village, at as many addresses as there are objects, so answers kept per
+    // address missed and walking the pages took ~11% of the GPU back thread. The answer for any
+    // address follows from where the contiguous run through its 64 KiB page ends: keep that per
+    // page and thread until the page table changes.
+    // EXPERIMENT (not for nx2): EDEN_NX2_RUN_CACHE=0 uses the per-address cache, =2 checks every
+    // answer against a page walk and logs differences.
+    static const int mode = [] {
+        const char* value = std::getenv("EDEN_NX2_RUN_CACHE");
+        return value == nullptr ? 1 : value[0] - '0';
+    }();
     const u64 serial = map_serial.load(std::memory_order_acquire);
-    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
-    if (entry.owner == unique_identifier + 1 && entry.gpu_addr == gpu_addr && entry.size == size &&
-        entry.serial == serial) {
-        return entry.result;
+    if (mode == 0) {
+        struct Entry {
+            size_t owner;
+            GPUVAddr gpu_addr;
+            size_t size;
+            u64 serial;
+            size_t result;
+        };
+        thread_local std::array<Entry, 64> cache{};
+        Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
+        if (entry.owner == unique_identifier + 1 && entry.gpu_addr == gpu_addr &&
+            entry.size == size && entry.serial == serial) {
+            return entry.result;
+        }
+        const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
+        entry = {unique_identifier + 1, gpu_addr, size, serial, result};
+        return result;
     }
-    const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
-    entry = {unique_identifier + 1, gpu_addr, size, serial, result};
+    // A run is followed this far from its page: past the 8 MiB storage bindings ask for.
+    constexpr size_t RunCap = size_t{16} << 20;
+    struct Run {
+        size_t owner;
+        GPUVAddr page;
+        u64 serial;
+        GPUVAddr end;
+    };
+    thread_local std::array<Run, 1024> runs{};
+    const GPUVAddr page = gpu_addr & ~big_page_mask;
+    Run& run = runs[(page >> big_page_bits) % runs.size()];
+    if (run.owner != unique_identifier + 1 || run.page != page || run.serial != serial) {
+        run = {unique_identifier + 1, page, serial, page + MaxContinuousRangeUncached(page, RunCap)};
+    }
+    size_t result;
+    if (run.end > gpu_addr && (gpu_addr + size <= page + RunCap || run.end < page + RunCap)) {
+        // The run from the page start passes gpu_addr, so the run from gpu_addr ends there too.
+        result = (std::min<size_t>)(size, run.end - gpu_addr);
+    } else {
+        result = MaxContinuousRangeUncached(gpu_addr, size);
+    }
+    if (mode == 2) [[unlikely]] {
+        const size_t expected = MaxContinuousRangeUncached(gpu_addr, size);
+        static std::atomic<u32> logged{};
+        if (expected != result && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU, "MaxContinuousRange({:#x}, {:#x}): run cache {:#x}, walk {:#x}",
+                      gpu_addr, size, result, expected);
+        }
+        return expected;
+    }
     return result;
 }
 
@@ -650,8 +693,12 @@ size_t MemoryManager::MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size)
 }
 
 size_t MemoryManager::GetMemoryLayoutSize(GPUVAddr gpu_addr, size_t max_size) const {
+    static const bool rebalance = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_REBALANCE");
+        return value == nullptr || value[0] != '0';
+    }();
     std::unique_lock<std::mutex> lock(guard);
-    return kind_map.GetContinuousSizeFrom(gpu_addr);
+    return kind_map.GetContinuousSizeFrom(gpu_addr, native_tiling && rebalance);
 }
 
 void MemoryManager::InvalidateRegion(GPUVAddr gpu_addr, size_t size,
