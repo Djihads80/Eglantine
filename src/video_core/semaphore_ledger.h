@@ -57,6 +57,11 @@ public:
         entries.erase(device_address);
     }
 
+    /// The split stopped: its ring positions restart at 0, so the orders recorded are stale.
+    void Clear() {
+        entries.clear();
+    }
+
     [[nodiscard]] const Entry* Find(u64 device_address) const {
         const auto it = entries.find(device_address);
         return it == entries.end() ? nullptr : &it->second;
