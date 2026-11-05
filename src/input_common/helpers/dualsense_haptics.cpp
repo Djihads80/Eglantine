@@ -39,8 +39,7 @@ constexpr f32 DefaultHighFrequency = 320.0f;
 // Matches the duration SDL rumble requests are sent with
 constexpr u64 VibrationTimeoutMs = 2000;
 
-// Only one controller can own an audio device. Multiple DualSense controllers would need their
-// audio devices matched to the right gamepad, which SDL doesn't expose.
+// Only one controller can own the audio device
 std::atomic<bool> device_in_use{false};
 
 f32 SanitizeAmplitude(f32 amplitude) {
@@ -81,6 +80,7 @@ bool DualSenseHaptics::Open() {
     int device_count = 0;
     SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&device_count);
     SDL_AudioDeviceID haptics_device = 0;
+    int candidate_count = 0;
     for (int i = 0; devices != nullptr && i < device_count; ++i) {
         const char* name = SDL_GetAudioDeviceName(devices[i]);
         if (name == nullptr || std::strstr(name, "DualSense") == nullptr) {
@@ -92,15 +92,22 @@ bool DualSenseHaptics::Open() {
             continue;
         }
         haptics_device = devices[i];
-        LOG_INFO(Input, "Using audio device \"{}\" for DualSense haptics", name);
-        break;
+        ++candidate_count;
     }
     SDL_free(devices);
 
-    if (haptics_device == 0) {
+    // SDL doesn't tell which audio device belongs to which gamepad. With more than one wired
+    // DualSense the haptics could end up on the wrong controller, so use standard rumble instead.
+    if (candidate_count != 1) {
+        if (candidate_count > 1) {
+            LOG_DEBUG(Input, "Found {} DualSense audio devices, using standard rumble",
+                      candidate_count);
+        }
         device_in_use = false;
         return false;
     }
+    LOG_INFO(Input, "Using audio device \"{}\" for DualSense haptics",
+             SDL_GetAudioDeviceName(haptics_device));
 
     const SDL_AudioSpec spec{
         .format = SDL_AUDIO_F32,
