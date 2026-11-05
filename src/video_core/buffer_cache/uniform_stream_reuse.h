@@ -117,15 +117,18 @@ template <class Runtime, class DeviceMemory>
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }
-    const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-    std::memcpy(span.data(), bytes, size);
-    slot.ref = runtime.LastStreamUniformRef();
-    // After the allocation: the tick the stream region is tagged with is the one current now.
-    slot.tick = runtime.CurrentTick();
     if (!same_bytes) {
+        // One snapshot, the slot's copy, which the stream is then written from: the guest may
+        // write the range meanwhile, and two reads of it could leave the stream and the copy
+        // (what the next bind compares against) different.
         slot.size = size;
         std::memcpy(slot.bytes.data(), bytes, size);
     }
+    const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
+    std::memcpy(span.data(), slot.bytes.data(), size);
+    slot.ref = runtime.LastStreamUniformRef();
+    // After the allocation: the tick the stream region is tagged with is the one current now.
+    slot.tick = runtime.CurrentTick();
     return true;
 }
 
