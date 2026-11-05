@@ -6,7 +6,7 @@ The emulator implements the majority of the syscalls pertaining to the HOS kerne
 
 Most programs in NX eventually invoke an `svc`, which, depending on it's immediate value, will go on to be dispatched into one of the specific syscall handlers.
 
-These can be seen in [svc.cpp](/src/core/hle/kernel/svc.cpp). All of these correspond to syscalls which userspace programs may perform.
+These can be seen in [svc.cpp](../src/core/hle/kernel/svc.cpp). All of these correspond to syscalls which userspace programs may perform.
 
 In turn, these syscalls create the mechanisms that allows programs to use CMIF/TIPC as their primary IPC form to contact other services/processes running on the system, the details of which will not be covered here, but you can consult the relevant [SwitchBrew article: 'HIPC'](https://switchbrew.org/wiki/HIPC).
 
