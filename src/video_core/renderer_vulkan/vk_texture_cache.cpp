@@ -4313,7 +4313,8 @@ VkImageView ImageView::StorageView(Shader::TextureType texture_type,
 }
 
 bool ImageView::IsRescaled() const noexcept {
-    return (*slot_images)[image_id].IsRescaled();
+    // The null view (and the fallback one) has no image to ask.
+    return slot_images && (*slot_images)[image_id].IsRescaled();
 }
 
 vk::ImageView ImageView::MakeView(VkFormat vk_format, VkImageAspectFlags aspect_mask,

@@ -801,6 +801,16 @@ void RasterizerVulkan::DrawTexture() {
     const auto& sampler = texture_cache.GetSampler(draw_texture_state.src_sampler, false);
     const auto& texture = texture_cache.GetImageView(draw_texture_state.src_texture);
     const auto* framebuffer = texture_cache.GetFramebuffer();
+    // A handle to no image gives the null view, without an image where the device has null
+    // descriptors (Turnip): nothing to draw from (Zelda: Ocarina of Time crashed blitting it).
+    if (texture.ImageHandle() == VK_NULL_HANDLE || framebuffer == nullptr) {
+        static bool logged{};
+        if (!std::exchange(logged, true)) {
+            LOG_WARNING(Render_Vulkan, "Draw texture skipped: no source image (handle {:#x})",
+                        draw_texture_state.src_texture);
+        }
+        return;
+    }
 
     const bool src_rescaling = texture_cache.IsRescaling() && texture.IsRescaled();
     const bool dst_rescaling = texture_cache.IsRescaling() && framebuffer->IsRescaled();
