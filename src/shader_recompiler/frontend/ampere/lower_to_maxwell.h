@@ -2026,8 +2026,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool signed_byte = opcode == 0x305 && mode == 0x0021e100;
             const bool short_trunc = opcode == 0x305 && (mode & ~0x100U) == 0x0021e800;
             // Bit 62: |Rs| on the register form (Hyrule Warriors: F2I.FTZ.U16.NTZ R26, |R42|).
-            const bool absolute = opcode == 0x305 && !half && insn.Bits(62, 1);
-            const bool negate = opcode == 0x305 && !half && insn.Bits(63, 1);
+            const bool absolute = (opcode == 0x305 || opcode == 0xb05) && !half && insn.Bits(62, 1);
+            const bool negate = (opcode == 0x305 || opcode == 0xb05) && !half && insn.Bits(63, 1);
             // F2I.U8: clamped to [0, 255] as a float, then converted as a 32-bit integer.
             const bool unsigned_byte = opcode == 0x305 && (mode & ~0x10000U) == 0x0020e000;
             if ((!half && !small && !floor && !nearest && !round_up && !signed_byte && !short_trunc &&
@@ -2039,13 +2039,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return fail(index, "native float-to-integer conversion mode");
             }
             const bool is_signed = insn.Bits(72, 1);
-            u32 source = opcode == 0xb05 ? materialize(2, 0, 252, false, false)
+            u32 source = opcode == 0xb05 ? materialize(2, 0, 252, absolute, negate)
                        : opcode == 0xd05 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (half) {
                 extract_half({source, insn.Bits(60, 1) ? 3U : 2U, false, false}, 0, 252);
                 source = 252;
             }
-            if (absolute || negate) source = materialize(0, source, 249, absolute, negate);
+            if (opcode != 0xb05 && (absolute || negate)) source = materialize(0, source, 249, absolute, negate);
             if (unsigned_byte) {
                 emit(0x5800000000000000ULL | predicate | 250 | (u64{source} << 8) |
                      (u64{source} << 20) | (u64{7} << 39) | (u64{7} << 48));
@@ -2428,7 +2428,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                                 return fail(index, "native per-tap gather offset clobber");
                             continue;
                         }
-                        const u32 count = (op == 0x225 || op == 0x625 || op == 0x825 || op == 0x805) ? 2U : 1U;
+                        if (op == 0xb9b || op == 0x59f || op == 0x386 || op == 0x986 ||
+                            op == 0x388 || op == 0x988 || op == 0x992 || op == 0xb1d ||
+                            op == 0x948 || op == 0x348 || op == 0x941 || op == 0x942 ||
+                            op == 0x95b) {
+                            continue;
+                        }
+                        const u32 count = (op == 0x225 || op == 0x625 || op == 0x825 || op == 0x805) ? 2U
+                                        : (op == 0x305 && def.Bits(75, 2) == 3) ? 2U
+                                        : 1U;
                         if (target == 255 || reg < target || reg >= target + count)
                             continue;
                         const bool move = op == 0x802 && !def.Bits(24, 8) && def.words[2] == 0xf00;
