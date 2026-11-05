@@ -3210,6 +3210,11 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
 
+    [[nodiscard]] static bool FrontIsWriterDraw(const Regs& regs);
+    [[nodiscard]] static bool FrontIsWriterDraw(const std::array<u32, Regs::NUM_REGS>& regs) {
+        return FrontIsWriterDraw(reinterpret_cast<const Regs&>(regs));
+    }
+
     bool ShouldExecute() const {
         return execute_on;
     }

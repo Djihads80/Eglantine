@@ -69,6 +69,12 @@ static_assert(NUM_GRAPHICS_UNIFORM_BUFFERS <= 32, "fast bitmask must fit u32");
 using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
 using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
 
+struct Nx2ResetRun {
+    GPUVAddr gpu_addr{};
+    DAddr cpu_addr{};
+    u32 count{};
+};
+
 enum class ObtainBufferSynchronize : u32 {
     NoSynchronize = 0,
     FullSynchronize = 1,
@@ -347,6 +353,8 @@ public:
     /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy
     /// no longer holds the page.
     void Nx2NoteListHostWrite(DAddr device_addr, u64 size);
+    /// Keeps command list page state consistent for indirect resets.
+    void Nx2SyncListPages(std::span<const Nx2ResetRun> runs, const u8* pattern_bytes);
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);

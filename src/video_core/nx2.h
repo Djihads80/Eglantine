@@ -50,6 +50,38 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_command_list_pages{};
 inline std::atomic<bool> g_nx2_has_command_list_pages{false};
 
+// Shaders in graphics pipeline stages that write storage buffers or command list pages.
+// Checked on the split GPU thread's front to identify writer draws and note them with split.NoteWriter().
+// Sized to 65,536 bits (1,024 64-bit words, 8 KiB), indexed via a fast multiplicative hash of the
+// 32-bit low shader address (which is aligned to 128/256 bytes in native Switch 2 drivers).
+inline constexpr size_t Nx2WriterShaderBits = 65536;
+inline std::array<std::atomic<u64>, Nx2WriterShaderBits / 64> g_nx2_graphics_writer_shaders{};
+inline std::atomic<bool> g_nx2_has_graphics_writer_shaders{false};
+
+inline void Nx2MarkGraphicsWriterShader(u32 addr_low) {
+    if (addr_low == 0) {
+        return;
+    }
+    const u32 hash = (addr_low >> 6) * 0x9e3779b9u;
+    const u32 bit_index = hash & (Nx2WriterShaderBits - 1);
+    auto& word = g_nx2_graphics_writer_shaders[bit_index / 64];
+    const u64 bit = u64{1} << (bit_index % 64);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+        word.fetch_or(bit, std::memory_order_release);
+        g_nx2_has_graphics_writer_shaders.store(true, std::memory_order_release);
+    }
+}
+
+[[nodiscard]] inline bool Nx2IsGraphicsWriterShader(u32 addr_low) {
+    if (addr_low == 0 || !g_nx2_has_graphics_writer_shaders.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const u32 hash = (addr_low >> 6) * 0x9e3779b9u;
+    const u32 bit_index = hash & (Nx2WriterShaderBits - 1);
+    const u64 word = g_nx2_graphics_writer_shaders[bit_index / 64].load(std::memory_order_relaxed);
+    return (word & (u64{1} << (bit_index % 64))) != 0;
+}
+
 inline void Nx2MarkCommandListPage(u64 device_address) {
     const u64 page = device_address >> Nx2WrittenPageBits;
     if (page >= g_nx2_command_list_pages.size() * 64) {
@@ -80,6 +112,10 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
+    for (auto& word : g_nx2_graphics_writer_shaders) {
+        word.store(0, std::memory_order_relaxed);
+    }
+    g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {
