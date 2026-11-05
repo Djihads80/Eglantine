@@ -277,7 +277,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         bool rewritten_uniform = false;
         bool uniform_guard = false;
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
-        if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
+        if (opcode == 0x2a4 || opcode == 0x4a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896 || opcode == 0x8a5) {
             // A guarded ULEA without .HI or a carry out lowers to one guarded ISCADD, which
             // leaves R253 to hold the guest predicate (Pokemon Pokopia's fullscreen passes).
@@ -313,7 +313,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 uniform_output = insn.Bits(81, 3);
                 insn.words[2] = (insn.words[2] & ~(7U << 17)) | ((6 - uniform_output) << 17);
             }
-            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
+            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x4a4 ? 0x424 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
                    : opcode == 0x292 ? 0x212 : opcode == 0x892 ? 0x812 : opcode == 0x291 ? 0x211
                    : opcode == 0x896 ? 0x816 : opcode == 0x8a5 ? 0x825 : 0x210;
         }
