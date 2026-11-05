@@ -881,6 +881,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
                 graphics_cache.emplace(key, std::move(pipeline));
+            } else {
+                disk_pipelines.erase(key.Hash());
             }
             ++state.built;
             if (state.has_loaded) {
