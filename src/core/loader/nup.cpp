@@ -138,14 +138,36 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
     base_title_id = program.title_id;
 
     // Title metadata lives on the base package (SPEC section 5.1), which is still present when
-    // its ExeFS is empty and the program boots from the update.
-    const auto has_metadata = [](const NupContainer::PackageInfo& package) {
-        return !package.title_name.empty() || !package.icon.empty() ||
-               !package.localized_icons.empty();
-    };
-    const auto& meta = base_index && has_metadata(nup->GetPackages()[*base_index])
-                           ? nup->GetPackages()[*base_index]
-                           : program;
+    // its ExeFS is empty and the program boots from the update. Take each field from the base
+    // when it has one and fall back to the program package otherwise.
+    NupContainer::PackageInfo meta;
+    meta.title_id = program.title_id;
+    meta.title_name = program.title_name;
+    meta.localized_titles = program.localized_titles;
+    meta.source_dump = program.source_dump;
+    meta.publisher = program.publisher;
+    meta.icon = program.icon;
+    meta.localized_icons = program.localized_icons;
+    if (base_index && *base_index != *program_index) {
+        const auto& base = nup->GetPackages()[*base_index];
+        if (!base.title_name.empty()) {
+            meta.title_name = base.title_name;
+        }
+        if (!base.localized_titles.empty()) {
+            meta.localized_titles = base.localized_titles;
+        }
+        if (!base.source_dump.empty()) {
+            meta.source_dump = base.source_dump;
+        }
+        if (!base.publisher.empty()) {
+            meta.publisher = base.publisher;
+        }
+        // The default and localized icons are one set, so they come from the same package.
+        if (!base.icon.empty() || !base.localized_icons.empty()) {
+            meta.icon = base.icon;
+            meta.localized_icons = base.localized_icons;
+        }
+    }
     has_program = true;
 
     const auto exefs = nup->GetExeFSDir(*exefs_index);
