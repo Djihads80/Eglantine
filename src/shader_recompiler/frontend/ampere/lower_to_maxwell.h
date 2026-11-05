@@ -304,8 +304,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         RegisterPressure pressure{insn};
         bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
-            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x988 && opcode != 0x59f && opcode != 0x98e && opcode != 0x927) continue;
+            if (opcode == 0x81c) break;
+            // Bits 32-39 name a register in register forms and in these opcodes: TEX/TLD, the
+            // stores, and the data operand of ISBEWR (0x927), RED (0x98e) and SURED (0x59f), all
+            // three listed with operand 32 in RegisterPressure.
+            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927 && opcode != 0x98e && opcode != 0x59f) continue;
             const u32 reg = insn.Bits(bit, 8);
             const u32 span = (bit == 24 && opcode == 0x59f)
                                  ? (insn.Bits(61, 3) <= 1 ? 1U : insn.Bits(61, 3) <= 3 ? 2U : 3U)
