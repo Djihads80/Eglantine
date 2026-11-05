@@ -265,7 +265,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (opcode == 0x81c) break; // PLOP3: bits 16-31 hold predicates and its LUT, not registers
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x986 && opcode != 0x987 && opcode != 0x988) continue;
+                opcode != 0x986 && opcode != 0x987 && opcode != 0x988 && opcode != 0x59f) continue;
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
@@ -1397,19 +1397,26 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
-        case 0x59f: { // SURED.D.2D.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute).
+        case 0x59f: { // SURED.D.2D.{ADD..XOR}.STRONG.GPU.IGN U32/S32, direct descriptor (title 1's
+                      // race compute: ADD; Ocarina's: OR). Type at 73-75, operation at 87-89.
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
-            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 || binding >= 18 ||
-                offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
+            const u32 type = insn.Bits(73, 3), operation = insn.Bits(87, 3);
+            // INC and DEC (3, 4) have no SPIR-V image form. Operands in the scratch registers were
+            // shadowed below them above; a coordinate pair straddling them can't be.
+            if ((insn.words[2] & ~0x03800e00U) != 0x0010e000 || insn.Bits(61, 3) != 3 ||
+                binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || type > 1 ||
+                operation == 3 || operation == 4 || coordinate + 2 > shadow_boundary ||
+                (data != 255 && data >= shadow_boundary))
                 return fail(index, "native surface reduction mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native surface descriptor buffer conflict");
             result.required_texture_buffer = binding;
-            // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
-            // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
+            // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, size 20
+            // (U32, S32), operation 24, type 33 (3 = 2D), bound offset 36, bound 51.
             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
-                (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+                (u64{type} << 20) | (u64{operation} << 24) | (u64{3} << 33) |
+                (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
         case 0x301: // BREV register.

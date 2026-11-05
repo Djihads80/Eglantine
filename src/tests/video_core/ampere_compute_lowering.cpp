@@ -112,4 +112,34 @@ TEST_CASE("Ampere guarded USHF.R.U32.HI lowers to a guarded SHR", "[video_core][
     const auto& out = lowered.instructions;
     REQUIRE(std::find(out.begin(), out.end(), guarded_shift) != out.end());
 }
+
+TEST_CASE("Ampere SURED keeps its operation and type", "[video_core][ampere]") {
+    // @P1 SURED.D.2D.OR.STRONG.GPU.IGN [R4], R0, 0x84 from Ocarina of Time's compute shaders.
+    const Instruction capture{{0x0400159f, 0x60008400, 0x0310e000, 0x0001e200}};
+    const auto lowered = LowerToMaxwell(std::array{capture, Exit});
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.required_texture_buffer == 0);
+    // Maxwell @P1 SURED.OR.U32 2D [R4], R0, bound handle 0x84.
+    REQUIRE(lowered.instructions.front() == 0xeb48084606010400ULL);
+    for (const u32 operation : {0U, 1U, 2U, 5U, 6U, 7U}) {
+        for (const u32 type : {0U, 1U}) {
+            auto instruction = capture;
+            instruction.words[2] = 0x0010e000 | (operation << 23) | (type << 9);
+            const auto variant = LowerToMaxwell(std::array{instruction, Exit});
+            REQUIRE(static_cast<bool>(variant));
+            CHECK(variant.instructions.front() ==
+                  (0xeb48084600010400ULL | (u64{operation} << 24) | (u64{type} << 20)));
+        }
+    }
+    // INC, DEC and U64 have no lowering; a coordinate pair can't straddle the scratch registers.
+    for (const u32 mode : {0x0190e000U, 0x0210e000U, 0x0010e400U}) {
+        auto instruction = capture;
+        instruction.words[2] = mode;
+        CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{instruction, Exit})));
+    }
+    auto straddling = capture;
+    straddling.words[0] = (straddling.words[0] & 0x00ffffffU) | (243U << 24);
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(std::array{straddling, Exit})));
+}
 } // namespace
