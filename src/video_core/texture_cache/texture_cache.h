@@ -514,14 +514,25 @@ void TextureCache<P>::MarkModification(ImageId id) noexcept {
 
 template <class P>
 void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist) {
+    if (views.empty()) {
+        return;
+    }
     bool has_blacklisted = false;
     do {
         has_deleted_images = false;
         if (blacklist) {
             has_blacklisted = false;
         }
+        u32 last_index = ~0U;
+        ImageViewId last_id{};
         for (ImageViewInOut& view : views) {
-            view.id = VisitImageView(view.index, compute);
+            if (view.index == last_index && !has_deleted_images) {
+                view.id = last_id;
+            } else {
+                view.id = VisitImageView(view.index, compute);
+                last_index = view.index;
+                last_id = view.id;
+            }
             if (blacklist) {
                 if (view.blacklist && view.id != NULL_IMAGE_VIEW_ID) {
                     const ImageViewBase& image_view = slot_image_views[view.id];

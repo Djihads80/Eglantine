@@ -613,7 +613,9 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
     if (stage == 0) {
         ++native_indirect_uniform_draw_ticket;
     }
-    BindHostGraphicsUniformBuffers(stage);
+    if (channel_state->enabled_uniform_buffer_masks[stage] != 0) {
+        BindHostGraphicsUniformBuffers(stage);
+    }
     if (channel_state->enabled_storage_buffers[stage] != 0) {
         BindHostGraphicsStorageBuffers(stage);
     }
@@ -635,24 +637,6 @@ void BufferCache<P>::BindHostComputeBuffers() {
         runtime.PostCopyBarrier();
         any_buffer_uploaded = false;
     }
-}
-
-template <class P>
-void BufferCache<P>::SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
-                                            const UniformBufferSizes* sizes) {
-    if (channel_state->enabled_uniform_buffer_masks == mask &&
-        channel_state->uniform_buffer_sizes == sizes) [[likely]] {
-        return;
-    }
-    if (channel_state->enabled_uniform_buffer_masks != mask) {
-        channel_state->fast_bound_uniform_buffers.fill(0);
-        if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
-            channel_state->dirty_uniform_buffers.fill(~u32{0});
-            channel_state->uniform_buffer_binding_sizes.fill({});
-        }
-        channel_state->enabled_uniform_buffer_masks = mask;
-    }
-    channel_state->uniform_buffer_sizes = sizes;
 }
 
 template <class P>
@@ -1745,9 +1729,15 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
         UpdateVertexBuffers();
         UpdateTransformFeedbackBuffers();
         for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
-            UpdateUniformBuffers(stage);
-            UpdateStorageBuffers(stage);
-            UpdateTextureBuffers(stage);
+            if (channel_state->enabled_uniform_buffer_masks[stage] != 0) {
+                UpdateUniformBuffers(stage);
+            }
+            if (channel_state->enabled_storage_buffers[stage] != 0) {
+                UpdateStorageBuffers(stage);
+            }
+            if (channel_state->enabled_texture_buffers[stage] != 0) {
+                UpdateTextureBuffers(stage);
+            }
         }
         if (current_draw_indirect) {
             UpdateDrawIndirect();

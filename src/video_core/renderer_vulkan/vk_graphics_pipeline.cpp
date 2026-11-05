@@ -496,7 +496,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     }
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
-    {
+    if (!views.empty()) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
                                      Spec::has_images);

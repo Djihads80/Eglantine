@@ -285,7 +285,21 @@ public:
     void BindHostComputeBuffers();
 
     void SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
-                                const UniformBufferSizes* sizes);
+                                const UniformBufferSizes* sizes) {
+        if (channel_state->enabled_uniform_buffer_masks == mask &&
+            channel_state->uniform_buffer_sizes == sizes) [[likely]] {
+            return;
+        }
+        if (channel_state->enabled_uniform_buffer_masks != mask) {
+            channel_state->fast_bound_uniform_buffers.fill(0);
+            if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
+                channel_state->dirty_uniform_buffers.fill(~u32{0});
+                channel_state->uniform_buffer_binding_sizes.fill({});
+            }
+            channel_state->enabled_uniform_buffer_masks = mask;
+        }
+        channel_state->uniform_buffer_sizes = sizes;
+    }
 
     void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
 
