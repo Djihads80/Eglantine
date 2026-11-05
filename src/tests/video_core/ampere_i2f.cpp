@@ -43,6 +43,7 @@ TEST_CASE("Ampere I2F keeps unsigned 16-bit sources unsigned", "[video_core][amp
     REQUIRE(Contains(lowered, 0x5cb8000000170601ULL));
 }
 
+/// Checks uniform I2F signedness and half selection, and rejects invalid uniform operands.
 TEST_CASE("Ampere I2F converts either half of signed and unsigned uniform words", "[video_core][ampere]") {
     for (const bool is_signed : {false, true}) {
         for (const u32 half : {0U, 1U}) {

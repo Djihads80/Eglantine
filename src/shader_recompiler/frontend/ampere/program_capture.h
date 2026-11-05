@@ -10,6 +10,8 @@ public:
     enum class Result { Continue, Complete, InvalidTarget };
     static constexpr u32 MaximumInstructions = 65536;
 
+    /// Tracks control-flow targets while capturing instructions in program order.
+    /// Returns Complete at a recognized program end or InvalidTarget for an invalid branch target.
     Result Observe(const Instruction& instruction, u32 index) {
         const u32 opcode = instruction.Bits(0, 12);
         if (opcode == 0x944 || opcode == 0x947 || opcode == 0x945) {

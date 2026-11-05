@@ -16,6 +16,8 @@ using Shader::Ampere::ProgramCaptureState;
 
 constexpr Instruction EXIT{{0x0000794d, 0, 0x03800000, 0}};
 
+/// Checks that register SGXT handles out-of-range bit counts before extracting signed or unsigned
+/// fields.
 TEST_CASE("Ampere register SGXT clamps the full bit count before extraction", "[video_core][ampere]") {
     using Shader::Maxwell::Opcode;
     // SGXT.U32 R16, R21, R16: the destination also holds the bit count.
@@ -67,6 +69,7 @@ TEST_CASE("Ampere register SGXT clamps the full bit count before extraction", "[
     }
 }
 
+/// Checks emitted F2F fields for conversion to double, including source selection and modifiers.
 TEST_CASE("Ampere float-to-double conversion preserves its source and modifiers", "[video_core][ampere]") {
     for (const u32 source : {2U, 44U, 255U}) {
         for (const u32 modifiers : {0U, 0x40000000U, 0x80000000U, 0xc0000000U}) {
@@ -92,6 +95,7 @@ TEST_CASE("Ampere float-to-double conversion preserves its source and modifiers"
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, EXIT})));
 }
 
+/// Checks double-to-float rounding and rejects invalid register pairs or conversion modifiers.
 TEST_CASE("Ampere double-to-float conversion keeps rounding and aligned source pairs", "[video_core][ampere]") {
     for (const u32 rounding : {0U, 1U, 2U, 3U}) {
         const Instruction convert{{0x00337310, 60, 0x00301000U | (rounding << 14), 0}};
@@ -111,6 +115,7 @@ TEST_CASE("Ampere double-to-float conversion keeps rounding and aligned source p
     }
 }
 
+/// Checks double addition operand order and rejects unsupported register or constant-buffer forms.
 TEST_CASE("Ampere double arithmetic retains constant-buffer and register operand order", "[video_core][ampere]") {
     for (const u32 rounding : {0U, 1U, 2U, 3U}) {
         const std::array<Instruction, 4> operations{{
@@ -140,6 +145,7 @@ TEST_CASE("Ampere double arithmetic retains constant-buffer and register operand
     }
 }
 
+/// Checks that double multiplication preserves its constant-buffer operand and validates modifiers.
 TEST_CASE("Ampere double multiply retains the full constant-buffer operand", "[video_core][ampere]") {
     // DMUL R44, R44, c[1][0], reached after TotK's F2F.F64.F32.
     for (const u32 rounding : {0U, 1U, 2U, 3U}) {
@@ -164,6 +170,7 @@ TEST_CASE("Ampere double multiply retains the full constant-buffer operand", "[v
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{absolute, EXIT})));
 }
 
+/// Checks register-form double multiplication and rejects unsupported modifiers or register pairs.
 TEST_CASE("Ampere double multiply lowers register operands", "[video_core][ampere]") {
     // DMUL R12, R36, R0, from a TotK graphics program.
     for (const u32 rounding : {0U, 1U, 2U, 3U}) {
@@ -191,13 +198,15 @@ TEST_CASE("Ampere double multiply lowers register operands", "[video_core][amper
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{absolute_a, EXIT})));
 }
 
-// BRA (unconditional) from `index` to `target`, both instruction indices.
+/// BRA (unconditional) from `index` to `target`, both instruction indices.
 Instruction Branch(s64 index, s64 target) {
     const u64 relative = static_cast<u64>((target - index - 1) * 16);
     return Instruction{{0x00007947, static_cast<u32>(relative),
                         0x03800000U | static_cast<u32>((relative >> 32) & 0x3ffff), 0}};
 }
 
+/// Checks capture termination at closing self-branches and preserves paths with reachable code or
+/// calls.
 TEST_CASE("Ampere capture ends at the closing self-branch of a program without an unconditional EXIT", "[video_core][ampere]") {
     // TotK's cutscene video network: a loop left only through @P0 EXIT, then BRA to itself.
     constexpr Instruction PREDICATED_EXIT{{0x0000094d, 0, 0x03800000, 0}};
@@ -235,6 +244,8 @@ TEST_CASE("Ampere capture ends at the closing self-branch of a program without a
     REQUIRE(linked.Observe(Branch(2, 2), 2) == ProgramCaptureState::Result::Continue);
 }
 
+/// Checks register-form double fused multiply-add and rejects unsupported modifiers or register
+/// pairs.
 TEST_CASE("Ampere double fused multiply-add lowers register operands", "[video_core][ampere]") {
     // DFMA R26, R34, R26, R12, from TotK's cutscene video network.
     for (const u32 rounding : {0U, 1U, 2U, 3U}) {
@@ -267,6 +278,7 @@ TEST_CASE("Ampere double fused multiply-add lowers register operands", "[video_c
     }
 }
 
+/// Checks immediate-addend UIMAD lowering, including its operand fields and rejected forms.
 TEST_CASE("Ampere UIMAD with an immediate addend lowers to an integer multiply-add", "[video_core][ampere]") {
     // UIMAD UR4, UR4, UR8, 0x3c00, from TotK's cutscene video network.
     for (const u32 sign : {0U, 0x200U}) {

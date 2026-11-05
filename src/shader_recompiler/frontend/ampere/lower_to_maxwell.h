@@ -64,10 +64,10 @@ struct RegisterPressure {
     bool valid = true;
 };
 
-// Native registers at or above `reserved` (the lowering's uniform mirrors and scratch) live in
-// bank 1. For one instruction, each aligned quartet of them it uses is copied into a low quartet
-// the instruction doesn't use (whose own values wait in bank 2), and copied back afterwards.
-// The copies are SSA renames: they cost nothing in the host shader.
+/// Native registers at or above `reserved` (the lowering's uniform mirrors and scratch) live in
+/// bank 1. For one instruction, each aligned quartet of them it uses is copied into a low quartet
+/// the instruction doesn't use (whose own values wait in bank 2), and copied back afterwards.
+/// The copies are SSA renames: they cost nothing in the host shader.
 inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 reserved) {
     RegisterPressure result{input};
     struct Operand { u32 bit, count; };
@@ -166,9 +166,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     return result;
 }
 
-// Lower only operations whose semantics are representable by the existing
-// Maxwell frontend. These are new instructions, not reinterpretations of the
-// native bytes. Scheduling/control words are added by the environment adapter.
+/// Lower only operations whose semantics are representable by the existing
+/// Maxwell frontend. These are new instructions, not reinterpretations of the
+/// native bytes. Scheduling/control words are added by the environment adapter.
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
                                           LoweringOptions options = {}) {
     const bool geometry = options.geometry, tensor = options.tensor;

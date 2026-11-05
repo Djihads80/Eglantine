@@ -184,6 +184,7 @@ void MaxwellDMA::Launch() {
     ReleaseSemaphore();
 }
 
+/// Copies the configured block-linear source to pitched memory, using its effective sector order.
 void MaxwellDMA::CopyBlockLinearToPitch() {
    
 
@@ -253,6 +254,7 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
                      block_depth, dst_operand.pitch, NativeTilingAt(src_operand.address));
 }
 
+/// Returns whether DMA data at address uses native tiling, accounting for cached legacy images.
 bool MaxwellDMA::NativeTilingAt(GPUVAddr address) {
     // An image the texture cache reads in the legacy sector order (TotK's movie textures, which
     // the game fills with pitch-to-block copies each frame) is written in that order too.
@@ -260,6 +262,8 @@ bool MaxwellDMA::NativeTilingAt(GPUVAddr address) {
            !rasterizer->AccessAccelerateDMA().UsesLegacySectorLayout(address);
 }
 
+/// Copies the configured pitched source into the destination image using its effective sector
+/// order.
 void MaxwellDMA::CopyPitchToBlockLinear() {
     UNIMPLEMENTED_IF_MSG(regs.dst_params.block_size.width != 0, "Block width is not one");
     UNIMPLEMENTED_IF(regs.dst_params.layer != 0);
@@ -325,6 +329,7 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
                    block_depth, regs.pitch_in, NativeTilingAt(dst_addr));
 }
 
+/// Copies between block-linear images using the source and destination sector orders independently.
 void MaxwellDMA::CopyBlockLinearToBlockLinear() {
     UNIMPLEMENTED_IF(regs.src_params.block_size.width != 0);
 

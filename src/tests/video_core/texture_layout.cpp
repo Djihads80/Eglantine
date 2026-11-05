@@ -8,6 +8,8 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 
+/// Checks swizzle and unswizzle results against explicit sector-order tables across supported pixel
+/// sizes.
 TEST_CASE("Block-linear textures preserve both GOB sector orders", "[texture_layout]") {
     // Each entry identifies a 16-byte sector in one 64-by-8-byte GOB.
     constexpr std::array<u8, 32> sectors{
@@ -48,6 +50,8 @@ TEST_CASE("Block-linear textures preserve both GOB sector orders", "[texture_lay
     }
 }
 
+/// Checks that the descriptor legacy hint overrides native tiling without changing legacy-device
+/// behavior.
 TEST_CASE("Native texture descriptors select their sector layout", "[texture_layout]") {
     Tegra::Texture::TICEntry config{};
     config.raw = {0x216af00078d7ffa1ULL, 0x0007002000600081ULL, 0x80000437e880077fULL,
@@ -61,6 +65,8 @@ TEST_CASE("Native texture descriptors select their sector layout", "[texture_lay
     }
 }
 
+/// Checks cache subresource and overlap matching for both sector layouts, offsets, and relaxed
+/// options.
 TEST_CASE("Cached textures match effective sector layouts", "[texture_layout]") {
     using namespace VideoCommon;
     constexpr GPUVAddr gpu_addr = 0x100000;
@@ -103,6 +109,8 @@ TEST_CASE("Cached textures match effective sector layouts", "[texture_layout]") 
     }
 }
 
+/// Checks render-target views with unknown layouts and one-time adoption of a descriptor's known
+/// layout.
 TEST_CASE("Render targets accept texture views without an explicit sector layout", "[texture_layout]") {
     using namespace VideoCommon;
     Tegra::Texture::TICEntry config{};

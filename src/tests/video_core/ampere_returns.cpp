@@ -12,6 +12,8 @@ namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 
+/// Evaluates the lowered reduction instructions for a supplied active-lane mask.
+/// Returns the value in the uniform destination and fails the test on unsupported instructions.
 u32 EvaluateRedux(const Shader::Ampere::LoweredProgram& program,
                   const std::array<u32, 32>& lanes, u32 active) {
     using Shader::Maxwell::Opcode;
@@ -67,6 +69,8 @@ u32 EvaluateRedux(const Shader::Ampere::LoweredProgram& program,
     return 0;
 }
 
+/// Compares signed and unsigned min/max reductions against a CPU reference for several active-lane
+/// masks.
 TEST_CASE("Ampere signed and unsigned min/max reductions exclude inactive lanes",
           "[video_core][ampere]") {
     std::array<u32, 32> lanes{};
@@ -97,6 +101,8 @@ TEST_CASE("Ampere signed and unsigned min/max reductions exclude inactive lanes"
     }
 }
 
+/// Checks uniform-address RED fields, signedness, predicates, and alignment of wide source
+/// operands.
 TEST_CASE("Ampere signed global reductions retain their uniform address and predicate",
           "[video_core][ampere]") {
     const std::array<Instruction, 2> code{{
@@ -137,6 +143,8 @@ TEST_CASE("Ampere signed global reductions retain their uniform address and pred
     }
 }
 
+/// Checks register-address RED offsets at the signed encoding limits and rejects out-of-range
+/// offsets.
 TEST_CASE("Ampere register-address reductions preserve signed byte offsets", "[video_core][ampere]") {
     const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
     for (const s32 offset : {0, 12, -12, -0x80000, 0x7ffff}) {

@@ -527,6 +527,8 @@ void SwizzlePitchLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
     }
 }
 
+/// Writes a linear buffer-image copy into guest block-linear memory using the image's sector
+/// layout.
 void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
                              const ImageInfo& info, const BufferImageCopy& copy,
                              std::span<const u8> input, Common::ScratchBuffer<u8>& tmp_buffer) {
@@ -851,6 +853,8 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }
 
+/// Decodes guest image data into linear output and returns the corresponding buffer-image copies.
+/// Block-linear images use the descriptor's effective sector layout.
 boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::MemoryManager& gpu_memory,
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
@@ -1086,6 +1090,7 @@ size_t UnswizzledRectsBytes(const ImageInfo& info, std::span<const LevelRect> re
     return bytes;
 }
 
+/// Decodes the requested GOB-aligned rectangles into output and returns their buffer-image copies.
 std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memory,
                                                  GPUVAddr gpu_addr, const ImageInfo& info,
                                                  std::span<const LevelRect> rects,
@@ -1135,6 +1140,8 @@ std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memor
     return copies;
 }
 
+/// Plans copies for dirty ranges of a 2D block-linear image without reading guest memory.
+/// Retains the sector-layout override for execution and marks unsupported layouts invalid.
 UnswizzlePlan PlanUnswizzleImageRows(
     GPUVAddr gpu_addr, const ImageInfo& info,
     std::span<const std::pair<u64, u64>> dirty_ranges) {
@@ -1259,6 +1266,7 @@ UnswizzlePlan PlanUnswizzleImageRows(
     return plan;
 }
 
+/// Reads and decodes a precomputed plan into output using its recorded sector-layout override.
 void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan& plan,
                          std::span<u8> output) {
     std::vector<u8> run;
@@ -1524,6 +1532,8 @@ bool IsPitchLinearSameSize(const ImageInfo& lhs, const ImageInfo& rhs, bool stri
     }
 }
 
+/// Resolves compatible overlapping image storage, returning nullopt when the layouts cannot be
+/// joined.
 std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr gpu_addr,
                                             VAddr cpu_addr, const ImageBase& overlap,
                                             bool strict_size, bool broken_views, bool native_bgr) {
@@ -1577,6 +1587,9 @@ bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs) {
     return false;
 }
 
+/// Finds the candidate's base mip and layer within an image under the supplied matching options.
+/// Returns nullopt when sector layouts, formats, dimensions, or subresource bounds are
+/// incompatible.
 std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const ImageBase& image,
                                                GPUVAddr candidate_addr, RelaxedOptions options,
                                                bool broken_views, bool native_bgr) {

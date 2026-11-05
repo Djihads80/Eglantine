@@ -1577,6 +1577,8 @@ bool TextureCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
     return is_modified;
 }
 
+/// Returns true when at least one known layout covers gpu_addr and all known layouts there are
+/// legacy.
 template <class P>
 bool TextureCache<P>::UsesLegacySectorLayout(GPUVAddr gpu_addr) {
     const std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
@@ -2101,6 +2103,8 @@ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_a
     return InsertImage(info, gpu_addr, options);
 }
 
+/// Finds a compatible cached image for the descriptor and guest address.
+/// Unknown sector layouts may be adopted only when the cached image has no GPU-written data.
 template <class P>
 ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                    RelaxedOptions options) {
@@ -2482,6 +2486,7 @@ std::optional<DAddr> TextureCache<P>::ImageCpuAddress(GPUVAddr gpu_addr, size_t 
     return ~(1ULL << 40ULL) + gpu_addr;
 }
 
+/// Registers an image at the guest address using its effective sector layout.
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {

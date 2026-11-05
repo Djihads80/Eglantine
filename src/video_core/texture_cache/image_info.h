@@ -36,10 +36,12 @@ struct ImageInfo {
     explicit ImageInfo(const Tegra::Engines::Fermi2D::Surface& config) noexcept;
     explicit ImageInfo(const Tegra::DMA::ImageOperand& config) noexcept;
 
+    /// Returns whether native memory tiling applies after the descriptor's legacy-layout override.
     [[nodiscard]] bool UsesNativeSectorLayout(bool native) const noexcept {
         return native && !legacy_sector_layout;
     }
 
+    /// Accepts unknown layouts; otherwise requires the same effective native-tiling state.
     [[nodiscard]] bool IsSectorLayoutCompatible(const ImageInfo& other) const noexcept {
         return !sector_layout_known || !other.sector_layout_known ||
                native_tiling == other.native_tiling;
