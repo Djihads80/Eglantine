@@ -9,7 +9,12 @@ L=(python3 -I tools/nx2/lab_ctl.py -d "$D")
 $L stop 2>/dev/null
 $L launch --hidden --max-seconds 420 --config "$D/qt-copy.ini" \
   --dump-dir ~/Documents/hermes/eglantine/oot-shader-dump --game "$GAME" "$@"
-sleep 90; $L press a --hold 200   # title -> load screen
-sleep 10; $L press a --hold 200   # newest save
+sleep 84; $L press a --hold 200   # title (fully up by ~81 s) -> load screen
+sleep 9;  $L press a --hold 200   # newest save
 sleep 4;  $L press a --hold 200   # confirm
-sleep 75                          # into gameplay
+# Loading is black for ~25-35 s; gameplay is the first bright frame (~145 s from launch).
+for i in {1..20}; do
+  sleep 4
+  luma=$($L capture --settle 1 --out "$D/to_gameplay.png" 2>/dev/null | grep -o '"luma": [0-9.]*' | grep -o '[0-9.]*$')
+  [[ -n $luma ]] && (( luma > 0.3 )) && break
+done
