@@ -278,6 +278,7 @@ private:
     void CheckDlssNetwork();
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
+    std::pair<std::vector<u32>, std::vector<u32>> NativeImageHandles(GPUVAddr program);
     bool UpscaleInsteadOfNativeProgram();
 
     /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether
