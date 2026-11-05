@@ -563,6 +563,11 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
     }
     channel_state->enabled_storage_buffers[stage] |= 1U << ssbo_index;
     channel_state->written_storage_buffers[stage] |= (is_written ? 1U : 0U) << ssbo_index;
+    if (is_written && stage < 4 && Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        if (maxwell3d) {
+            Tegra::Nx2MarkGraphicsWriterShader(maxwell3d->regs.pipelines[stage + 1].reserved[1]);
+        }
+    }
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
         if (runtime.ShouldLimitDynamicStorageBuffers() && !already_enabled) {
             ++channel_state->total_graphics_storage_buffers;
@@ -1804,6 +1809,13 @@ void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64
                 if (nx2_collect_list_copies) {
                     nx2_list_copy_requests.emplace_back(buffer_id, page_addr);
                 }
+                if (maxwell3d != nullptr) {
+                    for (size_t s = 0; s < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++s) {
+                        if (maxwell3d->regs.IsShaderConfigEnabled(s)) {
+                            Tegra::Nx2MarkGraphicsWriterShader(maxwell3d->regs.pipelines[s].reserved[1]);
+                        }
+                    }
+                }
             }
             ++page;
         }
@@ -1878,7 +1890,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             return Nx2ListRead::Unknown;
         }
         const auto current = [&](const Nx2ListPage& entry) {
-            return entry.copy && !entry.draw_written && entry.copy_writes == entry.writes &&
+            return entry.copy && entry.copy_writes == entry.writes &&
                    offset >= entry.copy_begin && offset + out.size() <= entry.copy_end;
         };
         u64 tick{};
@@ -1891,7 +1903,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             }
             const Nx2ListPage& entry = it->second;
             // Pages the CPU writes the lists of (GPU-written once, long before) stay synced.
-            if (!entry.draw_written && entry.synced_writes == entry.writes) {
+            if (entry.synced_writes == entry.writes) {
                 return Nx2ListRead::Synced;
             }
             if (!current(entry)) {
@@ -1952,6 +1964,56 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
             ++entry.writes;
             if (synced) {
                 entry.synced_writes = entry.writes;
+            }
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2SyncListPages(std::span<const Nx2ResetRun> runs, const u8* pattern_bytes) {
+    if constexpr (!IS_OPENGL) {
+        if (runs.empty() || !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+            return;
+        }
+        constexpr u64 page_bits = Tegra::Nx2WrittenPageBits;
+        constexpr u64 page_size = u64{1} << page_bits;
+        std::scoped_lock lock{nx2_list_mutex};
+
+        for (const auto& run : runs) {
+            const u64 dest_address = run.cpu_addr;
+            const u64 size = run.count * 20;
+            const u64 last = (std::min<u64>)((dest_address + size - 1) >> page_bits,
+                                             Tegra::g_nx2_command_list_pages.size() * 64 - 1);
+            for (u64 page = dest_address >> page_bits; page <= last; ++page) {
+                if (!((Tegra::g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >>
+                       (page % 64)) & 1)) {
+                    continue;
+                }
+                const DAddr page_addr = page << page_bits;
+                auto it = nx2_list_pages.find(page_addr);
+                if (it == nx2_list_pages.end()) {
+                    continue;
+                }
+                Nx2ListPage& entry = it->second;
+                // Guest memory holds the latest data from WriteBlockUnsafe
+                entry.synced_writes = entry.writes;
+
+                // If a staging copy exists, update it in-place so copy reads remain valid
+                if (entry.copy && pattern_bytes) {
+                    const u64 range_start = (std::max<u64>)(dest_address, page_addr);
+                    const u64 range_end = (std::min<u64>)(dest_address + size, page_addr + page_size);
+                    if (range_start < range_end) {
+                        const u64 offset_in_page = range_start - page_addr;
+                        const u64 offset_in_src = range_start - dest_address;
+                        const u64 copy_len = range_end - range_start;
+                        if (offset_in_page >= entry.copy_begin &&
+                            offset_in_page + copy_len <= entry.copy_end) {
+                            std::memcpy(entry.copy->mapped_span.data() + offset_in_page,
+                                        pattern_bytes + offset_in_src, copy_len);
+                            entry.copy_writes = entry.writes;
+                        }
+                    }
+                }
             }
         }
     }
