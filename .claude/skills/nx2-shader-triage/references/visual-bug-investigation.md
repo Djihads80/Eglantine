@@ -42,6 +42,19 @@ or stage where the image goes bad, with runs the agent drives itself.
 
 ## Pitfalls
 
+- **A full-screen white wash with black plant silhouettes is missing geometry, not a bloom
+  bug.** Ocarina of Time's vegetation is culled on the GPU through pointers loaded from memory
+  (pointer tables, a pointer behind a cbuf pointer). If the storage buffer pass can't follow them
+  the loads read 0, every instance is culled and the plants draw unlit. Auto-exposure then
+  overexposes the rest. Check that storage buffers behind loaded pointers bind
+  (`indirect_offset`, table pointers) before touching tone mapping. Luma that holds steady while
+  walking means exposure works; luma swinging 0.84 to 0.43 means it doesn't.
+- **`EDEN_NX2_SPLIT_CHECK` needs the Linux reporter** (`1789b05d94`). Before that commit it only
+  worked on Windows and printed nothing on Linux. A GPU-thread SEGV in
+  `CopyBuffer`/`InlineMemoryImplementation` under `SignalFence` or `ReleaseFences` means the
+  split's front used back-owned Vulkan state after a drain: route it through `GpuSplit::Run`.
+
+
 - **Ablation can't prove a producer.** An ablated program stops writing, and its output image keeps
   the last (bad) frame, so `bisect` reports "still bad with everything ablated". Bisect with
   ablation only for effects drawn fresh each frame. For persistent images, dump instead.
