@@ -1,0 +1,254 @@
+name: build-linux
+
+# Reusable: builds the Linux binaries (x86_64 and aarch64; with pgo=both also the clang PGO
+# variants) and uploads one artifact per platform holding the tar.gz and the AppImage.
+on:
+  workflow_call:
+    inputs:
+      sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      refspec:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      release:
+        type: boolean
+        default: false
+      nightly:
+        type: boolean
+        default: true
+      pgo:
+        description: none or both
+        type: string
+        default: none
+
+permissions:
+  contents: read
+
+# Clang major the PGO build uses, from apt.llvm.org. A profile is written by a current clang and an
+# older reader refuses it, so this has to stay at or above whatever produced eglantine.profdata;
+# bump it when a refreshed profile needs a newer LLVM.
+env:
+  PGO_LLVM_VERSION: "23"
+
+jobs:
+  build:
+    name: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3000M
+      PLATFORM: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
+      SHA: ${{ inputs.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        pgo: ${{ fromJSON(inputs.pgo == 'both' && '[false, true]' || '[false]') }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Setup build from checked-out source
+        if: hashFiles('.github/actions/setup-build/action.yml') != ''
+        uses: ./.github/actions/setup-build
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      - name: Setup build from compatibility pin
+        if: hashFiles('.github/actions/setup-build/action.yml') == ''
+        uses: Djihads80/Eglantine/.github/actions/setup-build@5016e217b829b45fda263b05ee00560bd3656397
+        with:
+          platform: ${{ env.PLATFORM }}
+          sha: ${{ inputs.sha }}
+          refspec: ${{ inputs.refspec }}
+          tag: ${{ inputs.tag }}
+          release: ${{ inputs.release }}
+
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
+            mesa-common-dev nasm ninja-build qt6-base-private-dev \
+            qt6-charts-dev qt6-tools-dev libavfilter-dev libavcodec-dev \
+            libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
+            spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev ccache \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+
+      - name: Install Qt on Linux x86_64
+        if: runner.arch != 'ARM64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Qt on Linux ARM64
+        if: runner.arch == 'ARM64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux_arm64
+          target: desktop
+          arch: linux_gcc_arm64
+          modules: qtcharts
+          cache: true
+
+      # TODO: Move to ubuntu 26 which has llvm-23 by default
+      # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
+      # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
+      # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
+      # ships ld.lld under /usr/lib/llvm-23/bin, so -B points the linker search there.
+      - name: Install clang for PGO
+        if: matrix.pgo
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
+            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
+            sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
+          "clang-$PGO_LLVM_VERSION" --version
+
+      # The profile is in the source tree, where the configure step reads it.
+      - name: Check PGO profile
+        if: matrix.pgo
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s eglantine.profdata
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DBUILD_TESTING=OFF
+            -DYUZU_TESTS=OFF
+            -DYUZU_CMD=ON
+            -DYUZU_ROOM=OFF
+            -DYUZU_ROOM_STANDALONE=OFF
+            -DYUZU_USE_BUNDLED_QT=OFF
+            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
+            -DYUZU_USE_BUNDLED_SDL3=ON
+            -DVulkanHeaders_FORCE_BUNDLED=ON
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
+            -DENABLE_UPDATE_CHECKER=OFF
+            -DUSE_DISCORD_PRESENCE=OFF
+            -DUSE_CCACHE=ON
+            -DNIGHTLY_BUILD=${{ inputs.nightly && 'ON' || 'OFF' }}
+          )
+          if [ '${{ matrix.pgo }}' = 'true' ]; then
+            # Same flags Eden's CI passes for its clang PGO build.
+            profile="-fprofile-use=$PWD/eglantine.profdata -Wno-backend-plugin \
+              -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+            flags+=(
+              "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
+              "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
+              "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
+              "-DCMAKE_C_FLAGS=$profile"
+              "-DCMAKE_CXX_FLAGS=$profile"
+            )
+          fi
+          cmake -S . -B build/release -G Ninja "${flags[@]}"
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          ccache --show-stats
+
+      # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
+      # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
+      # installed on the system.
+      - name: Package tar.gz
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x build/release/bin/eglantine
+          test -x build/release/bin/eden-cli
+          strip build/release/bin/eglantine build/release/bin/eden-cli
+          tar -czf "eglantine-${SHA}-${PLATFORM}.tar.gz" \
+            -C build/release/bin eglantine eden-cli
+          ls -la "eglantine-${SHA}-${PLATFORM}.tar.gz"
+
+      # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
+      # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
+      # and its Qt plugin adds the Qt libraries and platform plugins. Runs on glibc 2.39+ systems.
+      - name: Package AppImage
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -x build/release/bin/eglantine
+          test -x build/release/bin/eden-cli
+          tools="$RUNNER_TEMP/linuxdeploy"
+          mkdir -p "$tools"
+          arch=$(uname -m)   # aarch64 or x86_64
+          curl -fsSL -o "$tools/linuxdeploy-$arch.AppImage" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage"
+          curl -fsSL -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage"
+          chmod +x "$tools"/*.AppImage
+          # The desktop file names its icon dev.eglantine.eglantine.
+          icon="$RUNNER_TEMP/dev.eglantine.eglantine.png"
+          cp dist/Eglantine.png "$icon"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          # Include Wayland platform plugins and their graphics/shell integrations.
+          export EXTRA_QT_MODULES=waylandcompositor
+          export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
+          # Embedded in the AppImage metadata: the version label of this build.
+          export LDAI_VERSION="$VERSION_LABEL"
+          export LDAI_OUTPUT="eglantine-${SHA}-${PLATFORM}.AppImage"
+          export OUTPUT="$LDAI_OUTPUT"
+          export ARCH="$arch"
+          "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
+            --executable build/release/bin/eglantine \
+            --executable build/release/bin/eden-cli \
+            --desktop-file dist/dev.eden_emu.eden.desktop \
+            --icon-file "$icon" \
+            --plugin qt \
+            --output appimage
+          test -s "$LDAI_OUTPUT"
+          ls -la "$LDAI_OUTPUT"
+
+      # Both Linux files go in one artifact: the tar.gz and the AppImage.
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: eglantine-${{ env.PLATFORM }}-${{ inputs.sha }}
+          path: |
+            eglantine-${{ inputs.sha }}-${{ env.PLATFORM }}.tar.gz
+            eglantine-${{ inputs.sha }}-${{ env.PLATFORM }}.AppImage
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

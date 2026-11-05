@@ -1,0 +1,189 @@
+name: release
+
+# Called by ci.yml once every OS build succeeded: assembles the assets, writes the notes and
+# creates the GitHub release. Daily and branch releases are rolling (deleted and recreated);
+# stable and rc releases are created once.
+on:
+  workflow_call:
+    inputs:
+      kind:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      title:
+        type: string
+        required: true
+      prerelease:
+        type: boolean
+        required: true
+      sha:
+        type: string
+        required: true
+      prev_tag:
+        type: string
+        default: ""
+      branch:
+        type: string
+        default: ""
+      macos_runner:
+        type: string
+        default: macos-15
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish ${{ inputs.tag }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ inputs.sha }}
+      KIND: ${{ inputs.kind }}
+      TAG: ${{ inputs.tag }}
+      TITLE: ${{ inputs.title }}
+      PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      # Check out trusted CI scripts from the default branch, not files from a PR/branch build.
+      # This job has contents:write, so it must never execute tools from the untrusted build commit.
+      - name: Check out trusted release scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Fetch build commit and nx2 history
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TARGET_SHA"
+          git fetch --no-tags origin nx2:refs/remotes/origin/nx2 || true
+          git cat-file -e "$TARGET_SHA^{commit}"
+          # Release notes for stable/RC builds come from the exact source commit being released.
+          # Reading the markdown is safe; the script generating the release remains trusted.
+          if [ "$KIND" = stable ] || [ "$KIND" = rc ]; then
+            git show "$TARGET_SHA:CHANGELOG.md" > CHANGELOG.md
+          fi
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: eglantine-*-${{ inputs.sha }}
+          path: artifacts
+
+      # Asset names drop the commit sha: the tag already identifies the build, and stable names let
+      # the notes table link to them. (Not named dist/: the repository has one.)
+      - name: Package release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-assets
+          mkdir -p release-assets
+          shopt -s nullglob
+          strip_sha() { sed "s/-${SHA}//" <<< "$1"; }
+          artifacts=(artifacts/*/)
+          ((${#artifacts[@]} > 0)) || { echo "No build artifacts were downloaded" >&2; exit 1; }
+          for artifact in "${artifacts[@]}"; do
+            name=$(basename "$artifact")
+            appimages=("$artifact"*.AppImage)
+            mac_zips=("$artifact"*.zip)
+            if ((${#appimages[@]} > 0)); then
+              # Linux: ship the AppImage and tar.gz as they are.
+              for file in "${appimages[@]}" "$artifact"*.tar.gz; do
+                [[ -f "$file" ]] || continue
+                cp "$file" "release-assets/$(strip_sha "$(basename "$file")")"
+              done
+            elif ((${#mac_zips[@]} > 0)); then
+              # macOS: the app bundle zip and the dmg.
+              for file in "${mac_zips[@]}" "$artifact"*.dmg; do
+                [[ -f "$file" ]] || continue
+                cp "$file" "release-assets/$(strip_sha "$(basename "$file")")"
+              done
+            else
+              # Windows: upload-artifact stores the bin folder; zip it once for the release.
+              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/release-assets/$(strip_sha "$name").zip" .)
+            fi
+          done
+          files=(release-assets/*)
+          ((${#files[@]} > 0)) || { echo "Build artifacts contained no release files" >&2; exit 1; }
+          printf 'Prepared %s release assets\n' "${#files[@]}"
+          ls -la release-assets
+
+      - name: Write release notes
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ inputs.branch }}
+          PREV_TAG: ${{ inputs.prev_tag }}
+          MACOS_RUNNER: ${{ inputs.macos_runner }}
+          ASSET_DIR: release-assets
+        run: |
+          set -euo pipefail
+          bash tools/ci/release-notes.sh notes.md
+          cat notes.md
+
+      - name: Create release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Daily and branch releases are rolling: replace the previous one for the same tag.
+          if [ "$KIND" = daily ] || [ "$KIND" = branch ]; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
+          fi
+          # Check if the release already exists before our attempt to avoid overwriting or deleting
+          # a concurrent release created by an external publisher.
+          exists_before=false
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+            exists_before=true
+          fi
+          flags=(--repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TITLE" --notes-file notes.md)
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          # If release creation fails, remove any left-behind Git tag to allow safe retries,
+          # but only if the release wasn't already present before our attempt.
+          if ! gh release create "$TAG" release-assets/* "${flags[@]}"; then
+            if [ "$exists_before" = "true" ]; then
+              echo "Release $TAG already existed before this attempt; leaving existing release intact." >&2
+              exit 1
+            fi
+            echo "Release creation failed; cleaning up tag $TAG..." >&2
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
+            git push origin --delete "refs/tags/$TAG" 2> /dev/null || true
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" 2> /dev/null || true
+            exit 1
+          fi
+
+      # Keep the seven newest daily builds.
+      - name: Prune old daily builds
+        if: inputs.kind == 'daily'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' |
+            { grep '^daily-' || true; } | tail -n +8 |
+            while read -r old; do
+              echo "Deleting $old"
+              gh release delete "$old" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
+
+      - name: Ping Discord
+        if: >-
+          (inputs.kind == 'stable' || inputs.kind == 'rc') &&
+          github.repository == 'Djihads80/Eglantine'
+        shell: bash
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WEBHOOK" ]; then echo "No DISCORD_WEBHOOK_URL secret, skipping."; exit 0; fi
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          MSG=$(printf '## <@&1566184315178713190> %s (%s)\n%s' "$TITLE" "${SHA::7}" "$URL")
+          jq -n --arg content "$MSG" \
+            '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' |
+            curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"

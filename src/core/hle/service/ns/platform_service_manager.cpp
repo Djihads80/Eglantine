@@ -88,6 +88,8 @@ struct IPlatformServiceManager::Impl {
     /// Where Switch 2 GetBuiltInFontData finds the same fonts as plain TTF data: page-aligned
     /// copies in builtin_font_memory (the Switch 1 font memory is full with the system fonts).
     boost::container::static_vector<FontRegion, 8> builtin_font_regions;
+    /// Offset in shared_font of each built-in font's data.
+    boost::container::static_vector<u32, 8> builtin_font_sources;
     u32 builtin_font_memory_size{};
     /// Made by the first GetBuiltInFontSharedMemory (Switch 2 titles only).
     Kernel::KSharedMemory* builtin_font_memory{};
@@ -126,8 +128,11 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     // Attempt to load shared font data from disk
     const auto* nand = fsc.GetSystemNANDContents();
     std::size_t offset = 0;
+    // Each font type's region, empty when the font could not be loaded.
+    std::array<FontRegion, SHARED_FONTS.size()> type_regions{};
     // Rebuild shared fonts from data ncas or synthesize
-    for (auto& font : SHARED_FONTS) {
+    for (size_t font_index = 0; font_index < SHARED_FONTS.size(); ++font_index) {
+        const auto& font = SHARED_FONTS[font_index];
         FileSys::VirtualFile romfs;
         const auto nca =
             nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
@@ -163,11 +168,13 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         const FontRegion region{u32(offset + 8), u32((font_data_u32.size() * sizeof(u32)) - 8)};
         DecryptSharedFont(font_data_u32, impl->shared_font, offset);
         impl->shared_font_regions.push_back(region);
+        type_regions[font_index] = region;
     }
 
     // The data after each BFTTF header is the plain font: GetBuiltInFontSharedMemory copies it.
     u32 builtin_offset = 0;
-    for (const auto& region : impl->shared_font_regions) {
+    for (const auto& region : type_regions) {
+        impl->builtin_font_sources.push_back(region.offset);
         impl->builtin_font_regions.push_back({builtin_offset, region.size});
         builtin_offset = Common::AlignUp(builtin_offset + region.size, 0x1000);
     }
@@ -198,7 +205,7 @@ void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx)
         std::memset(data, 0, impl->builtin_font_memory_size);
         for (size_t i = 0; i < impl->builtin_font_regions.size(); ++i) {
             std::memcpy(data + impl->builtin_font_regions[i].offset,
-                        impl->shared_font.data() + impl->shared_font_regions[i].offset,
+                        impl->shared_font.data() + impl->builtin_font_sources[i],
                         impl->builtin_font_regions[i].size);
         }
         impl->builtin_font_memory = memory;
@@ -211,15 +218,19 @@ void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx)
 
 // nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool): returns a 16-byte
 // bool that says whether the font exists and a 16-byte descriptor (u8 flags, u8 flag bit, u16,
-// u32 offset into the font shared memory, u32 size, u32). The client expects plain TrueType/OpenType data
-// there. The type numbering is unknown, so types map onto Eden's shared fonts in order.
+// u32 offset into the font shared memory, u32 size, u32). The client expects plain TrueType/OpenType
+// data there. The types are the SharedFontType values: the SDK's GetSharedFontAddress and
+// GetSharedFontSize pass their type through unchanged.
 void IPlatformServiceManager::GetBuiltInFontData(HLERequestContext& ctx) {
+    // The SDK packs the type in the first byte and the bool in the second; the two bytes after them
+    // are padding, left as whatever was on the caller's stack.
     IPC::RequestParser rp{ctx};
-    const u32 type = rp.Pop<u32>();
-    const bool flag = rp.Pop<u8>() != 0;
+    const u32 args = rp.Pop<u32>();
+    const u32 type = args & 0xff;
+    const bool flag = ((args >> 8) & 1) != 0;
     const auto& regions = impl->builtin_font_regions;
-    const bool found = !regions.empty();
-    const FontRegion region = found ? regions[std::min<size_t>(type, regions.size() - 1)] : EMPTY_REGION;
+    const bool found = type < regions.size() && regions[type].size != 0;
+    const FontRegion region = found ? regions[type] : EMPTY_REGION;
     LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontData type={} flag={} -> offset={:#x} size={:#x}",
                 type, flag, region.offset, region.size);
     // Raw reply: the bool at offset 0, the descriptor at offset 8.

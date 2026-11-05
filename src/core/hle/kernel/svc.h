@@ -69,7 +69,7 @@ Result GetResourceLimitLimitValue(Core::System& system, int64_t* out_limit_value
 Result GetResourceLimitCurrentValue(Core::System& system, int64_t* out_current_value, Handle resource_limit_handle, LimitableResource which);
 Result SetThreadActivity(Core::System& system, Handle thread_handle, ThreadActivity thread_activity);
 Result GetThreadContext3(Core::System& system, uint64_t out_context, Handle thread_handle);
-Result WaitForAddress(Core::System& system, uint64_t address, ArbitrationType arb_type, int32_t value, int64_t timeout_ns);
+Result WaitForAddress(Core::System& system, uint64_t address, ArbitrationType arb_type, int64_t value, int64_t timeout_ns);
 Result SignalToAddress(Core::System& system, uint64_t address, SignalType signal_type, int32_t value, int32_t count);
 void SynchronizePreemptionState(Core::System& system);
 Result GetResourceLimitPeakValue(Core::System& system, int64_t* out_peak_value, Handle resource_limit_handle, LimitableResource which);
@@ -311,7 +311,7 @@ Result GetResourceLimitLimitValue64(Core::System& system, int64_t* out_limit_val
 Result GetResourceLimitCurrentValue64(Core::System& system, int64_t* out_current_value, Handle resource_limit_handle, LimitableResource which);
 Result SetThreadActivity64(Core::System& system, Handle thread_handle, ThreadActivity thread_activity);
 Result GetThreadContext364(Core::System& system, uint64_t out_context, Handle thread_handle);
-Result WaitForAddress64(Core::System& system, uint64_t address, ArbitrationType arb_type, int32_t value, int64_t timeout_ns);
+Result WaitForAddress64(Core::System& system, uint64_t address, ArbitrationType arb_type, int64_t value, int64_t timeout_ns);
 Result SignalToAddress64(Core::System& system, uint64_t address, SignalType signal_type, int32_t value, int32_t count);
 void SynchronizePreemptionState64(Core::System& system);
 Result GetResourceLimitPeakValue64(Core::System& system, int64_t* out_peak_value, Handle resource_limit_handle, LimitableResource which);

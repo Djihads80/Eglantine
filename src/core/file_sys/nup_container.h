@@ -117,6 +117,8 @@ public:
 
         std::vector<u8> npdm;
         std::string title_name;
+        std::string publisher;
+        std::string source_dump;
         std::vector<std::pair<std::string, std::string>> localized_titles;
         std::vector<u8> icon;
         std::vector<std::pair<std::string, std::vector<u8>>> localized_icons;
@@ -157,6 +159,7 @@ public:
 
     VirtualDir GetExeFSDir(std::size_t package_index);
     VirtualDir GetRomFSDir(std::size_t package_index);
+    VirtualDir GetPackageDir(std::size_t package_index);
 
     /// Stream-hashes every member file against its stored SHA-256.
     Loader::ResultStatus VerifyIntegrity(

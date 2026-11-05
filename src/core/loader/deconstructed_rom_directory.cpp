@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 #include <map>
@@ -110,26 +111,91 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
             return f;
         }
     }
+
+    const auto build_from = [](const FileSys::VirtualDir& romfs_dir) -> FileSys::VirtualFile {
+        if (romfs_dir == nullptr) {
+            return nullptr;
+        }
+        // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
+        // MiB), so loaders of the same directory share one build while any of them holds it.
+        static std::mutex cache_mutex;
+        static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
+        std::scoped_lock lk{cache_mutex};
+        auto& cached = cache[romfs_dir->GetFullPath()];
+        if (auto built = cached.lock()) {
+            return built;
+        }
+        LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
+        const auto started = std::chrono::steady_clock::now();
+        auto built = FileSys::CreateRomFS(romfs_dir);
+        LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - started)
+                     .count());
+        cached = built;
+        return built;
+    };
+
     if (const auto parent = exefs_dir->GetParentDirectory()) {
         if (const auto romfs_dir = FindLooseRomFSDirectory(parent)) {
-            // Building it walks every file and keeps an object for each (title 1: 206k files, ~150
-            // MiB), so loaders of the same directory share one build while any of them holds it.
-            static std::mutex cache_mutex;
-            static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
-            std::scoped_lock lk{cache_mutex};
-            auto& cached = cache[romfs_dir->GetFullPath()];
-            if (auto built = cached.lock()) {
-                return built;
+            return build_from(romfs_dir);
+        }
+        // Some base dumps carry only the executable and leave every file in an update, so the
+        // base has no romfs at all (Pokemon Pokopia: base/romfs does not exist, the 6.9 GB of
+        // data is in updates/655360/romfs). Handing a null RomFS to the title makes
+        // OpenDataStorageByCurrentProcess fail and the game panics with an opaque 0x3fffff
+        // instead of saying where the data is. Prefer the newest update present.
+        if (const auto root = parent->GetParentDirectory()) {
+            if (const auto updates = root->GetSubdirectory("updates")) {
+                FileSys::VirtualDir newest{};
+                u64 newest_version{0};
+                for (const auto& candidate : updates->GetSubdirectories()) {
+                    const std::string name = candidate->GetName();
+                    u64 version{0};
+                    const auto parsed =
+                        std::from_chars(name.data(), name.data() + name.size(), version);
+                    // from_chars stops at the first non digit and still reports success, so a
+                    // directory called "655360_old" or "999999.bak" would be accepted with its
+                    // leading digits. Require the whole name to be the number.
+                    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size()) {
+                        continue;
+                    }
+                    if (version >= newest_version) {
+                        newest_version = version;
+                        newest = candidate;
+                    }
+                }
+                if (const auto romfs_dir = FindLooseRomFSDirectory(newest)) {
+                    // Only safe when the executable is the same build as the update: running a 1.0
+                    // program against 2.0.1 data boots and then writes to unmapped memory in a
+                    // loop (Pokopia: 2012 invalid byte writes), which is worse than refusing.
+                    const auto main_size = [](const FileSys::VirtualDir& dir) -> u64 {
+                        if (dir == nullptr) {
+                            return 0;
+                        }
+                        for (const auto& candidate : dir->GetFiles()) {
+                            if (candidate->GetName() == "main") {
+                                return candidate->GetSize();
+                            }
+                        }
+                        return 0;
+                    };
+                    const auto base_exefs_size = main_size(exefs_dir);
+                    const auto update_exefs_size = main_size(newest->GetSubdirectory("exefs"));
+                    if (base_exefs_size != 0 && update_exefs_size != 0 &&
+                        base_exefs_size != update_exefs_size) {
+                        LOG_ERROR(Loader,
+                                  "Base RomFS is absent and the update RomFS belongs to a different "
+                                  "build (base main {} bytes, update main {} bytes). Load the "
+                                  "update's exefs instead of the base one.",
+                                  base_exefs_size, update_exefs_size);
+                        return nullptr;
+                    }
+                    LOG_INFO(Loader, "Base RomFS is absent, using the update RomFS (version {})",
+                             newest_version);
+                    return build_from(romfs_dir);
+                }
             }
-            LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            const auto started = std::chrono::steady_clock::now();
-            auto built = FileSys::CreateRomFS(romfs_dir);
-            LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
-                     std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::steady_clock::now() - started)
-                         .count());
-            cached = built;
-            return built;
         }
     }
     return nullptr;

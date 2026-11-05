@@ -12,6 +12,9 @@ No - The only emulator that has this kind of functionality is *Ryujinx* and it's
 ### Can I Play Online Games?
 No - This would require hijacking requests to Nintendo's official servers to a custom server infrastructure built to emulate that functionality.  This is how services like [*Pretendo*](https://pretendo.network/) operate.  As such, you would not be able to play "Online", you can however play multiplayer games.
 
+Guest socket readiness operations (`select` and `poll`) are emulated, but this alone does not
+provide Nintendo's online services or guarantee compatibility with a particular game or server.
+
 ### What's the Difference Between Online and Multiplayer?
 I have chosen the wording carefully here for a reason.  
 

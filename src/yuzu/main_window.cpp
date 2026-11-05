@@ -1470,6 +1470,9 @@ void MainWindow::ConnectWidgetEvents() {
             &MainWindow::OnGameListVerifyIntegrity);
     connect(game_list, &GameList::ConvertToNupRequested, this,
             &MainWindow::OnGameListConvertToNup);
+    connect(game_list, &GameList::ExtractNupRequested, this, &MainWindow::OnGameListExtractNup);
+    connect(game_list, &GameList::EditNupMetadataRequested, this,
+            &MainWindow::OnGameListEditNupMetadata);
     connect(game_list, &GameList::CopyTIDRequested, this, &MainWindow::OnGameListCopyTID);
     connect(game_list, &GameList::CreateShortcut, this, &MainWindow::OnGameListCreateShortcut);
     connect(game_list, &GameList::AddDirectory, this, &MainWindow::OnGameListAddDirectory);
@@ -4135,7 +4138,7 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
     nup_source_path = game_path;
     game_list->SetNupConversionRunning(true);
     nup_cancel = std::make_shared<std::atomic_bool>(false);
-    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    nup_progress = new NupProgressDialog(tr("Converting to NUP"), progress_title, progress_icon, this);
     connect(nup_progress, &NupProgressDialog::CancelRequested, this,
             [this, cancel = nup_cancel] {
                 cancel->store(true);
@@ -4204,6 +4207,205 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
             },
             Qt::QueuedConnection);
         return result;
+    }));
+}
+
+void MainWindow::OnGameListExtractNup(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto archive = to_path(game_path);
+    const auto out_dir = QFileDialog::getSaveFileName(
+        this, tr("Extract NUP"),
+        QString::fromStdString(Common::FS::PathToUTF8String(
+            FileSys::Nup::DefaultExtractPath(archive))));
+    if (out_dir.isEmpty()) {
+        return;
+    }
+    const auto out_path = to_path(out_dir.toStdString());
+    if (std::filesystem::exists(out_path)) {
+        QMessageBox::information(this, tr("Extract NUP"),
+                                 tr("The target directory already exists:\n%1").arg(out_dir));
+        return;
+    }
+    const auto probed = FileSys::Nup::ProbeNupMetadata(archive);
+    const QString progress_title =
+        QString::fromStdString(probed.title_name).trimmed().isEmpty()
+            ? tr("Extracting NUP")
+            : QString::fromStdString(probed.title_name);
+    QPixmap progress_icon;
+    if (!probed.icon.empty()) {
+        progress_icon.loadFromData(probed.icon.data(),
+                                   static_cast<uint>(probed.icon.size()));
+    }
+
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Extracting NUP"), progress_title, progress_icon, this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress) {
+                    nup_progress->SetCancelling();
+                }
+            });
+    nup_progress->show();
+
+    const auto cancel = nup_cancel;
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, out_path, cancel, last_update] {
+        std::string error;
+        const auto on_progress = [this,
+                                  last_update](const FileSys::Nup::PackProgress& progress) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, progress] {
+                    if (!nup_progress) {
+                        return;
+                    }
+                    nup_progress->SetProgress(progress);
+                },
+                Qt::QueuedConnection);
+        };
+        const auto result =
+            FileSys::Nup::ExtractNup(archive, out_path, on_progress, cancel.get(), &error);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error, out_path] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup::ExtractResult::Success:
+                    QMessageBox::information(
+                        this, tr("Extraction Complete"),
+                        tr("The NUP was extracted. You can delete the NUP file if you no longer "
+                           "need it."));
+                    // Only a new loose dump can appear, so one rescan is enough. The full refresh
+                    // also rescans external content and the firmware on the UI thread.
+                    game_list->RefreshGameDirectory();
+                    break;
+                case FileSys::Nup::ExtractResult::Cancelled:
+                    break;
+                case FileSys::Nup::ExtractResult::InvalidSource:
+                case FileSys::Nup::ExtractResult::IoError:
+                    QMessageBox::critical(this, tr("Extraction Failed"),
+                                          QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return FileSys::Nup::PackResult::Success;
+    }));
+}
+
+void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
+    if (nup_running) {
+        return;
+    }
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto archive = to_path(game_path);
+    NupEditDialog dialog(archive, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const auto edit = dialog.Edit();
+    if (!edit.title_name && !edit.icon && !edit.display_version && !edit.publisher &&
+        !edit.localized_titles) {
+        return;
+    }
+    const QString progress_title = dialog.DisplayName();
+    const QPixmap progress_icon = dialog.CurrentIcon();
+
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(tr("Editing NUP Metadata"), progress_title, progress_icon,
+                                         this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress) {
+                    nup_progress->SetCancelling();
+                }
+            });
+    nup_progress->show();
+
+    const auto cancel = nup_cancel;
+    auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
+    nup_watcher.setFuture(QtConcurrent::run([this, archive, edit, cancel, last_update] {
+        std::string error;
+        const auto on_progress = [this,
+                                  last_update](const FileSys::Nup::PackProgress& progress) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - *last_update < std::chrono::milliseconds(200)) {
+                return;
+            }
+            *last_update = now;
+            QMetaObject::invokeMethod(
+                this,
+                [this, progress] {
+                    if (!nup_progress) {
+                        return;
+                    }
+                    nup_progress->SetProgress(progress);
+                },
+                Qt::QueuedConnection);
+        };
+        const auto result =
+            FileSys::Nup::EditNupMetadata(archive, edit, &error, cancel.get(), on_progress);
+        QMetaObject::invokeMethod(
+            this,
+            [this, result, error] {
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
+                }
+                nup_cancel.reset();
+                switch (result) {
+                case FileSys::Nup::EditResult::Success:
+                    QMessageBox::information(this, tr("Edit Complete"),
+                                             tr("The NUP metadata was updated."));
+                    // The cached name and icon are keyed by title, so they must go; the rest is
+                    // one rescan instead of the full refresh.
+                    QtCommon::Game::ResetMetadata(false);
+                    game_list->RefreshGameDirectory();
+                    break;
+                case FileSys::Nup::EditResult::NoChange:
+                case FileSys::Nup::EditResult::Cancelled:
+                    break;
+                case FileSys::Nup::EditResult::InvalidSource:
+                case FileSys::Nup::EditResult::IoError:
+                    QMessageBox::critical(this, tr("Edit Failed"),
+                                          QString::fromStdString(error));
+                    break;
+                }
+            },
+            Qt::QueuedConnection);
+        return FileSys::Nup::PackResult::Success;
     }));
 }
 

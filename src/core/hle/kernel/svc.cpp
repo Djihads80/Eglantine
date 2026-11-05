@@ -1638,7 +1638,7 @@ static void SvcWrap_GetThreadContext364(Core::System& system, std::span<uint64_t
 static void SvcWrap_WaitForAddress64(Core::System& system, std::span<uint64_t, 8> args) {
     uint64_t address = Convert<uint64_t>(GetArg64(args, 0));
     ArbitrationType arb_type = Convert<ArbitrationType>(GetArg64(args, 1));
-    int32_t value = Convert<int32_t>(GetArg64(args, 2));
+    int64_t value = Convert<int64_t>(GetArg64(args, 2));
     int64_t timeout_ns = Convert<int64_t>(GetArg64(args, 3));
     Result ret = WaitForAddress64(system, address, arb_type, value, timeout_ns);
     SetArg64(args, 0, Convert<uint64_t>(ret));
@@ -2505,6 +2505,7 @@ void Call(Core::System& system, u32 imm) {
     auto& process = GetCurrentProcess(kernel);
     std::array<uint64_t, 8> args;
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
+    GetCurrentThread(kernel).SetEnteredKernel();
     //kernel.EnterSVCProfile();
     LOG_TRACE(Kernel_SVC, "{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x} [6]={:#x}",
         imm, GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2),

@@ -5069,6 +5069,49 @@ void EmitX64::EmitVectorSignedSaturatedNeg64(EmitContext& ctx, IR::Inst* inst) {
     });
 }
 
+template<typename T, typename U = std::make_unsigned_t<T>>
+    requires std::is_signed_v<T>
+static bool VectorSignedSaturatedRoundingShiftLeft(VectorArray<T>& dst, const VectorArray<T>& data, const VectorArray<T>& shift_values) {
+    constexpr s64 bit_size = s64(mcl::bitsizeof<T>);
+    bool qc_flag = false;
+    for (size_t i = 0; i < dst.size(); i++) {
+        const T element = data[i];
+        const s64 shift = s64(s8(shift_values[i] & 0xFF));
+        if (shift < 0) {
+            // (element + 2^(n-1)) >> n without the intermediate overflowing
+            const s64 n = -shift;
+            dst[i] = n >= bit_size ? T(0) : T((element >> n) + ((element >> (n - 1)) & 1));
+        } else if (element == 0) {
+            dst[i] = 0;
+        } else {
+            const T shifted = shift >= bit_size ? T(0) : T(U(element) << shift);
+            if (shift >= bit_size || T(shifted >> shift) != element) {
+                dst[i] = element < 0 ? (std::numeric_limits<T>::min)() : (std::numeric_limits<T>::max)();
+                qc_flag = true;
+            } else {
+                dst[i] = shifted;
+            }
+        }
+    }
+    return qc_flag;
+}
+
+void EmitX64::EmitVectorSignedSaturatedRoundingShiftLeft8(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorSignedSaturatedRoundingShiftLeft<s8>);
+}
+
+void EmitX64::EmitVectorSignedSaturatedRoundingShiftLeft16(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorSignedSaturatedRoundingShiftLeft<s16>);
+}
+
+void EmitX64::EmitVectorSignedSaturatedRoundingShiftLeft32(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorSignedSaturatedRoundingShiftLeft<s32>);
+}
+
+void EmitX64::EmitVectorSignedSaturatedRoundingShiftLeft64(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorSignedSaturatedRoundingShiftLeft<s64>);
+}
+
 // MSVC requires the capture within the saturate lambda, but it's
 // determined to be unnecessary via clang and GCC.
 #ifdef __clang__
@@ -6127,6 +6170,49 @@ void EmitX64::EmitVectorUnsignedSaturatedNarrow64(EmitContext& ctx, IR::Inst* in
         }
         return qc_flag;
     });
+}
+
+template<typename T>
+    requires std::is_unsigned_v<T>
+static bool VectorUnsignedSaturatedRoundingShiftLeft(VectorArray<T>& dst, const VectorArray<T>& data, const VectorArray<T>& shift_values) {
+    constexpr s64 bit_size = s64(mcl::bitsizeof<T>);
+    bool qc_flag = false;
+    for (size_t i = 0; i < dst.size(); i++) {
+        const T element = data[i];
+        const s64 shift = s64(s8(shift_values[i] & 0xFF));
+        if (shift < 0) {
+            // (element + 2^(n-1)) >> n without the intermediate overflowing
+            const s64 n = -shift;
+            dst[i] = n > bit_size ? T(0) : T((n == bit_size ? T(0) : T(element >> n)) + ((element >> (n - 1)) & 1));
+        } else if (element == 0) {
+            dst[i] = 0;
+        } else {
+            const T shifted = shift >= bit_size ? T(0) : T(element << shift);
+            if (shift >= bit_size || T(shifted >> shift) != element) {
+                dst[i] = (std::numeric_limits<T>::max)();
+                qc_flag = true;
+            } else {
+                dst[i] = shifted;
+            }
+        }
+    }
+    return qc_flag;
+}
+
+void EmitX64::EmitVectorUnsignedSaturatedRoundingShiftLeft8(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorUnsignedSaturatedRoundingShiftLeft<u8>);
+}
+
+void EmitX64::EmitVectorUnsignedSaturatedRoundingShiftLeft16(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorUnsignedSaturatedRoundingShiftLeft<u16>);
+}
+
+void EmitX64::EmitVectorUnsignedSaturatedRoundingShiftLeft32(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorUnsignedSaturatedRoundingShiftLeft<u32>);
+}
+
+void EmitX64::EmitVectorUnsignedSaturatedRoundingShiftLeft64(EmitContext& ctx, IR::Inst* inst) {
+    EmitTwoArgumentFallbackWithSaturation(code, ctx, inst, VectorUnsignedSaturatedRoundingShiftLeft<u64>);
 }
 
 template<typename T, typename S = std::make_signed_t<T>>
