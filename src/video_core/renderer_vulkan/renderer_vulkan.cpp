@@ -221,7 +221,6 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     RenderScreenshot(framebuffers);
     Frame* frame = present_manager.GetRenderFrame();
 
-    // Native window preferences define the signal encoding as well as storage.
 #ifdef __ANDROID__
     VkFormat output_format = VK_FORMAT_R8G8B8A8_UNORM;
 #else
@@ -229,18 +228,18 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 #endif
     const bool hdr_output =
         Settings::values.hdr.GetValue() && framebuffers.size() == 1 &&
-        framebuffers.front().native_tiling &&
-        (framebuffers.front().pixel_format == Service::android::PixelFormat::Rgba1010102 ||
-         framebuffers.front().pixel_format == Service::android::PixelFormat::RgbaFp16);
+        framebuffers.front().color_space != Tegra::ColorSpace::RGB709;
     if (hdr_output) {
         // The guest sees HDR availability, not individual encodings. Presentation must reject an
         // unavailable pair rather than reinterpret an already-rendered HDR frame as SDR.
-        switch (framebuffers.front().pixel_format) {
-        case Service::android::PixelFormat::Rgba1010102:
+        switch (framebuffers.front().color_space) {
+        case Tegra::ColorSpace::RGB2020_PQ:
             output_format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            frame->color_space = VK_COLOR_SPACE_HDR10_ST2084_EXT;
             break;
-        case Service::android::PixelFormat::RgbaFp16:
+        case Tegra::ColorSpace::RGB709_Linear:
             output_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            frame->color_space = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
             break;
         default:
             break;

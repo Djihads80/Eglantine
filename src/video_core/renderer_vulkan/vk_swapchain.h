@@ -38,7 +38,8 @@ public:
         VkSurfaceKHR_T* surface,
         u32 width,
         u32 height,
-        VkFormat requested_format = VK_FORMAT_B8G8R8A8_UNORM);
+        VkFormat requested_format = VK_FORMAT_B8G8R8A8_UNORM,
+        VkColorSpaceKHR requested_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
     /// Acquires the next image in the swapchain, waits as needed.
     /// `may_flush`: false on the async present thread (see Scheduler::Wait).
@@ -104,6 +105,10 @@ public:
         return requested_format;
     }
 
+    VkColorSpaceKHR GetRequestedColorSpace() const {
+        return requested_color_space;
+    }
+
     VkSemaphore CurrentPresentSemaphore() const {
         return *present_semaphores[frame_index];
     }
@@ -158,6 +163,7 @@ private:
     VkSurfaceFormatKHR surface_format{};
     std::atomic<VkFormat> sdr_image_format{VK_FORMAT_B8G8R8A8_UNORM};
     VkFormat requested_format{VK_FORMAT_B8G8R8A8_UNORM};
+    VkColorSpaceKHR requested_color_space{VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     bool has_imm{false};
     bool has_mailbox{false};
     bool has_fifo_relaxed{false};

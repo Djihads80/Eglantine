@@ -1462,6 +1462,8 @@ struct Nx2NativeObjects {
         bool gpu_read{};
         u32 gpu_maps{};     // outstanding 426 maps
         bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
+        Tegra::ColorSpace color_space{Tegra::ColorSpace::RGB709};
+        u16 linear_unit_luminance{};
     };
     std::mutex mutex;
     std::map<u32, Memory> memories;
@@ -1962,6 +1964,8 @@ private:
         u64 address{};
         Nx2ImageLayout layout{};
         Nx2NativeImageFormat image_format{};
+        Tegra::ColorSpace color_space{Tegra::ColorSpace::RGB709};
+        u16 linear_unit_luminance{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -1975,6 +1979,8 @@ private:
             address = memory->second.address;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
             image_format = static_cast<Nx2NativeImageFormat>(image->second.preference[6]);
+            color_space = image->second.color_space;
+            linear_unit_luminance = image->second.linear_unit_luminance;
         }
         const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
         if (!device) {
@@ -2035,7 +2041,6 @@ private:
             .height = layout.height,
             .stride = static_cast<u32>(
                 layout.pitch / (image_format == Nx2NativeImageFormat::Rgba16Float ? 8 : 4)),
-            // Native RGB10A2 carries HDR10 (PQ); RGBA16F carries scRGB.
             .pixel_format = image_format == Nx2NativeImageFormat::Rgba16Float
                                 ? android::PixelFormat::RgbaFp16
                             : image_format == Nx2NativeImageFormat::Rgb10A2
@@ -2045,6 +2050,8 @@ private:
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
+            .color_space = color_space,
+            .linear_unit_luminance = linear_unit_luminance,
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -3445,6 +3452,22 @@ private:
         image.memory = w[19];
         std::copy_n(w + 2, image.preference.size(), image.preference.begin());
         image.size = Nx2CalculateImageLayout(w + 2).size;
+        // gsv 429's native format encodes color as well as storage; other commands use
+        // different descriptor layouts even though they share this handler.
+        if (ctx.GetCommand() == 429 && image.preference[1] == 1) {
+            switch (static_cast<Nx2NativeImageFormat>(image.preference[6])) {
+            case Nx2NativeImageFormat::Rgb10A2:
+                image.color_space = Tegra::ColorSpace::RGB2020_PQ;
+                break;
+            case Nx2NativeImageFormat::Rgba16Float:
+                image.color_space = Tegra::ColorSpace::RGB709_Linear;
+                image.linear_unit_luminance =
+                    static_cast<u16>((image.preference[7] >> 8) & 0xFFFF);
+                break;
+            default:
+                break;
+            }
+        }
         LOG_INFO(Service, "nx2:gsv 429 CreateNativeImage memory={} count={} size={:#x} -> id {}",
                  w[19], w[18], image.size, id);
         TipcReplyWords(ctx, {id});

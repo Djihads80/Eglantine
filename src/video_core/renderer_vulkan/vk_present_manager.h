@@ -33,6 +33,7 @@ struct Frame {
     // Requested presentation view format and underlying image format may differ for SDR.
     VkFormat format{VK_FORMAT_UNDEFINED};
     VkFormat image_format{VK_FORMAT_UNDEFINED};
+    VkColorSpaceKHR color_space{VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     vk::Image image;
     vk::ImageView image_view;
     vk::ImageView storage_view;

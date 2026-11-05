@@ -27,25 +27,16 @@ namespace Vulkan {
 
 namespace {
 
-// Unsupported HDR format/colorspace pairs throw rather than reinterpret the guest's output as SDR.
 VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
-                                         VkFormat requested_format) {
+                                         VkFormat requested_format,
+                                         VkColorSpaceKHR requested_color_space) {
     if (requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
-        requested_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
-        const auto selected = std::find_if(formats.begin(), formats.end(), [=](const auto& format) {
-            if (requested_format == VK_FORMAT_R16G16B16A16_SFLOAT) {
-                return format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
-                       format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
-            }
-            return format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
-                   format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
-        });
-        if (selected != formats.end()) {
-            return *selected;
-        }
-        LOG_ERROR(Render_Vulkan, "HDR swapchain creation failed: surface does not support {}",
-                  requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ? "scRGB" : "HDR10");
-        throw vk::Exception(VK_ERROR_FORMAT_NOT_SUPPORTED);
+        requested_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+        requested_color_space != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        return {
+            .format = requested_format,
+            .colorSpace = requested_color_space,
+        };
     }
     if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
         VkSurfaceFormatKHR format;
@@ -57,7 +48,16 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
         return format.format == VK_FORMAT_B8G8R8A8_UNORM &&
                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     });
-    return found != formats.end() ? *found : formats[0];
+    if (found != formats.end()) {
+        return *found;
+    }
+    const auto sdr = std::find_if(formats.begin(), formats.end(), [](const auto& format) {
+        return format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    });
+    return sdr != formats.end()
+               ? *sdr
+               : VkSurfaceFormatKHR{.format = requested_format,
+                                    .colorSpace = requested_color_space};
 }
 
 static VkPresentModeKHR ChooseSwapPresentMode(bool has_imm, bool has_mailbox,
@@ -158,7 +158,8 @@ bool Swapchain::Create(
     VkSurfaceKHR_T* surface_,
     u32 width_,
     u32 height_,
-    VkFormat requested_format_)
+    VkFormat requested_format_,
+    VkColorSpaceKHR requested_color_space_)
 {
     is_outdated = false;
     // Keep recreation pending until creation succeeds, including zero-extent surfaces.
@@ -167,6 +168,7 @@ bool Swapchain::Create(
     height = height_;
     surface = surface_;
     requested_format = requested_format_;
+    requested_color_space = requested_color_space_;
 
     const auto physical_device = device.GetPhysical();
     const auto capabilities{physical_device.GetSurfaceCapabilitiesKHR(VkSurfaceKHR(surface))};
@@ -282,7 +284,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     const auto present_modes = physical_device.GetSurfacePresentModesKHR(VkSurfaceKHR(surface));
 
     // Keep the SDR choice available even while the active swapchain is HDR.
-    sdr_image_format = ChooseSwapSurfaceFormat(formats, VK_FORMAT_B8G8R8A8_UNORM).format;
+    sdr_image_format = ChooseSwapSurfaceFormat(formats, VK_FORMAT_B8G8R8A8_UNORM,
+                                              VK_COLOR_SPACE_SRGB_NONLINEAR_KHR).format;
 
     has_mailbox = std::find(present_modes.begin(), present_modes.end(), VK_PRESENT_MODE_MAILBOX_KHR)
                   != present_modes.end();
@@ -292,7 +295,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
                                  VK_PRESENT_MODE_FIFO_RELAXED_KHR) != present_modes.end();
 
     const VkCompositeAlphaFlagBitsKHR alpha_flags{ChooseAlphaFlags(capabilities)};
-    surface_format = ChooseSwapSurfaceFormat(formats, requested_format);
+    surface_format = ChooseSwapSurfaceFormat(formats, requested_format, requested_color_space);
     present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
 
     u32 requested_image_count{capabilities.minImageCount + 1};

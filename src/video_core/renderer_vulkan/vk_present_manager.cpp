@@ -181,6 +181,7 @@ Frame* PresentManager::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
     frame->present_done.Reset();
+    frame->color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
     return frame;
 }
@@ -368,7 +369,8 @@ void PresentManager::PresentThread(std::stop_token token) {
 
 // Returns false after discarding a deferred or incompatible frame; creation exceptions propagate.
 bool PresentManager::RecreateSwapchain(Frame* frame) {
-    if (swapchain.Create(*surface, frame->width, frame->height, frame->format)) {
+    if (swapchain.Create(*surface, frame->width, frame->height, frame->format,
+                         frame->color_space)) {
         SetImageCount();
         ConfigureTransfer(frame);
         if (transfer_mode != TransferMode::Unsupported) {
@@ -465,7 +467,8 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
     const bool size_changed =
         swapchain.GetWidth() != frame->width || swapchain.GetHeight() != frame->height;
     const bool format_changed = swapchain.GetRequestedFormat() != frame->format;
-    if (is_suboptimal || size_changed || format_changed) {
+    const bool color_space_changed = swapchain.GetRequestedColorSpace() != frame->color_space;
+    if (is_suboptimal || size_changed || format_changed || color_space_changed) {
         if (!RecreateSwapchain(frame)) {
             return;
         }
