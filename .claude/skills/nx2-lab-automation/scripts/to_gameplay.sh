@@ -6,6 +6,10 @@ D=${D:-$TMPDIR/ootlab}
 GAME="/run/media/kraibse/SOINC/emulation/Switch 2/games/The Legend of Zelda Ocarina of TIme [04004860224DEC000].nup"
 cd "$REPO" || exit 1
 L=(python3 -I tools/nx2/lab_ctl.py -d "$D")
+# Unattended runs must be silent: the null audio engine, muted (see mute_audio.py).
+if [ -f "$D/qt-copy.ini" ]; then
+  /usr/bin/python3 "$REPO/.claude/skills/nx2-lab-automation/scripts/mute_audio.py" "$D/qt-copy.ini"
+fi
 $L stop 2>/dev/null
 $L launch --hidden --max-seconds 420 --config "$D/qt-copy.ini" \
   --dump-dir ~/Documents/hermes/eglantine/oot-shader-dump --game "$GAME" "$@"
