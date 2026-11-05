@@ -149,6 +149,7 @@
 
             mkdir -p $out/bin
             cp build/bin/eglantine $out/bin/eglantine
+            cp build/bin/nx2_switches.txt $out/bin/nx2_switches.txt
 
             runHook postInstall
           '';
