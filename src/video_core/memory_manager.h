@@ -177,6 +177,10 @@ public:
         return map_serial.load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] u64 MapSerial() const noexcept {
+        return GetMapSerial();
+    }
+
     /// GetMemoryLayoutSize from the kind map under its lock (the answer with Nx2Perf off).
     size_t GetMemoryLayoutSizeUncached(GPUVAddr gpu_addr) const;
 

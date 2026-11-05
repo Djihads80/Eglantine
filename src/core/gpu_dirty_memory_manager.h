@@ -64,12 +64,6 @@ public:
     }
 
     void Gather(std::function<void(PAddr, size_t)>& callback) {
-        if (!IsValid(current.load(std::memory_order_acquire).address)) {
-            std::scoped_lock lk(guard);
-            if (!IsValid(current.load(std::memory_order_relaxed).address) && back_buffer.empty()) {
-                return;
-            }
-        }
         // FlushRegion also gathers off the GPU thread (host1x video decode reads); serialize
         // gatherers so one cannot swap or clear front_buffer while another iterates it.
         std::scoped_lock gather_lk(gather_guard);
