@@ -424,6 +424,7 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
     const u32 num_image_buffers = Shader::NumDescriptors(info.image_buffer_descriptors);
     views += num_texture_buffers;
     views += num_image_buffers;
+    const bool rescaling_active{Settings::values.resolution_info.active};
     for (const auto& desc : info.texture_descriptors) {
         bool is_rescaled{};
         for (u32 index = 0; index < desc.count; ++index) {
@@ -438,8 +439,9 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
             Sampler& sampler{texture_cache.GetSampler(sampler_id)};
             guest_descriptor_queue.AddSampledImage(vk_image_view,
                                                    sampler.HandleFor(image_view, desc.is_depth));
-            const bool element_rescaled{texture_cache.IsRescaling(image_view)};
-            is_rescaled |= element_rescaled;
+            if (rescaling_active) {
+                is_rescaled |= texture_cache.IsRescaling(image_view);
+            }
         }
         rescaling.PushTexture(is_rescaled);
     }
@@ -452,8 +454,9 @@ inline void PushImageDescriptors(TextureCache& texture_cache,
             }
             const VkImageView vk_image_view{image_view.StorageView(desc.type, desc.format)};
             guest_descriptor_queue.AddImage(vk_image_view);
-            const bool element_rescaled{texture_cache.IsRescaling(image_view)};
-            is_rescaled |= element_rescaled;
+            if (rescaling_active) {
+                is_rescaled |= texture_cache.IsRescaling(image_view);
+            }
         }
         rescaling.PushImage(is_rescaled);
     }

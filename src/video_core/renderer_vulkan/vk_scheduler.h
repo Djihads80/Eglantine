@@ -99,6 +99,10 @@ public:
         fragment_barrier_pending = state.renderpass != VK_NULL_HANDLE;
     }
 
+    bool HasFragmentBarrier() const {
+        return fragment_barrier_pending;
+    }
+
     bool TakeFragmentBarrier() {
         return std::exchange(fragment_barrier_pending, false);
     }

@@ -97,6 +97,7 @@ static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
 struct Binding {
     DAddr device_addr{};
     GPUVAddr gpu_addr{};
+    u64 map_serial{};
     u32 size{};
     BufferId buffer_id;
     u32 segment_first{};
@@ -275,20 +276,35 @@ public:
     bool InlineMemory(DAddr dest_address, size_t copy_size, std::span<const u8> inlined_buffer);
 
     void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size) {
-        const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+        auto& current = channel_state->uniform_buffers[stage][index];
+        const u64 map_serial = gpu_memory->GetMapSerial();
+        if (!channel_state->has_deleted_buffers && current.buffer_id &&
+            current.buffer_id != NULL_BUFFER_ID && current.gpu_addr == gpu_addr &&
+            current.size == size && current.map_serial == map_serial && current.device_addr != 0)
+            [[likely]] {
+            return;
+        }
+        const std::optional<DAddr> device_addr =
+            (current.gpu_addr == gpu_addr && current.map_serial == map_serial &&
+             current.device_addr != 0)
+                ? std::optional<DAddr>{current.device_addr}
+                : gpu_memory->GpuToCpuAddress(gpu_addr);
         if (!device_addr) {
-            channel_state->uniform_buffers[stage][index] = NULL_BINDING;
+            current = NULL_BINDING;
             channel_state->unresolved_uniform_buffers[stage] |= 1U << index;
             return;
         }
-        auto& current = channel_state->uniform_buffers[stage][index];
-        if (current.buffer_id && current.buffer_id != NULL_BUFFER_ID &&
-            current.device_addr == *device_addr && current.size == size) {
+        if (!channel_state->has_deleted_buffers && current.buffer_id &&
+            current.buffer_id != NULL_BUFFER_ID && current.device_addr == *device_addr &&
+            current.size == size) {
+            current.gpu_addr = gpu_addr;
+            current.map_serial = map_serial;
             return;
         }
         current = Binding{
             .device_addr = *device_addr,
             .gpu_addr = gpu_addr,
+            .map_serial = map_serial,
             .size = size,
             .buffer_id = BufferId{},
         };

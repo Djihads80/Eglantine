@@ -1938,18 +1938,35 @@ void BufferCache<P>::UpdateTransformFeedbackBuffer(u32 index) {
 
 template <class P>
 void BufferCache<P>::UpdateComputeUniformBuffers() {
+    const u64 map_serial = gpu_memory->GetMapSerial();
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
         Binding& binding = channel_state->compute_uniform_buffers[index];
         const auto& launch_desc = kepler_compute->launch_description;
         if (((launch_desc.const_buffer_enable_mask >> index) & 1) != 0) {
             const auto& cbuf = launch_desc.const_buffer_config[index];
-            const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(cbuf.Address());
+            const GPUVAddr gpu_addr = cbuf.Address();
+            if (!channel_state->has_deleted_buffers && binding.buffer_id &&
+                binding.buffer_id != NULL_BUFFER_ID && binding.gpu_addr == gpu_addr &&
+                binding.size == cbuf.size && binding.map_serial == map_serial &&
+                binding.device_addr != 0) [[likely]] {
+                return;
+            }
+            const std::optional<DAddr> device_addr =
+                (binding.gpu_addr == gpu_addr && binding.map_serial == map_serial &&
+                 binding.device_addr != 0)
+                    ? std::optional<DAddr>{binding.device_addr}
+                    : gpu_memory->GpuToCpuAddress(gpu_addr);
             if (device_addr) {
-                if (binding.buffer_id && binding.buffer_id != NULL_BUFFER_ID &&
+                if (!channel_state->has_deleted_buffers && binding.buffer_id &&
+                    binding.buffer_id != NULL_BUFFER_ID &&
                     binding.device_addr == *device_addr && binding.size == cbuf.size) {
+                    binding.gpu_addr = gpu_addr;
+                    binding.map_serial = map_serial;
                     return;
                 }
                 binding.device_addr = *device_addr;
+                binding.gpu_addr = gpu_addr;
+                binding.map_serial = map_serial;
                 binding.size = cbuf.size;
                 binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
                 return;

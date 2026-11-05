@@ -65,6 +65,8 @@ private:
     Shader::Info info;
     u64 shader_hash{};
     u32 num_descriptor_entries{};
+    bool has_image_resources{false};
+    bool has_rescaling_push_constants{false};
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};
 
