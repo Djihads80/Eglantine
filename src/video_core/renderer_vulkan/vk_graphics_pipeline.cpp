@@ -757,6 +757,14 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     const bool set_descriptor_buffer_offset =
         uses_descriptor_buffer &&
         (bind_pipeline || bind_descriptor_buffer || !reused_descriptor_buffer);
+    const bool needs_descriptor_command =
+        descriptor_set_layout &&
+        (uses_descriptor_buffer ? set_descriptor_buffer_offset
+                                : (uses_push_descriptor || update_descriptors));
+    if (!bind_descriptor_buffer && !bind_pipeline && !push_rescaling_words && !update_rescaling &&
+        !render_area.uses_render_area && !needs_descriptor_command) {
+        return true;
+    }
     scheduler.Record([this, descriptor_data, bind_pipeline, update_descriptors,
                       descriptor_buffer_offset, descriptor_buffer_chunk, bind_descriptor_buffer,
                       set_descriptor_buffer_offset, push_rescaling_words, rescaling_data,

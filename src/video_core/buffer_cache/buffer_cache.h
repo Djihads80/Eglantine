@@ -110,9 +110,9 @@ void BufferCache<P>::TickFrame() {
         return;
     }
     runtime.TickFrame(slot_buffers);
-    native_indirect_uniforms_this_frame.clear();
     if (native_indirect_uniform_shadow.size() > 256) {
         native_indirect_uniform_shadow.clear();
+        native_indirect_uniform_cache.fill({~DAddr{0}, nullptr});
         native_indirect_uniform_last_bank = ~DAddr{0};
         native_indirect_uniform_last_ptr = nullptr;
     }
@@ -1253,7 +1253,6 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
     Buffer& buffer = slot_buffers[binding.buffer_id];
-    TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
     const bool needs_alignment_stream = [&]() {
@@ -1279,12 +1278,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     }();
     if (bank_mode != '0' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
         gpu_memory->UsesNativeTiling() &&
-        (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000) &&
-        (bank_mode == '2' || bank_mode == '3' || !Nx2Perf::Enabled() || Nx2Perf::Verify() ||
-         !native_indirect_uniforms_this_frame.contains(device_addr)) &&
-        !memory_tracker.IsRegionGpuModified(device_addr, size) &&
-        (bank_mode == '2' || bank_mode == '3' ||
-         native_indirect_uniforms_this_frame.insert(device_addr).second)) {
+        (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000)) {
         // The bank size is only an upper limit: stop at the end of the mapped memory.
         // Only mark 4 KiB pages whose guest bytes actually changed since the last upload so
         // unchanged banks do not toggle VirtualProtect or break the Vulkan render pass on every draw.
@@ -1293,47 +1287,60 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             native_indirect_uniform_last_ptr != nullptr) [[likely]] {
             shadow = native_indirect_uniform_last_ptr;
         } else {
-            shadow = &native_indirect_uniform_shadow[device_addr];
+            const size_t cache_idx = ((device_addr >> 12) ^ (device_addr >> 20)) & 7;
+            auto& cached = native_indirect_uniform_cache[cache_idx];
+            if (cached.first == device_addr && cached.second != nullptr) [[likely]] {
+                shadow = cached.second;
+            } else {
+                shadow = &native_indirect_uniform_shadow[device_addr];
+                cached = {device_addr, shadow};
+            }
             native_indirect_uniform_last_bank = device_addr;
             native_indirect_uniform_last_ptr = shadow;
         }
-        if (shadow->last_draw_ticket != native_indirect_uniform_draw_ticket) {
-            shadow->last_draw_ticket = native_indirect_uniform_draw_ticket;
-            const u32 check_size = (std::min<u32>)(size, 0x10000U);
-            const u8* const base_ptr = device_memory.template GetPointer<u8>(device_addr);
-            const bool contiguous =
-                base_ptr != nullptr &&
-                (check_size <= Core::DEVICE_PAGESIZE ||
-                 base_ptr + (check_size - 1) ==
-                     device_memory.template GetPointer<u8>(device_addr + check_size - 1));
-            u32 offset_in_bank = 0;
-            u32 page_idx = 0;
-            while (offset_in_bank < check_size) {
-                const DAddr cur_addr = device_addr + offset_in_bank;
-                const u64 page_offset = cur_addr & Core::DEVICE_PAGEMASK;
-                const u32 chunk_size = static_cast<u32>(
-                    (std::min<u64>)(Core::DEVICE_PAGESIZE - page_offset, check_size - offset_in_bank));
-                const u8* const ptr = contiguous
-                                          ? (base_ptr + offset_in_bank)
-                                          : device_memory.template GetPointer<u8>(cur_addr);
-                if (ptr == nullptr) {
-                    break;
-                }
-                const u32 page_bit = 1U << (page_idx & 31);
-                const bool page_initialized = (shadow->initialized_mask & page_bit) != 0;
-                const bool already_cpu_modified =
-                    memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
-                u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
-                if (!page_initialized || already_cpu_modified ||
-                    std::memcmp(shadow_dst, ptr, chunk_size) != 0) {
-                    std::memcpy(shadow_dst, ptr, chunk_size);
-                    shadow->initialized_mask |= page_bit;
-                    if (!already_cpu_modified) {
-                        memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+        const bool skip_this_frame =
+            bank_mode != '2' && bank_mode != '3' && Nx2Perf::Enabled() && !Nx2Perf::Verify();
+        if ((!skip_this_frame || shadow->last_frame_tick != frame_tick) &&
+            !memory_tracker.IsRegionGpuModified(device_addr, size)) {
+            shadow->last_frame_tick = frame_tick;
+            if (shadow->last_draw_ticket != native_indirect_uniform_draw_ticket) {
+                shadow->last_draw_ticket = native_indirect_uniform_draw_ticket;
+                const u32 check_size = (std::min<u32>)(size, 0x10000U);
+                const u8* const base_ptr = device_memory.template GetPointer<u8>(device_addr);
+                const bool contiguous =
+                    base_ptr != nullptr &&
+                    (check_size <= Core::DEVICE_PAGESIZE ||
+                     base_ptr + (check_size - 1) ==
+                         device_memory.template GetPointer<u8>(device_addr + check_size - 1));
+                u32 offset_in_bank = 0;
+                u32 page_idx = 0;
+                while (offset_in_bank < check_size) {
+                    const DAddr cur_addr = device_addr + offset_in_bank;
+                    const u64 page_offset = cur_addr & Core::DEVICE_PAGEMASK;
+                    const u32 chunk_size = static_cast<u32>((std::min<u64>)(
+                        Core::DEVICE_PAGESIZE - page_offset, check_size - offset_in_bank));
+                    const u8* const ptr = contiguous
+                                              ? (base_ptr + offset_in_bank)
+                                              : device_memory.template GetPointer<u8>(cur_addr);
+                    if (ptr == nullptr) {
+                        break;
                     }
+                    const u32 page_bit = 1U << (page_idx & 31);
+                    const bool page_initialized = (shadow->initialized_mask & page_bit) != 0;
+                    const bool already_cpu_modified =
+                        memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
+                    u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
+                    if (!page_initialized || already_cpu_modified ||
+                        std::memcmp(shadow_dst, ptr, chunk_size) != 0) {
+                        std::memcpy(shadow_dst, ptr, chunk_size);
+                        shadow->initialized_mask |= page_bit;
+                        if (!already_cpu_modified) {
+                            memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+                        }
+                    }
+                    offset_in_bank += chunk_size;
+                    ++page_idx;
                 }
-                offset_in_bank += chunk_size;
-                ++page_idx;
             }
         }
     }
@@ -1377,6 +1384,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         }
         return;
     }
+    TouchBuffer(buffer, binding.buffer_id);
     // Classic cached path
     if (SynchronizeBuffer(buffer, device_addr, size)) {
         ++channel_state->uniform_cache_hits[0];
@@ -1590,7 +1598,6 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
         const Binding& binding = channel_state->compute_uniform_buffers[index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
-        TouchBuffer(buffer, binding.buffer_id);
         const u32 size =
             (std::min)(binding.size, (*channel_state->compute_uniform_buffer_sizes)[index]);
         const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
@@ -1632,6 +1639,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
             }
         }
 
+        TouchBuffer(buffer, binding.buffer_id);
         SynchronizeBuffer(buffer, binding.device_addr, size);
 
         buffer.MarkUsage(offset, size);

@@ -511,10 +511,12 @@ public:
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
     struct NativeUniformBankShadow {
         u64 last_draw_ticket{};
+        u64 last_frame_tick{~u64{0}};
         u32 initialized_mask{};
         std::array<u8, 0x10000> bytes{};
     };
     std::unordered_map<DAddr, NativeUniformBankShadow> native_indirect_uniform_shadow;
+    std::array<std::pair<DAddr, NativeUniformBankShadow*>, 8> native_indirect_uniform_cache{};
     DAddr native_indirect_uniform_last_bank = ~DAddr{0};
     NativeUniformBankShadow* native_indirect_uniform_last_ptr = nullptr;
     u64 native_indirect_uniform_draw_ticket = 0;

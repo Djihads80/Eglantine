@@ -149,9 +149,7 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
     for (const DescriptorBufferBinding& binding : layout.bindings) {
         for (u32 index = 0; index < binding.count; ++index, ++flat_index) {
             const DescriptorUpdateEntry& entry = payload[flat_index];
-            if (can_diff &&
-                std::memcmp(&cached_payload[flat_index], &entry,
-                            sizeof(DescriptorUpdateEntry)) == 0) {
+            if (can_diff && cached_payload[flat_index].raw == entry.raw) {
                 continue;
             }
             cached_payload[flat_index] = entry;

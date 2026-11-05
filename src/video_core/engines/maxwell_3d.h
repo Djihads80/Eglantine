@@ -3205,7 +3205,7 @@ public:
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
     /// GpuSplit's back (fast_maxwell3d): CallMethod for each of up to 64 single writes to the
-    /// constant buffer data registers, uploaded in one memory write.
+    /// constant buffer data registers, uploaded in one memory write within a device page.
     void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
                               u32 count);
 

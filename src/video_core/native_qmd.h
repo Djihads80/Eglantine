@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <unordered_map>
 
+#include "video_core/nx2_perf.h"
+
 namespace Tegra {
 
 // Native QMD 3.0 dependency scheduling; nonempty grids require a dispatch backend.
@@ -19,6 +21,7 @@ public:
     struct RejectShaderDispatch { bool operator()(const Descriptor&) const { return false; } };
     // Optional diagnostics: called with "load"/"count"/"defer"/"run" events.
     std::function<void(std::string_view, Address, std::int32_t)> trace;
+    bool nx2_perf = VideoCommon::Nx2Perf::Enabled();
     template <typename Read, typename Release>
     std::string_view Signal(Address address, Word argument, Read read, Release release) {
         return Signal(address, argument, read, release, RejectShaderDispatch{});
@@ -27,7 +30,10 @@ public:
     std::string_view Signal(Address address, Word argument, Read read, Release release, Dispatch dispatch) {
         struct Pending { Address address; Word action; Word count; };
         std::string_view error;
-        std::array<Pending, 256> pending{};
+        std::array<Pending, 256> pending;
+        if (!nx2_perf || VideoCommon::Nx2Perf::Verify()) {
+            pending = {};
+        }
         std::size_t count = 1;
         pending[0] = {address, argument & 15, ((argument >> 14) & 0x3ff) + 1};
         for (std::size_t i = 0; i < count; ++i) {

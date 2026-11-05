@@ -606,10 +606,10 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     const u32 offset = regs.const_buffer.offset;
     const u64 bytes = u64{count} * sizeof(u32);
     const GPUVAddr address = regs.const_buffer.Address();
-    // Word by word when CallMethod would not take its fast path, or ProcessCBMultiData would
-    // drop words past the end of the buffer.
+    // Keep per-word translation across device pages and per-word clipping at buffer limits.
     if (!fast_maxwell3d || executing_macro != 0 || address == 0 ||
-        offset > regs.const_buffer.size || bytes > regs.const_buffer.size - offset) {
+        offset > regs.const_buffer.size || bytes > regs.const_buffer.size - offset ||
+        bytes > Core::DEVICE_PAGESIZE - ((address + offset) & Core::DEVICE_PAGEMASK)) {
         for (u32 i = 0; i < count; ++i) {
             CallMethod(system, methods[i], arguments[i], true);
         }

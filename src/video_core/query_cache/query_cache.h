@@ -67,7 +67,8 @@ public:
         if (pending_sync.empty()) {
             return;
         }
-        std::vector<SyncValuesStruct> sync_values;
+        auto& sync_values = sync_values_stash;
+        sync_values.clear();
         sync_values.reserve(pending_sync.size());
         for (size_t pending_id : pending_sync) {
             auto& query = slot_queries[pending_id];
@@ -90,6 +91,7 @@ public:
 private:
     RuntimeType& runtime;
     std::deque<size_t> pending_sync;
+    std::vector<SyncValuesStruct> sync_values_stash;
 };
 
 template <typename Traits>
