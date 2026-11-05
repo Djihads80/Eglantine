@@ -90,6 +90,12 @@ public:
 
     // Stack for signal processing.
     std::unique_ptr<u8[]> m_stack{};
+
+    // Diagnostics (written only by this core's thread, in its fault handler): the guest access
+    // fault that keeps coming back at the same PC and address.
+    u64 m_repeat_fault_pc{};
+    u64 m_repeat_fault_address{};
+    u64 m_repeat_fault_count{};
 };
 
 } // namespace Core

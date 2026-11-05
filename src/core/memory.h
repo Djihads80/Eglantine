@@ -502,7 +502,15 @@ public:
 
     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
 
-    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
+    /// What InvalidateNCE found for a faulting page (diagnostics of the NCE fault handler).
+    struct NceInvalidateResult {
+        bool mapped{};               ///< The page has a backing pointer.
+        bool rasterizer{};           ///< The page is GPU-cached; the GPU caches were invalidated.
+        bool separate_heap_mapped{}; ///< A non-resident separate-heap page was mapped in.
+    };
+
+    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
+                       NceInvalidateResult* result = nullptr);
 
     bool InvalidateSeparateHeap(void* fault_address);
 

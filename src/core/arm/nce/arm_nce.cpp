@@ -4,10 +4,20 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cinttypes>
+#include <cstdlib>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
+#include "common/logging.h"
 #include "common/signal_chain.h"
+#include "core/arm/debug.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/interpreter_visitor.h"
 #include "core/arm/nce/patcher.h"
@@ -18,6 +28,7 @@
 
 #include <signal.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace Core {
@@ -43,6 +54,265 @@ fpsimd_context* GetFloatingPointState(mcontext_t& host_ctx) {
 
 using namespace Common::Literals;
 constexpr u32 StackSize = 128_KiB;
+
+// ---- Diagnostics: fatal guest signals, repeating faults and core sampling ----
+
+// Reads (guest = host, under NCE) memory without faulting.
+bool SafeRead(u64 address, void* out, size_t size) {
+    iovec local{out, size};
+    iovec remote{reinterpret_cast<void*>(address), size};
+    return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(size);
+}
+
+// The four instruction words at PC-8, PC-4, [PC] and PC+4; ???????? where unreadable.
+std::string CodeAround(u64 pc) {
+    std::string text;
+    for (u32 i = 0; i < 4; ++i) {
+        const u64 address = pc - 8 + i * 4;
+        u32 word{};
+        const bool readable = SafeRead(address, &word, sizeof(word));
+        if (!text.empty()) text += ' ';
+        if (address == pc) text += '[';
+        text += readable ? fmt::format("{:08x}", word) : std::string{"????????"};
+        if (address == pc) text += ']';
+    }
+    return text;
+}
+
+// A record in the signal frame's __reserved area (FPSIMD, ESR, ...), or null.
+const _aarch64_ctx* FindSigcontextRecord(const mcontext_t& host_ctx, u32 magic) {
+    const auto* base = reinterpret_cast<const u8*>(&host_ctx.__reserved);
+    size_t offset = 0;
+    while (offset + sizeof(_aarch64_ctx) <= sizeof(host_ctx.__reserved)) {
+        const auto* header = reinterpret_cast<const _aarch64_ctx*>(base + offset);
+        if (header->magic == 0 || header->size == 0) return nullptr;
+        if (header->magic == magic) return header;
+        offset += header->size;
+    }
+    return nullptr;
+}
+
+// ESR_EL1 of a synchronous fault, as the kernel reports it (0 if absent).
+u64 FaultEsr(const mcontext_t& host_ctx) {
+    const auto* record = FindSigcontextRecord(host_ctx, ESR_MAGIC);
+    return record ? reinterpret_cast<const esr_context*>(record)->esr : 0;
+}
+
+const char* AccessKind(u64 esr) {
+    const u64 ec = esr >> 26;
+    if (ec == 0x20 || ec == 0x21) return "instruction fetch";
+    if (ec == 0x24 || ec == 0x25) return (esr >> 6) & 1 ? "write" : "read";
+    return "access";
+}
+
+const char* SignalName(int sig) {
+    return sig == SIGILL ? "SIGILL" : sig == SIGTRAP ? "SIGTRAP" : sig == SIGFPE ? "SIGFPE" : "signal";
+}
+
+struct sigaction g_orig_ill_action;
+struct sigaction g_orig_trap_action;
+struct sigaction g_orig_fpe_action;
+
+// Hands a fatal signal on as if this handler were not installed.
+void ChainFatalSignal(int sig, siginfo_t* info, void* raw_context) {
+    const struct sigaction& original = sig == SIGILL    ? g_orig_ill_action
+                                       : sig == SIGTRAP ? g_orig_trap_action
+                                                        : g_orig_fpe_action;
+    if ((original.sa_flags & SA_SIGINFO) != 0 && original.sa_sigaction != nullptr) {
+        original.sa_sigaction(sig, info, raw_context);
+        return;
+    }
+    if ((original.sa_flags & SA_SIGINFO) == 0 && original.sa_handler != SIG_DFL &&
+        original.sa_handler != SIG_IGN) {
+        original.sa_handler(sig);
+        return;
+    }
+    // The default action: a fault re-executes into it on return, a sent signal is sent again.
+    struct sigaction default_action {};
+    default_action.sa_handler = SIG_DFL;
+    Common::SigAction(sig, &default_action, nullptr);
+    if (info->si_code <= 0) {
+        syscall(SYS_tgkill, getpid(), gettid(), sig);
+    }
+}
+
+void ReportGuestFatalSignal(int sig, const siginfo_t* info, void* raw_context,
+                            const NativeExecutionParameters* params) {
+    const auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
+    const auto* guest_ctx = static_cast<const GuestContext*>(params->native_context);
+    const ArmNce* core = guest_ctx->parent;
+    Kernel::KThread* const thread = core != nullptr ? core->m_running_thread : nullptr;
+    const u64 pc = host_ctx.pc;
+    LOG_CRITICAL(Core_ARM,
+                 "NCE guest {} (si_code {}) at PC {:#x}, address {:#x}, core {}, host tid {}, "
+                 "guest thread {}, guest TLS {:#x}, ESR {:#x}",
+                 SignalName(sig), info->si_code, pc, reinterpret_cast<u64>(info->si_addr),
+                 core != nullptr ? static_cast<s64>(core->m_core_index) : -1, gettid(),
+                 thread != nullptr ? static_cast<s64>(thread->GetThreadId()) : -1,
+                 params->tpidrro_el0, FaultEsr(host_ctx));
+    LOG_CRITICAL(Core_ARM, "NCE guest code at {:#x}: {}", pc - 8, CodeAround(pc));
+    for (u32 i = 0; i < 24; i += 8) {
+        LOG_CRITICAL(Core_ARM,
+                     "NCE x{:02}-x{:02}: {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} "
+                     "{:016x}",
+                     i, i + 7, host_ctx.regs[i], host_ctx.regs[i + 1], host_ctx.regs[i + 2],
+                     host_ctx.regs[i + 3], host_ctx.regs[i + 4], host_ctx.regs[i + 5],
+                     host_ctx.regs[i + 6], host_ctx.regs[i + 7]);
+    }
+    LOG_CRITICAL(Core_ARM,
+                 "NCE x24-x30: {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} {:016x} sp {:016x} "
+                 "pstate {:08x}",
+                 host_ctx.regs[24], host_ctx.regs[25], host_ctx.regs[26], host_ctx.regs[27],
+                 host_ctx.regs[28], host_ctx.regs[29], host_ctx.regs[30], host_ctx.sp,
+                 host_ctx.pstate);
+    Common::Log::Stop(); // flushes every backend
+    // Best effort: the guest modules and frame-pointer chain (reads guest memory, allocates).
+    if (thread != nullptr && thread->GetOwnerProcess() != nullptr) {
+        Kernel::Svc::ThreadContext ctx{};
+        for (size_t i = 0; i < 29; ++i) {
+            ctx.r[i] = host_ctx.regs[i];
+        }
+        ctx.fp = host_ctx.regs[29];
+        ctx.lr = host_ctx.regs[30];
+        ctx.sp = host_ctx.sp;
+        ctx.pc = host_ctx.pc;
+        ctx.pstate = static_cast<u32>(host_ctx.pstate);
+        for (const auto& entry : GetBacktraceFromContext(thread->GetOwnerProcess(), ctx)) {
+            LOG_CRITICAL(Core_ARM, "NCE backtrace: {} +{:#x} (address {:#x}) {}", entry.module,
+                         entry.offset, entry.original_address, entry.name);
+        }
+        Common::Log::Stop();
+    }
+}
+
+// SIGILL, SIGTRAP and SIGFPE. Guest code runs with the guest's tpidr_el0 (whose TLS magic
+// identifies it), so the host's is restored before anything touches libc; this entry itself must
+// not read the stack guard from TLS.
+__attribute__((no_stack_protector)) void GuestFatalSignalHandler(int sig, siginfo_t* info,
+                                                                 void* raw_context) {
+    u64 tpidr;
+    asm volatile("mrs %0, tpidr_el0" : "=r"(tpidr));
+    const auto* params = reinterpret_cast<const NativeExecutionParameters*>(tpidr);
+    if (params == nullptr || params->magic != TlsMagic || params->native_context == nullptr) {
+        ChainFatalSignal(sig, info, raw_context); // host code: unchanged
+        return;
+    }
+    const auto* guest_ctx = static_cast<const GuestContext*>(params->native_context);
+    asm volatile("msr tpidr_el0, %0" : : "r"(guest_ctx->host_ctx.host_tpidr_el0) : "memory");
+    ReportGuestFatalSignal(sig, info, raw_context, params);
+    // Leave the host tpidr_el0 in place: whatever runs next for this signal is host code.
+    ChainFatalSignal(sig, info, raw_context);
+}
+
+// A guest access fault that comes back this many times in a row at the same PC and address is
+// reported (and again every RepeatedFaultReminder repeats while it lasts).
+constexpr u64 RepeatedFaultThreshold = 1000;
+constexpr u64 RepeatedFaultReminder = 1ULL << 20;
+
+void NoteGuestAccessFault(ArmNce* core, const mcontext_t& host_ctx, const siginfo_t* info,
+                          const Memory::Memory::NceInvalidateResult& invalidate, bool handled) {
+    const u64 pc = host_ctx.pc, address = reinterpret_cast<u64>(info->si_addr);
+    if (pc != core->m_repeat_fault_pc || address != core->m_repeat_fault_address) {
+        core->m_repeat_fault_pc = pc;
+        core->m_repeat_fault_address = address;
+        core->m_repeat_fault_count = 1;
+        return;
+    }
+    const u64 count = ++core->m_repeat_fault_count;
+    if (count != RepeatedFaultThreshold && count % RepeatedFaultReminder != 0) {
+        return;
+    }
+    const u64 esr = FaultEsr(host_ctx);
+    u8 probe{};
+    const bool readable = SafeRead(address, &probe, sizeof(probe));
+    const char* lifted = invalidate.rasterizer             ? "GPU cache invalidate"
+                         : invalidate.separate_heap_mapped ? "separate heap mapped in"
+                                                           : "nothing (protection unchanged)";
+    Kernel::KThread* const thread = core->m_running_thread;
+    LOG_ERROR(Core_ARM,
+              "NCE guest fault repeated {} times in a row: {} of {:#x} (page offset {:#x}) at PC "
+              "{:#x}, si_code {}, ESR {:#x} (DFSC {:#x}), page mapped {}, fix applied: {}, "
+              "handled {}, readable now {}, core {}, guest thread {}",
+              count, AccessKind(esr), address, address & Memory::YUZU_PAGEMASK, pc, info->si_code,
+              esr, esr & 0x3f, invalidate.mapped, lifted, handled, readable, core->m_core_index,
+              thread != nullptr ? static_cast<s64>(thread->GetThreadId()) : -1);
+    LOG_ERROR(Core_ARM, "NCE guest code at {:#x}: {}", pc - 8, CodeAround(pc));
+}
+
+// EDEN_NX2_NCE_SAMPLE=1: every 2 s each core's thread is sent a signal whose handler records
+// where it was (guest or host code), to show where a spinning core is.
+struct NceSampleSlot {
+    std::atomic<u64> sequence{};
+    std::atomic<u64> pc{};
+    std::atomic<u64> lr{};
+    std::atomic<u64> sp{};
+    std::atomic<u64> x0{};
+    std::atomic<u64> guest_tls{};
+    std::atomic<u32> in_guest{};
+};
+static_assert(std::atomic<u64>::is_always_lock_free);
+NceSampleSlot g_sample;
+std::atomic<u64> g_sample_wanted{};
+int g_sample_signal = -1;
+std::mutex g_sample_cores_mutex;
+std::vector<ArmNce*> g_sample_cores;
+
+// Touches no TLS: it may interrupt guest code, which runs with the guest's tpidr_el0.
+__attribute__((no_stack_protector)) void NceSampleSignalHandler(int, siginfo_t*,
+                                                                void* raw_context) {
+    const auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
+    u64 tpidr;
+    asm volatile("mrs %0, tpidr_el0" : "=r"(tpidr));
+    const auto* params = reinterpret_cast<const NativeExecutionParameters*>(tpidr);
+    const bool in_guest = params != nullptr && params->magic == TlsMagic;
+    g_sample.pc.store(host_ctx.pc, std::memory_order_relaxed);
+    g_sample.lr.store(host_ctx.regs[30], std::memory_order_relaxed);
+    g_sample.sp.store(host_ctx.sp, std::memory_order_relaxed);
+    g_sample.x0.store(host_ctx.regs[0], std::memory_order_relaxed);
+    g_sample.guest_tls.store(in_guest ? params->tpidrro_el0 : 0, std::memory_order_relaxed);
+    g_sample.in_guest.store(in_guest ? 1 : 0, std::memory_order_relaxed);
+    g_sample.sequence.store(g_sample_wanted.load(std::memory_order_relaxed),
+                            std::memory_order_release);
+}
+
+void NceSamplerLoop() {
+    using namespace std::chrono_literals;
+    for (u64 round = 1;; ++round) {
+        std::this_thread::sleep_for(2s);
+        std::scoped_lock lk{g_sample_cores_mutex};
+        for (ArmNce* core : g_sample_cores) {
+            const pid_t tid = core->m_thread_id;
+            if (tid <= 0) continue;
+            const u64 wanted = g_sample_wanted.fetch_add(1) + 1;
+            if (syscall(SYS_tgkill, getpid(), tid, g_sample_signal) != 0) continue;
+            bool sampled = false;
+            for (u32 wait = 0; wait < 50 && !sampled; ++wait) {
+                sampled = g_sample.sequence.load(std::memory_order_acquire) == wanted;
+                if (!sampled) std::this_thread::sleep_for(1ms);
+            }
+            const u64 last_exit_pc = core->m_guest_ctx.pc;
+            const u32 last_svc = core->m_guest_ctx.svc;
+            if (!sampled) {
+                LOG_WARNING(Core_ARM,
+                            "NCE sample {}: core {} (tid {}) did not answer; last exit PC {:#x}, "
+                            "last SVC {:#x}",
+                            round, core->m_core_index, tid, last_exit_pc, last_svc);
+                continue;
+            }
+            const u64 pc = g_sample.pc.load(std::memory_order_relaxed);
+            const bool in_guest = g_sample.in_guest.load(std::memory_order_relaxed) != 0;
+            LOG_WARNING(Core_ARM,
+                        "NCE sample {}: core {} (tid {}) in {} code, PC {:#x} LR {:#x} SP {:#x} X0 "
+                        "{:#x}, guest TLS {:#x}, code {}; last exit PC {:#x}, last SVC {:#x}",
+                        round, core->m_core_index, tid, in_guest ? "guest" : "host", pc,
+                        g_sample.lr.load(std::memory_order_relaxed),
+                        g_sample.sp.load(std::memory_order_relaxed),
+                        g_sample.x0.load(std::memory_order_relaxed),
+                        g_sample.guest_tls.load(std::memory_order_relaxed),
+                        in_guest ? CodeAround(pc) : std::string{"-"}, last_exit_pc, last_svc);
+        }
+    }
+}
 
 } // namespace
 
@@ -121,11 +391,25 @@ bool ArmNce::HandleFailedGuestFault(GuestContext* guest_ctx, void* raw_info, voi
     // For data aborts, skip the instruction and return to guest code.
     // This will allow games to continue in many scenarios where they would otherwise crash.
     if (!is_prefetch_abort) {
+        // Diagnostics: the first 32 skips, then every 4096th.
+        static std::atomic<u64> skipped{};
+        const u64 count = skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 32 || count % 4096 == 0) {
+            const u64 esr = FaultEsr(host_ctx);
+            LOG_ERROR(Core_ARM,
+                      "NCE skipped unhandled guest data abort #{} (signal {}): {} of {:#x} at PC "
+                      "{:#x}, si_code {}, ESR {:#x}, core {}, code {}",
+                      count, info->si_signo, AccessKind(esr), reinterpret_cast<u64>(info->si_addr),
+                      host_ctx.pc, info->si_code, esr, guest_ctx->parent->m_core_index,
+                      CodeAround(host_ctx.pc));
+        }
         host_ctx.pc += 4;
         return true;
     }
 
     // This is a prefetch abort.
+    LOG_ERROR(Core_ARM, "NCE guest prefetch abort at PC {:#x}, si_code {}, core {}, LR {:#x}",
+              host_ctx.pc, info->si_code, guest_ctx->parent->m_core_index, host_ctx.regs[30]);
     guest_ctx->esr_el1.fetch_or(static_cast<u64>(HaltReason::PrefetchAbort));
 
     // Forcibly mark the context as locked. We are still running.
@@ -165,7 +449,11 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     const Common::ProcessAddress addr =
         (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
-    if (memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
+    Memory::Memory::NceInvalidateResult invalidate{};
+    const bool handled = memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, &invalidate);
+    NoteGuestAccessFault(guest_ctx->parent, static_cast<ucontext_t*>(raw_context)->uc_mcontext,
+                         info, invalidate, handled);
+    if (handled) {
         // We handled the access successfully and are returning to guest code.
         return true;
     }
@@ -274,10 +562,14 @@ ArmNce::ArmNce(System& system, bool uses_wall_clock, std::size_t core_index)
     m_guest_ctx.system = &m_system;
 }
 
-ArmNce::~ArmNce() = default;
+ArmNce::~ArmNce() {
+    std::scoped_lock lk{g_sample_cores_mutex};
+    std::erase(g_sample_cores, this);
+}
 
 void ArmNce::Initialize() {
-    if (m_thread_id == -1) {
+    const bool first_run = m_thread_id == -1;
+    if (first_run) {
         m_thread_id = gettid();
     }
 
@@ -331,7 +623,38 @@ void ArmNce::Initialize() {
             reinterpret_cast<HandlerType>(&ArmNce::GuestAccessFaultSignalHandler);
         access_fault_action.sa_mask = signal_mask;
         Common::SigAction(GuestAccessFaultSignal, &access_fault_action, &g_orig_segv_action);
+
+        // Diagnostics: report SIGILL/SIGTRAP/SIGFPE raised by guest code, then hand them on.
+        struct sigaction fatal_action {};
+        fatal_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        fatal_action.sa_sigaction = &GuestFatalSignalHandler;
+        // Only the run/interrupt signals are held off: a host fault while reporting still reaches
+        // the SIGSEGV/SIGBUS handlers and the crash reporter behind them.
+        sigemptyset(&fatal_action.sa_mask);
+        sigaddset(&fatal_action.sa_mask, ReturnToRunCodeByExceptionLevelChangeSignal);
+        sigaddset(&fatal_action.sa_mask, BreakFromRunCodeSignal);
+        Common::SigAction(SIGILL, &fatal_action, &g_orig_ill_action);
+        Common::SigAction(SIGTRAP, &fatal_action, &g_orig_trap_action);
+        Common::SigAction(SIGFPE, &fatal_action, &g_orig_fpe_action);
+
+        if (const char* sample = std::getenv("EDEN_NX2_NCE_SAMPLE");
+            sample != nullptr && *sample != '\0' && *sample != '0') {
+            g_sample_signal = SIGRTMAX - 1;
+            struct sigaction sample_action {};
+            sample_action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+            sample_action.sa_sigaction = &NceSampleSignalHandler;
+            sigemptyset(&sample_action.sa_mask);
+            Common::SigAction(g_sample_signal, &sample_action, nullptr);
+            std::thread{NceSamplerLoop}.detach();
+            LOG_WARNING(Core_ARM, "NCE sampling every 2 s on signal {} (EDEN_NX2_NCE_SAMPLE)",
+                        g_sample_signal);
+        }
     });
+
+    if (first_run && g_sample_signal >= 0) {
+        std::scoped_lock lk{g_sample_cores_mutex};
+        g_sample_cores.push_back(this);
+    }
 }
 
 void ArmNce::SetTpidrroEl0(u64 value) {
