@@ -999,6 +999,9 @@ std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
                                        std::span<const std::pair<u64, u64>> ranges, u32 tile_width,
                                        u32 tile_height, s32 tail_level) {
     std::vector<LevelRect> rects;
+    if (info.format == PixelFormat::Invalid) {
+        return rects;
+    }
     const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
     const u64 image_end = CalculateLevelBytes(
         CalculateLevelSizes(MakeLevelInfo(info), info.resources.levels), info.resources.levels);
