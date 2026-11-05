@@ -904,16 +904,18 @@ private:
             if (node.type != Type::Block) {
                 continue;
             }
-            if (branch_depth > 1) {
-                // Skip reordering nested demote branches.
-                continue;
-            }
             for (const IR::Inst& inst : node.data.block->Instructions()) {
                 const IR::Opcode op{inst.GetOpcode()};
                 if (op == IR::Opcode::DemoteToHelperInvocation) {
-                    demote_blocks.push_back(node.data.block);
+                    // Skip reordering nested demote branches.
+                    if (branch_depth <= 1) {
+                        demote_blocks.push_back(node.data.block);
+                    }
                     break;
                 }
+                // Returns count at any depth: a nested early return (an EXIT under two
+                // conditions, as native fragment programs end their discarded invocations) would
+                // otherwise leave before the demote moved to the end, and write its colours.
                 if (op == IR::Opcode::Epilogue) {
                     ++num_epilogues;
                 }
