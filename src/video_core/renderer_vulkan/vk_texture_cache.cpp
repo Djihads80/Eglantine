@@ -829,18 +829,24 @@ TransformBufferCopies(std::span<const VideoCommon::BufferCopy> copies, size_t bu
     };
 }
 
-// A guest view's levels on a host image that keeps only levels >= host_level_offset.
-[[nodiscard]] SubresourceRange HostRange(const Image& image, SubresourceRange range) {
-    const s32 skip = static_cast<s32>(image.host_level_offset);
+// A guest view's levels on a host image of `levels` guest levels that keeps only levels >=
+// host_level_offset.
+[[nodiscard]] SubresourceRange HostRange(u32 host_level_offset, s32 levels,
+                                         SubresourceRange range) {
+    const s32 skip = static_cast<s32>(host_level_offset);
     if (skip == 0) {
         return range;
     }
-    const s32 host_levels = image.info.resources.levels - skip;
+    const s32 host_levels = levels - skip;
     const s32 base = std::clamp(range.base.level - skip, 0, host_levels - 1);
     const s32 end = std::clamp(range.base.level + range.extent.levels - skip, base + 1, host_levels);
     range.base.level = base;
     range.extent.levels = end - base;
     return range;
+}
+
+[[nodiscard]] SubresourceRange HostRange(const Image& image, SubresourceRange range) {
+    return HostRange(image.host_level_offset, image.info.resources.levels, range);
 }
 
 [[nodiscard]] VkImageSubresourceRange MakeSubresourceRange(const ImageView* image_view) {
@@ -3983,6 +3989,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
                      ImageId image_id_, Image& image)
     : VideoCommon::ImageViewBase{info, image.info, image_id_, image.gpu_addr},
       device{&runtime.device}, image_handle{image.Handle()},
+      host_level_offset{image.host_level_offset}, image_levels{image.info.resources.levels},
       samples(ConvertSampleCount(image.info.num_samples)) {
     using Shader::TextureType;
 
@@ -4199,7 +4206,8 @@ bool ImageView::IsRescaled() const noexcept {
 vk::ImageView ImageView::MakeView(VkFormat vk_format, VkImageAspectFlags aspect_mask,
                                   std::optional<Shader::TextureType> texture_type) {
     VkImageViewType view_type = ImageViewType(type);
-    VkImageSubresourceRange subresource_range = MakeSubresourceRange(aspect_mask, range);
+    VkImageSubresourceRange subresource_range =
+        MakeSubresourceRange(aspect_mask, HostRange(host_level_offset, image_levels, range));
     const auto is_3d = [](VkImageViewType t) { return t == VK_IMAGE_VIEW_TYPE_3D; };
     if (texture_type && is_3d(ImageViewType(*texture_type)) != is_3d(view_type)) {
         // A 3D view of a 2D image (or the reverse) is invalid in Vulkan and aborts on Metal; keep
