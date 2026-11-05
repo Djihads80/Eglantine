@@ -33,6 +33,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -618,11 +619,14 @@ constexpr u32 UsedPipelinesMagic = 0x31505545; // "EUP1"
 // MoltenVK keeps the previous eight sessions: a pipeline built while playing goes through
 // SPIR-V -> MSL -> Metal, far more than the 2-3 ms the shorter window assumes, so each one
 // built at boot is a stutter avoided.
+// Ocarina still built pipelines for 1-2 s of every 10 s early in play with two sessions kept:
+// keep sixteen (#161).
 constexpr u8 UsedPipelinesMaxAge = 2;
+constexpr u8 UsedPipelinesMaxAgePerf = 16;
 constexpr u8 UsedPipelinesMaxAgeMoltenVK = 8;
 
-u8 MaxUsedPipelineAge(const Device& device) {
-    return device.IsMoltenVK() ? UsedPipelinesMaxAgeMoltenVK : UsedPipelinesMaxAge;
+u8 MaxUsedPipelineAge(const Device&) {
+    return VideoCommon::Nx2Perf::Enabled() ? UsedPipelinesMaxAgePerf : UsedPipelinesMaxAge;
 }
 
 std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path, u8 max_age) {
@@ -1017,8 +1021,11 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         graphics_miss = "creation-failed";
         return nullptr;
     }
+    const auto save_interval = VideoCommon::Nx2Perf::Enabled()
+                                   ? std::chrono::steady_clock::duration{std::chrono::seconds{15}}
+                                   : std::chrono::steady_clock::duration{std::chrono::minutes{2}};
     if (used_this_session.insert(pipeline.get()).second &&
-        std::chrono::steady_clock::now() - used_pipelines_saved > std::chrono::minutes{2}) {
+        std::chrono::steady_clock::now() - used_pipelines_saved > save_interval) {
         SaveUsedPipelines();
     }
     if (current_pipeline) {
