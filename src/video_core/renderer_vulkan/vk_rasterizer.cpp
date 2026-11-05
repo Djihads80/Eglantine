@@ -716,6 +716,9 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                      regs.blend.enable[0], seen.size());
         }
     }
+    // Garbage commands (stale or half-written command lists) give garbage state: a draw that
+    // throws on it is skipped, not the end of the process.
+    try {
     PrepareDraw(is_indexed, [this, is_indexed, instance_count] {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
         const u32 num_instances{instance_count};
@@ -765,6 +768,12 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                 is_indexed ? "vkCmdDrawIndexed" : "vkCmdDraw", params, VK_SUCCESS);
         }
     });
+    } catch (const std::exception& exception) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_ERROR(Render_Vulkan, "Draw skipped: {}", exception.what());
+        }
+    }
 }
 
 void RasterizerVulkan::DrawIndirect() {

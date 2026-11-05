@@ -25,7 +25,7 @@ template <typename T, typename Id = u32>
 class DescriptorTable {
 public:
     [[nodiscard]] bool Synchronize(GPUVAddr gpu_addr, u32 limit) noexcept {
-        bool ret = !(current_gpu_addr == gpu_addr && current_limit == limit);
+        bool ret = !(current_gpu_addr == gpu_addr && requested_limit == limit);
         if (ret) {
             Refresh(gpu_addr, limit);
         }
@@ -68,8 +68,14 @@ public:
         return result;
     }
 
-    void Refresh(GPUVAddr gpu_addr, u32 limit) noexcept {
+    void Refresh(GPUVAddr gpu_addr, u32 requested) noexcept {
         current_gpu_addr = gpu_addr;
+        requested_limit = requested;
+        // A limit from garbage commands (Ocarina of Time on a phone): sizing the table for it
+        // threw out of this noexcept function, or wrapped round to a table smaller than the
+        // limit. Readers reject indices past current_limit.
+        static constexpr u32 MaxLimit = (1U << 21) - 1;
+        const u32 limit = (std::min)(requested, MaxLimit);
         current_limit = limit;
         // Small tables round up geometrically: the 0x80000-entry steps below allocated 16 MiB
         // for every small 32-byte descriptor table. Large ones keep those steps (Mario
@@ -90,6 +96,7 @@ public:
     std::vector<Id> bound_ids;
     GPUVAddr current_gpu_addr{};
     u32 current_limit{};
+    u32 requested_limit{}; ///< As Synchronize was asked: current_limit is at most MaxLimit
     bool invalidated{}; ///< read_descriptors is to be cleared before the next read
 
 private:

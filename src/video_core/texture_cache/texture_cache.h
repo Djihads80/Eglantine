@@ -3092,6 +3092,10 @@ ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
     if (rt.format == Tegra::RenderTargetFormat::NONE) {
         return ImageViewId{};
     }
+    // A format no render target has: registers filled by garbage commands, no target.
+    if (!VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(rt.format)) {
+        return ImageViewId{};
+    }
     const ImageInfo info(regs.rt[index], regs.anti_alias_samples_mode);
     const ImageViewId view_id = FindRenderTargetView(info, gpu_addr);
     if (view_id && view_id != NULL_IMAGE_VIEW_ID) {
@@ -3129,10 +3133,24 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
     // 0x0 with 36232 layers): creating the image would abort.
     static constexpr u32 MaxRenderTargetSize = 32768;
     static constexpr s32 MaxRenderTargetLayers = 2048;
+    // Also blocks past 32 GOBs and targets whose first or last byte is unmapped: unswizzling
+    // such an image faulted (Ocarina of Time on a phone, with garbage commands).
+    const auto unmapped = [&] {
+        if (!gpu_memory->GpuToCpuAddress(gpu_addr)) {
+            return true;
+        }
+        const u64 size = CalculateGuestSizeInBytes(info);
+        return size == 0 || size > (u64{1} << 32) ||
+               !gpu_memory->GpuToCpuAddress(gpu_addr + size - 1);
+    };
     if (info.size.width > MaxRenderTargetSize || info.size.height > MaxRenderTargetSize ||
-        info.resources.layers > MaxRenderTargetLayers) {
-        LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}", info.size.width,
-                  info.size.height, info.resources.layers, gpu_addr);
+        info.resources.layers > MaxRenderTargetLayers || info.block.width > 5 ||
+        info.block.height > 5 || info.block.depth > 5 || unmapped()) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+            LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}",
+                      info.size.width, info.size.height, info.resources.layers, gpu_addr);
+        }
         return ImageViewId{}; // No render target: the null view has no format to size
     }
     ImageId image_id{};
