@@ -111,6 +111,8 @@ protected:
     size_t native_source_size{};
     /// Lower matrix multiplies too (KeplerCompute::EmulatesNativeTensorPrograms).
     bool native_tensor{};
+    /// ... in the compact form (KeplerCompute::UsesCompactTensorPrograms).
+    bool native_compact_tensor{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 
     Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
