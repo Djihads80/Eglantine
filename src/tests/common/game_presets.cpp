@@ -20,6 +20,7 @@ void SetConflictingPreferences(Settings::Values& settings, bool per_game) {
     set(settings.vsync_mode, Settings::VSyncMode::Immediate);
     set(settings.scaling_filter, Settings::ScalingFilter::NearestNeighbor);
     set(settings.anti_aliasing, Settings::AntiAliasing::Smaa);
+    set(settings.mkw_dynamic_fps, false);
 }
 
 void CheckPreset(const Settings::Values& settings) {
@@ -34,6 +35,7 @@ void CheckPreset(const Settings::Values& settings) {
     CHECK(settings.use_docked_mode.GetValue() == Settings::ConsoleMode::Handheld);
     CHECK(settings.scaling_filter.GetValue() == Settings::ScalingFilter::ScaleForce);
     CHECK(settings.anti_aliasing.GetValue() == Settings::AntiAliasing::Fxaa);
+    CHECK(settings.mkw_dynamic_fps.GetValue());
 }
 
 void CheckPreferences(const Settings::Values& settings, bool global = false) {

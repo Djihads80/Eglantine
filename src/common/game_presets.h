@@ -24,6 +24,11 @@ inline void SetMarioKartWorldRecommendedSettings(Values& settings, bool global) 
     session(settings.use_docked_mode, ConsoleMode::Handheld);
     session(settings.scaling_filter, ScalingFilter::ScaleForce);
     session(settings.anti_aliasing, AntiAliasing::Fxaa);
+    // The game picks a 1- or 2-vblank frame mode from a frame time that already includes the
+    // interval it asked for, so a frame held for 2 keeps reading as too slow and it stays at
+    // 30 FPS. Dynamic mode paces every vblank and lets the game choose; the loader patch is what
+    // keeps its speed normal, and without a matching patch the setting changes nothing.
+    session(settings.mkw_dynamic_fps, true);
 }
 
 inline bool ApplyMarioKartWorldPreset(Values& settings, u64 program_id, bool accepted) {
