@@ -75,21 +75,31 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     const auto operand = [&](u32 bit, u32 count = 1) { operands.push_back({bit, count}); };
     const u32 opcode = input.Bits(0, 12);
     switch (opcode) {
-    case 0x802: case 0xa02: case 0xb08: case 0xd08: operand(16); break;
-    case 0x804: operand(24); break;
+    case 0x802: case 0xa02: case 0xb08: case 0xd08: case 0xc3e: case 0x908: case 0x919:
+    case 0xb05: case 0xd05:
+        operand(16); break;
+    case 0x804: case 0xa0c: case 0x80b: operand(24); break;
+    case 0x20c: case 0x20b: operand(24); operand(32); break;
     case 0x805: operand(16, 2); break;
-    case 0x308: operand(16); operand(32); break;
-    case 0x433: case 0x633: operand(16); operand(24); break;
-    case 0x233: operand(16); operand(24); operand(32); break;
+    case 0x308: case 0x245: case 0x305: case 0x306: case 0x307: operand(16); operand(32); break;
+    case 0x433: case 0x633: case 0x807: case 0x820: case 0x421: case 0xc17: case 0x817: case 0x81a:
+        operand(16); operand(24); break;
+    case 0x233: case 0x207: case 0x208: case 0x220: case 0x221:
+        operand(16); operand(24); operand(32); break;
     case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
+    case 0xa24: case 0x810: case 0xa10: case 0xc10: case 0x823: case 0x419:
         operand(16); operand(24); operand(64); break;
-    case 0x230: case 0x231: case 0x211: case 0x224:
+    case 0x230: case 0x231: case 0x211: case 0x224: case 0x223: case 0x210:
         operand(16); operand(24); operand(32); operand(64); break;
     case 0x819: case 0xa11:
         operand(16); operand(24); operand(64); break;
-    case 0x225: case 0x625: case 0x825:
-        operand(16, 2); operand(24);
-        if (opcode == 0x225) { operand(32); operand(64, 2); }
+    case 0x59f: operand(24, 2); operand(32); break;
+    case 0x98e:
+        operand(24, input.Bits(72, 1) ? 2 : 1);
+        operand(32, input.Bits(73, 3) == 2 || input.Bits(73, 3) == 5 ? 2 : 1); break;
+    case 0x225: case 0x227: case 0x625: case 0x825:
+        operand(16, opcode == 0x227 ? 1 : 2); operand(24);
+        if (opcode == 0x225 || opcode == 0x227) { operand(32); operand(64, 2); }
         if (opcode == 0x625) operand(64);
         if (opcode == 0x825) operand(64, 2);
         break;
@@ -104,8 +114,14 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
         operand(opcode == 0x984 ? 16 : 32, count); operand(24); break;
     }
-    case 0x387: case 0x983:
-        operand(opcode == 0x387 ? 32 : 16); operand(24); break;
+    case 0x387: case 0x983: case 0x987: {
+        const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
+        operand(opcode == 0x983 ? 16 : 32, count); operand(24); break;
+    }
+    case 0x381: case 0x386: {
+        const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
+        operand(opcode == 0x386 ? 32 : 16, count); operand(24, 2); break;
+    }
     case 0x981: case 0x986: {
         const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
         operand(opcode == 0x981 ? 16 : 32, count);
@@ -119,7 +135,12 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     for (const auto [bit, count] : operands) {
         const u32 reg = input.Bits(bit, 8);
         if (reg == 255) continue;
-        if (reg + count > 255) { result.valid = false; return result; }
+        // An operand may not straddle the boundary or span two shadowed quartets: only its first
+        // register is renamed.
+        if (reg + count > 255 || (reg < reserved && reg + count > reserved) ||
+            (reg >= reserved && reg / 4 != (reg + count - 1) / 4)) {
+            result.valid = false; return result;
+        }
         for (u32 component = 0; component < count; ++component) {
             used[reg + component] = true;
             if (reg + component >= reserved) groups[(reg + component) / 4] = true;
@@ -237,8 +258,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         RegisterPressure pressure{insn};
         bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
+            if (opcode == 0x81c) break; // PLOP3: bits 16-31 hold predicates and its LUT, not registers
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x988) continue;
+                opcode != 0x986 && opcode != 0x987 && opcode != 0x988) continue;
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
