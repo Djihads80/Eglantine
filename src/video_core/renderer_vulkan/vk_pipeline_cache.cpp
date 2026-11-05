@@ -1086,7 +1086,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
-    if (!use_asynchronous_shaders) {
+    if (!use_asynchronous_shaders || pipeline->IsMeshPipeline()) {
         return pipeline;
     }
     // If something is using depth, we can assume that games are not rendering anything which
