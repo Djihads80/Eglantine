@@ -80,11 +80,23 @@ void KeplerCompute::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
 
 void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
     for (auto [method, value] : method_sink) {
+        if (method < native_registers.size()) {
+            native_registers[method] = value;
+        }
         if (method < Regs::NUM_REGS) {
             regs.reg_array[method] = value;
         }
     }
     method_sink.clear();
+}
+
+void KeplerCompute::CallStateMethod(Core::System& system, u32 method, u32 method_argument) {
+    if (method < native_registers.size()) {
+        native_registers[method] = method_argument;
+    }
+    if (method < Regs::NUM_REGS) {
+        regs.reg_array[method] = method_argument;
+    }
 }
 
 // SET_REPORT_SEMAPHORE_A-D (0x6c0-0x6c3): address high/low, payload, then operation in bits 1:0

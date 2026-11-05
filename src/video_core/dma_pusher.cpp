@@ -429,7 +429,8 @@ void DmaPusher::WatchArgument(u32 method, u32 argument) const {
 bool DmaPusher::WantsSegment() const {
     // Only macro parameters and compute uploads read the engine's current_dma_segment.
     const auto engine = subchannel_type[dma_state.subchannel];
-    return engine == Engines::EngineTypes::KeplerCompute ||
+    return (engine == Engines::EngineTypes::KeplerCompute &&
+            (dma_state.method == ComputeInline || dma_state.method >= MacroRegistersStart)) ||
            (engine == Engines::EngineTypes::Maxwell3D && dma_state.method >= MacroRegistersStart);
 }
 
@@ -453,8 +454,12 @@ void DmaPusher::CallMethod(u32 argument) {
         }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        const bool writer =
+            (engine_type == Engines::EngineTypes::KeplerCompute ||
+             engine_type == Engines::EngineTypes::MaxwellDMA) &&
+            (dma_state.method >= MacroRegistersStart ||
+             (dma_state.method < subchannel->execution_mask.size() &&
+              subchannel->execution_mask[dma_state.method]));
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -462,6 +467,7 @@ void DmaPusher::CallMethod(u32 argument) {
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+            const GPUVAddr* const opt_segment = WantsSegment() ? &segment : nullptr;
             if (split.FrontMacros()) {
                 const auto type = subchannel_type[dma_state.subchannel];
                 if (type == Engines::EngineTypes::Maxwell3D) {
@@ -475,13 +481,13 @@ void DmaPusher::CallMethod(u32 argument) {
                     auto* const compute = static_cast<Engines::KeplerCompute*>(subchannel);
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMethod(system, split, dma_state.method, argument,
-                                                 dma_state.is_last_call, &segment);
+                                                 dma_state.is_last_call, opt_segment);
                         return;
                     }
                 }
             }
             split.Method(subchannel, dma_state.method, argument, dma_state.is_last_call,
-                         WantsSegment() ? &segment : nullptr);
+                         opt_segment);
             return;
         }
         if (!subchannel->execution_mask[dma_state.method]) {
@@ -512,8 +518,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA;
+        const bool writer =
+            (engine_type == Engines::EngineTypes::KeplerCompute ||
+             engine_type == Engines::EngineTypes::MaxwellDMA) &&
+            (dma_state.method >= MacroRegistersStart ||
+             (dma_state.method < subchannel->execution_mask.size() &&
+              subchannel->execution_mask[dma_state.method]));
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -521,6 +531,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         };
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
+            const GPUVAddr* const opt_segment = WantsSegment() ? &segment : nullptr;
             if (split.FrontMacros()) {
                 const auto type = subchannel_type[dma_state.subchannel];
                 if (type == Engines::EngineTypes::Maxwell3D) {
@@ -534,13 +545,13 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                     auto* const compute = static_cast<Engines::KeplerCompute*>(subchannel);
                     if (compute->FrontRunsMacros()) {
                         compute->FrontCallMultiMethod(system, split, dma_state.method, base_start,
-                                                      num_methods, dma_state.method_count, &segment);
+                                                      num_methods, dma_state.method_count, opt_segment);
                         return;
                     }
                 }
             }
             split.MultiMethod(subchannel, dma_state.method, base_start, num_methods,
-                              dma_state.method_count, WantsSegment() ? &segment : nullptr);
+                              dma_state.method_count, opt_segment);
             return;
         }
         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};

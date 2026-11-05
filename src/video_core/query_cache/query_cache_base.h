@@ -125,11 +125,17 @@ protected:
     void IterateCache(VAddr addr, std::size_t size, Func&& func) {
         static constexpr bool RETURNS_BOOL =
             std::is_same_v<std::invoke_result<Func, QueryLocation>, bool>;
+        if (size == 0) {
+            return;
+        }
         const u64 addr_begin = addr;
         const u64 addr_end = addr_begin + size;
 
-        const u64 page_end = addr_end >> Core::DEVICE_PAGEBITS;
+        const u64 page_end = (addr_end - 1) >> Core::DEVICE_PAGEBITS;
         std::scoped_lock lock(cache_mutex);
+        if (cached_queries.empty()) {
+            return;
+        }
         for (u64 page = addr_begin >> Core::DEVICE_PAGEBITS; page <= page_end; ++page) {
             const u64 page_start = page << Core::DEVICE_PAGEBITS;
             const auto in_range = [page_start, addr_begin, addr_end](const u32 query_location) {
@@ -159,6 +165,9 @@ protected:
                     return in_range(pair.first);
                 };
                 erase_if(contents, in_range2);
+                if (contents.empty()) {
+                    cached_queries.erase(it);
+                }
             }
         }
     }

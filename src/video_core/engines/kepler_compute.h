@@ -74,8 +74,14 @@ public:
         upload_state.SetNativePartialTransfers(native_mode);
         native_macro = shared_macro;
         native_macro_positions = positions;
-        if (native_mode) execution_mask.set();
-        else {
+        if (native_mode) {
+            execution_mask.set();
+            for (u32 m = 0; m < native_plain_methods.size(); ++m) {
+                if (native_plain_methods[m]) {
+                    execution_mask[m] = false;
+                }
+            }
+        } else {
             execution_mask.reset();
             execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
             execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
@@ -235,6 +241,8 @@ public:
 
     /// Write the value to the register identified by method.
     void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
+
+    void CallStateMethod(Core::System& system, u32 method, u32 method_argument) override;
 
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
