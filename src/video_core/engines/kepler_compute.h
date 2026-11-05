@@ -315,6 +315,13 @@ private:
     std::optional<Texture::TICEntry> dlss_depth;
     GPUVAddr dlss_motion_color{};
     std::array<f32, 2> dlss_jitter{};
+    struct RejectedComputeProgram {
+        std::string message;
+        bool emulates_tensor{};
+        bool matrix_multiply{};
+        u32 upscale_failures{};
+    };
+    std::unordered_map<GPUVAddr, RejectedComputeProgram> rejected_compute_programs;
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
     std::array<u32, 0xc00>* native_data_ram{};

@@ -40,9 +40,11 @@ public:
                 if (states.size() >= 4096) return "QMD cache limit";
             }
             auto& state = states[request.address];
+            bool just_loaded = false;
             if (request.action == 3 || request.action == 2) {
                 if (request.action == 3 || !state.loaded) {
                     if (!read(request.address, state.descriptor)) return "unmapped QMD";
+                    just_loaded = true;
                     const auto& qmd = state.descriptor;
                     if ((qmd[18] & 0xff) != 0x30 || (qmd[4] & 0x100)) return "unsupported QMD version or queue";
                     if constexpr (std::is_same_v<Dispatch, RejectShaderDispatch>) {
@@ -75,7 +77,7 @@ public:
             if (state.dependencies < 0) return "QMD dependency underflow";
             // The SDK patches release payloads while a scheduled QMD is
             // waiting for its remaining dependencies. Fetch them at execution.
-            if (!read(request.address, state.descriptor)) return "unmapped QMD";
+            if (!just_loaded && !read(request.address, state.descriptor)) return "unmapped QMD";
             const auto qmd = state.descriptor;
             if ((qmd[18] & 0xff) != 0x30 || (qmd[4] & 0x100)) return "unsupported QMD version or queue";
             // Validate the release slots before making any visible.

@@ -420,16 +420,18 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             return true;
         }
         native_macro->native_execution_failed = true;
-        std::array<u32, 128> qmd{};
-        if (memory_manager.IsFullyMappedRange(qmd_address, sizeof(qmd))) {
-            memory_manager.ReadBlockUnsafe(qmd_address, qmd.data(), sizeof(qmd));
-        }
         // Log a failing program's first few dispatches only (QMD words 48-49 hold its code
         // address); it fails the same way every frame.
         static std::unordered_map<u64, u32> failures;
-        const u64 program = (u64{qmd[49]} << 32) | qmd[48];
-        if (failures[program ^ std::hash<std::string>{}(std::string{error})]++ >= 2) {
+        const u64 failure_key =
+            (error == "native shader dispatch required" ? regs.code_loc.Address() : qmd_address) ^
+            std::hash<std::string_view>{}(error);
+        if (failures[failure_key]++ >= 2) {
             return true;
+        }
+        std::array<u32, 128> qmd{};
+        if (memory_manager.IsFullyMappedRange(qmd_address, sizeof(qmd))) {
+            memory_manager.ReadBlockUnsafe(qmd_address, qmd.data(), sizeof(qmd));
         }
         LOG_ERROR(HW_GPU, "Native QMD failed: {}", error);
         if (qmd_diagnostics && memory_manager.IsFullyMappedRange(qmd_address, sizeof(qmd))) {
@@ -516,6 +518,19 @@ void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argu
 
 void KeplerCompute::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
     if (native_mode) {
+        if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+            ReleaseFront();
+        }
+        if (method < native_plain_methods.size() && native_plain_methods[method]) {
+            if (amount > 0) {
+                const u32 last = base_start[amount - 1];
+                native_registers[method] = last;
+                if (method < Regs::NUM_REGS) {
+                    regs.reg_array[method] = last;
+                }
+            }
+            return;
+        }
         for (u32 i = 0; i < amount; ++i) CallMethod(system, method, base_start[i], methods_pending - i <= 1);
         return;
     }
@@ -624,17 +639,38 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         dlss_chain.active = false;
         dlss_chain.pending.clear();
     }
+    const GPUVAddr program = regs.code_loc.Address();
     if (dlss_chain.active) {
         // While the network can't be shown (it failed its checks, or it is off) the passes of
         // earlier evaluations stop running, and the replacement upscale draws the output at the
         // output pass.
-        const GPUVAddr program = regs.code_loc.Address();
         if ((dlss_chain.failure != VideoCore::GameDlssReason::None ||
              GameDlssBlocker() != VideoCore::GameDlssReason::None) &&
             dlss_chain.programs.contains(program)) {
             return output_pass ? FinishDlssEvaluation() : true;
         }
         dlss_chain.pending.insert(program);
+    }
+    const bool emulates_tensor = EmulatesNativeTensorPrograms();
+    if (const auto rejected = rejected_compute_programs.find(program);
+        rejected != rejected_compute_programs.end() &&
+        rejected->second.emulates_tensor == emulates_tensor &&
+        !VideoCommon::Nx2Diag::Active()) {
+        diag_note("failed", rejected->second.message);
+        if (dlss_chain.active) {
+            ++dlss_chain.rejected;
+            return output_pass ? FinishDlssEvaluation() : false;
+        }
+        if (rejected->second.matrix_multiply && rejected->second.upscale_failures < 2) {
+            if (UpscaleInsteadOfNativeProgram()) {
+                return true;
+            }
+            ++rejected->second.upscale_failures;
+        }
+        if (output_pass) {
+            return FinishDlssEvaluation();
+        }
+        return false;
     }
     bool dispatched = true;
     try {
@@ -647,13 +683,23 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             LOG_ERROR(HW_GPU, "Native compute shader rejected: {}", error.what());
         }
         dispatched = false;
+        const bool matrix_multiply =
+            std::string_view{error.what()}.find("matrix multiply") != std::string_view::npos;
+        auto& rejected = rejected_compute_programs[program];
+        rejected.message = error.what();
+        rejected.emulates_tensor = emulates_tensor;
+        rejected.matrix_multiply = matrix_multiply;
+        rejected.upscale_failures = 0;
         if (dlss_chain.active) {
             ++dlss_chain.rejected;
-        } else if (std::string_view{error.what()}.find("matrix multiply") !=
-                   std::string_view::npos) {
+        } else if (matrix_multiply) {
             DescribeNativeResources(qmd);
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
-            return UpscaleInsteadOfNativeProgram();
+            if (UpscaleInsteadOfNativeProgram()) {
+                return true;
+            }
+            ++rejected.upscale_failures;
+            return false;
         }
     }
     if (output_pass) {
@@ -998,6 +1044,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
+        if (offset + sizeof(u32) > cbuf.size.Value()) return std::nullopt;
         const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
