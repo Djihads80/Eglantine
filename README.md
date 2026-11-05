@@ -49,6 +49,7 @@ This repository is for personal experiments, fixes and other things that may or 
 | **Keep Switch 2 pipelines built** (`vk_pipeline_cache`) | Switch 2 titles build every cached pipeline at boot and never evict them, instead of rebuilding evicted ones on the GPU thread mid-game. Switch 1 titles are unchanged. Only applies with the disk shader cache on. | Not merged. Branch [`fix/nx2-keep-switch2-pipelines`](https://github.com/Djihads80/Eglantine/compare/fix/nx2-keep-switch2-pipelines) exists upstream. |
 | **No task/mesh pipelines without `VK_EXT_mesh_shader`** (`vk_pipeline_cache`) | Returns no pipeline instead of building one the driver cannot use, so the draw is skipped as before. Aimed at a `VkPipelineBuild` crash seen on RADV (Vega). Not confirmed by a tester yet. | Not merged. A dev said it is planned, but nothing is on the main repo yet. |
 | **Release guest RAM when a Switch 2 game stops** (`core`) | Destroys the 14 GiB guest memory section when a Switch 2 game stops and creates it again for the next one, instead of keeping it (and clearing it again) until the app closes. In my tests, RAM went back to the base after each of three emulate/stop cycles; before it stayed at about half of the peak. Switch 1 titles are unchanged. Tested on one machine and one title. The first emulation after launching the app still uses 3 to 6 GB more than later ones, and the cause is not known. | Not merged. Not proposed upstream yet. Branch [`feat/release-guest-memory`](https://github.com/SmileyTatsu/Eglantine/tree/feat/release-guest-memory) on this fork. |
+| **Dynamic frame rate for Mario Kart World** (`nx2_gsv`, `game_presets`) | The game picks a 1- or 2-vblank frame mode from a frame time that already includes the interval it asked for, so holding a frame for 2 keeps it reading as too slow and it stays at 30 FPS for good. The recommended settings now turn its dynamic mode on, and `PaceToVblank` recognises the title through the application process: a present that arrives from a service context has no current game process, so the setting used to do nothing. | Not merged. Guarded on the loader patch: a title whose instruction sequence does not match is left unchanged, and every other title is unaffected. |
 
 ### Changes already in upstream
 
@@ -63,6 +64,21 @@ These are now in upstream. Unless a row says otherwise, this fork carries no ext
 ### Known issues
 
 - **More RAM in the first emulation after opening the app.** The first Switch 2 game you start after launching Eglantine can use 3 to 6 GB more RAM than the ones started after it (about 22 to 28 GB against 19 to 22 GB of total PC RAM in my tests). The extra memory is guest memory that the emulated CPU touches, and it stayed flat during the minutes I measured. Stopping the emulation frees it, and the next emulation starts with the lower usage, so stopping the game and starting it again brings the RAM down. The cause is not known yet. It is not a leak, and it is not caused by the RAM release change above: the build without that change used as much on its first run.
+
+### Ideas
+
+Future changes and optimisations, none of them implemented here yet.
+
+- **Align the pacer to the vsync clock.** The present sleep and the vi2 vsync event are two free-running clocks at the same nominal rate; snapping the sleep to the tick removes up to one vblank of phase error per frame without changing the rate the game asked for, so no title's speed changes.
+- **Model the console's present queue.** The compositor flips one frame per vblank and queues the rest, which is not the same as a blocking sleep per present. A bounded queue would let a game run at its real depth instead of stalling on every flip; it needs care, because a title that reuses its command memory once it runs ahead starts reading stale commands.
+- **Make the emulated refresh rate a setting.** An emulated display refresh that both the vsync tick and the pacing follow, so frame-rate mods can target it. `notsapinho/Eglantine` ships it as `nx2_refresh_rate`.
+- **Two frames ahead for 30 FPS titles.** Letting the game run two frames ahead of the GPU thread while it presents at two or more vblanks keeps long frames out of the present path, and backing off when a wait runs long keeps it from stalling. `notsapinho/Eglantine` ships it as `mkw_smooth`.
+- **Raise the texture cache cap.** `MaxCriticalMemory` is a constant applied on every GPU and is re-applied after the budget computation, so a card with more memory than the cap evicts and re-decodes textures that would fit in it. The cap should follow the device budget instead; `mollie2999/Eglantine`'s `exp` branch raises it and collects against the expected threshold.
+- **Batch fence and command-list submits.** Fences, command-list copies and `FlushCommands` each submit on their own today; deferring and batching them removes most of the queue submissions on fence-heavy titles.
+- **Upload only the written rows of a texture.** A CPU write to a plain 2D image marks the whole image dirty and `RefreshContents` re-uploads every mip level; `PlanUnswizzleImageRows` already exists and is used only for full-range chunks.
+- **Log uploads per image address.** The per-600-frame counters say how much was uploaded but not which image, so a texture that is rewritten every frame cannot be confirmed from a log; a per-image tally would show one large image re-uploaded on every rotation instead of once per scene.
+- **Capture a frame on the host GPU.** Nothing in the emulator says how the GPU time splits between draws, copies and decode work, and no CPU counter can; a RenderDoc or Nsight capture would.
+- **Cut draw setup.** It is the largest single term on the split back thread, and the split document already names it as the next step.
 
 ## Compatibility
 
