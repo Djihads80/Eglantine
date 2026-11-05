@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstdlib>
 #include <unordered_map>
 
@@ -85,6 +87,60 @@ public:
 
 private:
     std::unordered_map<u64, Entry> entries;
+};
+
+// Words compute QMDs have released to (device addresses; insert-only, any thread). With
+// EDEN_NX2_QMD_ACQUIRE_SKIP=1 a puller acquire on one does not drain the split's back: the
+// dispatch that releases it is taken to be queued before the acquire, and the back and the host
+// queue keep that order. Off by default: a release from a dispatch sent later (another channel,
+// a later submit) would not be waited for. From sylvieistaken/selevet-eglantine bce3c83739
+// (shintasku/selevet-eglantine-linux).
+class Nx2QmdReleaseTargets {
+public:
+    static bool Enabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_QMD_ACQUIRE_SKIP");
+            return value != nullptr && value[0] == '1';
+        }();
+        return enabled;
+    }
+
+    static void Note(u64 device_address) {
+        const u64 key = device_address + 1;
+        for (size_t i = 0, slot = Slot(device_address); i < Probes; ++i, slot = (slot + 1) % Size) {
+            u64 current = table[slot].load(std::memory_order_relaxed);
+            if (current == key ||
+                (current == 0 && table[slot].compare_exchange_strong(current, key)) ||
+                current == key) {
+                return;
+            }
+        }
+    }
+
+    /// False when the table is full around the word: the acquire drains.
+    [[nodiscard]] static bool Contains(u64 device_address) {
+        const u64 key = device_address + 1;
+        for (size_t i = 0, slot = Slot(device_address); i < Probes; ++i, slot = (slot + 1) % Size) {
+            const u64 current = table[slot].load(std::memory_order_relaxed);
+            if (current == key) {
+                return true;
+            }
+            if (current == 0) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+private:
+    static constexpr size_t Size = 4096;
+    static constexpr size_t Probes = 64;
+
+    static size_t Slot(u64 device_address) {
+        return static_cast<size_t>(((device_address >> 2) * 0x9E3779B97F4A7C15ULL) >> 52);
+    }
+
+    static inline std::array<std::atomic<u64>, Size> table{};
 };
 
 } // namespace Tegra

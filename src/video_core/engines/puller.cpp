@@ -123,6 +123,16 @@ void CountLedgerAcquire() {
     VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireLedger, 1);
 }
 
+// EDEN_NX2_QMD_ACQUIRE_SKIP=1: an acquire on a word compute QMDs release does not drain the back
+// (semaphore_ledger.h, Nx2QmdReleaseTargets).
+bool QmdAcquireSkip(DmaPusher& dma_pusher, GPUVAddr address) {
+    if (!Nx2QmdReleaseTargets::Enabled() || !VideoCommon::GpuSplit::Get().Active()) {
+        return false;
+    }
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    return device && Nx2QmdReleaseTargets::Contains(*device);
+}
+
 } // Anonymous namespace
 
 bool Puller::PendingAcquire::Matches(u32 current) const {
@@ -324,7 +334,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
         if (AcquireMetWithoutDrain(dma_pusher, acquire.address, acquire.value,
-                                   CompareOf(acquire.operation))) {
+                                   CompareOf(acquire.operation)) ||
+            QmdAcquireSkip(dma_pusher, acquire.address)) {
             CountLedgerAcquire();
             return;
         }
