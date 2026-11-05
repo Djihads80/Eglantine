@@ -1975,70 +1975,144 @@ void RasterizerVulkan::UpdateDynamicStates() {
         flags[Dirty::PrimitiveRestartEnable] = true;
     }
 
-    UpdateViewportsState(regs);
-    UpdateScissorsState(regs);
-    UpdateDepthBias(regs);
-    UpdateBlendConstants(regs);
-    UpdateDepthBounds(regs);
-    UpdateStencilFaces(regs);
-    UpdateLineWidth(regs);
-
-    if (device.IsExtExtendedDynamicStateSupported()) {
-        UpdateCullMode(regs);
-        UpdateDepthCompareOp(regs);
-        UpdateFrontFace(regs);
-        UpdateStencilOp(regs);
-        if (state_tracker.TouchStateEnable()) {
-            UpdateDepthBoundsTestEnable(regs);
-            UpdateDepthTestEnable(regs);
-            UpdateDepthWriteEnable(regs);
-            UpdateStencilTestEnable(regs);
+    static_assert(sizeof(Tegra::Engines::Maxwell3D::DirtyState::Flags) == 32);
+    static constexpr auto MakeDirtyWords = [](std::initializer_list<u8> indices) {
+        std::array<u64, 4> words{};
+        for (const u8 idx : indices) {
+            words[idx / 64] |= 1ULL << (idx % 64);
         }
-        if (topology_changed) {
-            scheduler.Record([topology_vk = MaxwellToVK::PrimitiveTopology(device, topology)](
-                                 vk::CommandBuffer cmdbuf) {
-                cmdbuf.SetPrimitiveTopologyEXT(topology_vk);
-            });
+        return words;
+    };
+    static constexpr auto HasAnyDirty = [](const std::array<u64, 4>& words,
+                                           const std::array<u64, 4>& mask) noexcept {
+        return ((words[0] & mask[0]) | (words[1] & mask[1]) | (words[2] & mask[2]) |
+                (words[3] & mask[3])) != 0;
+    };
+    static constexpr auto kViewportScissorMask = MakeDirtyWords({
+        Dirty::Viewports,
+        VideoCommon::Dirty::RescaleViewports,
+        Dirty::Scissors,
+        VideoCommon::Dirty::RescaleScissors,
+    });
+    static constexpr auto kBaseDynamicMask = MakeDirtyWords({
+        Dirty::DepthBias,
+        VideoCommon::Dirty::DepthBiasGlobal,
+        Dirty::BlendConstants,
+        Dirty::DepthBounds,
+        Dirty::StencilProperties,
+        Dirty::LineWidth,
+    });
+    static constexpr auto kEds1Mask = MakeDirtyWords({
+        Dirty::CullMode,
+        Dirty::DepthCompareOp,
+        Dirty::FrontFace,
+        Dirty::StencilOp,
+        Dirty::StateEnable,
+    });
+    static constexpr auto kEds2Mask = MakeDirtyWords({
+        Dirty::PrimitiveRestartEnable,
+        Dirty::RasterizerDiscardEnable,
+        Dirty::DepthBiasEnable,
+    });
+    static constexpr auto kEds3EnablesMask = MakeDirtyWords({
+        Dirty::LogicOpEnable,
+        Dirty::DepthClampEnable,
+        Dirty::LineRasterizationMode,
+        Dirty::LineStippleEnable,
+        Dirty::ConservativeRasterizationMode,
+        Dirty::AlphaToCoverageEnable,
+        Dirty::AlphaToOneEnable,
+    });
+    static constexpr auto kEds3BlendMask = MakeDirtyWords({
+        Dirty::Blending,
+        Dirty::ColorMask,
+    });
+    static constexpr auto kAllDynamicMask = [] {
+        std::array<u64, 4> combined{};
+        for (const auto& mask : {kViewportScissorMask, kBaseDynamicMask, kEds1Mask, kEds2Mask,
+                                 kEds3EnablesMask, kEds3BlendMask}) {
+            for (size_t i = 0; i < 4; ++i) {
+                combined[i] |= mask[i];
+            }
         }
-    }
+        combined[Dirty::LogicOp / 64] |= 1ULL << (Dirty::LogicOp % 64);
+        return combined;
+    }();
 
-    if (device.IsExtExtendedDynamicState2Supported()) {
-        UpdatePrimitiveRestartEnable(regs);
-        UpdateRasterizerDiscardEnable(regs);
-        UpdateDepthBiasEnable(regs);
-    }
-
-    if (device.IsExtExtendedDynamicState2ExtrasSupported()) {
-        UpdateLogicOp(regs);
-    }
-
-    if (device.IsExtExtendedDynamicState3EnablesSupported()) {
-        using namespace Tegra::Engines;
-        // AMD Workaround: LogicOp incompatible with float render targets
-        if (regs.logic_op.enable &&
-            (device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_OPEN_SOURCE ||
-             device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_PROPRIETARY)) {
-            const auto has_float = std::any_of(
-                regs.vertex_attrib_format.begin(), regs.vertex_attrib_format.end(),
-                [](const auto& attrib) {
-                    return attrib.type == Maxwell3D::Regs::VertexAttribute::Type::Float;
-                }
-            );
-            regs.logic_op.enable = static_cast<u32>(!has_float);
+    const auto words = std::bit_cast<std::array<u64, 4>>(flags);
+    if (topology_changed || HasAnyDirty(words, kAllDynamicMask)) {
+        if (HasAnyDirty(words, kViewportScissorMask)) {
+            UpdateViewportsState(regs);
+            UpdateScissorsState(regs);
         }
-        UpdateLogicOpEnable(regs);
-        UpdateDepthClampEnable(regs);
-        UpdateLineRasterizationMode(regs);
-        UpdateLineStippleEnable(regs);
-        UpdateConservativeRasterizationMode(regs);
-        UpdateAlphaToCoverageEnable(regs);
-        UpdateAlphaToOneEnable(regs);
-    }
+        if (HasAnyDirty(words, kBaseDynamicMask)) {
+            UpdateDepthBias(regs);
+            UpdateBlendConstants(regs);
+            UpdateDepthBounds(regs);
+            UpdateStencilFaces(regs);
+            UpdateLineWidth(regs);
+        }
 
-    if (device.IsExtExtendedDynamicState3BlendingSupported()) {
-        UpdateBlending(regs);
-    } else if (device.IsExtColorWriteEnableSupported()) {
-        UpdateColorWriteEnable(regs);
+        if ((topology_changed || HasAnyDirty(words, kEds1Mask)) &&
+            device.IsExtExtendedDynamicStateSupported()) {
+            UpdateCullMode(regs);
+            UpdateDepthCompareOp(regs);
+            UpdateFrontFace(regs);
+            UpdateStencilOp(regs);
+            if (state_tracker.TouchStateEnable()) {
+                UpdateDepthBoundsTestEnable(regs);
+                UpdateDepthTestEnable(regs);
+                UpdateDepthWriteEnable(regs);
+                UpdateStencilTestEnable(regs);
+            }
+            if (topology_changed) {
+                scheduler.Record([topology_vk = MaxwellToVK::PrimitiveTopology(device, topology)](
+                                     vk::CommandBuffer cmdbuf) {
+                    cmdbuf.SetPrimitiveTopologyEXT(topology_vk);
+                });
+            }
+        }
+
+        if (HasAnyDirty(words, kEds2Mask) && device.IsExtExtendedDynamicState2Supported()) {
+            UpdatePrimitiveRestartEnable(regs);
+            UpdateRasterizerDiscardEnable(regs);
+            UpdateDepthBiasEnable(regs);
+        }
+
+        if (flags[Dirty::LogicOp] && device.IsExtExtendedDynamicState2ExtrasSupported()) {
+            UpdateLogicOp(regs);
+        }
+
+        if (HasAnyDirty(words, kEds3EnablesMask) &&
+            device.IsExtExtendedDynamicState3EnablesSupported()) {
+            using namespace Tegra::Engines;
+            // AMD Workaround: LogicOp incompatible with float render targets
+            if (flags[Dirty::LogicOpEnable] && regs.logic_op.enable &&
+                (device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+                 device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_PROPRIETARY)) {
+                const auto has_float = std::any_of(
+                    regs.vertex_attrib_format.begin(), regs.vertex_attrib_format.end(),
+                    [](const auto& attrib) {
+                        return attrib.type == Maxwell3D::Regs::VertexAttribute::Type::Float;
+                    });
+                regs.logic_op.enable = static_cast<u32>(!has_float);
+            }
+            UpdateLogicOpEnable(regs);
+            UpdateDepthClampEnable(regs);
+            UpdateLineRasterizationMode(regs);
+            UpdateLineStippleEnable(regs);
+            UpdateConservativeRasterizationMode(regs);
+            UpdateAlphaToCoverageEnable(regs);
+            UpdateAlphaToOneEnable(regs);
+        }
+
+        if (HasAnyDirty(words, kEds3BlendMask)) {
+            if (device.IsExtExtendedDynamicState3BlendingSupported()) {
+                UpdateBlending(regs);
+            } else if (device.IsExtColorWriteEnableSupported()) {
+                UpdateColorWriteEnable(regs);
+            }
+        }
     }
 
     if (device.IsExtVertexInputDynamicStateSupported() &&

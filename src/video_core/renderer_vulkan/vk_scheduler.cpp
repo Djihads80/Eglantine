@@ -176,7 +176,7 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
                                     const VkClearValue* clear_values, u32 clear_value_count) {
     const VkFramebuffer framebuffer_handle = framebuffer->Handle();
     const VkExtent2D render_area = framebuffer->RenderArea();
-    state.renderpass = renderpass;
+    state.renderpass = framebuffer->RenderPass();
     state.framebuffer = framebuffer_handle;
     state.render_area = render_area;
 

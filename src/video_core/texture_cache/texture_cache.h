@@ -803,15 +803,14 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         if (rt_active_mask == 0) {
             return;
         }
-        for (size_t index = 0; index < NUM_RT; ++index) {
-            if ((rt_active_mask & (1u << index)) != 0) {
-                ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
-                PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
-            }
+        for (u32 mask = rt_active_mask & ((1u << NUM_RT) - 1); mask != 0; mask &= mask - 1) {
+            const size_t index = static_cast<size_t>(std::countr_zero(mask));
+            PrepareImage(rt_image_id[index], true,
+                         is_clear && IsFullClear(render_targets.color_buffer_ids[index]));
         }
         if ((rt_active_mask & (1u << NUM_RT)) != 0) {
-            const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
-            PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
+            PrepareImage(rt_depth_image_id, true,
+                         is_clear && IsFullClear(render_targets.depth_buffer_id));
         }
         return;
     }
