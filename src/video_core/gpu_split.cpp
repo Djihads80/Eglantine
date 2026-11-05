@@ -35,6 +35,7 @@
 #include "core/core.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/gpu_split.h"
+#include "video_core/semaphore_ledger.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 
@@ -251,6 +252,9 @@ void GpuSplit::Stop() {
     front_engine = nullptr;
     back_engine = nullptr;
     front_macros = false;
+    pending_count = 0;
+    // Its entries carry ring positions (orders) of this session: stale once they restart.
+    Tegra::Nx2SemaphoreLedger::Get().Clear();
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
