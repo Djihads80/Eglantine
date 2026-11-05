@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <fmt/ranges.h>
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_event.h"
@@ -145,6 +146,15 @@ Module::Module(Core::System& system)
     {
         // Read once per game start; EDEN_NX2_COMMAND_LISTS=0/1 overrides the setting.
         bool command_lists = Settings::values.nx2_command_lists.GetValue();
+#ifdef __ANDROID__
+        // On an Odin 3 the copies cost Mario Kart World ~45 ms of GPU-thread waiting a second
+        // and caused flicker, so it runs without them unless its own custom settings turn them
+        // on. Other games need them: Ocarina of Time deadlocks on the lists it rewrites.
+        if (system.GetApplicationProcessProgramID() == Settings::MarioKartWorldProgramId &&
+            Settings::values.nx2_command_lists.UsingGlobal()) {
+            command_lists = false;
+        }
+#endif
         const char* const override_value = std::getenv("EDEN_NX2_COMMAND_LISTS");
         if (override_value != nullptr && override_value[0] != '\0') {
             command_lists = override_value[0] != '0';
