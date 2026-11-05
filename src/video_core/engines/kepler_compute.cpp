@@ -1510,8 +1510,16 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
                                          u32 methods_pending, const GPUVAddr* segment) {
     auto& fs = Front(split);
     if (method >= 0xe00 && method < fs.registers.size()) {
-        for (u32 i = 0; i < amount; ++i) {
-            FrontCallMethod(system, split, method, base_start[i], methods_pending - i <= 1, segment);
+        if (!fs.executing_macro) {
+            if (method & 1) {
+                LOG_ERROR(HW_GPU, "Native compute macro starts on argument method");
+                return;
+            }
+            fs.executing_macro = method;
+        }
+        fs.parameters.insert(fs.parameters.end(), base_start, base_start + amount);
+        if (amount >= methods_pending) {
+            FrontRunMacro(system, split, fs);
         }
         return;
     }

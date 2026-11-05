@@ -52,25 +52,34 @@ public:
         // contiguous in host memory, so cache the host page pointer across descriptors in the
         // same 4 KiB page while the GPU page table mapping serial is unchanged.
         if (page_offset + sizeof(T) <= Core::Memory::YUZU_PAGESIZE) [[likely]] {
-            const GPUVAddr page_addr = gpu_addr - page_offset;
-            const size_t memory_id = gpu_memory.GetID();
-            const u64 map_serial = gpu_memory.MapSerial();
-            auto& cache_entry =
-                page_cache[(page_addr >> Core::Memory::YUZU_PAGEBITS) & (PageCacheSize - 1)];
-            const u8* page_ptr = nullptr;
-            if (cache_entry.page_addr == page_addr && cache_entry.memory_id == memory_id &&
-                cache_entry.map_serial == map_serial && cache_entry.host_ptr != nullptr)
-                [[likely]] {
-                page_ptr = cache_entry.host_ptr;
-            } else if (const u8* const resolved = gpu_memory.GetPointer(page_addr)) {
-                cache_entry.page_addr = page_addr;
-                cache_entry.memory_id = memory_id;
-                cache_entry.map_serial = map_serial;
-                cache_entry.host_ptr = resolved;
-                page_ptr = resolved;
-            }
-            if (page_ptr != nullptr) [[likely]] {
-                std::memcpy(std::addressof(result.first), page_ptr + page_offset, sizeof(T));
+            if constexpr (requires {
+                              gpu_memory.GetID();
+                              gpu_memory.GetMapSerial();
+                          }) {
+                const GPUVAddr page_addr = gpu_addr - page_offset;
+                const size_t memory_id = gpu_memory.GetID();
+                const u64 map_serial = gpu_memory.GetMapSerial();
+                auto& cache_entry =
+                    page_cache[(page_addr >> Core::Memory::YUZU_PAGEBITS) & (PageCacheSize - 1)];
+                const u8* page_ptr = nullptr;
+                if (cache_entry.page_addr == page_addr && cache_entry.memory_id == memory_id &&
+                    cache_entry.map_serial == map_serial && cache_entry.host_ptr != nullptr)
+                    [[likely]] {
+                    page_ptr = cache_entry.host_ptr;
+                } else if (const u8* const resolved = gpu_memory.GetPointer(page_addr)) {
+                    cache_entry.page_addr = page_addr;
+                    cache_entry.memory_id = memory_id;
+                    cache_entry.map_serial = map_serial;
+                    cache_entry.host_ptr = resolved;
+                    page_ptr = resolved;
+                }
+                if (page_ptr != nullptr) [[likely]] {
+                    std::memcpy(std::addressof(result.first), page_ptr + page_offset, sizeof(T));
+                } else {
+                    gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
+                }
+            } else if (const u8* const host_ptr = gpu_memory.GetPointer(gpu_addr)) {
+                std::memcpy(std::addressof(result.first), host_ptr, sizeof(T));
             } else {
                 gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
             }

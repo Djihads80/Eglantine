@@ -140,13 +140,20 @@ bool DmaPusher::Step() {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 auto* const engine_state = subchannels[dma_state.subchannel];
                 if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-                    // The caches behind IsMemoryDirty belong to the split's back thread.
-                    split.Defer(
-                        [engine_state, memory = &memory_manager,
-                         address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
-                            engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
-                        },
-                        VideoCommon::GpuSplit::Effect::None);
+                    const bool front_3d_macro =
+                        macro_payload && split.FrontMacros() &&
+                        static_cast<Engines::Maxwell3D*>(engine_state)
+                            ->GetNativeMacroEngine()
+                            .native_turing;
+                    if (!front_3d_macro) {
+                        // The caches behind IsMemoryDirty belong to the split's back thread.
+                        split.Defer(
+                            [engine_state, memory = &memory_manager,
+                             address = GPUVAddr{dma_state.dma_get}, bytes = words * sizeof(u32)] {
+                                engine_state->current_dirty = memory->IsMemoryDirty(address, bytes);
+                            },
+                            VideoCommon::GpuSplit::Effect::None);
+                    }
                 } else {
                     engine_state->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
                 }

@@ -1502,13 +1502,13 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     // waiting for the back: how much the drain costs, not a correct read.
     static const bool no_drain = std::getenv("EDEN_NX2_DMA_NO_DRAIN") != nullptr;
     if (no_drain) {
-        for (u32 i = 0; i < words; ++i) {
-            const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
-            if (method == 0x158) {
-                fs.parameters.push_back(word);
-            } else if (ram + i < native_data_ram.size()) {
-                native_data_ram[ram + i] = word;
-            }
+        if (method == 0x158) {
+            const size_t old_size = fs.parameters.size();
+            fs.parameters.resize(old_size + words);
+            memory_manager.ReadWordsUnsafe(source, fs.parameters.data() + old_size, words);
+        } else if (ram < native_data_ram.size()) {
+            const size_t copy_words = (std::min<size_t>)(words, native_data_ram.size() - ram);
+            memory_manager.ReadWordsUnsafe(source, native_data_ram.data() + ram, copy_words);
         }
         return;
     }
@@ -1527,6 +1527,17 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
             },
             VideoCommon::DrainSite::MacroDmaFlush);
     }
+    if (diag_before.empty()) {
+        if (method == 0x158) {
+            const size_t old_size = fs.parameters.size();
+            fs.parameters.resize(old_size + words);
+            memory_manager.ReadWordsUnsafe(source, fs.parameters.data() + old_size, words);
+        } else if (ram < native_data_ram.size()) {
+            const size_t copy_words = (std::min<size_t>)(words, native_data_ram.size() - ram);
+            memory_manager.ReadWordsUnsafe(source, native_data_ram.data() + ram, copy_words);
+        }
+        return;
+    }
     u32 changed{};
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
@@ -1535,7 +1546,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         } else if (ram + i < native_data_ram.size()) {
             native_data_ram[ram + i] = word;
         }
-        if (!diag_before.empty() && diag_before[i] != word) {
+        if (diag_before[i] != word) {
             ++changed;
         }
     }
@@ -1599,33 +1610,40 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             Profile::Add(wait_reason, 1);
         }
     }
+    if (!VideoCommon::Nx2Perf::Verify()) [[likely]] {
+        if (method == 0x158) {
+            const size_t old_size = fs.parameters.size();
+            fs.parameters.resize(old_size + words);
+            memory_manager.ReadWordsUnsafe(source, fs.parameters.data() + old_size, words);
+        } else if (ram < native_data_ram.size()) {
+            const size_t copy_words = (std::min<size_t>)(words, native_data_ram.size() - ram);
+            memory_manager.ReadWordsUnsafe(source, native_data_ram.data() + ram, copy_words);
+        }
+        return true;
+    }
     auto& read = fs.dma_words;
     read.resize(words);
-    for (u32 i = 0; i < words; ++i) {
-        read[i] = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+    memory_manager.ReadWordsUnsafe(source, read.data(), words);
+    // The old path: drain, flush, read again. Its words are the ones used.
+    split.Drain(VideoCommon::DrainSite::MacroDmaRead);
+    if (memory_manager.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
+        split.Run(
+            [memory = &memory_manager, source, bytes] {
+                memory->FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
+            },
+            VideoCommon::DrainSite::MacroDmaFlush);
     }
-    if (VideoCommon::Nx2Perf::Verify()) {
-        // The old path: drain, flush, read again. Its words are the ones used.
-        split.Drain(VideoCommon::DrainSite::MacroDmaRead);
-        if (memory_manager.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
-            split.Run(
-                [memory = &memory_manager, source, bytes] {
-                    memory->FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
-                },
-                VideoCommon::DrainSite::MacroDmaFlush);
+    static u32 logged{};
+    for (u32 i = 0; i < words; ++i) {
+        const u32 drained = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+        if (drained != read[i] && logged < 64) {
+            ++logged;
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf split: macro {:#x} DMA read of {} words at {:#x}: word {} is "
+                      "{:#x} without the drain, {:#x} after it",
+                      macro, words, source, i, read[i], drained);
         }
-        static u32 logged{};
-        for (u32 i = 0; i < words; ++i) {
-            const u32 drained = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
-            if (drained != read[i] && logged < 64) {
-                ++logged;
-                LOG_ERROR(HW_GPU,
-                          "Nx2Perf split: macro {:#x} DMA read of {} words at {:#x}: word {} is "
-                          "{:#x} without the drain, {:#x} after it",
-                          macro, words, source, i, read[i], drained);
-            }
-            read[i] = drained;
-        }
+        read[i] = drained;
     }
     for (u32 i = 0; i < words; ++i) {
         if (method == 0x158) {
