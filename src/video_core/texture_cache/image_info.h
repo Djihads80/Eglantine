@@ -40,6 +40,22 @@ struct ImageInfo {
         return native && !legacy_sector_layout;
     }
 
+    [[nodiscard]] bool IsSectorLayoutCompatible(const ImageInfo& other) const noexcept {
+        return !sector_layout_known || !other.sector_layout_known ||
+               native_tiling == other.native_tiling;
+    }
+
+    bool ResolveSectorLayout(const ImageInfo& other) noexcept {
+        if (sector_layout_known || !other.sector_layout_known) {
+            return false;
+        }
+        const bool changed = native_tiling != other.native_tiling;
+        native_tiling = other.native_tiling;
+        legacy_sector_layout = other.legacy_sector_layout;
+        sector_layout_known = true;
+        return changed;
+    }
+
     PixelFormat format = PixelFormat::Invalid;
     ImageType type = ImageType::e1D;
     SubresourceExtent resources;
@@ -55,6 +71,8 @@ struct ImageInfo {
     bool native_tiling = false;
     // Native TIC header bit 88 selects the legacy Tegra sector order.
     bool legacy_sector_layout = false;
+    // Render target registers do not specify the texture descriptor's sector order.
+    bool sector_layout_known = false;
     bool rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;

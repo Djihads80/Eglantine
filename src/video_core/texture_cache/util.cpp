@@ -1529,6 +1529,9 @@ std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr 
                                             bool strict_size, bool broken_views, bool native_bgr) {
     ASSERT(new_info.type != ImageType::Linear);
     ASSERT(overlap.info.type != ImageType::Linear);
+    if (!new_info.IsSectorLayoutCompatible(overlap.info)) {
+        return std::nullopt;
+    }
     if (!IsLayerStrideCompatible(new_info, overlap.info)) {
         return std::nullopt;
     }
@@ -1577,6 +1580,9 @@ bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs) {
 std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const ImageBase& image,
                                                GPUVAddr candidate_addr, RelaxedOptions options,
                                                bool broken_views, bool native_bgr) {
+    if (!candidate.IsSectorLayoutCompatible(image.info)) {
+        return std::nullopt;
+    }
     const std::optional<SubresourceBase> base = image.TryFindBase(candidate_addr);
     if (!base) {
         return std::nullopt;

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include "video_core/texture_cache/image_base.h"
 #include "video_core/texture_cache/image_info.h"
+#include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 
 TEST_CASE("Block-linear textures preserve both GOB sector orders", "[texture_layout]") {
@@ -57,4 +59,78 @@ TEST_CASE("Native texture descriptors select their sector layout", "[texture_lay
         REQUIRE(info.UsesNativeSectorLayout(true) == !legacy);
         REQUIRE_FALSE(info.UsesNativeSectorLayout(false));
     }
+}
+
+TEST_CASE("Cached textures match effective sector layouts", "[texture_layout]") {
+    using namespace VideoCommon;
+    constexpr GPUVAddr gpu_addr = 0x100000;
+    constexpr VAddr cpu_addr = 0x200000;
+    Tegra::Texture::TICEntry config{};
+    config.raw = {0x216af00078d7ffa1ULL, 0x0007002000600081ULL, 0x80000437e880077fULL,
+                  0x0000000003000000ULL};
+    for (const bool native : {false, true}) {
+        for (const bool cached_legacy : {false, true}) {
+            config.load_store_hint.Assign(cached_legacy);
+            ImageInfo cached_info{config};
+            cached_info.native_tiling = cached_info.UsesNativeSectorLayout(native);
+            cached_info.resources.layers = 2;
+            const ImageBase image{cached_info, gpu_addr, cpu_addr};
+            for (const bool candidate_legacy : {false, true}) {
+                CAPTURE(native, cached_legacy, candidate_legacy);
+                config.load_store_hint.Assign(candidate_legacy);
+                ImageInfo candidate{config};
+                candidate.native_tiling = candidate.UsesNativeSectorLayout(native);
+                const bool compatible = !native || cached_legacy == candidate_legacy;
+                for (const u32 offset : {0U, cached_info.layer_stride}) {
+                    CAPTURE(offset);
+                    for (const auto options : {RelaxedOptions{}, RelaxedOptions::Size |
+                                                                    RelaxedOptions::Format |
+                                                                    RelaxedOptions::Samples}) {
+                        CAPTURE(options);
+                        REQUIRE(IsSubresource(candidate, image, gpu_addr + offset, options, false,
+                                              true) == compatible);
+                    }
+                    REQUIRE(ResolveOverlap(candidate, gpu_addr + offset, cpu_addr + offset, image,
+                                           true, false, true)
+                                .has_value() == compatible);
+                    const ImageBase candidate_image{candidate, gpu_addr + offset, cpu_addr + offset};
+                    REQUIRE(ResolveOverlap(cached_info, gpu_addr, cpu_addr, candidate_image, true,
+                                           false, true)
+                                .has_value() == compatible);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Render targets resolve their sector layout from texture descriptors", "[texture_layout]") {
+    using namespace VideoCommon;
+    Tegra::Texture::TICEntry config{};
+    config.raw = {0x216af00078d7ffa1ULL, 0x0007002001600081ULL, 0x80000437e880077fULL,
+                  0x0000000003000000ULL};
+    ImageInfo sampled{config};
+    sampled.native_tiling = sampled.UsesNativeSectorLayout(true);
+    Tegra::Engines::Maxwell3D::Regs::RenderTargetConfig target{};
+    target.width = 1920;
+    target.height = 1080;
+    target.depth.Assign(1);
+    target.format = Tegra::RenderTargetFormat::B10G11R11_FLOAT;
+    target.tile_mode.block_height.Assign(4);
+    target.array_pitch = sampled.layer_stride / 4;
+    ImageInfo rendered{target, config.msaa_mode};
+    rendered.native_tiling = rendered.UsesNativeSectorLayout(true);
+    REQUIRE_FALSE(rendered.sector_layout_known);
+    REQUIRE(sampled.sector_layout_known);
+    const ImageBase image{rendered, 0x100000, 0x200000};
+    REQUIRE(IsSubresource(sampled, image, 0x100000, RelaxedOptions{}, false, true));
+    REQUIRE(ResolveOverlap(sampled, 0x100000, 0x200000, image, true, false, true).has_value());
+    REQUIRE(rendered.ResolveSectorLayout(sampled));
+    REQUIRE(rendered.sector_layout_known);
+    REQUIRE_FALSE(rendered.native_tiling);
+    REQUIRE(rendered.legacy_sector_layout);
+    sampled.native_tiling = true;
+    sampled.legacy_sector_layout = false;
+    REQUIRE_FALSE(rendered.IsSectorLayoutCompatible(sampled));
+    REQUIRE_FALSE(rendered.ResolveSectorLayout(sampled));
+    REQUIRE_FALSE(rendered.native_tiling);
 }

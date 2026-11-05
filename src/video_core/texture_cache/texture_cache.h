@@ -2085,6 +2085,8 @@ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_a
 template <class P>
 ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                    RelaxedOptions options) {
+    ImageInfo storage_info = info;
+    storage_info.native_tiling = info.UsesNativeSectorLayout(gpu_memory->UsesNativeTiling());
     const std::optional<DAddr> cpu_addr = ImageCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
     if (!cpu_addr) {
         return ImageId{};
@@ -2112,8 +2114,17 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                 image_ids.push_back(existing_image_id);
                 return !flexible_formats && existing.format == info.format;
             }
-        } else if (IsSubresource(info, existing_image, gpu_addr, options, broken_views,
+        } else if (IsSubresource(storage_info, existing_image, gpu_addr, options, broken_views,
                                  native_bgr)) {
+            if (existing_image.info.ResolveSectorLayout(storage_info) &&
+                False(existing_image.flags & ImageFlagBits::GpuModified)) {
+                existing_image.flags |= ImageFlagBits::CpuModified;
+                existing_image.dirty_layers.clear();
+                existing_image.dirty_ranges.clear();
+                if (True(existing_image.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(existing_image, existing_image_id);
+                }
+            }
             image_id = existing_image_id;
             image_ids.push_back(existing_image_id);
             return !flexible_formats && existing_image.info.format == info.format;
@@ -2514,6 +2525,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         const std::optional<OverlapResult> solution = ResolveOverlap(
             new_info, gpu_addr, cpu_addr, overlap, strict_size, broken_views, native_bgr);
         if (solution) {
+            new_info.ResolveSectorLayout(overlap.info);
             gpu_addr = solution->gpu_addr;
             cpu_addr = solution->cpu_addr;
             new_info.resources = solution->resources;
@@ -2524,11 +2536,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         constexpr auto options = RelaxedOptions::Size | RelaxedOptions::Format;
         const ImageBase new_image_base(new_info, gpu_addr, cpu_addr);
         if (IsSubresource(new_info, overlap, gpu_addr, options, broken_views, native_bgr)) {
+            new_info.ResolveSectorLayout(overlap.info);
             join_left_aliased_ids.push_back(overlap_id);
             overlap.flags |= ImageFlagBits::Alias;
             join_copies_to_do.emplace_back(JoinCopy{true, overlap_id});
         } else if (IsSubresource(overlap.info, new_image_base, overlap.gpu_addr, options,
                                  broken_views, native_bgr)) {
+            new_info.ResolveSectorLayout(overlap.info);
             join_right_aliased_ids.push_back(overlap_id);
             overlap.flags |= ImageFlagBits::Alias;
             join_copies_to_do.emplace_back(JoinCopy{true, overlap_id});
