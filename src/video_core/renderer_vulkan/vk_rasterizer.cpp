@@ -437,12 +437,17 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         diag_outcome = reason == "no pipeline" ? pipeline_cache.GraphicsMissReason()
                        : reason == "configure failed" ? "configure-failed" : "mesh-disabled";
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
+        static size_t async_logged{};
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
-            LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
-                        regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
+        // Say why, and keep the expected asynchronous-shader skips from using up the line budget.
+        const std::string_view miss = reason == "no pipeline" ? diag_outcome : reason;
+        const bool async_miss = miss == "async-build";
+        if ((async_miss ? async_logged < 8 : seen.size() < 64) && seen.emplace(vs, ps, miss).second) {
+            async_logged += async_miss ? 1 : 0;
+            LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{} miss={}", reason, vs,
+                        ps, regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height, miss);
         }
     };
     SCOPE_EXIT {
