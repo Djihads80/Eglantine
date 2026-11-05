@@ -65,3 +65,5 @@ or stage where the image goes bad, with runs the agent drives itself.
   scanning `LoweredProgram::instructions`. Map back with `source_instruction_offsets[ampere_index]`.
 - **`capture` matches files by mtime.** Capture numbers restart each run, so stale
   `capture-N.tga` from a previous run must not count. `launch` clears them.
+
+- **One material pure white for 1-2 frames, camera still (OoT tunic/leaves):** stale per-draw data in a native program's 64 KiB uniform bank, not the GPU split or fences. Bursts (`nx2-lab-automation` scripts/oot_burst.sh + flash_scan.py) A/B it: re-uploading the bank on every bind (`EDEN_NX2_BANK_REUPLOAD`, default 2) took it from ~1/600 presents to 0/1800. Sync GPU makes it more frequent, which is the quickest repro.
