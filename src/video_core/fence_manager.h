@@ -86,10 +86,6 @@ public:
             TryReleasePendingFences<false>();
         }
         auto [should_flush, committed_flushes] = CommitCacheFlushes();
-        // Downloads committed here reach guest memory when the fence pops: a guest that saw the
-        // fence first would read the bytes they replace (GPU readbacks).
-        const bool delay_operation =
-            delay_fence || (committed_flushes != 0 && DelaysDownloadFences());
         if (!delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
             Nx2Profile::Scope skipped_scope{Nx2Profile::Zone::FenceSkipped};
             func();
@@ -105,7 +101,7 @@ public:
         }
         {
             std::scoped_lock lock{uncommitted_guard};
-            if (delay_operation) {
+            if (delay_fence) {
                 uncommitted_operations.emplace_back(std::move(func));
             }
             pending_operations.emplace_back(std::move(uncommitted_operations));
@@ -113,7 +109,7 @@ public:
         }
         pending_flushes.push_back(committed_flushes);
         QueueFence(new_fence);
-        if (!delay_operation) {
+        if (!delay_fence) {
             func();
         }
         fences.push(std::move(new_fence));
@@ -306,15 +302,6 @@ private:
             }
             batch.clear();
         }
-    }
-
-    /// EDEN_NX2_DOWNLOAD_FENCE=0: release fences that carry downloads at once (for comparisons).
-    static bool DelaysDownloadFences() {
-        static const bool delays = [] {
-            const char* value = std::getenv("EDEN_NX2_DOWNLOAD_FENCE");
-            return value == nullptr || value[0] != '0';
-        }();
-        return delays;
     }
 
     bool ShouldWait() const {
