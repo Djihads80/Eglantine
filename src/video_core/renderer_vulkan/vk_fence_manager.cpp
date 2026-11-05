@@ -74,4 +74,8 @@ void FenceManager::WaitFence(Fence& fence) {
     fence->Wait();
 }
 
+void FenceManager::SubmitDeferredWork() {
+    scheduler.FlushDeferred();
+}
+
 } // namespace Vulkan
