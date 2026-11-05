@@ -65,6 +65,10 @@ enum class Zone : u32 {
     FlushSubmit,  ///< Of FlushWork: the scheduler submits (Flush)
     CommandListFlush, ///< The front downloads GPU-written command list pages (FlushCommandPages)
     CommandListCopy,  ///< The front reads a GPU-written command list's copy (waits for the GPU)
+    DrainAcquire,     ///< Of the split drains: semaphore acquires and their resumes (puller)
+    DrainCommandList, ///< Of the split drains: GPU-written command lists without a copy
+    DrainRun,         ///< Of the split drains: work that reads what the back wrote (CPU reads)
+    DrainSync,        ///< Of the split drains: command lists that signal a sync fence
     Count,
 };
 
@@ -77,7 +81,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
     "update index", "update vertex", "update stages", "ubo reuse", "ubo copy", "ubo cached",
-    "flush submit", "cmd list flush", "cmd list copy",
+    "flush submit", "cmd list flush", "cmd list copy", "drain acquire", "drain cmd list",
+    "drain run", "drain sync",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android

@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -270,7 +272,7 @@ bool DmaPusher::Step() {
     }
 
     if (signal_sync) {
-        VideoCommon::GpuSplit::Get().Drain();
+        VideoCommon::GpuSplit::Get().Drain(VideoCommon::Nx2Profile::Zone::DrainSync);
         rasterizer->SignalFence([this]() {
             std::scoped_lock lk(sync_mutex);
             synced = true;
@@ -531,9 +533,16 @@ void DmaPusher::CallMethod(u32 argument) {
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
                             engine_type == Engines::EngineTypes::MaxwellDMA ||
                             engine_type == Engines::EngineTypes::KeplerMemory;
+        // DMA copies and inline uploads may write guest memory as they run, anywhere as far as
+        // the front knows: MME DMA reads wait for them (shader writes go to the buffer cache).
+        const bool direct_writer = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                   engine_type == Engines::EngineTypes::KeplerMemory;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            }
+            if (direct_writer && split.Active()) {
+                split.NotePendingWriteAnywhere();
             }
         };
         if (split.Active()) {
@@ -592,9 +601,16 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
                             engine_type == Engines::EngineTypes::MaxwellDMA ||
                             engine_type == Engines::EngineTypes::KeplerMemory;
+        // DMA copies and inline uploads may write guest memory as they run, anywhere as far as
+        // the front knows: MME DMA reads wait for them (shader writes go to the buffer cache).
+        const bool direct_writer = engine_type == Engines::EngineTypes::MaxwellDMA ||
+                                   engine_type == Engines::EngineTypes::KeplerMemory;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            }
+            if (direct_writer && split.Active()) {
+                split.NotePendingWriteAnywhere();
             }
         };
         if (split.Active()) {
@@ -722,6 +738,39 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         }
         chunk = chunk_end;
     }
+    // EDEN_NX2_CMD_LIST_VERIFY=1: also flush the list's pages (after a drain) and read them,
+    // logging the lists whose copy or synced guest memory differs; the flushed words are run.
+    static const bool verify = [] {
+        const char* value = std::getenv("EDEN_NX2_CMD_LIST_VERIFY");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (verify) {
+        VideoCommon::GpuSplit::Get().Drain();
+        const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
+        const GPUVAddr end_page = (end + 0xfff) & ~GPUVAddr{0xfff};
+        memory_manager.FlushRegion(first_page, end_page - first_page,
+                                   VideoCommon::CacheType::BufferCache);
+        std::vector<u8> flushed(size_t{count} * sizeof(u32));
+        memory_manager.ReadBlockUnsafe(address, flushed.data(), flushed.size());
+        if (std::memcmp(flushed.data(), out, flushed.size()) != 0) {
+            static std::atomic<u32> mismatches{};
+            if (mismatches.fetch_add(1, std::memory_order_relaxed) < 64) {
+                size_t word = 0;
+                while (std::memcmp(flushed.data() + word * 4, out + word * 4, 4) == 0) {
+                    ++word;
+                }
+                u32 copied_word{};
+                u32 flushed_word{};
+                std::memcpy(&copied_word, out + word * 4, 4);
+                std::memcpy(&flushed_word, flushed.data() + word * 4, 4);
+                LOG_WARNING(HW_GPU,
+                            "GPU-written command list {:#x} ({} words) differs from its flushed "
+                            "pages at word {}: {:#010x}, flushed {:#010x}",
+                            address, count, word, copied_word, flushed_word);
+            }
+            std::memcpy(out, flushed.data(), flushed.size());
+        }
+    }
     return true;
 }
 
@@ -737,7 +786,7 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain();
+    VideoCommon::GpuSplit::Get().Drain(VideoCommon::Nx2Profile::Zone::DrainCommandList);
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,

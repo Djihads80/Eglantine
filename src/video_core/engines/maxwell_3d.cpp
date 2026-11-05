@@ -1442,9 +1442,10 @@ struct DmaReadStats {
 DmaReadStats g_dma_read_stats; // the front thread's
 
 // Reads `out` from `source` without draining the split's back: waits only for the reports,
-// semaphores and uploads queued for these pages and for queued compute and copy work, then reads
-// guest memory, or for pages the GPU has written the buffer cache's copy of them (made after
-// each write, as for GPU-written command lists). False when that copy is unknown: drain.
+// semaphores, uploads and copies queued for these pages (and for pages the GPU has written, the
+// compute and copy work queued), then reads guest memory, or for pages the GPU has written the
+// buffer cache's copy of them (made after each write, as for GPU-written command lists). False
+// when that copy is unknown: drain.
 bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_manager,
                          VideoCore::RasterizerInterface* rasterizer, GPUVAddr source,
                          std::span<u32> out, bool& waited, bool& copied) {
@@ -1468,9 +1469,16 @@ bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_man
                            static_cast<u32>(chunk_end - chunk), Tegra::Nx2IsGpuWritten(*device)};
         chunk = chunk_end;
     }
-    u64 target = split.WriterPosition();
+    // Queued compute work matters only for pages the GPU writes: its shaders write through the
+    // buffer cache (which then copies those pages). Waiting for it on every read, the front spent
+    // 60% of its time in WaitForPosition. Direct writes (reports, semaphores, uploads, DMA
+    // copies) are in PendingWrite.
+    u64 target = 0;
     for (size_t i = 0; i < count; ++i) {
         target = (std::max)(target, split.PendingWrite(pieces[i].device, pieces[i].size));
+        if (pieces[i].gpu_written) {
+            target = (std::max)(target, split.WriterPosition());
+        }
     }
     waited = split.WaitForPosition(target);
     u8* const bytes = reinterpret_cast<u8*>(out.data());
