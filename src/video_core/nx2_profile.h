@@ -337,4 +337,30 @@ inline void Report(const char* thread_name = "GPU thread") {
     data.window_start = now;
 }
 
+/// An MME DMA read that flushed GPU-written memory (each one waits for the host GPU). Logged at
+/// most every 10 s, profile or not: how many, the bytes they read and the time they waited.
+inline void NoteDmaReadFlush(u64 elapsed_ns, u64 bytes) {
+    struct Window {
+        u64 start{};
+        u64 flushes{};
+        u64 ns{};
+        u64 bytes{};
+    };
+    static Window window; // the thread running the macros
+    const u64 now = Now();
+    if (window.start == 0) {
+        window.start = now;
+    }
+    ++window.flushes;
+    window.ns += elapsed_ns;
+    window.bytes += bytes;
+    if (now - window.start >= 10'000'000'000ULL) {
+        LOG_INFO(HW_GPU, "MME DMA reads that flushed GPU-written memory in {:.1f} s: {} ({} bytes), "
+                         "{:.1f} ms waiting",
+                 static_cast<double>(now - window.start) / 1e9, window.flushes, window.bytes,
+                 static_cast<double>(window.ns) / 1e6);
+        window = {};
+    }
+}
+
 } // namespace VideoCommon::Nx2Profile

@@ -635,10 +635,20 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
         }
         ssbo_addr = holder + indirect_offset;
     }
+    // A native pointer is bare (no size word after it). Written bindings keep the size word
+    // guess: up to 8 MiB marked GPU-written per draw made Ocarina of Time's CPU accesses and MME
+    // DMA reads around them flush, at a few frames a second. EDEN_NX2_GRAPHICS_SSBO_SIZE=0: only
+    // loaded pointers sized as native, 2: every native binding.
+    static const int native_size_mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_GRAPHICS_SSBO_SIZE");
+        return value != nullptr ? value[0] - '0' : 1;
+    }();
+    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    const bool native_size = indirect_offset != ~0U ||
+                             (native && (native_size_mode == 2 ||
+                                         (native_size_mode == 1 && !is_written)));
     channel_state->storage_buffers[stage][ssbo_index] =
-        StorageBufferBinding(ssbo_addr, cbuf_index, is_written,
-                             maxwell3d->GetNativeMacroEngine().native_turing ||
-                                 indirect_offset != ~0U);
+        StorageBufferBinding(ssbo_addr, cbuf_index, is_written, native_size);
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
 }
 

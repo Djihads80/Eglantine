@@ -1338,7 +1338,10 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
     if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+        const u64 start = VideoCommon::Nx2Profile::Now();
         memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+        VideoCommon::Nx2Profile::NoteDmaReadFlush(VideoCommon::Nx2Profile::Now() - start,
+                                                  read_bytes);
     }
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
