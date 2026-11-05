@@ -622,14 +622,27 @@ constexpr u32 DLSS_CHECK_MISMATCH_PERCENT = 3;
 // The game's own DLSS network (its translated programs) is shown once every pass of an
 // evaluation has run several times in a row and its output has passed several health checks in
 // a row. Until then, when any pass can't run, and for the rest of the session once the network
-// fails its checks, the replacement upscale draws over the output pass's result. The setting
-// "Use the game's own DLSS" off, NVIDIA DLSS on or EDEN_NX2_DLSS_REPLACEMENT=fsr|standin keep the
-// replacement. The network's image sizes are fixed by the game, so it is used only without
-// resolution scaling; its matrix multiplies need shaders 32 threads wide.
+// fails its checks, the replacement upscale draws over the output pass's result. NVIDIA DLSS on
+// or EDEN_NX2_DLSS_REPLACEMENT=fsr|standin keep the replacement. The network's image sizes are
+// fixed by the game, so it is used only without resolution scaling; its matrix multiplies need
+// shaders 32 threads wide.
 VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
     using VideoCore::GameDlssReason;
-    static const bool forced_replacement = std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr;
-    if (forced_replacement || !Settings::values.game_dlss_network.GetValue()) {
+    // On Android the replacement is the default: compiling the network's emulated tensor passes
+    // took Turnip from 3.1 to 7.6 GB in 4 s on a 24 GB phone and crashed it (Fire Emblem:
+    // Fortune's Weave). EDEN_NX2_GAME_DLSS=1 tries the game's network there.
+    static const bool forced_replacement = [] {
+        if (std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr) {
+            return true;
+        }
+#ifdef __ANDROID__
+        const char* const game = std::getenv("EDEN_NX2_GAME_DLSS");
+        return game == nullptr || game[0] != '1';
+#else
+        return false;
+#endif
+    }();
+    if (forced_replacement) {
         return GameDlssReason::TurnedOff;
     }
     // NVIDIA DLSS, when turned on and running, comes first.
@@ -737,7 +750,7 @@ void KeplerCompute::CheckDlssNetwork() {
                 probe->mismatched, probe->blocks, probe->worst, probe->invalid_samples);
 }
 
-// Tells the Graphics tab what draws the game's DLSS evaluation, when that changes.
+// Logs what draws the game's DLSS evaluation, when that changes.
 void KeplerCompute::UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker) {
     using VideoCore::GameDlssReason;
     using VideoCore::GameDlssState;
@@ -771,7 +784,6 @@ void KeplerCompute::UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReaso
                  VideoCore::GameDlssReasonText(shown.reason));
     }
     dlss_chain.status = shown;
-    VideoCore::SetGameDlssStatus(shown);
 }
 
 // Ends this frame's DLSS evaluation at its output pass: either the network's own result stays,

@@ -18,7 +18,7 @@ enum class GameDlssState : u8 {
 /// Why the replacement upscale draws instead of the game's own network.
 enum class GameDlssReason : u8 {
     None,
-    TurnedOff,         ///< The "Use the game's own DLSS" setting is off.
+    TurnedOff,         ///< EDEN_NX2_DLSS_REPLACEMENT asks for the replacement.
     NvidiaDlss,        ///< NVIDIA DLSS is turned on and runs in its place.
     ResolutionScaling, ///< The network only makes the game's own resolution.
     Unsupported,       ///< Not Vulkan, or compute shaders can't be made 32 threads wide.
@@ -32,10 +32,6 @@ struct GameDlssStatus {
     GameDlssReason reason{};
     u32 rejected_passes{};
 };
-
-/// For the Graphics tab; safe to call from any thread.
-[[nodiscard]] GameDlssStatus GetGameDlssStatus();
-void SetGameDlssStatus(const GameDlssStatus& status);
 
 /// The reason in English, for the log.
 [[nodiscard]] const char* GameDlssReasonText(GameDlssReason reason);

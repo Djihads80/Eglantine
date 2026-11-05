@@ -794,13 +794,6 @@ abstract class SettingsItem(
             )
             put(
                 SwitchSetting(
-                    BooleanSetting.RENDERER_GAME_DLSS_NETWORK,
-                    titleId = R.string.renderer_game_dlss_network,
-                    descriptionId = R.string.renderer_game_dlss_network_description
-                )
-            )
-            put(
-                SwitchSetting(
                     BooleanSetting.RENDERER_NX2_COMMAND_LISTS,
                     titleId = R.string.renderer_nx2_command_lists,
                     descriptionId = R.string.renderer_nx2_command_lists_description
