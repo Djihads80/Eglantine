@@ -1,22 +1,60 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "common/page_table.h"
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
+#include "core/memory.h"
 #include "tests/core/system_test_context.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_null/null_rasterizer.h"
+
+namespace VideoCommon {
+
+struct GpuSplitTestAccess {
+    static void Initialize(GpuSplit& split, Core::System& system, u64 position = 0) {
+        split.system = &system;
+        split.ring = std::make_unique<u64[]>(GpuSplit::RingWords);
+        split.write_position = position;
+        split.consumed_cache = position;
+        split.published_local = position;
+        split.publish_every = GpuSplit::RingWords;
+    }
+
+    static u64 End(const GpuSplit& split) {
+        return split.write_position;
+    }
+
+    static u64 NearWrap() {
+        return GpuSplit::RingWords - 1;
+    }
+
+    static u64 Execute(GpuSplit& split, u64 position, u64 available) {
+        const size_t index = position & GpuSplit::RingMask;
+        const size_t size = split.Execute(
+            &split.ring[index], std::min<u64>(available - position, GpuSplit::RingWords - index));
+        return position + (size != 0 ? size : GpuSplit::RingWords - index);
+    }
+};
+
+} // namespace VideoCommon
 
 namespace {
 
@@ -314,6 +352,274 @@ TEST_CASE("Maxwell3D state method runs match single CallMethod writes",
         REQUIRE(consumed == run_len);
         f.Compare();
     }
+}
+
+TEST_CASE("GpuSplit CB batching respects device remaps within GPU big pages",
+          "[video_core][maxwell_fast_method][gpu_split_dispatch]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    Fixture f;
+    f.system.Initialize();
+    Kernel::KProcess process{f.system.Kernel()};
+    SCOPE_EXIT { f.system.Kernel().UnregisterKernelObject(&process); };
+    auto& table = process.GetPageTable().GetImpl();
+    table.Resize(20, 12);
+    auto* backing = f.physical.GetPointerFromRaw<u8>(0x10000);
+    auto* replacement = f.physical.GetPointerFromRaw<u8>(0x30000);
+    for (u64 page = 0; page < 16; ++page) {
+        table.entries.GetAndFault(4 + page)
+            .Store(false, Common::PageType::Memory, 1,
+                   reinterpret_cast<uintptr_t>(backing) - 0x4000);
+    }
+    table.entries.GetAndFault(0x20).Store(false, Common::PageType::Memory, 1,
+                                        reinterpret_cast<uintptr_t>(replacement) - 0x20000);
+    process.GetMemory().SetCurrentPageTable(process);
+    const auto asid = f.device_memory.RegisterProcess(&process.GetMemory());
+    f.device_memory.BindInterface(&f.rasterizer);
+    SCOPE_EXIT {
+        f.device_memory.Unmap(0x10000, 0x10000);
+        f.device_memory.UnregisterProcess(asid);
+    };
+    f.device_memory.Map(0x10000, 0x4000, 0x10000, asid);
+    f.memory.BindRasterizer(&f.rasterizer);
+    f.memory.Map(0x100000, 0x10000, 0x10000, Tegra::PTEKind::PITCH, true);
+    f.device_memory.Unmap(0x11000, 0x1000);
+    f.device_memory.Map(0x11000, 0x20000, 0x1000, asid);
+    REQUIRE(f.memory.GetPointer(0x100ffc) == backing + 0xffc);
+    REQUIRE(f.memory.GetPointer(0x101000) == replacement);
+
+    for (auto* engine : {&f.slow, &f.fast}) {
+        std::memset(backing, 0, 0x10000);
+        std::memset(replacement, 0, 0x1000);
+        VideoCommon::GpuSplit split;
+        Access::Initialize(split, f.system);
+        split.MacroWrite(engine, CbAddressHigh, 0);
+        split.MacroWrite(engine, CbAddressLow, 0x100ffc);
+        split.MacroWrite(engine, CbSize, 8);
+        split.MacroWrite(engine, CbOffset, 0);
+        split.MacroWrite(engine, CbData, 0x12345678);
+        split.MacroWrite(engine, CbData + 1, 0x87654321);
+        u64 position{};
+        while (position < Access::End(split)) {
+            position = Access::Execute(split, position, Access::End(split));
+        }
+        u32 first{}, second{}, stale{};
+        std::memcpy(&first, backing + 0xffc, sizeof(first));
+        std::memcpy(&second, replacement, sizeof(second));
+        std::memcpy(&stale, backing + 0x1000, sizeof(stale));
+        CAPTURE(engine == &f.fast);
+        CAPTURE(stale);
+        REQUIRE(first == 0x12345678);
+        REQUIRE(second == 0x87654321);
+        REQUIRE(stale == 0);
+        REQUIRE(engine->regs.const_buffer.offset == 8);
+    }
+    f.Compare();
+}
+
+TEST_CASE("GpuSplit dispatch preserves mapped uploads and macro boundaries",
+          "[video_core][maxwell_fast_method][gpu_split_dispatch]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    Fixture f;
+    f.system.Initialize();
+    Kernel::KProcess process{f.system.Kernel()};
+    SCOPE_EXIT { f.system.Kernel().UnregisterKernelObject(&process); };
+    auto& table = process.GetPageTable().GetImpl();
+    table.Resize(20, 12);
+    constexpr GPUVAddr gpu_address = 0x100000;
+    constexpr DAddr device_address = 0x10000;
+    for (u64 page = 0; page < 3; ++page) {
+        const VAddr virtual_address = 0x4000 + page * 0x1000;
+        auto* backing = f.physical.GetPointerFromRaw<u8>(0x10000 + page * 0x8000);
+        table.entries.GetAndFault(virtual_address >> 12)
+            .Store(false, Common::PageType::Memory, 1,
+                   reinterpret_cast<uintptr_t>(backing) - virtual_address);
+    }
+    process.GetMemory().SetCurrentPageTable(process);
+    const auto asid = f.device_memory.RegisterProcess(&process.GetMemory());
+    f.device_memory.BindInterface(&f.rasterizer);
+    SCOPE_EXIT {
+        f.device_memory.Unmap(device_address, 0x3000);
+        f.device_memory.UnregisterProcess(asid);
+    };
+    f.device_memory.Map(device_address, 0x4000, 0x3000, asid);
+    f.memory.BindRasterizer(&f.rasterizer);
+    f.memory.Map(gpu_address, device_address, 0x3000, Tegra::PTEKind::PITCH, false);
+
+    struct Snapshot {
+        std::array<u8, 0x3000> bytes{};
+        std::array<u32, Maxwell3D::Regs::NUM_REGS> regs{};
+        std::array<u32, Maxwell3D::Regs::NUM_REGS> shadow{};
+        Maxwell3D::DirtyState::Flags dirty{};
+        GPUVAddr segment{};
+    };
+    const auto snapshot = [&](const Maxwell3D& engine) {
+        Snapshot result;
+        f.memory.ReadBlockUnsafe(gpu_address, result.bytes.data(), result.bytes.size());
+        result.regs = engine.regs.reg_array;
+        result.shadow = engine.shadow_state.reg_array;
+        result.dirty = engine.dirty.flags;
+        result.segment = engine.current_dma_segment;
+        return result;
+    };
+
+    for (const bool wrap : {false, true}) {
+        CAPTURE(wrap);
+        std::vector<Snapshot> expected;
+        for (auto* engine : {&f.slow, &f.fast}) {
+            VideoCommon::GpuSplit split;
+            struct ProbeEngine final : Tegra::Engines::EngineInterface {
+                u32 writes{};
+                void CallMethod(Core::System&, u32, u32, bool) override {
+                    ++writes;
+                }
+                void CallMultiMethod(Core::System&, u32, const u32*, u32 amount, u32) override {
+                    writes += amount;
+                }
+            } probe;
+            const u64 start = wrap ? Access::NearWrap() : 0;
+            Access::Initialize(split, f.system, start);
+            std::vector<u64> boundaries;
+            std::array<u8, 0x3000> cleared{};
+            f.memory.WriteBlockUnsafe(gpu_address, cleared.data(), cleared.size());
+            engine->current_dma_segment = 0;
+            engine->dirty.flags.reset();
+            const auto state = [&](u32 method, u32 value) {
+                split.Method(engine, method, value, true, nullptr);
+                boundaries.push_back(Access::End(split));
+            };
+            const auto direct = [&](u32 method, u32 value) {
+                split.MacroWrite(engine, method, value);
+                boundaries.push_back(Access::End(split));
+            };
+            size_t observed{};
+            const auto inspect = [&] {
+                split.Defer([&, engine] {
+                    auto actual = snapshot(*engine);
+                    if (engine == &f.slow) {
+                        expected.push_back(std::move(actual));
+                    } else {
+                        REQUIRE(observed < expected.size());
+                        const auto& reference = expected[observed];
+                        REQUIRE(actual.bytes == reference.bytes);
+                        REQUIRE(actual.regs == reference.regs);
+                        REQUIRE(actual.shadow == reference.shadow);
+                        REQUIRE(actual.dirty == reference.dirty);
+                        REQUIRE(actual.segment == reference.segment);
+                    }
+                    ++observed;
+                });
+                boundaries.push_back(Access::End(split));
+            };
+            state(ShadowControl, 0);
+            state(CbAddressHigh, 0);
+            state(CbAddressLow, static_cast<u32>(gpu_address));
+            state(CbSize, 0x3000);
+            state(CbOffset, 0xffb);
+            direct(MAXWELL3D_REG_INDEX(global_base_instance_index), 17);
+            inspect();
+            for (u32 i = 0; i < 129; ++i) {
+                if (i % 2 == 0) {
+                    direct(CbData + i % 16, 0x12340000 + i);
+                } else {
+                    state(CbData + i % 16, 0x56780000 + i);
+                }
+            }
+            inspect();
+            state(ShadowControl, 3);
+            state(CbOffset, 0x1ffd);
+            for (u32 i = 0; i < 33; ++i) {
+                direct(CbData + i % 16, 0xdeadbeef);
+            }
+            inspect();
+            state(ShadowControl, 2);
+            state(CbOffset, 0x1ffd);
+            direct(DrawBegin, 0);
+            direct(DrawEnd, 0);
+            direct(DrawBegin, 1u << 26);
+            direct(DrawEnd, 0);
+            direct(CbData, 0x11223344);
+            direct(CbData + 1, 0xaabbccdd);
+            const GPUVAddr segment = 0x12345678;
+            split.Method(engine, CbData + 2, 0x87654321, false, &segment);
+            boundaries.push_back(Access::End(split));
+            direct(CbData + 3, 0x76543210);
+            split.MacroWrite(&probe, 0x10, 42);
+            boundaries.push_back(Access::End(split));
+            direct(CbData + 4, 0x65432100);
+            const std::array<u32, 3> multi{19, 20, 21};
+            split.MultiMethod(engine, CbData, multi.data(), 3, 3, &segment);
+            boundaries.push_back(Access::End(split));
+            inspect();
+            state(CbSize, 7);
+            state(CbOffset, 0);
+            direct(CbData, 0x99aabbcc);
+            direct(CbData + 1, 0xddeeff00);
+            inspect();
+
+            u64 position = start;
+            if (wrap) {
+                for (const u64 available : boundaries) {
+                    while (position < available) {
+                        position = Access::Execute(split, position, available);
+                        REQUIRE(position <= available);
+                    }
+                }
+            } else {
+                while (position < Access::End(split)) {
+                    position = Access::Execute(split, position, Access::End(split));
+                    REQUIRE(position <= Access::End(split));
+                }
+            }
+            REQUIRE(observed == expected.size());
+            REQUIRE(probe.writes == 1);
+        }
+        f.Compare();
+    }
+}
+
+TEST_CASE("GpuSplit CB batching preserves words at the GPU address space end",
+          "[video_core][maxwell_fast_method][gpu_split_dispatch]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    Fixture f;
+    f.system.Initialize();
+    Kernel::KProcess process{f.system.Kernel()};
+    SCOPE_EXIT { f.system.Kernel().UnregisterKernelObject(&process); };
+    auto& table = process.GetPageTable().GetImpl();
+    table.Resize(20, 12);
+    auto* backing = f.physical.GetPointerFromRaw<u8>(0x10000);
+    table.entries.GetAndFault(4).Store(false, Common::PageType::Memory, 1,
+                                     reinterpret_cast<uintptr_t>(backing) - 0x4000);
+    process.GetMemory().SetCurrentPageTable(process);
+    const auto asid = f.device_memory.RegisterProcess(&process.GetMemory());
+    f.device_memory.BindInterface(&f.rasterizer);
+    SCOPE_EXIT {
+        f.device_memory.Unmap(0x10000, 0x1000);
+        f.device_memory.UnregisterProcess(asid);
+    };
+    f.device_memory.Map(0x10000, 0x4000, 0x1000, asid);
+    f.memory.BindRasterizer(&f.rasterizer);
+    f.memory.Map(0xfffff000, 0x10000, 0x1000, Tegra::PTEKind::PITCH, false);
+    for (auto* engine : {&f.slow, &f.fast}) {
+        std::memset(backing, 0, 0x1000);
+        VideoCommon::GpuSplit split;
+        Access::Initialize(split, f.system);
+        split.MacroWrite(engine, CbAddressHigh, 0);
+        split.MacroWrite(engine, CbAddressLow, 0xfffffffcu);
+        split.MacroWrite(engine, CbSize, 8);
+        split.MacroWrite(engine, CbOffset, 0);
+        split.MacroWrite(engine, CbData, 0x12345678);
+        split.MacroWrite(engine, CbData + 1, 0x87654321);
+        u64 position{};
+        while (position < Access::End(split)) {
+            position = Access::Execute(split, position, Access::End(split));
+        }
+        u32 word{};
+        std::memcpy(&word, backing + 0xffc, sizeof(word));
+        CAPTURE(engine == &f.fast);
+        REQUIRE(word == 0x12345678);
+        REQUIRE(engine->regs.const_buffer.offset == 8);
+    }
+    f.Compare();
 }
 
 TEST_CASE("Maxwell3D fast method dispatch cost", "[.][maxwell_fast_method_bench]") {
