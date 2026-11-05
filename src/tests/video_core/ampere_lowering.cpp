@@ -244,4 +244,50 @@ TEST_CASE("Ampere guarded uniform comparisons keep the output when the guard is 
     REQUIRE(static_cast<bool>(selected));
     CHECK(selected.instructions.front() == 0x5ca000000df70403ULL);
 }
+
+TEST_CASE("Ampere gathers take arrays, per-pixel offsets and depth references",
+          "[video_core][ampere]") {
+    const auto lower = [](const Instruction& instruction) {
+        const std::array<Instruction, 2> code{{instruction, EXIT}};
+        return LowerToMaxwell(code);
+    };
+    const auto field = [](u64 word, u32 offset, u32 count) {
+        return (word >> offset) & ((u64{1} << count) - 1);
+    };
+    // Ocarina: TLD4.R.2D.ARRAY R44, R42, R8, R4. Layer and x in R8, R9, y in R4.
+    const auto array = lower({{0x082c7b63, 0xb0801004, 0x001e0f2a, 0x00014200}});
+    INFO(array.error);
+    REQUIRE(static_cast<bool>(array));
+    REQUIRE(array.instructions.size() >= 4);
+    CHECK(array.instructions[0] == 0x5c980780008700faULL);
+    CHECK(array.instructions[1] == 0x5c980780009700fbULL);
+    CHECK(array.instructions[2] == 0x5c980780004700fcULL);
+    CHECK(field(array.instructions[3], 20, 8) == 255);
+    CHECK(field(array.instructions[3], 28, 3) == 3);
+    CHECK(field(array.instructions[3], 50, 1) == 0);
+    CHECK(field(array.instructions[3], 54, 2) == 0);
+
+    // Ocarina: @!P1 TLD4.R.PTP R24, R14, R6, R16: x, y in R6, R7, the offsets in R16, R17.
+    const auto per_pixel = lower({{0x06189b63, 0x30007c10, 0x001e2f0e, 0x000f4600}});
+    INFO(per_pixel.error);
+    REQUIRE(static_cast<bool>(per_pixel));
+    REQUIRE(per_pixel.instructions.size() >= 5);
+    CHECK(field(per_pixel.instructions[2], 20, 8) == 16);
+    CHECK(field(per_pixel.instructions[3], 20, 8) == 17);
+    CHECK(field(per_pixel.instructions[4], 20, 8) == 246);
+    CHECK(field(per_pixel.instructions[4], 28, 3) == 2);
+    CHECK(field(per_pixel.instructions[4], 54, 2) == 2);
+
+    // Ocarina: TLD4.R.DC R12, R14, R24, R28: x, y in R24, R25, the reference in R28.
+    const auto depth = lower({{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}});
+    INFO(depth.error);
+    REQUIRE(static_cast<bool>(depth));
+    REQUIRE(depth.instructions.size() >= 4);
+    CHECK(field(depth.instructions[2], 20, 8) == 28);
+    CHECK(field(depth.instructions[3], 50, 1) == 1);
+    CHECK(field(depth.instructions[3], 54, 2) == 0);
+
+    // Offset mode 3 is not an offset form.
+    CHECK_FALSE(lower({{0x082c7b63, 0xb0801004, 0x001e3f2a, 0x00014200}}));
+}
 } // namespace
