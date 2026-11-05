@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #include <ranges>
@@ -15,6 +17,16 @@
 namespace Vulkan {
 
 constexpr u64 FENCE_RESERVE_SIZE = 8;
+
+std::chrono::microseconds GpuWaitSpin() {
+    // Off by default: the polling keeps a core busy (and a phone warm). From
+    // sylvieistaken/selevet-eglantine bce3c83739, where it is 300.
+    static const std::chrono::microseconds spin{[] {
+        const char* value = std::getenv("EDEN_NX2_GPU_WAIT_SPIN_US");
+        return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
+    }()};
+    return spin;
+}
 
 MasterSemaphore::MasterSemaphore(const Device& device_) : device(device_) {
     if (!device.HasTimelineSemaphore()) {
@@ -101,6 +113,19 @@ void MasterSemaphore::Wait(u64 tick) {
 
     if (IsFree(tick)) {
         return;
+    }
+
+    // Work that ends within microseconds (a GPU-written command list's copy) can wait long for
+    // the driver's wait to wake up: poll first (GpuWaitSpin).
+    if (const auto spin = GpuWaitSpin(); spin.count() > 0) {
+        const auto end = std::chrono::steady_clock::now() + spin;
+        do {
+            std::this_thread::yield();
+            Refresh();
+            if (IsFree(tick)) {
+                return;
+            }
+        } while (std::chrono::steady_clock::now() < end);
     }
 
     // If none of the above is hit, fallback to a regular wait

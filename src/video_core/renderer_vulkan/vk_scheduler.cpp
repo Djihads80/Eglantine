@@ -360,8 +360,25 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
         return true;
     }};
 
+    // A reader waiting on a submission also waits for this thread to wake: with GpuWaitSpin,
+    // look for work a moment before sleeping (from sylvieistaken/selevet-eglantine bce3c83739).
+    const auto spin = GpuWaitSpin();
+
     while (!stop_token.stop_requested()) {
         std::unique_ptr<CommandChunk> work;
+
+        if (spin.count() > 0) {
+            const auto end = std::chrono::steady_clock::now() + spin;
+            do {
+                {
+                    std::scoped_lock lk{queue_mutex};
+                    if (!work_queue.empty()) {
+                        break;
+                    }
+                }
+                std::this_thread::yield();
+            } while (std::chrono::steady_clock::now() < end && !stop_token.stop_requested());
+        }
 
         {
             std::unique_lock lk{queue_mutex};

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -20,6 +21,10 @@
 namespace Vulkan {
 
 class Device;
+
+/// EDEN_NX2_GPU_WAIT_SPIN_US=<microseconds> (default 0): how long GPU waits and the idle Vulkan
+/// worker poll before sleeping.
+[[nodiscard]] std::chrono::microseconds GpuWaitSpin();
 
 class MasterSemaphore {
     using Waitable = std::pair<u64, vk::Fence>;
