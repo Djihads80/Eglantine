@@ -31,6 +31,19 @@ bool ReadFromUser(KernelCore& kernel, s32* out, KProcessAddress address) {
     return true;
 }
 
+bool ReadFromUser(KernelCore& kernel, s64* out, KProcessAddress address) {
+    auto& memory = GetCurrentMemory(kernel);
+    const u64 addr = GetInteger(address);
+
+    // Reject ranges that wrap past the end of the address space; the range check accepts them.
+    if (addr + sizeof(s64) < addr || !memory.IsValidVirtualAddressRange(addr, sizeof(s64))) {
+        return false;
+    }
+
+    *out = static_cast<s64>(memory.Read64(addr));
+    return true;
+}
+
 bool DecrementIfLessThan(KernelCore& kernel, s32* out, KProcessAddress address, s32 value) {
     auto& monitor = GetCurrentProcess(kernel).GetExclusiveMonitor();
     const auto current_core = kernel.CurrentPhysicalCoreIndex();
@@ -322,11 +335,7 @@ Result KAddressArbiter::WaitIfEqual(uint64_t addr, s64 value, s64 timeout, bool 
         s64 user_value{};
         bool succeeded{};
         if (is_64_bit) {
-            auto& memory = GetCurrentMemory(system.Kernel());
-            succeeded = memory.IsValidVirtualAddressRange(addr, sizeof(s64));
-            if (succeeded) {
-                user_value = static_cast<s64>(memory.Read64(addr));
-            }
+            succeeded = ReadFromUser(system.Kernel(), std::addressof(user_value), addr);
         } else {
             s32 user_value32{};
             succeeded = ReadFromUser(system.Kernel(), std::addressof(user_value32), addr);
