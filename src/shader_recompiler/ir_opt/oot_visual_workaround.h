@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -17,6 +18,18 @@ inline std::optional<size_t> ApplyOotVisualWorkaround(IR::Program& program, u64 
     if (!enabled || title_id != 0x0400486024DEC000ULL) {
         return std::nullopt;
     }
+    static const float fog_scale = [] {
+        if (const char* v = std::getenv("EDEN_NX2_OOT_FOG_SCALE"); v && *v) {
+            return std::strtof(v, nullptr);
+        }
+        return 0.25f;
+    }();
+    static const float exposure_scale = [] {
+        if (const char* v = std::getenv("EDEN_NX2_OOT_EXPOSURE_SCALE"); v && *v) {
+            return std::strtof(v, nullptr);
+        }
+        return 0.65f;
+    }();
     const bool fog = shader_hash == 0x780c0536b89fc89eULL && program.stage == Stage::Compute;
     const bool exposure = shader_hash == 0xbded5ce917183214ULL && program.stage == Stage::Fragment;
     if (!fog && !exposure) {
@@ -65,7 +78,7 @@ inline std::optional<size_t> ApplyOotVisualWorkaround(IR::Program& program, u64 
         const auto original = block->PrependNewInst(insertion, *inst);
         IR::IREmitter ir{*block, insertion};
         const auto scaled = ir.FPMul(IR::F32{IR::Value{&*original}},
-                                     ir.Imm32(fog ? 0.25f : 0.65f));
+                                     ir.Imm32(fog ? fog_scale : exposure_scale));
         inst->ReplaceUsesWith(scaled);
     }
     return matches.size();
