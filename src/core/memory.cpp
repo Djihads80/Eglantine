@@ -577,8 +577,10 @@ struct Memory::Impl {
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
-        // Clean cached read areas also need invalidation when reactive flushing is enabled.
-        read_trap_generation.fetch_add(1, std::memory_order_release);
+        if (Settings::values.use_reactive_flushing.GetValue()) {
+            // Clean cached read areas also need invalidation when reactive flushing is enabled.
+            read_trap_generation.fetch_add(1, std::memory_order_release);
+        }
         if (vaddr == 0 || size == 0 || !AddressSpaceContains(*current_page_table, vaddr, size) ||
             !ReadTrapsEnabled()) {
             return;
