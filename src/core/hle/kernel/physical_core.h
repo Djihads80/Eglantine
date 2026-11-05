@@ -51,7 +51,7 @@ public:
     void LogBacktrace(KernelCore& kernel);
 
     // Wait for an interrupt.
-    void Idle();
+    void Idle(KernelCore& kernel);
 
     // Interrupt this core.
     void Interrupt();
