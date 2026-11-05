@@ -73,6 +73,8 @@ public:
         // Not a hardware operation: a copy that decodes sRGB-encoded values to linear, for the
         // nx2 upscale fallback standing in for a program that decodes its output.
         SrcCopySrgbToLinear = 7,
+        // Likewise for a square-root-encoded source (the copy squares it).
+        SrcCopySquareToLinear = 8,
     };
 
     enum class MemoryLayout : u32 {

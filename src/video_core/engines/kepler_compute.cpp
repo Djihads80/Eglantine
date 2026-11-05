@@ -13,6 +13,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include "common/assert.h"
@@ -1182,14 +1183,35 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         result.addr_lower = static_cast<u32>(tic.Address());
         return result;
     };
+    // The program's output is presented as linear, so an encoded input is decoded like it does.
+    // Zelda: Ocarina of Time packs its frame as E5B9G9R9 holding each channel's square root
+    // (compute a2fcaa95c5a162f3, out = sqrt(in) exactly) and sRGB-encodes the output as linear;
+    // copied as is, the frame was gamma-encoded twice (washed out, white haze).
+    // EDEN_NX2_UPSCALE_DECODE=copy|srgb|square overrides the choice (A/B comparisons).
+    static const std::string_view forced_decode = [] {
+        const char* const value = std::getenv("EDEN_NX2_UPSCALE_DECODE");
+        return std::string_view{value ? value : ""};
+    }();
+    const Fermi2D::Operation operation = [&] {
+        using Operation = Fermi2D::Operation;
+        if (forced_decode == "copy") return Operation::SrcCopy;
+        if (forced_decode == "srgb") return Operation::SrcCopySrgbToLinear;
+        if (forced_decode == "square") return Operation::SrcCopySquareToLinear;
+        if (info.decodes_srgb) return Operation::SrcCopySrgbToLinear;
+        if (input_format->view == VideoCore::Surface::PixelFormat::E5B9G9R9_FLOAT) {
+            return Operation::SrcCopySquareToLinear;
+        }
+        return Operation::SrcCopy;
+    }();
     if (!info.announced) {
         info.announced = true;
         LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: {}", program,
-                 info.decodes_srgb ? "decodes sRGB like the program" : "plain copy");
+                 operation == Fermi2D::Operation::SrcCopySrgbToLinear     ? "decodes sRGB"
+                 : operation == Fermi2D::Operation::SrcCopySquareToLinear ? "squares (decodes sqrt)"
+                                                                          : "plain copy");
     }
     const Fermi2D::Config config{
-        .operation = info.decodes_srgb ? Fermi2D::Operation::SrcCopySrgbToLinear
-                                       : Fermi2D::Operation::SrcCopy,
+        .operation = operation,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,
