@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -2060,8 +2061,25 @@ private:
                 path = fmt::format("{}/capture-{}.tga", VideoCommon::Nx2Diag::DrawListDir().string(), *id);
             }
         }
-        if (path.empty() && directory != nullptr && (m_presents % 120) == 1) {
+        // A "burst" file holding N in <dir> saves the next N presents instead (one-frame artifacts).
+        if (directory != nullptr && (m_presents % 30) == 0) {
+            const auto burst = std::filesystem::path{directory} / "burst";
+            if (std::FILE* file = std::fopen(burst.string().c_str(), "r")) {
+                int count = 0;
+                if (std::fscanf(file, "%d", &count) == 1 && count > 0) {
+                    m_burst_left = static_cast<u32>(count);
+                }
+                std::fclose(file);
+                std::error_code ec;
+                std::filesystem::remove(burst, ec);
+            }
+        }
+        if (path.empty() && directory != nullptr &&
+            (m_burst_left > 0 || (m_presents % 120) == 1)) {
             path = fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
+            if (m_burst_left > 0 && !m_capture_pending->load()) {
+                m_burst_left--;
+            }
         }
         if (path.empty() || m_capture_pending->exchange(true)) {
             return;
@@ -2351,6 +2369,7 @@ private:
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
+    u32 m_burst_left{}; // presents still to save for a burst capture
 };
 
 // True the first time a Switch 2 video command is seen, so each one is logged once in full and new
