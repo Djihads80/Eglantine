@@ -19,6 +19,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/query_cache/query_cache.h"
+#include "video_core/query_cache/native_query_producer_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
@@ -180,6 +181,9 @@ public:
         });
 
         has_started = true;
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] {
+            ++producer_counters.begins;
+        }
     }
 
 
@@ -192,6 +196,9 @@ public:
             cmdbuf.EndQuery(query_pool, static_cast<u32>(query_index));
         });
         has_started = false;
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] {
+            ++producer_counters.ends;
+        }
     }
 
     void ResetCounter() override {
@@ -199,6 +206,12 @@ public:
             PauseCounter();
         }
         AbandonCurrentQuery();
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] {
+            ++producer_counters.resets;
+            producer_counters.begins_at_reset = producer_counters.begins;
+            producer_counters.ends_at_reset = producer_counters.ends;
+            prior_draws = {};
+        }
         std::function<void()> func([this] {
             amend_value = 0;
             accumulation_value = 0;
@@ -211,6 +224,12 @@ public:
 
     void CloseCounter() override {
         PauseCounter();
+    }
+
+    void RecordDiagnosticDraw(const VideoCommon::NativeQueryProducerTrace::Draw& draw) override {
+        if (VideoCommon::NativeQueryProducerTrace::Enabled() && has_started && current_query) {
+            current_draws.Add(draw);
+        }
     }
 
     bool HasPendingSync() const override {
@@ -343,6 +362,7 @@ public:
 
     size_t WriteCounter(DAddr address, bool has_timestamp, u32 value,
                         [[maybe_unused]] std::optional<u32> subreport) override {
+        const bool active_before_report = has_started;
         PauseCounter();
         auto index = BuildQuery();
         auto* new_query = GetQuery(index);
@@ -351,6 +371,20 @@ public:
         new_query->flags &= ~VideoCommon::QueryFlagBits::IsOrphan;
         if (has_timestamp) {
             new_query->flags |= VideoCommon::QueryFlagBits::HasTimestamp;
+        }
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] {
+            VideoCommon::NativeQueryProducerTrace::StageSamples(
+                new_query, {.present = true,
+                            .no_current = current_query == nullptr,
+                            .active_before_report = active_before_report,
+                            .bank = current_query ? current_query->start_bank_id : 0,
+                            .banks = current_query ? current_query->size_banks : 0,
+                            .slot = current_query ? current_query->start_slot : 0,
+                            .slots = current_query ? current_query->size_slots : 0,
+                            .tick = scheduler.CurrentTick(),
+                            .counters = producer_counters,
+                            .current_draws = current_draws,
+                            .prior_draws = prior_draws});
         }
         if (!current_query) {
             new_query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
@@ -402,6 +436,7 @@ public:
             });
             query->value = total;
             query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            VideoCommon::NativeQueryProducerTrace::Resolved(query, query->guest_address, total);
         }
     }
 
@@ -489,6 +524,7 @@ private:
         } else {
             current_query_id = BuildQuery();
             current_query = GetQuery(current_query_id);
+            if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] current_draws = {};
             current_query->start_bank_id = static_cast<u32>(current_bank_id);
             current_query->size_banks = 1;
             current_query->start_slot = new_slot;
@@ -512,6 +548,7 @@ private:
         Free(current_query_id);
         current_query = nullptr;
         current_query_id = 0;
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] current_draws = {};
     }
 
     void ReplicateCurrentQueryIfNeeded() {
@@ -534,6 +571,9 @@ private:
             bank->AddReference(amount);
         });
         pending_flush_queries.push_back(index);
+        if (VideoCommon::NativeQueryProducerTrace::Enabled()) [[unlikely]] {
+            prior_draws.Append(current_draws);
+        }
         std::function<void()> func([this, index] {
             auto* query = GetQuery(index);
             query->value += GetAmendValue();
@@ -607,6 +647,8 @@ private:
     bool accumulation_since_last_sync{};
     VideoCommon::HostQueryBase* current_query;
     bool has_started{};
+    VideoCommon::NativeQueryProducerTrace::Counters producer_counters{};
+    VideoCommon::NativeQueryProducerTrace::DrawRange current_draws{}, prior_draws{};
     std::mutex flush_guard;
     std::optional<QueriesPrefixScanPass> queries_prefix_scan_pass;
 };

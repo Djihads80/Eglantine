@@ -3210,6 +3210,10 @@ public:
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
 
+    bool HasFrontState() const { return front != nullptr; }
+    void FrontCallStateMethods(VideoCommon::GpuSplit& split, u32 method,
+                               std::span<const u32> arguments, u32 methods_pending);
+
     bool ShouldExecute() const {
         return execute_on;
     }

@@ -3,10 +3,16 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <catch2/catch_test_macros.hpp>
 
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
+#include "shader_recompiler/frontend/maxwell/translate_program.h"
+#include "shader_recompiler/host_translate_info.h"
 
 namespace {
 using Shader::Ampere::Instruction;
@@ -14,6 +20,51 @@ using Shader::Ampere::LowerToMaxwell;
 using Shader::Ampere::ProgramCaptureState;
 
 constexpr Instruction EXIT{{0x0000794d, 0, 0x03800000, 0}};
+
+class GatherEnvironment final : public Shader::Environment {
+public:
+    GatherEnvironment(std::span<const u64> instructions, u32 texture_binding)
+        : binding{texture_binding}, code(0x50 / sizeof(u64)) {
+        stage = Shader::Stage::Compute;
+        start_address = 0x50;
+        for (const u64 word : instructions) {
+            if ((code.size() * sizeof(u64)) % 32 == 0) code.push_back(0);
+            code.push_back(word);
+        }
+    }
+    u64 ReadInstruction(u32 address) override {
+        REQUIRE(address % sizeof(u64) == 0);
+        REQUIRE(address / sizeof(u64) < code.size());
+        return code[address / sizeof(u64)];
+    }
+    bool IsNativeProgram() const override { return true; }
+    u32 ReadCbufValue(u32 bank, u32 offset) override { return (bank << 16) | offset; }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override {
+        return Shader::TexturePixelFormat::A8B8G8R8_UNORM;
+    }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 1; }
+    u32 TextureBoundBuffer() const override { return binding; }
+    u32 LocalMemorySize() const override { return 0; }
+    u32 SharedMemorySize() const override { return 4096; }
+    std::array<u32, 3> WorkgroupSize() const override { return {32, 1, 1}; }
+    bool HasHLEMacroState() const override { return false; }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override {
+        return std::nullopt;
+    }
+    void Dump(u64, u64) override {}
+
+private:
+    u32 binding;
+    std::vector<u64> code;
+};
+
+Instruction LiteralOffset(u32 reg, u32 value, u32 guard) {
+    return {{0xff000424U | (reg << 16) | (guard << 12), value, 0x078e00ff, 0}};
+}
+
+constexpr Instruction PTP_GATHER{{0x06189b63, 0x30007c10, 0x001e2f0e, 0}};
 
 // Lowered Maxwell words whose top bits (above `shift`) are `opcode`.
 template <typename Program>
@@ -372,5 +423,184 @@ TEST_CASE("Ampere Ocarina sign extends, uniform shifts and carries, LEA.HI and S
         EXIT,
     }};
     CHECK_FALSE(LowerToMaxwell(straddle));
+}
+
+TEST_CASE("Ampere PTP literal proof respects register, predicate and control flow changes",
+          "[video_core][ampere][gather]") {
+    using Shader::Ampere::GatherOffsetProof;
+    const std::array code{
+        LiteralOffset(16, 0xfffeffff, 9), LiteralOffset(17, 0xfffcfffd, 9),
+        Instruction{{0x1c1a7212, 0xff, 0x0784a003, 0}}, // LOP3 writes R26 and P2.
+        Instruction{{0x0000281c, 0, 0x03f0f070, 0}}, // @P2 PLOP3 writes P0.
+        Instruction{{0x00002947, 16, 0x03800000, 0}}, // @P2 exits, never enters the proof.
+        PTP_GATHER, EXIT,
+    };
+    const auto expected = std::array<u32, 2>{0xfffeffff, 0xfffcfffd};
+    REQUIRE(GatherOffsetProof{code}.Find(5) == expected);
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    const u32 first = lowered.source_instruction_offsets[5];
+    CHECK(((lowered.instructions[first + 2] >> 16) & 15) == 7);
+    CHECK(((lowered.instructions[first + 3] >> 16) & 15) == 7);
+    CHECK(((lowered.instructions[first + 4] >> 16) & 15) == 9);
+
+    for (const u32 definition : {0U, 1U}) {
+        for (const u32 guard : {1U, 2U, 7U, 15U}) {
+            auto changed = code;
+            changed[definition].words[0] = (changed[definition].words[0] & ~0xf000U) | (guard << 12);
+            CAPTURE(definition, guard);
+            CHECK(GatherOffsetProof{changed}.Find(5).has_value() == (guard == 7));
+        }
+    }
+    for (const u32 instruction : {2U, 3U}) {
+        auto changed = code;
+        changed[instruction].words[2] = (changed[instruction].words[2] & ~(7U << 17)) | (1U << 17);
+        CHECK_FALSE(GatherOffsetProof{changed}.Find(5));
+        changed[0] = LiteralOffset(16, 0xfffeffff, 7);
+        changed[1] = LiteralOffset(17, 0xfffcfffd, 7);
+        CHECK(GatherOffsetProof{changed}.Find(5) == expected);
+    }
+    for (const Instruction clobber : {
+             Instruction{{0x04107810, 4, 0x07ffe0ff, 0}}, // IADD3 overwrites an offset.
+             Instruction{{0x041c7810, 4, 0x07f3e0ff, 0}}, // IADD3 writes P1.
+             Instruction{{0x000f7805, 0, 0x0001ff00, 0}}, // CS2R R15:R16 overlaps R16.
+             Instruction{{0x00117919, 0, 0x2100, 0}}, // Dynamic S2R overwrites R17.
+             Instruction{{0x00007949, 0, 0, 0}}, // Indirect control has unknown entry points.
+             Instruction{{0x00007000, 0, 0, 0}}, // Unknown effects cannot prove constancy.
+         }) {
+        auto changed = code;
+        changed[2] = clobber;
+        CHECK_FALSE(GatherOffsetProof{changed}.Find(5));
+    }
+    auto changed = code;
+    changed[4].words[1] = 0; // A branch directly to the gather bypasses the proof boundary.
+    CHECK_FALSE(GatherOffsetProof{changed}.Find(5));
+    changed[4].words[0] = 0x00007945; // Treat a BSSY reconvergence target conservatively too.
+    CHECK_FALSE(GatherOffsetProof{changed}.Find(5));
+    changed = code;
+    changed[6] = {{0x00007947, static_cast<u32>(-80), 0x0383ffff, 0}}; // Back edge to instruction 2.
+    CHECK_FALSE(GatherOffsetProof{changed}.Find(5));
+    changed = code;
+    changed[2] = {{0x00007000, 0, 0, 0}};
+    changed[2].words[0] |= 0xf000; // @!PT cannot clobber anything.
+    CHECK(GatherOffsetProof{changed}.Find(5) == expected);
+
+    const std::array entry_at_definition{
+        Instruction{{0x00007947, 0, 0x03800000, 0}},
+        code[0], code[1], PTP_GATHER, EXIT,
+    };
+    CHECK(GatherOffsetProof{entry_at_definition}.Find(3) == expected);
+
+    changed = code;
+    changed[2] = PTP_GATHER;
+    changed[2].words[2] = (changed[2].words[2] & ~0xffU) | 16U;
+    CHECK_FALSE(GatherOffsetProof{changed}.Find(5)); // The gather's second destination overwrites R16.
+    changed[2].words[2] |= 1U << 15;
+    CHECK_FALSE(GatherOffsetProof{changed}.Find(5)); // F16 still writes its packed second destination.
+
+    const auto dynamic = LowerToMaxwell(std::array{PTP_GATHER, EXIT});
+    REQUIRE(dynamic);
+    CHECK((dynamic.instructions[2] >> 48) == 0x5c98); // Unproven offsets still read guest registers.
+    CHECK(((dynamic.instructions[2] >> 16) & 15) == 9);
+}
+
+TEST_CASE("Ampere guarded PTP literals survive production IR and SPIRV translation",
+          "[video_core][ampere][gather]") {
+    namespace IR = Shader::IR;
+    // Regression for OOT's @!P1 gather. The literal rematerialization approach is also used by
+    // Lichii 375c4a472bd95fdfaae0de6e3f192499cd14f806 (GPL-3.0-or-later).
+    const std::array<u32, 8> expected{0xffffffff, 0xffffffff, 0xfffffffe, 0xffffffff,
+                                     0xfffffffd, 0xffffffff, 0xfffffffc, 0xffffffff};
+    for (const bool half : {false, true}) {
+        for (const u32 guard : {1U, 7U, 9U}) {
+            CAPTURE(half, guard);
+            auto gather = PTP_GATHER;
+            gather.words[0] = (gather.words[0] & ~0xf000U) | (guard << 12);
+            gather.words[2] |= u32{half} << 15;
+            const std::array native{
+                Instruction{{0x000e7919, 0, 0x2100, 0}}, // Runtime thread index, so P1 is not constant.
+                Instruction{{0x0e00720c, 0xff, 0x03f25070, 0}},
+                LiteralOffset(16, 0xfffeffff, guard), LiteralOffset(17, 0xfffcfffd, guard),
+                gather, EXIT,
+            };
+            const auto lowered = LowerToMaxwell(native);
+            INFO(lowered.error);
+            REQUIRE(lowered);
+            auto code = lowered.instructions;
+            // Shared stores keep all gather results alive through dead-code elimination.
+            for (const u32 reg : {14U, 15U, 24U, 25U}) {
+                code.insert(code.end() - 1, 0xef58000000070000ULL | reg | (255ULL << 8) |
+                                           (u64{reg * 4} << 20) | (4ULL << 48));
+            }
+            GatherEnvironment env{code, lowered.required_texture_buffer};
+            Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_pool;
+            Shader::Maxwell::Flow::CFG cfg{env, flow_pool, Shader::Maxwell::Location{0x50}};
+            Shader::ObjectPool<IR::Inst> inst_pool;
+            Shader::ObjectPool<IR::Block> block_pool;
+            Shader::HostTranslateInfo host{};
+            host.ApplyDescriptorLimitPolicy();
+            auto program = Shader::Maxwell::TranslateProgram(inst_pool, block_pool, env, cfg, host);
+            u32 gathers = 0;
+            for (const auto* block : program.blocks) {
+                for (const auto& inst : *block) {
+                    if (inst.GetOpcode() != IR::Opcode::ImageGather) continue;
+                    ++gathers;
+                    for (u32 vector = 0; vector < 2; ++vector) {
+                        const auto* offsets = inst.Arg(2 + vector).InstRecursive();
+                        REQUIRE(offsets->GetOpcode() == IR::Opcode::CompositeConstructU32x4);
+                        REQUIRE(offsets->AreAllArgsImmediates());
+                        for (u32 lane = 0; lane < 4; ++lane)
+                            CHECK(offsets->Arg(lane).U32() == expected[vector * 4 + lane]);
+                    }
+                }
+            }
+            REQUIRE(gathers == 1);
+            Shader::Profile profile{};
+            // Device::SupportedSpirvVersion selects 1.6 for Vulkan >= 1.3, including the RTX 5070.
+            // Validate these modules with spirv-val --target-env vulkan1.3.
+            profile.supported_spirv = 0x00010600;
+            const auto spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, program);
+            REQUIRE(spirv.size() > 5);
+            CHECK(spirv.front() == 0x07230203);
+            CHECK(spirv[1] == profile.supported_spirv);
+            std::map<u32, u32> scalars;
+            std::map<u32, std::vector<u32>> composites;
+            std::vector<u32> offset_arrays;
+            for (size_t i = 5; i < spirv.size();) {
+                const u32 count = spirv[i] >> 16, opcode = spirv[i] & 0xffff;
+                REQUIRE(count > 0);
+                REQUIRE(i + count <= spirv.size());
+                if (opcode == 43 && count == 4) scalars[spirv[i + 2]] = spirv[i + 3]; // OpConstant
+                if (opcode == 44) // OpConstantComposite
+                    composites[spirv[i + 2]] = {spirv.begin() + i + 3, spirv.begin() + i + count};
+                if (opcode == 96) { // OpImageGather must carry ConstOffsets, not silently drop them.
+                    REQUIRE(count == 8);
+                    CHECK(spirv[i + 6] == 0x20);
+                    offset_arrays.push_back(spirv[i + 7]);
+                }
+                i += count;
+            }
+            REQUIRE(offset_arrays.size() == 1);
+            const auto& taps = composites.at(offset_arrays.front());
+            REQUIRE(taps.size() == 4);
+            for (u32 tap = 0; tap < 4; ++tap) {
+                const auto& pair = composites.at(taps[tap]);
+                REQUIRE(pair.size() == 2);
+                CHECK(scalars.at(pair[0]) == expected[tap * 2]);
+                CHECK(scalars.at(pair[1]) == expected[tap * 2 + 1]);
+            }
+            // Optional artifacts for spirv-val; normal test execution writes no files.
+            if (const char* directory = std::getenv("EDEN_TEST_SPIRV_DIR")) {
+                const auto folder = std::filesystem::path{directory};
+                std::filesystem::create_directories(folder);
+                std::ofstream output{folder / fmt::format("gather-{}-{}.spv", guard, half),
+                                     std::ios::binary};
+                output.write(reinterpret_cast<const char*>(spirv.data()),
+                             static_cast<std::streamsize>(spirv.size() * sizeof(u32)));
+                REQUIRE(output.good());
+            }
+        }
+    }
 }
 } // namespace

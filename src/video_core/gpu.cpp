@@ -11,6 +11,7 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "common/assert.h"
 #include "common/settings.h"
@@ -22,6 +23,7 @@
 #include "core/hle/service/nvdrv/nvdata.h"
 #include "core/perf_stats.h"
 #include "video_core/cdma_pusher.h"
+#include "video_core/composite_completion.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/control/scheduler.h"
 #include "video_core/dma_pusher.h"
@@ -62,7 +64,9 @@ struct GPU::Impl {
         , is_async{is_async_}
     {}
 
-    ~Impl() = default;
+    ~Impl() {
+        NotifyShutdown();
+    }
 
     std::shared_ptr<Control::ChannelState> CreateChannel(s32 channel_id) {
         auto channel_state = std::make_shared<Tegra::Control::ChannelState>(channel_id);
@@ -113,10 +117,16 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
-        std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
-            renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
+        // Collect all CPU queues before preserving shared pages. Processing a write while
+        // another CPU write to that page is still queued could download over its new bytes.
+        std::vector<std::pair<DAddr, std::size_t>> writes;
+        std::function<void(PAddr, size_t)> callback_writes([&writes](PAddr address, size_t size) {
+            writes.emplace_back(address, size);
         });
         system.GatherGPUDirtyMemory(callback_writes);
+        if (!writes.empty()) {
+            renderer->ReadRasterizer()->OnCacheInvalidationBatch(writes);
+        }
     }
 
     /// Signal the ending of command list.
@@ -182,9 +192,18 @@ struct GPU::Impl {
     }
 
     void NotifyShutdown() {
+        shutting_down.store(true, std::memory_order_release);
+        // A ready-input job may be enqueueing a GPU tick. Stop it while the consumer still
+        // runs, outside Host1x/service locks, then stop front/back and image-release callbacks.
+        composite_requests.Stop();
         gpu_thread.NotifyShutdown();
+        // Requests that never ran still own completion tokens. Destroy them here, outside the
+        // mutex, while the services their cancellation callbacks may notify are still alive.
+        VideoCore::DiscardPendingSyncRequests(sync_request_mutex, sync_requests);
+        if (renderer) {
+            renderer->CancelCompositeCompletions();
+        }
         std::unique_lock lk{sync_mutex};
-        shutting_down.store(true, std::memory_order::relaxed);
         sync_cv.notify_all();
     }
 
@@ -268,7 +287,58 @@ struct GPU::Impl {
         gpu_thread.FlushAndInvalidateRegion(addr, size, is_async);
     }
 
-    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers, std::vector<Service::Nvidia::NvFence>&& fences) {
+    void RequestTrackedComposite(std::vector<Tegra::FramebufferConfig>&& layers,
+                                 std::vector<Service::Nvidia::NvFence>&& fences,
+                                 std::function<void(bool)> callback, u64 ordering_key) {
+        auto completion = std::make_shared<VideoCore::CompositeCompletion>(std::move(callback));
+        if (shutting_down.load(std::memory_order_acquire) || layers.empty() || ordering_key == 0 ||
+            !renderer->SupportsCompositeCompletion()) {
+            return;
+        }
+        for (const auto& fence : fences) {
+            if (fence.id < 0 || static_cast<size_t>(fence.id) >=
+                                    Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS) {
+                return;
+            }
+        }
+        auto& manager = system.Host1x().GetSyncpointManager();
+        composite_requests.Enqueue(
+            [&manager, input_fences = std::move(fences)] {
+                for (const auto& fence : input_fences) {
+                    if (!manager.IsReadyGuest(fence.id, fence.value)) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            [this, ready_layers = std::move(layers), completion](bool ready) mutable {
+                if (!ready || shutting_down.load(std::memory_order_acquire)) {
+                    completion->Complete(false);
+                    return;
+                }
+                // Host1x actions run under its guard and may run on arbitrary threads. This
+                // readiness worker owns no such guard: it can safely queue work to GPUBack.
+                (void)RequestSyncOperation(
+                    [this, queued_layers = std::move(ready_layers), completion]() mutable {
+                        if (shutting_down.load(std::memory_order_acquire)) {
+                            completion->Complete(false);
+                            return;
+                        }
+                        renderer->CompositeWithCompletion(
+                            queued_layers, [completion](bool done) { completion->Complete(done); });
+                    });
+                gpu_thread.TickGPU(is_async);
+            }, ordering_key);
+    }
+
+    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::function<void(bool)> completion, u64 ordering_key) {
+        if (completion) {
+            RequestTrackedComposite(std::move(layers), std::move(fences), std::move(completion),
+                                    ordering_key);
+            return;
+        }
         const size_t num_fences{fences.size()};
         size_t current_request_counter{};
         if (num_fences != 0) {
@@ -374,6 +444,7 @@ struct GPU::Impl {
     std::deque<size_t> request_swap_counters;
     std::mutex request_swap_mutex;
     u64 pending_composite_fence{};
+    VideoCore::CompositeCompletionQueue composite_requests;
 };
 
 GPU::GPU(Core::System& system, bool is_async, bool use_nvdec)
@@ -491,8 +562,9 @@ const VideoCore::ShaderNotify& GPU::ShaderNotify() const {
 }
 
 void GPU::RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                           std::vector<Service::Nvidia::NvFence>&& fences) {
-    impl->RequestComposite(std::move(layers), std::move(fences));
+                           std::vector<Service::Nvidia::NvFence>&& fences,
+                           std::function<void(bool)> completion, u64 ordering_key) {
+    impl->RequestComposite(std::move(layers), std::move(fences), std::move(completion), ordering_key);
 }
 
 void GPU::WaitForComposite() {

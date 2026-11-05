@@ -203,11 +203,52 @@ try
 }
 
 RendererVulkan::~RendererVulkan() {
+    CancelCompositeCompletions();
     scheduler.RegisterOnSubmit([] {});
     void(device.GetLogical().WaitIdle());
 }
 
 void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers) {
+    CompositeImpl(framebuffers);
+}
+
+void RendererVulkan::CompositeWithCompletion(
+    std::span<const Tegra::FramebufferConfig> framebuffers, std::function<void(bool)> callback) {
+    auto completion = std::make_shared<VideoCore::CompositeCompletion>(std::move(callback));
+    if (framebuffers.empty()) {
+        return; // Dropping the token cancels; no image was consumed.
+    }
+    CompositeImpl(framebuffers, std::move(completion));
+}
+
+void RendererVulkan::CancelCompositeCompletions() {
+    composite_completions.Stop();
+}
+
+void RendererVulkan::QueueCompositeCompletion(
+    u64 tick, std::shared_ptr<VideoCore::CompositeCompletion> completion) {
+    composite_completions.Enqueue(
+        [this, tick] {
+            // Flush has already queued this exact submission. Refresh/IsFree only observe
+            // its hardware timeline; this worker never records or submits scheduler work.
+            auto& master = scheduler.GetMasterSemaphore();
+            try {
+                master.Refresh();
+                return master.IsFree(tick);
+            } catch (const vk::Exception& exception) {
+                LOG_ERROR(Render_Vulkan, "Composite GPU tick {} failed: {}", tick,
+                          exception.what());
+                throw;
+            }
+        },
+        [completion = std::move(completion)](bool completed) {
+            completion->Complete(completed);
+        });
+}
+
+void RendererVulkan::CompositeImpl(
+    std::span<const Tegra::FramebufferConfig> framebuffers,
+    std::shared_ptr<VideoCore::CompositeCompletion> completion) {
     SCOPE_EXIT {
         render_window.OnFrameDisplayed();
     };
@@ -215,6 +256,12 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     RenderAppletCaptureLayer(framebuffers);
 
     if (!render_window.IsShown()) {
+        if (completion) {
+            // The minimized window discards this presentation. Retire any prior rendering
+            // and applet-capture source reads on a real submitted tick before releasing it.
+            // There is no swapchain blit, Present, or RendererFrameEndNotify here.
+            QueueCompositeCompletion(scheduler.Flush(), std::move(completion));
+        }
         return;
     }
 
@@ -243,7 +290,10 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
 #endif
 
-    scheduler.Flush(*frame->render_ready);
+    const u64 composite_tick = scheduler.Flush(*frame->render_ready);
+    if (completion) {
+        QueueCompositeCompletion(composite_tick, std::move(completion));
+    }
 
     present_manager.Present(frame);
 #ifdef HAS_LSFG

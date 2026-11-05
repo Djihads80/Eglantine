@@ -34,7 +34,11 @@
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/buffer_cache/buffer_base.h"
+#include "video_core/buffer_cache/proven_compute_writes.h"
+#include "video_core/buffer_cache/proven_compute_sync.h"
+#include "video_core/buffer_cache/cpu_upload_ranges.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
+#include "video_core/buffer_cache/write_preserve_downloads.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
@@ -139,6 +143,8 @@ public:
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
     std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    ProvenComputeWrites::Plan compute_write_plan;
+    ProvenComputeSync::Plan compute_sync_plan;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -243,6 +249,8 @@ public:
     /// when the memory is going away).
     void WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data = true);
 
+    void WriteMemoryBatch(std::span<const std::pair<DAddr, std::size_t>> writes);
+
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
     bool OnCPUWrite(DAddr device_addr, u64 size);
@@ -291,7 +299,10 @@ public:
     void UnbindComputeStorageBuffers();
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
-                                  bool is_written);
+                                  bool is_written,
+                                  const Shader::StorageWriteBounds::DescriptorProof* proof = nullptr,
+                                  const Shader::StorageWriteBounds::Dispatch* dispatch = nullptr,
+                                  const Shader::StorageWriteBounds::DescriptorAccessProof* access_proof = nullptr);
 
     void UnbindComputeTextureBuffers();
 
@@ -511,6 +522,8 @@ private:
     /// Downloads the GPU-written data of several buffers with one wait for the GPU.
     void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
 
+    void DownloadMemoryRanges(const Common::RangeSet<DAddr>& ranges);
+
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
@@ -565,6 +578,7 @@ private:
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 
     MemoryTracker memory_tracker;
+    WritePreserveDownloadHints write_preserve_downloads;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
 
     /// Whether GPU-written buffer ranges are copied back to guest memory at the next fence;
@@ -585,15 +599,12 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
-    /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
-    /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
-    /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
-    bool DownloadsAtFence(DAddr device_addr, u64 size) noexcept {
-        return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
-    }
+    /// Queue only CPU-read pages when full asynchronous downloads are disabled. A large
+    /// storage binding can contain one such page; its other pages stay GPU-owned until read.
+    void QueueWrittenDownloads(DAddr device_addr, u64 size);
 
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
-    /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
+    /// pages, which flushes them once and marks them Preflushable (then QueueWrittenDownloads).
     void ArmReadTraps(DAddr device_addr, u64 size) {
         const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
         const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
@@ -619,6 +630,11 @@ private:
     /// fence pops. A write to a range after a download was taken removes it from that download
     /// (and every other pending one): its bytes are older than the write.
     std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
+    struct DownloadBatchStats {
+        u64 regions{};
+        u64 commands{};
+        u64 window_start{};
+    } download_batch_stats;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;

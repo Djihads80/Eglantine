@@ -13,6 +13,7 @@
 #include "common/common_types.h"
 #include "common/thread_worker.h"
 #include "shader_recompiler/shader_info.h"
+#include "shader_recompiler/storage_write_bounds.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
@@ -40,7 +41,10 @@ public:
                              Common::ThreadWorker* thread_worker,
                              PipelineStatistics* pipeline_statistics,
                              VideoCore::ShaderNotify* shader_notify, const Shader::Info& info,
-                             vk::ShaderModule spv_module, u64 shader_hash);
+                             vk::ShaderModule spv_module, u64 shader_hash,
+                             std::vector<Shader::StorageWriteBounds::DescriptorProof> write_proofs,
+                             std::vector<Shader::StorageWriteBounds::DescriptorAccessProof> access_proofs,
+                             std::array<u32, 3> compiled_workgroup_size);
 
     ComputePipeline& operator=(ComputePipeline&&) noexcept = delete;
     ComputePipeline(ComputePipeline&&) noexcept = delete;
@@ -51,6 +55,8 @@ public:
     [[nodiscard]] bool Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                  Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                  BufferCache& buffer_cache, TextureCache& texture_cache);
+
+    void SetDiagnosticNativeKey(u64 key) { diagnostic_native_key = key; }
 
     bool IsBound() const noexcept {
         return static_cast<bool>(pipeline);
@@ -63,6 +69,10 @@ private:
     DescriptorBufferRing& descriptor_buffer_ring;
     Shader::Info info;
     u64 shader_hash{};
+    u64 diagnostic_native_key{};
+    std::vector<Shader::StorageWriteBounds::DescriptorProof> write_proofs;
+    std::vector<Shader::StorageWriteBounds::DescriptorAccessProof> access_proofs;
+    std::array<u32, 3> compiled_workgroup_size{};
     u32 num_descriptor_entries{};
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};

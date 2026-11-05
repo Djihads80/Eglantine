@@ -30,6 +30,7 @@ class GPU;
 }
 
 namespace VideoCommon {
+namespace NativeQueryProducerTrace { struct Draw; }
 
 struct LookupData {
     VAddr address;
@@ -96,6 +97,7 @@ public:
     void CounterReset(QueryType counter_type);
 
     void CounterClose(QueryType counter_type);
+    void RecordDiagnosticDraw(const NativeQueryProducerTrace::Draw& draw);
 
     void CounterReport(GPUVAddr addr, QueryType counter_type, QueryPropertiesFlags flags,
                        u32 payload, u32 subreport);

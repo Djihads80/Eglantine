@@ -7,12 +7,14 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <optional>
 
 #include "common/common_types.h"
 #include "core/hle/service/nvdrv/nvdata.h"
 
 namespace Tegra::Host1x {
 class Host1x;
+class SyncpointManager;
 } // namespace Tegra::Host1x
 
 namespace Service::Nvidia::NvCore {
@@ -39,6 +41,10 @@ enum class ChannelType : u32 {
 class SyncpointManager final {
 public:
     explicit SyncpointManager(Tegra::Host1x::Host1x& host1x);
+    explicit SyncpointManager(Tegra::Host1x::SyncpointManager& syncpoint_values);
+
+    // Diagnostic GPU domain: fresh IDs only, retained until this allocator is destroyed.
+    std::optional<u32> TryAllocateGpuCompletionSyncpoint();
     ~SyncpointManager();
 
     /**
@@ -51,6 +57,9 @@ public:
      * @return The ID of the reserved syncpoint
      */
     u32 AllocateSyncpoint(bool client_managed);
+
+    // Service-facing allocation: exhaustion is an error reply, not an assertion.
+    std::optional<u32> TryAllocateSyncpoint(bool client_managed);
 
     /**
      * @url
@@ -128,7 +137,7 @@ private:
     std::array<SyncpointInfo, SyncpointCount> syncpoints{};
     std::mutex reservation_lock;
 
-    Tegra::Host1x::Host1x& host1x;
+    Tegra::Host1x::SyncpointManager& syncpoint_values;
 };
 
 } // namespace Service::Nvidia::NvCore

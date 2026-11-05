@@ -35,6 +35,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/native_upscale.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -460,9 +461,32 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
         }
         if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
+    static const bool isolated_tensor = [] {
+        const char* value = std::getenv("EDEN_NX2_OOT_TENSOR_6F");
+        const bool global = std::getenv("EDEN_NX2_TENSOR") != nullptr;
+        if (value && std::string_view{value} == "1" && global) {
+            LOG_WARNING(Shader, "Isolated OOT tensor diagnostic disabled: unset EDEN_NX2_TENSOR "
+                                "to isolate the exact program (global mode is unchanged)");
+        }
+        return NativeUpscale::TensorGateEnabled(value ? std::string_view{value} : std::string_view{},
+                                                global);
+    }();
+    const bool candidate = isolated_tensor && stage == Shader::Stage::Compute &&
+                           native_header_size == 0 && !geometry &&
+                           native.size() * sizeof(Instruction) == NativeUpscale::SignedSquareProgramBytes;
+    // Fingerprint the complete captured program before lowering, using the existing owned copy.
+    // The resulting lowered code is already part of Analyze()'s pipeline cache key.
+    const bool selected_tensor = NativeUpscale::SelectTensorReconstruction(
+        isolated_tensor, candidate, candidate ? Shader::Ampere::NativeProgramKey(native) : 0,
+        native.size() * sizeof(Instruction));
+    if (selected_tensor) {
+        LOG_INFO(Shader, "Isolated OOT tensor reconstruction selected: key {:016x}, {} bytes, "
+                         "compute; native SIMT lowering (not a fidelity/performance guarantee)",
+                 NativeUpscale::SignedSquareProgramKey, native.size() * sizeof(Instruction));
+    }
     auto lowered = Shader::Ampere::LowerToMaxwell(
         native, {.geometry = geometry,
-                 .tensor = native_tensor,
+                 .tensor = native_tensor || selected_tensor,
                  .native_code_address = program_base + native_header_size});
     // EDEN_NX2_REJECT=<hex address>,...: treat these programs as rejected (to find which newly
     // lowered program changes a game's behaviour without rebuilding).

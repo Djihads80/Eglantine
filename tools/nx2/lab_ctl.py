@@ -28,12 +28,296 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
+import uuid
 import zlib
 
 KEY = re.compile(r"^[0-9a-f]{16}$")
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+
+
+class WindowsProcesses:
+    """Process handles and a private Job Object; never terminate a PID by itself."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes as wt
+        self.ct, self.wt = ctypes, wt
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        declarations = {
+            "CreateJobObjectW": ([wt.LPVOID, wt.LPCWSTR], wt.HANDLE),
+            "OpenJobObjectW": ([wt.DWORD, wt.BOOL, wt.LPCWSTR], wt.HANDLE),
+            "SetInformationJobObject": ([wt.HANDLE, ctypes.c_int, wt.LPVOID, wt.DWORD], wt.BOOL),
+            "AssignProcessToJobObject": ([wt.HANDLE, wt.HANDLE], wt.BOOL),
+            "IsProcessInJob": ([wt.HANDLE, wt.HANDLE, ctypes.POINTER(wt.BOOL)], wt.BOOL),
+            "TerminateJobObject": ([wt.HANDLE, wt.UINT], wt.BOOL),
+            "OpenProcess": ([wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE),
+            "CreateToolhelp32Snapshot": ([wt.DWORD, wt.DWORD], wt.HANDLE),
+            "Thread32First": ([wt.HANDLE, wt.LPVOID], wt.BOOL),
+            "Thread32Next": ([wt.HANDLE, wt.LPVOID], wt.BOOL),
+            "OpenThread": ([wt.DWORD, wt.BOOL, wt.DWORD], wt.HANDLE),
+            "GetProcessIdOfThread": ([wt.HANDLE], wt.DWORD),
+            "ResumeThread": ([wt.HANDLE], wt.DWORD),
+            "GetProcessTimes": ([wt.HANDLE] + [ctypes.POINTER(wt.FILETIME)] * 4, wt.BOOL),
+            "QueryFullProcessImageNameW": ([wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)], wt.BOOL),
+            "WaitForSingleObject": ([wt.HANDLE, wt.DWORD], wt.DWORD),
+            "CloseHandle": ([wt.HANDLE], wt.BOOL),
+        }
+        for name, (arguments, result) in declarations.items():
+            function = getattr(self.kernel, name)
+            function.argtypes, function.restype = arguments, result
+
+    def checked(self, result):
+        if not result:
+            raise self.ct.WinError(self.ct.get_last_error())
+        return result
+
+    def close(self, handle):
+        if handle:
+            self.kernel.CloseHandle(handle)
+
+    def create_job(self, name):
+        ct, wt = self.ct, self.wt
+        class Limits(ct.Structure):
+            _fields_ = [("process_time", ct.c_int64), ("job_time", ct.c_int64),
+                        ("flags", wt.DWORD), ("min_working", ct.c_size_t),
+                        ("max_working", ct.c_size_t), ("active", wt.DWORD),
+                        ("affinity", ct.c_size_t), ("priority", wt.DWORD), ("scheduling", wt.DWORD)]
+        class ExtendedLimits(ct.Structure):
+            _fields_ = [("basic", Limits), ("io_counters", ct.c_uint64 * 6),
+                        ("process_memory", ct.c_size_t), ("job_memory", ct.c_size_t),
+                        ("peak_process", ct.c_size_t), ("peak_job", ct.c_size_t)]
+        job = self.checked(self.kernel.CreateJobObjectW(None, name))
+        limits = ExtendedLimits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        try:
+            self.checked(self.kernel.SetInformationJobObject(job, 9, ct.byref(limits), ct.sizeof(limits)))
+            return job
+        except BaseException:
+            self.close(job)
+            raise
+
+    def identity(self, process):
+        times = [self.wt.FILETIME() for _ in range(4)]
+        self.checked(self.kernel.GetProcessTimes(process, *(self.ct.byref(t) for t in times)))
+        image = self.ct.create_unicode_buffer(32768)
+        length = self.wt.DWORD(len(image))
+        self.checked(self.kernel.QueryFullProcessImageNameW(process, 0, image, self.ct.byref(length)))
+        return {"created": (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime,
+                "image": os.path.normcase(image.value)}
+
+    def resume(self, process):
+        # Popen closes CreateProcess's primary thread handle. Find the one thread
+        # of our suspended child, and resume only after the job/watchdog are ready.
+        class ThreadEntry(self.ct.Structure):
+            _fields_ = [("size", self.wt.DWORD), ("usage", self.wt.DWORD),
+                        ("thread_id", self.wt.DWORD), ("process_id", self.wt.DWORD),
+                        ("base_priority", self.wt.LONG), ("delta_priority", self.wt.LONG),
+                        ("flags", self.wt.DWORD)]
+        snapshot = self.kernel.CreateToolhelp32Snapshot(4, 0)  # TH32CS_SNAPTHREAD
+        if snapshot == self.ct.c_void_p(-1).value:
+            raise self.ct.WinError(self.ct.get_last_error())
+        thread = None
+        try:
+            entry = ThreadEntry()
+            entry.size = self.ct.sizeof(entry)
+            found = self.kernel.Thread32First(snapshot, self.ct.byref(entry))
+            while found:
+                if entry.process_id == process.pid:
+                    thread = self.checked(self.kernel.OpenThread(0x802, False, entry.thread_id))
+                    break
+                found = self.kernel.Thread32Next(snapshot, self.ct.byref(entry))
+            if (not thread or process.poll() is not None or
+                    self.kernel.GetProcessIdOfThread(thread) != process.pid):
+                raise RuntimeError("suspended child thread is no longer available")
+            if self.kernel.ResumeThread(thread) != 1:
+                raise RuntimeError("could not resume the suspended child exactly once")
+        finally:
+            self.close(thread)
+            self.close(snapshot)
+
+    def open_owned(self, record):
+        process = self.kernel.OpenProcess(0x101000, False, record["pid"])
+        if not process:
+            if self.ct.get_last_error() == 87:  # PID no longer exists.
+                return None
+            self.checked(process)
+        try:
+            if self.kernel.WaitForSingleObject(process, 0) == 0:
+                self.close(process)
+                return None
+            identity = self.identity(process)
+            if identity != {key: record[key] for key in ("created", "image")}:
+                raise RuntimeError("process identity changed; refusing to stop a reused PID")
+            return process
+        except BaseException:
+            self.close(process)
+            raise
+
+    def open_owned_job(self, record, process):
+        job = self.checked(self.kernel.OpenJobObjectW(0xC, False, record["job"]))
+        member = self.wt.BOOL()
+        try:
+            self.checked(self.kernel.IsProcessInJob(process, job, self.ct.byref(member)))
+            if not member.value:
+                raise RuntimeError("process is not in this lab's Job Object")
+            return job
+        except BaseException:
+            self.close(job)
+            raise
+
+    def request_close(self, pid):
+        user = self.ct.WinDLL("user32", use_last_error=True)
+        callback_type = self.ct.WINFUNCTYPE(self.wt.BOOL, self.wt.HWND, self.wt.LPARAM)
+        user.EnumWindows.argtypes = [callback_type, self.wt.LPARAM]
+        user.GetWindowThreadProcessId.argtypes = [self.wt.HWND, self.ct.POINTER(self.wt.DWORD)]
+        user.PostMessageW.argtypes = [self.wt.HWND, self.wt.UINT, self.wt.WPARAM, self.wt.LPARAM]
+        requested = []
+        @callback_type
+        def close_window(window, unused):
+            owner = self.wt.DWORD()
+            user.GetWindowThreadProcessId(window, self.ct.byref(owner))
+            if owner.value == pid:
+                if user.PostMessageW(window, 0x10, 0, 0):  # WM_CLOSE
+                    requested.append(window)
+            return True
+        user.EnumWindows(close_window, 0)
+        return bool(requested)
+
+
+def windows_record(diag):
+    text = read(os.path.join(diag, "emulator.json"))
+    if not text:
+        return None
+    record = json.loads(text)
+    if (record.get("platform") != "windows" or
+            not re.fullmatch(r"[0-9a-f]{32}", record.get("token", "")) or
+            record.get("job") != "Local\\EglantineLab-" + record["token"] or
+            not isinstance(record.get("pid"), int) or not 0 < record["pid"] < 2**32 or
+            not isinstance(record.get("created"), int) or not isinstance(record.get("image"), str)):
+        raise RuntimeError("invalid emulator identity file")
+    return record
+
+
+def windows_ready(diag, token):
+    return os.path.join(diag, "watchdog-" + token + ".ready")
+
+
+def command_windows_watchdog(args):
+    api = WindowsProcesses()
+    record = windows_record(args.diag_dir)
+    if not record or record["token"] != args.token:
+        sys.exit("watchdog identity mismatch")
+    process = api.open_owned(record)
+    if not process:
+        sys.exit("emulator exited before watchdog startup")
+    job = None
+    try:
+        job = api.open_owned_job(record, process)
+        write_atomic(windows_ready(args.diag_dir, args.token), args.token)
+        reason = "exited"
+        while True:
+            waited = api.kernel.WaitForSingleObject(process, 200)
+            if waited == 0:
+                break
+            if waited != 258:
+                raise api.ct.WinError(api.ct.get_last_error())
+            if time.monotonic() >= record["deadline"]:
+                api.checked(api.kernel.TerminateJobObject(job, 124))
+                reason = "timeout"
+                break
+        write_atomic(os.path.join(args.diag_dir, "watchdog-result.json"),
+                     json.dumps({"token": args.token, "reason": reason, "pid": record["pid"]}))
+    finally:
+        api.close(job)
+        api.close(process)
+
+
+def windows_available(diag):
+    api = WindowsProcesses()
+    previous = windows_record(diag)
+    if previous:
+        process = api.open_owned(previous)
+        if process:
+            api.close(process)
+            sys.exit("this diagnostics directory already owns a running emulator; stop it first")
+    elif read(os.path.join(diag, "emulator.pid")):
+        sys.exit("legacy emulator.pid has no Windows ownership record; use a fresh diagnostics directory")
+
+
+def windows_launch(command, environment, log, diag, max_seconds):
+    windows_available(diag)
+    api = WindowsProcesses()
+    token = uuid.uuid4().hex
+    job_name = "Local\\EglantineLab-" + token
+    job = api.create_job(job_name)
+    process = guard = None
+    try:
+        process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
+                                   creationflags=(subprocess.CREATE_NO_WINDOW |
+                                                  subprocess.CREATE_NEW_PROCESS_GROUP | 4),  # CREATE_SUSPENDED
+                                   cwd=REPO)
+        api.checked(api.kernel.AssignProcessToJobObject(job, int(process._handle)))
+        record = {"platform": "windows", "token": token, "job": job_name, "pid": process.pid,
+                  "deadline": time.monotonic() + max_seconds, **api.identity(int(process._handle))}
+        write_atomic(os.path.join(diag, "emulator.json"), json.dumps(record))
+        write_atomic(os.path.join(diag, "emulator.pid"), str(process.pid))
+        with open(os.path.join(diag, "watchdog.log"), "w", encoding="utf-8") as guard_log:
+            guard = subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "-d", diag,
+                                      "_watchdog-windows", "--token", token],
+                                     stdout=guard_log, stderr=subprocess.STDOUT,
+                                     creationflags=subprocess.CREATE_NO_WINDOW, cwd=REPO)
+        deadline = time.monotonic() + 10
+        while read(windows_ready(diag, token)) != token:
+            if guard.poll() is not None or time.monotonic() >= deadline:
+                raise RuntimeError("watchdog did not acquire the owned process; launch cancelled")
+            time.sleep(0.05)
+        api.resume(process)
+        # Reap the helper when this controller stays alive (e.g. imported by tests).
+        # In the usual CLI invocation it remains an independent hidden process.
+        threading.Thread(target=guard.wait, daemon=True).start()
+        return process
+    except BaseException:
+        api.kernel.TerminateJobObject(job, 125)
+        if process and process.poll() is None:
+            process.terminate()  # Popen retains the original process HANDLE.
+            process.wait(timeout=10)
+        if guard and guard.poll() is None:
+            guard.terminate()
+            guard.wait(timeout=10)
+        raise
+    finally:
+        # The watchdog holds the remaining job handle; if it dies, its job closes.
+        api.close(job)
+
+
+def windows_stop(diag):
+    record = windows_record(diag)
+    if not record:
+        sys.exit("no Windows emulator identity record")
+    api = WindowsProcesses()
+    process = api.open_owned(record)
+    job = None
+    try:
+        if process:
+            job = api.open_owned_job(record, process)
+            graceful = api.request_close(record["pid"])
+            if api.kernel.WaitForSingleObject(process, 5000 if graceful else 0) == 258:
+                api.checked(api.kernel.TerminateJobObject(job, 0))
+                if api.kernel.WaitForSingleObject(process, 5000) != 0:
+                    raise RuntimeError("owned emulator did not terminate")
+    finally:
+        api.close(job)
+        api.close(process)
+    current = windows_record(diag)
+    if current and current["token"] == record["token"]:
+        for name in ("emulator.pid", "emulator.json", os.path.basename(windows_ready(diag, record["token"]))):
+            try:
+                os.unlink(os.path.join(diag, name))
+            except FileNotFoundError:
+                pass
 
 
 def read(path, default=None):
@@ -180,6 +464,8 @@ def capture(diag, settle, out, timeout):
     # The screenshot is written by a callback: wait until its size settles.
     size = -1
     while size != os.path.getsize(tga):
+        if time.time() > deadline:
+            sys.exit("capture file did not finish within the timeout")
         size = os.path.getsize(tga)
         time.sleep(0.2)
     if out:
@@ -199,7 +485,11 @@ def drawlist(path):
 # --- commands ---------------------------------------------------------------------------------
 
 def command_launch(args):
+    if not 0 < args.max_seconds <= 86400:
+        sys.exit("--max-seconds must be between 1 and 86400")
     os.makedirs(args.diag_dir, exist_ok=True)
+    if os.name == "nt":
+        windows_available(args.diag_dir)
     environment = dict(os.environ)
     environment.update({
         "EDEN_NX2_DIAG": "1",
@@ -220,22 +510,33 @@ def command_launch(args):
     for stale in os.listdir(args.diag_dir):
         if re.match(r"^(diag-state\.json|draw-list|draw-list-\d+\.tsv|capture-\d+\.tga)$", stale):
             os.unlink(os.path.join(args.diag_dir, stale))
-    binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli")
-    log = open(os.path.join(args.diag_dir, "emulator.log"), "w")
-    command = [binary] + (["-c", args.config] if args.config else []) + ["-g", args.game]
-    process = subprocess.Popen(command, env=environment, stdout=log,
-                               stderr=subprocess.STDOUT, start_new_session=True, cwd=REPO)
-    write_atomic(os.path.join(args.diag_dir, "emulator.pid"), str(process.pid))
-    if args.max_seconds:
+    binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli.exe" if os.name == "nt" else "eden-cli")
+    command = [os.path.abspath(binary)]
+    if args.config:
+        command += ["-c", os.path.abspath(args.config)]
+    command += ["-g", os.path.abspath(args.game)]
+    log_path = os.path.join(args.diag_dir, "emulator.log")
+    with open(log_path, "w", encoding="utf-8") as log:
+        if os.name == "nt":
+            process = windows_launch(command, environment, log, args.diag_dir, args.max_seconds)
+        else:
+            process = subprocess.Popen(command, env=environment, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True, cwd=REPO)
+            write_atomic(os.path.join(args.diag_dir, "emulator.pid"), str(process.pid))
+    if os.name != "nt":
         # A watchdog, so a forgotten run does not keep the GPU busy: kills the process group after
         # that long unless the emulator is already gone.
         subprocess.Popen(["/bin/sh", "-c", f"sleep {args.max_seconds}; kill -TERM -{process.pid} 2>/dev/null; "
                           f"sleep 10; kill -KILL -{process.pid} 2>/dev/null"], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print(json.dumps({"pid": process.pid, "log": log.name, "max_seconds": args.max_seconds}))
+    print(json.dumps({"pid": process.pid, "log": log_path, "max_seconds": args.max_seconds}))
 
 
 def command_stop(args):
+    if os.name == "nt":
+        windows_stop(args.diag_dir)
+        print("stopped")
+        return
     pid = read(os.path.join(args.diag_dir, "emulator.pid"))
     if not pid:
         sys.exit("no emulator.pid")
@@ -398,12 +699,15 @@ def main():
     launch.add_argument("--keys", help="EDEN_NX2_KEY_SCRIPT (\"seconds:code,...\" or \"@file\")")
     launch.add_argument("--env", action="append", help="extra NAME=VALUE")
     launch.add_argument("--max-seconds", type=int, default=900,
-                        help="stop the emulator after this long (0: never)")
-    launch.add_argument("--binary")
+                        help="stop the emulator after this many seconds (1-86400)")
+    launch.add_argument("--binary", "--exe", dest="binary")
     launch.add_argument("--config", help="eden-cli -c: a configuration file (e.g. a copy of qt-config.ini)")
     launch.set_defaults(func=command_launch)
 
     commands.add_parser("stop").set_defaults(func=command_stop)
+    watchdog = commands.add_parser("_watchdog-windows", help=argparse.SUPPRESS)
+    watchdog.add_argument("--token", required=True)
+    watchdog.set_defaults(func=command_windows_watchdog)
 
     show = commands.add_parser("state", help="programs seen recently, busiest first")
     show.add_argument("--kind", choices=("v", "p", "c"))

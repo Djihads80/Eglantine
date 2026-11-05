@@ -97,24 +97,37 @@ template <class Runtime, class DeviceMemory>
     }
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
-    u8* const scratch = reuse.scratch.data();
-    device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+    const u8* source = nullptr;
+    if constexpr (requires { device_memory.template GetPointer<u8>(device_addr); }) {
+        // Device memory pages are 4 KiB. Only borrow a pointer within one mapped page;
+        // a cross-page range may be physically discontinuous and must use the block reader.
+        constexpr u64 PageBytes = 4096;
+        if (size <= PageBytes - (device_addr & (PageBytes - 1))) {
+            source = device_memory.template GetPointer<u8>(device_addr);
+        }
+    }
+    if (source == nullptr) {
+        device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
+        source = reuse.scratch.data();
+    }
 
     const bool same_bytes =
-        slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
+        slot.size == size && std::memcmp(slot.bytes.data(), source, size) == 0;
     if (same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }
+    if (!same_bytes) {
+        // Keep a CPU snapshot before allocating staging memory. Both the comparison cache and
+        // the GPU allocation must describe these same bytes even if the guest changes later.
+        slot.size = size;
+        std::memcpy(slot.bytes.data(), source, size);
+    }
     const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-    std::memcpy(span.data(), scratch, size);
+    std::memcpy(span.data(), slot.bytes.data(), size);
     slot.ref = runtime.LastStreamUniformRef();
     // After the allocation: the tick the stream region is tagged with is the one current now.
     slot.tick = runtime.CurrentTick();
-    if (!same_bytes) {
-        slot.size = size;
-        std::memcpy(slot.bytes.data(), scratch, size);
-    }
     return true;
 }
 

@@ -4,11 +4,15 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "common/settings.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/native_mme_predicate_trace.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra::Engines {
@@ -317,7 +321,64 @@ void Maxwell3D::DrawManager::ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed
         draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count;
     LOG_TRACE(HW_GPU, "called, topology={}, count={}", draw_state.topology, draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count);
     UpdateTopology(maxwell3d);
-    if (maxwell3d.ShouldExecute()) {
+    const bool execute = maxwell3d.ShouldExecute();
+    // Opt-in investigation of the 3216-index object whose colour draw can disappear between
+    // frames. Record the decision before a conditional draw is dropped, without reading or
+    // flushing guest memory. This does not override culling or change the submitted draw.
+    static const bool trace_3216 = [] {
+        const char* value = std::getenv("EDEN_NX2_DRAW_3216_TRACE");
+        return value != nullptr && value[0] == '1';
+    }();
+    if ((trace_3216 || VideoCommon::NativeMmePredicateTrace::Enabled()) && draw_indexed &&
+        draw_state.draw_element_count == 3216 &&
+        maxwell3d.GetNativeMacroEngine().native_turing) {
+        struct TraceCounts {
+            u64 allowed{};
+            u64 skipped{};
+            u32 detailed{};
+            std::chrono::steady_clock::time_point next_summary{};
+        };
+        // Draw processing belongs to the GPU worker; thread-local counters also avoid sharing
+        // writable diagnostic state if a separate renderer is created in another thread.
+        static thread_local TraceCounts counts;
+        const u64 outcome_count = execute ? ++counts.allowed : ++counts.skipped;
+        const bool capturing = VideoCommon::Nx2Diag::Active() &&
+                               VideoCommon::Nx2Diag::Diagnostics::Get().Capturing();
+        const auto now = std::chrono::steady_clock::now();
+        const bool summary = now >= counts.next_summary;
+        const bool detailed = outcome_count <= 8 || (capturing && counts.detailed < 256);
+        if (summary) {
+            counts.next_summary = now + std::chrono::seconds{10};
+        }
+        if (summary || detailed) {
+            counts.detailed += detailed;
+            const auto& trace_regs = maxwell3d.regs;
+            const auto shader_address = [&](size_t stage) {
+                return (GPUVAddr{trace_regs.pipelines[stage].reserved[0] & 0xff} << 32) |
+                       trace_regs.pipelines[stage].reserved[1];
+            };
+            const auto& vs_cb0 = maxwell3d.state.shader_stages[0].const_buffers[0];
+            const auto& ps_cb2 = maxwell3d.state.shader_stages[4].const_buffers[2];
+            LOG_INFO(HW_GPU,
+                     "NX2 draw3216: allowed={} skipped={} execute={} capture={} summary={} "
+                     "instances={} first={} base_index={} base_instance={} draw_mode={} "
+                     "loop_instances={} vs={:#x} ps={:#x} rt={:#x} zeta={:#x} zeta_enable={} "
+                     "render_mode={} override={} condition={:#x} "
+                     "vs_cb0={:#x}/{} ps_cb2={:#x}/{}",
+                     counts.allowed, counts.skipped, execute, capturing, summary, instance_count,
+                     draw_state.index_buffer.first, draw_state.base_index, draw_state.base_instance,
+                     static_cast<u32>(draw_state.draw_mode), draw_state.instance_count,
+                     shader_address(1), shader_address(5), trace_regs.rt[0].Address(), trace_regs.zeta.Address(),
+                     trace_regs.zeta_enable, static_cast<u32>(trace_regs.render_enable.mode),
+                     static_cast<u32>(trace_regs.render_enable_override), trace_regs.render_enable.Address(),
+                     vs_cb0.address, vs_cb0.enabled, ps_cb2.address, ps_cb2.enabled);
+            if (detailed && VideoCommon::NativeMmePredicateTrace::Enabled()) {
+                VideoCommon::NativeMmePredicateTrace::Log(
+                    &maxwell3d, execute, static_cast<u32>(trace_regs.render_enable.mode));
+            }
+        }
+    }
+    if (execute) {
         maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
     }
 }

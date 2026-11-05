@@ -9,6 +9,8 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
+#include "video_core/nx2_command_writer_trace.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
@@ -215,18 +217,51 @@ void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
 }
 
 GPUVAddr MemoryManager::Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size, PTEKind kind, bool is_big_pages) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    if (Writer::Enabled()) {
+        Writer::RecordGpu(Writer::Kind::GpuMap, Writer::Phase::Before, GetID(), gpu_addr, size,
+                          dev_addr, 0, Writer::Extent::PageCoverage);
+    }
+    SCOPE_EXIT {
+        if (Writer::Enabled()) {
+            Writer::RecordGpu(Writer::Kind::GpuMap, Writer::Phase::After, GetID(), gpu_addr, size,
+                              dev_addr, 0, Writer::Extent::PageCoverage);
+        }
+    };
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
     return PageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
 }
 
 GPUVAddr MemoryManager::MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    if (Writer::Enabled()) {
+        Writer::RecordGpu(Writer::Kind::GpuSparseMap, Writer::Phase::Before, GetID(), gpu_addr, size,
+                          0, 0, Writer::Extent::PageCoverage);
+    }
+    SCOPE_EXIT {
+        if (Writer::Enabled()) {
+            Writer::RecordGpu(Writer::Kind::GpuSparseMap, Writer::Phase::After, GetID(), gpu_addr, size,
+                              0, 0, Writer::Extent::PageCoverage);
+        }
+    };
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
     return PageTableOp(gpu_addr, 0, size, PTEKind::INVALID, EntryType::Reserved);
 }
 
 void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    if (Writer::Enabled()) {
+        Writer::RecordGpu(Writer::Kind::GpuUnmap, Writer::Phase::Before, GetID(), gpu_addr, size,
+                          0, 0, Writer::Extent::PageCoverage);
+    }
+    SCOPE_EXIT {
+        if (Writer::Enabled()) {
+            Writer::RecordGpu(Writer::Kind::GpuUnmap, Writer::Phase::After, GetID(), gpu_addr, size,
+                              0, 0, Writer::Extent::PageCoverage);
+        }
+    };
     if (size == 0) {
         return;
     }
@@ -299,12 +334,24 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
         std::memcpy(page_pointer, &data, sizeof(T));
+        if (VideoCommon::CommandWriterTrace::Enabled()) {
+            VideoCommon::CommandWriterTrace::RecordGpu(
+                VideoCommon::CommandWriterTrace::Kind::GpuScalarWrite,
+                VideoCommon::CommandWriterTrace::Phase::After, GetID(), addr, sizeof(T),
+                reinterpret_cast<u64>(page_pointer));
+        }
         return;
     }
     // A Switch 2 sparse block nobody wrote yet gets its memory now.
     Tegra::Nx2BackSparseWrite(addr, sizeof(T), &data);
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
         std::memcpy(page_pointer, &data, sizeof(T));
+        if (VideoCommon::CommandWriterTrace::Enabled()) {
+            VideoCommon::CommandWriterTrace::RecordGpu(
+                VideoCommon::CommandWriterTrace::Kind::GpuScalarWrite,
+                VideoCommon::CommandWriterTrace::Phase::After, GetID(), addr, sizeof(T),
+                reinterpret_cast<u64>(page_pointer));
+        }
         return;
     }
 
@@ -421,6 +468,12 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(dest_buffer, physical, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Enabled()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::GpuReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(&memory),
+                    dev_addr_base, copy_amount, reinterpret_cast<u64>(physical));
+            }
         } else {
             std::memset(dest_buffer, 0, copy_amount);
         }
@@ -437,6 +490,12 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {
             std::memcpy(dest_buffer, physical, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Enabled()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::GpuReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(&memory),
+                    dev_addr_base, copy_amount, reinterpret_cast<u64>(physical));
+            }
         } else {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
         }
@@ -461,6 +520,12 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
     if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
         if (const u8* const pointer = GetPointer(gpu_src_addr)) {
             std::memcpy(dest_buffer, pointer, size);
+            if (VideoCommon::CommandWriterTrace::Enabled()) {
+                VideoCommon::CommandWriterTrace::RecordGpu(
+                    VideoCommon::CommandWriterTrace::Kind::GpuReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, GetID(), gpu_src_addr, size,
+                    reinterpret_cast<u64>(pointer));
+            }
             return;
         }
     }
@@ -492,6 +557,12 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         }
         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Enabled()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::GpuBlockWrite,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(&memory),
+                    dev_addr_base, copy_amount, reinterpret_cast<u64>(physical));
+            }
         }
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
@@ -504,6 +575,12 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Enabled()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::GpuBlockWrite,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(&memory),
+                    dev_addr_base, copy_amount, reinterpret_cast<u64>(physical));
+            }
         } else {
             memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
         }

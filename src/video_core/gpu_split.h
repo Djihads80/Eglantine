@@ -3,14 +3,19 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <thread>
 #include <type_traits>
 
 #include "common/common_types.h"
+#include "video_core/split_state_batch.h"
 
 namespace Core {
 class System;
@@ -73,8 +78,10 @@ public:
 
     /// An engine method write, executed as DmaPusher would (method sink, ConsumeSink, call).
     /// `segment`: the engine's current_dma_segment for the call, when the engine reads it.
+    /// `state_only` is supplied only for non-executable Maxwell3D methods; a pending draw can
+    /// still make them writers until DeferDrawBoundary explicitly finishes that engine's draws.
     void Method(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument, bool is_last,
-                const GPUVAddr* segment) {
+                const GPUVAddr* segment, bool state_only = false) {
         SelectEngine(engine);
         const size_t words = segment != nullptr ? 2 : 1;
         u64* const entry = Reserve(words);
@@ -85,16 +92,41 @@ public:
             entry[1] = *segment;
         }
         Commit(words);
+        NoteMemoryEffect(engine, state_only);
+    }
+    // The same individual Method entries, copied before one publication check. The caller
+    // supplies only non-executable Maxwell3D state writes from one Increasing packet.
+    void StateMethods(Tegra::Engines::EngineInterface* engine,
+                      std::span<const SplitStateBatch::Write> writes) {
+        if (writes.empty()) {
+            return;
+        }
+        SelectEngine(engine);
+        while (!writes.empty()) {
+            const size_t count = std::min(writes.size(), size_t{SplitStateBatch::Capacity});
+            u64* const entries = Reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                const auto& write = writes[i];
+                entries[i] = static_cast<u64>(Kind::Method) | (write.is_last ? IsLast : 0) |
+                             (u64{write.method & 0xffff} << 8) | (u64{write.argument} << 32);
+            }
+            Commit(count);
+            NoteMemoryEffect(engine, true);
+            writes = writes.subspan(count);
+        }
     }
     void MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
-                     u32 amount, u32 methods_pending, const GPUVAddr* segment);
+                     u32 amount, u32 methods_pending, const GPUVAddr* segment,
+                     bool state_only = false);
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
-    void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
+    void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument,
+                    bool state_only = false) {
         SelectEngine(engine);
         u64* const entry = Reserve(1);
         entry[0] = static_cast<u64>(Kind::Method) | IsLast | Direct | (u64{method & 0xffff} << 8) |
                    (u64{argument} << 32);
         Commit(1);
+        NoteMemoryEffect(engine, state_only);
     }
 
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
@@ -107,8 +139,64 @@ public:
         entry[1] = reinterpret_cast<u64>(&CallThunk<Func>);
         std::memcpy(entry + 2, &func, sizeof(Func));
         Commit(2 + payload);
+        NoteMemoryEffect(nullptr, false);
     }
     void DeferFunction(std::function<void()>&& func);
+
+    /// The callback consumes this engine's sink and emits all its deferred draws. Only after
+    /// that boundary can its non-executable state writes be treated as having no memory effects.
+    template <typename Func>
+    void DeferDrawBoundary(Tegra::Engines::EngineInterface* engine, const Func& func) {
+        Defer(func);
+        if (memory_tail_wait || semaphore_tail_wait) {
+            state_only_engine = engine;
+        }
+    }
+
+    /// Runs on the back and waits. Drain alone does not exclude the back's idle hook.
+    /// Called by the front or reentrantly by the back; captures must be trivially copyable.
+    template <typename Func>
+    void Run(const Func& func) {
+        if (OnBackThread() || !active) {
+            func();
+            return;
+        }
+        Defer(func);
+        Drain();
+    }
+
+    class Completion {
+    public:
+        void Signal() {
+            std::scoped_lock lock{mutex};
+            signaled = true;
+            cv.notify_all();
+        }
+
+        bool IsSignaled() {
+            std::scoped_lock lock{mutex};
+            return signaled;
+        }
+
+        void Wait() {
+            std::unique_lock lock{mutex};
+            cv.wait(lock, [this] { return signaled; });
+        }
+
+    private:
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool signaled{};
+    };
+
+    /// Emit on the back, then wait on the caller. The emitter must arrange exactly one Signal;
+    /// it must not wait for work that the back can submit only after the emitter returns.
+    template <typename Func>
+    void RunAndWait(const Func& emit) {
+        Completion completion;
+        Run([&] { emit(completion); });
+        completion.Wait();
+    }
 
     /// EDEN_NX2_SPLIT_CHECK=1 (debug): reports, with its stack, a thread other than the back
     /// using back-owned state (the Vulkan scheduler) while the back runs entries.
@@ -128,7 +216,19 @@ public:
     /// Returns whether any of it was still queued.
     bool WaitForWriters();
 
+    [[nodiscard]] bool MemoryTailWaitEnabled() const {
+        return memory_tail_wait;
+    }
+    [[nodiscard]] bool SemaphoreTailWaitEnabled() const {
+        return semaphore_tail_wait;
+    }
+    /// Experimental memory read wait. All unknown work remains a writer, including draws.
+    /// Returns the words of a proven state-only tail still unconsumed after the wait.
+    u64 WaitForMemoryWriters();
+
 private:
+    friend struct GpuSplitTestAccess;
+
     enum class Kind : u64 {
         Wrap,   ///< The rest of the ring is unused: continue at its start
         Engine, ///< The engine the next methods go to: word 1
@@ -173,6 +273,14 @@ private:
         }
     }
     void SwitchEngine(Tegra::Engines::EngineInterface* engine);
+    bool WaitForPosition(u64 target);
+    void NoteMemoryEffect(Tegra::Engines::EngineInterface* engine, bool state_only) {
+        if ((memory_tail_wait || semaphore_tail_wait) &&
+            (!state_only || engine != state_only_engine)) {
+            last_memory_writer_position = write_position;
+            state_only_engine = nullptr;
+        }
+    }
 
     void BackLoop(std::stop_token stop_token);
     size_t Execute(const u64* entry);
@@ -180,11 +288,22 @@ private:
     Core::System* system{};
     bool active{};
     bool front_macros{};
+    bool memory_tail_wait{};
+    bool semaphore_tail_wait{};
+    // Opt-in: acknowledge completed entries before a requested scheduler idle hook.
+    bool early_hook_ack{};
+    bool hook_ack_audit{};
+    // Back-owned until Stop joins. No clock or logging cost when the audit is disabled.
+    u64 requested_hook_count{}, early_hook_ack_count{}, early_hook_ack_words{};
+    u64 hook_at_batch_end_count{}, hook_with_position_waiter_count{};
+    u64 requested_hook_ns{}, longest_requested_hook_ns{};
     std::unique_ptr<u64[]> ring;
 
     // Front side.
     u64 write_position{};
     u64 last_writer_position{};
+    u64 last_memory_writer_position{};
+    Tegra::Engines::EngineInterface* state_only_engine{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.

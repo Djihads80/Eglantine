@@ -23,6 +23,7 @@
 #include "core/device_memory.h"
 #include "core/device_memory_manager.h"
 #include "core/memory.h"
+#include "video_core/nx2_command_writer_trace.h"
 
 namespace Core {
 
@@ -249,6 +250,17 @@ void DeviceMemoryManager<Traits>::Free(DAddr start, size_t size) {
 template <typename Traits>
 void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size_t size, Asid asid,
                                       bool track) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    if (Writer::Enabled()) {
+        Writer::RecordDevice(Writer::Kind::DeviceMap, Writer::Phase::Before,
+            reinterpret_cast<u64>(this), address, size, virtual_address, asid.id, Writer::Extent::PageCoverage);
+    }
+    SCOPE_EXIT {
+        if (Writer::Enabled()) {
+            Writer::RecordDevice(Writer::Kind::DeviceMap, Writer::Phase::After,
+                reinterpret_cast<u64>(this), address, size, virtual_address, asid.id, Writer::Extent::PageCoverage);
+        }
+    };
     Core::Memory::Memory* process_memory = registered_processes[asid.id];
     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
@@ -290,6 +302,17 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    if (Writer::Enabled()) {
+        Writer::RecordDevice(Writer::Kind::DeviceUnmap, Writer::Phase::Before,
+            reinterpret_cast<u64>(this), address, size, 0, 0, Writer::Extent::PageCoverage);
+    }
+    SCOPE_EXIT {
+        if (Writer::Enabled()) {
+            Writer::RecordDevice(Writer::Kind::DeviceUnmap, Writer::Phase::After,
+                reinterpret_cast<u64>(this), address, size, 0, 0, Writer::Extent::PageCoverage);
+        }
+    };
     size_t start_page_d = address >> Memory::YUZU_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, Memory::YUZU_PAGESIZE) >> Memory::YUZU_PAGEBITS;
     device_inter->InvalidateRegion(address, size);
@@ -423,6 +446,12 @@ void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
         return;
     }
     std::memcpy(ptr, &value, sizeof(T));
+    if (VideoCommon::CommandWriterTrace::Active()) {
+        VideoCommon::CommandWriterTrace::RecordDevice(
+            VideoCommon::CommandWriterTrace::Kind::DeviceScalarWrite,
+            VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this), address,
+            sizeof(T), reinterpret_cast<u64>(ptr), translation_generation.load(std::memory_order_relaxed));
+    }
 }
 
 template <typename Traits>
@@ -473,6 +502,13 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
         for (const TranslationEntry& entry : cache.slots) {
             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
                 std::memcpy(dest_pointer, entry.host_ptr + page_offset, size);
+                if (VideoCommon::CommandWriterTrace::Active()) {
+                    VideoCommon::CommandWriterTrace::RecordDevice(
+                        VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                        VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                        address, size, reinterpret_cast<u64>(entry.host_ptr + page_offset),
+                        translation_generation.load(std::memory_order_relaxed));
+                }
                 return;
             }
         }
@@ -484,8 +520,20 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
             cache.cursor = (cache.cursor + 1) & 3U;
             std::memcpy(dest_pointer, mem_ptr + page_offset, size);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    address, size, reinterpret_cast<u64>(mem_ptr + page_offset),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
             return;
         }
+    }
+    const bool trace_enabled = VideoCommon::CommandWriterTrace::Enabled();
+    DAddr trace_address{};
+    if (trace_enabled) {
+        trace_address = address;
     }
     WalkBlock(
         address, size,
@@ -501,14 +549,29 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
         },
         [&](size_t copy_amount, const u8* const src_ptr) {
             std::memcpy(dest_pointer, src_ptr, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    trace_address, copy_amount, reinterpret_cast<u64>(src_ptr),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
         },
         [&](const std::size_t copy_amount) {
             dest_pointer = static_cast<u8*>(dest_pointer) + copy_amount;
+            if (trace_enabled) {
+                trace_address += copy_amount;
+            }
         });
 }
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_pointer, size_t size) {
+    const bool trace_enabled = VideoCommon::CommandWriterTrace::Enabled();
+    DAddr trace_address{};
+    if (trace_enabled) {
+        trace_address = address;
+    }
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
@@ -522,9 +585,19 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
             std::memcpy(dst_ptr, src_pointer, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceBlockWrite,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    trace_address, copy_amount, reinterpret_cast<u64>(dst_ptr),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
         },
         [&](const std::size_t copy_amount) {
             src_pointer = static_cast<const u8*>(src_pointer) + copy_amount;
+            if (trace_enabled) {
+                trace_address += copy_amount;
+            }
         });
     device_inter->InvalidateRegion(address, size);
 }
@@ -538,6 +611,13 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
         for (const TranslationEntry& entry : cache.slots) {
             if (entry.guest_page == guest_page && entry.host_ptr != nullptr) {
                 std::memcpy(dest_pointer, entry.host_ptr + page_offset, size);
+                if (VideoCommon::CommandWriterTrace::Active()) {
+                    VideoCommon::CommandWriterTrace::RecordDevice(
+                        VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                        VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                        address, size, reinterpret_cast<u64>(entry.host_ptr + page_offset),
+                        translation_generation.load(std::memory_order_relaxed));
+                }
                 return;
             }
         }
@@ -549,8 +629,20 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
             cache.slots[cache.cursor] = TranslationEntry{.guest_page = guest_page, .host_ptr = mem_ptr};
             cache.cursor = (cache.cursor + 1) & 3U;
             std::memcpy(dest_pointer, mem_ptr + page_offset, size);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    address, size, reinterpret_cast<u64>(mem_ptr + page_offset),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
             return;
         }
+    }
+    const bool trace_enabled = VideoCommon::CommandWriterTrace::Enabled();
+    DAddr trace_address{};
+    if (trace_enabled) {
+        trace_address = address;
     }
     WalkBlock(
         address, size,
@@ -566,15 +658,30 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
         },
         [&](size_t copy_amount, const u8* const src_ptr) {
             std::memcpy(dest_pointer, src_ptr, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceReadCopy,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    trace_address, copy_amount, reinterpret_cast<u64>(src_ptr),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
         },
         [&](const std::size_t copy_amount) {
             dest_pointer = static_cast<u8*>(dest_pointer) + copy_amount;
+            if (trace_enabled) {
+                trace_address += copy_amount;
+            }
         });
 }
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* src_pointer,
                                                    size_t size) {
+    const bool trace_enabled = VideoCommon::CommandWriterTrace::Enabled();
+    DAddr trace_address{};
+    if (trace_enabled) {
+        trace_address = address;
+    }
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
@@ -588,9 +695,19 @@ void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* sr
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
             std::memcpy(dst_ptr, src_pointer, copy_amount);
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                VideoCommon::CommandWriterTrace::RecordDevice(
+                    VideoCommon::CommandWriterTrace::Kind::DeviceUnsafeWrite,
+                    VideoCommon::CommandWriterTrace::Phase::After, reinterpret_cast<u64>(this),
+                    trace_address, copy_amount, reinterpret_cast<u64>(dst_ptr),
+                    translation_generation.load(std::memory_order_relaxed));
+            }
         },
         [&](const std::size_t copy_amount) {
             src_pointer = static_cast<const u8*>(src_pointer) + copy_amount;
+            if (trace_enabled) {
+                trace_address += copy_amount;
+            }
         });
 }
 
@@ -707,6 +824,13 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
 template <typename Traits>
 void DeviceMemoryManager<Traits>::UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta) {
     if (ranges.empty()) {
+        return;
+    }
+    if (ranges.size() == 1) {
+        // A single range is already sorted/coalesced. This acquires the identical range lock
+        // and invokes the same counter/protection update without allocating two vectors.
+        const auto& [address, size] = ranges.front();
+        UpdatePagesCachedCount(address, size, delta);
         return;
     }
     // Make a local copy and sort by address

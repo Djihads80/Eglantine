@@ -16,6 +16,7 @@
 #include "video_core/query_cache/query_base.h"
 
 namespace VideoCommon {
+namespace NativeQueryProducerTrace { struct Draw; }
 
 class StreamerInterface {
 public:
@@ -39,6 +40,7 @@ public:
     virtual void CloseCounter() {
         /* Do Nothing */
     }
+    virtual void RecordDiagnosticDraw(const NativeQueryProducerTrace::Draw&) {}
 
     virtual bool HasPendingSync() const {
         return false;

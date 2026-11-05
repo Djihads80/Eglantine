@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
+#include "video_core/renderer_vulkan/vk_submission_timing.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -48,7 +49,8 @@ void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf,
 Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
     : device{device_}, state_tracker{state_tracker_},
       master_semaphore{std::make_unique<MasterSemaphore>(device)},
-      command_pool{std::make_unique<CommandPool>(*master_semaphore, device)} {
+      command_pool{std::make_unique<CommandPool>(*master_semaphore, device)},
+      submission_timing{SubmissionTiming::Create(device)} {
 
     AcquireNewChunk();
     AllocateWorkerCommandBuffer();
@@ -85,6 +87,14 @@ bool Scheduler::DeferFlush() {
     }
     flush_pending = true;
     return true;
+}
+
+bool Scheduler::FlushPendingCommands() {
+    return submission_work.FlushIfPending(deferred_clear.framebuffer != nullptr, [this] {
+        if (!DeferFlush()) {
+            Flush();
+        }
+    });
 }
 
 void Scheduler::FlushDeferred() {
@@ -415,6 +425,9 @@ void Scheduler::AllocateWorkerCommandBuffer() {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         .pInheritanceInfo = nullptr,
     });
+    if (submission_timing) {
+        submission_timing->Begin(current_upload_cmdbuf, master_semaphore->KnownGpuTick());
+    }
 }
 
 u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
@@ -422,7 +435,8 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     InvalidateState();
 
     const u64 signal_value = master_semaphore->NextTick();
-    RecordWithUploadBuffer([signal_semaphore, wait_semaphore, signal_value,
+    const u64 timing_enqueue_ns = submission_timing ? SubmissionTiming::Now() : 0;
+    RecordWithUploadBuffer([signal_semaphore, wait_semaphore, signal_value, timing_enqueue_ns,
                             this](vk::CommandBuffer cmdbuf, vk::CommandBuffer upload_cmdbuf) {
         static constexpr VkMemoryBarrier WRITE_BARRIER{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -431,6 +445,9 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         };
         upload_cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, WRITE_BARRIER);
+        if (submission_timing) {
+            submission_timing->End(cmdbuf);
+        }
         upload_cmdbuf.End();
         cmdbuf.End();
 
@@ -439,8 +456,14 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
         }
 
         std::scoped_lock lock{submit_mutex};
-        switch (const VkResult result = master_semaphore->SubmitQueue(
-                    cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, signal_value)) {
+        const u64 timing_submit_begin_ns = submission_timing ? SubmissionTiming::Now() : 0;
+        const VkResult result = master_semaphore->SubmitQueue(
+            cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, signal_value);
+        if (submission_timing) {
+            submission_timing->Submitted(signal_value, timing_enqueue_ns, timing_submit_begin_ns,
+                                         SubmissionTiming::Now(), result);
+        }
+        switch (result) {
         case VK_SUCCESS:
             // Log successful queue submission
             if (GPU::Logging::IsActive() &&
@@ -459,6 +482,9 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     });
     chunk->MarkSubmit();
     DispatchWork();
+    // EndPendingOperations and the submission command itself also record commands. Retire
+    // them only after handing the chunk containing that submission to the worker.
+    submission_work.Submitted();
     return signal_value;
 }
 

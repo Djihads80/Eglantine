@@ -4,7 +4,9 @@
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 
 #include "common/assert.h"
@@ -22,6 +24,8 @@
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/rasterizer_interface.h"
@@ -33,13 +37,49 @@ namespace {
 constexpr u32 Gf100BindClassMask = 0xffff;
 constexpr u32 Gf100BindValidMask =  0x1f0000 | Gf100BindClassMask;
 
+enum class AcquireRoute : size_t { Syncpoint, SemaphoreTrigger, SemaphoreExecute, Count };
+
+// Initial comparisons only: a later fence release may satisfy a semaphore before suspension.
+void ProfileAcquire(AcquireRoute route, const DmaPusher& dma_pusher, u32 operation, u64 subject,
+                    u32 target, u32 current, bool known, bool ready) {
+    if (!g_nx2_ampere || !VideoCommon::Nx2Profile::Enabled()) {
+        return;
+    }
+    constexpr std::array names{"syncpoint", "sem-trigger", "sem-execute"};
+    struct Counts {
+        std::array<u64, static_cast<size_t>(AcquireRoute::Count)> calls{}, unmet{};
+        u64 last_report{};
+    };
+    static thread_local Counts counts;
+    const size_t index = static_cast<size_t>(route);
+    ++counts.calls[index];
+    counts.unmet[index] += known && !ready;
+    if (counts.calls[index] <= 8) {
+        LOG_INFO(HW_GPU,
+                 "nx2 acquire route {} #{} channel={} op={} subject={:#x} target={:#x} "
+                 "current={:#x} known={} ready={}",
+                 names[index], counts.calls[index], dma_pusher.channel_state.bind_id, operation,
+                 subject, target, current, known, ready);
+    }
+    const u64 now = VideoCommon::Nx2Profile::Now();
+    if (counts.last_report == 0 || now - counts.last_report >= 10'000'000'000ULL) {
+        LOG_INFO(HW_GPU,
+                 "nx2 acquire totals (calls/initial unmet): syncpoint={}/{} sem-trigger={}/{} "
+                 "sem-execute={}/{}",
+                 counts.calls[0], counts.unmet[0], counts.calls[1], counts.unmet[1],
+                 counts.calls[2], counts.unmet[2]);
+        counts.last_report = now;
+    }
+}
+
 // Reads a semaphore word, flushing a GPU-written copy out of the buffer cache first.
 u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
         device && dma_pusher.rasterizer->MustFlushRegion(*device, sizeof(u32),
                                                           VideoCommon::CacheType::BufferCache)) {
-        dma_pusher.rasterizer->FlushRegion(*device, sizeof(u32),
-                                           VideoCommon::CacheType::BufferCache);
+        VideoCommon::GpuSplit::Get().Run([rasterizer = dma_pusher.rasterizer, device = *device] {
+            rasterizer->FlushRegion(device, sizeof(u32), VideoCommon::CacheType::BufferCache);
+        });
     }
     return dma_pusher.memory_manager.Read<u32>(address);
 }
@@ -57,6 +97,37 @@ void OnBack(const Func& func) {
 
 void DrainBack() {
     VideoCommon::GpuSplit::Get().Drain();
+}
+
+void WaitForSemaphoreRead(bool resume) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (!split.Active() || !split.SemaphoreTailWaitEnabled()) {
+        split.Drain();
+        return;
+    }
+    // Only proven state-only work may remain. Puller releases are Defer callbacks, hence
+    // writers, and a dirty semaphore still takes ReadSemaphoreWord's full back-owned flush.
+    const u64 tail = split.WaitForMemoryWriters();
+    struct Counts {
+        u64 reads{}, resumes{}, with_tail{}, tail_words{};
+        std::chrono::steady_clock::time_point next_report{};
+    };
+    static thread_local Counts counts;
+    ++counts.reads;
+    counts.resumes += resume;
+    counts.with_tail += tail != 0;
+    counts.tail_words += tail;
+    if (counts.reads != 1 && (counts.reads & 1023) != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= counts.next_report) {
+        counts.next_report = now + std::chrono::seconds{10};
+        LOG_INFO(HW_GPU,
+                 "Semaphore tail waits: reads={} resumes={} with_state_tail={} tail_words={} "
+                 "(before cache flush)",
+                 counts.reads, counts.resumes, counts.with_tail, counts.tail_words);
+    }
 }
 
 } // Anonymous namespace
@@ -80,7 +151,7 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
-    DrainBack();
+    WaitForSemaphoreRead(true);
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
         if (static std::atomic<u32> rescued{};
@@ -97,6 +168,13 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire->reported &&
         std::chrono::steady_clock::now() - pending_acquire->since > std::chrono::seconds{2}) {
         pending_acquire->reported = true;
+        if (VideoCommon::CommandTrace::Enabled()) {
+            namespace Trace = VideoCommon::CommandTrace;
+            Trace::Record({.origin = dma_pusher.CommandTraceOrigin(), .a = pending_acquire->address,
+                           .b = pending_acquire->value, .c = current, .d = pending_acquire->operation,
+                           .kind = Trace::EventKind::Stall});
+            Trace::Dump("semaphore-stall");
+        }
         const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
         LOG_WARNING(HW_GPU, "Channel {} waits on semaphore {:#x} (op {}, {:#x}, now {:#x}) for 2 s; "
                     "device {:#x}, buffer cache holds GPU data: {}, words {:08x} {:08x} {:08x} {:08x}",
@@ -119,6 +197,12 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     // counting those made the count odd ("suspended") at random, so submit-time snapshots were
     // thrown away for about half of all entries (CommandList::snapshot_suspensions).
     if (pending_acquire) {
+        if (VideoCommon::CommandTrace::Enabled()) {
+            namespace Trace = VideoCommon::CommandTrace;
+            Trace::Record({.origin = dma_pusher.CommandTraceOrigin(), .a = pending_acquire->address,
+                           .b = pending_acquire->value, .d = pending_acquire->operation,
+                           .kind = Trace::EventKind::Resume});
+        }
         pending_acquire.reset();
         dma_pusher.suspensions.fetch_add(1, std::memory_order_release);
         Nx2SemaphoreWaiters::Get().Remove(this);
@@ -176,6 +260,30 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
         dma_pusher.BindSubchannel(&dma_pusher.channel_state.payload->nv01_timer, method_call.subchannel, EngineTypes::Nv01Timer);
         break;
     default:
+        if (VideoCommon::CommandTrace::Enabled()) {
+            namespace Trace = VideoCommon::CommandTrace;
+            const auto origin = dma_pusher.CommandTraceOrigin();
+            const bool in_window = Trace::InWindow(origin.present);
+            static std::atomic_flag reported = ATOMIC_FLAG_INIT;
+            if (!reported.test_and_set(std::memory_order_relaxed)) {
+                LOG_WARNING(HW_GPU,
+                    "First invalid bind: present={} trace_window={}..{} eligible={} "
+                    "submission={} asid={} channel={} entry={:#x} offset={} epoch={} "
+                    "subchannel={} raw={:#x} normalized={:#x}",
+                    origin.present, Trace::FirstPresent, Trace::LastPresent, in_window,
+                    origin.submission, origin.asid, origin.channel, origin.entry, origin.offset,
+                    origin.generation, method_call.subchannel, method_call.argument, engine);
+            }
+            // Preserve history before the existing assertion/error cascade. No new guest reads.
+            // A failure outside the window is logged above, without expanding collection.
+            static std::atomic_flag dump_attempted = ATOMIC_FLAG_INIT;
+            if (in_window && !dump_attempted.test_and_set(std::memory_order_relaxed)) {
+                Trace::Record({.origin = origin, .a = method_call.argument, .b = engine,
+                               .c = method_call.subchannel, .d = method_call.method,
+                               .kind = Trace::EventKind::InvalidBind});
+                Trace::Dump("invalid-engine-bind");
+            }
+        }
         UNIMPLEMENTED_MSG("Unimplemented engine {:04X}", engine_id);
         break;
     }
@@ -183,11 +291,22 @@ void Puller::ProcessBindMethod(DmaPusher& dma_pusher, const MethodCall& method_c
 
 void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
     switch (regs.fence_action.op) {
-    case Puller::FenceOperation::Acquire:
+    case Puller::FenceOperation::Acquire: {
+        if (g_nx2_ampere && VideoCommon::Nx2Profile::Enabled()) {
+            const u32 id = regs.fence_action.syncpoint_id.Value();
+            const bool valid = id < Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS;
+            const u32 current = valid
+                                    ? dma_pusher.system.Host1x().GetSyncpointManager()
+                                          .GetGuestSyncpointValue(id)
+                                    : 0;
+            ProfileAcquire(AcquireRoute::Syncpoint, dma_pusher, 0, id, regs.fence_value,
+                           current, valid, valid && static_cast<s32>(current - regs.fence_value) >= 0);
+        }
         // UNIMPLEMENTED_MSG("Channel Scheduling pending.");
         // WaitFence(regs.fence_action.syncpoint_id, regs.fence_value);
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
         break;
+    }
     case Puller::FenceOperation::Increment:
         OnBack([rasterizer = dma_pusher.rasterizer, id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {
             rasterizer->SignalSyncPoint(id);
@@ -227,12 +346,22 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
         }
-        OnBack([rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
+        const auto work = [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
             rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
             if (mirror != 0) {
                 rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
             }
-        });
+        };
+        if (VideoCommon::CommandTrace::Enabled()) {
+            const auto origin = dma_pusher.CommandTraceOrigin();
+            OnBack([work, origin, sequence_address, payload] {
+                namespace Trace = VideoCommon::CommandTrace;
+                Trace::ScopedOrigin scope{origin};
+                Trace::Record({.origin = origin, .a = sequence_address, .b = payload,
+                               .kind = Trace::EventKind::ReleaseIssued});
+                work();
+            });
+        } else OnBack(work);
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
@@ -250,8 +379,18 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        DrainBack();
-        if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
+        WaitForSemaphoreRead(false);
+        const u32 current = ReadSemaphoreWord(dma_pusher, acquire.address);
+        const bool ready = acquire.Matches(current);
+        if (VideoCommon::CommandTrace::Enabled()) {
+            namespace Trace = VideoCommon::CommandTrace;
+            Trace::Record({.origin = dma_pusher.CommandTraceOrigin(), .a = acquire.address,
+                           .b = acquire.value, .c = current, .d = acquire.operation,
+                           .kind = Trace::EventKind::Acquire});
+        }
+        ProfileAcquire(AcquireRoute::SemaphoreTrigger, dma_pusher, acquire.operation,
+                       acquire.address, acquire.value, current, true, ready);
+        if (ready) {
             return;
         }
         // Registered before the fences run, so a release among them that meets the value counts
@@ -348,6 +487,8 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
                        : operation == 4 ? (word & payload) != 0
                        : operation == 5 ? (word & payload) == 0
                                         : true;
+    ProfileAcquire(AcquireRoute::SemaphoreExecute, dma_pusher, operation, address, payload, word,
+                   operation <= 5, ready);
     if (!ready) {
         static std::atomic<u32> reported{};
         if (reported.fetch_add(1) < 8) {

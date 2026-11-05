@@ -44,6 +44,18 @@ public:
     /// Finalize rendering the guest frame and draw into the presentation texture
     virtual void Composite(std::span<const Tegra::FramebufferConfig> layers) = 0;
 
+    /// Optional image-release path. True completion means the host GPU has finished reading
+    /// the source images, not that commands were queued or the display scanout has finished.
+    virtual bool SupportsCompositeCompletion() const {
+        return false;
+    }
+    virtual void CompositeWithCompletion(std::span<const Tegra::FramebufferConfig>,
+                                         std::function<void(bool)> completion) {
+        completion(false);
+    }
+    /// Called before services/kernel handles close, then again safely during destruction.
+    virtual void CancelCompositeCompletions() {}
+
     /// Get the tiled applet layer capture buffer
     virtual std::vector<u8> GetAppletCaptureBuffer() = 0;
 

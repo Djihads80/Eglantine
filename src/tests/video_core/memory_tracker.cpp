@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include "common/container/unordered_map.h"
 #include <tuple>
@@ -593,6 +594,115 @@ TEST_CASE("MemoryTracker: cached writes preserve tracking counts") {
     REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 4, PAGE));
     memory_track->MarkRegionAsCpuModified(c, WORD * 2);
     REQUIRE(rasterizer.Count() == 0);
+}
+
+TEST_CASE("MemoryTracker: one CPU-read page does not select an entire storage binding",
+          "[video_core][readback]") {
+    RasterizerInterface rasterizer;
+    std::optional<MemoryTracker> memory_track(rasterizer);
+    constexpr u64 binding_size = 8 * 1024 * 1024;
+    constexpr DAddr read_page = c + PAGE * 19;
+    memory_track->UnmarkRegionAsCpuModified(c, binding_size);
+    memory_track->MarkRegionAsGpuModified(c, binding_size);
+    memory_track->MarkRegionAsPreflushable(read_page, 4);
+    const auto tracking_calls = rasterizer.UpdateCalls();
+
+    std::vector<Range> selected;
+    memory_track->ForEachPreflushableRange(c, binding_size, [&](u64 addr, u64 size) {
+        selected.emplace_back(addr, size);
+    });
+    REQUIRE(selected == std::vector<Range>{{read_page, PAGE}});
+    CHECK(rasterizer.UpdateCalls() == tracking_calls);
+    CHECK(memory_track->ModifiedGpuRegion(c, binding_size) == Range{c, c + binding_size});
+
+    // Retiring the selected download must leave other pages available for an on-demand flush.
+    memory_track->ForEachDownloadRangeAndClear(read_page, PAGE, [](u64, u64) {});
+    CHECK_FALSE(memory_track->IsRegionGpuModified(read_page, PAGE));
+    CHECK(memory_track->IsRegionGpuModified(read_page + PAGE, PAGE));
+    std::vector<Range> reactive;
+    memory_track->ForEachDownloadRangeAndClear(read_page + PAGE, PAGE, [&](u64 addr, u64 size) {
+        reactive.emplace_back(addr, size);
+    });
+    CHECK(reactive == std::vector<Range>{{read_page + PAGE, PAGE}});
+
+    // CPU writes and downloads do not erase the historical CPU-read mark.
+    memory_track->MarkRegionAsCpuModified(read_page, PAGE);
+    selected.clear();
+    memory_track->ForEachPreflushableRange(c, binding_size, [&](u64 addr, u64 size) {
+        selected.emplace_back(addr, size);
+    });
+    CHECK(selected == std::vector<Range>{{read_page, PAGE}});
+}
+
+TEST_CASE("MemoryTracker: preflushable ranges preserve gaps and clip word and manager boundaries",
+          "[video_core][readback]") {
+    RasterizerInterface rasterizer;
+    std::optional<MemoryTracker> memory_track(rasterizer);
+    memory_track->MarkRegionAsPreflushable(c + WORD - PAGE, 2 * PAGE);
+    memory_track->MarkRegionAsPreflushable(c + HIGH_PAGE_SIZE - PAGE, 2 * PAGE);
+    memory_track->MarkRegionAsPreflushable(c + 3 * HIGH_PAGE_SIZE + PAGE, PAGE);
+    const DAddr begin = c + WORD - 17;
+    const DAddr end = c + 3 * HIGH_PAGE_SIZE + PAGE + 31;
+    const std::vector<Range> expected{
+        {begin, PAGE + 17},
+        {c + HIGH_PAGE_SIZE - PAGE, PAGE},
+        {c + HIGH_PAGE_SIZE, PAGE},
+        {end - 31, 31},
+    };
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        std::vector<Range> selected;
+        memory_track->ForEachPreflushableRange(begin, end - begin, [&](u64 addr, u64 size) {
+            selected.emplace_back(addr, size);
+        });
+        CHECK(selected == expected);
+    }
+    CHECK_FALSE(memory_track->IsRegionFullyPreflushable(begin, end - begin));
+    CHECK(memory_track->IsRegionFullyPreflushable(c + HIGH_PAGE_SIZE - 4, 8));
+    size_t missing_manager_calls = 0;
+    memory_track->ForEachPreflushableRange(c + 2 * HIGH_PAGE_SIZE, HIGH_PAGE_SIZE,
+                                         [&](u64, u64) { ++missing_manager_calls; });
+    CHECK(missing_manager_calls == 0);
+    CHECK(rasterizer.UpdateCalls() == 0);
+}
+
+TEST_CASE("MemoryTracker: a CPU read spanning a new page still requires a flush",
+          "[video_core][readback]") {
+    RasterizerInterface rasterizer;
+    std::optional<MemoryTracker> memory_track(rasterizer);
+    memory_track->MarkRegionAsPreflushable(c, PAGE);
+    CHECK(memory_track->IsRegionFullyPreflushable(c + 7, PAGE - 7));
+    CHECK_FALSE(memory_track->IsRegionFullyPreflushable(c + PAGE - 4, 8));
+    CHECK_FALSE(memory_track->IsRegionFullyPreflushable(c - 4, 8));
+    memory_track->MarkRegionAsPreflushable(c + PAGE, 1);
+    CHECK(memory_track->IsRegionFullyPreflushable(c + PAGE - 4, 8));
+    memory_track->UnmarkRegionAsPreflushable(c, PAGE);
+    CHECK_FALSE(memory_track->IsRegionFullyPreflushable(c + PAGE - 4, 8));
+    CHECK(memory_track->IsRegionFullyPreflushable(c + PAGE, PAGE));
+}
+
+TEST_CASE("MemoryTracker: preflush iteration rejects empty and invalid device ranges",
+          "[video_core][readback]") {
+    RasterizerInterface rasterizer;
+    std::optional<MemoryTracker> memory_track(rasterizer);
+    constexpr u64 address_limit = 1ULL << 36;
+    memory_track->MarkRegionAsPreflushable(address_limit - PAGE, PAGE);
+    std::vector<Range> selected;
+    memory_track->ForEachPreflushableRange(address_limit - 17, 17, [&](u64 addr, u64 size) {
+        selected.emplace_back(addr, size);
+    });
+    CHECK(selected == std::vector<Range>{{address_limit - 17, 17}});
+    CHECK(memory_track->IsRegionFullyPreflushable(address_limit - 17, 17));
+    for (const Range range : {Range{c, 0}, Range{address_limit, 1},
+                              Range{address_limit - 1, 2},
+                              Range{0, std::numeric_limits<u64>::max()},
+                              Range{std::numeric_limits<u64>::max(), 2}}) {
+        CAPTURE(range.first, range.second);
+        size_t calls = 0;
+        memory_track->ForEachPreflushableRange(range.first, range.second,
+                                             [&](u64, u64) { ++calls; });
+        CHECK(calls == 0);
+        CHECK_FALSE(memory_track->IsRegionFullyPreflushable(range.first, range.second));
+    }
 }
 
 TEST_CASE("DeviceMemoryManager: UpdatePagesCachedBatch basic") {

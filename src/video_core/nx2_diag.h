@@ -39,9 +39,12 @@
 //                              "vs|ps|cs <hex>" (an address as logged); "#" starts a comment;
 //                            - inspect.txt: one program key per line; for those the constant buffers
 //                              bound at each draw are watched and the words that change from frame
-//                              to frame are reported in diag-state.json;
+//                              to frame are reported in diag-state.json, along with their first 16
+//                              words from the latest observed frame (head_words);
 //                            - draw-list: create it and the next frame's draws and dispatches are
-//                              written to draw-list-<n>.tsv (the file is removed).
+//                              written to draw-list-<n>.tsv (the file is removed). Inspected programs
+//                              also include bounded TIC descriptor candidates in the extra column:
+//                              CB2 first 24 words for graphics, CB0 bytes 0x80..0x17f for compute.
 //   EDEN_NX2_DIAG_SAMPLES=1  with a draw-list capture, count the samples each draw passes (an occlusion
 //                            query per draw, up to MaxProbeQueries) and add them to the draw list as
 //                            the "samples" column and to diag-state.json as "probe". A draw that
@@ -533,8 +536,15 @@ private:
                     continue;
                 }
                 out << (first_slot ? "" : ",") << "{\"slot\":" << id.second << ",\"words\":"
-                    << watch.first.size() << ",\"frames\":" << watch.frames_compared << ",\"changing\":[";
+                    << watch.first.size() << ",\"frames\":" << watch.frames_compared
+                    << ",\"last_frame\":" << watch.last_frame << ",\"head_words\":[";
                 first_slot = false;
+                // Reuse the first draw's existing snapshot; static constants also need inspection.
+                const size_t head_count = std::min<size_t>(watch.first.size(), 16);
+                for (size_t index = 0; index < head_count; ++index) {
+                    out << (index ? "," : "") << watch.first[index];
+                }
+                out << "],\"changing\":[";
                 size_t listed = 0;
                 for (const auto& [index, n] : watch.changes) {
                     if (listed++ >= 96) {

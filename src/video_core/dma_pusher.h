@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "common/scratch_buffer.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/puller.h"
+#include "video_core/nx2_command_trace.h"
 
 namespace Core {
 class System;
@@ -109,11 +111,73 @@ inline CommandHeader BuildCommandHeader(BufferMethods method, u32 arg_count, Sub
     return result;
 }
 
+// Diagnostic only: test whether a stable submitted command stream must survive later
+// acquire epochs. This is independent of RESNAPSHOT=0, which falls back to live memory.
+inline bool ImmutableSnapshotDiagnosticEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_IMMUTABLE_PB");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
+// Requires the existing immutable diagnostic too. Equal channel epochs are not proof
+// of CPU/GPU ownership: this only isolates odd-epoch submission refresh behavior.
+inline bool StableOddSnapshotDiagnosticEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_IMMUTABLE_STABLE_ODD");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled && ImmutableSnapshotDiagnosticEnabled();
+}
+
 struct CommandList final {
     CommandList() = default;
     explicit CommandList(std::size_t size) : command_lists(size) {}
     explicit CommandList(boost::container::small_vector<CommandHeader, 512>&& prefetch_command_list_)
         : prefetch_command_list{std::move(prefetch_command_list_)} {}
+
+    struct SnapshotView {
+        std::span<const CommandHeader> entry;
+        std::span<const CommandHeader> remaining;
+    };
+
+    void CompleteSubmittedSnapshot(u64 ending_epoch) {
+        submitted_snapshot_epoch_unchanged = ending_epoch == snapshot_suspensions;
+        submitted_snapshot_stable = submitted_snapshot_epoch_unchanged &&
+                                    (snapshot_suspensions & 1) == 0;
+    }
+
+    [[nodiscard]] bool HasImmutableSnapshot(bool diagnostic_enabled,
+                                           bool allow_stable_odd = false) const {
+        return diagnostic_enabled && !submitted_offsets.empty() &&
+               ((submitted_snapshot_stable && (snapshot_suspensions & 1) == 0) ||
+                (allow_stable_odd && submitted_snapshot_epoch_unchanged));
+    }
+
+    /// Normally only a fresh epoch may be read. The opt-in diagnostic permits an older,
+    /// stable-even submission. The separate stable-odd experiment additionally permits an
+    /// unchanged odd submit epoch, never a suspended current epoch or known GPU-written data.
+    [[nodiscard]] std::optional<SnapshotView> SnapshotForEntry(
+        size_t index, size_t resume_offset, u64 current_suspensions, bool gpu_written,
+        bool gpu_dirty, bool immutable_diagnostic = false, bool allow_stable_odd = false) const {
+        const bool immutable = HasImmutableSnapshot(immutable_diagnostic, allow_stable_odd);
+        if (gpu_written || gpu_dirty || ((snapshot_suspensions & 1) != 0 && !immutable) ||
+            (current_suspensions & 1) != 0 ||
+            (snapshot_suspensions != current_suspensions && !immutable) ||
+            index >= command_lists.size() ||
+            index >= submitted_offsets.size()) {
+            return std::nullopt;
+        }
+        const size_t offset = submitted_offsets[index];
+        const size_t count = command_lists[index].size;
+        if (offset > submitted_words.size() || count > submitted_words.size() - offset ||
+            resume_offset > count) {
+            return std::nullopt;
+        }
+        const auto entry = std::span<const CommandHeader>{submitted_words}.subspan(offset, count);
+        return SnapshotView{entry, entry.subspan(resume_offset)};
+    }
 
     boost::container::small_vector<CommandListHeader, 512> command_lists;
     boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
@@ -127,6 +191,13 @@ struct CommandList final {
     /// that waited behind one, reads memory instead: games write the commands it runs before they
     /// release the acquire.
     u64 snapshot_suspensions = 0;
+    // True only for a submit copy whose channel epoch stayed equal and even throughout.
+    // It does not assert that the application's CPU could not mutate the bytes concurrently.
+    bool submitted_snapshot_stable{};
+    // Separate from stable-even so the old diagnostic keeps its original qualification.
+    bool submitted_snapshot_epoch_unchanged{};
+    u64 trace_submission_id{};
+    u32 trace_refreshes{};
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
@@ -156,7 +227,9 @@ public:
         // Copied during a suspension, or behind one: copy again now, unless still suspended.
         const u64 now = suspensions.load(std::memory_order_acquire);
         if (ResnapshotEnabled() && !entries.submitted_offsets.empty() && (now & 1) == 0 &&
-            entries.snapshot_suspensions != now) {
+            entries.snapshot_suspensions != now &&
+            !entries.HasImmutableSnapshot(ImmutableSnapshotDiagnosticEnabled(),
+                                          StableOddSnapshotDiagnosticEnabled())) {
             RefreshSnapshot(entries, now);
         }
         dma_pushbuffer.push_back(std::move(entries));
@@ -185,7 +258,8 @@ private:
     bool Step();
     /// Returns how many words were processed: fewer than given when a semaphore acquire
     /// suspended the channel.
-    size_t ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset = 0);
+    size_t ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset = 0,
+                           VideoCommon::CommandTrace::Source trace_source = VideoCommon::CommandTrace::Source::None);
     size_t command_resume_offset{}; ///< Words of the current entry done before a suspension
 
     void SetState(const CommandHeader& command_header);
@@ -200,6 +274,7 @@ public:
     /// Logs the GPFIFO entry being processed (and the one before it), read through the GPU MMU
     /// and straight from guest memory, to find pushbuffer desyncs. Debug aid for Switch 2.
     void DumpCurrentEntry(const char* reason);
+    VideoCommon::CommandTrace::Origin CommandTraceOrigin() const;
     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
     /// Whether the entry lies on device pages the GPU has written (NX2).
@@ -284,7 +359,9 @@ public:
     const bool ib_enable : 1 = true; ///< IB mode enabled
     bool dma_increment_once : 1 = false;
     bool signal_sync : 1 = false;
-    bool synced : 1 = false;
+    // Guarded by sync_mutex after construction. A standalone object keeps fencing-thread writes
+    // out of the memory location shared by the front thread's adjacent bitfields.
+    bool synced = false;
 };
 
 } // namespace Tegra

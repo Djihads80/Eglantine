@@ -31,6 +31,7 @@
 #include <fmt/ostream.h>
 
 #include "common/logging.h"
+#include "common/cpu_features.h"
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/string_util.h"
@@ -59,6 +60,7 @@
 #include "yuzu_cmd/emu_window/emu_window_sdl3_null.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3_vk.h"
 #include "yuzu_cmd/nx2_sampler.h"
+#include "yuzu_cmd/nx2_clock_audit.h"
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
@@ -250,6 +252,7 @@ struct SdlState {
     InputCommon::InputSubsystem input_subsystem{};
     std::unique_ptr<EmuWindow_SDL3> emu_window;
     bool network_initialized{};
+    Nx2ClockAudit::Audit clock_audit;
 };
 
 static std::atomic_bool pack_nup_cancel{false};
@@ -477,6 +480,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     // Apply the command line arguments
     state->system.ApplySettings();
+    Settings::LogSettings();
 
     switch (Settings::values.renderer_backend.GetValue()) {
 #ifdef HAS_OPENGL
@@ -702,8 +706,94 @@ static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
     RunLiveKeys(input_subsystem);
 }
 
+static Nx2ClockAudit::Config ReadClockAuditConfig(const Core::System& system) {
+    return {
+        .frequency = Common::g_wall_clock.GetGuestCNTFRQ(),
+        .cpu_clock = static_cast<u32>(Settings::values.cpu_clock.GetValue()),
+        .speed_limit = Settings::SpeedLimit(),
+        .sync_core_speed = Settings::values.sync_core_speed.GetValue(),
+        .multicore = system.IsMulticore(),
+        .use_speed_limit = Settings::values.use_speed_limit.GetValue(),
+        .custom_cpu_ticks = Settings::values.use_custom_cpu_ticks.GetValue(),
+        .cpu_ticks = Settings::values.cpu_ticks.GetValue(),
+    };
+}
+
+static void RunClockAudit(SdlState& state) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_CLOCK_AUDIT");
+        return Nx2ClockAudit::Enabled(value ? value : "");
+    }();
+    if (!enabled) return; // No host/guest clock reads or settings sampling while OFF.
+    // SDL_AppIterate runs only after SDL_AppInit has loaded and Run() the system.
+    // Reset across an observed pause/unpowered interval; do not include boot setup.
+    const bool powered = state.system.IsPoweredOn();
+    const bool multicore = powered && state.system.IsMulticore();
+    if (powered && !multicore) {
+        static bool reported_single_core = false;
+        if (!reported_single_core) {
+            reported_single_core = true;
+            LOG_INFO(Frontend, "NX2 clock audit skipped: effective single-core mode has no "
+                               "thread-safe SDL-side guest counter read");
+        }
+    }
+    const bool running = Nx2ClockAudit::CanReadGuestCounter(
+        powered, state.system.IsPaused(), multicore);
+    state.clock_audit.Poll(true, running,
+        [] {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        },
+        [&] {
+            const auto before = ReadClockAuditConfig(state.system);
+            if (before.frequency == 0 || (before.sync_core_speed && before.speed_limit == 0))
+                return Nx2ClockAudit::GuestRead{0, before, false};
+            const u64 ticks = state.system.CoreTiming().GetClockTicks();
+            const auto after = ReadClockAuditConfig(state.system);
+            return Nx2ClockAudit::GuestRead{ticks, after, before == after};
+        },
+        [](const Nx2ClockAudit::Report& report) {
+            const auto& current = report.current;
+            const auto& config = current.guest.config;
+            LOG_INFO(Frontend,
+                "NX2 clock audit status={} ticks={} cntfrq={} cpu_clock={} speed_limit={} "
+                "sync_core_speed={} multicore={} use_speed_limit={} custom_cpu_ticks={} cpu_ticks={} "
+                "wall_before_ns={} wall_after_ns={} prev_before_ns={} prev_after_ns={} "
+                "delta_ticks={} wall_min_ns={} wall_max_ns={} ratio_mid={:.9f} ratio_low={:.9f} "
+                "ratio_high={:.9f} (guest counter/wall only; not simulation speed)",
+                Nx2ClockAudit::Name(report.status), current.guest.ticks, config.frequency,
+                config.cpu_clock, config.speed_limit, config.sync_core_speed, config.multicore,
+                config.use_speed_limit, config.custom_cpu_ticks, config.cpu_ticks,
+                current.before_ns, current.after_ns,
+                report.previous ? report.previous->before_ns : 0,
+                report.previous ? report.previous->after_ns : 0,
+                report.delta_ticks, report.wall_min_ns, report.wall_max_ns,
+                report.ratio_mid, report.ratio_low, report.ratio_high);
+        });
+}
+
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     SdlState *state = (SdlState *)appstate;
+    // Bounded local tests must exercise SDL_AppQuit and the normal core/GPU teardown.
+    // The external lab watchdog remains a fallback for a hung emulation thread.
+    static const double exit_after = [] {
+        const char* value = std::getenv("EDEN_NX2_EXIT_AFTER_SECONDS");
+        if (value == nullptr || *value == '\0') {
+            return 0.0;
+        }
+        char* end{};
+        const double seconds = std::strtod(value, &end);
+        if (end == value || *end != '\0' || !(seconds >= 1.0 && seconds <= 86400.0)) {
+            LOG_WARNING(Frontend, "Ignoring invalid EDEN_NX2_EXIT_AFTER_SECONDS");
+            return 0.0;
+        }
+        return seconds;
+    }();
+    if (exit_after != 0.0 && Nx2KeyClockSeconds() >= exit_after) {
+        LOG_INFO(Frontend, "Timed test completed; shutting down normally");
+        return SDL_APP_SUCCESS;
+    }
+    RunClockAudit(*state);
     RunKeyScript(state->input_subsystem);
     if (state->emu_window) {
         state->emu_window->ApplyPendingTitle();

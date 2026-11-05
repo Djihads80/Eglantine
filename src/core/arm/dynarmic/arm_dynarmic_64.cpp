@@ -10,6 +10,7 @@
 #include <immintrin.h>
 #endif
 #include "common/settings.h"
+#include "video_core/nx2_command_writer_trace.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_64.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
@@ -65,6 +66,10 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 }
 
 void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
         switch (size) {
         case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
@@ -76,6 +81,10 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
     }
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
         m_memory.Write64(vaddr, value[0]);
         m_memory.Write64(vaddr + 8, value[1]);
@@ -83,22 +92,42 @@ void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value)
 }
 
 bool DynarmicCallbacks64::MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     return CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive8(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     return CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive16(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive32(u64 vaddr, std::uint32_t value, std::uint32_t expected) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     return CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive32(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive64(u64 vaddr, std::uint64_t value, std::uint64_t expected) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     return CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive64(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) {
+    VideoCommon::CommandWriterTrace::CpuScope writer_scope{[this] {
+        return VideoCommon::CommandWriterTrace::CpuContext{
+            m_process->GetProcessId(), m_parent.m_core_index, m_parent.m_jit->GetPC()};
+    }};
     return CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive128(vaddr, value, expected);
 }

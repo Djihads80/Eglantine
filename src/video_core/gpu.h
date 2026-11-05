@@ -224,8 +224,14 @@ public:
 
     void RendererFrameEndNotify();
 
+    /// With completion, rendering stays asynchronous and the callback reports real source
+    /// image release (true), or cancellation/failure (false). It must not throw and must own
+    /// lifecycle-safe ticket state; it may run on another thread or inline on rejection.
+    /// Tracked requests require a nonzero ordering key for that layer registration; use distinct
+    /// keys for independent layers and a new key after a layer is destroyed/recreated.
     void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                          std::vector<Service::Nvidia::NvFence>&& fences);
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::function<void(bool)> completion = {}, u64 ordering_key = 0);
 
     void WaitForComposite();
 

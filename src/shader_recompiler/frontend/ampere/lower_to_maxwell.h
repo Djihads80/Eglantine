@@ -51,6 +51,123 @@ struct LoweringOptions {
     u64 native_code_address{};
 };
 
+// Prove literal PTP operands without crossing an entry point or an unknown register effect.
+// A definition under the gather's guard is valid only while that predicate remains unchanged.
+class GatherOffsetProof {
+public:
+    explicit GatherOffsetProof(std::span<const Instruction> instructions)
+        : code{instructions}, entries(instructions.size()) {
+        for (u32 index = 0; index < code.size(); ++index) {
+            const auto& insn = code[index];
+            if (insn.Bits(12, 4) == 15) continue;
+            const u32 opcode = insn.Bits(0, 12);
+            if (opcode == 0x949 || opcode == 0x958 || opcode == 0x944 || opcode == 0x950) {
+                bounded_control = false;
+            } else if (opcode == 0x947 || opcode == 0x945) {
+                const u64 raw = (insn.words[1] & ~3U) | (u64{insn.words[2] & 0x3ffff} << 32);
+                const s64 relative = opcode == 0x945 ? static_cast<s32>(insn.words[1])
+                                                     : static_cast<s64>(raw << 14) >> 14;
+                const s64 target = s64{index} * 16 + 16 + relative;
+                if (target < 0 || target % 16 || target / 16 >= static_cast<s64>(code.size())) {
+                    bounded_control = false;
+                } else {
+                    entries[static_cast<size_t>(target / 16)] = true;
+                }
+            }
+        }
+    }
+
+    std::optional<std::array<u32, 2>> Find(u32 index) const {
+        if (!bounded_control || entries[index]) return std::nullopt;
+        const u32 source = code[index].Bits(32, 8), guard = code[index].Bits(12, 4);
+        if (source >= 254) return std::nullopt;
+        const auto first = FindLiteral(index, source, guard);
+        const auto second = FindLiteral(index, source + 1, guard);
+        if (!first || !second) return std::nullopt;
+        return std::array{*first, *second};
+    }
+
+private:
+    std::optional<u32> FindLiteral(u32 index, u32 reg, u32 guard) const {
+        bool guard_changed = false;
+        for (u32 prior = index; prior-- > 0;) {
+            const auto& insn = code[prior];
+            const u32 predicate = insn.Bits(12, 4), opcode = insn.Bits(0, 12);
+            if (predicate != 15) {
+                const u32 dest = insn.Bits(16, 8);
+                const bool literal = (opcode == 0x802 && insn.Bits(24, 8) == 0 &&
+                                      insn.words[2] == 0xf00) ||
+                                     (opcode == 0x424 && insn.Bits(24, 8) == 255 &&
+                                      insn.words[2] == 0x078e00ff);
+                if (literal && dest == reg) {
+                    if (predicate == 7 || (predicate == guard && !guard_changed))
+                        return insn.words[1];
+                    return std::nullopt;
+                }
+                u32 count = 1, second = 255, second_count = 0, predicates = 0;
+                switch (opcode) {
+                case 0x202: case 0x802: case 0xa02: case 0xc02: // MOV
+                case 0x223: case 0x423: case 0x623: case 0x823: case 0xa23: // FFMA
+                case 0x220: case 0x820: case 0xa20: // FMUL
+                case 0x221: case 0x421: case 0x621: case 0x821: case 0xa21: // FADD
+                case 0x245: case 0x819: case 0x919: // I2FP, SHF, S2R
+                    break;
+                case 0x805: // CS2R writes a pair, including the high word.
+                    count = 2;
+                    break;
+                case 0x225: case 0x625: case 0x825: // IMAD.WIDE
+                    count = 2;
+                    [[fallthrough]];
+                case 0x227: case 0x827: case 0xa27: // IMAD.HI
+                case 0x224: case 0x424: case 0x624: case 0x824: // low-word IMAD (currently PT only)
+                case 0x212: case 0x812: // LOP3
+                    predicates = 1U << insn.Bits(81, 3);
+                    break;
+                case 0x210: case 0x810: // IADD3
+                    predicates = (1U << insn.Bits(81, 3)) | (1U << insn.Bits(84, 3));
+                    break;
+                case 0x20b: case 0x80b: case 0xa0b: // FSETP
+                case 0x20c: case 0x80c: case 0xa0c: // ISETP
+                case 0x81c: // PLOP3
+                    count = 0;
+                    predicates = (1U << insn.Bits(81, 3)) | (1U << insn.Bits(84, 3));
+                    break;
+                case 0xb63: { // Both destinations of a preceding gather can clobber an offset.
+                    const u32 components = static_cast<u32>(std::popcount(insn.Bits(72, 4)));
+                    const bool half = insn.Bits(79, 1) != 0;
+                    second = insn.Bits(64, 8);
+                    count = second == 255 ? components : (std::min)(components, 2U);
+                    second_count = second == 255 || components <= 2 ? 0U : components - 2;
+                    if (half) {
+                        count = (count + 1) / 2;
+                        second_count = (second_count + 1) / 2;
+                    }
+                    predicates = 1U << insn.Bits(81, 3);
+                    break;
+                }
+                case 0x918: case 0x91a: // NOP, DEPBAR
+                case 0x947: // Outgoing branches are safe; branch/reconvergence entries stop the search.
+                case 0x945: case 0x941: case 0x942: case 0x948: case 0x348:
+                    count = 0;
+                    break;
+                default:
+                    return std::nullopt;
+                }
+                if ((dest != 255 && reg >= dest && reg - dest < count) ||
+                    (second != 255 && reg >= second && reg - second < second_count))
+                    return std::nullopt;
+                guard_changed |= (predicates & (1U << (guard & 7))) != 0;
+            }
+            if (entries[prior]) return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    std::span<const Instruction> code;
+    std::vector<bool> entries;
+    bool bounded_control = true;
+};
+
 // A MOV form the Maxwell frontend reads, for lowered native programs only, as a copy between
 // register banks of 256 (bank 0 = R0-R254; banks 1 and 2 exist only in the IR).
 inline u64 NativeRegisterCopy(u32 destination_bank, u32 destination, u32 source_bank, u32 source) {
@@ -235,6 +352,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     // Native registers from here up share the lowering's uniform mirrors and scratch; the
     // instructions that use them get shadow copies (PrepareRegisterPressure).
     const u32 shadow_boundary = (uses_uniform_bank ? high_uniform_base : 246U) & ~3U;
+    std::optional<GatherOffsetProof> gather_offsets;
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
@@ -2304,9 +2422,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 const u32 source = i < in_a ? element(source_a, i) : element(source_b, i - in_a);
                 emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) | (u64{source} << 20));
             }
+            std::optional<std::array<u32, 2>> literal_offsets;
+            if (offset_mode == 2 && native_predicate != 7) {
+                if (!gather_offsets) gather_offsets.emplace(code);
+                literal_offsets = gather_offsets->Find(index);
+            }
             for (u32 i = 0; i < meta; ++i) {
-                emit(0x5c98000000000000ULL | predicate | (246 + i) | (u64{15} << 39) |
-                     (u64{element(source_b, i)} << 20));
+                if (literal_offsets && i < 2) {
+                    // Scratch alone is unconditional: predication would turn the literal into
+                    // a Phi before SPIR-V's ConstOffsets check. The gather stays predicated.
+                    emit(0x010000000007f000ULL | (246 + i) | (u64{(*literal_offsets)[i]} << 20));
+                } else {
+                    emit(0x5c98000000000000ULL | predicate | (246 + i) | (u64{15} << 39) |
+                         (u64{element(source_b, i)} << 20));
+                }
             }
             if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));

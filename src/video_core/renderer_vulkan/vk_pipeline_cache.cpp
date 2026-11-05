@@ -36,8 +36,11 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/native_storage_range_audit.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "shader_recompiler/storage_write_bounds_ir.h"
+#include "video_core/native_proven_writes.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -742,10 +745,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     };
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& pipeline{pair->second};
-    if (!is_new) {
-        return pipeline.get();
+    if (is_new) {
+        pipeline = CreateComputePipeline(key, shader);
     }
-    pipeline = CreateComputePipeline(key, shader);
+    if (VideoCommon::NativeStorageRangeAudit::Enabled() && pipeline && shader->lowered_native) {
+        pipeline->SetDiagnosticNativeKey(shader->lowered_native->diagnostic_key);
+    }
     return pipeline.get();
 }
 
@@ -1357,6 +1362,20 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     }
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    std::vector<Shader::StorageWriteBounds::DescriptorProof> write_proofs;
+    std::vector<Shader::StorageWriteBounds::DescriptorAccessProof> access_proofs;
+    if (VideoCommon::NativeProvenWrites::Enabled() && env.IsNativeProgram()) {
+        const u64 alignment = host_info.min_ssbo_alignment;
+        if (alignment > 0 && alignment <= 65536) {
+            write_proofs = Shader::StorageWriteBounds::Extract(
+                program, static_cast<u32>(alignment),
+                VideoCommon::NativeProvenWrites::GlobalReadsEnabled());
+            if (VideoCommon::NativeProvenWrites::SyncEnabled()) {
+                access_proofs = Shader::StorageWriteBounds::ExtractReadWrites(
+                    program, static_cast<u32>(alignment));
+            }
+        }
+    }
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
@@ -1399,7 +1418,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                                              guest_descriptor_queue, descriptor_buffer_ring,
                                              thread_worker, statistics,
                                              &shader_notify, program.info, std::move(spv_module),
-                                             key.unique_hash);
+                                             key.unique_hash, std::move(write_proofs), std::move(access_proofs),
+                                             program.workgroup_size);
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "{}", exception.what());

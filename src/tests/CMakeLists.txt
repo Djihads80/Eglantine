@@ -8,6 +8,7 @@ add_executable(tests
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
+    common/cpu_sets.cpp
     common/fibers.cpp
     common/game_presets.cpp
     common/host_memory.cpp
@@ -21,22 +22,44 @@ add_executable(tests
     common/unique_function.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
+    core/nx2_clock_audit.cpp
     core/ldn.cpp
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
+    core/nx2_fence_wake.cpp
+    core/nx2_present_state.cpp
+    core/nx2_present_wait.cpp
+    core/nx2_cpu_syncpoint.cpp
     core/priority_queue.cpp
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
+    video_core/buffer_copy_batch.cpp
+    video_core/cpu_write_batch.cpp
+    video_core/query_read_sync.cpp
+    video_core/write_preserve_downloads.cpp
+    video_core/gpu_split.cpp
+    video_core/command_list_snapshot.cpp
+    video_core/command_trace.cpp
+    video_core/command_writer_trace.cpp
+    video_core/cpu_write_trace.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
     video_core/ampere_lowering.cpp
+    video_core/hmma_numeric.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_guarded_ulea.cpp
     video_core/ampere_compute_lowering.cpp
     video_core/native_macro_fifo.cpp
+    video_core/native_upscale.cpp
     video_core/uniform_stream_reuse.cpp
+    video_core/storage_write_bounds.cpp
+    video_core/storage_write_bounds_ir.cpp
+    video_core/proven_compute_writes.cpp
+    video_core/proven_compute_sync.cpp
+    video_core/submission_work.cpp
+    video_core/composite_completion.cpp
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
     video_core/global_address_tracking.cpp
@@ -53,6 +76,8 @@ add_executable(tests
 create_target_directory_groups(tests)
 
 target_link_libraries(tests PRIVATE common core input_common video_core)
+target_include_directories(tests PRIVATE "${CMAKE_BINARY_DIR}/src/video_core/host_shaders/include")
+add_dependencies(tests host_shaders)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 add_test(NAME tests COMMAND tests)

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -22,7 +24,9 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
+#include "video_core/native_mme_predicate_trace.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/query_cache/query_read_sync.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
@@ -833,6 +837,7 @@ void Maxwell3D::SetHLEReplacementAttributeType(u32 bank, u32 offset,
 // plus the few changes the back makes on its own (constant buffer offset, shadow_scratch[0] on
 // falcon[4], the macro bind pointer); the front loads and binds the macro code itself.
 struct Maxwell3D::FrontState {
+    VideoCommon::NativeMmePredicateTrace::FrontTrace predicate_trace;
     std::array<ControlWrite, 16> control_writes{};
     u32 control_count{};
     std::array<u32, Regs::NUM_REGS> regs{};
@@ -918,6 +923,9 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         macro_params.clear();
         executing_macro = 0;
         front_macros = true;
+        if (VideoCommon::NativeMmePredicateTrace::Enabled()) [[unlikely]] {
+            split.Defer([this] { VideoCommon::NativeMmePredicateTrace::Reset(this); });
+        }
     }
     return *front;
 }
@@ -926,15 +934,12 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
     // As ProcessShadowRam does on the back.
-    u32 value = argument;
-    bool shadow_kept = true;
-    if (fs.control == Regs::ShadowRamControl::Track ||
-        fs.control == Regs::ShadowRamControl::TrackWithFilter) {
-        shadow_kept = fs.shadow[method] == argument;
-        fs.shadow[method] = argument;
-    } else if (fs.control == Regs::ShadowRamControl::Replay) {
-        value = fs.shadow[method];
-    }
+    const auto shadow = VideoCommon::SplitStateBatch::ApplyShadow(
+        fs.shadow[method], argument,
+        fs.control == Regs::ShadowRamControl::Track ||
+            fs.control == Regs::ShadowRamControl::TrackWithFilter,
+        fs.control == Regs::ShadowRamControl::Replay);
+    const u32 value = shadow.value;
     if (Profile::Enabled()) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
     }
@@ -945,13 +950,12 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     if (!execution_mask[method]) {
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
-        if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
+        if (!VideoCommon::SplitStateBatch::ApplyState(fs.regs[method], shadow, fs.skip_same)) {
             if (Profile::Enabled()) [[unlikely]] {
                 Profile::Add(Profile::Counter::SameValueWrites, 1);
             }
             return;
         }
-        fs.regs[method] = value;
     } else {
         fs.regs[method] = value;
         constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -990,11 +994,65 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         }
     }
     if (from_macro) {
-        split.MacroWrite(this, method, argument);
+        split.MacroWrite(this, method, argument, !execution_mask[method]);
     } else {
-        split.Method(this, method, argument, is_last_call, nullptr);
+        split.Method(this, method, argument, is_last_call, nullptr, !execution_mask[method]);
+    }
+    if (method == MAXWELL3D_REG_INDEX(render_enable.mode) &&
+        VideoCommon::NativeMmePredicateTrace::Enabled()) [[unlikely]] {
+        const auto snapshot = fs.predicate_trace.Predicate(
+            argument, value, static_cast<u32>(fs.control), from_macro);
+        // The method may flush an earlier deferred draw. Install its origin afterwards so
+        // that earlier draw keeps the old predicate; subsequent draws see this value copy.
+        split.Defer([this, snapshot] {
+            VideoCommon::NativeMmePredicateTrace::Install(this, snapshot);
+        });
     }
 }
+
+namespace {
+
+void AuditFrontStateBatch(size_t arguments, size_t enqueued) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_STATE_BATCH_AUDIT");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    if (!enabled) {
+        return;
+    }
+    struct Counters {
+        u64 batches{};
+        u64 arguments{};
+        u64 enqueued{};
+        u64 skipped{};
+        u64 max_batch{};
+        std::array<u64, 4> sizes{};
+        std::chrono::steady_clock::time_point last_report{};
+    };
+    // The split front is the sole producer; counters die with that GPU thread.
+    static thread_local Counters totals;
+    ++totals.batches;
+    totals.arguments += arguments;
+    totals.enqueued += enqueued;
+    totals.skipped += arguments - enqueued;
+    totals.max_batch = std::max(totals.max_batch, static_cast<u64>(arguments));
+    ++totals.sizes[arguments <= 8 ? 0 : arguments <= 16 ? 1 : arguments <= 32 ? 2 : 3];
+    if ((totals.batches & 1023) != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (totals.last_report != std::chrono::steady_clock::time_point{} &&
+        now - totals.last_report < std::chrono::seconds{10}) {
+        return;
+    }
+    totals.last_report = now;
+    LOG_INFO(HW_GPU, "NX2 state batch cumulative: batches={} arguments={} enqueued={} skipped={} "
+             "max={} sizes_2_8={} sizes_9_16={} sizes_17_32={} sizes_33_64={}",
+             totals.batches, totals.arguments, totals.enqueued, totals.skipped, totals.max_batch,
+             totals.sizes[0], totals.sizes[1], totals.sizes[2], totals.sizes[3]);
+}
+
+} // Anonymous namespace
 
 void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                                 u32 argument, bool is_last_call) {
@@ -1010,6 +1068,34 @@ void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& spl
         return;
     }
     FrontWrite(split, fs, method, argument, is_last_call, false);
+}
+
+void Maxwell3D::FrontCallStateMethods(VideoCommon::GpuSplit& split, u32 method,
+                                      std::span<const u32> arguments, u32 methods_pending) {
+    namespace Batch = VideoCommon::SplitStateBatch;
+    namespace Profile = VideoCommon::Nx2Profile;
+    ASSERT(arguments.size() <= Batch::Capacity && arguments.size() <= methods_pending);
+    ASSERT(front);
+    auto& fs = *front;
+    const bool tracking = fs.control == Regs::ShadowRamControl::Track ||
+                          fs.control == Regs::ShadowRamControl::TrackWithFilter;
+    const bool replay = fs.control == Regs::ShadowRamControl::Replay;
+    std::array<Batch::Write, Batch::Capacity> writes;
+    size_t count = 0;
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        const u32 current = method + static_cast<u32>(i);
+        ASSERT(current < MacroRegistersStart && !execution_mask[current]);
+        const auto shadow = Batch::ApplyShadow(fs.shadow[current], arguments[i], tracking, replay);
+        if (Batch::ApplyState(fs.regs[current], shadow, fs.skip_same)) {
+            writes[count++] = {current, arguments[i], i + 1 == methods_pending};
+        }
+    }
+    if (Profile::Enabled()) {
+        Profile::Add(Profile::Counter::MethodWrites, arguments.size());
+        Profile::Add(Profile::Counter::SameValueWrites, arguments.size() - count);
+    }
+    split.StateMethods(this, std::span<const Batch::Write>{writes}.first(count));
+    AuditFrontStateBatch(arguments.size(), count);
 }
 
 void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1098,7 +1184,16 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             }
         }
     }
-    split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr);
+    split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr,
+                      !execution_mask[method]);
+    if (method == MAXWELL3D_REG_INDEX(render_enable.mode) && amount != 0 &&
+        VideoCommon::NativeMmePredicateTrace::Enabled()) [[unlikely]] {
+        const auto snapshot = fs.predicate_trace.Predicate(
+            base_start[amount - 1], fs.regs[method], static_cast<u32>(fs.control), false);
+        split.Defer([this, snapshot] {
+            VideoCommon::NativeMmePredicateTrace::Install(this, snapshot);
+        });
+    }
 }
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1109,6 +1204,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     auto& engine = GetNativeMacroEngine();
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
+    if (VideoCommon::NativeMmePredicateTrace::Enabled()) [[unlikely]] {
+        fs.predicate_trace.BeginMacro(method, start, fs.parameters);
+    }
     {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
@@ -1140,7 +1238,8 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     fs.parameters.clear();
     if (fs.draw_pending) {
         fs.draw_pending = false;
-        split.Defer([this, system_ptr = &system] { FinishFrontMacro(*system_ptr); });
+        split.DeferDrawBoundary(this,
+                               [this, system_ptr = &system] { FinishFrontMacro(*system_ptr); });
     }
     if (FrontVerifyEnabled() && (++fs.calls & 4095) == 0) [[unlikely]] {
         FrontVerify(split, fs);
@@ -1155,23 +1254,132 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
+    const bool tail_wait = split.MemoryTailWaitEnabled();
+    u64 tail_words{};
+    if (tail_wait) {
+        tail_words = split.WaitForMemoryWriters();
+    } else {
+        split.Drain();
+    }
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);
     const size_t read_bytes = size_t{words} * sizeof(u32);
+    if (words != 0 && VideoCommon::NativeMmeQueryFlushEnabled()) [[unlikely]] {
+        // Queries are separate from buffer-cache GPU writes. Even Low accuracy defers real
+        // counters, so Drain plus a BufferCache flush alone can leave old predicate words.
+        constexpr u32 MaxAuditWords = 8;
+        const u32 sampled = std::min(words, MaxAuditWords);
+        std::array<u32, MaxAuditWords> before{};
+        bool query_dirty{};
+        split.Run([&] {
+            query_dirty = memory_manager.IsMemoryDirty(source, read_bytes,
+                                                 VideoCommon::CacheType::QueryCache);
+            if (!query_dirty) {
+                return;
+            }
+            for (u32 i = 0; i < sampled; ++i) {
+                before[i] = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+            }
+            memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+        });
+        u32 changed{};
+        std::array<u32, MaxAuditWords> after{};
+        if (query_dirty) {
+            for (u32 i = 0; i < sampled; ++i) {
+                after[i] = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+                changed += before[i] != after[i];
+            }
+        }
+        static thread_local u64 reads{}, dirty_reads{}, changed_reads{}, sampled_words{}, changed_words{};
+        static thread_local u32 detailed{};
+        static thread_local auto next_log = std::chrono::steady_clock::time_point{};
+        ++reads;
+        dirty_reads += query_dirty;
+        changed_reads += changed != 0;
+        sampled_words += query_dirty ? sampled : 0;
+        changed_words += changed;
+        if (query_dirty && detailed < 8) {
+            ++detailed;
+            LOG_INFO(HW_GPU,
+                     "MME query flush: source={:#x} method={:#x} words={} changed={}/{} "
+                     "before={:08x} after={:08x}",
+                     source, method, words, changed, sampled,
+                     fmt::join(std::span{before}.first(sampled), " "),
+                     fmt::join(std::span{after}.first(sampled), " "));
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_log) {
+            next_log = now + std::chrono::seconds{10};
+            LOG_INFO(HW_GPU,
+                     "MME query flush totals: {} reads, {} dirty, {} changed reads, "
+                     "{} of {} sampled words changed", reads, dirty_reads, changed_reads,
+                     changed_words, sampled_words);
+        }
+    }
     if (VideoCommon::Nx2Profile::Enabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
-    if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+    const auto flush_if_dirty = [&] {
+        if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+            split.Run([memory = &memory_manager, source, read_bytes] {
+                memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+            });
+        }
+    };
+    flush_if_dirty();
+    static const bool audit_enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_MACRO_DMA_AUDIT");
+        return value != nullptr && value[0] == '1';
+    }();
+    const bool audit = tail_wait && audit_enabled;
+    std::vector<u32> before;
+    if (audit) {
+        before.resize(words); // At most 4096 words, released after this read.
+        for (u32 i = 0; i < words; ++i) {
+            before[i] = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+        }
+        split.Drain();
+        flush_if_dirty();
     }
+    u32 changed{};
+    auto* const traced_dma = VideoCommon::NativeMmePredicateTrace::Enabled()
+                                 ? &fs.predicate_trace.BeginDma(source, method, ram, count, words,
+                                                               memory_manager.GetID())
+                                 : nullptr;
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
+        if (traced_dma != nullptr && i < traced_dma->sampled) [[unlikely]] {
+            traced_dma->words[i] = word;
+        }
+        changed += audit && before[i] != word;
         if (method == 0x158) {
             fs.parameters.push_back(word);
         } else if (ram + i < native_data_ram.size()) {
             native_data_ram[ram + i] = word;
+        }
+    }
+    if (tail_wait) {
+        static u64 reads{}, narrower{}, skipped_words{}, checked_words{}, changed_words{};
+        static u32 mismatch_logs{};
+        static auto next_log = std::chrono::steady_clock::time_point{};
+        ++reads;
+        narrower += tail_words != 0;
+        skipped_words += tail_words;
+        checked_words += audit ? words : 0;
+        changed_words += changed;
+        if (changed != 0 && mismatch_logs++ < 8) {
+            LOG_WARNING(HW_GPU,
+                        "Macro DMA tail audit: {} of {} words changed after full drain at {:#x}; "
+                        "using the fresh values", changed, words, source);
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_log) {
+            next_log = now + std::chrono::seconds{10};
+            LOG_INFO(HW_GPU,
+                     "Macro DMA tail totals: {} reads, {} with a remaining state-only tail "
+                     "({} words), {} words audited, {} changed; audit={}",
+                     reads, narrower, skipped_words, checked_words, changed_words, audit);
         }
     }
 }

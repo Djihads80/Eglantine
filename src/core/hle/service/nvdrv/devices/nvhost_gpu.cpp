@@ -5,11 +5,15 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "video_core/nx2_command_writer_trace.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/service/nvdrv/core/container.h"
@@ -41,7 +45,23 @@ nvhost_gpu::nvhost_gpu(Core::System& system_, EventInterface& events_interface_,
     : nvdevice{system_}, events_interface{events_interface_}, core{core_},
       syncpoint_manager{core_.GetSyncpointManager()}, nvmap{core.GetNvMapFile()},
       channel_state{system.GPU().AllocateChannel()} {
-    channel_syncpoint = syncpoint_manager.AllocateSyncpoint(false);
+    const char* completion_gate = std::getenv("EDEN_NX2_CPU_GPU_COMPLETION");
+    const bool strict_completion = completion_gate && std::strcmp(completion_gate, "1") == 0 &&
+                                   g_nx2_driver.load(std::memory_order_acquire) &&
+                                   Settings::values.renderer_backend.GetValue() ==
+                                       Settings::RendererBackend::Vulkan;
+    if (strict_completion) {
+        const auto id = syncpoint_manager.TryAllocateGpuCompletionSyncpoint();
+        if (!id) {
+            LOG_ERROR(Service_NVDRV, "NX2 CPU completion: no fresh GPU syncpoint available");
+            throw std::runtime_error("NX2 CPU completion syncpoint exhaustion");
+        }
+        channel_syncpoint = *id;
+        LOG_INFO(Service_NVDRV, "NX2 CPU completion: GPU channel syncpoint {} uses real host fences",
+                 channel_syncpoint);
+    } else {
+        channel_syncpoint = syncpoint_manager.AllocateSyncpoint(false);
+    }
     sm_exception_breakpoint_int_report_event =
         events_interface.CreateEvent("GpuChannelSMExceptionBreakpointInt");
     sm_exception_breakpoint_pause_report_event =
@@ -447,6 +467,8 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         }();
         if (snapshot && channel_state->memory_manager && channel_state->payload) {
             // Before the copy: a suspension during it must count as one after it.
+            entries.trace_submission_id = VideoCommon::CommandTrace::NextSubmission();
+            const u64 trace_start = VideoCommon::CommandTrace::Active() ? VideoCommon::CommandTrace::Now() : 0;
             entries.snapshot_suspensions =
                 channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
             size_t words = 0;
@@ -458,9 +480,73 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             size_t offset = 0;
             for (const auto& entry : entries.command_lists) {
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
+                namespace Writer = VideoCommon::CommandWriterTrace;
+                const bool watch = Writer::Active() && Writer::WatchesDescriptor(bind_id, entry.size);
+                if (watch) {
+                    const u64 first = entry.addr & ~u64{0xfff};
+                    for (u64 page = first; page < entry.addr + entry.size * sizeof(u32); page += 0x1000) {
+                        if (const auto device = channel_state->memory_manager->GpuToCpuAddress(page)) {
+                            Writer::WatchPage(channel_state->memory_manager->GetID(), page, *device,
+                                reinterpret_cast<u64>(&system.Host1x().MemoryManager()),
+                                Writer::IsTargetedDescriptor(bind_id, entry.size));
+                        }
+                    }
+                }
                 channel_state->memory_manager->ReadBlockUnsafe(
                     entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                if (watch) {
+                    Writer::Snapshot(bind_id, channel_state->memory_manager->GetID(), entry.addr,
+                        entries.trace_submission_id, entries.submitted_offsets.size() - 1,
+                        entry.raw, entries.snapshot_suspensions, false,
+                        std::span<const Tegra::CommandHeader>{entries.submitted_words}.subspan(offset, entry.size));
+                }
+                if (trace_start != 0) {
+                    namespace Trace = VideoCommon::CommandTrace;
+                    const auto copied = std::span<const Tegra::CommandHeader>{entries.submitted_words}.subspan(offset, entry.size);
+                    Trace::Record({.origin = {.submission = entries.trace_submission_id,
+                                             .present = Trace::Present(), .asid = channel_state->memory_manager->GetID(),
+                                             .entry = entry.addr, .generation = entries.snapshot_suspensions,
+                                             .channel = bind_id, .source = Trace::Source::Submitted},
+                                   .a = Trace::Fingerprint(copied), .b = entry.size,
+                                   .c = std::min(copied.size(), Trace::SampleWords),
+                                   .kind = Trace::EventKind::SubmitCopy});
+                }
                 offset += entry.size;
+            }
+            if (Tegra::ImmutableSnapshotDiagnosticEnabled()) {
+                const u64 ending_epoch =
+                    channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
+                entries.CompleteSubmittedSnapshot(ending_epoch);
+                if (Tegra::StableOddSnapshotDiagnosticEnabled() &&
+                    entries.submitted_snapshot_epoch_unchanged &&
+                    (entries.snapshot_suspensions & 1) != 0) {
+                    static std::atomic<u32> odd_reported{};
+                    if (odd_reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                        LOG_WARNING(HW_GPU,
+                            "Experimental immutable stable-odd copy: channel={} epoch={} "
+                            "submission={} entries={} words={} (ownership unproven)",
+                            bind_id, entries.snapshot_suspensions, entries.trace_submission_id,
+                            entries.command_lists.size(), words);
+                    }
+                }
+                static std::atomic<u32> reported{};
+                if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                    LOG_INFO(HW_GPU,
+                             "Immutable command snapshot diagnostic: channel={} start_epoch={} "
+                             "end_epoch={} stable_even={} entries={} words={}",
+                             bind_id, entries.snapshot_suspensions, ending_epoch,
+                             entries.submitted_snapshot_stable, entries.command_lists.size(), words);
+                }
+            }
+            if (trace_start != 0) {
+                namespace Trace = VideoCommon::CommandTrace;
+                Trace::Record({.origin = {.submission = entries.trace_submission_id, .present = Trace::Present(),
+                                         .asid = channel_state->memory_manager->GetID(),
+                                         .generation = entries.snapshot_suspensions, .channel = bind_id},
+                               .a = entries.command_lists.size(), .b = words,
+                               .c = Trace::Now() - trace_start,
+                               .d = channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire),
+                               .kind = Trace::EventKind::SubmitEnd});
             }
         }
     }

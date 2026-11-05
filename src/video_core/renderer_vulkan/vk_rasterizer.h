@@ -108,6 +108,7 @@ public:
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(DAddr addr, u64 size) override;
+    void OnCacheInvalidationBatch(std::span<const std::pair<DAddr, std::size_t>> writes) override;
     bool TryCacheInvalidation(DAddr addr, u64 size) override;
     bool OnCPUWrite(DAddr addr, u64 size) override;
     void InvalidateGPUCache() override;
@@ -181,7 +182,7 @@ private:
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
 
-    void UpdateDynamicStates();
+    void UpdateDynamicStates(const GraphicsPipeline* pipeline = nullptr);
 
     void HandleTransformFeedback();
 

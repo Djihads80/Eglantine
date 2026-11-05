@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "video_core/nx2_command_trace.h"
+#include "video_core/nx2_command_writer_trace.h"
 
 #include <array>
 #include <cstdlib>
@@ -26,6 +28,7 @@
 #include "video_core/nx2.h"
 #include "video_core/query_cache/bank_base.h"
 #include "video_core/query_cache/query_base.h"
+#include "video_core/query_cache/native_query_producer_trace.h"
 #include "video_core/query_cache/query_cache_base.h"
 #include "video_core/query_cache/query_stream.h"
 #include "video_core/query_cache/types.h"
@@ -203,6 +206,13 @@ void QueryCacheBase<Traits>::CounterEnable(QueryType counter_type, bool is_enabl
 }
 
 template <typename Traits>
+void QueryCacheBase<Traits>::RecordDiagnosticDraw(const NativeQueryProducerTrace::Draw& draw) {
+    if (!NativeQueryProducerTrace::Enabled()) return;
+    auto* streamer = impl->streamers[static_cast<size_t>(QueryType::ZPassPixelCount64)];
+    if (streamer) streamer->RecordDiagnosticDraw(draw);
+}
+
+template <typename Traits>
 void QueryCacheBase<Traits>::CounterClose(QueryType counter_type) {
     size_t index = static_cast<size_t>(counter_type);
     StreamerInterface* streamer = impl->streamers[index];
@@ -233,6 +243,7 @@ void QueryCacheBase<Traits>::BindToChannel(s32 id) {
 template <typename Traits>
 void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type,
                                            QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
     const bool has_timestamp = True(flags & QueryPropertiesFlags::HasTimeout);
     const bool is_fence = True(flags & QueryPropertiesFlags::IsAFence);
     static const GPUVAddr watch = [] {
@@ -260,6 +271,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     DAddr cpu_addr = *cpu_addr_opt;
     const size_t new_query_id = streamer->WriteCounter(cpu_addr, has_timestamp, payload, subreport);
     auto* query = streamer->GetQuery(new_query_id);
+    const auto producer_token = NativeQueryProducerTrace::Report(
+        query, gpu_memory->GetID(), addr, cpu_addr, static_cast<u32>(counter_type),
+        static_cast<u32>(flags), payload);
     if (is_fence) {
         query->flags |= QueryFlagBits::IsFence;
     }
@@ -272,16 +286,23 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
+    // Keep the manager identity with the callback; gpu_memory may later select another channel.
+    const u64 writer_owner = Writer::Enabled()
+        ? reinterpret_cast<u64>(&impl->device_memory) : 0;
     bool is_synced = (Settings::IsGPUFenceBehaviorDefault() ? !Settings::IsGPULevelHigh() : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) && is_fence;
     std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
-                                     pointer, pointer_timestamp, cpu_addr] {
+                                     pointer, pointer_timestamp, cpu_addr, producer_token, writer_owner] {
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
+            NativeQueryProducerTrace::Complete(producer_token,
+                                               NativeQueryProducerTrace::Outcome::Invalidated);
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
             }
             return;
         }
         if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
+            NativeQueryProducerTrace::Complete(producer_token,
+                                               NativeQueryProducerTrace::Outcome::Unsynchronized);
             LOG_ERROR(HW_GPU,
                       "Query report value not synchronized. Consider increasing GPU accuracy.");
             if (!is_synced) [[likely]] {
@@ -294,16 +315,45 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
             u64 timestamp = impl->gpu.GetTicks();
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+            if (Writer::Active()) {
+                Writer::RecordDevice(Writer::Kind::QueryReportWrite, Writer::Phase::After,
+                    writer_owner, cpu_addr + 8, sizeof(timestamp), reinterpret_cast<u64>(pointer_timestamp));
+            }
             std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
+            if (Writer::Active()) {
+                Writer::RecordDevice(Writer::Kind::QueryReportWrite, Writer::Phase::After,
+                    writer_owner, cpu_addr, sizeof(query_base->value), reinterpret_cast<u64>(pointer));
+            }
+            NativeQueryProducerTrace::Complete(producer_token,
+                NativeQueryProducerTrace::Outcome::Written, query_base->value, timestamp, true);
         } else {
             u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
+            if (Writer::Active()) {
+                Writer::RecordDevice(Writer::Kind::QueryReportWrite, Writer::Phase::After,
+                    writer_owner, cpu_addr, sizeof(value), reinterpret_cast<u64>(pointer));
+            }
+            NativeQueryProducerTrace::Complete(producer_token,
+                NativeQueryProducerTrace::Outcome::Written, value);
+        }
+        if (CommandTrace::Enabled()) {
+            CommandTrace::Record({.origin = CommandTrace::current_origin, .a = cpu_addr,
+                                  .b = query_base->value,
+                                  .c = True(query_base->flags & QueryFlagBits::HasTimestamp) ? 16U : 4U,
+                                  .kind = CommandTrace::EventKind::ReleasePublishedCpu});
         }
         Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, static_cast<u32>(query_base->value));
         if (!is_synced) [[likely]] {
             impl->pending_unregister.push_back(query_location);
         }
     });
+    if (CommandTrace::Enabled()) {
+        const auto origin = CommandTrace::CurrentOrigin(gpu_memory->GetID());
+        operation = [origin, operation = std::move(operation)] {
+            CommandTrace::ScopedOrigin scope{origin};
+            operation();
+        };
+    }
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
@@ -312,9 +362,30 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
                 u64 timestamp = impl->gpu.GetTicks();
                 u64 value = static_cast<u64>(payload);
                 std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+                if (Writer::Active()) {
+                    Writer::RecordDevice(Writer::Kind::QueryImmediateWrite, Writer::Phase::After,
+                        writer_owner, cpu_addr + 8, sizeof(timestamp), reinterpret_cast<u64>(pointer_timestamp));
+                }
                 std::memcpy(pointer, &value, sizeof(value));
+                if (Writer::Active()) {
+                    Writer::RecordDevice(Writer::Kind::QueryImmediateWrite, Writer::Phase::After,
+                        writer_owner, cpu_addr, sizeof(value), reinterpret_cast<u64>(pointer));
+                }
+                NativeQueryProducerTrace::Complete(producer_token,
+                    NativeQueryProducerTrace::Outcome::Written, value, timestamp, true);
             } else {
                 std::memcpy(pointer, &payload, sizeof(payload));
+                if (Writer::Active()) {
+                    Writer::RecordDevice(Writer::Kind::QueryImmediateWrite, Writer::Phase::After,
+                        writer_owner, cpu_addr, sizeof(payload), reinterpret_cast<u64>(pointer));
+                }
+                NativeQueryProducerTrace::Complete(producer_token,
+                    NativeQueryProducerTrace::Outcome::Written, payload);
+            }
+            if (CommandTrace::Enabled()) {
+                CommandTrace::Record({.origin = CommandTrace::CurrentOrigin(gpu_memory->GetID()),
+                                      .a = cpu_addr, .b = payload, .c = has_timestamp ? 16U : 4U,
+                                      .kind = CommandTrace::EventKind::ReleasePublishedCpu});
             }
             Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
             streamer->Free(new_query_id);
@@ -570,6 +641,7 @@ void QueryCacheBase<Traits>::InvalidateQuery(QueryCacheBase<Traits>::QueryLocati
         return;
     }
     query_base->flags |= QueryFlagBits::IsInvalidated;
+    NativeQueryProducerTrace::Mark(query_base, NativeQueryProducerTrace::Outcome::Invalidated);
 }
 
 template <typename Traits>
@@ -584,6 +656,7 @@ bool QueryCacheBase<Traits>::IsQueryDirty(QueryCacheBase<Traits>::QueryLocation 
 
 template <typename Traits>
 bool QueryCacheBase<Traits>::SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLocation location) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
     auto* query_base = impl->ObtainQuery(location);
     if (!query_base) {
         return false;
@@ -593,10 +666,24 @@ bool QueryCacheBase<Traits>::SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLo
         auto* ptr = impl->device_memory.template GetPointer<u8>(query_base->guest_address);
         if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
             std::memcpy(ptr, &query_base->value, sizeof(query_base->value));
+            if (Writer::Active()) {
+                Writer::RecordDevice(Writer::Kind::QueryPartialWrite, Writer::Phase::After,
+                    reinterpret_cast<u64>(&impl->device_memory), query_base->guest_address,
+                    sizeof(query_base->value), reinterpret_cast<u64>(ptr));
+            }
+            NativeQueryProducerTrace::Mark(query_base,
+                NativeQueryProducerTrace::Outcome::PartialWrite, query_base->value);
             return false;
         }
         u32 value_l = static_cast<u32>(query_base->value);
         std::memcpy(ptr, &value_l, sizeof(value_l));
+        if (Writer::Active()) {
+            Writer::RecordDevice(Writer::Kind::QueryPartialWrite, Writer::Phase::After,
+                reinterpret_cast<u64>(&impl->device_memory), query_base->guest_address,
+                sizeof(value_l), reinterpret_cast<u64>(ptr));
+        }
+        NativeQueryProducerTrace::Mark(query_base,
+            NativeQueryProducerTrace::Outcome::PartialWrite, value_l);
         return false;
     }
     return True(query_base->flags & QueryFlagBits::IsHostManaged) &&

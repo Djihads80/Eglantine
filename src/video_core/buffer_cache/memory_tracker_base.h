@@ -70,6 +70,37 @@ public:
         });
     }
 
+    /// Visit CPU-read pages without clearing their marks. Results are clipped to the query;
+    /// unallocated managers and unmarked pages produce no range.
+    template <typename Func>
+    void ForEachPreflushableRange(VAddr query_cpu_addr, u64 query_size, Func&& func) {
+        constexpr u64 address_limit = 1ULL << MAX_CPU_PAGE_BITS;
+        if (query_size == 0 || query_cpu_addr >= address_limit ||
+            query_size > address_limit - query_cpu_addr) {
+            return;
+        }
+        const VAddr query_end = query_cpu_addr + query_size;
+        IteratePages<false>(query_cpu_addr, query_size, [&](Manager* manager, u64 offset, size_t size) {
+            manager->ForEachModifiedRange(
+                Type::Preflushable, false, manager->cpu_addr + offset, size,
+                [&](VAddr addr, u64 range_size) {
+                    const VAddr begin = (std::max)(addr, query_cpu_addr);
+                    const VAddr end = (std::min)(addr + range_size, query_end);
+                    if (begin < end) {
+                        func(begin, end - begin);
+                    }
+                });
+        });
+    }
+
+    /// A read spanning known and newly read pages must still flush the newly read pages.
+    [[nodiscard]] bool IsRegionFullyPreflushable(VAddr query_cpu_addr, u64 query_size) {
+        u64 covered_size = 0;
+        ForEachPreflushableRange(query_cpu_addr, query_size,
+                                [&](VAddr, u64 size) { covered_size += size; });
+        return query_size != 0 && covered_size == query_size;
+    }
+
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {

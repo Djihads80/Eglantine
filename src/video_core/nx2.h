@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "video_core/nx2_command_writer_trace.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -29,6 +30,12 @@ inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
 
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
+    namespace Writer = VideoCommon::CommandWriterTrace;
+    // Declaration/bitmap coverage, not evidence of an actual shader store to every byte.
+    if (Writer::Enabled()) {
+        Writer::RecordDevice(Writer::Kind::GpuDirtyMark, Writer::Phase::Before, 0,
+            device_address, size, 0, 0, Writer::Extent::PageCoverage);
+    }
     if (size == 0) {
         return;
     }

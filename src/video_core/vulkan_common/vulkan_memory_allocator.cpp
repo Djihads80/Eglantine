@@ -23,6 +23,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/vulkan_common/vulkan_allocation_diagnostics.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/settings.h"
 
@@ -288,6 +289,9 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                      ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
                      ci.arrayLayers, static_cast<u32>(ci.format), static_cast<int>(result));
     }
+    if (result != VK_SUCCESS) {
+        ReportAllocationFailure(result, "vmaCreateImage", texels, 0, ci.flags, ci.format);
+    }
     vk::Check(result);
 
     // Log GPU memory allocation for images
@@ -424,7 +428,12 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VkMemoryPropertyFlags property_flags{};
 
     if (!CreateBufferInSeparatePool(ci, usage, alloc_ci, handle, allocation, alloc_info)) {
-        vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+        const auto result = vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+        if (result != VK_SUCCESS) {
+            ReportAllocationFailure(result, "vmaCreateBuffer", ci.size, 0, ci.usage,
+                                    static_cast<u64>(usage));
+        }
+        vk::Check(result);
     }
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
@@ -481,8 +490,13 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
-                                           &allocation, &alloc_info));
+    const auto result = vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment,
+                                                     &handle, &allocation, &alloc_info);
+    if (result != VK_SUCCESS) {
+        ReportAllocationFailure(result, "vmaCreateBufferWithAlignment", ci.size, min_alignment,
+                                ci.usage, static_cast<u64>(usage));
+    }
+    vk::Check(result);
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     u8 *data = reinterpret_cast<u8 *>(alloc_info.pMappedData);
@@ -530,6 +544,10 @@ MemoryCommit MemoryAllocator::Commit(const VkMemoryRequirements &reqs, MemoryUsa
         }
     }
 
+    if (res != VK_SUCCESS) {
+        ReportAllocationFailure(res, "vmaAllocateMemory/Commit", reqs.size, reqs.alignment,
+                                reqs.memoryTypeBits, static_cast<u64>(usage));
+    }
     vk::Check(res);
     return MemoryCommit(allocator, a, info);
 }
@@ -567,8 +585,17 @@ MemoryCommit MemoryAllocator::Commit(const vk::Buffer &buffer, MemoryUsage usage
         }
     }
 
+    if (res != VK_SUCCESS) {
+        ReportAllocationFailure(res, "vmaAllocateMemoryForBuffer/Commit", 0, 0, ci.flags,
+                                static_cast<u64>(usage));
+    }
     vk::Check(res);
-    vk::Check(vmaBindBufferMemory2(allocator, a, 0, raw, nullptr));
+    const auto bind_result = vmaBindBufferMemory2(allocator, a, 0, raw, nullptr);
+    if (bind_result != VK_SUCCESS) {
+        ReportAllocationFailure(bind_result, "vmaBindBufferMemory2", info.size, info.offset, 0,
+                                static_cast<u64>(usage));
+    }
+    vk::Check(bind_result);
     return MemoryCommit(allocator, a, info);
 }
 

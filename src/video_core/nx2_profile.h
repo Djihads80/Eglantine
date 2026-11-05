@@ -51,6 +51,12 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    SplitCall,    ///< Deferred callbacks executed on the back thread
+    SinkAppend,   ///< State-only method writes appended to the back's method sink
+    SplitIdleHook, ///< Deferred Vulkan submission from the back's idle hook
+    SyncDownload, ///< Synchronous buffer download preparation and host writeback
+    SyncDownloadWait, ///< Waiting for the synchronous buffer copy to reach the host GPU
+    WritePreserve, ///< Synchronous preservation of GPU-written neighbors of a CPU write
     Count,
 };
 
@@ -62,6 +68,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait",
+    "split callback", "sink append", "split idle hook", "sync download", "sync download wait",
+    "write preserve",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
@@ -80,7 +88,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, 11> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -130,6 +138,9 @@ enum class Counter : u32 {
     SameValueWrites, ///< Of MethodWrites: the register already held the value
     AcquireChecks,  ///< Semaphore acquires evaluated
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    SyncDownloadBytes, ///< Synchronous buffer data copied back, separate from fence downloads
+    SyncDownloadCopies, ///< Regions in those synchronous copies
+    EmptyAutomaticFlushes, ///< Automatic draw flush requests with no unsubmitted commands
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -190,6 +201,11 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    line += fmt::format(" | sync downloads {:.0f} KiB in {:.0f} copies",
+                        static_cast<double>(data.counters[8]) * 1e9 / 1024.0 / window,
+                        static_cast<double>(data.counters[9]) * 1e9 / window);
+    line += fmt::format(" | empty automatic flush skips {:.0f}",
+                        static_cast<double>(data.counters[10]) * 1e9 / window);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;

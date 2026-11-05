@@ -125,6 +125,7 @@ add_library(
     adpf.h
     thread_queue_list.h
     thread_worker.h
+    windows/cpu_sets.h
     threadsafe_queue.h
     time_zone.cpp
     time_zone.h

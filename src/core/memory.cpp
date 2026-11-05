@@ -23,6 +23,8 @@
 #include "common/common_types.h"
 #include "common/heap_tracker.h"
 #include "common/logging.h"
+#include "video_core/nx2_command_writer_trace.h"
+#include "video_core/nx2_cpu_write_trace.h"
 #include "common/page_table.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -792,6 +794,37 @@ struct Memory::Impl {
         return T{};
     }
 
+    template <typename Store>
+    bool ObserveCpuWrite(u8* pointer, u64 virtual_address, size_t size, Store&& store) {
+        namespace Writer = VideoCommon::CommandWriterTrace;
+        return Writer::ObserveCpuWrite(
+            Writer::Active(),
+            [&] {
+                Writer::CpuWriteObservation observation;
+                auto& device = system.Host1x().MemoryManager();
+                Common::ScratchBuffer<u32> scratch;
+                // Resolve the actual destination's aliases before writing. A later remap must
+                // not be used to describe this store. This observes metadata, not memory bytes.
+                for (size_t offset = 0; offset < size;) {
+                    const u8* chunk = pointer + offset;
+                    const u64 host_pointer = reinterpret_cast<u64>(chunk);
+                    const size_t amount = std::min<size_t>(
+                        size - offset, YUZU_PAGESIZE - (host_pointer & YUZU_PAGEMASK));
+                    device.ApplyOpOnPointer(chunk, scratch, [&](DAddr address) {
+                        // Reverse lookup can be absent or concurrently changed. Only record an
+                        // alias whose existing page-table pointer matches this destination.
+                        if (device.GetPointer<u8>(address) == chunk) {
+                            Writer::CaptureCpuWriteRange(observation, reinterpret_cast<u64>(&device),
+                                {address, amount}, virtual_address + offset, host_pointer);
+                        }
+                    });
+                    offset += amount;
+                }
+                return observation;
+            },
+            std::forward<Store>(store), Writer::PublishCpuWrite);
+    }
+
     /// @brief Writes a particular data type to memory at the given virtual address.
     /// @param vaddr The virtual address to write the data type to.
     /// @tparam T The data type to write to memory.
@@ -800,8 +833,16 @@ struct Memory::Impl {
         const u64 addr = GetInteger(vaddr);
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
             LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}", sizeof(T) * 8, addr, u64(data));
-        }, [&]() { HandleRasterizerWrite(addr, sizeof(T)); }); ptr) [[likely]]
-            std::memcpy(ptr, &data, sizeof(T));
+        }, [&]() { HandleRasterizerWrite(addr, sizeof(T)); }); ptr) [[likely]] {
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                ObserveCpuWrite(ptr, addr, sizeof(T), [&] {
+                    std::memcpy(ptr, &data, sizeof(T));
+                    return true;
+                });
+            } else {
+                std::memcpy(ptr, &data, sizeof(T));
+            }
+        }
     }
 
     template <typename T>
@@ -814,6 +855,11 @@ struct Memory::Impl {
             },
             [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(T)); });
         if (ptr) {
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                return ObserveCpuWrite(ptr, GetInteger(vaddr), sizeof(T), [&] {
+                    return Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
+                });
+            }
             return Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
         }
         return true;
@@ -828,6 +874,11 @@ struct Memory::Impl {
             },
             [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(u128)); });
         if (ptr) {
+            if (VideoCommon::CommandWriterTrace::Active()) {
+                return ObserveCpuWrite(ptr, GetInteger(vaddr), sizeof(u128), [&] {
+                    return Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
+                });
+            }
             return Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
         }
         return true;
@@ -889,6 +940,14 @@ struct Memory::Impl {
             }
         };
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            // Existing cached-write callback, before the eventual store/CAS. It is not proof
+            // that an exclusive store succeeded; direct fastmem stores may bypass this path.
+            namespace Writer = VideoCommon::CommandWriterTrace;
+            if (Writer::Enabled()) {
+                Writer::RecordDevice(Writer::Kind::CpuCachedAccess, Writer::Phase::Before,
+                    reinterpret_cast<u64>(gpu_device_memory), address, size, v_address,
+                    reinterpret_cast<u64>(p));
+            }
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;
             // Performance note:

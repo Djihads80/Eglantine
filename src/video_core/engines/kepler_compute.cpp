@@ -17,12 +17,15 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "common/assert.h"
+#include "video_core/nx2_command_trace.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/nx2_diag_resources.h"
+#include "video_core/native_upscale.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2.h"
 #include "video_core/engines/fermi_2d.h"
@@ -345,10 +348,22 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                     qmd_address, fmt::join(descriptor, ","));
             }
         }
+        GPUVAddr trace_qmd_origin{};
         const auto error = native_qmd.Signal(qmd_address, argument,
             [&](u64 address, NativeQmdScheduler::Descriptor& descriptor) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(descriptor))) return false;
                 memory_manager.ReadBlockUnsafe(address, descriptor.data(), sizeof(descriptor));
+                if (VideoCommon::CommandTrace::Enabled()) {
+                    namespace Trace = VideoCommon::CommandTrace;
+                    trace_qmd_origin = address;
+                    Trace::Record({.origin = {.present = Trace::Present(), .asid = memory_manager.GetID(),
+                                             .entry = address, .source = Trace::Source::Qmd},
+                                   .a = Trace::Fingerprint<u32>(descriptor), .b = argument,
+                                   .c = (u64{descriptor[49]} << 32) | descriptor[48],
+                                   .d = (descriptor[4] >> 14) & 0xffff,
+                                   .kind = Trace::EventKind::QmdRead,
+                                   .words = {descriptor[52], descriptor[53], descriptor[54], descriptor[55]}});
+                }
                 if (static u32 logged{}; (descriptor[53] & (1U << 23)) && logged < 8) {
                     ++logged;
                     LOG_INFO(HW_GPU, "Native QMD {:#x} releases: {:08x} | {:08x} | {:08x}", address,
@@ -368,10 +383,32 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             },
             [&](u64 address, u32 payload, u32 flags) {
                 if (!memory_manager.IsFullyMappedRange(address, sizeof(payload))) return false;
+                std::optional<VideoCommon::CommandTrace::ScopedOrigin> trace_scope;
+                if (VideoCommon::CommandTrace::Enabled()) {
+                    namespace Trace = VideoCommon::CommandTrace;
+                    trace_scope.emplace(Trace::Origin{.present = Trace::Present(), .asid = memory_manager.GetID(),
+                                                      .entry = trace_qmd_origin, .source = Trace::Source::Qmd});
+                    Trace::Record({.origin = Trace::current_origin, .a = address, .b = payload, .c = flags,
+                                   .kind = Trace::EventKind::ReleaseIssued});
+                }
+                const auto signal_traced = [&](auto&& operation) {
+                    if (VideoCommon::CommandTrace::Enabled()) {
+                        const auto origin = VideoCommon::CommandTrace::CurrentOrigin(memory_manager.GetID());
+                        rasterizer->SignalFence([origin, operation = std::forward<decltype(operation)>(operation)] {
+                            VideoCommon::CommandTrace::ScopedOrigin scope{origin};
+                            operation();
+                        });
+                    } else rasterizer->SignalFence(std::forward<decltype(operation)>(operation));
+                };
                 if (flags & (1U << 26)) {
-                    rasterizer->SignalFence([this, address, payload] {
+                    signal_traced([this, address, payload] {
                         const u32 value = memory_manager.Read<u32>(address) + payload;
                         memory_manager.Write<u32>(address, value);
+                        if (VideoCommon::CommandTrace::Enabled()) {
+                            namespace Trace = VideoCommon::CommandTrace;
+                            Trace::Record({.origin = Trace::current_origin, .a = address, .b = value,
+                                           .c = sizeof(value), .kind = Trace::EventKind::ReleasePublishedGpu});
+                        }
                         if (const auto device = memory_manager.GpuToCpuAddress(address)) {
                             Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*device, value);
                         }
@@ -389,9 +426,14 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
                     // NVN2 tracks QMD completion with a max release (bit 19) into a word other
                     // releases also advance: a plain write would move it backwards and leave
                     // GEQ acquires waiting forever.
-                    rasterizer->SignalFence([this, address, payload] {
+                    signal_traced([this, address, payload] {
                         const u32 value = (std::max)(memory_manager.Read<u32>(address), payload);
                         memory_manager.Write<u32>(address, value);
+                        if (VideoCommon::CommandTrace::Enabled()) {
+                            namespace Trace = VideoCommon::CommandTrace;
+                            Trace::Record({.origin = Trace::current_origin, .a = address, .b = value,
+                                           .c = sizeof(value), .kind = Trace::EventKind::ReleasePublishedGpu});
+                        }
                         if (const auto device = memory_manager.GpuToCpuAddress(address)) {
                             Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*device, value);
                         }
@@ -581,12 +623,23 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             diag.Note(true, diag_code, 0, outcome, diag_groups, diag_threads, detail);
         }
         if (diag.Capturing()) {
-            diag.Row(fmt::format("{}\tdispatch\t{:#x}\t0x0\t{}\t{}\t{}\t0\t0x0\t0\t0\t0x0\t0\t0\t0x0\tgrid={}x{}x{} block={}x{}x{}\t{:016x}\t0000000000000000",
+            std::string resources;
+            if (diag.Inspecting(diag.ProgramKey(diag_code)) &&
+                (launch_description.const_buffer_enable_mask.Value() & 1)) {
+                const auto& buffer = launch_description.const_buffer_config[0];
+                const auto candidates = Diag::TextureDescriptorCandidates(
+                    memory_manager, "cs", 0, buffer.Address(), buffer.size.Value(), 0x80, 64,
+                    regs.tic.Address(), regs.tic.limit);
+                if (!candidates.empty()) {
+                    resources = " resources=[" + candidates + ']';
+                }
+            }
+            diag.Row(fmt::format("{}\tdispatch\t{:#x}\t0x0\t{}\t{}\t{}\t0\t0x0\t0\t0\t0x0\t0\t0\t0x0\tgrid={}x{}x{} block={}x{}x{}{}\t{:016x}\t0000000000000000",
                                  diag.NextSeq(), diag_code, outcome, diag_threads, diag_groups,
                                  launch_description.grid_dim_x.Value(), launch_description.grid_dim_y.Value(),
                                  launch_description.grid_dim_z.Value(), launch_description.block_dim_x.Value(),
                                  launch_description.block_dim_y.Value(), launch_description.block_dim_z.Value(),
-                                 diag.ProgramKey(diag_code)));
+                                 resources, diag.ProgramKey(diag_code)));
         }
     };
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z) {
@@ -1118,12 +1171,32 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
         }
         known->second = threshold && exponent;
+    }
+    bool signed_square = false;
+    if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan &&
+        shared_exponent_input && output->format == Texture::TextureFormat::B10G11R11) {
+        // Read only this allowlisted program's bounded length. Do not inspect adjacent shaders or
+        // classify a transfer function from a few constants. The hash covers every instruction.
+        if (memory_manager.IsFullyMappedRange(
+                program, VideoCommon::NativeUpscale::SignedSquareProgramBytes)) {
+            std::array<u8, VideoCommon::NativeUpscale::SignedSquareProgramBytes> bytes{};
+            memory_manager.ReadBlockUnsafe(program, bytes.data(), bytes.size());
+            signed_square = VideoCommon::NativeUpscale::UsesSignedSquare(
+                VideoCommon::NativeUpscale::ProgramKey(bytes), bytes.size(), input->format.Value(),
+                output->format.Value());
+            // Revalidate bytes on every matching-format fallback: GPU addresses may be reused for
+            // different programs. Do not cache a positive identification by address alone.
+        }
+    }
+    if (inserted) {
         LOG_INFO(HW_GPU, "Upscale fallback for program {:#x}: {}", program,
-                 known->second ? "decodes sRGB like the program" : "plain copy");
+                 signed_square ? "verified signed-square output conversion"
+                 : known->second ? "decodes sRGB like the program" : "plain copy");
     }
     const Fermi2D::Config config{
-        .operation = known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
-                                   : Fermi2D::Operation::SrcCopy,
+        .operation = signed_square ? Fermi2D::Operation::SrcCopySignedSquare
+                     : known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                     : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,

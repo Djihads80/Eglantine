@@ -33,6 +33,7 @@ add_executable(yuzu-cmd
     emu_window/emu_window_sdl3_vk.h
     nx2_sampler.cpp
     nx2_sampler.h
+    nx2_clock_audit.h
     sdl_config.cpp
     sdl_config.h
     yuzu.cpp

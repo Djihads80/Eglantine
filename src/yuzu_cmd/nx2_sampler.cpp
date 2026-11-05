@@ -6,13 +6,11 @@
 #ifdef _WIN32
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
-#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -20,17 +18,13 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
-#include <dbghelp.h>
 
 namespace Nx2Sampler {
 namespace {
 
-constexpr size_t MaxDepth = 40;
-
 struct Sample {
     unsigned thread;
-    unsigned depth;
-    std::array<DWORD64, MaxDepth> frames;
+    DWORD64 instruction_pointer;
 };
 
 struct Target {
@@ -117,88 +111,32 @@ std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
     return targets;
 }
 
-// Walks a suspended thread's stack from its context. Nothing here may allocate: the thread
-// could be paused holding the heap lock.
-unsigned Walk(CONTEXT context, std::array<DWORD64, MaxDepth>& frames) {
-    unsigned depth = 0;
-    while (depth < MaxDepth && context.Rip != 0) {
-        frames[depth++] = context.Rip;
-        DWORD64 image_base{};
-        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
-        if (function == nullptr) {
-            // A leaf function (no unwind data): its return address is on top of the stack. JIT
-            // code has none either; past the first frame, stop there.
-            if (depth != 1) {
-                break;
-            }
-            context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
-            context.Rsp += 8;
-            continue;
-        }
-        PVOID handler_data{};
-        DWORD64 establisher_frame{};
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
-                         &handler_data, &establisher_frame, nullptr);
-    }
-    return depth;
-}
-
+// Resolve only loaded-image addresses. Never inspect JIT unwind metadata or guess a
+// symbol from the nearest export; resolve executable RVAs with the matching linker map.
 struct Symbolizer {
-    using SymInitializeFn = BOOL(WINAPI*)(HANDLE, PCSTR, BOOL);
-    using SymSetOptionsFn = DWORD(WINAPI*)(DWORD);
-    using SymFromAddrFn = BOOL(WINAPI*)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
-
-    Symbolizer() {
-        const HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
-        if (dbghelp == nullptr) {
-            return;
-        }
-        const auto set_options =
-            reinterpret_cast<SymSetOptionsFn>(GetProcAddress(dbghelp, "SymSetOptions"));
-        const auto initialize =
-            reinterpret_cast<SymInitializeFn>(GetProcAddress(dbghelp, "SymInitialize"));
-        from_address = reinterpret_cast<SymFromAddrFn>(GetProcAddress(dbghelp, "SymFromAddr"));
-        if (set_options == nullptr || initialize == nullptr || from_address == nullptr) {
-            from_address = nullptr;
-            return;
-        }
-        set_options(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-        if (!initialize(GetCurrentProcess(), nullptr, TRUE)) {
-            from_address = nullptr;
-        }
-    }
-
     const std::string& Name(DWORD64 address) {
         const auto [it, is_new] = cache.try_emplace(address);
         if (!is_new) {
             return it->second;
         }
-        if (from_address != nullptr) {
-            alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 1024]{};
-            auto* const symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
-            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-            symbol->MaxNameLen = 1024;
-            DWORD64 displacement{};
-            if (from_address(GetCurrentProcess(), address, &displacement, symbol)) {
-                it->second.assign(symbol->Name, std::min<size_t>(symbol->NameLen, 160));
-                return it->second;
-            }
-        }
         HMODULE module{};
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                                reinterpret_cast<LPCSTR>(address), &module)) {
             char path[MAX_PATH] = "?";
             GetModuleFileNameA(module, path, sizeof(path));
             const char* base = std::strrchr(path, '\\');
-            it->second = std::string{base != nullptr ? base + 1 : path} + "!?";
+            char relative[24]{};
+            std::snprintf(relative, sizeof(relative), "+0x%llx",
+                          static_cast<unsigned long long>(
+                              address - reinterpret_cast<DWORD64>(module)));
+            FreeLibrary(module);
+            it->second = std::string{base != nullptr ? base + 1 : path} + relative;
         } else {
-            it->second = "(jit)";
+            it->second = "(jit/unmapped)";
         }
         return it->second;
     }
 
-    SymFromAddrFn from_address{};
     std::unordered_map<DWORD64, std::string> cache;
 };
 
@@ -209,28 +147,16 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
     if (file == nullptr) {
         return;
     }
+    std::fprintf(file, "# mode=rip-only; self samples only; no call-stack attribution\n");
     for (unsigned thread = 0; thread < targets.size(); ++thread) {
         std::map<std::string, unsigned> self;
-        std::map<std::string, unsigned> inclusive;
-        std::map<std::string, unsigned> self_caller;
         unsigned total = 0;
         for (const Sample& sample : samples) {
-            if (sample.thread != thread || sample.depth == 0) {
+            if (sample.thread != thread) {
                 continue;
             }
             ++total;
-            const std::string& top = symbolizer.Name(sample.frames[0]);
-            ++self[top];
-            if (sample.depth > 1) {
-                ++self_caller[top + "  <-  " + symbolizer.Name(sample.frames[1])];
-            }
-            std::set<std::string> seen;
-            for (unsigned i = 0; i < sample.depth; ++i) {
-                const std::string& name = symbolizer.Name(sample.frames[i]);
-                if (seen.insert(name).second) {
-                    ++inclusive[name];
-                }
-            }
+            ++self[symbolizer.Name(sample.instruction_pointer)];
         }
         const auto print = [&](const char* title, const std::map<std::string, unsigned>& counts,
                                size_t limit) {
@@ -248,20 +174,16 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
         };
         std::fprintf(file, "=== thread \"%s\": %u samples\n", targets[thread].name.c_str(), total);
         print("self (where the thread is)", self, 60);
-        print("self <- caller", self_caller, 50);
-        print("inclusive (on the stack)", inclusive, 90);
         std::fprintf(file, "\n");
     }
     std::fclose(file);
 
-    // <out>.folded: every distinct stack with its count, root first ("thread;a;b;c count").
+    // <out>.folded preserves the format, with exactly one sampled PC after the thread name.
     std::map<std::string, unsigned> folded;
     for (const Sample& sample : samples) {
         std::string line = targets[sample.thread].name;
-        for (unsigned i = sample.depth; i-- > 0;) {
-            line += ';';
-            line += symbolizer.Name(sample.frames[i]);
-        }
+        line += ';';
+        line += symbolizer.Name(sample.instruction_pointer);
         ++folded[line];
     }
     if (std::FILE* const out = std::fopen((std::string{path} + ".folded").c_str(), "w")) {
@@ -275,7 +197,7 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
 void Run(std::vector<std::string> patterns, double start, double seconds, std::string out) {
     std::this_thread::sleep_for(std::chrono::duration<double>(start));
     const std::vector<Target> targets = FindThreads(patterns);
-    std::fprintf(stderr, "nx2 sampler: %zu threads match, sampling %.0f s\n", targets.size(),
+    std::fprintf(stderr, "nx2 sampler: %zu threads match, sampling %.0f s (RIP only, no unwinding)\n", targets.size(),
                  seconds);
     if (targets.empty()) {
         return;
@@ -290,14 +212,15 @@ void Run(std::vector<std::string> patterns, double start, double seconds, std::s
             if (SuspendThread(handle) == static_cast<DWORD>(-1)) {
                 continue;
             }
+            // While suspended, call only the context/resume APIs. The target may hold
+            // heap or loader locks; storing and symbolizing the PC happens after resuming.
             CONTEXT context{};
-            context.ContextFlags = CONTEXT_FULL;
-            if (GetThreadContext(handle, &context)) {
-                Sample& sample = samples.emplace_back();
-                sample.thread = i;
-                sample.depth = Walk(context, sample.frames);
-            }
+            context.ContextFlags = CONTEXT_CONTROL;
+            const bool captured = GetThreadContext(handle, &context) != 0;
             ResumeThread(handle);
+            if (captured && context.Rip != 0) {
+                samples.push_back({i, context.Rip});
+            }
         }
         Sleep(1);
     }

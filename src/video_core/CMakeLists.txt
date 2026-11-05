@@ -18,10 +18,13 @@ add_library(video_core STATIC
     buffer_cache/buffer_cache_base.h
     buffer_cache/buffer_cache.cpp
     buffer_cache/buffer_cache.h
+    buffer_cache/buffer_copy_batch.h
+    buffer_cache/cpu_write_batch.h
     buffer_cache/memory_tracker_base.h
     buffer_cache/usage_tracker.h
     buffer_cache/virtual_range_cache.h
     buffer_cache/word_manager.h
+    buffer_cache/write_preserve_downloads.h
     cache_types.h
     capture.h
     cdma_pusher.cpp
@@ -39,6 +42,7 @@ add_library(video_core STATIC
     dirty_flags.h
     dma_pusher.cpp
     dma_pusher.h
+    nx2_command_trace.h
     engines/sw_blitter/blitter.cpp
     engines/sw_blitter/blitter.h
     engines/sw_blitter/converter.cpp
@@ -100,8 +104,11 @@ add_library(video_core STATIC
     fence_manager.h
     gpu.cpp
     gpu.h
+    nx2_command_writer_trace.h
+    nx2_cpu_write_trace.h
     gpu_split.cpp
     gpu_split.h
+    split_state_batch.h
     gpu_thread.cpp
     gpu_thread.h
     guest_memory.h
@@ -113,18 +120,26 @@ add_library(video_core STATIC
     nx2.h
     nx2_diag.h
     nx2_profile.h
+    native_storage_range_audit.h
+    native_proven_writes.h
+    native_proven_sync_audit.h
+    buffer_cache/proven_compute_writes.h
+    buffer_cache/proven_compute_sync.h
+    buffer_cache/cpu_upload_ranges.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
     query_cache/query_base.h
     query_cache/query_cache_base.h
     query_cache/query_cache.h
+    query_cache/query_read_sync.h
     query_cache/query_stream.h
     query_cache/types.h
     query_cache.h
     rasterizer_interface.h
     renderer_base.cpp
     renderer_base.h
+    composite_completion.h
 
     # Null
     renderer_null/null_rasterizer.cpp
@@ -205,6 +220,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_resource_pool.h
     renderer_vulkan/vk_scheduler.cpp
     renderer_vulkan/vk_scheduler.h
+    renderer_vulkan/submission_work.h
+    renderer_vulkan/vk_submission_timing.h
     renderer_vulkan/vk_shader_util.cpp
     renderer_vulkan/vk_shader_util.h
     renderer_vulkan/vk_staging_buffer_pool.cpp
@@ -229,6 +246,7 @@ add_library(video_core STATIC
     vulkan_common/vulkan_library.cpp
     vulkan_common/vulkan_library.h
     vulkan_common/vulkan_memory_allocator.cpp
+    vulkan_common/vulkan_allocation_diagnostics.h
     vulkan_common/vulkan_memory_allocator.h
     vulkan_common/vulkan_surface.cpp
     vulkan_common/vulkan_surface.h

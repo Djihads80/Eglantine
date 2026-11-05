@@ -20,6 +20,7 @@
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
 #include "video_core/gpu_split.h"
+#include "video_core/renderer_vulkan/submission_work.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -35,6 +36,7 @@ class Device;
 class Framebuffer;
 class GraphicsPipeline;
 class StateTracker;
+class SubmissionTiming;
 
 struct QueryCacheParams;
 
@@ -56,6 +58,9 @@ public:
     /// once); otherwise it goes with the next one. The back submits deferred work before it
     /// sleeps and when another thread asks (WaitSubmitted). True when the flush was deferred.
     bool DeferFlush();
+    /// Handles an automatic draw-counter flush request only when unsubmitted work remains.
+    /// Explicit fence submissions do not use this guard.
+    bool FlushPendingCommands();
     /// Submits deferred work (the split's back, from its idle hook).
     void FlushDeferred();
     /// Threads other than the split's back: waits until tick is submitted, asking the back to
@@ -124,6 +129,7 @@ public:
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
         }
+        submission_work.Record();
         if (chunk->Record(command)) {
             return;
         }
@@ -340,6 +346,7 @@ private:
 
     std::unique_ptr<MasterSemaphore> master_semaphore;
     std::unique_ptr<CommandPool> command_pool;
+    std::unique_ptr<SubmissionTiming> submission_timing;
 
     VideoCommon::QueryCacheBase<QueryCacheParams>* query_cache = nullptr;
 
@@ -347,6 +354,7 @@ private:
     vk::CommandBuffer current_upload_cmdbuf;
 
     DeferredClear deferred_clear;
+    SubmissionWork submission_work;
 
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;

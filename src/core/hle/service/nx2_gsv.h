@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <initializer_list>
+#include <functional>
+#include <string_view>
 #include <limits>
 #include <atomic>
 #include <deque>
@@ -28,6 +30,7 @@
 #include "common/alignment.h"
 #include "common/div_ceil.h"
 #include "common/game_presets.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -48,6 +51,7 @@
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_resource_limit.h"
 #include "core/hle/kernel/k_server_session.h"
+#include "core/hle/kernel/k_synchronization_object.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_readable_event.h"
@@ -69,6 +73,9 @@
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nx2_stub_interface.h"
+#include "core/hle/service/nx2_fence_wake.h"
+#include "core/hle/service/nx2_present_state.h"
+#include "core/hle/service/nx2_present_wait.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
@@ -190,7 +197,7 @@ private:
     void QueryCounter(HLERequestContext& ctx) {
         const u32 syncpoint = ~ctx.CommandBuffer()[2];
         const u64 value = syncpoint < HostSyncpoints
-                              ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(syncpoint)
+                              ? system.Host1x().GetSyncpointManager().GetCpuSyncpointValue(syncpoint)
                               : 0;
         LOG_DEBUG(Service, "nx2:syncpt 103 syncpoint={} value={:#x}", syncpoint, value);
         TipcReplyWords(ctx, {static_cast<u32>(value), static_cast<u32>(value >> 32), 0});
@@ -212,7 +219,7 @@ private:
     struct SlotRequest {
         u32 syncpoint{};
         std::atomic<bool> pending{};
-        Tegra::Host1x::SyncpointManager::ActionHandle handle{};
+        Tegra::Host1x::SyncpointManager::CpuActionHandle handle{};
     };
 
     // Outlives the session (actions hold a reference): signalling happens under `mutex` and only
@@ -250,9 +257,19 @@ private:
         request.syncpoint = syncpoint;
         request.pending = true;
         auto& manager = system.Host1x().GetSyncpointManager();
-        // The action runs on the GPU thread under the manager's lock, or inline if the value is
-        // already reached.
-        request.handle = manager.RegisterGuestAction(
+        // The action runs under the manager's lock (GPU/fencing thread), or inline if ready.
+        // Registration returns its domain so cancellation cannot target the wrong action list.
+        if (manager.UsesCpuGpuCompletion(syncpoint) &&
+            manager.GetGuestSyncpointValue(syncpoint) >= static_cast<u32>(value) &&
+            manager.GetHostSyncpointValue(syncpoint) < static_cast<u32>(value)) {
+            static std::atomic<u32> delayed_logs{};
+            if (delayed_logs.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_INFO(Service, "NX2 CPU completion: wait id={} target={} guest={} host={}",
+                         syncpoint, value, manager.GetGuestSyncpointValue(syncpoint),
+                         manager.GetHostSyncpointValue(syncpoint));
+            }
+        }
+        request.handle = manager.RegisterCpuAction(
             syncpoint, static_cast<u32>(value),
             [shared = m_shared, &kernel = system.Kernel(), &request, event] {
                 std::scoped_lock lk{shared->mutex};
@@ -287,12 +304,18 @@ private:
 
     /// Returns true if the request was still pending.
     bool Cancel(SlotRequest& request) {
-        if (request.pending.exchange(false)) {
-            system.Host1x().GetSyncpointManager().DeregisterGuestAction(request.syncpoint,
-                                                                        request.handle);
-            return true;
+        const bool was_pending = request.pending.exchange(false);
+        if (was_pending) {
+            system.Host1x().GetSyncpointManager().DeregisterCpuAction(request.syncpoint,
+                                                                     request.handle);
         }
-        return false;
+        // A callback clears pending before signalling. Quiesce that tail even when pending
+        // was already false, before the caller clears/reuses its event. Never hold this mutex
+        // during Deregister: manager callbacks acquire guard -> SharedState::mutex.
+        {
+            std::scoped_lock lk{m_shared->mutex};
+        }
+        return was_pending;
     }
 
     static constexpr u32 HostSyncpoints = 192; // Tegra::Host1x::SyncpointManager
@@ -1633,6 +1656,9 @@ public:
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
             {11, &INx2Vi2Session::ReturnEvent, "Unknown11"},
+            {21, &INx2Vi2Session::ReadPresentationNotifications, "ReadPresentationNotifications"},
+            {201, &INx2Vi2Session::RegisterPresentationLayer, "RegisterPresentationLayer"},
+            {202, &INx2Vi2Session::UnregisterPresentationLayer, "UnregisterPresentationLayer"},
             {31, &INx2Vi2Session::AcquireNativeEvent, "AcquireNativeEvent"},
             {32, &INx2Vi2Session::DuplicateNativeEvent, "DuplicateNativeEvent"},
             {261, &INx2Vi2Session::BindVsync, "BindDisplayVsyncEvent"},
@@ -1667,7 +1693,6 @@ public:
             {111, &INx2Vi2Session::StubReplyZeroed, "Unknown111"},
             {112, &INx2Vi2Session::StubReplyZeroed, "Unknown112"},
             {113, &INx2Vi2Session::StubReplyZeroed, "Unknown113"},
-            {202, &INx2Vi2Session::StubReplyZeroed, "Unknown202"},
             {230, &INx2Vi2Session::StubReplyZeroed, "Unknown230"},
             {231, &INx2Vi2Session::StubReplyZeroed, "Unknown231"},
             {232, &INx2Vi2Session::StubReplyZeroed, "Unknown232"},
@@ -1699,6 +1724,27 @@ public:
     }
 
     ~INx2Vi2Session() override {
+        std::vector<u32> counters;
+        size_t quarantined{};
+        {
+            std::scoped_lock lock{m_presentation->mutex};
+            m_presentation->alive = false;
+            m_presentation->event = nullptr;
+            counters = m_presentation->state.ReleasableCounters();
+            quarantined = m_presentation->state.Counters().size() - counters.size();
+        }
+        // Callbacks publish under the same mutex; none can increment an ID after this point.
+        // Retain NVDRV ownership instead of looking services up during service shutdown.
+        // Pending/faulted guest waiters can outlive this session. Their reserved IDs must not
+        // be reused to satisfy an unfinished old target; leave them reserved until NvCore dies.
+        if (quarantined != 0) {
+            LOG_WARNING(Service, "nx2:vi2 release-sync quarantined {} unfinished counters until shutdown",
+                        quarantined);
+        }
+        if (m_present_nvdrv) {
+            auto& allocator = m_present_nvdrv->GetModule()->GetContainer().GetSyncpointManager();
+            for (const auto counter : counters) allocator.FreeSyncpoint(counter);
+        }
         // The vsync callback may be running on the HostTiming thread: empty its event list under
         // its lock first (it holds the state, not this session), then close the events.
         {
@@ -1714,6 +1760,181 @@ public:
     }
 
 private:
+    static bool PresentationReleaseSyncEnabled() {
+        static const bool enabled = [] {
+            const auto* value = std::getenv("EDEN_NX2_PRESENT_RELEASE_SYNC");
+            return value && std::string_view{value} == "1";
+        }();
+        return enabled;
+    }
+
+    static void PresentationError(HLERequestContext& ctx, const char* detail) {
+        LOG_ERROR(Service, "nx2:vi2 release-sync command {} rejected: {}", ctx.GetCommand(), detail);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.PushRaw<u32>(ResultUnknown.raw);
+    }
+
+    struct PresentationShared {
+        std::mutex mutex;
+        bool alive{true};
+        Nx2::NativePresentState state;
+        Kernel::KEvent* event{};
+    };
+
+    Nvidia::NvCore::SyncpointManager* PresentationSyncpoints() {
+        if (!m_present_nvdrv) {
+            m_present_nvdrv = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", true);
+        }
+        return m_present_nvdrv ? &m_present_nvdrv->GetModule()->GetContainer().GetSyncpointManager()
+                              : nullptr;
+    }
+
+    void CollectPresentationCounters() {
+        std::vector<u32> counters;
+        {
+            std::scoped_lock lock{m_presentation->mutex};
+            counters = m_presentation->state.CollectRetiredCounters();
+        }
+        if (auto* manager = PresentationSyncpoints()) {
+            for (const auto id : counters) manager->FreeSyncpoint(id);
+        }
+    }
+
+    // TIPC201 binds the caller's two notification indices to its full layer token. The SDK
+    // waits on the second index when no presentation credit remains; it is separate from vsync.
+    void RegisterPresentationLayer(HLERequestContext& ctx) {
+        if (!PresentationReleaseSyncEnabled()) {
+            StubReplyZeroed(ctx);
+            return;
+        }
+        const auto* w = ctx.CommandBuffer();
+        if (w[0] != 217 || w[1] != 4 || !system.GPU().Renderer().SupportsCompositeCompletion()) {
+            PresentationError(ctx, "unsupported layer packet or renderer completion");
+            return;
+        }
+        CollectPresentationCounters();
+        auto* allocator = PresentationSyncpoints();
+        if (!allocator) {
+            PresentationError(ctx, "syncpoint allocator unavailable");
+            return;
+        }
+        const auto allocated = allocator->TryAllocateSyncpoint(true);
+        if (!allocated) {
+            PresentationError(ctx, "no valid release counter");
+            return;
+        }
+        const u32 counter = *allocated;
+        const u64 token = u64{w[2]} | (u64{w[3]} << 32);
+        const u32 base = system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(counter);
+        bool registered;
+        {
+            std::scoped_lock lock{m_presentation->mutex};
+            registered = m_presentation->state.Register(token, w[4], w[5], counter, base);
+        }
+        if (!registered) {
+            allocator->FreeSyncpoint(counter);
+            PresentationError(ctx, "invalid or duplicate layer/notification binding");
+            return;
+        }
+        // A reused layer token must establish a new successful reply before opting into overlap.
+        m_last_release_reply.reset();
+        LOG_INFO(Service, "nx2:vi2 release-sync layer {:#x}, credit notification {}, counter {}, capacity {}",
+                 token, w[5], counter, Nx2::NativePresentState::CreditCount);
+        TipcReplyWords(ctx, {});
+    }
+
+    void UnregisterPresentationLayer(HLERequestContext& ctx) {
+        if (!PresentationReleaseSyncEnabled()) {
+            StubReplyZeroed(ctx);
+            return;
+        }
+        const auto* w = ctx.CommandBuffer();
+        const u64 token = u64{w[2]} | (u64{w[3]} << 32);
+        std::optional<std::array<u32, 2>> last;
+        if (w[0] == 218 && w[1] == 2) {
+            std::scoped_lock lock{m_presentation->mutex};
+            last = m_presentation->state.LastRelease(token);
+        }
+        if (!last || !WaitForFrame((*last)[0], (*last)[1])) {
+            PresentationError(ctx, "cannot unregister before all image releases complete");
+            return;
+        }
+        bool removed{};
+        if (w[0] == 218 && w[1] == 2) {
+            std::scoped_lock lock{m_presentation->mutex};
+            removed = m_presentation->state.Unregister(token);
+        }
+        if (!removed) {
+            PresentationError(ctx, "unknown layer or invalid unregister packet");
+            return;
+        }
+        m_last_release_reply.reset();
+        CollectPresentationCounters();
+        TipcReplyWords(ctx, {});
+    }
+
+    // The SDK clears TIPC11's SystemEvent before draining these 1024 bits via a B descriptor.
+    // A completion after this atomic drain sets a fresh bit and signals the event again.
+    void ReadPresentationNotifications(HLERequestContext& ctx) {
+        if (!PresentationReleaseSyncEnabled()) {
+            StubReplyZeroed(ctx);
+            return;
+        }
+        const auto* w = ctx.CommandBuffer();
+        if (w[0] != 0x01000025 || w[1] != 0 || !ctx.CanWriteBuffer() ||
+            ctx.GetWriteBufferSize() != sizeof(Nx2::NativePresentState::Notifications)) {
+            PresentationError(ctx, "notification output must be a 128-byte receive buffer");
+            return;
+        }
+        Nx2::NativePresentState::Notifications bits;
+        {
+            std::scoped_lock lock{m_presentation->mutex};
+            bits = m_presentation->state.TakeNotifications();
+        }
+        if (ctx.WriteBuffer(bits) != sizeof(bits)) {
+            std::scoped_lock lock{m_presentation->mutex};
+            m_presentation->state.RestoreNotifications(bits);
+            if (m_presentation->event) m_presentation->event->Signal(system.Kernel());
+            PresentationError(ctx, "notification output failed");
+            return;
+        }
+        if (++m_notification_reads <= 8) {
+            LOG_INFO(Service, "nx2:vi2 release-sync notification drain #{} words0/1={:#x}/{:#x}",
+                     m_notification_reads, bits[0], bits[1]);
+        }
+        TipcReplyWords(ctx, {});
+    }
+
+    std::function<void(bool)> PresentationCompletion(const Nx2::NativePresentState::Ticket& ticket) {
+        return [weak = std::weak_ptr{m_presentation}, ticket,
+                syncpoints = &system.Host1x().GetSyncpointManager(), kernel = &system.Kernel()]
+               (bool completed) {
+            const auto shared = weak.lock();
+            if (!shared) return;
+            std::scoped_lock lock{shared->mutex};
+            if (!shared->alive) return;
+            const auto result = shared->state.Complete(ticket, completed);
+            if (!result.accepted) return;
+            if (result.failed) {
+                LOG_ERROR(Service, "nx2:vi2 composition failed/cancelled: image {}, generation {}, release {} not signalled",
+                          ticket.image, ticket.generation, ticket.value);
+            }
+            // This private, client-managed counter is consumed through the SDK syncpt service
+            // and native shim. No synthetic host-min updates or incomplete GPU success.
+            for (u32 i = 0; i < result.increments; ++i) syncpoints->IncrementGuest(result.counter);
+            if (ticket.sequence <= 8 || ticket.sequence % 600 == 0) {
+                LOG_INFO(Service, "nx2:vi2 release-sync ticket {} generation {} image {} credit {} completed={} counter {} now {} prefix increments {}",
+                         ticket.sequence, ticket.generation, ticket.image, ticket.credit, completed,
+                         ticket.counter, syncpoints->GetGuestSyncpointValue(ticket.counter), result.increments);
+            }
+            if (shared->event && shared->state.HasNotifications()) shared->event->Signal(*kernel);
+        };
+    }
+
+    std::shared_ptr<PresentationShared> m_presentation = std::make_shared<PresentationShared>();
+    std::shared_ptr<Nvidia::NVDRV> m_present_nvdrv;
+    u32 m_notification_reads{};
+
     void Handshake(HLERequestContext& ctx) {
         TipcHandshake(ctx, "nx2:vi2");
     }
@@ -1723,6 +1944,14 @@ private:
     // at once (changes.patch's default mask is 0x7fff).
     void PresentClientBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
+        std::optional<Nx2::NativePresentRequest> request;
+        if (PresentationReleaseSyncEnabled()) {
+            request = Nx2::NativePresentRequest::Parse(std::span<const u32>{w, 26});
+            if (!request || !system.GPU().Renderer().SupportsCompositeCompletion()) {
+                PresentationError(ctx, "unsupported present packet, sync handle or renderer");
+                return;
+            }
+        }
         ++m_presents;
         Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed);
         if (m_presents <= 4 || (m_presents % 600) == 0) {
@@ -1750,6 +1979,7 @@ private:
             frames_ahead = 0;
         }
         const auto entered = std::chrono::steady_clock::now();
+        bool waited_successfully = true;
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
@@ -1764,17 +1994,56 @@ private:
             const bool gpu_behind = frames_ahead == 1 && m_previous_fence_id < 192 &&
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
-            WaitForFrame(m_previous_fence_id, m_previous_fence_value);
-            if (gpu_behind) {
-                WaitForFrame(~w[22], w[24]);
+            static const bool previous_only = [] {
+                const char* value = std::getenv("EDEN_NX2_PRESENT_PREVIOUS_ONLY");
+                return Nx2::PreviousPresentOnlyEnabled(value ? value : "");
+            }();
+            const Nx2::PresentFence previous{m_previous_fence_id, m_previous_fence_value};
+            const Nx2::PresentFence current{~w[22], w[24]};
+            const bool omit_current = gpu_behind && Nx2::CanOmitCurrentPresentWait(
+                previous_only, system.GetApplicationProcessProgramID(), frames_ahead,
+                request ? request->layer : 0, previous, current, m_last_release_reply);
+            waited_successfully = Nx2::WaitForPresentFences(
+                previous, current, gpu_behind && !omit_current,
+                [this](Nx2::PresentFence fence) { return WaitForFrame(fence.id, fence.value); });
+            if (omit_current) {
+                ++m_previous_only_waits;
+                if (m_previous_only_waits <= 8 || (m_presents % 600) == 0) {
+                    LOG_INFO(Service,
+                             "nx2:vi2 experimental previous-only present #{}: omitted {} extra "
+                             "current waits, previous ({}, {}) ready={}, current ({}, {})",
+                             m_presents, m_previous_only_waits, previous.id, previous.value,
+                             waited_successfully, current.id, current.value);
+                }
             }
         } else if (frames_ahead == 0) {
-            WaitForFrame(~w[22], w[24]);
+            waited_successfully = WaitForFrame(~w[22], w[24]);
+        }
+        if (request && !waited_successfully) {
+            PresentationError(ctx, "render fence did not complete before the existing deadline");
+            return;
         }
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
-        Composite(w[5], ~w[22], w[24], w[7]);
+        std::optional<Nx2::NativePresentState::Ticket> ticket;
+        if (request) {
+            std::scoped_lock lock{m_presentation->mutex};
+            ticket = m_presentation->state.Submit(*request);
+            if (!ticket) {
+                PresentationError(ctx, "unknown/faulted layer, busy credit or exhausted release counter");
+                return;
+            }
+        }
+        const bool queued = Composite(w[5], ~w[22], w[24], w[7],
+                                      ticket ? PresentationCompletion(*ticket) : std::function<void(bool)>{},
+                                      ticket ? ticket->ordering_key : 0);
+        if (ticket && !queued) {
+            std::scoped_lock lock{m_presentation->mutex};
+            m_presentation->state.AbortUnpublished(*ticket);
+            PresentationError(ctx, "image or its device mapping could not be composed");
+            return;
+        }
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
@@ -1797,7 +2066,7 @@ private:
             }
             if (m_stats.last_present != std::chrono::steady_clock::time_point{}) {
                 const long long frame = to_us(entered - m_stats.last_present);
-                m_stats.frame_us += frame;
+                m_stats.frame_intervals.Add(frame);
                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
             }
@@ -1807,11 +2076,27 @@ private:
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
                          "pacing {} us, {} ran a frame ahead",
-                         m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
+                         m_stats.frame_intervals.MeanMicroseconds(), m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead);
                 m_stats = {.last_present = entered};
             }
+        }
+        if (ticket) {
+            std::scoped_lock lock{m_presentation->mutex};
+            const auto available = m_presentation->state.Available(request->layer);
+            if (!available) {
+                PresentationError(ctx, "composition failed before its reply");
+                return;
+            }
+            if (ticket->sequence <= 8 || ticket->sequence % 600 == 0) {
+                LOG_INFO(Service, "nx2:vi2 release-sync reserved layer {:#x} ticket {} image {} credit {} counter {} target {} available {:#x}",
+                         request->layer, ticket->sequence, ticket->image, ticket->credit,
+                         ticket->counter, ticket->value, *available);
+            }
+            m_last_release_reply = Nx2::PresentReplyFence{request->layer, {~w[22], w[24]}};
+            TipcReplyWords(ctx, ticket->Reply(*available));
+            return;
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
@@ -1825,13 +2110,16 @@ private:
     // rewrites command memory it hasn't read yet.
     u32 m_wait_timeouts{};
     struct PresentStats {
-        long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
+        Nx2::PresentIntervalAccumulator frame_intervals;
+        long long fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
         u32 presents{}, ran_ahead{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
+    std::optional<Nx2::PresentReplyFence> m_last_release_reply;
+    u64 m_previous_only_waits{};
 
     // The console flips one frame per 60 Hz vblank and keeps the rest queued, so a game can't
     // present faster than that. Every slot is reported free here: hold each present until the
@@ -1894,8 +2182,68 @@ private:
         const auto start = std::chrono::steady_clock::now();
         // Long enough to cover shader/pipeline compile stalls: a game that gets more than a few
         // command buffers ahead misses the equal-value gates its other channels acquire.
-        const auto deadline = start + std::chrono::milliseconds{4000};
-        if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+        // A diagnostic capture may pause GPU submission for longer than the normal deadline.
+        static const auto timeout = std::chrono::milliseconds{[] {
+            const char* value = std::getenv("EDEN_NX2_CAPTURE_FENCE_TIMEOUT_MS");
+            return Nx2::CaptureFenceTimeoutMilliseconds(value ? value : "");
+        }()};
+        const auto deadline = start + timeout;
+        static const bool cooperative_wait = [] {
+            const char* value = std::getenv("EDEN_NX2_COOPERATIVE_PRESENT");
+            const bool enabled = value != nullptr && value[0] == '1';
+            if (enabled) {
+                LOG_INFO(Service, "nx2:vi2 cooperative present fence waits enabled");
+            }
+            return enabled;
+        }();
+        if (cooperative_wait && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            auto* event = m_context.CreateEvent("nx2:vi2:PresentFence");
+            std::shared_ptr<Nx2::FenceWake> wake;
+            SCOPE_EXIT {
+                if (wake) {
+                    wake->Cancel();
+                }
+                m_context.CloseEvent(event);
+            };
+            if (event != nullptr) {
+                wake = std::make_shared<Nx2::FenceWake>([event, &kernel = system.Kernel()] {
+                    static_cast<void>(event->Signal(kernel));
+                });
+                // Register before waiting: KEvent retains even an inline notification.
+                syncpoints.RegisterGuestAction(fence_id, fence_value, Nx2::FenceWake::Callback(wake));
+            }
+            bool gpu_waited = false;
+            while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline) {
+                    break;
+                }
+                if (unless_gpu_waits) {
+                    gpu_waited |= system.GPU().HasSuspendedChannels();
+                    if (gpu_waited && now - start > std::chrono::milliseconds{3}) {
+                        return false;
+                    }
+                }
+                const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now);
+                const auto interval = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::milliseconds{unless_gpu_waits || event == nullptr ? 1 : 50});
+                const s64 timeout_tick = kernel.HardwareTimer().GetTick() +
+                                         std::min(remaining, interval).count() + 2;
+                Result result;
+                if (event != nullptr) {
+                    Kernel::KSynchronizationObject* object = &event->GetReadableEvent();
+                    s32 index = -1;
+                    result = Kernel::KSynchronizationObject::Wait(kernel, &index, &object, 1,
+                                                                   timeout_tick);
+                } else {
+                    // Resource exhaustion must not turn an unreached fence into success.
+                    result = Kernel::GetCurrentThread(kernel).Sleep(kernel, timeout_tick);
+                }
+                if (result == Kernel::ResultTerminationRequested || result == Kernel::ResultCancelled) {
+                    return false;
+                }
+            }
+        } else if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
             // about 1 ms per check on Windows, added to every frame. An action left registered
             // after a timeout fires later on a state nobody waits on.
@@ -1932,8 +2280,9 @@ private:
             return false;
         }
         if (!syncpoints.IsReadyGuest(fence_id, fence_value) && m_wait_timeouts++ < 64) {
-            LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
-                        m_presents, fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
+            LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in {} ms (now {})",
+                        m_presents, fence_id, fence_value, timeout.count(),
+                        syncpoints.GetGuestSyncpointValue(fence_id));
         }
         if (m_presents <= 8 || (m_presents % 600) == 0) {
             LOG_INFO(Service, "nx2:vi2 present #{} fence ({}, {}) now {}, waited {} us",
@@ -1950,7 +2299,8 @@ private:
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
+    bool Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size,
+                   std::function<void(bool)> completion = {}, u64 ordering_key = 0) {
         u64 address{};
         Nx2ImageLayout layout{};
         u32 image_format{};
@@ -1958,21 +2308,29 @@ private:
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
             if (image == m_objects->images.end()) {
-                return;
+                return false;
             }
             const auto memory = m_objects->memories.find(image->second.memory);
             if (memory == m_objects->memories.end() || memory->second.address == 0) {
-                return;
+                return false;
             }
             address = memory->second.address;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
             image_format = image->second.preference[6];
+            if (completion) {
+                // The tracked path must reject an invalid backing range before handing out a fence.
+                const auto offset = image->second.offset;
+                if ((image_format != 1 && image_format != 4) || offset > memory->second.size ||
+                    layout.size > memory->second.size - offset ||
+                    offset > std::numeric_limits<u64>::max() - address) return false;
+                address += offset;
+            }
         }
         const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address);
         if (!device) {
             LOG_WARNING(Service, "nx2:vi2 present: image {} at {:#x} has no device mapping",
                         image_id, address);
-            return;
+            return false;
         }
         u32 crop_width = layout.width;
         u32 crop_height = layout.height;
@@ -2038,12 +2396,14 @@ private:
         if (fence_id < 192) {
             fences.push_back({static_cast<s32>(fence_id), fence_value});
         }
-        system.GPU().RequestComposite(std::move(layers), std::move(fences));
+        system.GPU().RequestComposite(std::move(layers), std::move(fences),
+                                      std::move(completion), ordering_key);
         CaptureFrame();
         DumpRanges();
         system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
         system.GetPerfStats().EndSystemFrame();
         system.GetPerfStats().BeginSystemFrame();
+        return true;
     }
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
@@ -2133,6 +2493,19 @@ private:
 
     // 228(u64 token, u32 slot): return a buffer without presenting it.
     void CancelClientBuffer(HLERequestContext& ctx) {
+        if (PresentationReleaseSyncEnabled()) {
+            const auto* w = ctx.CommandBuffer();
+            const u64 token = u64{w[2]} | (u64{w[3]} << 32);
+            std::scoped_lock lock{m_presentation->mutex};
+            if (w[0] != 244 || w[1] != 19 ||
+                !m_presentation->state.CancelCredit(token, static_cast<u8>(w[4]))) {
+                PresentationError(ctx, "unknown layer, busy credit or invalid cancel packet");
+                return;
+            }
+            const auto available = *m_presentation->state.Available(token);
+            TipcReplyWords(ctx, {static_cast<u32>(available), static_cast<u32>(available >> 32), 0, 0, 0, 0});
+            return;
+        }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
                              static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
@@ -2168,6 +2541,17 @@ private:
     // a second until some are set; it only got going because the auto stub's reply happened to
     // hold non-zero leftovers. Report the same slots 228/229 hand back.
     void GetLayerBufferBits(HLERequestContext& ctx) {
+        if (PresentationReleaseSyncEnabled()) {
+            const auto* w = ctx.CommandBuffer();
+            std::scoped_lock lock{m_presentation->mutex};
+            const auto available = m_presentation->state.Available(u64{w[2]} | (u64{w[3]} << 32));
+            if (w[0] != 228 || w[1] != 2 || !available) {
+                PresentationError(ctx, "unknown/faulted layer or invalid availability packet");
+                return;
+            }
+            TipcReplyWords(ctx, {static_cast<u32>(*available), static_cast<u32>(*available >> 32)});
+            return;
+        }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots), static_cast<u32>(AvailableSlots >> 32)});
     }
@@ -2207,6 +2591,28 @@ private:
     }
 
     void ReturnEvent(HLERequestContext& ctx) {
+        if (PresentationReleaseSyncEnabled()) {
+            const auto* w = ctx.CommandBuffer();
+            if (w[0] != 27 || w[1] != 1 || w[2] >= 1024) {
+                PresentationError(ctx, "invalid aggregate notification event packet");
+                return;
+            }
+            std::scoped_lock lock{m_presentation->mutex};
+            auto*& event = m_presentation->event;
+            if (!event) {
+                event = m_context.CreateEvent("nx2:vi2:PresentationNotifications");
+                if (!event) {
+                    PresentationError(ctx, "notification event allocation failed");
+                    return;
+                }
+                m_events.push_back(event);
+            }
+            if (m_presentation->state.HasNotifications()) event->Signal(system.Kernel());
+            IPC::ResponseBuilder rb{ctx, 2, 1, 0};
+            rb.PushRaw<u32>(ResultSuccess.raw);
+            rb.PushCopyObjects(ctx, event->GetReadableEvent());
+            return;
+        }
         LOG_WARNING(Service, "(STUBBED) nx2:vi2 TIPC {} [2]={:#x} [3]={:#x}, returning an event",
                     ctx.GetCommand(), ctx.CommandBuffer()[2], ctx.CommandBuffer()[3]);
         auto* event = m_context.CreateEvent(fmt::format("nx2:vi2:Event{}", m_events.size()));
@@ -3277,12 +3683,13 @@ private:
         rb.PushCopyObjects(ctx, m_syncpt_events[1]->GetReadableEvent());
     }
 
-    // Mirrors Eden's guest syncpoint values into the shared RO page. Returns true if any changed.
+    // CPU wait provider: same counter domain as QueryCounter and slot events.
+    // GPU shims and WaitForFrame continue reading Guest directly.
     bool UpdateSyncptValues() {
         auto& manager = system.Host1x().GetSyncpointManager();
         bool changed = false;
         for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
-            const u64 value = manager.GetGuestSyncpointValue(id);
+            const u64 value = manager.GetCpuSyncpointValue(id);
             const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
             if (m_syncpt_memory->Read64(address) != value) {
                 m_syncpt_memory->Write64(address, value);

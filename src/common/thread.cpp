@@ -20,8 +20,13 @@
 #elif defined(__HAIKU__)
 #include <kernel/OS.h>
 #elif defined(_WIN32)
+#include <array>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <windows.h>
 #include "common/string_util.h"
+#include "common/windows/cpu_sets.h"
 #include "common/windows/timer_resolution.h"
 #else
 #if defined(__FreeBSD__)
@@ -35,6 +40,113 @@
 #endif
 #include <pthread.h>
 #include <sched.h>
+#endif
+
+#ifdef _WIN32
+namespace {
+void SetWindowsThreadToPerformanceCores() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PCORES");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    if (!enabled) {
+        return;
+    }
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    static const auto get_info = reinterpret_cast<decltype(&GetSystemCpuSetInformation)>(
+        GetProcAddress(kernel, "GetSystemCpuSetInformation"));
+    static const auto get_defaults = reinterpret_cast<decltype(&GetProcessDefaultCpuSets)>(
+        GetProcAddress(kernel, "GetProcessDefaultCpuSets"));
+    static const auto get_selected = reinterpret_cast<decltype(&GetThreadSelectedCpuSets)>(
+        GetProcAddress(kernel, "GetThreadSelectedCpuSets"));
+    static const auto set_selected = reinterpret_cast<decltype(&SetThreadSelectedCpuSets)>(
+        GetProcAddress(kernel, "SetThreadSelectedCpuSets"));
+    if (!get_info || !get_defaults || !get_selected || !set_selected) {
+        return;
+    }
+
+    const HANDLE process = GetCurrentProcess();
+    const HANDLE thread = GetCurrentThread();
+    ULONG selected_count{};
+    if (!get_selected(thread, nullptr, 0, &selected_count) || selected_count != 0) {
+        return; // Preserve an explicit thread CPU Set policy supplied by another component.
+    }
+    std::array<USHORT, 64> groups{};
+    USHORT group_count = static_cast<USHORT>(groups.size());
+    GROUP_AFFINITY affinity{};
+    DWORD_PTR process_mask{}, system_mask{};
+    // GetProcessAffinityMask is ambiguous for a multi-group process. Leave those systems
+    // unrestricted until that topology has a separately validated placement policy.
+    if (!GetProcessGroupAffinity(process, &group_count, groups.data()) || group_count != 1 ||
+        !GetThreadGroupAffinity(thread, &affinity) || affinity.Group != groups[0] ||
+        affinity.Group >= GetActiveProcessorGroupCount() ||
+        !GetProcessAffinityMask(process, &process_mask, &system_mask)) {
+        return;
+    }
+    ULONG default_count{};
+    if (!get_defaults(process, nullptr, 0, &default_count) &&
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return;
+    }
+    if (default_count > 64) {
+        return;
+    }
+    std::vector<ULONG> default_ids(default_count);
+    if (default_count != 0 &&
+        !get_defaults(process, default_ids.data(), default_count, &default_count)) {
+        return;
+    }
+    default_ids.resize(default_count);
+    const std::vector<u32> defaults(default_ids.begin(), default_ids.end());
+
+    ULONG bytes{};
+    get_info(nullptr, 0, &bytes, process, 0);
+    if (bytes == 0 || bytes > 1024 * 1024) {
+        return;
+    }
+    std::vector<u8> buffer(bytes);
+    if (!get_info(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), bytes, &bytes,
+                  process, 0) || bytes > buffer.size()) {
+        return;
+    }
+    std::vector<Common::Windows::CpuSet> topology;
+    for (size_t offset = 0; offset < bytes;) {
+        if (bytes - offset < 2 * sizeof(DWORD)) {
+            return;
+        }
+        SYSTEM_CPU_SET_INFORMATION info{};
+        std::memcpy(&info, buffer.data() + offset, 2 * sizeof(DWORD));
+        if (info.Size < 2 * sizeof(DWORD) || info.Size > bytes - offset) {
+            return;
+        }
+        if (info.Type == CpuSetInformation) {
+            if (info.Size < sizeof(info)) {
+                return;
+            }
+            std::memcpy(&info, buffer.data() + offset, sizeof(info));
+            const auto& cpu = info.CpuSet;
+            topology.push_back({cpu.Id, cpu.Group, cpu.LogicalProcessorIndex,
+                                cpu.EfficiencyClass,
+                                cpu.Allocated != 0 && cpu.AllocatedToTargetProcess == 0});
+        }
+        offset += info.Size;
+    }
+    const auto selected = Common::Windows::SelectPerformanceCpuSets(
+        topology, affinity.Group, static_cast<u64>(affinity.Mask & process_mask), defaults);
+    if (selected.empty()) {
+        return;
+    }
+    // Parked is transient: let Windows unpark selected cores instead of excluding them.
+    const std::vector<ULONG> ids(selected.begin(), selected.end());
+    if (!set_selected(thread, ids.data(), static_cast<ULONG>(ids.size()))) {
+        LOG_WARNING(Common, "EDEN_NX2_PCORES: thread {} CPU Set selection failed: {}",
+                    GetCurrentThreadId(), GetLastError());
+        return;
+    }
+    LOG_INFO(Common, "EDEN_NX2_PCORES: thread {} selected {} performance CPU Sets in group {}",
+             GetCurrentThreadId(), ids.size(), affinity.Group);
+}
+} // Anonymous namespace
 #endif
 
 #ifndef _WIN32
@@ -504,7 +616,7 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 }
 
 void SetCurrentThreadName(const char* name) {
-#ifdef _MSC_VER
+#ifdef _WIN32
     // Sets the debugger-visible name of the current thread.
     if (auto pf = (decltype(&SetThreadDescription))(void*)GetProcAddress(GetModuleHandle(TEXT("KernelBase.dll")), "SetThreadDescription"); pf)
         pf(GetCurrentThread(), UTF8ToUTF16W(name).data()); // Windows 10+
@@ -529,18 +641,15 @@ void SetCurrentThreadName(const char* name) {
         buf[len] = '\0';
         pthread_setname_np(pthread_self(), buf);
     }
-#elif defined(_WIN32)
-    // MinGW with the POSIX threading model does not support pthread_setname_np
-    // See for reference
-    // https://gitlab.freedesktop.org/mesa/mesa/-/blame/main/src/util/u_thread.c?ref_type=heads#L75
-    (void)name;
 #else
     pthread_setname_np(pthread_self(), name);
 #endif
 }
 
 void SetCurrentThreadToPerformanceCores() {
-#if defined(__ANDROID__)
+#if defined(_WIN32)
+    SetWindowsThreadToPerformanceCores();
+#elif defined(__ANDROID__)
     if (ADPF::AddCurrentThread(ADPF::Session::Render)) {
         SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
         return;

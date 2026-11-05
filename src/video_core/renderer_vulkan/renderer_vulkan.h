@@ -12,6 +12,7 @@
 
 #include "common/dynamic_library.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/composite_completion.h"
 #include "video_core/renderer_base.h"
 #ifdef HAS_LSFG
 #include "video_core/renderer_vulkan/present/frame_gen.h"
@@ -48,6 +49,12 @@ public:
     ~RendererVulkan() override;
 
     void Composite(std::span<const Tegra::FramebufferConfig> framebuffers) override;
+    bool SupportsCompositeCompletion() const override {
+        return true;
+    }
+    void CompositeWithCompletion(std::span<const Tegra::FramebufferConfig> framebuffers,
+                                 std::function<void(bool)> completion) override;
+    void CancelCompositeCompletions() override;
 
     std::vector<u8> GetAppletCaptureBuffer() override;
 
@@ -63,6 +70,10 @@ public:
     void InitializePlatformSpecific();
 
 private:
+    void CompositeImpl(std::span<const Tegra::FramebufferConfig> framebuffers,
+                       std::shared_ptr<VideoCore::CompositeCompletion> completion = {});
+    void QueueCompositeCompletion(u64 tick,
+                                  std::shared_ptr<VideoCore::CompositeCompletion> completion);
     void InterpolateFrames(Frame* prev_frame, Frame* curr_frame);
     Frame* previous_frame = nullptr;  // Store the previous frame for interpolation
     VkCommandBuffer BeginSingleTimeCommands();
@@ -110,6 +121,8 @@ private:
     std::optional<TurboMode> turbo_mode;
 
     Frame applet_frame;
+    // Last member: its worker is also stopped explicitly before Scheduler/device destruction.
+    VideoCore::CompositeCompletionQueue composite_completions;
 };
 
 } // namespace Vulkan

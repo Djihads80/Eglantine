@@ -19,6 +19,8 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_handle_program.h"
+#include "video_core/native_storage_range_audit.h"
+#include "video_core/native_proven_writes.h"
 #include "video_core/shader_notify.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -39,11 +41,16 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  Common::ThreadWorker* thread_worker,
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
-                                 vk::ShaderModule spv_module_, u64 shader_hash_)
+                                 vk::ShaderModule spv_module_, u64 shader_hash_,
+                                 std::vector<Shader::StorageWriteBounds::DescriptorProof> write_proofs_,
+                                 std::vector<Shader::StorageWriteBounds::DescriptorAccessProof> access_proofs_,
+                                 std::array<u32, 3> compiled_workgroup_size_)
     : device{device_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
-      shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
+      shader_hash{shader_hash_}, write_proofs{std::move(write_proofs_)},
+      access_proofs{std::move(access_proofs_)},
+      compiled_workgroup_size{compiled_workgroup_size_}, spv_module(std::move(spv_module_)) {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -164,13 +171,49 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 BufferCache& buffer_cache, TextureCache& texture_cache) {
     guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
 
+    VideoCommon::NativeStorageRangeAudit::Scope range_audit{shader_hash, kepler_compute.IsNativeMode(),
+        kepler_compute.regs.code_loc.Address() + kepler_compute.launch_description.program_start,
+        diagnostic_native_key};
+    if (range_audit) {
+        const auto& launch = kepler_compute.launch_description;
+        const u32 flags = (info.native_global_bounds ? 1U : 0U) |
+                          (info.uses_global_memory ? 2U : 0U) |
+                          (kepler_compute.GetIndirectComputeAddress().has_value() ? 4U : 0U);
+        const auto written = std::count_if(info.storage_buffers_descriptors.begin(),
+            info.storage_buffers_descriptors.end(), [](const auto& desc) { return desc.is_written; });
+        range_audit.Dispatch(flags, static_cast<u32>(written),
+            {launch.grid_dim_x.Value(), launch.grid_dim_y.Value(), launch.grid_dim_z.Value(),
+             launch.block_dim_x.Value(), launch.block_dim_y.Value(), launch.block_dim_z.Value()});
+    }
     buffer_cache.SetComputeUniformBufferState(info.constant_buffer_mask, &uniform_buffer_sizes);
     buffer_cache.UnbindComputeStorageBuffers();
+    const auto& proof_launch = kepler_compute.launch_description;
+    const std::array<u32, 3> launch_local{proof_launch.block_dim_x.Value(),
+        proof_launch.block_dim_y.Value(), proof_launch.block_dim_z.Value()};
+    const Shader::StorageWriteBounds::Dispatch write_dispatch{
+        {proof_launch.grid_dim_x.Value(), proof_launch.grid_dim_y.Value(), proof_launch.grid_dim_z.Value()},
+        compiled_workgroup_size,
+        !kepler_compute.GetIndirectComputeAddress().has_value() && launch_local == compiled_workgroup_size};
+    const bool use_write_proofs = VideoCommon::NativeProvenWrites::Enabled() &&
+        kepler_compute.IsNativeMode() && write_proofs.size() == info.storage_buffers_descriptors.size() &&
+        info.image_descriptors.empty() && info.image_buffer_descriptors.empty();
+    const bool use_access_proofs = VideoCommon::NativeProvenWrites::SyncEnabled() &&
+        kepler_compute.IsNativeMode() && access_proofs.size() == info.storage_buffers_descriptors.size() &&
+        info.image_descriptors.empty() && info.image_buffer_descriptors.empty() &&
+        info.texture_descriptors.empty() && info.texture_buffer_descriptors.empty();
     size_t ssbo_index{};
     for (const auto& desc : info.storage_buffers_descriptors) {
         ASSERT(desc.count == 1);
+        if (range_audit) {
+            const auto& cbufs = kepler_compute.launch_description.const_buffer_config;
+            range_audit.Binding(desc.cbuf_index, desc.cbuf_offset, desc.is_written,
+                desc.cbuf_index < cbufs.size() ? cbufs[desc.cbuf_index].size.Value() : 0U);
+        }
         buffer_cache.BindComputeStorageBuffer(ssbo_index, desc.cbuf_index, desc.cbuf_offset,
-                                              desc.is_written);
+                                              desc.is_written,
+                                              use_write_proofs ? &write_proofs[ssbo_index] : nullptr,
+                                              (use_write_proofs || use_access_proofs) ? &write_dispatch : nullptr,
+                                              use_access_proofs ? &access_proofs[ssbo_index] : nullptr);
         ++ssbo_index;
     }
 

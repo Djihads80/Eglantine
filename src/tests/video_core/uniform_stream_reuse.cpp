@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <span>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
@@ -32,6 +33,7 @@ struct Runtime {
     std::vector<std::vector<u8>> allocations;
     StreamUniformRef last{}, bound{};
     u64 tick{1};
+    std::function<void()> on_allocate;
     u64 CurrentTick() const {
         return tick;
     }
@@ -41,6 +43,9 @@ struct Runtime {
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
         allocations.emplace_back(size);
         last = bound = StreamUniformRef{allocations.size() - 1};
+        if (on_allocate) {
+            on_allocate();
+        }
         return allocations.back();
     }
     void RebindStreamUniform(StreamUniformRef ref, u32 size) {
@@ -54,6 +59,29 @@ struct Runtime {
     }
 };
 
+struct DirectMemory : Memory {
+    size_t pointer_reads{};
+    size_t block_reads{};
+    bool mapped{true};
+
+    template <typename T>
+    T* GetPointer(u64 address) {
+        ++pointer_reads;
+        Check(address < bytes.size(), "pointer outside guest memory");
+        return mapped ? reinterpret_cast<T*>(bytes.data() + address) : nullptr;
+    }
+
+    void ReadBlockUnsafe(u64 address, void* destination, u32 size) {
+        ++block_reads;
+        if (mapped) {
+            Memory::ReadBlockUnsafe(address, destination, size);
+        } else {
+            Check(address + size <= bytes.size(), "read outside guest memory");
+            std::memset(destination, 0, size);
+        }
+    }
+};
+
 void CheckBound(const Runtime& runtime, const Memory& memory, u64 address, u32 size) {
     const auto& bytes = runtime.allocations.at(runtime.bound.allocation);
     Check(bytes.size() == size &&
@@ -63,7 +91,7 @@ void CheckBound(const Runtime& runtime, const Memory& memory, u64 address, u32 s
 } // namespace
 
 TEST_CASE("Uniform stream reuse preserves data through mutation and session resets",
-          "[video_core]") {
+          "[video_core][uniform_reuse]") {
     using VideoCommon::BindSmallUniformReusing;
     Memory memory;
     Runtime runtime;
@@ -113,4 +141,75 @@ TEST_CASE("Uniform stream reuse preserves data through mutation and session rese
         bind(stage, slot, address, size);
         bind(stage, slot, address, size);
     }
+}
+
+TEST_CASE("Uniform reuse compares current mapped bytes and survives tick and session changes",
+          "[video_core][uniform_reuse]") {
+    DirectMemory memory;
+    Runtime runtime;
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    const auto bind = [&](u64 address, u32 size) {
+        REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, address, size));
+        CheckBound(runtime, memory, address, size);
+    };
+    bind(128, 64);
+    bind(128, 64);
+    CHECK(runtime.allocations.size() == 1);
+    CHECK(memory.block_reads == 0);
+    bind(256, 64); // Same bytes at another address may reuse the allocation.
+    CHECK(runtime.allocations.size() == 1);
+    memory.bytes[257] = 0x37;
+    bind(256, 64); // Same address cannot bypass the byte comparison.
+    CHECK(runtime.allocations.size() == 2);
+    runtime.NextTick();
+    bind(256, 64);
+    CHECK(runtime.allocations.size() == 1);
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    bind(256, 64);
+    CHECK(runtime.allocations.size() == 2);
+    bind(0, 4096); // Exactly one full page is eligible.
+    CHECK(memory.pointer_reads == 7);
+    CHECK(memory.block_reads == 0);
+}
+
+TEST_CASE("Uniform reuse keeps block-reader fallback at page boundaries and unmapped memory",
+          "[video_core][uniform_reuse]") {
+    DirectMemory memory;
+    Runtime runtime;
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    memory.bytes[4095] = 0x31;
+    memory.bytes[4096] = 0x72;
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 4095, 2));
+    CheckBound(runtime, memory, 4095, 2);
+    CHECK(memory.pointer_reads == 0);
+    CHECK(memory.block_reads == 1);
+    memory.mapped = false;
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 64, 16));
+    CHECK(memory.pointer_reads == 1);
+    CHECK(memory.block_reads == 2);
+    CHECK(std::ranges::all_of(runtime.allocations.at(runtime.bound.allocation),
+                             [](u8 byte) { return byte == 0; }));
+    memory.mapped = true;
+    memory.bytes[64] = 0x89;
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 64, 16));
+    CheckBound(runtime, memory, 64, 16);
+    CHECK(memory.block_reads == 2);
+}
+
+TEST_CASE("Uniform reuse snapshots bytes before a staging allocation changes guest memory",
+          "[video_core][uniform_reuse]") {
+    DirectMemory memory;
+    Runtime runtime;
+    VideoCommon::ResetUniformStreamReuse<Runtime>();
+    std::fill_n(memory.bytes.begin() + 64, 16, 0x24);
+    runtime.on_allocate = [&] { std::fill_n(memory.bytes.begin() + 64, 16, 0x69); };
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 64, 16));
+    CHECK(std::ranges::all_of(runtime.allocations.at(runtime.bound.allocation),
+                             [](u8 byte) { return byte == 0x24; }));
+    runtime.on_allocate = {};
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 64, 16));
+    CheckBound(runtime, memory, 64, 16);
+    CHECK(runtime.allocations.size() == 2);
+    REQUIRE(VideoCommon::BindSmallUniformReusing(runtime, memory, 0, 0, 0, 64, 16));
+    CHECK(runtime.allocations.size() == 2);
 }

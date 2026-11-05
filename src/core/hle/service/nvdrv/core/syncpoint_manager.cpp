@@ -3,12 +3,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/assert.h"
+#include "common/logging.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
 #include "video_core/host1x/host1x.h"
 
 namespace Service::Nvidia::NvCore {
 
-SyncpointManager::SyncpointManager(Tegra::Host1x::Host1x& host1x_) : host1x{host1x_} {
+SyncpointManager::SyncpointManager(Tegra::Host1x::Host1x& host1x_)
+    : SyncpointManager{host1x_.GetSyncpointManager()} {}
+
+SyncpointManager::SyncpointManager(Tegra::Host1x::SyncpointManager& values)
+    : syncpoint_values{values} {
     constexpr u32 VBlank0SyncpointId{26};
     constexpr u32 VBlank1SyncpointId{27};
 
@@ -21,6 +26,12 @@ SyncpointManager::SyncpointManager(Tegra::Host1x::Host1x& host1x_) : host1x{host
     for (u32 syncpoint_id : channel_syncpoints) {
         if (syncpoint_id) {
             ReserveSyncpoint(syncpoint_id, false);
+        }
+    }
+    // Host1x can outlive NvCore. Import its sticky quarantine before ordinary allocations.
+    for (u32 id = 1; id < syncpoints.size(); ++id) {
+        if (!syncpoints[id].reserved && syncpoint_values.UsesCpuGpuCompletion(id)) {
+            ReserveSyncpoint(id, false);
         }
     }
 }
@@ -36,6 +47,7 @@ u32 SyncpointManager::ReserveSyncpoint(u32 id, bool client_managed) {
     }
 
     syncpoint.reserved = true;
+    syncpoint_values.NoteSyncpointReservation(id);
     syncpoint.interface_managed = client_managed;
 
     return id;
@@ -56,10 +68,37 @@ u32 SyncpointManager::AllocateSyncpoint(bool client_managed) {
     return ReserveSyncpoint(FindFreeSyncpoint(), client_managed);
 }
 
+std::optional<u32> SyncpointManager::TryAllocateSyncpoint(bool client_managed) {
+    std::lock_guard lock(reservation_lock);
+    for (u32 id = 1; id < syncpoints.size(); ++id) {
+        if (!syncpoints[id].reserved) return ReserveSyncpoint(id, client_managed);
+    }
+    return std::nullopt;
+}
+
+std::optional<u32> SyncpointManager::TryAllocateGpuCompletionSyncpoint() {
+    std::lock_guard lock(reservation_lock);
+    for (u32 id = 1; id < syncpoints.size(); ++id) {
+        if (!syncpoints[id].reserved && !syncpoint_values.WasSyncpointReserved(id) &&
+            syncpoint_values.MarkCpuGpuCompletion(id)) {
+            return ReserveSyncpoint(id, false);
+        }
+    }
+    return std::nullopt;
+}
+
 void SyncpointManager::FreeSyncpoint(u32 id) {
     std::lock_guard lock(reservation_lock);
     auto& syncpoint = syncpoints.at(id);
     ASSERT(syncpoint.reserved);
+    if (syncpoint_values.UsesCpuGpuCompletion(id)) {
+        // A late real GPU callback or old SDK waiter must never act on a reused ID.
+        // Deliberately retained until NvCore shutdown, including unfinished counters.
+        LOG_INFO(Service_NVDRV, "NX2 CPU completion: quarantine syncpoint {} guest={} host={}",
+                 id, syncpoint_values.GetGuestSyncpointValue(id),
+                 syncpoint_values.GetHostSyncpointValue(id));
+        return;
+    }
     syncpoint.reserved = false;
 }
 
@@ -114,7 +153,7 @@ u32 SyncpointManager::UpdateMin(u32 id) {
         return 0;
     }
 
-    syncpoint.counter_min = host1x.GetSyncpointManager().GetHostSyncpointValue(id);
+    syncpoint.counter_min = syncpoint_values.GetHostSyncpointValue(id);
     return syncpoint.counter_min;
 }
 

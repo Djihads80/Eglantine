@@ -9,6 +9,7 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <utility>
 
 #include "common/common_types.h"
 
@@ -26,6 +27,36 @@ public:
 
     u32 GetHostSyncpointValue(u32 id) const {
         return syncpoints_host[id].load(std::memory_order_acquire);
+    }
+
+    // CPU-only completion domain. It is assigned before the channel can submit,
+    // never reset, and its allocator keeps the ID reserved through NvCore shutdown.
+    bool MarkCpuGpuCompletion(u32 id) {
+        if (id == 0 || id >= NUM_MAX_SYNCPOINTS || WasSyncpointReserved(id) ||
+            GetGuestSyncpointValue(id) != 0 ||
+            GetHostSyncpointValue(id) != 0) {
+            return false;
+        }
+        bool expected = false;
+        return cpu_gpu_completion[id].compare_exchange_strong(expected, true,
+                                                              std::memory_order_acq_rel);
+    }
+
+    void NoteSyncpointReservation(u32 id) {
+        syncpoint_ever_reserved[id].store(true, std::memory_order_release);
+    }
+
+    bool WasSyncpointReserved(u32 id) const {
+        return syncpoint_ever_reserved[id].load(std::memory_order_acquire);
+    }
+
+    bool UsesCpuGpuCompletion(u32 id) const {
+        return id < NUM_MAX_SYNCPOINTS &&
+               cpu_gpu_completion[id].load(std::memory_order_acquire);
+    }
+
+    u32 GetCpuSyncpointValue(u32 id) const {
+        return UsesCpuGpuCompletion(id) ? GetHostSyncpointValue(id) : GetGuestSyncpointValue(id);
     }
 
     struct RegisteredAction {
@@ -46,6 +77,35 @@ public:
     ActionHandle RegisterHostAction(u32 syncpoint_id, u32 expected_value, Func&& action) {
         return RegisterAction(syncpoints_host[syncpoint_id], host_action_storage[syncpoint_id],
                               expected_value, std::move(action));
+    }
+
+    struct CpuActionHandle {
+        ActionHandle action{};
+        bool host{};
+    };
+
+    template <typename Func>
+    CpuActionHandle RegisterCpuAction(u32 id, u32 value, Func&& action) {
+        const bool host = UsesCpuGpuCompletion(id);
+        auto handle = host ? RegisterHostAction(id, value, std::forward<Func>(action))
+                           : RegisterGuestAction(id, value, std::forward<Func>(action));
+        return {handle, host};
+    }
+
+    void DeregisterCpuAction(u32 id, const CpuActionHandle& handle) {
+        if (handle.host) {
+            DeregisterHostAction(id, handle.action);
+        } else {
+            DeregisterGuestAction(id, handle.action);
+        }
+    }
+
+    // The enqueue callback receives whether the completion must be a real GPU fence.
+    // Guest still advances at command processing, so GPU-side waits are unchanged.
+    template <typename Enqueue>
+    void QueueGpuSyncpoint(u32 id, Enqueue&& enqueue) {
+        IncrementGuest(id);
+        enqueue([this, id] { IncrementHost(id); }, UsesCpuGpuCompletion(id));
     }
 
     void DeregisterGuestAction(u32 syncpoint_id, const ActionHandle& handle);
@@ -80,6 +140,8 @@ private:
 
     void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32 expected_value);
 
+    std::array<std::atomic<bool>, NUM_MAX_SYNCPOINTS> cpu_gpu_completion{};
+    std::array<std::atomic<bool>, NUM_MAX_SYNCPOINTS> syncpoint_ever_reserved{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_host{};
 

@@ -15,6 +15,7 @@
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "video_core/vulkan_common/vulkan_allocation_diagnostics.h"
 
 namespace Vulkan::vk {
 
@@ -779,6 +780,9 @@ Pipeline Device::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, 
     // This result code is out of spec, but should be handled as "kinda working"
     if (result == VK_INCOMPLETE)
         return Pipeline(object, handle, *dld);
+    if (result != VK_SUCCESS) {
+        ReportAllocationFailure(result, "vkCreateGraphicsPipelines", ci.stageCount, 0, ci.flags, 0);
+    }
     Check(result);
     return Pipeline(object, handle, *dld);
 }
@@ -786,7 +790,11 @@ Pipeline Device::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, 
 Pipeline Device::CreateComputePipeline(const VkComputePipelineCreateInfo& ci,
                                        VkPipelineCache cache) const {
     VkPipeline object;
-    Check(dld->vkCreateComputePipelines(handle, cache, 1, &ci, nullptr, &object));
+    const auto result = dld->vkCreateComputePipelines(handle, cache, 1, &ci, nullptr, &object);
+    if (result != VK_SUCCESS) {
+        ReportAllocationFailure(result, "vkCreateComputePipelines", 1, 0, ci.flags, 0);
+    }
+    Check(result);
     return Pipeline(object, handle, *dld);
 }
 
@@ -855,7 +863,11 @@ DeviceMemory Device::TryAllocateMemory(const VkMemoryAllocateInfo& ai) const noe
 
 DeviceMemory Device::AllocateMemory(const VkMemoryAllocateInfo& ai) const {
     VkDeviceMemory memory;
-    Check(dld->vkAllocateMemory(handle, &ai, nullptr, &memory));
+    const auto result = dld->vkAllocateMemory(handle, &ai, nullptr, &memory);
+    if (result != VK_SUCCESS) {
+        ReportAllocationFailure(result, "vkAllocateMemory", ai.allocationSize, 0, ai.memoryTypeIndex, 0);
+    }
+    Check(result);
     return DeviceMemory(memory, handle, *dld);
 }
 

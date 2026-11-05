@@ -79,9 +79,14 @@ public:
         uncommitted_operations.emplace_back(std::move(func));
     }
 
-    void SignalFence(std::function<void()>&& func) {
+    void SignalFence(std::function<void()>&& func, bool force_delayed = false,
+                     bool force_real = false) {
         Nx2Profile::Scope profile_scope{Nx2Profile::Zone::Fence};
-        const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+        // Explicit query reads need completion after host results, guest writebacks and the
+        // callbacks produced by CommitAsyncFlushes. Other callers retain the selected policy.
+        const bool delay_fence = force_real || force_delayed ||
+            (Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() :
+             Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate());
         if constexpr (!can_async_check) {
             TryReleasePendingFences<false>();
         }
@@ -93,7 +98,9 @@ public:
             return;
         }
         skipped_fences = 0;
-        should_flush |= query_cache.HasUncommittedFlushes();
+        // Strict CPU waits require physical completion even when there are no downloads.
+        // force_real also prevents the Immediate/SkipEmptyFence callback shortcut above.
+        should_flush |= force_real || query_cache.HasUncommittedFlushes();
         query_cache.CommitAsyncFlushes();
         TFence new_fence = CreateFence(!should_flush);
         if constexpr (can_async_check) {
@@ -131,9 +138,11 @@ public:
             LOG_ERROR(HW_GPU, "Signal of syncpoint {} past the table, ignored", value);
             return;
         }
-        syncpoint_manager.IncrementGuest(value);
-        std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
-        SignalFence(std::move(func));
+        syncpoint_manager.QueueGpuSyncpoint(value, [this](auto callback, bool strict) {
+            // The allocator enables this domain only for NX2 Vulkan GPU channels.
+            // Guest is unchanged; Host is published after a real queued fence.
+            SignalFence(std::move(callback), strict, strict);
+        });
     }
 
     void WaitPendingFences([[maybe_unused]] bool force) {
