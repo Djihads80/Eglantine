@@ -9,6 +9,7 @@ add_executable(tests
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
+    common/event.cpp
     common/fibers.cpp
     common/game_presets.cpp
     common/host_memory.cpp
@@ -58,6 +59,10 @@ target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain
 
 add_test(NAME tests COMMAND tests)
 
+if (WIN32 AND ARCHITECTURE_x86_64)
+    add_executable(event_wait_probe ../../tools/nx2/event_wait_probe.cpp)
+    target_link_libraries(event_wait_probe PRIVATE common)
+endif()
 # needed for vma
 if (NOT MSVC)
     target_compile_options(tests PRIVATE
