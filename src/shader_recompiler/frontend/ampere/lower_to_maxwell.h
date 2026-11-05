@@ -87,6 +87,14 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(16); operand(24); operand(32); operand(64); break;
     case 0x819: case 0xa11:
         operand(16); operand(24); operand(64); break;
+    case 0x820: case 0xa20: // FMUL with an immediate or constant-buffer second source
+        operand(16); operand(24); break;
+    case 0x220: // FMUL, register sources
+        operand(16); operand(24); operand(32); break;
+    case 0x212: // LOP3.LUT, register sources
+        operand(16); operand(24); operand(32); operand(64); break;
+    case 0xa12: // LOP3.LUT, constant-buffer second source
+        operand(16); operand(24); operand(64); break;
     case 0x225: case 0x625: case 0x825:
         operand(16, 2); operand(24);
         if (opcode == 0x225) { operand(32); operand(64, 2); }
@@ -106,9 +114,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     }
     case 0x387: case 0x983:
         operand(opcode == 0x387 ? 32 : 16); operand(24); break;
-    case 0x981: case 0x986: {
+    case 0x381: case 0x981: case 0x986: { // LDG (register or uniform address), STG
         const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
-        operand(opcode == 0x981 ? 16 : 32, count);
+        operand(opcode == 0x986 ? 32 : 16, count);
         operand(24, input.Bits(72, 1) ? 2 : 1); break;
     }
     default:
