@@ -92,10 +92,20 @@ public:
         return surface_format.format;
     }
 
+    /// Returns the cached SDR surface format, including while an HDR swapchain is active.
     VkFormat GetSdrImageFormat() const {
         return sdr_image_format.load();
     }
 
+    /// Reads the native HDR format/colorspace support cached during surface enumeration.
+    bool SupportsHdrFormat(VkFormat format) const {
+        return (hdr_formats.load() &
+                (format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ? Hdr10Support
+                 : format == VK_FORMAT_R16G16B16A16_SFLOAT   ? ScRgbSupport
+                                                           : 0U)) != 0;
+    }
+
+    /// Returns the producer format requested by the latest creation attempt.
     VkFormat GetRequestedFormat() const {
         return requested_format;
     }
@@ -121,6 +131,9 @@ public:
     }
 
 private:
+    static constexpr u32 Hdr10Support = 1U << 0;
+    static constexpr u32 ScRgbSupport = 1U << 1;
+
     void CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities);
     void CreateSemaphores();
     void CreateImageViews();
@@ -153,6 +166,7 @@ private:
     VkPresentModeKHR present_mode{};
     VkSurfaceFormatKHR surface_format{};
     std::atomic<VkFormat> sdr_image_format{VK_FORMAT_B8G8R8A8_UNORM};
+    std::atomic<u32> hdr_formats{};
     VkFormat requested_format{VK_FORMAT_B8G8R8A8_UNORM};
     bool has_imm{false};
     bool has_mailbox{false};

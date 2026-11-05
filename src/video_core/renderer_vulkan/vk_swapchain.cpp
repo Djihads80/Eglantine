@@ -36,8 +36,7 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
                 return format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
                        format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
             }
-            return (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-                    format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
+            return format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
                    format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
         });
         if (selected != formats.end()) {
@@ -282,6 +281,17 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 
     // Keep the SDR choice available even while the active swapchain is HDR.
     sdr_image_format = ChooseSwapSurfaceFormat(formats, VK_FORMAT_B8G8R8A8_UNORM).format;
+    u32 supported_hdr_formats = 0;
+    for (const auto& format : formats) {
+        if (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
+            format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
+            supported_hdr_formats |= Hdr10Support;
+        } else if (format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                   format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+            supported_hdr_formats |= ScRgbSupport;
+        }
+    }
+    hdr_formats = supported_hdr_formats;
 
     has_mailbox = std::find(present_modes.begin(), present_modes.end(), VK_PRESENT_MODE_MAILBOX_KHR)
                   != present_modes.end();

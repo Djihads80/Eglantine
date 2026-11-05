@@ -4,6 +4,26 @@ Graphical enhancements and visual quality improvments. This doesn't cover textur
 
 ## Visual Enhancements
 
+### Native HDR output
+
+**HDR is disabled by default and requires explicit opt-in.** Enabling it assumes that
+you have configured a compatible HDR environment: Vulkan, a suitable GPU and driver,
+an HDR-capable display, and HDR enabled in the operating system where required.
+Verifying and maintaining that environment is the user's responsibility. Configure
+it before starting the game.
+
+This feature preserves native HDR output from Switch 2 games that support it. It
+does not add HDR to SDR-only games. HDR10 and optional scRGB output depend on the
+game's requested format and the host surface's support for that format.
+
+The emulator checks surface capabilities and rejects unsupported presentation
+formats; these checks are not automatic setup or compatibility workarounds. It does
+not enable operating-system HDR, tone-map HDR into SDR, or reinterpret HDR pixels
+as SDR. Live display changes and operating-system HDR toggles during gameplay are
+intentionally unsupported. Captures are not promised HDR-to-SDR tone mapping.
+Handling HDR content on an SDR desktop is an operating-system concern, not behavior
+this feature attempts to emulate.
+
 ### Anti-aliasing
 
 Enhancements aimed at removing jagged lines/sharp edges and/or masking artifacts.

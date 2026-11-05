@@ -66,6 +66,7 @@ public:
 
     [[nodiscard]] bool NeedsStorage(const Frame* frame, bool required) const;
 
+    /// Selects the backing image format, preserving the cached SDR format or explicit HDR format.
     [[nodiscard]] VkFormat GetFrameImageFormat(VkFormat image_view_format) const;
 
     /// Waits for the present thread to finish presenting all queued frames.
@@ -89,6 +90,7 @@ private:
     // Returns false after discarding the frame if creation or transfer cannot proceed.
     bool RecreateSwapchain(Frame* frame);
 
+    /// Caches a copy, blit, or unsupported transfer decision for this frame and active swapchain.
     void ConfigureTransfer(const Frame* frame);
 
     void DiscardFrame(Frame* frame);

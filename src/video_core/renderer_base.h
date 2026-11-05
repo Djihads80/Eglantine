@@ -51,6 +51,11 @@ public:
 
     [[nodiscard]] virtual std::string GetDeviceVendor() const = 0;
 
+    /// Reports whether the host surface supports at least one native HDR output format.
+    [[nodiscard]] virtual bool SupportsHdr() const {
+        return false;
+    }
+
     // Getter/setter functions:
     // ------------------------
 

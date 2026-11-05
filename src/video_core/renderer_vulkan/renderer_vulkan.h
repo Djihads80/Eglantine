@@ -59,6 +59,12 @@ public:
         return device.GetDriverName();
     }
 
+    /// Reports cached support for either native HDR signal encoding.
+    [[nodiscard]] bool SupportsHdr() const override {
+        return swapchain.SupportsHdrFormat(VK_FORMAT_A2B10G10R10_UNORM_PACK32) ||
+               swapchain.SupportsHdrFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
+    }
+
     // Enhanced platform-specific initialization
     void InitializePlatformSpecific();
 
