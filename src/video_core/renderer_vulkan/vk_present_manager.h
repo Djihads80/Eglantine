@@ -30,6 +30,9 @@ struct Frame {
     u32 width;
     u32 height;
     u32 index;
+    // Requested presentation view format and underlying image format may differ for SDR.
+    VkFormat format{VK_FORMAT_UNDEFINED};
+    VkFormat image_format{VK_FORMAT_UNDEFINED};
     vk::Image image;
     vk::ImageView image_view;
     vk::ImageView storage_view;
@@ -63,6 +66,8 @@ public:
 
     [[nodiscard]] bool NeedsStorage(const Frame* frame, bool required) const;
 
+    [[nodiscard]] VkFormat GetFrameImageFormat(VkFormat image_view_format) const;
+
     /// Waits for the present thread to finish presenting all queued frames.
     void WaitPresent();
 
@@ -73,13 +78,18 @@ public:
     [[nodiscard]] VkFormat SwapchainImageFormat() const { return swapchain_image_format; }
 
 private:
+    enum class TransferMode { Unsupported, Copy, Blit };
+
     void PresentThread(std::stop_token token);
 
     void CopyToSwapchain(Frame* frame);
 
     void CopyToSwapchainImpl(Frame* frame);
 
-    void RecreateSwapchain(Frame* frame);
+    // Returns false after discarding the frame if creation or transfer cannot proceed.
+    bool RecreateSwapchain(Frame* frame);
+
+    void ConfigureTransfer(const Frame* frame);
 
     void DiscardFrame(Frame* frame);
 
@@ -103,7 +113,8 @@ private:
     std::mutex queue_mutex;
     std::mutex free_mutex;
     std::jthread present_thread;
-    bool blit_supported;
+    VkFormat transfer_source_format{VK_FORMAT_UNDEFINED};
+    TransferMode transfer_mode{TransferMode::Unsupported};
     bool storage_supported;
     bool use_present_thread;
     std::atomic<std::size_t> image_count{};

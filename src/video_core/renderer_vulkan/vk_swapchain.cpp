@@ -27,7 +27,24 @@ namespace Vulkan {
 
 namespace {
 
-VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats) {
+VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
+                                         VkFormat requested_format) {
+    if (requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+        requested_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+        const auto selected = std::find_if(formats.begin(), formats.end(), [=](const auto& format) {
+            if (requested_format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+                return format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                       format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+            }
+            return (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                    format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
+                   format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+        });
+        if (selected != formats.end()) {
+            return *selected;
+        }
+        throw vk::Exception(VK_ERROR_FORMAT_NOT_SUPPORTED);
+    }
     if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
         VkSurfaceFormatKHR format;
         format.format = VK_FORMAT_B8G8R8A8_UNORM;
@@ -132,30 +149,39 @@ Swapchain::Swapchain(
 
 Swapchain::~Swapchain() = default;
 
-void Swapchain::Create(
+bool Swapchain::Create(
     VkSurfaceKHR_T* surface_,
     u32 width_,
-    u32 height_)
+    u32 height_,
+    VkFormat requested_format_)
 {
     is_outdated = false;
-    is_suboptimal = false;
+    // Keep recreation pending until creation succeeds, including zero-extent surfaces.
+    is_suboptimal = true;
     width = width_;
     height = height_;
     surface = surface_;
+    requested_format = requested_format_;
 
     const auto physical_device = device.GetPhysical();
     const auto capabilities{physical_device.GetSurfaceCapabilitiesKHR(VkSurfaceKHR(surface))};
     if (capabilities.maxImageExtent.width == 0 || capabilities.maxImageExtent.height == 0) {
-        return;
+        return false;
     }
 
     Destroy();
 
     CreateSwapchain(capabilities);
     CreateSemaphores();
+    is_suboptimal = false;
 
     resource_ticks.clear();
     resource_ticks.resize(image_count);
+    if (hdr_format_unavailable) {
+        LOG_INFO(Render_Vulkan, "Swapchain output restored after HDR format unavailability");
+        hdr_format_unavailable = false;
+    }
+    return true;
 }
 
 bool Swapchain::AcquireNextImage(bool may_flush) {
@@ -254,6 +280,9 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
     const auto formats{physical_device.GetSurfaceFormatsKHR(VkSurfaceKHR(surface))};
     const auto present_modes = physical_device.GetSurfacePresentModesKHR(VkSurfaceKHR(surface));
 
+    // Keep the SDR choice available even while the active swapchain is HDR.
+    sdr_image_format = ChooseSwapSurfaceFormat(formats, VK_FORMAT_B8G8R8A8_UNORM).format;
+
     has_mailbox = std::find(present_modes.begin(), present_modes.end(), VK_PRESENT_MODE_MAILBOX_KHR)
                   != present_modes.end();
     has_imm = std::find(present_modes.begin(), present_modes.end(),
@@ -262,7 +291,16 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
                                  VK_PRESENT_MODE_FIFO_RELAXED_KHR) != present_modes.end();
 
     const VkCompositeAlphaFlagBitsKHR alpha_flags{ChooseAlphaFlags(capabilities)};
-    surface_format = ChooseSwapSurfaceFormat(formats);
+    try {
+        surface_format = ChooseSwapSurfaceFormat(formats, requested_format);
+    } catch (const vk::Exception& exception) {
+        if (exception.GetResult() == VK_ERROR_FORMAT_NOT_SUPPORTED && !hdr_format_unavailable) {
+            LOG_ERROR(Render_Vulkan, "HDR output ({}) is not supported by this surface",
+                      requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ? "scRGB" : "HDR10");
+            hdr_format_unavailable = true;
+        }
+        throw;
+    }
     present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
 
     u32 requested_image_count{capabilities.minImageCount + 1};
@@ -327,7 +365,8 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
         .viewFormatCount = static_cast<u32>(view_formats.size()),
         .pViewFormats = view_formats.data(),
     };
-    if (device.IsKhrSwapchainMutableFormatEnabled()) {
+    if (device.IsKhrSwapchainMutableFormatEnabled() &&
+        surface_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
         format_list.pNext = std::exchange(swapchain_ci.pNext, &format_list);
         swapchain_ci.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
     }
@@ -347,6 +386,9 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 #else
     image_view_format = VK_FORMAT_B8G8R8A8_UNORM;
 #endif
+    if (surface_format.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        image_view_format = surface_format.format;
+    }
 }
 
 void Swapchain::CreateSemaphores() {

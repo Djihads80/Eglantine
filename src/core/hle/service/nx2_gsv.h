@@ -1473,7 +1473,7 @@ struct Nx2NativeObjects {
 // Block-linear layout of an InterModuleUserImagePreference (16 words): word 2 holds
 // (width - 1) | (height - 1) << 16, word 4 the block height (log2 of GOB rows), word 5 the row
 // pitch in 64-byte GOBs. Formula from changes.patch (native_image_layout.h); preferences outside
-// it fall back to 4 bytes per pixel and 128-row blocks.
+// it fall back to the format's bytes per pixel and 128-row blocks.
 struct Nx2ImageLayout {
     u32 width;
     u32 height;
@@ -1489,12 +1489,13 @@ inline Nx2ImageLayout Nx2CalculateImageLayout(const u32* preference) {
     layout.height = (preference[2] >> 16) + 1;
     const u64 pitch_gobs = preference[5];
     const u32 block_height_log2 = preference[4];
-    if (block_height_log2 <= 8 && pitch_gobs >= (u64{layout.width} * 4 + 63) / 64 &&
+    const u32 bytes_per_pixel = preference[6] == 5 ? 8 : 4;
+    if (block_height_log2 <= 8 && pitch_gobs >= (u64{layout.width} * bytes_per_pixel + 63) / 64 &&
         pitch_gobs <= 4096) {
         layout.pitch = pitch_gobs * 64;
         layout.block_height_log2 = block_height_log2;
     } else {
-        layout.pitch = Common::AlignUp(u64{layout.width} * 4, 64);
+        layout.pitch = Common::AlignUp(u64{layout.width} * bytes_per_pixel, 64);
         layout.block_height_log2 = 7;
     }
     const u64 block_rows = u64{1} << layout.block_height_log2;
@@ -1946,7 +1947,7 @@ private:
 
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
-    // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
+    // surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
     void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
@@ -2024,9 +2025,10 @@ private:
             .offset = 0,
             .width = layout.width,
             .height = layout.height,
-            .stride = static_cast<u32>(layout.pitch / 4),
-            // Preference word 6: 1 = RGBA8, 4 = RGB10A2.
-            .pixel_format = image_format == 4 ? android::PixelFormat::Rgba1010102
+            .stride = static_cast<u32>(layout.pitch / (image_format == 5 ? 8 : 4)),
+            // Preference word 6: 1 = RGBA8, 4 = RGB10A2/HDR10 (PQ), 5 = RGBA16F/scRGB.
+            .pixel_format = image_format == 5 ? android::PixelFormat::RgbaFp16
+                          : image_format == 4 ? android::PixelFormat::Rgba1010102
                                               : android::PixelFormat::Rgba8888,
             .transform_flags = android::BufferTransformFlags::Unset,
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
@@ -2134,22 +2136,27 @@ private:
         TipcReplyWords(ctx, {60, 0});
     }
 
-    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits. The empty reply
-    // left it to the message buffer's leftovers; answer the BT.2408 reference white.
+    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 reference white in nits.
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
-        TipcReplyWords(ctx, {203});
+        if (Settings::values.hdr_reference_white.GetValue() > 0) {
+            TipcReplyWords(ctx, {std::min(Settings::values.hdr_reference_white.GetValue(),
+                                        Settings::values.hdr_peak_luminance.GetValue())});
+        } else {
+            // Switch 2 calibration starts at ceil(peak / 1.5), clamped to 50..300 nits.
+            TipcReplyWords(ctx, {std::clamp<u32>(
+                                    (Settings::values.hdr_peak_luminance.GetValue() * 2U + 2U) / 3U,
+                                    50U, 300U)});
+        }
     }
 
-    // nn::vi2::QueryDisplayHdrStatus(display name): u64 HdrOutputFormat, u16. The sdk's
-    // DefaultDisplay::QueryHdrStatus takes format 1 as HDR output and fails with 0x272 on
-    // anything above 1. With the empty auto stub reply it read the request's leftover words as
-    // the format; Kirby Air Riders re-queries whenever its HDR status event fires and rebuilt its
-    // window images every few frames, which showed black. Report SDR output.
-    // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format, u16 peak luminance in
-    // nits. The sdk takes format 1 as SDR and 2 as HDR and fails the query on any other value.
-    // Report SDR output with a typical SDR panel's peak.
+    // Wire reply: u64 output format (1 = SDR, 2 = HDR), u16 peak luminance in nits.
+    // MKW's SDK converts these to public formats 0/1 before DefaultDisplay tests for HDR.
+    // HDR is explicitly opt-in; luminance defaults are not host-display calibration.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
-        TipcReplyWords(ctx, {1, 0, 400});
+        const bool hdr_enabled = Settings::values.hdr.GetValue() &&
+                                 Settings::values.renderer_backend.GetValue() ==
+                                     Settings::RendererBackend::Vulkan;
+        TipcReplyWords(ctx, {hdr_enabled ? 2U : 1U, 0, Settings::values.hdr_peak_luminance.GetValue()});
     }
 
     // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
@@ -2253,7 +2260,7 @@ private:
     }
 
     // 263/265/267/269/271(u64 display name, u32 index): fire the slot when the display's refresh
-    // rate, HDR status, HDR paper white, buffer max resolution or mode capability changes, so the
+    // rate, HDR status, HDR reference white, buffer max resolution or mode capability changes, so the
     // game re-queries it. None of them change here: fire once so the game reads the current
     // state, then leave the slot quiet. Kirby Air Riders re-queried its HDR status on every
     // present while this slot fired with vsync.

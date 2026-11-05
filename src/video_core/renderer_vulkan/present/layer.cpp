@@ -54,6 +54,8 @@ VkFormat GetFormat(const Tegra::FramebufferConfig& framebuffer) {
         return VK_FORMAT_B8G8R8A8_UNORM;
     case Service::android::PixelFormat::Rgba1010102:
         return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case Service::android::PixelFormat::RgbaFp16:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
     default:
         UNIMPLEMENTED_MSG("Unknown framebuffer pixel format: {}",
                           static_cast<u32>(framebuffer.pixel_format));
@@ -99,14 +101,19 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     const u32 scaled_width = texture_info ? texture_info->scaled_width : texture_width;
     const u32 scaled_height = texture_info ? texture_info->scaled_height : texture_height;
     const bool use_accelerated = texture_info.has_value();
+    const bool native_hdr = framebuffer.native_tiling &&
+        (framebuffer.pixel_format == Service::android::PixelFormat::Rgba1010102 ||
+         framebuffer.pixel_format == Service::android::PixelFormat::RgbaFp16);
     const bool is_applet =
         (framebuffer.layer_stack_mask & Service::Nvnflinger::LayerStackBit(
                                             Service::Nvnflinger::LayerStackId::Recording)) == 0;
 
     RefreshResources(device, framebuffer);
-    SetAntiAliasPass(device);
+    if (!native_hdr) {
+        SetAntiAliasPass(device);
+    }
 #ifdef HAS_RESHADE
-    SetPostProcessPass(device, is_applet);
+    SetPostProcessPass(device, is_applet || native_hdr);
 #endif
 
     // Finish any pending renderpass
@@ -124,9 +131,9 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
     VkImageView source_image_view =
         texture_info ? texture_info->image_view : *raw_image_views[image_index];
 
-    if (auto* fxaa = std::get_if<FXAA>(&anti_alias)) {
+    if (auto* fxaa = std::get_if<FXAA>(&anti_alias); !native_hdr && fxaa) {
         fxaa->Draw(device, scheduler, image_index, &source_image, &source_image_view);
-    } else if (auto* smaa = std::get_if<SMAA>(&anti_alias)) {
+    } else if (auto* smaa = std::get_if<SMAA>(&anti_alias); !native_hdr && smaa) {
         smaa->Draw(device, scheduler, image_index, &source_image, &source_image_view);
     }
 
@@ -142,16 +149,16 @@ void Layer::ConfigureDraw(const Device& device, PresentPushConstants* out_push_c
         .height = scaled_height,
     };
 
-    if (auto* fsr = std::get_if<FSR>(&sr_filter)) {
+    if (auto* fsr = std::get_if<FSR>(&sr_filter); !native_hdr && fsr) {
         source_image_view = fsr->Draw(device, scheduler, image_index, source_image, source_image_view, render_extent, crop_rect);
         crop_rect = {0, 0, 1, 1};
-    } else if (auto* sgsr = std::get_if<SGSR>(&sr_filter)) {
+    } else if (auto* sgsr = std::get_if<SGSR>(&sr_filter); !native_hdr && sgsr) {
         if (!is_applet) {
             source_image_view = sgsr->Draw(device, scheduler, image_index, source_image,
                                            source_image_view, render_extent, crop_rect);
             crop_rect = {0, 0, 1, 1};
         }
-    } else if (auto* fsr3 = std::get_if<FSR3>(&sr_filter)) {
+    } else if (auto* fsr3 = std::get_if<FSR3>(&sr_filter); !native_hdr && fsr3) {
         source_image_view = fsr3->Draw(device, scheduler, image_index, source_image,
                                        source_image_view, render_extent, crop_rect);
         crop_rect = {0, 0, 1, 1};
