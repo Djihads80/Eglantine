@@ -253,6 +253,9 @@ public:
 
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
+    /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
+    void ClearDownload(DAddr base_addr, u64 size);
+
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
@@ -388,6 +391,7 @@ public:
     bool any_buffer_uploaded = false;
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
+    std::unordered_map<DAddr, std::array<u8, Core::DEVICE_PAGESIZE>> native_indirect_uniform_shadow;
 
 private:
     template <typename Func>
@@ -548,8 +552,6 @@ private:
 
     /// Re-dirties repacked vertex buffers whose source data was written since they were bound.
     void RefreshRepackedVertexBuffers();
-
-    void ClearDownload(DAddr base_addr, u64 size);
 
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                     std::span<const u8> inlined_buffer);

@@ -495,6 +495,9 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
     };
     auto mapped_normal = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
         const DAddr dev_addr_base = (DAddr(page_table[page_index]) << cpu_page_bits) + offset;
+        if (!unsafe) {
+            rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
+        }
         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
         }
@@ -506,6 +509,9 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
     };
     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
         const DAddr dev_addr_base = (DAddr(big_page_table_dev[page_index]) << cpu_page_bits) + offset;
+        if (!unsafe) {
+            rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
+        }
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {

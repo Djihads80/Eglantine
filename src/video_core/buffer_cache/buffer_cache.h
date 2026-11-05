@@ -108,6 +108,9 @@ void BufferCache<P>::TickFrame() {
     }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
+    if (native_indirect_uniform_shadow.size() > 4096) {
+        native_indirect_uniform_shadow.clear();
+    }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
             device_memory.HintCold(address, size);
@@ -1310,13 +1313,30 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         (bank_mode == '2' || bank_mode == '3' ||
          native_indirect_uniforms_this_frame.insert(device_addr).second)) {
         // The bank size is only an upper limit: stop at the end of the mapped memory.
-        u64 mapped_size = 0;
-        while (mapped_size < size &&
-               device_memory.template GetPointer<u8>(device_addr + mapped_size) != nullptr) {
-            mapped_size += Core::DEVICE_PAGESIZE - ((device_addr + mapped_size) & Core::DEVICE_PAGEMASK);
-        }
-        if (mapped_size != 0) {
-            memory_tracker.MarkRegionAsCpuModified(device_addr, (std::min<u64>)(mapped_size, size));
+        // Only mark 4 KiB pages whose guest bytes actually changed since the last upload so
+        // unchanged banks do not toggle VirtualProtect or break the Vulkan render pass on every draw.
+        u64 offset_in_bank = 0;
+        while (offset_in_bank < size) {
+            const DAddr cur_addr = device_addr + offset_in_bank;
+            const u8* const ptr = device_memory.template GetPointer<u8>(cur_addr);
+            if (ptr == nullptr) {
+                break;
+            }
+            const u64 page_offset = cur_addr & Core::DEVICE_PAGEMASK;
+            const u64 chunk_size =
+                (std::min<u64>)(Core::DEVICE_PAGESIZE - page_offset, size - offset_in_bank);
+            const DAddr page_addr = cur_addr - page_offset;
+            const bool already_cpu_modified =
+                memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
+            auto [it, inserted] = native_indirect_uniform_shadow.try_emplace(page_addr);
+            if (inserted || already_cpu_modified ||
+                std::memcmp(it->second.data() + page_offset, ptr, chunk_size) != 0) {
+                std::memcpy(it->second.data() + page_offset, ptr, chunk_size);
+                if (!already_cpu_modified) {
+                    memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+                }
+            }
+            offset_in_bank += chunk_size;
         }
     }
     const bool use_fast_buffer = needs_alignment_stream

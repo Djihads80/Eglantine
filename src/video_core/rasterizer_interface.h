@@ -122,6 +122,10 @@ public:
     virtual void InvalidateRegion(DAddr addr, u64 size,
                                   VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
+    /// Called before guest memory in the region is overwritten, ahead of InvalidateRegion
+    virtual void PrepareRegionWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size,
+                                    [[maybe_unused]] VideoCommon::CacheType which) {}
+
     virtual void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
         if (!Settings::values.skip_cpu_inner_invalidation.GetValue()) {
             for (const auto& [cpu_addr, size] : sequences) {
