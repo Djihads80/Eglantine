@@ -390,8 +390,10 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias)
 }
 
 /// Native programs: every constant buffer pointer the low address can come from, following only
-/// additions, selects and phis. A predicated address assignment becomes a phi whose other input
-/// can point into a different buffer, so the search does not stop at the first pointer.
+/// additions, selects, phis and subgroup broadcasts. A predicated address assignment becomes a phi
+/// whose other input can point into a different buffer, so the search does not stop at the first
+/// pointer. A pointer read from an array at a dynamic offset contributes every mapped slot of the
+/// array.
 small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_addr,
                                                            Environment& env) {
     small_vector<StorageBufferAddr, 4> candidates;
@@ -429,6 +431,10 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
         case IR::Opcode::SelectU32:
             enqueue(inst->Arg(1));
             enqueue(inst->Arg(2));
+            break;
+        case IR::Opcode::ShuffleIndex:
+            // A pointer made uniform by broadcasting one lane's value to the subgroup.
+            enqueue(inst->Arg(0));
             break;
         case IR::Opcode::CompositeExtractU32x2:
             if (inst->Arg(1).IsImmediate() && inst->Arg(1).U32() == 0) {
