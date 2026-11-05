@@ -1221,8 +1221,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 const u32 address = uniform_register(insn.Bits(64, 6));
                 const u32 type = insn.Bits(73, 3);
                 const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
+                // U64 (2) and S64 (5) take an aligned register pair.
+                const bool wide = type == 2 || type == 5;
                 if (address == ~0U || (address & 1) || type > 5 || insn.Bits(32, 8) >= 250 ||
-                    offset < -0x80000 || offset > 0x7ffff)
+                    (wide && (insn.Bits(32, 8) & 1)) || offset < -0x80000 || offset > 0x7ffff)
                     return fail(index, "native global reduction uniform address");
                 emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
                      (u64{type} << 20) |
