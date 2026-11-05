@@ -1330,7 +1330,10 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 });
             } else {
                 count = std::min(count, sampled_dynamic_cap);
-                const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                // A depth-compare image is float in SPIR-V (OpImageSampleDref* returns a float
+                // and needs a float sampled type). An integer format bound to one is a stale or
+                // out-of-range TIC entry, and the integer type made RADV's spirv_to_nir fail.
+                const bool is_integer{!flags.is_depth && is_texture_pixel_format_integer(cbuf)};
                 index = descriptors.Add(TextureDescriptor{
                     .type = flags.type,
                     .is_depth = flags.is_depth != 0,
