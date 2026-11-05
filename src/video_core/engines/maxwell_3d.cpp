@@ -24,6 +24,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/semaphore_ledger.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
@@ -974,6 +975,45 @@ bool FrontSkipSame() {
     return skip;
 }
 
+// A report semaphore write the front just sent (ProcessQueryGet on the back, in ring order). The
+// acquire ledger (semaphore_ledger.h) records a payload release, so acquires it meets need not
+// drain the back, and forgets the words any other report writes. From
+// sylvieistaken/selevet-eglantine bce3c83739.
+void NoteFrontReport(MemoryManager& memory_manager, const u32* regs, u32 query) {
+    using Ledger = Nx2SemaphoreLedger;
+    using Report = Maxwell3D::Regs::ReportSemaphore;
+    if (!Ledger::Enabled()) {
+        return;
+    }
+    Report report{};
+    report.address_high = regs[MAXWELL3D_REG_INDEX(report_semaphore.address_high)];
+    report.address_low = regs[MAXWELL3D_REG_INDEX(report_semaphore.address_low)];
+    report.query.raw = query;
+    const auto operation = report.query.operation.Value();
+    if (operation != Report::Operation::Release && operation != Report::Operation::ReportOnly) {
+        return;
+    }
+    const auto device = memory_manager.GpuToCpuAddress(report.Address());
+    if (!device) {
+        return;
+    }
+    auto& ledger = Ledger::Get();
+    if (operation == Report::Operation::Release &&
+        report.query.report.Value() == Report::Report::Payload &&
+        report.query.reduction_enable == 0) {
+        ledger.NoteRelease(*device, regs[MAXWELL3D_REG_INDEX(report_semaphore.payload)],
+                           VideoCommon::GpuSplit::Get().WritePosition());
+    } else {
+        ledger.Forget(*device);
+    }
+    if (report.query.short_query == 0) {
+        // A long report writes 16 bytes: the value's high word and a timestamp.
+        for (u64 offset = 4; offset < 16; offset += 4) {
+            ledger.Forget(*device + offset);
+        }
+    }
+}
+
 } // Anonymous namespace
 
 Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSplit& split) {
@@ -1119,6 +1159,9 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         // macro's end consumes the sink too (FinishFrontMacro).
         split.Method(this, method, argument, is_last_call, nullptr);
     }
+    if (method == MAXWELL3D_REG_INDEX(report_semaphore.query)) [[unlikely]] {
+        NoteFrontReport(memory_manager, fs.regs.data(), value);
+    }
 }
 
 void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
@@ -1233,6 +1276,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         }
     }
     split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr);
+    if (method == MAXWELL3D_REG_INDEX(report_semaphore.query) && amount != 0) [[unlikely]] {
+        NoteFrontReport(memory_manager, fs.regs.data(), fs.regs[method]);
+    }
 }
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
