@@ -121,9 +121,20 @@ Buffer::Buffer(BufferCacheRuntime& runtime, DAddr cpu_addr_, u64 size_bytes_,
     }
 }
 
+bool Buffer::IsRegionUsed(u64 offset, u64 size) const noexcept {
+    if (scheduler->CurrentTick() != last_usage_tick) {
+        return false;
+    }
+    return tracker.IsUsed(offset, size);
+}
+
 void Buffer::MarkUsage(u64 offset, u64 size) noexcept {
+    const u64 current_tick = scheduler->CurrentTick();
+    if (current_tick != last_usage_tick) {
+        tracker.Reset();
+        last_usage_tick = current_tick;
+    }
     tracker.Track(offset, size);
-    last_usage_tick = scheduler->CurrentTick();
 }
 
 VkBufferView Buffer::View(u32 offset, u32 size, VideoCore::Surface::PixelFormat format) {

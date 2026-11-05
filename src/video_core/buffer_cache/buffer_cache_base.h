@@ -392,6 +392,22 @@ public:
     /// Indirectly read banks of native programs already uploaded this frame.
     std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
     std::unordered_map<DAddr, std::array<u8, Core::DEVICE_PAGESIZE>> native_indirect_uniform_shadow;
+    DAddr native_indirect_uniform_last_page = ~DAddr{0};
+    std::array<u8, Core::DEVICE_PAGESIZE>* native_indirect_uniform_last_ptr = nullptr;
+
+    static constexpr size_t ResolvedStorageAddrCacheSize = 512;
+    struct ResolvedStorageAddrCacheEntry {
+        GPUVAddr gpu_addr{};
+        GPUVAddr aligned_gpu_addr{};
+        DAddr device_addr{};
+        u64 map_serial{};
+        size_t memory_id{};
+        u32 binding_size{};
+        u8 flags{};
+        bool valid{};
+    };
+    mutable std::array<ResolvedStorageAddrCacheEntry, ResolvedStorageAddrCacheSize>
+        resolved_storage_addr_cache{};
 
 private:
     template <typename Func>

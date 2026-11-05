@@ -110,6 +110,8 @@ void BufferCache<P>::TickFrame() {
     native_indirect_uniforms_this_frame.clear();
     if (native_indirect_uniform_shadow.size() > 4096) {
         native_indirect_uniform_shadow.clear();
+        native_indirect_uniform_last_page = ~DAddr{0};
+        native_indirect_uniform_last_ptr = nullptr;
     }
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
         for (const auto& [address, size] : uploaded_buffer_ranges) {
@@ -1320,10 +1322,21 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             const DAddr page_addr = cur_addr - page_offset;
             const bool already_cpu_modified =
                 memory_tracker.IsRegionCpuModified(cur_addr, chunk_size);
-            auto [it, inserted] = native_indirect_uniform_shadow.try_emplace(page_addr);
+            std::array<u8, Core::DEVICE_PAGESIZE>* shadow_page = nullptr;
+            bool inserted = false;
+            if (page_addr == native_indirect_uniform_last_page &&
+                native_indirect_uniform_last_ptr != nullptr) {
+                shadow_page = native_indirect_uniform_last_ptr;
+            } else {
+                auto [it, is_new] = native_indirect_uniform_shadow.try_emplace(page_addr);
+                shadow_page = &it->second;
+                inserted = is_new;
+                native_indirect_uniform_last_page = page_addr;
+                native_indirect_uniform_last_ptr = shadow_page;
+            }
             if (inserted || already_cpu_modified ||
-                std::memcmp(it->second.data() + page_offset, ptr, chunk_size) != 0) {
-                std::memcpy(it->second.data() + page_offset, ptr, chunk_size);
+                std::memcmp(shadow_page->data() + page_offset, ptr, chunk_size) != 0) {
+                std::memcpy(shadow_page->data() + page_offset, ptr, chunk_size);
                 if (!already_cpu_modified) {
                     memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
                 }
@@ -2771,6 +2784,27 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         return NULL_BINDING;
     }
 
+    const u8 cache_flags = static_cast<u8>((is_written ? 1u : 0u) |
+                                           (native_pointer ? 2u : 0u) |
+                                           (table_pointer ? 4u : 0u));
+    const u64 map_serial = gpu_memory->GetMapSerial();
+    const size_t memory_id = gpu_memory->GetID();
+    const size_t cache_slot =
+        (((gpu_addr >> 4) ^ (gpu_addr >> 20) ^ (u64{cache_flags} * 0x9e3779b9ULL)) &
+         (ResolvedStorageAddrCacheSize - 1));
+    if (native_pointer || table_pointer) {
+        const auto& entry = resolved_storage_addr_cache[cache_slot];
+        if (entry.valid && entry.gpu_addr == gpu_addr && entry.map_serial == map_serial &&
+            entry.memory_id == memory_id && entry.flags == cache_flags) {
+            return Binding{
+                .device_addr = entry.device_addr,
+                .gpu_addr = entry.aligned_gpu_addr,
+                .size = entry.binding_size,
+                .buffer_id = BufferId{},
+            };
+        }
+    }
+
     u32 size = [&]() {
         const u32 memory_layout_size =
             static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
@@ -2829,6 +2863,18 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         .size = binding_size,
         .buffer_id = BufferId{},
     };
+    if (native_pointer || table_pointer) {
+        resolved_storage_addr_cache[cache_slot] = ResolvedStorageAddrCacheEntry{
+            .gpu_addr = gpu_addr,
+            .aligned_gpu_addr = aligned_gpu_addr,
+            .device_addr = *aligned_device_addr,
+            .map_serial = map_serial,
+            .memory_id = memory_id,
+            .binding_size = binding_size,
+            .flags = cache_flags,
+            .valid = true,
+        };
+    }
     return binding;
 }
 

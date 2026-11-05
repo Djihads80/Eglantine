@@ -167,6 +167,10 @@ public:
     size_t GetMemoryLayoutSize(GPUVAddr gpu_addr,
                                size_t max_size = (std::numeric_limits<size_t>::max)()) const;
 
+    [[nodiscard]] u64 GetMapSerial() const noexcept {
+        return map_serial.load(std::memory_order_acquire);
+    }
+
     void FlushCaching();
 
     /// Leaves the caches' invalidation of a range already written for the next FlushCaching
