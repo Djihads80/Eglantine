@@ -187,7 +187,7 @@ bool DmaPusher::Step() {
         // safe read below would flush (with the split, the front can't tell: it reads memory
         // unflushed anyway). Entries on pages the GPU writes (culling) always take the flushing
         // read: their words at submit time are an older frame's.
-        const bool submitted = command_resume_offset == 0 &&
+        const bool submitted = command_resume_offset < header.size &&
                                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
                                (command_list.snapshot_suspensions & 1) == 0 &&
                                command_list.snapshot_suspensions ==
@@ -200,8 +200,11 @@ bool DmaPusher::Step() {
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
                 header.size};
-            RecordParsedEntry(header, commands);
-            command_resume_offset += ProcessCommands(commands, 0);
+            if (command_resume_offset == 0) {
+                RecordParsedEntry(header, commands);
+            }
+            command_resume_offset +=
+                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
