@@ -190,39 +190,44 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu_data) {
     Nx2NoteListHostWrite(device_addr, size);
-    if (IsRegionGpuModified(device_addr, size)) {
-        ClearDownload(device_addr, size);
-        gpu_modified_ranges.Subtract(device_addr, size);
-    }
-    // The tracker marks whole pages CPU-modified, which drops their GPU-modified state: GPU-written
-    // bytes elsewhere on these pages would never be downloaded, and the page's next upload would
-    // send the stale guest copy over them. Hyrule Warriors: Age of Imprisonment writes small
-    // structures next to the draw arguments its compute dispatches fill in; the draws then read
-    // leftover bytes as vertex counts. Download those bytes first (the CPU's own were subtracted
-    // above, so they aren't overwritten).
-    // Only the scheduler's owner may download (it records and submits): unmaps and other writes
-    // reach this from CPU and service threads too, and submitting there raced the GPU thread's
-    // own submissions (crashes in Scheduler::SubmitExecution). Those keep the old behaviour;
-    // guest CPU writes come through TryCacheInvalidation, which sends such pages to the GPU thread.
     const DAddr page_begin = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
     const DAddr page_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
-    if (keep_page_gpu_data && VideoCommon::GpuSplit::OwnsScheduler() &&
-        gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
-        // Switch 2 titles: upload the CPU's bytes into the buffer instead, as CachedWriteMemory
-        // does, so the page stays GPU-owned and nothing waits for the host GPU.
-        static const int forced = [] {
-            const char* value = std::getenv("EDEN_NX2_INLINE_PAGE_WRITES");
-            return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
-        }();
-        const bool inline_writes =
-            forced >= 0 ? forced == 1 : Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
-        if (inline_writes && IsRegionRegistered(device_addr, size)) {
-            tmp_buffer.resize_destructive(size);
-            device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
-            InlineMemoryImplementation(device_addr, size, tmp_buffer);
-            return;
+    // [device_addr, device_addr + size) lies within [page_begin, page_end): one lookup answers
+    // whether the written range or its surrounding 4 KiB page holds any GPU-modified bytes.
+    if (gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) [[unlikely]] {
+        if (IsRegionGpuModified(device_addr, size)) {
+            ClearDownload(device_addr, size);
+            gpu_modified_ranges.Subtract(device_addr, size);
         }
-        DownloadMemory(page_begin, page_end - page_begin);
+        // The tracker marks whole pages CPU-modified, which drops their GPU-modified state:
+        // GPU-written bytes elsewhere on these pages would never be downloaded, and the page's next
+        // upload would send the stale guest copy over them. Hyrule Warriors: Age of Imprisonment
+        // writes small structures next to the draw arguments its compute dispatches fill in; the
+        // draws then read leftover bytes as vertex counts. Download those bytes first (the CPU's
+        // own were subtracted above, so they aren't overwritten).
+        // Only the scheduler's owner may download (it records and submits): unmaps and other writes
+        // reach this from CPU and service threads too, and submitting there raced the GPU thread's
+        // own submissions (crashes in Scheduler::SubmitExecution). Those keep the old behaviour;
+        // guest CPU writes come through TryCacheInvalidation, which sends such pages to the GPU
+        // thread.
+        if (keep_page_gpu_data && VideoCommon::GpuSplit::OwnsScheduler() &&
+            gpu_modified_ranges.Intersects(page_begin, page_end - page_begin)) {
+            // Switch 2 titles: upload the CPU's bytes into the buffer instead, as CachedWriteMemory
+            // does, so the page stays GPU-owned and nothing waits for the host GPU.
+            static const int forced = [] {
+                const char* value = std::getenv("EDEN_NX2_INLINE_PAGE_WRITES");
+                return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+            }();
+            const bool inline_writes =
+                forced >= 0 ? forced == 1 : Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+            if (inline_writes && IsRegionRegistered(device_addr, size)) {
+                tmp_buffer.resize_destructive(size);
+                device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
+                InlineMemoryImplementation(device_addr, size, tmp_buffer);
+                return;
+            }
+            DownloadMemory(page_begin, page_end - page_begin);
+        }
     }
     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
@@ -1769,16 +1774,28 @@ void BufferCache<P>::UpdateIndexBuffer() {
 
     const GPUVAddr gpu_addr_begin = index_buffer_ref.StartAddress();
     const GPUVAddr gpu_addr_end = index_buffer_ref.EndAddress();
-    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
     const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
     const u32 draw_size = (index_buffer_ref.count + index_buffer_ref.first) * u32(index_buffer_ref.FormatSizeInBytes());
     const u32 size = (std::min)(address_size, draw_size);
-    if (size == 0 || !device_addr) {
+    if (size == 0) {
         channel_state->index_buffer = NULL_BINDING;
         return;
     }
-    channel_state->index_buffer = Binding{
+    auto& current = channel_state->index_buffer;
+    const u64 map_serial = gpu_memory->GetMapSerial();
+    const std::optional<DAddr> device_addr =
+        (current.gpu_addr == gpu_addr_begin && current.map_serial == map_serial &&
+         current.device_addr != 0)
+            ? std::optional<DAddr>{current.device_addr}
+            : gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+    if (!device_addr) {
+        current = NULL_BINDING;
+        return;
+    }
+    current = Binding{
         .device_addr = *device_addr,
+        .gpu_addr = gpu_addr_begin,
+        .map_serial = map_serial,
         .size = size,
         .buffer_id = FindBuffer(*device_addr, size, false),
     };
@@ -1815,11 +1832,28 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
         throw std::runtime_error("Native vertex stream exceeds supported 32-bit buffer size");
     }
     const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
-    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
     const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
     u32 size = address_size; // TODO: Analyze stride and number of vertices
-    if (array.enable == 0 || size == 0 || !device_addr) {
+    if (array.enable == 0 || size == 0) {
         channel_state->vertex_buffers[index] = NULL_BINDING;
+        UpdateVertexBufferSlot(index, NULL_BINDING);
+        return;
+    }
+    auto& current = channel_state->vertex_buffers[index];
+    const u64 map_serial = gpu_memory->GetMapSerial();
+    if (!channel_state->has_deleted_buffers && current.buffer_id &&
+        current.buffer_id != NULL_BUFFER_ID && current.gpu_addr == gpu_addr_begin &&
+        current.size == size && current.map_serial == map_serial && current.device_addr != 0 &&
+        !Settings::IsGPUFenceBehaviorAccurate()) [[likely]] {
+        return;
+    }
+    const std::optional<DAddr> device_addr =
+        (current.gpu_addr == gpu_addr_begin && current.map_serial == map_serial &&
+         current.device_addr != 0)
+            ? std::optional<DAddr>{current.device_addr}
+            : gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+    if (!device_addr) {
+        current = NULL_BINDING;
         UpdateVertexBufferSlot(index, NULL_BINDING);
         return;
     }
@@ -1829,10 +1863,12 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     const BufferId buffer_id = FindBuffer(*device_addr, size, false);
     const Binding binding{
         .device_addr = *device_addr,
+        .gpu_addr = gpu_addr_begin,
+        .map_serial = map_serial,
         .size = size,
         .buffer_id = buffer_id,
     };
-    channel_state->vertex_buffers[index] = binding;
+    current = binding;
     UpdateVertexBufferSlot(index, binding);
 }
 

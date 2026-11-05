@@ -292,6 +292,7 @@ GraphicsPipeline::GraphicsPipeline(
         num_image_elements += Shader::NumDescriptors(info->texture_descriptors);
         num_image_elements += Shader::NumDescriptors(info->image_descriptors);
         num_descriptor_entries += NumDescriptorEntries(*info);
+        has_render_area_push_constants |= info->uses_render_area;
     }
     fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];
     const auto any_written = [](const auto& descriptors) {
@@ -317,6 +318,8 @@ GraphicsPipeline::GraphicsPipeline(
             uses_descriptor_buffer = false;
             descriptor_buffer_layout = {};
             descriptor_set_layout = builder.CreateDescriptorSetLayout(uses_push_descriptor);
+        } else {
+            last_descriptor_payload.reserve(num_descriptor_entries);
         }
     }
 
@@ -618,14 +621,6 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling,
                                  samplers_it, views_it);
         }
-        if (info.uses_render_area) {
-            render_area.uses_render_area = true;
-            // Switch 2 titles may never program the surface clip; use colour target 0 then.
-            const u32 clip_width = regs.surface_clip.width, clip_height = regs.surface_clip.height;
-            const bool clip_set = clip_width != 0 && clip_height != 0;
-            render_area.words = {static_cast<float>(clip_set ? clip_width : u32{regs.rt[0].width}),
-                                 static_cast<float>(clip_set ? clip_height : u32{regs.rt[0].height})};
-        }
     }};
     if constexpr (Spec::enabled_stages[0]) {
         prepare_stage(0);
@@ -642,6 +637,14 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     if constexpr (Spec::enabled_stages[4]) {
         prepare_stage(4);
     }
+    if (has_render_area_push_constants) [[unlikely]] {
+        render_area.uses_render_area = true;
+        // Switch 2 titles may never program the surface clip; use colour target 0 then.
+        const u32 clip_width = regs.surface_clip.width, clip_height = regs.surface_clip.height;
+        const bool clip_set = clip_width != 0 && clip_height != 0;
+        render_area.words = {static_cast<float>(clip_set ? clip_width : u32{regs.rt[0].width}),
+                             static_cast<float>(clip_set ? clip_height : u32{regs.rt[0].height})};
+    }
     if (buffer_cache.any_buffer_uploaded) {
         buffer_cache.runtime.PostCopyBarrier();
         buffer_cache.any_buffer_uploaded = false;
@@ -650,9 +653,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::RenderTargets};
         texture_cache.UpdateRenderTargets(false);
         const std::span<const VideoCommon::ImageViewInOut> view_span{views.data(), views.size()};
-        texture_cache.CheckFeedbackLoop(view_span);
+        if (!view_span.empty()) {
+            texture_cache.CheckFeedbackLoop(view_span);
+        }
         if (scheduler.HasFragmentBarrier() &&
-            (scheduler.RenderPassHasStores() || texture_cache.SamplesRenderTarget(view_span))) {
+            (scheduler.RenderPassHasStores() ||
+             (!view_span.empty() && texture_cache.SamplesRenderTarget(view_span)))) {
             scheduler.RequestOutsideRenderPassOperationContext();
         }
     }

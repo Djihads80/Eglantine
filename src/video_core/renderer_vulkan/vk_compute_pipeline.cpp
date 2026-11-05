@@ -73,6 +73,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             uses_descriptor_buffer = false;
             descriptor_buffer_layout = {};
             descriptor_set_layout = builder.CreateDescriptorSetLayout(false);
+        } else {
+            last_descriptor_payload.reserve(num_descriptor_entries);
         }
     }
     pipeline_layout = builder.CreatePipelineLayout(*descriptor_set_layout);

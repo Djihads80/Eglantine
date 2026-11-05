@@ -565,6 +565,7 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
         last_feedback_loop_result = false;
         return;
     }
+    const u32 color_mask = rt_active_mask & ((1u << NUM_RT) - 1);
     const u32 depth_bit = 1u << NUM_RT;
     const bool depth_active = (rt_active_mask & depth_bit) != 0;
 
@@ -576,8 +577,13 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
 
             {
                 bool is_continue = false;
-                for (size_t i = 0; i < 8; ++i)
-                    is_continue |= (rt_active_mask & (1u << i)) && view.id == render_targets.color_buffer_ids[i];
+                for (u32 m = color_mask; m != 0; m &= m - 1) {
+                    const size_t i = static_cast<size_t>(std::countr_zero(m));
+                    if (view.id == render_targets.color_buffer_ids[i]) {
+                        is_continue = true;
+                        break;
+                    }
+                }
                 if (is_continue)
                     continue;
             }
@@ -588,8 +594,13 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
             const ImageId view_image_id = slot_image_views[view.id].image_id;
             {
                 bool is_continue = false;
-                for (size_t i = 0; i < 8; ++i)
-                    is_continue |= (rt_active_mask & (1u << i)) && view_image_id == rt_image_id[i];
+                for (u32 m = color_mask; m != 0; m &= m - 1) {
+                    const size_t i = static_cast<size_t>(std::countr_zero(m));
+                    if (view_image_id == rt_image_id[i]) {
+                        is_continue = true;
+                        break;
+                    }
+                }
                 if (is_continue)
                     continue;
             }
@@ -611,20 +622,24 @@ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
 
 template <class P>
 bool TextureCache<P>::SamplesRenderTarget(std::span<const ImageViewInOut> views) {
-    if (rt_active_mask == 0) {
+    if (rt_active_mask == 0 || views.empty()) {
         return false;
     }
+    const u32 color_mask = rt_active_mask & ((1u << NUM_RT) - 1);
     const bool depth_active = (rt_active_mask & (1u << NUM_RT)) != 0;
+    ImageViewId last_view_id{};
     for (const auto& view : views) {
-        if (!view.id) {
+        if (!view.id || view.id == last_view_id) {
             continue;
         }
+        last_view_id = view.id;
         const ImageId image_id = slot_image_views[view.id].image_id;
         if (depth_active && image_id == rt_depth_image_id) {
             return true;
         }
-        for (size_t i = 0; i < NUM_RT; ++i) {
-            if ((rt_active_mask & (1u << i)) != 0 && image_id == rt_image_id[i]) {
+        for (u32 m = color_mask; m != 0; m &= m - 1) {
+            const size_t i = static_cast<size_t>(std::countr_zero(m));
+            if (image_id == rt_image_id[i]) {
                 return true;
             }
         }
