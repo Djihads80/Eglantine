@@ -100,6 +100,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break;
     case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break;
     case 0x927: operand(24); operand(32); break;
+    case 0x9a8: operand(16); operand(32); break; // ATOMG: result in Rd, data operand at bit 32.
+    case 0xb6c: case 0xf6c: // TXD: both destination pairs, coordinate pair, four gradients.
+        operand(16, 2); operand(24, 2); operand(32, 4); operand(64, 2); break;
     case 0x202: case 0x243: operand(16); operand(32); break;
     case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
         operand(16); operand(24); operand(64); break;
@@ -309,10 +312,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (opcode == 0x81c) break;
-            // Bits 32-39 name a register in register forms and in these opcodes: TEX/TLD, the
-            // stores, and the data operand of ISBEWR (0x927), RED (0x98e) and SURED (0x59f), all
-            // three listed with operand 32 in RegisterPressure.
-            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927 && opcode != 0x98e && opcode != 0x59f) continue;
+            // Bits 32-39 name a register in register forms and in these opcodes: TEX/TLD, TXD's
+            // gradients, and the data operand of the stores, ISBEWR (0x927), the global atomic
+            // (0x9a8), RED (0x98e) and SURED (0x59f), all listed with operand 32 in RegisterPressure.
+            if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xb6c && opcode != 0xf6c && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927 && opcode != 0x9a8 && opcode != 0x98e && opcode != 0x59f) continue;
             const u32 reg = insn.Bits(bit, 8);
             const u32 span = (bit == 24 && opcode == 0x59f)
                                  ? (insn.Bits(61, 3) <= 1 ? 1U : insn.Bits(61, 3) <= 3 ? 2U : 3U)
