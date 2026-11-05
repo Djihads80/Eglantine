@@ -25,6 +25,7 @@
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 
 #include "common/assert.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/exception.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
@@ -715,15 +716,20 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
         if (mesh_draw) {
-            // NVN launches workgroups [first, first + count); DrawMeshTasksEXT starts at 0.
-            if (draw_params.base_vertex != 0) {
+            // NVN launches workgroups [first, first + count). DrawMeshTasksEXT starts at 0, so the
+            // first stage adds first from a push constant (MeshFirstEnabled). The count is the raw
+            // one: MakeDrawParams rewrites counts for quad topologies.
+            const u32 groups = is_indexed ? draw_state.index_buffer.count
+                                          : draw_state.vertex_buffer.count;
+            const u32 first = draw_state.vertex_buffer.first;
+            if (first != 0 && !Shader::Backend::SPIRV::MeshFirstEnabled()) {
                 static std::atomic<u32> logged{};
                 if (logged++ < 16) {
                     LOG_INFO(Render_Vulkan, "Mesh draw of {} workgroups from {}: drawn from 0",
-                             draw_params.num_vertices, draw_params.base_vertex);
+                             groups, first);
                 }
             }
-            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+            scheduler.Record([groups](vk::CommandBuffer cmdbuf) {
                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
             });
             return;
@@ -761,7 +767,8 @@ void RasterizerVulkan::DrawIndirect() {
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
         if (mesh_draw) {
-            // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
+            // Unreachable for Switch 2 titles: their MME code reads indirect arguments itself
+            // (MME_DMA_READ_FIFOED) and makes a direct draw; only the HLE macros come here.
             static bool logged{};
             if (!std::exchange(logged, true)) {
                 LOG_WARNING(Render_Vulkan, "Indirect task/mesh draw skipped");
@@ -2529,10 +2536,11 @@ std::string RasterizerVulkan::DrawStateJson(const GraphicsPipeline& pipeline) co
         dynamic_alpha_to_coverage ? alpha_to_coverage_enable
                                   : alpha_to_coverage && pipeline.SupportsAlphaToCoverage();
     return fmt::format(
-        R"("fs":"{:016x}","mesh":{},"vb":[{},{}],"ib":[{},{}],"inst":{},"blend":[{}],"per_target":{},)"
-        R"("iterated":{},"const":[{},{},{},{}],"alpha_test":[{},{}],"a2c":[{},{}],"color0":{},)"
-        R"("kill":{},"depth":[{},{},{}])",
-        pipeline.ShaderHashes()[5], pipeline.IsMeshPipeline(), draw.vertex_buffer.first,
+        R"("fs":"{:016x}","mesh":{},"topo":{},"vb":[{},{}],"ib":[{},{}],"inst":{},"blend":[{}],)"
+        R"("per_target":{},"iterated":{},"const":[{},{},{},{}],"alpha_test":[{},{}],"a2c":[{},{}],)"
+        R"("color0":{},"kill":{},"depth":[{},{},{}])",
+        pipeline.ShaderHashes()[5], pipeline.IsMeshPipeline(), static_cast<u32>(draw.topology),
+        draw.vertex_buffer.first,
         draw.vertex_buffer.count, draw.index_buffer.first, draw.index_buffer.count,
         draw.instance_count, targets, regs.blend_per_target_enabled != 0,
         regs.iterated_blend.enable.Value(), number(regs.blend_color.r), number(regs.blend_color.g),
