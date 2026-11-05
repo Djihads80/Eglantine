@@ -1678,6 +1678,14 @@ void BufferCache<P>::UpdateIndexBuffer() {
         return;
     }
 
+    // A format from garbage commands (FormatSizeInBytes would abort): no index buffer.
+    using IndexFormat = Tegra::Engines::Maxwell3D::Regs::IndexFormat;
+    if (index_buffer_ref.format != IndexFormat::UnsignedByte &&
+        index_buffer_ref.format != IndexFormat::UnsignedShort &&
+        index_buffer_ref.format != IndexFormat::UnsignedInt) [[unlikely]] {
+        channel_state->index_buffer = NULL_BINDING;
+        return;
+    }
     const GPUVAddr gpu_addr_begin = index_buffer_ref.StartAddress();
     const GPUVAddr gpu_addr_end = index_buffer_ref.EndAddress();
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);

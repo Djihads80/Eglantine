@@ -3133,19 +3133,11 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
     // 0x0 with 36232 layers): creating the image would abort.
     static constexpr u32 MaxRenderTargetSize = 32768;
     static constexpr s32 MaxRenderTargetLayers = 2048;
-    // Also blocks past 32 GOBs and targets whose first or last byte is unmapped: unswizzling
-    // such an image faulted (Ocarina of Time on a phone, with garbage commands).
-    const auto unmapped = [&] {
-        if (!gpu_memory->GpuToCpuAddress(gpu_addr)) {
-            return true;
-        }
-        const u64 size = CalculateGuestSizeInBytes(info);
-        return size == 0 || size > (u64{1} << 32) ||
-               !gpu_memory->GpuToCpuAddress(gpu_addr + size - 1);
-    };
+    // Also blocks past 32 GOBs and unmapped targets: unswizzling such an image faulted
+    // (Ocarina of Time on a phone, with garbage commands).
     if (info.size.width > MaxRenderTargetSize || info.size.height > MaxRenderTargetSize ||
         info.resources.layers > MaxRenderTargetLayers || info.block.width > 5 ||
-        info.block.height > 5 || info.block.depth > 5 || unmapped()) {
+        info.block.height > 5 || info.block.depth > 5 || !gpu_memory->GpuToCpuAddress(gpu_addr)) {
         static std::atomic<u32> logged{};
         if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
             LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}",

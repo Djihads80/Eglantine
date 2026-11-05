@@ -594,7 +594,11 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u64 first = is_indexed ? state.index_buffer.first : state.vertex_buffer.first;
         const u64 count = is_indexed ? state.index_buffer.count : state.vertex_buffer.count;
         constexpr u64 MaxVertices = u64{1} << 24;
-        if (first + count > MaxVertices) {
+        // An index format from garbage commands: FormatSizeInBytes and the host index type abort.
+        const bool bad_index_format =
+            is_indexed && static_cast<u32>(state.index_buffer.format) >
+                              static_cast<u32>(Maxwell::IndexFormat::UnsignedInt);
+        if (first + count > MaxVertices || bad_index_format) {
             static std::atomic<u32> skipped{};
             if (skipped.fetch_add(1, std::memory_order_relaxed) < 16) {
                 LOG_WARNING(HW_GPU, "Draw skipped: {} {} from {} (vertex/index count past {})",
