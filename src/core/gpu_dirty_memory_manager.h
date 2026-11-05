@@ -48,6 +48,9 @@ public:
     }
 
     void Gather(std::function<void(PAddr, size_t)>& callback) {
+        // FlushRegion also gathers off the GPU thread (host1x video decode reads); serialize
+        // gatherers so one cannot swap or clear front_buffer while another iterates it.
+        std::scoped_lock gather_lk(gather_guard);
         {
             std::scoped_lock lk(guard);
             TransformAddress t = current.exchange(default_transform, std::memory_order_relaxed);
@@ -115,6 +118,7 @@ private:
 
     std::atomic<TransformAddress> current{};
     std::mutex guard;
+    std::mutex gather_guard;
     std::vector<TransformAddress> back_buffer;
     std::vector<TransformAddress> front_buffer;
 };
