@@ -2487,26 +2487,31 @@ void RasterizerVulkan::UpdateDepthClampEnable(Tegra::Engines::Maxwell3D::Regs& r
         [is_enabled](vk::CommandBuffer cmdbuf) { cmdbuf.SetDepthClampEnableEXT(is_enabled); });
 }
 
+// Both enables also depend on the bound pipeline writing colour 0, which the dirty flags do not
+// track, so they are recomputed every draw and recorded when they change (Lichii 82b95a65d4).
 void RasterizerVulkan::UpdateAlphaToCoverageEnable(Tegra::Engines::Maxwell3D::Regs& regs) {
-    if (!state_tracker.TouchAlphaToCoverageEnable()) {
-        return;
-    }
+    const bool dirty = state_tracker.TouchAlphaToCoverageEnable();
     if (!device.SupportsDynamicState3AlphaToCoverageEnable()) {
         return;
     }
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     const bool enable = pipeline != nullptr && pipeline->SupportsAlphaToCoverage() &&
                         regs.anti_alias_alpha_control.alpha_to_coverage != 0;
+    if (!dirty && enable == alpha_to_coverage_enable) {
+        return;
+    }
+    alpha_to_coverage_enable = enable;
     scheduler.Record([enable](vk::CommandBuffer cmdbuf) {
         cmdbuf.SetAlphaToCoverageEnableEXT(enable ? VK_TRUE : VK_FALSE);
     });
 }
 
 void RasterizerVulkan::UpdateAlphaToOneEnable(Tegra::Engines::Maxwell3D::Regs& regs) {
-    if (!state_tracker.TouchAlphaToOneEnable()) {
-        return;
-    }
+    const bool dirty = state_tracker.TouchAlphaToOneEnable();
     if (!device.SupportsDynamicState3AlphaToOneEnable()) {
+        if (!dirty) {
+            return;
+        }
         static std::once_flag warn_alpha_to_one;
         std::call_once(warn_alpha_to_one, [] {
             LOG_WARNING(Render_Vulkan,
@@ -2517,6 +2522,10 @@ void RasterizerVulkan::UpdateAlphaToOneEnable(Tegra::Engines::Maxwell3D::Regs& r
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     const bool enable = pipeline != nullptr && pipeline->SupportsAlphaToOne() &&
                         regs.anti_alias_alpha_control.alpha_to_one != 0;
+    if (!dirty && enable == alpha_to_one_enable) {
+        return;
+    }
+    alpha_to_one_enable = enable;
     scheduler.Record([enable](vk::CommandBuffer cmdbuf) {
         cmdbuf.SetAlphaToOneEnableEXT(enable ? VK_TRUE : VK_FALSE);
     });
