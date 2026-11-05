@@ -751,12 +751,22 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
+    const size_t fast_slot = static_cast<size_t>((key.unique_hash ^ (key.unique_hash >> 32) ^
+                                                  key.shared_memory_size ^ key.workgroup_size[0]) &
+                                                 (ComputeFastCacheSize - 1));
+    auto& fast_entry = compute_fast_cache[fast_slot];
+    if (fast_entry.pipeline != nullptr && fast_entry.key == key) {
+        return fast_entry.pipeline;
+    }
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& pipeline{pair->second};
-    if (!is_new) {
-        return pipeline.get();
+    if (is_new) {
+        pipeline = CreateComputePipeline(key, shader);
     }
-    pipeline = CreateComputePipeline(key, shader);
+    if (pipeline) {
+        fast_entry.key = key;
+        fast_entry.pipeline = pipeline.get();
+    }
     return pipeline.get();
 }
 

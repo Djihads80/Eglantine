@@ -114,6 +114,11 @@ private:
     /// @return Pointer to a valid shader, nullptr when nothing is found
     ShaderInfo* TryGet(VAddr addr) const;
 
+    const ShaderInfo* TryGetResolved(GPUVAddr shader_addr, size_t memory_id, u64 map_serial,
+                                     u64 inv_serial, std::optional<VAddr>& out_cpu_addr);
+    void CacheResolved(GPUVAddr shader_addr, size_t memory_id, u64 map_serial, u64 inv_serial,
+                       const ShaderInfo* info) noexcept;
+
     /// @brief Register in the cache a given entry
     /// @param data Shader to store in the cache
     /// @param addr Start address of the shader that will be registered
@@ -177,6 +182,17 @@ private:
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};
+
+    static constexpr size_t ResolvedShaderCacheSize = 512;
+    struct ResolvedShaderCacheEntry {
+        GPUVAddr shader_addr{~GPUVAddr{0}};
+        size_t memory_id{~size_t{0}};
+        u64 map_serial{};
+        u64 invalidation_serial{};
+        const ShaderInfo* info{};
+    };
+    std::array<ResolvedShaderCacheEntry, ResolvedShaderCacheSize> resolved_shader_cache{};
+    std::atomic<u64> invalidation_serial{1};
 };
 
 } // namespace VideoCommon

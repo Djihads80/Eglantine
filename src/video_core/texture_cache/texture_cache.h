@@ -3764,8 +3764,10 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             TrackImage(image, image_id);
         }
     } else {
-        RefreshContents(image, image_id);
-        if (!image.aliased_images.empty()) {
+        if (True(image.flags & ImageFlagBits::CpuModified)) {
+            RefreshContents(image, image_id);
+        }
+        if (True(image.flags & ImageFlagBits::Alias) && !image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
         }
     }

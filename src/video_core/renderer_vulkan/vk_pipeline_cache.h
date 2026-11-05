@@ -186,6 +186,13 @@ private:
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
 
+    static constexpr size_t ComputeFastCacheSize = 64;
+    struct ComputeFastCacheEntry {
+        ComputePipelineCacheKey key{};
+        ComputePipeline* pipeline{};
+    };
+    std::array<ComputeFastCacheEntry, ComputeFastCacheSize> compute_fast_cache{};
+
     ShaderPools main_pools;
 
     Shader::Profile profile;
