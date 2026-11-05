@@ -2399,14 +2399,25 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 const u32 reg = element(source_b, i);
                 std::optional<u32> imm;
                 if (offset_mode == 2 && i < 2) {
-                    for (u32 cursor = index; cursor > 0 && !control_entries[cursor];) {
+                    for (u32 cursor = index; cursor > 0;) {
+                        if (std::ranges::any_of(relocations, [cursor](const Relocation& r) {
+                                return r.target == static_cast<s64>(cursor);
+                            })) {
+                            break;
+                        }
                         const auto& def = code[--cursor];
                         if (def.Bits(12, 4) == 15) continue;
                         const u32 op = def.Bits(0, 12), target = def.Bits(16, 8);
-                        auto count = write_count(def);
-                        if (op == 0x211 || op == 0x811 || op == 0xa11 || op == 0x224 || op == 0x624)
-                            count = 1;
-                        if (!count || target == 255 || reg < target || reg >= target + *count)
+                        if (op == 0x947 || op == 0x94d || op == 0x950 || op == 0x944 ||
+                            op == 0x943) {
+                            break;
+                        }
+                        if (op == 0x945 || op == 0x918 || op == 0x91a ||
+                            (op & 0x1ff) == 0x00c || (op & 0x1ff) == 0x00b) {
+                            continue;
+                        }
+                        const u32 count = (op == 0x225 || op == 0x625 || op == 0x825 || op == 0x805) ? 2U : 1U;
+                        if (target == 255 || reg < target || reg >= target + count)
                             continue;
                         const bool move = op == 0x802 && !def.Bits(24, 8) && def.words[2] == 0xf00;
                         const bool imad = op == 0x424 && def.Bits(24, 8) == 255 && def.words[2] == 0x078e00ff;
