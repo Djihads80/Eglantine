@@ -15,8 +15,10 @@
 #include <string>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <unordered_set>
 #include <utility>
 
 #include "common/assert.h"
@@ -345,11 +347,30 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
     return std::nullopt;
 }
 
+namespace {
+// A handle past the pool reads no descriptor, and the shader is translated for a zeroed one
+// (format 0, 1D): say which, once per handle (32 at most).
+void LogHandlePastPool(u32 raw, u32 index, u32 limit, bool via_header_index) {
+    static std::mutex mutex;
+    static std::unordered_set<u32> logged;
+    std::scoped_lock lock{mutex};
+    if (logged.size() < 32 && logged.insert(raw).second) {
+        LOG_WARNING(HW_GPU,
+                    "Texture handle {:#x} (index {:#x}) is past the pool limit {:#x} (via header "
+                    "index {})",
+                    raw, index, limit, via_header_index);
+    }
+}
+} // Anonymous namespace
+
 Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
                                                              bool via_header_index, u32 raw) {
     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
     const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit,
                                                        gpu_memory->UsesNativeTiling())};
+    if (index > tic_limit) {
+        LogHandlePastPool(raw, index, tic_limit, via_header_index);
+    }
     ASSERT(index <= tic_limit);
     const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
     Tegra::Texture::TICEntry entry;
@@ -778,6 +799,9 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
     const u32 index{Tegra::Texture::TextureHeaderIndex(
         Tegra::Texture::TexturePair(handle, snapshot->via_header_index).first,
         snapshot->texture_pool_limit, snapshot->native_tiling)};
+    if (index > snapshot->texture_pool_limit) {
+        LogHandlePastPool(handle, index, snapshot->texture_pool_limit, snapshot->via_header_index);
+    }
     ASSERT(index <= snapshot->texture_pool_limit);
     Tegra::Texture::TICEntry entry{};
     if (index <= snapshot->texture_pool_limit) {
