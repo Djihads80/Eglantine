@@ -71,13 +71,6 @@ void ReleaseFences(DmaPusher& dma_pusher) {
         VideoCommon::DrainSite::FenceRelease);
 }
 
-// The fence manager records into the scheduler and downloads the CPU's writes over GPU data:
-// the back's state, which a drained back still uses from its idle hook (it submits).
-void ReleaseFences(DmaPusher& dma_pusher) {
-    VideoCommon::GpuSplit::Get().Run(
-        [rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); });
-}
-
 } // Anonymous namespace
 
 bool Puller::PendingAcquire::Matches(u32 current) const {

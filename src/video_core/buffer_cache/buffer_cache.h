@@ -663,21 +663,6 @@ void BufferCache<P>::SetComputeUniformBufferState(u32 mask,
 }
 
 template <class P>
-void BufferCache<P>::UnbindGraphicsStorageBuffers(size_t stage) {
-    if (channel_state->enabled_storage_buffers[stage] == 0) {
-        return;
-    }
-    if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
-        if (runtime.ShouldLimitDynamicStorageBuffers()) {
-            channel_state->total_graphics_storage_buffers -=
-                static_cast<u32>(std::popcount(channel_state->enabled_storage_buffers[stage]));
-        }
-    }
-    channel_state->enabled_storage_buffers[stage] = 0;
-    channel_state->written_storage_buffers[stage] = 0;
-}
-
-template <class P>
 bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index,
                                                u32 cbuf_offset, bool is_written,
                                                u32 indirect_offset) {
@@ -723,16 +708,6 @@ bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, 
                              maxwell3d->GetNativeMacroEngine().native_turing,
                              indirect_offset != ~0U);
     return (channel_state->storage_buffers[stage][ssbo_index].buffer_id != NULL_BUFFER_ID);
-}
-
-template <class P>
-void BufferCache<P>::UnbindGraphicsTextureBuffers(size_t stage) {
-    if (channel_state->enabled_texture_buffers[stage] == 0) {
-        return;
-    }
-    channel_state->enabled_texture_buffers[stage] = 0;
-    channel_state->written_texture_buffers[stage] = 0;
-    channel_state->image_texture_buffers[stage] = 0;
 }
 
 template <class P>

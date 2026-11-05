@@ -488,7 +488,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
-    g_back_busy.store(true, std::memory_order_relaxed);
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
@@ -514,7 +513,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 available = published.load(std::memory_order_acquire);
             }
             if (available == read_position) {
-                g_back_busy.store(false, std::memory_order_release);
                 // Publish bumps `wake` when it sees back_waiting: read it before the last look
                 // at `published`, so a publish in between ends the wait at once.
                 back_waiting.store(true, std::memory_order_seq_cst);
@@ -527,14 +525,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     }
                 }
                 back_waiting.store(false, std::memory_order_seq_cst);
-                g_back_busy.store(true, std::memory_order_seq_cst);
                 continue;
             }
         }
         u64 last_store = read_position;
         // Before any entry runs, so a front that sees these entries consumed also sees this.
         back_quiet.store(false, std::memory_order_seq_cst);
-        g_back_busy.store(true, std::memory_order_relaxed);
         while (read_position != available) {
             const size_t index = read_position & RingMask;
             const size_t size =
@@ -565,7 +561,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
     }
-    g_back_busy.store(false, std::memory_order_release);
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);
     front_wake.notify_all();

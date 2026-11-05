@@ -289,12 +289,31 @@ public:
 
     void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
 
-    void UnbindGraphicsStorageBuffers(size_t stage);
+    void UnbindGraphicsStorageBuffers(size_t stage) {
+        if (channel_state->enabled_storage_buffers[stage] == 0) {
+            return;
+        }
+        if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
+            if (runtime.ShouldLimitDynamicStorageBuffers()) {
+                channel_state->total_graphics_storage_buffers -=
+                    static_cast<u32>(std::popcount(channel_state->enabled_storage_buffers[stage]));
+            }
+        }
+        channel_state->enabled_storage_buffers[stage] = 0;
+        channel_state->written_storage_buffers[stage] = 0;
+    }
 
     bool BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
                                    bool is_written, u32 indirect_offset = ~0U);
 
-    void UnbindGraphicsTextureBuffers(size_t stage);
+    void UnbindGraphicsTextureBuffers(size_t stage) {
+        if (channel_state->enabled_texture_buffers[stage] == 0) {
+            return;
+        }
+        channel_state->enabled_texture_buffers[stage] = 0;
+        channel_state->written_texture_buffers[stage] = 0;
+        channel_state->image_texture_buffers[stage] = 0;
+    }
 
     void BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr, u32 size,
                                    PixelFormat format, bool is_written, bool is_image);
