@@ -40,6 +40,8 @@ constexpr size_t SIZE_CAP = size_t{2} << 30;
 constexpr size_t QUEUE_BUDGET = size_t{512} << 20;
 #endif
 constexpr size_t STAGING_BUDGET = size_t{256} << 20;
+/// Larger images (a 12288x12288 shadow map) are listed without their data.
+constexpr size_t MAX_READBACK = size_t{64} << 20;
 constexpr u32 MAX_SKIPPED_LINES = 512;
 
 template <typename T>
@@ -442,12 +444,19 @@ bool FrameDump::NoteSampled(std::span<const Sampled> textures) {
         }
         const u32 index = static_cast<u32>(pass_sampled.size());
         pass_sampled.push_back(*key);
-        recorded |= RecordSampled(
-            texture, index,
-            fmt::format("{:04}_pass{:03}_tex{:02}_s{}_tic{}", sequence++, pass_index, index,
-                        texture.stage, texture.tic),
+        const std::string tags =
             fmt::format(R"("kind":"sampled","pass":{},"draw":{},"stage":{},"tic":{},"index":{})",
-                        pass_index, draws - 1, texture.stage, texture.tic, index));
+                        pass_index, draws - 1, texture.stage, texture.tic, index);
+        // Read back once per frame until something writes the image again.
+        if (const auto it = std::ranges::find(frame_readbacks, *key, &FrameReadback::key);
+            it != frame_readbacks.end()) {
+            Enqueue({.tags = fmt::format(R"({{{},"same_as":"{}"}})", tags, it->name)});
+            continue;
+        }
+        std::string name = fmt::format("{:04}_pass{:03}_tex{:02}_s{}_tic{}", sequence++,
+                                       pass_index, index, texture.stage, texture.tic);
+        frame_readbacks.push_back({*key, name});
+        recorded |= RecordSampled(texture, index, std::move(name), tags);
     }
     return recorded;
 }
@@ -459,18 +468,18 @@ void FrameDump::NoteDispatchSampled(u64 shader_hash, std::span<const Sampled> te
         if (!key) {
             continue;
         }
-        const std::tuple<u64, GPUVAddr, u32> seen{shader_hash, key->first, key->second};
-        if (std::ranges::find(dispatch_sampled, seen) != dispatch_sampled.end()) {
+        const std::string tags = fmt::format(
+            R"("kind":"sampled","dispatch":{},"after_draws":{},"stage":{},"tic":{},"index":{},"shaders":["{:016x}"])",
+            dispatches, draws, texture.stage, texture.tic, index, shader_hash);
+        if (const auto it = std::ranges::find(frame_readbacks, *key, &FrameReadback::key);
+            it != frame_readbacks.end()) {
+            Enqueue({.tags = fmt::format(R"({{{},"same_as":"{}"}})", tags, it->name)});
             continue;
         }
-        dispatch_sampled.push_back(seen);
-        RecordSampled(
-            texture, index,
-            fmt::format("{:04}_dispatch{:04}_{:016x}_tex{:02}_tic{}", sequence++, dispatches,
-                        shader_hash, index, texture.tic),
-            fmt::format(
-                R"("kind":"sampled","dispatch":{},"after_draws":{},"stage":{},"tic":{},"index":{},"shaders":["{:016x}"])",
-                dispatches, draws, texture.stage, texture.tic, index, shader_hash));
+        std::string name = fmt::format("{:04}_dispatch{:04}_{:016x}_tex{:02}_tic{}", sequence++,
+                                       dispatches, shader_hash, index, texture.tic);
+        frame_readbacks.push_back({*key, name});
+        RecordSampled(texture, index, std::move(name), tags);
     }
 }
 
@@ -525,6 +534,7 @@ bool FrameDump::EndPass() {
     const std::string programs = JsonAddresses(pass_programs);
     bool recorded = false;
     for (const Target& target : pass_targets) {
+        Written(target.gpu_addr);
         recorded |= Record(
             target,
             fmt::format("{:04}_pass{:03}_d{}-{}_rt{}", sequence++, pass_index, pass_first_draw,
@@ -551,6 +561,7 @@ void FrameDump::CaptureDispatch(u64 shader_hash, u64 program, std::span<const u3
         if (!target) {
             continue;
         }
+        Written(target->gpu_addr);
         any = true;
         Record(*target,
                fmt::format("{:04}_dispatch{:04}_{:016x}_img{}", sequence++, dispatch, shader_hash,
@@ -566,6 +577,11 @@ void FrameDump::CaptureDispatch(u64 shader_hash, u64 program, std::span<const u3
                      dispatch, draws, shader_hash, program, groups[0], groups[1], groups[2],
                      written.size())});
     }
+}
+
+void FrameDump::Written(GPUVAddr gpu_addr) {
+    std::erase_if(frame_readbacks,
+                  [gpu_addr](const FrameReadback& readback) { return readback.key.first == gpu_addr; });
 }
 
 void FrameDump::CapturePresent(ImageView& view) {
@@ -585,6 +601,12 @@ bool FrameDump::Record(const Target& target, std::string name, std::string tags)
         return false;
     }
     const size_t size = size_t{target.width} * target.height * target.depth * TexelBytes(target);
+    if (size > MAX_READBACK) {
+        Enqueue({.tags = fmt::format(R"({{"name":"{}",{},"format":"{}","width":{},"height":{},"depth":{},"gpu_addr":"{:#x}","skipped":"over {} MiB"}})",
+                                     name, tags, target.format, target.width, target.height,
+                                     target.depth, target.gpu_addr, MAX_READBACK >> 20)});
+        return false;
+    }
     if (recorded_bytes + size > SIZE_CAP) {
         truncated = true;
         return false;
@@ -889,7 +911,7 @@ void FrameDump::Start() {
     dispatches = 0;
     skipped = 0;
     pass_framebuffer = nullptr;
-    dispatch_sampled.clear();
+    frame_readbacks.clear();
     if (!writer.joinable()) {
         writer = std::thread{[this] { WriterLoop(); }};
     }

@@ -130,6 +130,8 @@ private:
     static int Decode(const Target& target, const u8* pixel, std::array<float, 4>& out);
     bool Record(const Target& target, std::string name, std::string tags);
     bool RecordSampled(const Sampled& texture, u32 index, std::string name, std::string tags);
+    /// An image was written: its next sampling is read back again.
+    void Written(GPUVAddr gpu_addr);
     bool TriggerPending();
     void Start();
     void Drain();
@@ -170,8 +172,12 @@ private:
     std::vector<u64> pass_hashes;
     std::vector<u64> pass_programs;
     std::vector<std::pair<GPUVAddr, u32>> pass_sampled;
-    /// (compute shader hash, image address, format/level/layer) already read back this frame.
-    std::vector<std::tuple<u64, GPUVAddr, u32>> dispatch_sampled;
+    /// Sampled images (address, format/level/layer) read back this frame and not written since.
+    struct FrameReadback {
+        std::pair<GPUVAddr, u32> key;
+        std::string name;
+    };
+    std::vector<FrameReadback> frame_readbacks;
     u32 pass_index{};
     u32 pass_first_draw{};
     u32 draws{};
