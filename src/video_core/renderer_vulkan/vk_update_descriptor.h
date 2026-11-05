@@ -54,7 +54,17 @@ public:
 
     void TickFrame();
     void Acquire(Scheduler& scheduler, size_t required_entries = 0,
-                 bool use_descriptor_buffer_ = false);
+                 bool use_descriptor_buffer_ = false) {
+        use_descriptor_buffer = supports_descriptor_buffer && use_descriptor_buffer_;
+        static constexpr size_t DEFAULT_REQUIRED_ENTRIES = 0x400;
+        const size_t reserve = required_entries > 0 ? required_entries : DEFAULT_REQUIRED_ENTRIES;
+        const size_t used = static_cast<size_t>(payload_cursor - payload_start);
+        if (used + reserve >= frame_payload_size) [[unlikely]] {
+            AcquireOverflow(scheduler, reserve);
+            return;
+        }
+        upload_start = payload_cursor;
+    }
 
     const DescriptorUpdateEntry* UpdateData() const noexcept {
         return upload_start;
@@ -115,6 +125,8 @@ public:
     }
 
 private:
+    void AcquireOverflow(Scheduler& scheduler, size_t reserve);
+
     const Device& device;
     const size_t frame_payload_size;
     const bool supports_descriptor_buffer;

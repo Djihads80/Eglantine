@@ -230,19 +230,26 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     for (const auto& desc : info.image_buffer_descriptors) {
         add_image(desc, false);
     }
+    u32 last_sampler_handle = ~0U;
+    VideoCommon::SamplerId last_sampler{};
     for (const auto& desc : info.texture_descriptors) {
         for (u32 index = 0; index < desc.count; ++index) {
             const auto handle{read_handle(desc, index)};
             views.push_back({handle.first});
 
-            VideoCommon::SamplerId sampler = texture_cache.GetSamplerId(handle.second, true);
-            samplers.push_back(sampler);
+            if (handle.second != last_sampler_handle) {
+                last_sampler_handle = handle.second;
+                last_sampler = texture_cache.GetSamplerId(handle.second, true);
+            }
+            samplers.push_back(last_sampler);
         }
     }
     for (const auto& desc : info.image_descriptors) {
         add_image(desc, desc.is_written);
     }
-    texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (!views.empty()) {
+        texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

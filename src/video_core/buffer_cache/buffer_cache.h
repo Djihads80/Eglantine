@@ -614,13 +614,6 @@ void BufferCache<P>::BindHostComputeBuffers() {
 }
 
 template <class P>
-void BufferCache<P>::SetComputeUniformBufferState(u32 mask,
-                                                  const ComputeUniformBufferSizes* sizes) {
-    channel_state->enabled_compute_uniform_buffer_mask = mask;
-    channel_state->compute_uniform_buffer_sizes = sizes;
-}
-
-template <class P>
 bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index,
                                                u32 cbuf_offset, bool is_written,
                                                u32 indirect_offset) {
@@ -682,19 +675,6 @@ void BufferCache<P>::BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, G
 }
 
 template <class P>
-void BufferCache<P>::UnbindComputeStorageBuffers() {
-    if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
-        if (runtime.ShouldLimitDynamicStorageBuffers()) {
-            channel_state->total_compute_storage_buffers -=
-                static_cast<u32>(std::popcount(channel_state->enabled_compute_storage_buffers));
-        }
-    }
-    channel_state->enabled_compute_storage_buffers = 0;
-    channel_state->written_compute_storage_buffers = 0;
-    channel_state->image_compute_texture_buffers = 0;
-}
-
-template <class P>
 void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
                                               bool is_written, u32 indirect_offset) {
     if (ssbo_index >= channel_state->compute_storage_buffers.size()) [[unlikely]] {
@@ -743,13 +723,6 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
     channel_state->compute_storage_buffers[ssbo_index] =
         StorageBufferBinding(ssbo_addr, cbuf_index, is_written, kepler_compute->IsNativeMode(),
                              indirect_offset != ~0U);
-}
-
-template <class P>
-void BufferCache<P>::UnbindComputeTextureBuffers() {
-    channel_state->enabled_compute_texture_buffers = 0;
-    channel_state->written_compute_texture_buffers = 0;
-    channel_state->image_compute_texture_buffers = 0;
 }
 
 template <class P>
@@ -1723,9 +1696,15 @@ template <class P>
 void BufferCache<P>::DoUpdateComputeBuffers() {
     compute_segments.clear();
     BufferOperations([&]() {
-        UpdateComputeUniformBuffers();
-        UpdateComputeStorageBuffers();
-        UpdateComputeTextureBuffers();
+        if (channel_state->enabled_compute_uniform_buffer_mask != 0) {
+            UpdateComputeUniformBuffers();
+        }
+        if (channel_state->enabled_compute_storage_buffers != 0) {
+            UpdateComputeStorageBuffers();
+        }
+        if (channel_state->enabled_compute_texture_buffers != 0) {
+            UpdateComputeTextureBuffers();
+        }
     });
 }
 

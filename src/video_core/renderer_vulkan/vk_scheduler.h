@@ -134,10 +134,25 @@ public:
     }
 
     /// Update the rescaling state. Returns true if the state has to be updated.
-    bool UpdateRescaling(bool is_rescaling);
+    bool UpdateRescaling(bool is_rescaling) {
+        if (state.rescaling_defined && is_rescaling == state.is_rescaling) [[likely]] {
+            return false;
+        }
+        state.rescaling_defined = true;
+        state.is_rescaling = is_rescaling;
+        return true;
+    }
 
     /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
-    bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
+    bool UpdateDescriptorBufferChunk(u32 descriptor_chunk) {
+        if (state.descriptor_buffer_bound && descriptor_chunk == state.descriptor_buffer_chunk)
+            [[likely]] {
+            return false;
+        }
+        state.descriptor_buffer_bound = true;
+        state.descriptor_buffer_chunk = descriptor_chunk;
+        return true;
+    }
 
     /// Invalidates current command buffer state except for render passes
     void InvalidateState();

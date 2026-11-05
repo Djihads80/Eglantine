@@ -320,7 +320,10 @@ public:
         channel_state->uniform_buffer_sizes = sizes;
     }
 
-    void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
+    void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes) {
+        channel_state->enabled_compute_uniform_buffer_mask = mask;
+        channel_state->compute_uniform_buffer_sizes = sizes;
+    }
 
     void UnbindGraphicsStorageBuffers(size_t stage) {
         if (channel_state->enabled_storage_buffers[stage] == 0) {
@@ -351,12 +354,33 @@ public:
     void BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr, u32 size,
                                    PixelFormat format, bool is_written, bool is_image);
 
-    void UnbindComputeStorageBuffers();
+    void UnbindComputeStorageBuffers() {
+        if (channel_state->enabled_compute_storage_buffers == 0 &&
+            channel_state->image_compute_texture_buffers == 0) {
+            return;
+        }
+        if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
+            if (runtime.ShouldLimitDynamicStorageBuffers()) {
+                channel_state->total_compute_storage_buffers -=
+                    static_cast<u32>(std::popcount(channel_state->enabled_compute_storage_buffers));
+            }
+        }
+        channel_state->enabled_compute_storage_buffers = 0;
+        channel_state->written_compute_storage_buffers = 0;
+        channel_state->image_compute_texture_buffers = 0;
+    }
 
     void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
                                   bool is_written, u32 indirect_offset = ~0U);
 
-    void UnbindComputeTextureBuffers();
+    void UnbindComputeTextureBuffers() {
+        if (channel_state->enabled_compute_texture_buffers == 0) {
+            return;
+        }
+        channel_state->enabled_compute_texture_buffers = 0;
+        channel_state->written_compute_texture_buffers = 0;
+        channel_state->image_compute_texture_buffers = 0;
+    }
 
     void BindComputeTextureBuffer(size_t tbo_index, GPUVAddr gpu_addr, u32 size, PixelFormat format,
                                   bool is_written, bool is_image);
