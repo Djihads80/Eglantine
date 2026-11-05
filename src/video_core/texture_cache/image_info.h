@@ -45,17 +45,6 @@ struct ImageInfo {
                native_tiling == other.native_tiling;
     }
 
-    bool ResolveSectorLayout(const ImageInfo& other) noexcept {
-        if (sector_layout_known || !other.sector_layout_known) {
-            return false;
-        }
-        const bool changed = native_tiling != other.native_tiling;
-        native_tiling = other.native_tiling;
-        legacy_sector_layout = other.legacy_sector_layout;
-        sector_layout_known = true;
-        return changed;
-    }
-
     PixelFormat format = PixelFormat::Invalid;
     ImageType type = ImageType::e1D;
     SubresourceExtent resources;

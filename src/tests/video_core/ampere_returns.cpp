@@ -115,6 +115,32 @@ TEST_CASE("Ampere signed global reductions retain their uniform address and pred
     REQUIRE(((reduction >> 48) & 1) == 1); // 64-bit address
 }
 
+TEST_CASE("Ampere register-address reductions preserve signed byte offsets", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    for (const s32 offset : {0, 12, -12, -0x80000, 0x7ffff}) {
+        // @P0 RED.E.ADD.STRONG.GPU [R12 + offset], R17 (TotK menu).
+        const Instruction reduce{{0x0c00098e, 17U | ((static_cast<u32>(offset) & 0xffffffU) << 8),
+                                   0x0010e100, 0}};
+        const auto lowered = LowerToMaxwell(std::array{reduce, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        const u64 word = lowered.instructions.front();
+        REQUIRE(Shader::Maxwell::Decode(word) == Shader::Maxwell::Opcode::RED);
+        REQUIRE((word & 255) == 17);
+        REQUIRE(((word >> 8) & 255) == 12);
+        REQUIRE(((word >> 16) & 15) == 0);
+        REQUIRE(((word >> 20) & 7) == 0); // U32
+        REQUIRE(((word >> 23) & 7) == 0); // ADD
+        REQUIRE(((word >> 48) & 1) == 1); // 64-bit address pair.
+        const s32 decoded_offset = static_cast<s32>((word >> 28) & 0xfffff) << 12 >> 12;
+        REQUIRE(decoded_offset == offset);
+    }
+    for (const s32 offset : {-0x80001, 0x80000}) {
+        const Instruction reduce{{0x0c00798e, 17U | ((static_cast<u32>(offset) & 0xffffffU) << 8),
+                                   0x0010e100, 0}};
+        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{reduce, exit})));
+    }
+}
+
 TEST_CASE("Ampere returns do not write the link register", "[video_core][ampere]") {
     for (const u32 link : {0U, 55U}) {
         const std::array<Instruction, 4> code{{

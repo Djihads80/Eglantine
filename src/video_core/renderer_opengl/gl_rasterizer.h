@@ -62,6 +62,8 @@ public:
     bool BufferToImage(const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& src,
                        const Tegra::DMA::ImageOperand& dst) override;
 
+    bool UsesLegacySectorLayout(GPUVAddr address) override;
+
 private:
     template <bool IS_IMAGE_UPLOAD>
     bool DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,

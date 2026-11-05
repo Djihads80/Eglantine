@@ -103,7 +103,7 @@ TEST_CASE("Cached textures match effective sector layouts", "[texture_layout]") 
     }
 }
 
-TEST_CASE("Render targets resolve their sector layout from texture descriptors", "[texture_layout]") {
+TEST_CASE("Render targets accept texture views without an explicit sector layout", "[texture_layout]") {
     using namespace VideoCommon;
     Tegra::Texture::TICEntry config{};
     config.raw = {0x216af00078d7ffa1ULL, 0x0007002001600081ULL, 0x80000437e880077fULL,
@@ -122,15 +122,15 @@ TEST_CASE("Render targets resolve their sector layout from texture descriptors",
     REQUIRE_FALSE(rendered.sector_layout_known);
     REQUIRE(sampled.sector_layout_known);
     const ImageBase image{rendered, 0x100000, 0x200000};
-    REQUIRE(IsSubresource(sampled, image, 0x100000, RelaxedOptions{}, false, true));
-    REQUIRE(ResolveOverlap(sampled, 0x100000, 0x200000, image, true, false, true).has_value());
-    REQUIRE(rendered.ResolveSectorLayout(sampled));
-    REQUIRE(rendered.sector_layout_known);
-    REQUIRE_FALSE(rendered.native_tiling);
-    REQUIRE(rendered.legacy_sector_layout);
-    sampled.native_tiling = true;
-    sampled.legacy_sector_layout = false;
-    REQUIRE_FALSE(rendered.IsSectorLayoutCompatible(sampled));
-    REQUIRE_FALSE(rendered.ResolveSectorLayout(sampled));
-    REQUIRE_FALSE(rendered.native_tiling);
+    for (const bool legacy : {false, true}) {
+        CAPTURE(legacy);
+        config.load_store_hint.Assign(legacy);
+        ImageInfo view{config};
+        view.native_tiling = view.UsesNativeSectorLayout(true);
+        REQUIRE(IsSubresource(view, image, 0x100000, RelaxedOptions{}, false, true));
+        REQUIRE(ResolveOverlap(view, 0x100000, 0x200000, image, true, false, true).has_value());
+        const ImageBase viewed{view, 0x100000, 0x200000};
+        REQUIRE(IsSubresource(rendered, viewed, 0x100000, RelaxedOptions{}, false, true));
+        REQUIRE(ResolveOverlap(rendered, 0x100000, 0x200000, viewed, true, false, true).has_value());
+    }
 }
