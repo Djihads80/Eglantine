@@ -102,6 +102,23 @@ TEST_CASE("Ampere SUST.P keeps its channel mask", "[video_core][ampere]") {
     REQUIRE(((FindMaxwell(lowered, 0xeb2, 52) >> 20) & 0xf) == 1);
 }
 
+TEST_CASE("Ampere SHF.R.U64 immediate shifts keep their amount", "[video_core][ampere]") {
+    // SHF.R.U64 R14, R14, n, R17 (Ocarina vertex shader 1a55fa57a335b963). The Maxwell
+    // translator reads the immediate from bits 20-38, so no max-shift bits may be set there.
+    for (const u32 shift : {0U, 1U, 21U, 31U, 32U}) {
+        const std::array<Instruction, 2> code{{
+            {{0x0e0e7819, shift, 0x00001211, 0x020fe200}},
+            EXIT,
+        }};
+        const auto lowered = LowerToMaxwell(code);
+        REQUIRE(static_cast<bool>(lowered));
+        const u64 shf = FindMaxwell(lowered, 0x38f8, 48);
+        REQUIRE(shf != 0);
+        CHECK(((shf >> 20) & 0x7ffff) == shift);
+        CHECK(((shf >> 39) & 0xff) == 17);
+    }
+}
+
 TEST_CASE("Ampere SHFL with a register lane keeps its mode", "[video_core][ampere]") {
     // SHFL.DOWN PT, R7, R0, R5, 0x1f
     const std::array<Instruction, 2> code{{

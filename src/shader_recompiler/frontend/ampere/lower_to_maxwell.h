@@ -2908,9 +2908,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool is_signed = insn.Bits(73, 2) == 2;
             if (!insn.Bits(80, 1) && insn.Bits(76, 1) && insn.Bits(73, 2) == 1 &&
                 !insn.Bits(75, 1) && insn.words[1] <= 32) {
+                // SHF.R.U64 funnel: the translator reads bits 20-38 as the immediate, so the U64
+                // clamp (bit 38) would turn every shift into 63; shifts up to 32 need no clamp.
                 emit(base(0x38f8000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
-                     (u64{insn.words[1]} << 20) | (u64{2} << 37) |
-                     (u64{insn.Bits(64, 8)} << 39));
+                     (u64{insn.words[1]} << 20) | (u64{insn.Bits(64, 8)} << 39));
                 break;
             }
             if (!insn.Bits(80, 1) && !insn.Bits(76, 1) && insn.Bits(64, 8) == 255 &&
