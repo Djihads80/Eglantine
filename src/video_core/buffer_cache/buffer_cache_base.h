@@ -34,6 +34,7 @@
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/buffer_cache/buffer_base.h"
+#include "video_core/buffer_cache/read_trap_tracker.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/delayed_destruction_ring.h"
@@ -649,22 +650,17 @@ private:
     }
 
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
-    /// pages, which flushes them once and marks them Preflushable (then DownloadsAtFence).
+    /// pages, which flushes them on demand (or marks them Preflushable with preflushing enabled).
     void ArmReadTraps(DAddr device_addr, u64 size) {
         const DAddr begin = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
         const DAddr end = Common::AlignUp(device_addr + size, Core::DEVICE_PAGESIZE);
-        u64 armed_bytes = 0;
-        read_trapped_ranges.ForEachInRange(begin, end - begin, [&](DAddr lower, DAddr upper) {
-            armed_bytes += upper - lower;
-        });
-        if (armed_bytes == end - begin) {
+        if (!read_trapped_ranges.Arm(begin, end - begin)) {
             return;
         }
-        read_trapped_ranges.Add(begin, end - begin);
         device_memory.ArmReadTraps(begin, end - begin);
     }
 
-    Common::RangeSet<DAddr> read_trapped_ranges;
+    ReadTrapTracker read_trapped_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 

@@ -11,6 +11,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "common/common_types.h"
+#include "common/range_sets.h"
+#include "video_core/buffer_cache/read_trap_tracker.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "core/device_memory.h"
 #include "core/memory.h"
@@ -565,6 +567,85 @@ TEST_CASE("MemoryTracker: Cached write downloads") {
     REQUIRE(!memory_track->IsRegionGpuModified(c + PAGE, PAGE));
     memory_track->MarkRegionAsCpuModified(c, WORD);
     REQUIRE(rasterizer.Count() == 0);
+}
+
+TEST_CASE("MemoryTracker: overlapping readbacks clear each GPU page once", "[cpu_readback]") {
+    RasterizerInterface rasterizer;
+    MemoryTracker tracker{rasterizer};
+    tracker.UnmarkRegionAsCpuModified(c, PAGE * 4);
+    tracker.MarkRegionAsGpuModified(c, PAGE * 3);
+
+    std::vector<Range> downloads;
+    const auto collect = [&](u64 address, u64 size) { downloads.emplace_back(address, size); };
+    tracker.ForEachDownloadRangeAndClear(c, PAGE * 2, collect);
+    tracker.ForEachDownloadRangeAndClear(c + PAGE, PAGE * 2, collect);
+    tracker.ForEachDownloadRangeAndClear(c, PAGE * 4, collect);
+    REQUIRE(downloads == std::vector<Range>{{c, PAGE * 2}, {c + PAGE * 2, PAGE}});
+    REQUIRE_FALSE(tracker.IsRegionGpuModified(c, PAGE * 4));
+}
+
+TEST_CASE("Consumed read traps rearm on the next GPU write", "[cpu_readback][read_traps]") {
+    VideoCommon::ReadTrapTracker traps;
+    // A GPU write protects both pages; repeated writes need no second core notification.
+    REQUIRE(traps.Arm(c, PAGE * 2));
+    REQUIRE_FALSE(traps.Arm(c, PAGE * 2));
+    REQUIRE_FALSE(traps.Arm(c, PAGE));
+
+    // The first CPU read consumes only its page. The next GPU write must notify the core again.
+    traps.Subtract(c, PAGE);
+    REQUIRE_FALSE(traps.Arm(c + PAGE, PAGE));
+    REQUIRE(traps.Arm(c, PAGE));
+    REQUIRE_FALSE(traps.Arm(c, PAGE));
+    traps.Subtract(c, PAGE);
+    REQUIRE(traps.Arm(c, PAGE));
+
+    // Unmapping the whole buffer must forget both pages before a later mapping reuses them.
+    traps.Subtract(c, PAGE * 2);
+    REQUIRE(traps.Arm(c, PAGE * 2));
+}
+
+TEST_CASE("MemoryTracker: a GPU rewrite needs a fresh CPU readback", "[cpu_readback]") {
+    RasterizerInterface rasterizer;
+    MemoryTracker tracker{rasterizer};
+    tracker.UnmarkRegionAsCpuModified(c, PAGE * 2);
+    tracker.MarkRegionAsGpuModified(c, PAGE);
+    std::vector<Range> downloads;
+    const auto collect = [&](u64 address, u64 size) { downloads.emplace_back(address, size); };
+
+    tracker.ForEachDownloadRangeAndClear(c + PAGE, PAGE, collect);
+    REQUIRE(downloads.empty());
+    REQUIRE(tracker.IsRegionGpuModified(c, PAGE));
+    tracker.ForEachDownloadRangeAndClear(c, PAGE, collect);
+    REQUIRE(downloads == std::vector<Range>{{c, PAGE}});
+    REQUIRE_FALSE(tracker.IsRegionGpuModified(c, PAGE));
+    REQUIRE_FALSE(tracker.IsRegionPreflushable(c, PAGE));
+
+    tracker.MarkRegionAsGpuModified(c, PAGE);
+    REQUIRE(tracker.IsRegionGpuModified(c, PAGE));
+    downloads.clear();
+    tracker.ForEachDownloadRangeAndClear(c, PAGE, collect);
+    REQUIRE(downloads == std::vector<Range>{{c, PAGE}});
+    REQUIRE_FALSE(tracker.IsRegionGpuModified(c, PAGE));
+}
+
+TEST_CASE("CPU read range sets merge overlaps and forget deleted buffer spans", "[cpu_readback]") {
+    Common::RangeSet<DAddr> ranges;
+    ranges.Add(c, PAGE * 2);
+    ranges.Add(c + PAGE, PAGE * 2);
+    ranges.Add(c, PAGE * 2);
+    std::vector<Range> intersections;
+    const auto collect = [&](DAddr lower, DAddr upper) {
+        intersections.emplace_back(lower, upper - lower);
+    };
+    ranges.ForEachInRange(c, PAGE * 4, collect);
+    REQUIRE(intersections == std::vector<Range>{{c, PAGE * 3}});
+
+    ranges.Subtract(c + PAGE, PAGE);
+    intersections.clear();
+    ranges.ForEachInRange(c + PAGE, PAGE, collect);
+    REQUIRE(intersections.empty());
+    ranges.ForEachInRange(c, PAGE * 4, collect);
+    REQUIRE(intersections == std::vector<Range>{{c, PAGE}, {c + PAGE * 2, PAGE}});
 }
 
 TEST_CASE("MemoryTracker: cached writes preserve tracking counts") {
