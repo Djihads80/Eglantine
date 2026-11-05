@@ -5,6 +5,7 @@
 #include "video_core/control/channel_state.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/renderer_null/null_rasterizer.h"
 
 namespace Null {
@@ -28,7 +29,11 @@ void RasterizerNull::DispatchCompute() {}
 void RasterizerNull::ResetCounter(VideoCommon::QueryType type) {}
 void RasterizerNull::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                            VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
-    if (!gpu_memory || !gpu_memory->GpuToCpuAddress(gpu_addr)) {
+    if (!gpu_memory) {
+        return;
+    }
+    const auto cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!cpu_addr) {
         return;
     }
     if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
@@ -38,6 +43,7 @@ void RasterizerNull::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
     } else {
         gpu_memory->Write<u32>(gpu_addr, payload);
     }
+    Tegra::Nx2SemaphoreWaiters::Get().OnWrite(*cpu_addr, payload);
 }
 void RasterizerNull::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
                                                u32 size) {}
