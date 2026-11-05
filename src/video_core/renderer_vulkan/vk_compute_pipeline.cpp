@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -249,6 +250,23 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (FrameDump::RecordingResources()) [[unlikely]] {
+        written_images.clear();
+        sampled_images.clear();
+        size_t view_index = Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                            Shader::NumDescriptors(info.image_buffer_descriptors);
+        for (u32 texture = 0; texture < Shader::NumDescriptors(info.texture_descriptors);
+             ++texture, ++view_index) {
+            sampled_images.push_back({views[view_index].index, views[view_index].id});
+        }
+        for (const auto& desc : info.image_descriptors) {
+            for (u32 index = 0; index < desc.count; ++index, ++view_index) {
+                if (desc.is_written) {
+                    written_images.push_back(views[view_index].id);
+                }
+            }
+        }
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

@@ -238,6 +238,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
                      gpu.ShaderNotify()),
       accelerate_dma(buffer_cache, texture_cache, scheduler),
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
+      frame_dump(device, memory_allocator, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
     VideoCommon::GpuSplit::Get().SetIdleHook(
@@ -348,10 +349,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         gpu_memory->FlushCaching();
     }
     NoteSceneColor();
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.DrainIfFull();
+    }
 
     const auto report_failure = [&](std::string_view reason) {
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
         const auto& regs = maxwell3d->regs;
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.NoteSkipped("draw", reason, GraphicsPrograms(), regs.rt[0].Address());
+        }
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
         if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
@@ -408,6 +415,23 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
+    }
+    if (frame_dump.Capturing()) [[unlikely]] {
+        FrameDumpPass(texture_cache.GetFramebuffer());
+        boost::container::small_vector<ImageView*, 8> written;
+        for (const VideoCommon::ImageViewId id : pipeline->WrittenImages()) {
+            written.push_back(id ? &texture_cache.GetImageView(id) : nullptr);
+        }
+        frame_dump.NoteDraw(pipeline->ShaderHashes(), GraphicsPrograms(), written);
+        if (frame_dump.CapturingSampled()) {
+            boost::container::small_vector<FrameDump::Sampled, 16> sampled;
+            for (const auto& image : pipeline->SampledImages()) {
+                sampled.push_back({image.stage, image.tic, &texture_cache.GetImageView(image.id)});
+            }
+            if (frame_dump.NoteSampled(sampled)) {
+                scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
+            }
+        }
     }
 
     {
@@ -564,6 +588,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             if (skipped.fetch_add(1, std::memory_order_relaxed) < 16) {
                 LOG_WARNING(HW_GPU, "Draw skipped: {} {} from {} (vertex/index count past {})",
                             count, is_indexed ? "indices" : "vertices", first, MaxVertices);
+            }
+            if (frame_dump.Capturing()) [[unlikely]] {
+                frame_dump.NoteSkipped("draw", "vertex/index count past 16M", GraphicsPrograms(),
+                                       maxwell3d->regs.rt[0].Address());
             }
             return;
         }
@@ -819,6 +847,9 @@ void RasterizerVulkan::DrawTexture() {
         }
         return;
     }
+    if (frame_dump.Capturing()) [[unlikely]] {
+        FrameDumpPass(framebuffer);
+    }
 
     const bool src_rescaling = texture_cache.IsRescaling() && texture.IsRescaled();
     const bool dst_rescaling = texture_cache.IsRescaling() && framebuffer->IsRescaled();
@@ -872,6 +903,9 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     std::scoped_lock lock{texture_cache.mutex};
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
+    if (frame_dump.Capturing()) [[unlikely]] {
+        FrameDumpPass(framebuffer);
+    }
     const VkExtent2D render_area = framebuffer->RenderArea();
 
     constexpr bool ENABLE_DEFERRED_CLEAR = true;
@@ -1045,10 +1079,21 @@ void RasterizerVulkan::DispatchCompute() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
     FlushWork();
     gpu_memory->FlushCaching();
+    const auto dump_program = [&] {
+        return kepler_compute->regs.code_loc.Address() +
+               kepler_compute->launch_description.program_start;
+    };
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.EndPass();
+        frame_dump.DrainIfFull();
+    }
 
     u64 native_key{};
     ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline(native_key)};
     if (!pipeline) {
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.NoteSkipped("dispatch", "no pipeline", std::array{dump_program()}, 0);
+        }
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;
     }
@@ -1060,9 +1105,37 @@ void RasterizerVulkan::DispatchCompute() {
     };
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
                              texture_cache, staging_pool)) {
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.NoteSkipped("dispatch", "configure failed", std::array{dump_program()}, 0);
+        }
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
         return;
     }
+    if (frame_dump.Capturing()) [[unlikely]] {
+        if (frame_dump.CapturingSampled()) {
+            boost::container::small_vector<FrameDump::Sampled, 16> sampled;
+            for (const auto& image : pipeline->SampledImages()) {
+                sampled.push_back({5, image.tic, &texture_cache.GetImageView(image.id)});
+            }
+            frame_dump.NoteDispatchSampled(pipeline->ShaderHash(), sampled);
+        }
+    }
+    SCOPE_EXIT {
+        // Read back what the dispatch wrote (recorded after it).
+        if (!frame_dump.Capturing()) {
+            return;
+        }
+        boost::container::small_vector<ImageView*, 8> written;
+        for (const VideoCommon::ImageViewId id : pipeline->WrittenImages()) {
+            written.push_back(id ? &texture_cache.GetImageView(id) : nullptr);
+        }
+        const auto& launch = kepler_compute->launch_description;
+        const bool indirect = kepler_compute->GetIndirectComputeAddress().has_value();
+        const std::array<u32, 3> groups{indirect ? 0U : launch.grid_dim_x,
+                                        indirect ? 0U : launch.grid_dim_y,
+                                        indirect ? 0U : launch.grid_dim_z};
+        frame_dump.CaptureDispatch(pipeline->ShaderHash(), dump_program(), groups, written);
+    };
 
     const auto& qmd{kepler_compute->launch_description};
     const auto publish_collision_map = [&] {
@@ -1464,7 +1537,41 @@ void RasterizerVulkan::NoteSceneColor() {
     scene_color = {.address = target.Address(), .width = target.width, .height = target.height};
 }
 
+void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
+    std::array<ImageView*, VideoCommon::NUM_RT> colors{};
+    const auto& targets = texture_cache.GetRenderTargets();
+    for (size_t slot = 0; slot < targets.color_buffer_ids.size(); ++slot) {
+        if (targets.color_buffer_ids[slot]) {
+            colors[slot] = &texture_cache.GetImageView(targets.color_buffer_ids[slot]);
+        }
+    }
+    ImageView* const depth =
+        targets.depth_buffer_id ? &texture_cache.GetImageView(targets.depth_buffer_id) : nullptr;
+    if (frame_dump.BeginPass(framebuffer, colors, depth)) {
+        scheduler.RequestRenderpass(framebuffer);
+    }
+}
+
+std::array<u64, 6> RasterizerVulkan::GraphicsPrograms() const {
+    std::array<u64, 6> programs{};
+    const auto& regs = maxwell3d->regs;
+    const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    for (size_t index = 0; index < programs.size(); ++index) {
+        if (!regs.IsShaderConfigEnabled(index)) {
+            continue;
+        }
+        const auto& config = regs.pipelines[index];
+        programs[index] = native ? (u64{config.reserved[0] & 0xff} << 32) | config.reserved[1]
+                                 : regs.program_region.Address() + config.offset;
+    }
+    return programs;
+}
+
 void RasterizerVulkan::TickFrame() {
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        frame_dump.TickFrame();
+    }
     draw_counter = 0;
     last_scene_color = scene_color;
     scene_color = {};
@@ -1610,6 +1717,10 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
     }
     if (!image_view) {
         return {};
+    }
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.EndPass();
+        frame_dump.CapturePresent(*image_view);
     }
 
     query_cache.NotifySegment(false);

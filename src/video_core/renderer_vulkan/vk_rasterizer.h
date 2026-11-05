@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -185,6 +186,11 @@ private:
     void NoteSceneColor();
     bool TryNx2IndirectReset();
 
+    /// Frame dump (vk_frame_dump.h): starts a pass at a framebuffer change.
+    void FrameDumpPass(const Framebuffer* framebuffer);
+    /// The bound graphics program addresses, by stage (0 when unused).
+    [[nodiscard]] std::array<u64, 6> GraphicsPrograms() const;
+
     void FlushWork();
 
     /// Records the copies of the command list pages the work just recorded wrote and submits, so
@@ -253,6 +259,7 @@ private:
     PipelineCache pipeline_cache;
     AccelerateDMA accelerate_dma;
     FenceManager fence_manager;
+    FrameDump frame_dump;
 
     vk::Event wfi_event;
 

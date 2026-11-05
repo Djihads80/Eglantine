@@ -11,6 +11,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -104,6 +105,25 @@ public:
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
+
+    [[nodiscard]] const std::array<u64, 6>& ShaderHashes() const noexcept {
+        return key.unique_hashes;
+    }
+
+    struct SampledImage {
+        u32 stage;
+        u32 tic;
+        VideoCommon::ImageViewId id;
+    };
+
+    /// Textures sampled and storage images written by the last configured draw, kept while a
+    /// frame dump captures (vk_frame_dump.h).
+    [[nodiscard]] std::span<const SampledImage> SampledImages() const noexcept {
+        return sampled_images;
+    }
+    [[nodiscard]] std::span<const VideoCommon::ImageViewId> WrittenImages() const noexcept {
+        return written_images;
+    }
     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
 
@@ -195,6 +215,8 @@ private:
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     u32 num_descriptor_entries{};
     size_t num_image_elements{};
+    std::vector<SampledImage> sampled_images;
+    std::vector<VideoCommon::ImageViewId> written_images;
     u32 num_textures{};
     bool fragment_has_color0_output{};
     bool writes_memory{};

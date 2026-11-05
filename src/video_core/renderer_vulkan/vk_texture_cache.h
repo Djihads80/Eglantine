@@ -721,6 +721,10 @@ public:
         return buffer_size;
     }
 
+    [[nodiscard]] const Image* BackingImage() const noexcept {
+        return slot_images && image_id ? &(*slot_images)[image_id] : nullptr;
+    }
+
 private:
     struct StorageViews {
         std::array<vk::ImageView, Shader::NUM_TEXTURE_TYPES> signeds;

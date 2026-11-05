@@ -9,6 +9,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <span>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/thread_worker.h"
@@ -59,6 +61,24 @@ public:
         return static_cast<bool>(pipeline);
     }
 
+    [[nodiscard]] u64 ShaderHash() const noexcept {
+        return shader_hash;
+    }
+
+    struct SampledImage {
+        u32 tic;
+        VideoCommon::ImageViewId id;
+    };
+
+    /// Storage images written and textures sampled by the last configured dispatch, kept while a
+    /// frame dump captures (vk_frame_dump.h).
+    [[nodiscard]] std::span<const VideoCommon::ImageViewId> WrittenImages() const noexcept {
+        return written_images;
+    }
+    [[nodiscard]] std::span<const SampledImage> SampledImages() const noexcept {
+        return sampled_images;
+    }
+
 private:
     const Device& device;
     vk::PipelineCache& pipeline_cache;
@@ -67,6 +87,8 @@ private:
     Shader::Info info;
     u64 shader_hash{};
     u32 num_descriptor_entries{};
+    std::vector<VideoCommon::ImageViewId> written_images;
+    std::vector<SampledImage> sampled_images;
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};
 
