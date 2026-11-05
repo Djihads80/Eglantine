@@ -1741,13 +1741,16 @@ private:
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
             return value == nullptr ? -1 : value[0] == '1' ? 1 : 0;
         }();
-        // Donkey Kong Bananza's channels wait on each other every frame, so it always ran a frame
-        // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
-        // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
+        // Donkey Kong Bananza's and Ocarina of Time's channels wait on each other every frame, so
+        // they always ran a frame ahead, where they rewrote memory the GPU thread hadn't read yet
+        // (misread commands, then a freeze or crash; rubberbanding while moving). Title 1 runs
+        // ahead without either.
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+        const u64 program_id = system.GetApplicationProcessProgramID();
         int frames_ahead = frames_ahead_setting;
         if (frames_ahead == -1 &&
-            system.GetApplicationProcessProgramID() == DonkeyKongBananzaProgramId) {
+            (program_id == DonkeyKongBananzaProgramId || program_id == OcarinaOfTimeProgramId)) {
             frames_ahead = 0;
         }
         const auto entered = std::chrono::steady_clock::now();
@@ -1893,9 +1896,10 @@ private:
         }
         auto& syncpoints = system.Host1x().GetSyncpointManager();
         const auto start = std::chrono::steady_clock::now();
-        // Long enough to cover shader/pipeline compile stalls: a game that gets more than a few
-        // command buffers ahead misses the equal-value gates its other channels acquire.
-        const auto deadline = start + std::chrono::milliseconds{4000};
+        // Long enough to cover shader/pipeline compile and large asset upload stalls on scene load:
+        // a game that gets more than a few command buffers ahead misses the equal-value gates its
+        // other channels acquire. Extend the deadline whenever the syncpoint makes progress.
+        auto deadline = start + std::chrono::milliseconds{unless_gpu_waits ? 4000 : 15000};
         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
             // about 1 ms per check on Windows, added to every frame. An action left registered
@@ -1917,6 +1921,7 @@ private:
             // Title 1's channels resume and suspend again while they wait on this thread, so any
             // suspension counts, not only an unbroken one.
             bool gpu_waited = false;
+            u32 last_syncpoint = syncpoints.GetGuestSyncpointValue(fence_id);
             while (!wake->done && system.IsPoweredOn() &&
                    std::chrono::steady_clock::now() < deadline) {
                 if (unless_gpu_waits) {
@@ -1924,6 +1929,14 @@ private:
                     if (gpu_waited &&
                         std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
                         return false;
+                    }
+                } else {
+                    const u32 current_syncpoint = syncpoints.GetGuestSyncpointValue(fence_id);
+                    if (current_syncpoint != last_syncpoint) {
+                        last_syncpoint = current_syncpoint;
+                        deadline = (std::max)(deadline,
+                                              std::chrono::steady_clock::now() +
+                                                  std::chrono::milliseconds{4000});
                     }
                 }
                 wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});

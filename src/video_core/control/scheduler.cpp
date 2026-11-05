@@ -73,6 +73,9 @@ bool Scheduler::ResumePending(GPU& gpu) {
             }
             BindChannel(gpu, state->bind_id);
             dma_pusher.DispatchCalls();
+            if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+                split.Publish();
+            }
             progress = true;
             any_moved = true;
         }
