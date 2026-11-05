@@ -180,6 +180,7 @@ private:
     /// Records the copies of the command list pages the work just recorded wrote and submits, so
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
+    void FlushSplitIdle();
 
     void UpdateDynamicStates();
 

@@ -400,9 +400,16 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if ((read_position - last_store >= 4096 ||
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
+                if (idle_hook != nullptr &&
+                    read_position >= wait_target.load(std::memory_order_relaxed)) {
+                    idle_hook(idle_argument);
+                }
                 consumed.store(read_position, std::memory_order_release);
                 last_store = read_position;
             }
+        }
+        if (idle_hook != nullptr) {
+            idle_hook(idle_argument);
         }
         consumed.store(read_position, std::memory_order_release);
     }

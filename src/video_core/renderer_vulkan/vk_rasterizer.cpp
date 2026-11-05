@@ -240,8 +240,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
     VideoCommon::GpuSplit::Get().SetIdleHook(
-        [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
-        &scheduler);
+        [](void* argument) { static_cast<RasterizerVulkan*>(argument)->FlushSplitIdle(); },
+        this);
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -356,23 +356,51 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
         gpu_memory->WriteBlockUnsafe(run.gpu_addr, pattern_bytes, run_bytes);
     }
 
+    static const bool defer = [] {
+        const char* value = std::getenv("EDEN_NX2_INLINE_DEFER");
+        return value == nullptr || value[0] != '0';
+    }();
+
     // 2. Batched buffer cache upload under a single lock
     {
         std::scoped_lock lock{buffer_cache.mutex};
-        for (const auto& run : runs) {
+        for (auto& run : runs) {
             const size_t run_bytes = run.count * sizeof(record);
-            buffer_cache.Nx2NoteListHostWrite(run.cpu_addr, run_bytes);
-            buffer_cache.InlineMemory(run.cpu_addr, run_bytes, std::span{pattern_bytes, run_bytes});
+            buffer_cache.Nx2NoteListHostWrite(run.cpu_addr, run_bytes,
+                                              std::span{pattern_bytes, run_bytes});
+            run.uploaded =
+                buffer_cache.InlineMemory(run.cpu_addr, run_bytes, std::span{pattern_bytes, run_bytes});
+            if (!run.uploaded && !defer) {
+                buffer_cache.WriteMemory(run.cpu_addr, run_bytes);
+            }
         }
-        // 3. Maintain consistent Nx2ListPage state
-        buffer_cache.Nx2SyncListPages(runs, pattern_bytes);
     }
 
-    // 4. Invalidation passes over coalesced runs
+    // 3. Invalidation passes over coalesced runs (matching AccelerateInlineToMemory)
+    bool any_immediate = false;
     for (const auto& run : runs) {
         const size_t run_bytes = run.count * sizeof(record);
         query_cache.InvalidateRegion(run.cpu_addr, run_bytes);
-        gpu_memory->AccumulateInvalidation(run.gpu_addr, run_bytes);
+        if (!run.uploaded && defer) {
+            gpu_memory->AccumulateInvalidation(run.gpu_addr, run_bytes);
+        } else {
+            any_immediate = true;
+        }
+    }
+    if (any_immediate) {
+        {
+            std::scoped_lock lock{texture_cache.mutex};
+            for (const auto& run : runs) {
+                if (run.uploaded || !defer) {
+                    texture_cache.WriteMemory(run.cpu_addr, run.count * sizeof(record));
+                }
+            }
+        }
+        for (const auto& run : runs) {
+            if (run.uploaded || !defer) {
+                pipeline_cache.InvalidateRegion(run.cpu_addr, run.count * sizeof(record));
+            }
+        }
     }
     static u32 reported{};
     if (reported++ < 5) {
@@ -441,6 +469,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    if (buffer_cache.HasPendingNx2ListCopies() &&
+        !Tegra::Engines::Maxwell3D::FrontIsWriterDraw(maxwell3d->regs)) {
+        SubmitNx2ListCopies();
+    }
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
@@ -478,7 +510,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         draw_func();
     }
-    SubmitNx2ListCopies();
     submitted = true;
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
@@ -1189,8 +1220,20 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
     }
 }
 
+void RasterizerVulkan::FlushSplitIdle() {
+    if (buffer_cache.HasPendingNx2ListCopies()) {
+        std::scoped_lock lock{buffer_cache.mutex};
+        SubmitNx2ListCopies();
+    }
+    scheduler.FlushDeferred();
+}
+
 VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenCommandList(
     DAddr addr, std::span<u8> out) {
+    if (!VideoCommon::GpuSplit::Get().Active() && buffer_cache.HasPendingNx2ListCopies()) {
+        std::scoped_lock lock{buffer_cache.mutex};
+        SubmitNx2ListCopies();
+    }
     // No cache lock: the front only reads the copies, under their own lock.
     switch (buffer_cache.Nx2ReadListCopy(addr, out)) {
     case BufferCache::Nx2ListRead::Copied:
@@ -1543,7 +1586,7 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     {
         std::scoped_lock lock{buffer_cache.mutex};
         // Guest memory has the words now: a command list copy of the page no longer does.
-        buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
+        buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size, memory);
         uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
         if (!uploaded && !defer) {
             buffer_cache.WriteMemory(*cpu_addr, copy_size);

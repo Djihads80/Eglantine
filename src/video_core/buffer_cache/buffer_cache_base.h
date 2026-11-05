@@ -73,6 +73,7 @@ struct Nx2ResetRun {
     GPUVAddr gpu_addr{};
     DAddr cpu_addr{};
     u32 count{};
+    bool uploaded{};
 };
 
 enum class ObtainBufferSynchronize : u32 {
@@ -333,13 +334,13 @@ public:
     bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
 
     /// Switch 2 GPU-written command lists (nx2.h, g_nx2_command_list_pages). While collecting (a
-    /// compute dispatch or a DMA copy being recorded), writes to command list pages are noted;
+    /// compute dispatch, DMA copy, or draw being recorded), writes to command list pages are noted;
     /// Nx2CopyListPages then records copies of those pages into host memory after the work.
     void Nx2CollectListCopies(bool collect) {
         nx2_collect_list_copies = collect;
-        if (!collect) {
-            nx2_list_copy_requests.clear();
-        }
+    }
+    [[nodiscard]] bool HasPendingNx2ListCopies() const noexcept {
+        return !nx2_list_copy_requests.empty();
     }
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
@@ -351,10 +352,8 @@ public:
     /// Front thread, the split drained: the command list page was flushed to guest memory.
     void Nx2NoteListSynced(DAddr page);
     /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy
-    /// no longer holds the page.
-    void Nx2NoteListHostWrite(DAddr device_addr, u64 size);
-    /// Keeps command list page state consistent for indirect resets.
-    void Nx2SyncListPages(std::span<const Nx2ResetRun> runs, const u8* pattern_bytes);
+    /// no longer holds the page unless updated in place.
+    void Nx2NoteListHostWrite(DAddr device_addr, u64 size, std::span<const u8> data = {});
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
@@ -677,6 +676,7 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+    int nx2_graphics_stage{-1};
 };
 
 } // namespace VideoCommon
