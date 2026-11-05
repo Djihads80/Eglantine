@@ -10092,7 +10092,7 @@ Verifica que tus herramientas de extracción estén actualizadas y vuelve a extr
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="96"/>
-        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eden or re-install firmware.</source>
+        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eglantine or re-install firmware.</source>
         <translation>Instalación del firmware cancelada.
 El firmware podría estar dañado o en un estado incorrecto.
 Reinicia Eden o vuelve a instalar el firmware.</translation>
@@ -10109,12 +10109,12 @@ Reinicia Eden o vuelve a instalar el firmware.</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="110"/>
-        <source>Eden has detected user data for the following emulators:</source>
+        <source>Eglantine has detected user data for the following emulators:</source>
         <translation>Eden ha detectado datos de usuario de los siguientes emuladores:</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="112"/>
-        <source>Would you like to migrate your data for use in Eden?
+        <source>Would you like to migrate your data for use in Eglantine?
 Select the corresponding button to migrate data from that emulator.
 This may take a while.</source>
         <translation>¿Deseas migrar tus datos para usarlos en Eden?
@@ -10144,7 +10144,7 @@ Se recomienda hacerlo en dispositivos con espacio de almacenamiento limitado.</t
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="124"/>
-        <source>Creates a filesystem link between the old directory and Eden directory.
+        <source>Creates a filesystem link between the old directory and Eglantine directory.
 This is recommended if you want to share data between emulators.</source>
         <translation>Crea un enlace del sistema de archivos entre el directorio antiguo y el directorio de Eden.
 Se recomienda si deseas compartir datos entre emuladores.</translation>
