@@ -28,7 +28,7 @@ void RasterizerNull::DispatchCompute() {}
 void RasterizerNull::ResetCounter(VideoCommon::QueryType type) {}
 void RasterizerNull::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                            VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
-    if (!gpu_memory) {
+    if (!gpu_memory || !gpu_memory->GpuToCpuAddress(gpu_addr)) {
         return;
     }
     if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
@@ -91,7 +91,12 @@ bool RasterizerNull::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfac
     return true;
 }
 void RasterizerNull::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
-                                              std::span<const u8> memory) {}
+                                              std::span<const u8> memory) {
+    if (!gpu_memory) {
+        return;
+    }
+    gpu_memory->WriteBlockUnsafe(address, memory.data(), copy_size);
+}
 void RasterizerNull::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                                        const VideoCore::DiskResourceLoadCallback& callback) {}
 void RasterizerNull::InitializeChannel(Tegra::Control::ChannelState& channel) {
