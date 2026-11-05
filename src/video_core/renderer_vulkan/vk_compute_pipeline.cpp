@@ -304,6 +304,17 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             workgroups = slices;
         } else if (workgroups == 0) {
             workgroups = 1; // Nothing runs: one slice keeps the binding valid
+        } else if (workgroups > slices) {
+            // The shader clamps its slice index: workgroups past the last slice share it within
+            // this one dispatch (the limit is the host's storage buffer range). Not split here
+            // (the program reads its workgroup id); reported so it is known to happen.
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(Render_Vulkan,
+                            "Compute dispatch of {} workgroups with {} bytes of emulated shared "
+                            "memory each: only {} slices fit, the rest share the last",
+                            workgroups, info.emulated_shared_memory_size, slices);
+            }
         }
         const u64 size = (std::min)(workgroups, slices) * info.emulated_shared_memory_size;
         // EDEN_NX2_SCRATCH_REUSE=0: a region per dispatch, as before.
