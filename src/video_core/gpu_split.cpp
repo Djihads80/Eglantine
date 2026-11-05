@@ -414,6 +414,13 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
                 }
                 return count;
             }
+            if (!maxwell3d->execution_mask[method] && (head & HasSegment) == 0 &&
+                method < Maxwell3D::Regs::NUM_REGS && !Nx2Perf::Verify()) {
+                if (!maxwell3d->method_sink.empty()) [[unlikely]] {
+                    maxwell3d->ConsumeSink(*system);
+                }
+                return maxwell3d->CallStateMethodRun(entry, words);
+            }
             if ((head & Direct) != 0) {
                 maxwell3d->ConsumeSink(*system);
                 maxwell3d->CallMethod(*system, method, argument, true);

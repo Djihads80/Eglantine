@@ -179,6 +179,9 @@ public:
     bool has_deleted_buffers = false;
 
     std::array<u32, NUM_STAGES> dirty_uniform_buffers{};
+    std::array<u32, NUM_STAGES> unresolved_uniform_buffers{
+        ~u32{0}, ~u32{0}, ~u32{0}, ~u32{0}, ~u32{0},
+    };
     std::array<u32, NUM_STAGES> fast_bound_uniform_buffers{};
     std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
         uniform_buffer_binding_sizes{};
@@ -275,14 +278,21 @@ public:
         const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
         if (!device_addr) {
             channel_state->uniform_buffers[stage][index] = NULL_BINDING;
+            channel_state->unresolved_uniform_buffers[stage] |= 1U << index;
             return;
         }
-        const Binding binding{
+        auto& current = channel_state->uniform_buffers[stage][index];
+        if (current.buffer_id && current.buffer_id != NULL_BUFFER_ID &&
+            current.device_addr == *device_addr && current.size == size) {
+            return;
+        }
+        current = Binding{
             .device_addr = *device_addr,
+            .gpu_addr = gpu_addr,
             .size = size,
             .buffer_id = BufferId{},
         };
-        channel_state->uniform_buffers[stage][index] = binding;
+        channel_state->unresolved_uniform_buffers[stage] |= 1U << index;
     }
 
     void DisableGraphicsUniformBuffer(size_t stage, u32 index) {
@@ -292,6 +302,7 @@ public:
             return;
         }
         current = NULL_BINDING;
+        channel_state->unresolved_uniform_buffers[stage] &= ~(1U << index);
     }
 
     void UpdateGraphicsBuffers(bool is_indexed);

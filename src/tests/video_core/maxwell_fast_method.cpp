@@ -273,6 +273,49 @@ TEST_CASE("Maxwell3D constant buffer word runs match single CallMethod writes",
     }
 }
 
+TEST_CASE("Maxwell3D state method runs match single CallMethod writes",
+          "[video_core][maxwell_fast_method]") {
+    Fixture f;
+    std::mt19937 rng{19};
+    constexpr u64 kind_method = 2;
+    constexpr u64 is_last = 1ULL << 4;
+    constexpr u64 has_segment = 1ULL << 5;
+    constexpr u64 direct = 1ULL << 6;
+    for (u32 step = 0; step < 5000; ++step) {
+        CAPTURE(step);
+        if (rng() % 6 == 0) {
+            f.Call(ShadowControl, rng() % 4, true);
+            f.Compare();
+            continue;
+        }
+        const size_t run_len = 1 + rng() % 32;
+        std::vector<u64> ring(run_len + 1);
+        for (size_t i = 0; i < run_len; ++i) {
+            const u32 method = f.state_methods[rng() % f.state_methods.size()];
+            const u32 arg = RandomArgument(rng, method, f.slow);
+            const u64 flags = (rng() % 2 == 0 ? is_last : 0) | (rng() % 2 == 0 ? direct : 0);
+            ring[i] = kind_method | flags | (u64{method} << 8) | (u64{arg} << 32);
+            f.slow.CallMethod(f.system, method, arg, (flags & is_last) != 0);
+        }
+        // Append a stopper entry (executable method, HasSegment, or non-Method kind).
+        switch (rng() % 3) {
+        case 0:
+            ring[run_len] = kind_method | (u64{DrawBegin} << 8);
+            break;
+        case 1:
+            ring[run_len] =
+                kind_method | has_segment | (u64{f.state_methods[0]} << 8) | (u64{1} << 32);
+            break;
+        default:
+            ring[run_len] = 3; // Kind::Multi
+            break;
+        }
+        const size_t consumed = f.fast.CallStateMethodRun(ring.data(), ring.size());
+        REQUIRE(consumed == run_len);
+        f.Compare();
+    }
+}
+
 TEST_CASE("Maxwell3D fast method dispatch cost", "[.][maxwell_fast_method_bench]") {
     Fixture f;
     // Per draw, as the back thread sees Ocarina's: state writes the front did not drop, a

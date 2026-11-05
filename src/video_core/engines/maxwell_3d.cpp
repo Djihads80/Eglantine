@@ -652,6 +652,73 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     regs.const_buffer.offset += static_cast<u32>(bytes);
 }
 
+size_t Maxwell3D::CallStateMethodRun(const u64* entry, size_t max_words) {
+    const auto control = shadow_state.shadow_ram_control;
+    const bool skip_same = SkipSameValueWrites();
+    size_t count = 0;
+    if (control == Regs::ShadowRamControl::Track ||
+        control == Regs::ShadowRamControl::TrackWithFilter) {
+        do {
+            const u64 word = entry[count];
+            const u32 method = static_cast<u32>((word >> 8) & 0xffff);
+            const u32 value = static_cast<u32>(word >> 32);
+            shadow_state.reg_array[method] = value;
+            if (!skip_same || regs.reg_array[method] != value) {
+                ProcessDirtyRegisters(method, value);
+            }
+            ++count;
+            if (count >= max_words) {
+                break;
+            }
+            const u64 next = entry[count];
+            const u32 next_method = static_cast<u32>((next >> 8) & 0xffff);
+            if ((next & 0x2f) != 2 || next_method >= Regs::NUM_REGS ||
+                execution_mask[next_method]) {
+                break;
+            }
+        } while (true);
+    } else if (control == Regs::ShadowRamControl::Replay) {
+        do {
+            const u64 word = entry[count];
+            const u32 method = static_cast<u32>((word >> 8) & 0xffff);
+            const u32 value = shadow_state.reg_array[method];
+            if (!skip_same || regs.reg_array[method] != value) {
+                ProcessDirtyRegisters(method, value);
+            }
+            ++count;
+            if (count >= max_words) {
+                break;
+            }
+            const u64 next = entry[count];
+            const u32 next_method = static_cast<u32>((next >> 8) & 0xffff);
+            if ((next & 0x2f) != 2 || next_method >= Regs::NUM_REGS ||
+                execution_mask[next_method]) {
+                break;
+            }
+        } while (true);
+    } else {
+        do {
+            const u64 word = entry[count];
+            const u32 method = static_cast<u32>((word >> 8) & 0xffff);
+            const u32 value = static_cast<u32>(word >> 32);
+            if (!skip_same || regs.reg_array[method] != value) {
+                ProcessDirtyRegisters(method, value);
+            }
+            ++count;
+            if (count >= max_words) {
+                break;
+            }
+            const u64 next = entry[count];
+            const u32 next_method = static_cast<u32>((next >> 8) & 0xffff);
+            if ((next & 0x2f) != 2 || next_method >= Regs::NUM_REGS ||
+                execution_mask[next_method]) {
+                break;
+            }
+        } while (true);
+    }
+    return count;
+}
+
 void Maxwell3D::CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
@@ -1232,19 +1299,14 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     if (Profile::Enabled()) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
     }
-    if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
-        fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
-            argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
-    }
     using Effect = VideoCommon::GpuSplit::Effect;
     // What the entry may write on the back (FrontDmaRead): any method may issue a deferred
     // instanced draw first.
     Effect effect = fs.draw_pending ? Effect::Gpu : Effect::None;
-    std::optional<GPUVAddr> cb_write;
-    if (IsWaitForIdle(method)) {
-        split.NoteEngineSync();
-    }
     if (!execution_mask[method]) {
+        if (method == MAXWELL3D_REG_INDEX(trigger_wfi)) [[unlikely]] {
+            split.NoteEngineSync();
+        }
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
         if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
@@ -1254,44 +1316,57 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             return;
         }
         fs.regs[method] = value;
-    } else {
-        fs.regs[method] = value;
-        effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
-        constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
-        switch (method) {
-        case MAXWELL3D_REG_INDEX(shadow_ram_control):
-            // The back's mode is shadow_state.shadow_ram_control: the shadow copy of this very
-            // register, which a later Replay write reads back.
-            fs.control = static_cast<Regs::ShadowRamControl>(argument);
-            fs.shadow[method] = argument;
-            break;
-        case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
-            GetNativeMacroEngine().ClearCode(fs.regs[MAXWELL3D_REG_INDEX(load_mme.instruction_ptr)]);
-            break;
-        case MAXWELL3D_REG_INDEX(load_mme.instruction):
-            GetNativeMacroEngine().AddCode(fs.regs[MAXWELL3D_REG_INDEX(load_mme.instruction_ptr)], value);
-            break;
-        case MAXWELL3D_REG_INDEX(load_mme.start_address): {
-            const auto positions = GetNativeMacroPositions();
-            u32& pointer = fs.regs[MAXWELL3D_REG_INDEX(load_mme.start_address_ptr)];
-            if (pointer < positions.size()) {
-                positions[pointer] = value;
-            }
-            ++pointer;
-            break;
+        if (from_macro) {
+            split.MacroWrite(this, method, argument, effect);
+        } else {
+            split.Method(this, method, argument, is_last_call, nullptr, effect);
         }
-        case MAXWELL3D_REG_INDEX(falcon[4]):
-            fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
-            break;
-        default:
-            if (method >= cb_data && method < cb_data + 16) {
-                cb_write = ConstBufferWriteAddress(fs.regs);
-                fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
-            } else if (!FrontHandledOutsideDrawManager(method)) {
-                fs.draw_pending = true;
-            }
-            break;
+        return;
+    }
+    if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
+        fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
+            argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
+    }
+    std::optional<GPUVAddr> cb_write;
+    if (method == MAXWELL3D_REG_INDEX(wait_for_idle)) [[unlikely]] {
+        split.NoteEngineSync();
+    }
+    fs.regs[method] = value;
+    effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
+    constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(shadow_ram_control):
+        // The back's mode is shadow_state.shadow_ram_control: the shadow copy of this very
+        // register, which a later Replay write reads back.
+        fs.control = static_cast<Regs::ShadowRamControl>(argument);
+        fs.shadow[method] = argument;
+        break;
+    case MAXWELL3D_REG_INDEX(load_mme.instruction_ptr):
+        GetNativeMacroEngine().ClearCode(fs.regs[MAXWELL3D_REG_INDEX(load_mme.instruction_ptr)]);
+        break;
+    case MAXWELL3D_REG_INDEX(load_mme.instruction):
+        GetNativeMacroEngine().AddCode(fs.regs[MAXWELL3D_REG_INDEX(load_mme.instruction_ptr)], value);
+        break;
+    case MAXWELL3D_REG_INDEX(load_mme.start_address): {
+        const auto positions = GetNativeMacroPositions();
+        u32& pointer = fs.regs[MAXWELL3D_REG_INDEX(load_mme.start_address_ptr)];
+        if (pointer < positions.size()) {
+            positions[pointer] = value;
         }
+        ++pointer;
+        break;
+    }
+    case MAXWELL3D_REG_INDEX(falcon[4]):
+        fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
+        break;
+    default:
+        if (method >= cb_data && method < cb_data + 16) {
+            cb_write = ConstBufferWriteAddress(fs.regs);
+            fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
+        } else if (!FrontHandledOutsideDrawManager(method)) {
+            fs.draw_pending = true;
+        }
+        break;
     }
     if (from_macro) {
         split.MacroWrite(this, method, argument, effect);

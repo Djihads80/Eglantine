@@ -1104,7 +1104,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
     if (use_optimized_vertex_buffers) {
         auto& flags = maxwell3d->dirty.flags;
         u32 enabled_mask = enabled_vertex_buffers_mask;
-        HostBindings<Buffer> bindings{};
+        HostBindings<Buffer> bindings;
         u32 last_index = (std::numeric_limits<u32>::max)();
         const auto flush_bindings = [&]() {
             if (bindings.buffers.empty()) {
@@ -1112,7 +1112,12 @@ void BufferCache<P>::BindHostVertexBuffers() {
             }
             bindings.max_index = bindings.min_index + static_cast<u32>(bindings.buffers.size());
             runtime.BindVertexBuffers(bindings);
-            bindings = HostBindings<Buffer>{};
+            bindings.buffers.clear();
+            bindings.offsets.clear();
+            bindings.sizes.clear();
+            bindings.strides.clear();
+            bindings.min_index = NUM_VERTEX_BUFFERS;
+            bindings.max_index = 0;
             last_index = (std::numeric_limits<u32>::max)();
         };
         while (enabled_mask != 0) {
@@ -1787,7 +1792,11 @@ void BufferCache<P>::UpdateVertexBuffers() {
     }
     flags[Dirty::VertexBuffers] = false;
 
-    for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
+    const auto flags_words = std::bit_cast<std::array<u64, 4>>(flags);
+    u32 dirty_vb_mask = static_cast<u32>(flags_words[0] >> Dirty::VertexBuffer0);
+    while (dirty_vb_mask != 0) {
+        const u32 index = static_cast<u32>(std::countr_zero(dirty_vb_mask));
+        dirty_vb_mask &= dirty_vb_mask - 1;
         UpdateVertexBuffer(index);
     }
 }
@@ -1851,10 +1860,13 @@ void BufferCache<P>::UpdateDrawIndirect() {
 
 template <class P>
 void BufferCache<P>::UpdateUniformBuffers(size_t stage) {
-    if (channel_state->enabled_uniform_buffer_masks[stage] == 0) [[likely]] {
+    const u32 to_resolve = channel_state->enabled_uniform_buffer_masks[stage] &
+                           channel_state->unresolved_uniform_buffers[stage];
+    if (to_resolve == 0) [[likely]] {
         return;
     }
-    ForEachEnabledBit(channel_state->enabled_uniform_buffer_masks[stage], [&](u32 index) {
+    channel_state->unresolved_uniform_buffers[stage] &= ~to_resolve;
+    ForEachEnabledBit(to_resolve, [&](u32 index) {
         Binding& binding = channel_state->uniform_buffers[stage][index];
         if (binding.buffer_id) {
             // Already updated
@@ -1928,17 +1940,22 @@ template <class P>
 void BufferCache<P>::UpdateComputeUniformBuffers() {
     ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
         Binding& binding = channel_state->compute_uniform_buffers[index];
-        binding = NULL_BINDING;
         const auto& launch_desc = kepler_compute->launch_description;
         if (((launch_desc.const_buffer_enable_mask >> index) & 1) != 0) {
             const auto& cbuf = launch_desc.const_buffer_config[index];
             const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(cbuf.Address());
             if (device_addr) {
+                if (binding.buffer_id && binding.buffer_id != NULL_BUFFER_ID &&
+                    binding.device_addr == *device_addr && binding.size == cbuf.size) {
+                    return;
+                }
                 binding.device_addr = *device_addr;
                 binding.size = cbuf.size;
+                binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+                return;
             }
         }
-        binding.buffer_id = FindBuffer(binding.device_addr, binding.size, false);
+        binding = NULL_BINDING;
     });
 }
 
@@ -2784,6 +2801,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
         }
     }
     std::ranges::for_each(channel_state->uniform_buffers, replace);
+    channel_state->unresolved_uniform_buffers.fill(~u32{0});
     std::ranges::for_each(channel_state->storage_buffers, replace);
     replace(channel_state->transform_feedback_buffers);
     replace(channel_state->compute_uniform_buffers);
