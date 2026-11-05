@@ -238,12 +238,15 @@ ImageInfo::ImageInfo(const Maxwell3D::Regs::Zeta& zt, const Maxwell3D::Regs::Zet
     }
 }
 
-ImageInfo::ImageInfo(const Fermi2D::Surface& config) noexcept {
+ImageInfo::ImageInfo(const Fermi2D::Surface& config) noexcept
+    : ImageInfo(config, VideoCore::Surface::PixelFormatFromRenderTargetFormat(config.format)) {}
+
+ImageInfo::ImageInfo(const Fermi2D::Surface& config, PixelFormat format_) noexcept {
     UNIMPLEMENTED_IF_MSG(config.layer != 0, "Surface layer is not zero");
     forced_flushed = config.linear == Fermi2D::MemoryLayout::Pitch &&
                      !Settings::values.use_reactive_flushing.GetValue();
     dma_downloaded = forced_flushed;
-    format = VideoCore::Surface::PixelFormatFromRenderTargetFormat(config.format);
+    format = format_;
     rescaleable = false;
     if (config.linear == Fermi2D::MemoryLayout::Pitch) {
         type = ImageType::Linear;

@@ -90,6 +90,13 @@ bool RasterizerNull::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfac
                                            const Tegra::Engines::Fermi2D::Config& copy_config) {
     return true;
 }
+bool RasterizerNull::AccelerateSurfaceCopyAs(const Tegra::Engines::Fermi2D::Surface& src,
+                                             VideoCore::Surface::PixelFormat src_format,
+                                             const Tegra::Engines::Fermi2D::Surface& dst,
+                                             VideoCore::Surface::PixelFormat dst_format,
+                                             const Tegra::Engines::Fermi2D::Config& copy_config) {
+    return true;
+}
 void RasterizerNull::AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                               std::span<const u8> memory) {}
 void RasterizerNull::LoadDiskResources(u64 title_id, std::stop_token stop_loading,

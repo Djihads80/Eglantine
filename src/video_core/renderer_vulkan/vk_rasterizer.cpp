@@ -1492,6 +1492,15 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
     return texture_cache.BlitImage(dst, src, copy_config);
 }
 
+bool RasterizerVulkan::AccelerateSurfaceCopyAs(const Tegra::Engines::Fermi2D::Surface& src,
+                                               VideoCore::Surface::PixelFormat src_format,
+                                               const Tegra::Engines::Fermi2D::Surface& dst,
+                                               VideoCore::Surface::PixelFormat dst_format,
+                                               const Tegra::Engines::Fermi2D::Config& copy_config) {
+    std::scoped_lock lock{texture_cache.mutex};
+    return texture_cache.BlitImage(dst, src, copy_config, dst_format, src_format);
+}
+
 bool RasterizerVulkan::UsesNvidiaDlss() const {
     return texture_cache_runtime.UsesNvidiaDlss();
 }

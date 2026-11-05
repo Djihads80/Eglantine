@@ -120,6 +120,11 @@ public:
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                const Tegra::Engines::Fermi2D::Surface& dst,
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
+    bool AccelerateSurfaceCopyAs(const Tegra::Engines::Fermi2D::Surface& src,
+                                 VideoCore::Surface::PixelFormat src_format,
+                                 const Tegra::Engines::Fermi2D::Surface& dst,
+                                 VideoCore::Surface::PixelFormat dst_format,
+                                 const Tegra::Engines::Fermi2D::Config& copy_config) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
     void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                   std::span<const u8> memory) override;

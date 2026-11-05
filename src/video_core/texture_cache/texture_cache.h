@@ -1095,8 +1095,10 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
 template <class P>
 bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                                 const Tegra::Engines::Fermi2D::Surface& src,
-                                const Tegra::Engines::Fermi2D::Config& copy) {
-    const auto result = GetBlitImages(dst, src, copy);
+                                const Tegra::Engines::Fermi2D::Config& copy,
+                                std::optional<PixelFormat> dst_format,
+                                std::optional<PixelFormat> src_format) {
+    const auto result = GetBlitImages(dst, src, copy, dst_format, src_format);
     if (!result) {
         return false;
     }
@@ -1157,7 +1159,17 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const std::optional src_base = src_image.TryFindBase(src.Address());
     const SubresourceRange src_range{.base = src_base.value(), .extent = {1, 1}};
     const ImageViewInfo src_view_info(ImageViewType::e2D, images.src_format, src_range);
-    const auto [src_framebuffer_id, src_view_id] = RenderTargetFromImage(src_id, src_view_info);
+    // A framebuffer of the source only where blits read framebuffers (OpenGL): Vulkan samples
+    // it, and a format no render target has (E5B9G9R9) can't be one.
+    FramebufferId src_framebuffer_id{};
+    ImageViewId src_view_id{};
+    if constexpr (FRAMEBUFFER_BLITS) {
+        const auto ids = RenderTargetFromImage(src_id, src_view_info);
+        src_framebuffer_id = ids.first;
+        src_view_id = ids.second;
+    } else {
+        src_view_id = FindOrEmplaceImageView(src_id, src_view_info);
+    }
     const auto [src_samples_x, src_samples_y] = SamplesLog2(src_image.info.num_samples);
     Region2D src_region{
         Offset2D{.x = copy.src_x0 >> src_samples_x, .y = copy.src_y0 >> src_samples_y},
@@ -2863,13 +2875,14 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 template <class P>
 std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImages(
     const Tegra::Engines::Fermi2D::Surface& dst, const Tegra::Engines::Fermi2D::Surface& src,
-    const Tegra::Engines::Fermi2D::Config& copy) {
+    const Tegra::Engines::Fermi2D::Config& copy, std::optional<PixelFormat> dst_format,
+    std::optional<PixelFormat> src_format) {
 
     constexpr auto FIND_OPTIONS = RelaxedOptions::Samples;
     const GPUVAddr dst_addr = dst.Address();
     const GPUVAddr src_addr = src.Address();
-    ImageInfo dst_info(dst);
-    ImageInfo src_info(src);
+    ImageInfo dst_info = dst_format ? ImageInfo(dst, *dst_format) : ImageInfo(dst);
+    ImageInfo src_info = src_format ? ImageInfo(src, *src_format) : ImageInfo(src);
     const bool can_be_depth_blit =
         dst_info.format == src_info.format && copy.filter == Tegra::Engines::Fermi2D::Filter::Point;
     ImageId dst_id;

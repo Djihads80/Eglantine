@@ -34,6 +34,9 @@ struct ImageInfo {
                        const Tegra::Engines::Maxwell3D::Regs::ZetaSize& zt_size,
                        Tegra::Texture::MsaaMode msaa_mode) noexcept;
     explicit ImageInfo(const Tegra::Engines::Fermi2D::Surface& config) noexcept;
+    /// The surface viewed in format instead of its own (one no render target format names).
+    explicit ImageInfo(const Tegra::Engines::Fermi2D::Surface& config,
+                       PixelFormat format_) noexcept;
     explicit ImageInfo(const Tegra::DMA::ImageOperand& config) noexcept;
 
     PixelFormat format = PixelFormat::Invalid;

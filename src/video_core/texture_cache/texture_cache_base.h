@@ -288,10 +288,13 @@ public:
     /// Remove images in a region
     void UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size);
 
-    /// Blit an image with the given parameters
+    /// Blit an image with the given parameters; with formats, the images are viewed in them
+    /// instead of the surfaces' (one no render target format names, like E5B9G9R9)
     bool BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                    const Tegra::Engines::Fermi2D::Surface& src,
-                   const Tegra::Engines::Fermi2D::Config& copy);
+                   const Tegra::Engines::Fermi2D::Config& copy,
+                   std::optional<PixelFormat> dst_format = {},
+                   std::optional<PixelFormat> src_format = {});
 
     /// Stand-in for a DLSS evaluation: temporal upscale of src into dst (see the runtime's
     /// TemporalUpscale). False when the images cannot take it; the caller then blits.
@@ -431,7 +434,8 @@ private:
     /// Return a blit image pair from the given guest blit parameters
     [[nodiscard]] std::optional<BlitImages> GetBlitImages(
         const Tegra::Engines::Fermi2D::Surface& dst, const Tegra::Engines::Fermi2D::Surface& src,
-        const Tegra::Engines::Fermi2D::Config& copy);
+        const Tegra::Engines::Fermi2D::Config& copy, std::optional<PixelFormat> dst_format = {},
+        std::optional<PixelFormat> src_format = {});
 
     /// Find or create a sampler from a guest descriptor sampler
     [[nodiscard]] SamplerId FindSampler(const TSCEntry& config, bool compute);

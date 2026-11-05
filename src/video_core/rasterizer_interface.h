@@ -20,6 +20,7 @@
 #include "video_core/gpu.h"
 #include "video_core/query_cache/types.h"
 #include "video_core/rasterizer_download_area.h"
+#include "video_core/surface.h"
 
 namespace Tegra {
 class MemoryManager;
@@ -183,6 +184,15 @@ public:
     /// Attempt to use a faster method to perform a surface copy
     [[nodiscard]] virtual bool AccelerateSurfaceCopy(
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
+        const Tegra::Engines::Fermi2D::Config& copy_config) {
+        return false;
+    }
+
+    /// AccelerateSurfaceCopy with the images viewed in these formats, not the surfaces' (which
+    /// are ignored): the DLSS stand-in's input can be one no render target has, like E5B9G9R9.
+    [[nodiscard]] virtual bool AccelerateSurfaceCopyAs(
+        const Tegra::Engines::Fermi2D::Surface& src, VideoCore::Surface::PixelFormat src_format,
+        const Tegra::Engines::Fermi2D::Surface& dst, VideoCore::Surface::PixelFormat dst_format,
         const Tegra::Engines::Fermi2D::Config& copy_config) {
         return false;
     }

@@ -131,6 +131,11 @@ public:
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                const Tegra::Engines::Fermi2D::Surface& dst,
                                const Tegra::Engines::Fermi2D::Config& copy_config) override;
+    bool AccelerateSurfaceCopyAs(const Tegra::Engines::Fermi2D::Surface& src,
+                                 VideoCore::Surface::PixelFormat src_format,
+                                 const Tegra::Engines::Fermi2D::Surface& dst,
+                                 VideoCore::Surface::PixelFormat dst_format,
+                                 const Tegra::Engines::Fermi2D::Config& copy_config) override;
     bool SupportsGameDlssNetwork() const override;
     bool UsesNvidiaDlss() const override;
     bool CanProbeGameDlssOutput() const override {

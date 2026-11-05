@@ -36,6 +36,7 @@
 #include "video_core/macro_turing_jit_arm64.h"
 #endif
 #include "video_core/rasterizer_interface.h"
+#include "video_core/surface.h"
 #include "video_core/textures/decoders.h"
 
 namespace Tegra::Engines {
@@ -908,15 +909,31 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 }
 
 namespace {
-/// The colour formats the upscale stand-in blits (not motion vectors, depth or single channels).
-std::optional<Tegra::RenderTargetFormat> UpscaleFormat(const Texture::TICEntry& tic) {
+/// A colour format the upscale stand-in blits: how its images are viewed, and their render
+/// target format (NONE for an input only: no render target has E5B9G9R9).
+struct UpscaleImageFormat {
+    VideoCore::Surface::PixelFormat view;
+    Tegra::RenderTargetFormat target;
+};
+
+/// The colour formats the upscale stand-in blits (not motion vectors, depth, one or two channels
+/// or compressed). Zelda: Ocarina of Time samples its scene colour, drawn as 32 bits, as E5B9G9R9.
+std::optional<UpscaleImageFormat> UpscaleFormat(const Texture::TICEntry& tic) {
+    using PixelFormat = VideoCore::Surface::PixelFormat;
     using RTFormat = Tegra::RenderTargetFormat;
     switch (tic.format) {
-    case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
-    case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
-    case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
-    case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
-    default: return std::nullopt;
+    case Texture::TextureFormat::A2B10G10R10:
+        return UpscaleImageFormat{PixelFormat::A2B10G10R10_UNORM, RTFormat::A2B10G10R10_UNORM};
+    case Texture::TextureFormat::A8B8G8R8:
+        return UpscaleImageFormat{PixelFormat::A8B8G8R8_UNORM, RTFormat::A8B8G8R8_UNORM};
+    case Texture::TextureFormat::B10G11R11:
+        return UpscaleImageFormat{PixelFormat::B10G11R11_FLOAT, RTFormat::B10G11R11_FLOAT};
+    case Texture::TextureFormat::R16G16B16A16:
+        return UpscaleImageFormat{PixelFormat::R16G16B16A16_FLOAT, RTFormat::R16G16B16A16_FLOAT};
+    case Texture::TextureFormat::E5B9G9R9:
+        return UpscaleImageFormat{PixelFormat::E5B9G9R9_FLOAT, RTFormat::NONE};
+    default:
+        return std::nullopt;
     }
 }
 
@@ -934,6 +951,7 @@ struct UpscaleProgram {
 struct UpscaleCandidate {
     u32 offset{};
     Texture::TICEntry tic{};
+    UpscaleImageFormat format{};
 };
 } // Anonymous namespace
 
@@ -947,8 +965,10 @@ struct UpscaleCandidate {
 // Weave's. Else, among the 2D colour images of cbuf0+0x80..0x11c (within the buffer), the pair
 // with the most evidence: the input is the frame's scene colour (LastSceneColor: its address,
 // else its size) and read by the program, the output is what the program stores to, both have
-// one format; then the largest output and input. A game's ping-ponged history keeps its slot,
-// so the slots chosen last stay unless another pair reads the scene's colour instead.
+// one format; then the largest output and input. The scene's colour, when the program reads it,
+// is the input whatever else; other inputs under a quarter of the output's area are not.
+// A game's ping-ponged history keeps its slot, so the slots chosen last stay unless another pair
+// reads the scene's colour instead.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -1017,13 +1037,14 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) continue;
             const auto tic = GetTICEntry(handle & 0xfffff);
             const auto type = tic.texture_type.Value();
-            if (tic.Address() == 0 || !tic.IsBlockLinear() || !UpscaleFormat(tic) ||
+            const auto format = UpscaleFormat(tic);
+            if (tic.Address() == 0 || !tic.IsBlockLinear() || !format ||
                 (type != Texture::TextureType::Texture2D &&
                  type != Texture::TextureType::Texture2DNoMipmap &&
                  (type != Texture::TextureType::Texture2DArray || tic.Depth() != 1)))
                 continue;
             any_stored |= info.stored[offset / 4];
-            candidates[count++] = {.offset = offset, .tic = tic};
+            candidates[count++] = {.offset = offset, .tic = tic, .format = *format};
         }
         const VideoCore::SceneColorTarget scene = rasterizer->LastSceneColor();
         // A pair's evidence, nothing when it isn't one. An output the size of its input only
@@ -1035,6 +1056,8 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             const bool scene_input = scene.address != 0 && in.tic.Address() == scene.address;
             const bool stored_output = info.stored[out.offset / 4];
             if (in.offset == out.offset || in.tic.Address() == out.tic.Address() ||
+                out.format.target == Tegra::RenderTargetFormat::NONE ||
+                (!scene_input && 4 * u64{in_width} * in_height < u64{out_width} * out_height) ||
                 out_width < in_width || out_height < in_height ||
                 (any_stored && (!stored_output || info.stored[in.offset / 4])) ||
                 (out_width == in_width && out_height == in_height &&
@@ -1057,11 +1080,13 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             const UpscaleCandidate* in;
             const UpscaleCandidate* out;
             u32 evidence;
+            bool scene; ///< The input is the scene's colour and the program reads it
         };
         const auto area = [](const UpscaleCandidate* candidate) {
             return u64{candidate->tic.Width()} * candidate->tic.Height();
         };
         const auto better = [&](const Choice& a, const Choice& b) {
+            if (a.scene != b.scene) return a.scene;
             if (a.evidence != b.evidence) return a.evidence > b.evidence;
             if (area(a.out) != area(b.out)) return area(a.out) > area(b.out);
             return area(a.in) > area(b.in);
@@ -1071,7 +1096,10 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             for (size_t out = 0; out < count; ++out) {
                 const auto value = evidence(candidates[in], candidates[out]);
                 if (!value) continue;
-                const Choice choice{&candidates[in], &candidates[out], *value};
+                const Choice choice{&candidates[in], &candidates[out], *value,
+                                    scene.address != 0 &&
+                                        candidates[in].tic.Address() == scene.address &&
+                                        info.read[candidates[in].offset / 4]};
                 if (candidates[in].offset == info.input && candidates[out].offset == info.output) {
                     kept = choice;
                 }
@@ -1079,7 +1107,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             }
         }
         // The last pair stays unless another reads the scene's colour (or its size) instead.
-        if (kept && kept->evidence + 8 > best->evidence) best = kept;
+        if (kept && kept->scene == best->scene && kept->evidence + 8 > best->evidence) {
+            best = kept;
+        }
         const u32 in_offset = best ? best->in->offset : 0;
         const u32 out_offset = best ? best->out->offset : 0;
         const bool changed = in_offset != info.input || out_offset != info.output;
@@ -1136,7 +1166,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         return false;
     using RTFormat = Tegra::RenderTargetFormat;
     const auto input_format = UpscaleFormat(*input), output_format = UpscaleFormat(*output);
-    if (!input_format || !output_format)
+    if (!input_format || !output_format || output_format->target == RTFormat::NONE)
         return false;
     const auto surface = [&](const Texture::TICEntry& tic, RTFormat format) {
         Fermi2D::Surface result{};
@@ -1217,7 +1247,8 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             (void)fake;
         }
     }
-    auto source = surface(*input, *input_format);
+    auto source = surface(*input, input_format->target);
+    auto source_view = input_format->view;
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
     if (static const u64 override_source = [] {
             const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
@@ -1228,6 +1259,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         source.addr_lower = static_cast<u32>(override_source);
         if (const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE_FORMAT")) {
             source.format = static_cast<RTFormat>(std::strtoul(value, nullptr, 16));
+            source_view = VideoCore::Surface::PixelFormatFromRenderTargetFormat(source.format);
         }
     }
     // Fortune's Weave: a temporal upscale along its motion vectors that undoes this frame's camera
@@ -1239,16 +1271,20 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             return value == nullptr || std::string_view{value} != "0";
         }();
         if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
-            dlss_motion_color != input->Address())
+            dlss_motion_color != input->Address() || source.format == RTFormat::NONE)
             return false;
         const Fermi2D::Surface motion = surface(*dlss_motion_vectors, RTFormat::R16G16_FLOAT);
         return rasterizer->AccelerateTemporalUpscale(
-            source, surface(*output, *output_format), motion, dlss_depth ? &*dlss_depth : nullptr,
-            dlss_jitter, {1.0f, 1.0f});
+            source, surface(*output, output_format->target), motion,
+            dlss_depth ? &*dlss_depth : nullptr, dlss_jitter, {1.0f, 1.0f});
     };
-    const bool done = upscale_temporally() ||
-                      rasterizer->AccelerateSurfaceCopy(source, surface(*output, *output_format),
-                                                        config);
+    // One bilinear pass viewing each image in its sampled format: an E5B9G9R9 input is the 32-bit
+    // target the scene was drawn to, read through a view (no Fermi2D format has E5B9G9R9).
+    const bool done =
+        upscale_temporally() ||
+        rasterizer->AccelerateSurfaceCopyAs(source, source_view,
+                                            surface(*output, output_format->target),
+                                            output_format->view, config);
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
