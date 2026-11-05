@@ -217,4 +217,31 @@ TEST_CASE("Ampere uniform select and bit operations reach every uniform register
     REQUIRE(static_cast<bool>(counted));
     CHECK(counted.instructions.front() == 0x5c0800000e9700e2ULL);
 }
+
+TEST_CASE("Ampere guarded uniform comparisons keep the output when the guard is false",
+          "[video_core][ampere]") {
+    // Ocarina 2079791ecb288b83: @UP4 UISETP.GT.U32.AND UP0, UPT, UR21, 0x1f, UPT. UP4 and the old
+    // UP0 load into P2 and P6, so a false guard merges UP0 back unchanged.
+    const std::array<Instruction, 2> code{{
+        {{0x1500488c, 0x1f, 0x0bf04070, 0x000fe200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+    const std::array<u64, 6> expected{
+        0x0100000001f7f0fcULL, 0x38e800000447fffdULL, 0x38f000000447ef00ULL,
+        0x5b6803800fc2ed37ULL, 0x38e800000407efefULL, 0x38f000000447fd00ULL};
+    CHECK(std::equal(expected.begin(), expected.end(), lowered.instructions.begin()));
+
+    // SEL R3, R4, UR7, P0
+    const std::array<Instruction, 2> select{{
+        {{0x04037c07, 0x7, 0x08000000, 0x000fe400}},
+        EXIT,
+    }};
+    const auto selected = LowerToMaxwell(select);
+    INFO(selected.error);
+    REQUIRE(static_cast<bool>(selected));
+    CHECK(selected.instructions.front() == 0x5ca000000df70403ULL);
+}
 } // namespace
