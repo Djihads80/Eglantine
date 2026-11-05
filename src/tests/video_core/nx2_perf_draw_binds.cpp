@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <memory>
 #include <random>
 #include <span>
 #include <tuple>
@@ -12,9 +13,11 @@
 #include "common/alignment.h"
 #include "common/common_types.h"
 #include "common/container/unordered_map.h"
+#include "common/slot_vector.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/buffer_cache/usage_tracker.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/renderer_vulkan/fragment_barrier_state.h"
 
 namespace {
 
@@ -125,6 +128,86 @@ Ranges DirtyUpload(Tracker& tracker, DAddr addr, u64 size) {
 }
 
 } // Anonymous namespace
+
+TEST_CASE("Nx2Perf draw-binds: deferred barrier survives unrelated draws", "[video_core]") {
+    Vulkan::FragmentBarrierState barrier;
+    const auto prepare_draw = [&](bool stores, bool samples_attachment) {
+        const bool end_pass = barrier.Pending() && (stores || samples_attachment);
+        if (end_pass) {
+            barrier.Reset();
+        }
+        return end_pass;
+    };
+    REQUIRE_FALSE(prepare_draw(false, true));
+    barrier.Defer(true);
+    REQUIRE_FALSE(prepare_draw(false, false));
+    REQUIRE_FALSE(prepare_draw(false, false));
+    REQUIRE(prepare_draw(false, true));
+    REQUIRE_FALSE(prepare_draw(false, true));
+    barrier.Defer(true);
+    REQUIRE(prepare_draw(true, false));
+    barrier.Defer(true);
+    barrier.Reset();
+    REQUIRE_FALSE(prepare_draw(true, true));
+    barrier.Defer(false);
+    REQUIRE_FALSE(prepare_draw(true, true));
+}
+
+TEST_CASE("Nx2Perf draw-binds: usage survives slot relocation and reset", "[video_core]") {
+    constexpr u64 size = 16 * MANAGER;
+    Common::SlotVector<VideoCommon::UsageTracker> slots;
+    const auto id = slots.insert(size);
+    slots[id].Track(0, size);
+    const std::vector<u64> before{slots[id].Pages().begin(), slots[id].Pages().end()};
+    for (size_t i = 0; i < 130; ++i) {
+        const auto other = slots.insert(PAGE);
+        slots[other].Track(64, 64);
+    }
+    REQUIRE(std::ranges::equal(slots[id].Pages(), before));
+    slots[id].Reset();
+    REQUIRE(std::ranges::all_of(slots[id].Pages(), [](u64 word) { return word == 0; }));
+    OldUsageTracker old{size};
+    for (u64 i = 0; i < 8; ++i) {
+        slots[id].Track(i * PAGE, 2 * WORD + 64);
+        old.Track(i * PAGE, 2 * WORD + 64);
+    }
+    REQUIRE(std::ranges::equal(slots[id].Pages(), old.pages));
+    auto copied = slots[id];
+    VideoCommon::UsageTracker moved{PAGE};
+    moved = std::move(copied);
+    moved.Track(4 * WORD, WORD);
+    old.Track(4 * WORD, WORD);
+    REQUIRE(std::ranges::equal(moved.Pages(), old.pages));
+    slots.erase(id);
+    const auto recycled = slots.insert(size);
+    REQUIRE(recycled == id);
+    REQUIRE(std::ranges::all_of(slots[recycled].Pages(), [](u64 word) { return word == 0; }));
+    slots[recycled].Track(PAGE, 3 * WORD);
+    old.Reset();
+    old.Track(PAGE, 3 * WORD);
+    REQUIRE(std::ranges::equal(slots[recycled].Pages(), old.pages));
+}
+
+TEST_CASE("Nx2Perf draw-binds: clean words survive manager pool growth", "[video_core]") {
+    FakeRasterizer full_rasterizer;
+    FakeRasterizer dirty_rasterizer;
+    auto full = std::make_unique<Tracker>(full_rasterizer);
+    auto dirty = std::make_unique<Tracker>(dirty_rasterizer);
+    for (u64 i = 0; i < 65; ++i) {
+        const auto address = BASE + i * MANAGER;
+        REQUIRE(Upload(*full, address, MANAGER) == DirtyUpload(*dirty, address, MANAGER));
+        full->CachedCpuWrite(address + 15 * WORD + PAGE, 16);
+        dirty->CachedCpuWrite(address + 15 * WORD + PAGE, 16);
+    }
+    full->FlushCachedWrites();
+    dirty->FlushCachedWrites();
+    REQUIRE(dirty->CleanWordsHold(BASE, 65 * MANAGER));
+    REQUIRE(Upload(*full, BASE + 1, 65 * MANAGER - 2) ==
+            DirtyUpload(*dirty, BASE + 1, 65 * MANAGER - 2));
+    REQUIRE(full_rasterizer.calls == dirty_rasterizer.calls);
+    REQUIRE(dirty->CleanWordsHold(BASE, 65 * MANAGER));
+    REQUIRE(DirtyUpload(*dirty, BASE, 65 * MANAGER).empty());
+}
 
 TEST_CASE("Nx2Perf draw-binds: UsageTracker run matches the old Track", "[video_core]") {
     REQUIRE(VideoCommon::Nx2Perf::Enabled());
