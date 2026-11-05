@@ -252,29 +252,31 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     }
 
     buffer_cache.UnbindComputeTextureBuffers();
-    size_t index{};
-    const auto add_buffer{[&](const auto& desc) {
-        constexpr bool is_image = std::is_same_v<decltype(desc), const ImageBufferDescriptor&>;
-        for (u32 i = 0; i < desc.count; ++i) {
-            bool is_written{false};
-            if constexpr (is_image) {
-                is_written = desc.is_written;
-            }
-            ImageView& image_view = texture_cache.GetImageView(views[index].id);
-            PixelFormat format{image_view.format};
-            if constexpr (is_image) {
-                if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
-                    format = *explicit_format;
+    if (!info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) {
+        size_t index{};
+        const auto add_buffer{[&](const auto& desc) {
+            constexpr bool is_image = std::is_same_v<decltype(desc), const ImageBufferDescriptor&>;
+            for (u32 i = 0; i < desc.count; ++i) {
+                bool is_written{false};
+                if constexpr (is_image) {
+                    is_written = desc.is_written;
                 }
+                ImageView& image_view = texture_cache.GetImageView(views[index].id);
+                PixelFormat format{image_view.format};
+                if constexpr (is_image) {
+                    if (const auto explicit_format{PixelFormatFromImageFormat(desc.format)}) {
+                        format = *explicit_format;
+                    }
+                }
+                buffer_cache.BindComputeTextureBuffer(index, image_view.GpuAddr(),
+                                                      image_view.BufferSize(), format,
+                                                      is_written, is_image);
+                ++index;
             }
-            buffer_cache.BindComputeTextureBuffer(index, image_view.GpuAddr(),
-                                                  image_view.BufferSize(), format,
-                                                  is_written, is_image);
-            ++index;
-        }
-    }};
-    std::ranges::for_each(info.texture_buffer_descriptors, add_buffer);
-    std::ranges::for_each(info.image_buffer_descriptors, add_buffer);
+        }};
+        std::ranges::for_each(info.texture_buffer_descriptors, add_buffer);
+        std::ranges::for_each(info.image_buffer_descriptors, add_buffer);
+    }
 
     buffer_cache.UpdateComputeBuffers();
     buffer_cache.BindHostComputeBuffers();
@@ -286,8 +288,11 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     RescalingPushConstant rescaling;
     const VideoCommon::SamplerId* samplers_it{samplers.data()};
     const VideoCommon::ImageViewInOut* views_it{views.data()};
-    PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
-                         views_it);
+    if (!info.texture_descriptors.empty() || !info.image_descriptors.empty() ||
+        !info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) {
+        PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
+                             views_it);
+    }
 
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
@@ -306,16 +311,35 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const DescriptorUpdateEntry* const descriptor_data{guest_descriptor_queue.UpdateData()};
     VkDeviceSize descriptor_buffer_offset{};
     u32 descriptor_buffer_chunk{};
-    if (uses_descriptor_buffer) {
-        const DescriptorBufferRing::Allocation alloc{
-            descriptor_buffer_ring.Allocate(scheduler, descriptor_buffer_layout.size)};
-        if (!alloc.host) {
-            LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping dispatch");
-            return false;
+    if (descriptor_set_layout && uses_descriptor_buffer) {
+        const bool reuse_allocation =
+            last_descriptor_buffer_generation == descriptor_buffer_ring.CurrentGeneration() &&
+            last_descriptor_payload.size() == num_descriptor_entries &&
+            std::memcmp(last_descriptor_payload.data(), descriptor_data,
+                        num_descriptor_entries * sizeof(DescriptorUpdateEntry)) == 0;
+        if (reuse_allocation) {
+            descriptor_buffer_offset = last_descriptor_buffer_offset;
+            descriptor_buffer_chunk = last_descriptor_buffer_chunk;
+            descriptor_buffer_ring.TouchFrame(scheduler);
+        } else {
+            const DescriptorBufferRing::Allocation alloc{
+                descriptor_buffer_ring.Allocate(scheduler, descriptor_buffer_layout.size)};
+            if (!alloc.host) {
+                LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping dispatch");
+                return false;
+            }
+            WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host);
+            descriptor_buffer_offset = alloc.offset;
+            descriptor_buffer_chunk = alloc.chunk;
+            last_descriptor_buffer_offset = alloc.offset;
+            last_descriptor_buffer_chunk = alloc.chunk;
+            last_descriptor_buffer_generation = alloc.generation;
+            last_descriptor_payload.resize(num_descriptor_entries);
+            if (num_descriptor_entries != 0) {
+                std::memcpy(last_descriptor_payload.data(), descriptor_data,
+                            num_descriptor_entries * sizeof(DescriptorUpdateEntry));
+            }
         }
-        WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host);
-        descriptor_buffer_offset = alloc.offset;
-        descriptor_buffer_chunk = alloc.chunk;
     }
 
     const bool bind_descriptor_buffer{

@@ -372,6 +372,9 @@ GraphicsPipeline::GraphicsPipeline(
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
+    if (transition_keys.size() >= 16) {
+        return;
+    }
     transition_keys.push_back(transition->key);
     transitions.push_back(transition);
 }
@@ -608,12 +611,13 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             Profile::Scope scope{Profile::Zone::BindStageBuffers};
             buffer_cache.BindHostStageBuffers(stage);
         }
-        {
-            Profile::Scope scope{Profile::Zone::PushDescriptors};
-            PushImageDescriptors(texture_cache, guest_descriptor_queue, stage_infos[stage],
-                                 rescaling, samplers_it, views_it);
-        }
         const auto& info{stage_infos[stage]};
+        if (!info.texture_descriptors.empty() || !info.image_descriptors.empty() ||
+            !info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) {
+            Profile::Scope scope{Profile::Zone::PushDescriptors};
+            PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling,
+                                 samplers_it, views_it);
+        }
         if (info.uses_render_area) {
             render_area.uses_render_area = true;
             // Switch 2 titles may never program the surface clip; use colour target 0 then.
@@ -689,7 +693,11 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
             last_descriptor_buffer_offset = alloc.offset;
             last_descriptor_buffer_chunk = alloc.chunk;
             last_descriptor_buffer_generation = alloc.generation;
-            last_descriptor_payload.assign(entries, entries + num_descriptor_entries);
+            last_descriptor_payload.resize(num_descriptor_entries);
+            if (num_descriptor_entries != 0) {
+                std::memcpy(last_descriptor_payload.data(), entries,
+                            num_descriptor_entries * sizeof(DescriptorUpdateEntry));
+            }
         }
     }
 

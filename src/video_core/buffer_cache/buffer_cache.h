@@ -1587,9 +1587,19 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
              !memory_tracker.IsRegionGpuModified(binding.device_addr, size));
         if constexpr (!IS_OPENGL) {
             if (use_fast_buffer) {
-                const std::span<u8> span =
-                    runtime.BindMappedUniformBuffer(0, binding_index, size);
-                device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
+                bool streamed = false;
+                if constexpr (VideoCommon::StreamUniformReusable<Runtime>) {
+                    if (VideoCommon::UniformStreamReuseEnabled()) {
+                        streamed = VideoCommon::BindSmallComputeUniformReusing(
+                            runtime, device_memory, index, binding_index, binding.device_addr,
+                            size);
+                    }
+                }
+                if (!streamed) {
+                    const std::span<u8> span =
+                        runtime.BindMappedUniformBuffer(0, binding_index, size);
+                    device_memory.ReadBlockUnsafe(binding.device_addr, span.data(), size);
+                }
                 return;
             }
         }
