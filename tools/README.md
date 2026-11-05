@@ -34,10 +34,10 @@ Tools for Eden and other subprojects. When adding new scripts please use `#!/bin
 
 ## nx2
 
-Helpers for poking at NX2 binaries. All of them only read the files they are given.
+Helpers for poking at NX2 binaries. The ones that take a file only read it; `gdbrsp.py` talks to a live guest instead.
 
 - `nx2/a64_coverage.py`: Reports which AArch64 encodings in NSO `.text` segments dynarmic does not decode.
-- `nx2/gdbrsp.py`: Minimal GDB remote-serial-protocol client for the gdbstub (AArch64 guests).
+- `nx2/gdbrsp.py`: Minimal GDB remote-serial-protocol client for the gdbstub (AArch64 guests): sets breakpoints, reads registers and memory, steps and continues execution.
 - `nx2/npdm_info.py`: Prints the META header and kernel capabilities of a `main.npdm`.
 - `nx2/nso_dis.py`: Disassembles a range of an NSO's `.text` using clang and llvm-objdump.
 - `nx2/nso_syms.py`: Symbol lookup for an NSO (nearest export, GOT slot, or name search).

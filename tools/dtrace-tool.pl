@@ -3,8 +3,8 @@
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Basic script to run dtrace sampling over the program (requires Flamegraph)
-# Usage is either running as: ./dtrace-tool.pl pid (then input the pid of the process)
-# Or just run directly with: ./dtrace-tool.pl <command>
+# Usage: ./dtrace-tool.pl [-p] [-g] [-s] [-<n>]
+#   -p prompt for parameters, -g generate output, -s keep generating, -<n> dtrace type (0-3)
 use strict;
 use warnings;
 use POSIX qw(strftime);
