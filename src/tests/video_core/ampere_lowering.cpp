@@ -147,4 +147,74 @@ TEST_CASE("Ampere programs go on past an EXIT that a branch jumps over", "[video
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(lowered.source_size == sizeof(code));
 }
+
+TEST_CASE("Ampere capture ends at the return of a helper called past the EXIT",
+          "[video_core][ampere]") {
+    // Ocarina 69a40579971fb867: MOV R0, 0x20; CALL.REL.NOINC; EXIT; RET.REL.NODEC R0, then the
+    // next program in memory.
+    const std::array<Instruction, 4> code{{
+        {{0x00007802, 0x20, 0x00000f00, 0}},
+        {{0x00007944, 0x10, 0x03c00000, 0}},
+        EXIT,
+        {{0x00007950, 0xffffffc0, 0x03c3ffff, 0}},
+    }};
+    ProgramCaptureState capture;
+    for (u32 index = 0; index + 1 < code.size(); ++index)
+        CHECK(capture.Observe(code[index], index) == ProgramCaptureState::Result::Continue);
+    CHECK(capture.Observe(code.back(), 3) == ProgramCaptureState::Result::Complete);
+    REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+
+    ProgramCaptureState jump;
+    CHECK(jump.Observe({{0x00007944, 0x10, 0x03c00000, 0}}, 0) == ProgramCaptureState::Result::Continue);
+    CHECK(jump.Observe(EXIT, 1) == ProgramCaptureState::Result::Continue);
+    CHECK(jump.Observe(EXIT, 2) == ProgramCaptureState::Result::Complete);
+}
+
+TEST_CASE("Ampere uniform select and bit operations reach every uniform register",
+          "[video_core][ampere]") {
+    // Ocarina e8decc3e5c0c184e: @UP0 USEL UR4, UR4, 0x20, UP1. UP0 and UP1 come from R239 into
+    // P6 and P5; the SEL runs under P6 and the guest predicates are restored.
+    const std::array<Instruction, 2> select{{
+        {{0x04040887, 0x20, 0x08800000, 0x000fe200}},
+        EXIT,
+    }};
+    const auto selected = LowerToMaxwell(select);
+    INFO(selected.error);
+    REQUIRE(static_cast<bool>(selected));
+    const std::array<u64, 5> expected_select{
+        0x010000000207f0fcULL, 0x38e800000607fffdULL, 0x38f000000607ef00ULL,
+        0x5ca002800fc6dcdcULL, 0x38f000000607fd00ULL};
+    CHECK(std::search(selected.instructions.begin(), selected.instructions.end(),
+                      expected_select.begin(), expected_select.end()) != selected.instructions.end());
+
+    // Ocarina 2079791ecb288b83: UBREV UR4, UR17.
+    const std::array<Instruction, 2> reverse{{
+        {{0x000472be, 0x11, 0x08000000, 0x000fc800}},
+        EXIT,
+    }};
+    const auto reversed = LowerToMaxwell(reverse);
+    INFO(reversed.error);
+    REQUIRE(static_cast<bool>(reversed));
+    CHECK(reversed.instructions.front() == 0x382801800007e9dcULL);
+
+    // Ocarina 2079791ecb288b83: UFLO.U32.SH UR21, UR21.
+    const std::array<Instruction, 2> leading{{
+        {{0x001572bd, 0x15, 0x080e0400, 0x000fe400}},
+        EXIT,
+    }};
+    const auto found = LowerToMaxwell(leading);
+    INFO(found.error);
+    REQUIRE(static_cast<bool>(found));
+    CHECK(found.instructions.front() == 0x5c3002000ed700edULL);
+
+    // Ocarina 2079791ecb288b83: UPOPC UR10, UR17.
+    const std::array<Instruction, 2> count{{
+        {{0x000a72bf, 0x11, 0x08000000, 0x000fe200}},
+        EXIT,
+    }};
+    const auto counted = LowerToMaxwell(count);
+    INFO(counted.error);
+    REQUIRE(static_cast<bool>(counted));
+    CHECK(counted.instructions.front() == 0x5c0800000e9700e2ULL);
+}
 } // namespace
