@@ -2784,7 +2784,10 @@ private:
         if (!name_buf.empty()) {
             if (codec.empty()) {
                 const std::string_view sv{reinterpret_cast<const char*>(name_buf.data()), name_buf.size()};
-                for (const auto& candidate : {"video/avc", "video/vp9", "video/vp8", "video/hevc"}) {
+                // Both AV1 spellings Nx2IsAv1Mime accepts, so a buffer naming AV1 off its start
+                // still configures the AV1 path.
+                for (const auto& candidate : {"video/avc", "video/vp9", "video/vp8", "video/hevc",
+                                              "video/av01", "video/av1"}) {
                     if (sv.find(candidate) != std::string_view::npos) {
                         codec = candidate;
                         break;
