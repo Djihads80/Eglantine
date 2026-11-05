@@ -30,13 +30,19 @@ void KeplerMemory::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 
 void KeplerMemory::ConsumeSinkImpl(Core::System& system) {
     for (auto [method, value] : method_sink) {
-        regs.reg_array[method] = value;
+        if (method < Regs::NUM_REGS) {
+            regs.reg_array[method] = value;
+        }
     }
     method_sink.clear();
 }
 
 void KeplerMemory::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    ASSERT_MSG(method < Regs::NUM_REGS, "Invalid KeplerMemory register, increase the size of the Regs structure");
+    if (method >= Regs::NUM_REGS) {
+        // Switch 2 games can send methods past this register file; don't write past it.
+        LOG_DEBUG(HW_GPU, "Ignoring KeplerMemory method {:#x} past the register file", method);
+        return;
+    }
 
     regs.reg_array[method] = method_argument;
 

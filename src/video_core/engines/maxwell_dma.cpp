@@ -37,7 +37,9 @@ void MaxwellDMA::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 
 void MaxwellDMA::ConsumeSinkImpl(Core::System& system) {
     for (auto [method, value] : method_sink) {
-        regs.reg_array[method] = value;
+        if (method < NUM_REGS) {
+            regs.reg_array[method] = value;
+        }
     }
     method_sink.clear();
 }
