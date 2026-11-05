@@ -205,12 +205,15 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 }
 
 // A huge natively sampled color array in a Switch 2 sparse region on a host that cannot leave
-// layers unbound (MoltenVK): title 1's terrain arrays (8192x8192x68, 1.4 and 5.8 GB) hold full
-// detail in a few layers and the low levels (1024x1024 and below) in all of them. Such an array
-// is backed with its low levels only (see TrimmedHostInfo, Image::CompactLayers).
+// layers unbound (MoltenVK, AMD): title 1's terrain arrays (8192x8192x68, 1.4 and 5.8 GB) hold
+// full detail in a few layers and the low levels (1024x1024 and below) in all of them. Such an
+// array is backed with its low levels only (see TrimmedHostInfo, Image::CompactLayers).
 [[nodiscard]] bool UsesCompactLayers(const Device& device, const ImageInfo& info,
                                      GPUVAddr gpu_addr) {
-    if (device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
+    // The complement of UsesSparseLayers' device check: AMD has sparse residency but cannot
+    // sample unbound memory.
+    if ((device.IsSparseResidencyImage2DSupported() && device.CanUseUnbackedSparseImages()) ||
+        info.type != ImageType::e2D ||
         info.resources.layers <= 1 || info.resources.levels <= 1 || info.num_samples != 1 ||
         info.size.depth != 1 ||
         VideoCore::Surface::GetFormatType(info.format) !=
