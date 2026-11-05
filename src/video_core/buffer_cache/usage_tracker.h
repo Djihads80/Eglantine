@@ -27,6 +27,10 @@ public:
     }
 
     void Reset() noexcept {
+        if (!tracked) {
+            return;
+        }
+        tracked = false;
         std::ranges::fill(pages, 0ULL);
         recent.fill({~u64{0}, 0});
     }
@@ -40,6 +44,7 @@ public:
                 return;
             }
         }
+        tracked = true;
         recent[recent_cursor++ % recent.size()] = {offset, size};
         const size_t page = offset >> BUFFER_PAGE_SHIFT;
         const size_t page_end = (offset + size) >> BUFFER_PAGE_SHIFT;
@@ -110,6 +115,7 @@ private:
     /// Ranges tracked last, (offset, size).
     std::array<std::pair<u64, u64>, 4> recent{{{~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}}};
     size_t recent_cursor{};
+    bool tracked{};
 };
 
 } // namespace VideoCommon
