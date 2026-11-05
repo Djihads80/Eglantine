@@ -184,7 +184,13 @@ bool DmaPusher::Step() {
         // Only with the command list series on (nx2_command_lists): without it no page is ever
         // marked, IsGpuWrittenCommands is always false, and the wait (for every compute dispatch
         // or copy queued for the back) ran for every entry, ~130,000 times a second, for nothing.
-        if (!gpu_written && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+        // EDEN_NX2_WRITER_WAIT=0 skips it, as sylvieistaken/selevet-eglantine f28449539b does:
+        // only pages already GPU-written wait, and a page's first write can be read a frame late.
+        static const bool writer_wait = [] {
+            const char* value = std::getenv("EDEN_NX2_WRITER_WAIT");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (!gpu_written && writer_wait && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
             Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
