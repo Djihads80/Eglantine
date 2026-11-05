@@ -3412,6 +3412,7 @@ private:
     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    bool FrontSkipsLoopWrite(FrontState& state, u32 method, u32 value, bool shadow_kept);
     void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
                       u32 count);
     bool FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,

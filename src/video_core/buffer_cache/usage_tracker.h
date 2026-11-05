@@ -32,6 +32,10 @@ public:
     }
 
     void Reset() noexcept {
+        if (!touched) {
+            return;
+        }
+        touched = false;
         std::ranges::fill(pages, 0ULL);
         recent.fill({~u64{0}, 0});
         full_begin = 0;
@@ -51,6 +55,7 @@ public:
             }
         }
         recent[recent_cursor++ % recent.size()] = {offset, size};
+        touched = true;
         const size_t page = offset >> BUFFER_PAGE_SHIFT;
         const size_t page_end = (offset + size) >> BUFFER_PAGE_SHIFT;
         if (page_end < page || page_end >= pages.size()) {
@@ -166,6 +171,7 @@ private:
     /// Ranges tracked last, (offset, size).
     std::array<std::pair<u64, u64>, 4> recent{{{~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}, {~u64{0}, 0}}};
     size_t recent_cursor{};
+    bool touched{}; ///< Tracked since the last Reset (Reset skips untouched trackers)
     /// Pages known to be all ones (FillPages).
     size_t full_begin{};
     size_t full_end{};
