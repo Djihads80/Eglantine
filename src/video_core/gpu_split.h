@@ -209,6 +209,11 @@ private:
     /// Back side: hands the ring up to `position` back, waking a sleeping front.
     void HandBack(u64 position);
     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
+        // Words queued (QueueWord) go first, before the engine is compared: their entry selects
+        // their own engine, which may differ from this one, and from front_engine as it is now.
+        if (pending_count != 0) [[unlikely]] {
+            FlushPending();
+        }
         if (engine != front_engine) [[unlikely]] {
             SwitchEngine(engine);
         }
