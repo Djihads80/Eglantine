@@ -248,6 +248,9 @@ public:
 
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
+    /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
+    void ClearDownload(DAddr base_addr, u64 size);
+
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
@@ -546,8 +549,6 @@ private:
 
     /// Re-dirties repacked vertex buffers whose source data was written since they were bound.
     void RefreshRepackedVertexBuffers();
-
-    void ClearDownload(DAddr base_addr, u64 size);
 
     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                     std::span<const u8> inlined_buffer);

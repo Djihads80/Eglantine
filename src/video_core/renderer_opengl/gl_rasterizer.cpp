@@ -533,6 +533,14 @@ VideoCore::RasterizerDownloadArea RasterizerOpenGL::GetFlushArea(DAddr addr, u64
     return new_area;
 }
 
+void RasterizerOpenGL::PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) {
+    if (addr == 0 || size == 0 || False(which & VideoCommon::CacheType::BufferCache)) {
+        return;
+    }
+    std::scoped_lock lock{buffer_cache.mutex};
+    buffer_cache.ClearDownload(addr, size);
+}
+
 void RasterizerOpenGL::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (addr == 0 || size == 0) {
         return;

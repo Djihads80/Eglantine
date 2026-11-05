@@ -99,6 +99,7 @@ public:
     VideoCore::RasterizerDownloadArea GetFlushArea(PAddr addr, u64 size) override;
     void InvalidateRegion(DAddr addr, u64 size,
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
     void OnCacheInvalidation(PAddr addr, u64 size) override;
     bool OnCPUWrite(PAddr addr, u64 size) override;
     void InvalidateGPUCache() override;
