@@ -2687,16 +2687,6 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
             continue;
         }
-        if (overlap.modification_tick <= new_image.modification_tick) {
-            if (!copy_object.is_alias) {
-                if (True(overlap.flags & ImageFlagBits::Tracked)) {
-                    UntrackImage(overlap, copy_object.id);
-                }
-                UnregisterImage(copy_object.id);
-                DeleteImage(copy_object.id);
-            }
-            continue;
-        }
         if (copy_object.is_alias) {
             if (!overlap.IsSafeGpuCopy() || False(overlap.flags & ImageFlagBits::GpuModified)) {
                 continue;

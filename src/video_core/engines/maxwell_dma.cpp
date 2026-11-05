@@ -261,6 +261,24 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
     const u32 num_remap_components = regs.remap_const.num_dst_components_minus_one + 1;
     const u32 remap_components_size = regs.remap_const.component_size_minus_one + 1;
 
+    u32 bytes_per_pixel = 1;
+    DMA::ImageOperand dst_operand;
+    dst_operand.bytes_per_pixel = bytes_per_pixel;
+    dst_operand.params = regs.dst_params;
+    dst_operand.address = regs.offset_out;
+    DMA::BufferOperand src_operand;
+    src_operand.pitch = regs.pitch_in;
+    src_operand.width = regs.line_length_in;
+    src_operand.height = regs.line_count;
+    src_operand.address = regs.offset_in;
+    DMA::ImageCopy copy_info{};
+    copy_info.length_x = regs.line_length_in;
+    copy_info.length_y = regs.line_count;
+    auto& accelerate = rasterizer->AccessAccelerateDMA();
+    if (accelerate.BufferToImage(copy_info, src_operand, dst_operand)) {
+        return;
+    }
+
     const auto& dst_params = regs.dst_params;
 
     const u32 base_bpp = !is_remapping ? 1U : num_remap_components * remap_components_size;
@@ -278,24 +296,7 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
         x_offset >>= bpp_shift;
     }
 
-    const u32 bytes_per_pixel = base_bpp << bpp_shift;
-
-    DMA::ImageOperand dst_operand;
-    dst_operand.bytes_per_pixel = bytes_per_pixel;
-    dst_operand.params = regs.dst_params;
-    dst_operand.address = regs.offset_out;
-    DMA::BufferOperand src_operand;
-    src_operand.pitch = regs.pitch_in;
-    src_operand.width = regs.line_length_in;
-    src_operand.height = regs.line_count;
-    src_operand.address = regs.offset_in;
-    DMA::ImageCopy copy_info{};
-    copy_info.length_x = regs.line_length_in;
-    copy_info.length_y = regs.line_count;
-    auto& accelerate = rasterizer->AccessAccelerateDMA();
-    if (accelerate.BufferToImage(copy_info, src_operand, dst_operand)) {
-        return;
-    }
+    bytes_per_pixel = base_bpp << bpp_shift;
     const u32 height = dst_params.height;
     const u32 depth = dst_params.depth;
     const u32 block_height = dst_params.block_size.height;
