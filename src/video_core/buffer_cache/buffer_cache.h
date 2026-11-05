@@ -2564,7 +2564,13 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
         // one bound Fortune's Weave's DLSS input features to 266 bytes and dropped the rest.
         if (native_pointer) {
-            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+            // A native program's pointer can be the base of an object pool read far past that base
+            // (Ocarina of Time's grass instances lie 12-18 MiB into theirs): bound to the end of
+            // the mapping, up to 64 MiB. Written bindings keep the 8 MiB cap, and so does every
+            // non-native pointer: a write marks the whole binding GPU-modified, and raising the cap
+            // for all of them grew hundreds of bindings into an 80 MiB region.
+            const u32 cap = is_written ? 8_MiB : 64_MiB;
+            return (std::min)(memory_layout_size, cap);
         }
         const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
         const u32 packed_size = static_cast<u32>(next_qword);
