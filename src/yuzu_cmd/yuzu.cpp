@@ -599,7 +599,7 @@ double Nx2KeyClockSeconds(); // emu_window_sdl3.cpp
 // EDEN_NX2_DIAG_DIR=<dir>: keys.txt there is read and removed while the game runs, for scripted
 // control (tools/nx2/lab_ctl.py press). One entry per line: "<code>" press, "-<code>" release, or
 // "<code> <milliseconds>" press and release after that long. Codes are SDL scancodes.
-static void RunLiveKeys(InputCommon::InputSubsystem& input_subsystem) {
+static void RunLiveKeys(InputCommon::InputSubsystem& input_subsystem, Core::System& system) {
     static const std::filesystem::path file = [] {
         const char* dir = std::getenv("EDEN_NX2_DIAG_DIR");
         return dir && *dir ? std::filesystem::path{dir} / "keys.txt" : std::filesystem::path{};
@@ -631,6 +631,15 @@ static void RunLiveKeys(InputCommon::InputSubsystem& input_subsystem) {
     std::ifstream in{taken};
     std::string line;
     while (std::getline(in, line)) {
+        // "gpu low|high": sets the GPU accuracy, as the Qt app's Change GPU Mode hotkey.
+        if (line.starts_with("gpu ")) {
+            const bool high = line.substr(4) == "high";
+            Settings::values.gpu_accuracy.SetValue(high ? Settings::GpuAccuracy::High
+                                                        : Settings::GpuAccuracy::Low);
+            system.ApplySettings();
+            LOG_INFO(Frontend, "Live keys: GPU accuracy {}", high ? "high" : "low");
+            continue;
+        }
         int code = 0, milliseconds = -1;
         if (std::sscanf(line.c_str(), "%d %d", &code, &milliseconds) < 1 || code == 0) {
             continue;
@@ -650,7 +659,7 @@ static void RunLiveKeys(InputCommon::InputSubsystem& input_subsystem) {
     std::filesystem::remove(taken, error);
 }
 
-static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
+static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem, Core::System& system) {
     struct KeyEvent {
         double seconds; // when frame is 0
         u64 frame;      // "f<frame>:code": after that many presents
@@ -699,12 +708,12 @@ static void RunKeyScript(InputCommon::InputSubsystem& input_subsystem) {
         }
         ++next;
     }
-    RunLiveKeys(input_subsystem);
+    RunLiveKeys(input_subsystem, system);
 }
 
 extern "C" SDL_AppResult SDL_AppIterate(void *appstate) {
     SdlState *state = (SdlState *)appstate;
-    RunKeyScript(state->input_subsystem);
+    RunKeyScript(state->input_subsystem, state->system);
     if (state->emu_window) {
         state->emu_window->ApplyPendingTitle();
     }
