@@ -295,14 +295,6 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
         } else {
             if constexpr (USE_MEMORY_MAPS) {
-                // Pages that trap a second time across GPU writes are read back repeatedly (e.g.
-                // per-frame CPU readbacks): promote those overlapping pages to Preflushable so
-                // QueueGpuWrite downloads them at fences instead of stalling mid-frame on every read.
-                cpu_read_ranges.ForEachInRange(
-                    area->start_address, area->end_address - area->start_address,
-                    [&](DAddr lower, DAddr upper) {
-                        memory_tracker.MarkRegionAsPreflushable(lower, upper - lower);
-                    });
                 cpu_read_ranges.Add(area->start_address, area->end_address - area->start_address);
                 download_cpu_read_ranges = true;
             }
