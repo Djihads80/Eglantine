@@ -3204,6 +3204,11 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    /// GpuSplit's back (fast_maxwell3d): CallMethod for each of up to 64 single writes to the
+    /// constant buffer data registers, uploaded in one memory write.
+    void CallConstBufferWords(Core::System& system, const u32* methods, const u32* arguments,
+                              u32 count);
+
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
     /// registers and sends the register writes to the back thread.
@@ -3290,6 +3295,12 @@ private:
     void ConsumeSinkImpl(Core::System& system) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);
+
+    /// CallMethod with every check, for the cases and tools CallMethodFast leaves out.
+    void CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
+    void CallMethodFast(u32 method, u32 method_argument, bool is_last_call);
+    /// EDEN_NX2_PERF_VERIFY: CallMethodFast's register state against CallMethodSlow's.
+    void VerifyCallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
 
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;

@@ -553,6 +553,23 @@ void MemoryManager::WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buf
     accumulator.Add(gpu_dest_addr, size);
 }
 
+void MemoryManager::WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, std::size_t count) {
+    const std::size_t size = count * sizeof(u32);
+    // Words on Switch 2 sparse memory go one at a time, as Nx2BackSparseWrite saw them.
+    if (gpu_dest_addr + size > Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) &&
+        gpu_dest_addr < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed)) {
+        for (std::size_t i = 0; i < count; ++i) {
+            WriteBlockCached(gpu_dest_addr + i * sizeof(u32), words + i, sizeof(u32));
+        }
+        return;
+    }
+    WriteBlockImpl(gpu_dest_addr, words, size, VideoCommon::CacheType::None, true);
+    // The accumulator merges word by word differently from one range: keep its ranges.
+    for (std::size_t i = 0; i < count; ++i) {
+        accumulator.Add(gpu_dest_addr + i * sizeof(u32), sizeof(u32));
+    }
+}
+
 void MemoryManager::FlushRegion(GPUVAddr gpu_addr, size_t size,
                                 VideoCommon::CacheType which) const {
     auto do_nothing = [&]([[maybe_unused]] std::size_t page_index,

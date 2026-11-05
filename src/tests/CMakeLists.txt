@@ -6,8 +6,10 @@
 
 add_executable(tests
     core/builtin_patches.cpp
+    core/system_test_context.h
     video_core/gpu_timestamp.cpp
     video_core/oot_visual_workaround.cpp
+    video_core/maxwell_fast_method.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
