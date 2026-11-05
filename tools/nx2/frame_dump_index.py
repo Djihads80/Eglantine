@@ -107,6 +107,8 @@ def main():
             header = entry
         elif entry.get("kind") == "summary":
             summary = entry
+        elif entry.get("kind") == "draw":
+            continue  # per-draw state lines: read the manifest
         elif "name" in entry:
             entries.append(entry)
         else:

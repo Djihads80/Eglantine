@@ -97,6 +97,11 @@ public:
         return fragment_has_color0_output;
     }
 
+    /// The fragment program can discard (from Lichii 82b95a65d4).
+    bool FragmentCanDiscard() const noexcept {
+        return stage_infos[NUM_STAGES - 1].uses_demote_to_helper_invocation;
+    }
+
     bool UsesExtendedDynamicState() const noexcept {
         return key.state.extended_dynamic_state != 0;
     }

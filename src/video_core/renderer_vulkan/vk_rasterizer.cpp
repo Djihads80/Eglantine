@@ -16,6 +16,7 @@
 #include <set>
 #include <fstream>
 #include <mutex>
+#include <cmath>
 #include <string_view>
 #include <vector>
 
@@ -437,6 +438,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     {
         Profile::Scope scope{Profile::Zone::DynamicState};
         UpdateDynamicStates();
+    }
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.NoteDrawState(DrawStateJson(*pipeline));
     }
 
     query_cache.NotifySegment(true);
@@ -2485,6 +2489,54 @@ void RasterizerVulkan::UpdateDepthClampEnable(Tegra::Engines::Maxwell3D::Regs& r
                             Maxwell::ViewportClipControl::GeometryClip::FrustumZ);
     scheduler.Record(
         [is_enabled](vk::CommandBuffer cmdbuf) { cmdbuf.SetDepthClampEnableEXT(is_enabled); });
+}
+
+std::string RasterizerVulkan::DrawStateJson(const GraphicsPipeline& pipeline) const {
+    const auto& regs = maxwell3d->regs;
+    const auto& draw = maxwell3d->draw_manager.draw_state;
+    const auto number = [](f32 value) {
+        return std::isfinite(value) ? fmt::format("{:.6g}", value) : std::string{"null"};
+    };
+    // Per colour target: index, enable, colour op/src/dst, alpha op/src/dst (guest enums), mask.
+    std::string targets;
+    for (size_t index = 0; index < Maxwell::NumRenderTargets; ++index) {
+        if (regs.rt[index].format == Tegra::RenderTargetFormat::NONE) {
+            continue;
+        }
+        const auto& mask = regs.color_mask[regs.color_mask_common ? 0 : index];
+        const auto entry = [&](const auto& blend) {
+            return fmt::format(R"([{},{},{},{},{},{},{},{},"{:x}"])", index,
+                               regs.blend.enable[index], static_cast<u32>(blend.color_op),
+                               static_cast<u32>(blend.color_source),
+                               static_cast<u32>(blend.color_dest),
+                               static_cast<u32>(blend.alpha_op),
+                               static_cast<u32>(blend.alpha_source),
+                               static_cast<u32>(blend.alpha_dest), mask.raw & 0x1111);
+        };
+        targets += targets.empty() ? "" : ",";
+        targets += regs.blend_per_target_enabled ? entry(regs.blend_per_target[index])
+                                                 : entry(regs.blend);
+    }
+    const bool alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
+    const bool dynamic_alpha_to_coverage = device.IsExtExtendedDynamicState3EnablesSupported() &&
+                                           device.SupportsDynamicState3AlphaToCoverageEnable() &&
+                                           pipeline.UsesExtendedDynamicState();
+    const bool host_alpha_to_coverage =
+        dynamic_alpha_to_coverage ? alpha_to_coverage_enable
+                                  : alpha_to_coverage && pipeline.SupportsAlphaToCoverage();
+    return fmt::format(
+        R"("fs":"{:016x}","mesh":{},"vb":[{},{}],"ib":[{},{}],"inst":{},"blend":[{}],"per_target":{},)"
+        R"("iterated":{},"const":[{},{},{},{}],"alpha_test":[{},{}],"a2c":[{},{}],"color0":{},)"
+        R"("kill":{},"depth":[{},{},{}])",
+        pipeline.ShaderHashes()[5], pipeline.IsMeshPipeline(), draw.vertex_buffer.first,
+        draw.vertex_buffer.count, draw.index_buffer.first, draw.index_buffer.count,
+        draw.instance_count, targets, regs.blend_per_target_enabled != 0,
+        regs.iterated_blend.enable.Value(), number(regs.blend_color.r), number(regs.blend_color.g),
+        number(regs.blend_color.b), number(regs.blend_color.a),
+        regs.alpha_test_enabled ? static_cast<u32>(regs.alpha_test_func) : 0,
+        number(regs.alpha_test_ref), alpha_to_coverage, host_alpha_to_coverage,
+        pipeline.SupportsAlphaToCoverage(), pipeline.FragmentCanDiscard(),
+        regs.depth_test_enable, static_cast<u32>(regs.depth_test_func), regs.depth_write_enabled);
 }
 
 // Both enables also depend on the bound pipeline writing colour 0, which the dirty flags do not

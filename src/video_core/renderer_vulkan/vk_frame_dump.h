@@ -81,6 +81,8 @@ public:
     /// A draw or dispatch that was not executed, and why.
     void NoteSkipped(std::string_view kind, std::string_view reason, std::span<const u64> programs,
                      GPUVAddr target);
+    /// The last noted draw's state ("kind":"draw"); fields: JSON members without braces.
+    void NoteDrawState(std::string_view fields);
     /// Captures the current pass; returns true when copies were recorded.
     bool EndPass();
     void CaptureDispatch(u64 shader_hash, u64 program, std::span<const u32, 3> groups,
@@ -183,6 +185,7 @@ private:
     u32 draws{};
     u32 dispatches{};
     u32 skipped{};
+    u32 draw_states{};
 
     std::thread writer;
     std::mutex queue_mutex;

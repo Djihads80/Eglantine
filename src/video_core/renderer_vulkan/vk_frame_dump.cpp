@@ -43,6 +43,7 @@ constexpr size_t STAGING_BUDGET = size_t{256} << 20;
 /// Larger images (a 12288x12288 shadow map) are listed without their data.
 constexpr size_t MAX_READBACK = size_t{64} << 20;
 constexpr u32 MAX_SKIPPED_LINES = 512;
+constexpr u32 MAX_DRAW_STATE_LINES = 8192;
 
 template <typename T>
 T Load(const u8* pixel, int index) {
@@ -522,6 +523,14 @@ void FrameDump::NoteSkipped(std::string_view kind, std::string_view reason,
                  kind, reason, pass_index, draws, dispatches, JsonAddresses(programs), target)});
 }
 
+void FrameDump::NoteDrawState(std::string_view fields) {
+    if (draw_states++ >= MAX_DRAW_STATE_LINES) {
+        return;
+    }
+    Enqueue({.tags = fmt::format(R"({{"kind":"draw","draw":{},"pass":{},{}}})", draws - 1,
+                                 pass_index, fields)});
+}
+
 bool FrameDump::EndPass() {
     if (!pass_framebuffer) {
         return false;
@@ -910,6 +919,7 @@ void FrameDump::Start() {
     draws = 0;
     dispatches = 0;
     skipped = 0;
+    draw_states = 0;
     pass_framebuffer = nullptr;
     frame_readbacks.clear();
     if (!writer.joinable()) {

@@ -228,6 +228,8 @@ private:
     void UpdateAlphaToOneEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     bool alpha_to_coverage_enable{}; ///< Last value recorded with SetAlphaToCoverageEnableEXT
     bool alpha_to_one_enable{};      ///< Last value recorded with SetAlphaToOneEnableEXT
+    /// Frame dump: the draw's blend, alpha and depth state as JSON fields.
+    std::string DrawStateJson(const GraphicsPipeline& pipeline) const;
     void UpdateFrontFace(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilOp(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& regs);
