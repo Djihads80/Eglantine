@@ -510,6 +510,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineGlobalMemoryFunctions(program);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
+    DefineMeshDrawBase();
 }
 
 EmitContext::~EmitContext() = default;
@@ -1168,7 +1169,7 @@ void EmitContext::DefineRescalingInput(const Info& info) {
 }
 
 void EmitContext::DefineRescalingInputPushConstant() {
-    boost::container::static_vector<Id, 3> members{};
+    boost::container::static_vector<Id, 4> members{};
     u32 member_index{0};
 
     rescaling_textures_type = TypeArray(U32[1], Const(4u));
@@ -1185,9 +1186,18 @@ void EmitContext::DefineRescalingInputPushConstant() {
         members.push_back(F32[1]);
         rescaling_downfactor_member_index = member_index++;
     }
+    if (UsesMeshDrawBase()) {
+        members.push_back(U32[1]);
+        mesh_draw_base_member_index = member_index++;
+    }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
     Name(push_constant_struct, "ResolutionInfo");
+    if (UsesMeshDrawBase()) {
+        MemberDecorate(push_constant_struct, mesh_draw_base_member_index, spv::Decoration::Offset,
+                       MeshDrawBaseOffset());
+        MemberName(push_constant_struct, mesh_draw_base_member_index, "mesh_draw_base");
+    }
 
     MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
                    static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));
@@ -1206,6 +1216,9 @@ void EmitContext::DefineRescalingInputPushConstant() {
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
+    if (UsesMeshDrawBase()) {
+        mesh_draw_base_push_constant = rescaling_push_constants;
+    }
 
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
@@ -1220,6 +1233,36 @@ void EmitContext::DefineRescalingInputUniformConstant() {
 
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_uniform_constant);
+    }
+}
+
+bool EmitContext::UsesMeshDrawBase() const {
+    return (stage == Stage::Task || stage == Stage::Mesh) && profile.unified_descriptor_binding &&
+           MeshFirstEnabled();
+}
+
+u32 EmitContext::MeshDrawBaseOffset() const {
+    return MESH_DRAW_BASE_OFFSET + static_cast<u32>(stage == Stage::Task
+                                                        ? offsetof(MeshDrawBaseLayout, task)
+                                                        : offsetof(MeshDrawBaseLayout, mesh));
+}
+
+void EmitContext::DefineMeshDrawBase() {
+    // One push constant block per entry point: the rescaling block already holds it if defined.
+    if (!UsesMeshDrawBase() || Sirit::ValidId(mesh_draw_base_push_constant)) {
+        return;
+    }
+    const Id push_constant_struct{TypeStruct(U32[1])};
+    Decorate(push_constant_struct, spv::Decoration::Block);
+    Name(push_constant_struct, "MeshDrawBase");
+    MemberDecorate(push_constant_struct, 0, spv::Decoration::Offset, MeshDrawBaseOffset());
+    MemberName(push_constant_struct, 0, "mesh_draw_base");
+    mesh_draw_base_member_index = 0;
+    const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
+    mesh_draw_base_push_constant = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
+    Name(mesh_draw_base_push_constant, "mesh_draw_base_push_constants");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(mesh_draw_base_push_constant);
     }
 }
 

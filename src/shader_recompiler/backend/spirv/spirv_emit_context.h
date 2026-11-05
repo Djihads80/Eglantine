@@ -334,6 +334,9 @@ public:
     Id render_area_push_constant{};
     u32 render_are_member_index{};
 
+    Id mesh_draw_base_push_constant{};
+    u32 mesh_draw_base_member_index{};
+
     Id local_memory{};
 
     bool uses_explicit_workgroup_layout{};
@@ -452,6 +455,9 @@ private:
     void DefineRescalingInputPushConstant();
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
+    void DefineMeshDrawBase();
+    [[nodiscard]] bool UsesMeshDrawBase() const;
+    [[nodiscard]] u32 MeshDrawBaseOffset() const;
 
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);

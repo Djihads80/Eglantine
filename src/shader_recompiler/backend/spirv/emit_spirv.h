@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <vector>
 
 #include "common/common_types.h"
@@ -32,6 +33,21 @@ struct RenderAreaLayout {
 constexpr u32 RESCALING_LAYOUT_WORDS_OFFSET = offsetof(RescalingLayout, rescaling_textures);
 constexpr u32 RESCALING_LAYOUT_DOWN_FACTOR_OFFSET = offsetof(RescalingLayout, down_factor);
 constexpr u32 RENDERAREA_LAYOUT_OFFSET = offsetof(RenderAreaLayout, render_area);
+
+// EDEN_NX2_MESH_FIRST=1: the draw's first vertex is the first task (or mesh, without a task)
+// workgroup index, as in NVN and GL_NV_mesh_shader. Only the first active stage reads non-zero.
+struct MeshDrawBaseLayout {
+    u32 task;
+    u32 mesh;
+};
+constexpr u32 MESH_DRAW_BASE_OFFSET = sizeof(RescalingLayout);
+static_assert(MESH_DRAW_BASE_OFFSET + sizeof(MeshDrawBaseLayout) <=
+              sizeof(RescalingLayout) + sizeof(RenderAreaLayout));
+
+inline bool MeshFirstEnabled() {
+    static const bool enabled{std::getenv("EDEN_NX2_MESH_FIRST") != nullptr};
+    return enabled;
+}
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
 [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {

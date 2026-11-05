@@ -169,8 +169,14 @@ void MeshEpilogue(EmitContext& ctx) {
 } // Anonymous namespace
 
 Id EmitIsbeRead(EmitContext& ctx, Id address) {
-    const Id workgroup{
+    Id workgroup{
         ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    if (Sirit::ValidId(ctx.mesh_draw_base_push_constant)) {
+        const Id pointer_type{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1])};
+        const Id pointer{ctx.OpAccessChain(pointer_type, ctx.mesh_draw_base_push_constant,
+                                           ctx.Const(ctx.mesh_draw_base_member_index))};
+        workgroup = ctx.OpIAdd(ctx.U32[1], workgroup, ctx.OpLoad(ctx.U32[1], pointer));
+    }
     if (ctx.stage == Stage::Task) {
         return workgroup; // the input region holds the workgroup index (VERTEX_ID)
     }
