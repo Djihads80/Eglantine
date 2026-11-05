@@ -1,7 +1,5 @@
 {
   # Eglantine NixOS Flake - Builds and Installs latest release on any x86_64 NixOS system
-  description = "Experimental Switch 2 Emulator";
-
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
