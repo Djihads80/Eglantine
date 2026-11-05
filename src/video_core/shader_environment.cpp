@@ -191,6 +191,13 @@ bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     return mapped;
 }
 
+/**
+ * @brief Hash the shader code, including the native ABI version for lowered programs.
+ *
+ * For Maxwell programs, find the program size and record its cached address range before hashing.
+ *
+ * @return Shader hash, or std::nullopt when the Maxwell program size cannot be determined.
+ */
 std::optional<u64> GenericEnvironment::Analyze() {
     if (native_source_size) {
         // Include the converted header and a version tag to isolate this experimental ABI.

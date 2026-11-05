@@ -138,6 +138,10 @@ public:
     }
 
 private:
+    /**
+     * @brief Validate TIPC command 0 and echo its 64-bit handshake token.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
     void Handshake(HLERequestContext& ctx) {
         const auto* words = ctx.CommandBuffer();
         if (words[0] != 0x10 || words[1] != 2) {
@@ -148,6 +152,10 @@ private:
         TipcHandshake(ctx, "nx2:gsv:1121");
     }
 
+    /**
+     * @brief Validate TIPC command 11 and reply with a stubbed 64-bit zero value.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
     void Probe(HLERequestContext& ctx) {
         const auto* words = ctx.CommandBuffer();
         if (words[0] != 0x1b || words[1] != 4) {
@@ -3172,6 +3180,10 @@ private:
         TipcReplyWords(ctx, {});
     }
 
+    /**
+     * @brief Validate TIPC command 1121 and move a new raw session handle into the reply.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
     void OpenSession1121(HLERequestContext& ctx) {
         const auto* words = ctx.CommandBuffer();
         if (words[0] != 0x471 || words[1] != 0) {

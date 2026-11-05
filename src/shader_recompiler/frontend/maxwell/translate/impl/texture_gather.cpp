@@ -103,6 +103,15 @@ IR::Value MakeOffset(TranslatorVisitor& v, IR::Reg& reg, TextureType type) {
     throw NotImplementedException("Invalid texture type {}", type);
 }
 
+/**
+ * @brief Unpack per-pixel gather offsets from two consecutive registers.
+ *
+ * Native programs use signed 8-bit components; Maxwell programs use signed 6-bit components.
+ *
+ * @param v Translator that reads the registers and emits offset extraction operations.
+ * @param[in,out] reg First packed offset register; advanced by two registers.
+ * @return Two IR vectors, each containing four signed offset components.
+ */
 std::pair<IR::Value, IR::Value> MakeOffsetPTP(TranslatorVisitor& v, IR::Reg& reg) {
     const IR::U32 value1{v.X(reg++)};
     const IR::U32 value2{v.X(reg++)};

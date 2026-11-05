@@ -156,9 +156,17 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     return result;
 }
 
-// Lower only operations whose semantics are representable by the existing
-// Maxwell frontend. These are new instructions, not reinterpretations of the
-// native bytes. Scheduling/control words are added by the environment adapter.
+/**
+ * @brief Lower native Ampere instructions to operations supported by the Maxwell frontend.
+ *
+ * Emits new instructions rather than reinterpreting native bytes. The environment adapter
+ * adds scheduling words. Unsupported instructions or modes return a diagnostic.
+ *
+ * @param code Native instructions to lower.
+ * @param high_uniforms Number of registers reserved below R216 to mirror UR28 and higher.
+ * @param options Geometry, tensor, and native code address settings.
+ * @return Lowered instructions and metadata, or an error and its native byte offset.
+ */
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
                                           LoweringOptions options = {}) {
     const bool geometry = options.geometry, tensor = options.tensor;
