@@ -888,12 +888,18 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
         if (mesh_draw) {
-            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+            scheduler.Record([this, groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
             });
             return;
         }
-        scheduler.Record([draw_params](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, draw_params](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             if (draw_params.is_indexed) {
                 cmdbuf.DrawIndexed(draw_params.num_vertices, draw_params.num_instances,
                                    draw_params.first_index, draw_params.base_vertex,
@@ -944,8 +950,11 @@ void RasterizerVulkan::DrawIndirect() {
         const auto& buffer = indirect_buffer.first;
         const auto& offset = indirect_buffer.second;
         if (params.is_byte_count) {
-            scheduler.Record([buffer_obj = buffer->Handle(), offset,
+            scheduler.Record([this, buffer_obj = buffer->Handle(), offset,
                               stride = params.stride](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 cmdbuf.DrawIndirectByteCountEXT(1, 0, buffer_obj, offset, 0,
                                                 static_cast<u32>(stride));
             });
@@ -955,9 +964,12 @@ void RasterizerVulkan::DrawIndirect() {
             const auto count = buffer_cache.GetDrawIndirectCount();
             const auto& draw_buffer = count.first;
             const auto& offset_base = count.second;
-            scheduler.Record([draw_buffer_obj = draw_buffer->Handle(),
+            scheduler.Record([this, draw_buffer_obj = draw_buffer->Handle(),
                               buffer_obj = buffer->Handle(), offset_base, offset,
                               params](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 if (params.is_indexed) {
                     cmdbuf.DrawIndexedIndirectCount(
                         buffer_obj, offset, draw_buffer_obj, offset_base,
@@ -970,7 +982,10 @@ void RasterizerVulkan::DrawIndirect() {
             });
             return;
         }
-        scheduler.Record([buffer_obj = buffer->Handle(), offset, params](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, buffer_obj = buffer->Handle(), offset, params](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             if (params.is_indexed) {
                 cmdbuf.DrawIndexedIndirect(buffer_obj, offset,
                                            static_cast<u32>(params.max_draw_counts),
