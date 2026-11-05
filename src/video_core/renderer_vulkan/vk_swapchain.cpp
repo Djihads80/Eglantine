@@ -42,6 +42,8 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
         if (selected != formats.end()) {
             return *selected;
         }
+        LOG_ERROR(Render_Vulkan, "HDR swapchain creation failed: surface does not support {}",
+                  requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ? "scRGB" : "HDR10");
         throw vk::Exception(VK_ERROR_FORMAT_NOT_SUPPORTED);
     }
     if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED) {
@@ -143,7 +145,10 @@ Swapchain::Swapchain(
     , device{device_}
     , scheduler{scheduler_}
 {
-    Create(surface, width_, height_);
+    if (!Create(surface, width_, height_)) {
+        LOG_ERROR(Render_Vulkan, "Initial swapchain creation failed: surface has zero extent");
+        throw vk::Exception(VK_ERROR_INITIALIZATION_FAILED);
+    }
 }
 
 Swapchain::~Swapchain() = default;
@@ -176,10 +181,6 @@ bool Swapchain::Create(
 
     resource_ticks.clear();
     resource_ticks.resize(image_count);
-    if (hdr_format_unavailable) {
-        LOG_INFO(Render_Vulkan, "Swapchain output restored after HDR format unavailability");
-        hdr_format_unavailable = false;
-    }
     return true;
 }
 
@@ -281,17 +282,6 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 
     // Keep the SDR choice available even while the active swapchain is HDR.
     sdr_image_format = ChooseSwapSurfaceFormat(formats, VK_FORMAT_B8G8R8A8_UNORM).format;
-    u32 supported_hdr_formats = 0;
-    for (const auto& format : formats) {
-        if (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
-            format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
-            supported_hdr_formats |= Hdr10Support;
-        } else if (format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
-                   format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-            supported_hdr_formats |= ScRgbSupport;
-        }
-    }
-    hdr_formats = supported_hdr_formats;
 
     has_mailbox = std::find(present_modes.begin(), present_modes.end(), VK_PRESENT_MODE_MAILBOX_KHR)
                   != present_modes.end();
@@ -301,16 +291,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
                                  VK_PRESENT_MODE_FIFO_RELAXED_KHR) != present_modes.end();
 
     const VkCompositeAlphaFlagBitsKHR alpha_flags{ChooseAlphaFlags(capabilities)};
-    try {
-        surface_format = ChooseSwapSurfaceFormat(formats, requested_format);
-    } catch (const vk::Exception& exception) {
-        if (exception.GetResult() == VK_ERROR_FORMAT_NOT_SUPPORTED && !hdr_format_unavailable) {
-            LOG_ERROR(Render_Vulkan, "HDR output ({}) is not supported by this surface",
-                      requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ? "scRGB" : "HDR10");
-            hdr_format_unavailable = true;
-        }
-        throw;
-    }
+    surface_format = ChooseSwapSurfaceFormat(formats, requested_format);
     present_mode = ChooseSwapPresentMode(has_imm, has_mailbox, has_fifo_relaxed);
 
     u32 requested_image_count{capabilities.minImageCount + 1};

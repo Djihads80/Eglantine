@@ -2166,8 +2166,7 @@ private:
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
         const bool hdr_enabled = Settings::values.hdr.GetValue() &&
                                  Settings::values.renderer_backend.GetValue() ==
-                                     Settings::RendererBackend::Vulkan &&
-                                 system.Renderer().SupportsHdr();
+                                     Settings::RendererBackend::Vulkan;
         TipcReplyWords(ctx, {hdr_enabled ? 2U : 1U, 0, Settings::values.hdr_peak_luminance.GetValue()});
     }
 

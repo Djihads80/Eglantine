@@ -13,13 +13,16 @@ Verifying and maintaining that environment is the user's responsibility. Configu
 it before starting the game.
 
 This feature preserves native HDR output from Switch 2 games that support it. It
-does not add HDR to SDR-only games. HDR10 and optional scRGB output depend on the
-game's requested format and the host surface's support for that format.
+does not add HDR to SDR-only games. Enabling HDR declares that your environment
+supports both HDR10 and scRGB. There are no HDR startup probes: the emulator starts
+with an SDR swapchain and selects HDR output when the game supplies native HDR
+frames.
 
-The emulator checks surface capabilities and rejects unsupported presentation
-formats; these checks are not automatic setup or compatibility workarounds. It does
+The emulator selects the requested presentation format when creating the actual
+swapchain; this is not automatic setup or a compatibility workaround. It does
 not enable operating-system HDR, tone-map HDR into SDR, or reinterpret HDR pixels
-as SDR. Live display changes and operating-system HDR toggles during gameplay are
+as SDR. HDR swapchain creation failures follow the normal Vulkan error path, with
+no HDR-specific fallback. Live display changes and operating-system HDR toggles during gameplay are
 intentionally unsupported. Captures are not promised HDR-to-SDR tone mapping.
 Handling HDR content on an SDR desktop is an operating-system concern, not behavior
 this feature attempts to emulate.

@@ -446,10 +446,6 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
             // Draw to swapchain.
             return CopyToSwapchainImpl(frame);
         } catch (const vk::Exception& except) {
-            if (except.GetResult() == VK_ERROR_FORMAT_NOT_SUPPORTED) {
-                DiscardFrame(frame);
-                return;
-            }
             if (except.GetResult() != VK_ERROR_SURFACE_LOST_KHR) {
                 throw;
             }
