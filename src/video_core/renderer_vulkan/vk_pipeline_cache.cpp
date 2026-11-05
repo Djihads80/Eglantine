@@ -625,8 +625,11 @@ constexpr u8 UsedPipelinesMaxAge = 2;
 constexpr u8 UsedPipelinesMaxAgePerf = 16;
 constexpr u8 UsedPipelinesMaxAgeMoltenVK = 8;
 
-u8 MaxUsedPipelineAge(const Device&) {
-    return VideoCommon::Nx2Perf::Enabled() ? UsedPipelinesMaxAgePerf : UsedPipelinesMaxAge;
+u8 MaxUsedPipelineAge(const Device& device) {
+    if (device.IsMoltenVK()) {
+        return UsedPipelinesMaxAgeMoltenVK;
+    }
+    return VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineRetention) ? UsedPipelinesMaxAgePerf : UsedPipelinesMaxAge;
 }
 
 std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path, u8 max_age) {
@@ -1031,7 +1034,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         graphics_miss = "creation-failed";
         return nullptr;
     }
-    const auto save_interval = VideoCommon::Nx2Perf::Enabled()
+    const auto save_interval = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineRetention)
                                    ? std::chrono::steady_clock::duration{std::chrono::seconds{15}}
                                    : std::chrono::steady_clock::duration{std::chrono::minutes{2}};
     if (used_this_session.insert(pipeline.get()).second &&

@@ -56,7 +56,7 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
     execution_mask.reset();
     for (size_t i = 0; i < execution_mask.size(); i++)
         execution_mask[i] = IsMethodExecutable(u32(i));
-    fast_maxwell3d = VideoCommon::Nx2Perf::Enabled() && !record_write_history &&
+    fast_maxwell3d = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Method) && !record_write_history &&
                      !g_trace_first_method_writes && !VideoCommon::Nx2Profile::Enabled();
 }
 
@@ -1587,7 +1587,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         }
         return;
     }
-    if (VideoCommon::Nx2Perf::Enabled() && !Tegra::Nx2CmdPageDiag::g_enabled &&
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) && !Tegra::Nx2CmdPageDiag::g_enabled &&
         FrontDmaReadEarly(split, fs, macro, method, source, ram, words)) {
         return;
     }

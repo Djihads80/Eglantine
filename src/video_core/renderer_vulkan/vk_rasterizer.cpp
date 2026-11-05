@@ -1366,7 +1366,7 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
     // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
     // the longer DeferFlush interval (#161).
     if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
-        (VideoCommon::Nx2Perf::Enabled() || !scheduler.DeferFlush())) {
+        (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) || !scheduler.DeferFlush())) {
         scheduler.Flush();
     }
 }
@@ -1663,7 +1663,7 @@ void RasterizerVulkan::WaitForIdle() {
 void RasterizerVulkan::FragmentBarrier() {
     // The next draw breaks the render pass only if it reads what this one wrote (#161): Ocarina
     // ended ~5,900 render passes a second here.
-    if (VideoCommon::Nx2Perf::Enabled()) {
+    if (device.IsMoltenVK() || VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FragmentBarrier)) {
         scheduler.DeferFragmentBarrier();
         return;
     }
@@ -1898,7 +1898,7 @@ void RasterizerVulkan::FlushWork() {
     // Keep the host GPU working while native commands are still being recorded.
     // The 128-draw native budget is tuned for MoltenVK; desktop Vulkan takes the legacy 4096 (#161).
     static const u32 native_flush_draws = [] {
-        const u32 fallback = VideoCommon::Nx2Perf::Enabled() ? 4096U : 128U;
+        const u32 fallback = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SubmitBudget) ? 4096U : 128U;
         const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS");
         if (value == nullptr || value[0] < '0' || value[0] > '9') {
             return fallback;

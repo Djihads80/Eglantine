@@ -82,7 +82,7 @@ bool Scheduler::DeferFlush() {
         if (value != nullptr) {
             return static_cast<s64>(std::atoll(value));
         }
-        return VideoCommon::Nx2Perf::Enabled() ? s64{5000} : s64{500};
+        return VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) ? s64{5000} : s64{500};
     }();
     if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {

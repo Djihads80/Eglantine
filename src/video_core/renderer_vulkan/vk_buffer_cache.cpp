@@ -658,7 +658,7 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
         vk_buffer = *null_buffer;
     }
     // The same index buffer is still bound in this command buffer (PR #161): skip the rebind.
-    if (VideoCommon::Nx2Perf::Enabled() && !VideoCommon::Nx2Perf::Verify()) {
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::IndexRebind) && !VideoCommon::Nx2Perf::Verify()) {
         const u64 epoch = scheduler.RecordingEpoch();
         if (bound_index_valid && vk_buffer == bound_index_buffer &&
             vk_offset == bound_index_offset && vk_index_type == bound_index_type &&

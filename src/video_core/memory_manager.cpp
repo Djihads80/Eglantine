@@ -158,7 +158,7 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         std::unique_lock<std::mutex> lock(guard);
         kind_map.Map(gpu_addr, gpu_addr + size, kind);
     }
-    if (VideoCommon::Nx2Perf::Enabled()) {
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Bounds)) {
         UpdateContinuousRuns(gpu_addr, size);
     } else {
         map_serial.fetch_add(1, std::memory_order_release);
@@ -218,7 +218,7 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
         std::unique_lock<std::mutex> lock(guard);
         kind_map.Map(gpu_addr, gpu_addr + size, kind);
     }
-    if (VideoCommon::Nx2Perf::Enabled()) {
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Bounds)) {
         UpdateContinuousRuns(gpu_addr, size);
     } else {
         map_serial.fetch_add(1, std::memory_order_release);
@@ -640,7 +640,7 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // Native storage buffers ask this for up to 8 MiB on each bind, ~90,000 times a second in
     // Ocarina's Kokiri village: answer from the runs kept at map time instead of walking pages.
-    if (!VideoCommon::Nx2Perf::Enabled()) {
+    if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Bounds)) {
         return MaxContinuousRangeUncached(gpu_addr, size);
     }
     size_t result = 0;
@@ -813,7 +813,7 @@ size_t MemoryManager::MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size)
 
 size_t MemoryManager::GetMemoryLayoutSize(GPUVAddr gpu_addr,
                                           [[maybe_unused]] size_t max_size) const {
-    if (!VideoCommon::Nx2Perf::Enabled()) {
+    if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Bounds)) {
         return GetMemoryLayoutSizeUncached(gpu_addr);
     }
     // RangeMap::GetContinuousSizeFrom on the snapshot's copy of the kind map, without its lock.

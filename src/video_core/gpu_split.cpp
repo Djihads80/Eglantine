@@ -274,7 +274,7 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
         Pause();
         return;
     }
-    if (!Nx2Perf::Enabled() || !back_running.load(std::memory_order_acquire)) {
+    if (!Nx2Perf::On(Nx2Perf::Opt::FrontSleep) || !back_running.load(std::memory_order_acquire)) {
         std::this_thread::yield();
         return;
     }
@@ -332,7 +332,7 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
 }
 
 void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) {
-    if (size == 0 || !Nx2Perf::Enabled()) {
+    if (size == 0 || !Nx2Perf::On(Nx2Perf::Opt::SplitOverlap)) {
         return;
     }
     // While a queued function may still change the GPU mappings, the back may translate the
@@ -386,7 +386,8 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
             using Tegra::Engines::Maxwell3D;
             auto* const maxwell3d = static_cast<Maxwell3D*>(engine);
             constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
-            if (method - cb_data < 16 && (head & HasSegment) == 0) {
+            if (method - cb_data < 16 && (head & HasSegment) == 0 &&
+                Nx2Perf::On(Nx2Perf::Opt::CbBatch)) {
                 // Single constant buffer words in a row (macros write them one by one) go up in
                 // one write. They are executable: each entry would only consume the sink first.
                 std::array<u32, 64> methods;
