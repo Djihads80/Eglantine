@@ -88,7 +88,12 @@ public:
 
     /// Requests the current execution context to be able to execute operations only allowed outside
     /// of a renderpass.
-    void RequestOutsideRenderPassOperationContext();
+    void RequestOutsideRenderPassOperationContext() {
+        if (!state.renderpass && deferred_clear.framebuffer == nullptr) {
+            return;
+        }
+        EndRenderPass();
+    }
 
     void DeferFragmentBarrier() {
         fragment_barrier_pending = state.renderpass != VK_NULL_HANDLE;
@@ -112,7 +117,12 @@ public:
     }
 
     /// Update the pipeline to the current execution context.
-    bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
+    bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
+        if (state.graphics_pipeline == pipeline && !state.needs_state_enable_refresh) [[likely]] {
+            return false;
+        }
+        return UpdateGraphicsPipelineImpl(pipeline);
+    }
 
     /// Worker thread only: whether the bound graphics pipeline failed to build, so the draws
     /// recorded after it must be dropped instead of reaching the driver without a pipeline.
@@ -348,6 +358,8 @@ private:
     /// Begins a render pass for the given framebuffer, optionally with clear values.
     void BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
                              const VkClearValue* clear_values, u32 clear_value_count);
+
+    bool UpdateGraphicsPipelineImpl(GraphicsPipeline* pipeline);
 
     /// If a deferred clear is pending.
     void RealizeDeferredClear();
