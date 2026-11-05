@@ -18,7 +18,7 @@
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/engines/maxwell_3d.h"
+#include "video_core/nx2.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
@@ -900,7 +900,47 @@ bool FrontSkipSame() {
     return skip;
 }
 
+[[nodiscard]] constexpr bool IsDrawMethod(u32 method) noexcept {
+    switch (method) {
+    case MAXWELL3D_REG_INDEX(draw.end):
+    case MAXWELL3D_REG_INDEX(index_buffer32_first):
+    case MAXWELL3D_REG_INDEX(index_buffer16_first):
+    case MAXWELL3D_REG_INDEX(index_buffer8_first):
+    case MAXWELL3D_REG_INDEX(index_buffer32_subsequent):
+    case MAXWELL3D_REG_INDEX(index_buffer16_subsequent):
+    case MAXWELL3D_REG_INDEX(index_buffer8_subsequent):
+    case MAXWELL3D_REG_INDEX(vertex_array_instance_first):
+    case MAXWELL3D_REG_INDEX(vertex_array_instance_subsequent):
+    case MAXWELL3D_REG_INDEX(draw_texture.src_y0):
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // Anonymous namespace
+
+bool Maxwell3D::FrontIsWriterDraw(const Regs& regs) {
+    if (regs.rasterize_enable == 0) {
+        return true;
+    }
+    if (regs.transform_feedback_enabled != 0) {
+        return true;
+    }
+    if (!Tegra::g_nx2_has_graphics_writer_shaders.load(std::memory_order_acquire)) {
+        return false;
+    }
+    for (std::size_t stage = 0; stage < Regs::MaxShaderProgram; ++stage) {
+        if (!regs.IsShaderConfigEnabled(stage)) {
+            continue;
+        }
+        const u32 addr_low = regs.pipelines[stage].reserved[1];
+        if (Tegra::Nx2IsGraphicsWriterShader(addr_low)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSplit& split) {
     if (!front) [[unlikely]] {
@@ -993,6 +1033,9 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         split.MacroWrite(this, method, argument);
     } else {
         split.Method(this, method, argument, is_last_call, nullptr);
+        if (IsDrawMethod(method) && FrontIsWriterDraw(fs.regs)) {
+            split.NoteWriter();
+        }
     }
 }
 
@@ -1099,6 +1142,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         }
     }
     split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr);
+    if (IsDrawMethod(method) && FrontIsWriterDraw(fs.regs)) {
+        split.NoteWriter();
+    }
 }
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1141,6 +1187,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     if (fs.draw_pending) {
         fs.draw_pending = false;
         split.Defer([this, system_ptr = &system] { FinishFrontMacro(*system_ptr); });
+        if (FrontIsWriterDraw(fs.regs)) {
+            split.NoteWriter();
+        }
     }
     if (FrontVerifyEnabled() && (++fs.calls & 4095) == 0) [[unlikely]] {
         FrontVerify(split, fs);

@@ -296,6 +296,8 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
     std::vector<u64> pointers(count);
     gpu_memory->ReadBlockUnsafe(range->begin, pointers.data(), range->size);
     static constexpr std::array<u32, 5> record{0, 1, 0, 0, 0};
+    boost::container::small_vector<VideoCommon::Nx2ResetRun, 16> runs;
+
     for (const u64 pointer : pointers) {
         if (!pointer) {
             continue;
@@ -312,12 +314,64 @@ bool RasterizerVulkan::TryNx2IndirectReset() {
             segments[0].second != sizeof(record)) {
             return reject("record crosses a mapping boundary");
         }
-    }
-    const std::span<const u8> bytes{reinterpret_cast<const u8*>(record.data()), sizeof(record)};
-    for (const u64 pointer : pointers) {
-        if (pointer) {
-            AccelerateInlineToMemory(pointer, bytes.size(), bytes);
+        const auto cpu_addr = gpu_memory->GpuToCpuAddress(pointer);
+        if (!cpu_addr) {
+            return reject("record not mapped to CPU address");
         }
+        if (!runs.empty()) {
+            auto& last = runs.back();
+            const u64 expected_gpu = last.gpu_addr + last.count * sizeof(record);
+            const u64 expected_cpu = last.cpu_addr + last.count * sizeof(record);
+            if (pointer == expected_gpu && *cpu_addr == expected_cpu) {
+                last.count++;
+                continue;
+            }
+        }
+        runs.push_back(VideoCommon::Nx2ResetRun{
+            .gpu_addr = pointer,
+            .cpu_addr = *cpu_addr,
+            .count = 1,
+        });
+    }
+
+    if (runs.empty()) {
+        return true;
+    }
+
+    // Prepare repeating pattern buffer
+    size_t max_records = 0;
+    for (const auto& run : runs) {
+        max_records = std::max<size_t>(max_records, static_cast<size_t>(run.count));
+    }
+    std::vector<u32> pattern(max_records * 5);
+    for (size_t i = 0; i < max_records; ++i) {
+        std::memcpy(pattern.data() + i * 5, record.data(), sizeof(record));
+    }
+    const u8* const pattern_bytes = reinterpret_cast<const u8*>(pattern.data());
+
+    // 1. Batched guest-memory writes
+    for (const auto& run : runs) {
+        const size_t run_bytes = run.count * sizeof(record);
+        gpu_memory->WriteBlockUnsafe(run.gpu_addr, pattern_bytes, run_bytes);
+    }
+
+    // 2. Batched buffer cache upload under a single lock
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        for (const auto& run : runs) {
+            const size_t run_bytes = run.count * sizeof(record);
+            buffer_cache.Nx2NoteListHostWrite(run.cpu_addr, run_bytes);
+            buffer_cache.InlineMemory(run.cpu_addr, run_bytes, std::span{pattern_bytes, run_bytes});
+        }
+        // 3. Maintain consistent Nx2ListPage state
+        buffer_cache.Nx2SyncListPages(runs, pattern_bytes);
+    }
+
+    // 4. Invalidation passes over coalesced runs
+    for (const auto& run : runs) {
+        const size_t run_bytes = run.count * sizeof(record);
+        query_cache.InvalidateRegion(run.cpu_addr, run_bytes);
+        gpu_memory->AccumulateInvalidation(run.gpu_addr, run_bytes);
     }
     static u32 reported{};
     if (reported++ < 5) {
@@ -400,6 +454,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
+    // Enable command list copy collection around pipeline configure and draw
+    buffer_cache.Nx2CollectListCopies(true);
+    SCOPE_EXIT {
+        buffer_cache.Nx2CollectListCopies(false);
+    };
+
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
@@ -417,6 +477,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         draw_func();
     }
+    SubmitNx2ListCopies();
     submitted = true;
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
