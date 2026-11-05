@@ -113,6 +113,22 @@ TEST_CASE("Ampere signed global reductions retain their uniform address and pred
     REQUIRE(((reduction >> 20) & 7) == 1); // S32
     REQUIRE(((reduction >> 23) & 7) == 1); // MIN
     REQUIRE(((reduction >> 48) & 1) == 1); // 64-bit address
+
+    // The operand type (bits 73-75) carries over unchanged for values 0-5; 6 and 7 are rejected.
+    for (u32 type = 0; type < 8; ++type) {
+        CAPTURE(type);
+        const std::array<Instruction, 2> typed{{
+            {{0xff00098e, 1, (0x0c90e304U & ~0xe00U) | (type << 9), 0x000fe200}},
+            code[1],
+        }};
+        const auto result = LowerToMaxwell(typed);
+        if (type > 5) {
+            REQUIRE_FALSE(static_cast<bool>(result));
+            continue;
+        }
+        REQUIRE(static_cast<bool>(result));
+        REQUIRE(((result.instructions.front() >> 20) & 7) == type);
+    }
 }
 
 TEST_CASE("Ampere register-address reductions preserve signed byte offsets", "[video_core][ampere]") {

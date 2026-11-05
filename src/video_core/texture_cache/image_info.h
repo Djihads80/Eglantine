@@ -45,6 +45,19 @@ struct ImageInfo {
                native_tiling == other.native_tiling;
     }
 
+    /// Takes the known sector layout of `other` when this one's is unknown; returns whether
+    /// the guest memory order changed. Only for images without GPU-written data.
+    bool AdoptSectorLayout(const ImageInfo& other) noexcept {
+        if (sector_layout_known || !other.sector_layout_known) {
+            return false;
+        }
+        const bool changed = native_tiling != other.native_tiling;
+        native_tiling = other.native_tiling;
+        legacy_sector_layout = other.legacy_sector_layout;
+        sector_layout_known = true;
+        return changed;
+    }
+
     PixelFormat format = PixelFormat::Invalid;
     ImageType type = ImageType::e1D;
     SubresourceExtent resources;

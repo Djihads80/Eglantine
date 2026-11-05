@@ -212,6 +212,27 @@ TEST_CASE("Ampere capture ends at the closing self-branch of a program without a
     ProgramCaptureState skipped;
     REQUIRE(skipped.Observe(Branch(0, 3), 0) == ProgramCaptureState::Result::Continue);
     REQUIRE(skipped.Observe(Branch(1, 1), 1) == ProgramCaptureState::Result::Continue);
+
+    // BRA.DIV never branches in the lowering, and a condition in bits 87-90 makes the branch
+    // conditional: neither ends the program.
+    Instruction divergent = Branch(2, 2);
+    divergent.words[1] |= 2;
+    Instruction conditional = Branch(2, 2);
+    conditional.words[2] &= ~0x07800000U; // P0 as the second condition
+    for (const Instruction& branch : {divergent, conditional}) {
+        ProgramCaptureState not_terminal;
+        REQUIRE(not_terminal.Observe(looping[0], 0) == ProgramCaptureState::Result::Continue);
+        REQUIRE(not_terminal.Observe(looping[1], 1) == ProgramCaptureState::Result::Continue);
+        REQUIRE(not_terminal.Observe(branch, 2) == ProgramCaptureState::Result::Continue);
+    }
+
+    // A linked call (CALL.REL.NOINC with the link set up) has a callee that ends at RET, so a
+    // self-branch inside it does not end the capture.
+    const Instruction call{{0x00007944, 16, 0x03c00000, 0}}; // to instruction 2
+    ProgramCaptureState linked;
+    REQUIRE(linked.Observe(call, 0) == ProgramCaptureState::Result::Continue);
+    REQUIRE(linked.Observe(EXIT, 1) == ProgramCaptureState::Result::Continue);
+    REQUIRE(linked.Observe(Branch(2, 2), 2) == ProgramCaptureState::Result::Continue);
 }
 
 TEST_CASE("Ampere double fused multiply-add lowers register operands", "[video_core][ampere]") {

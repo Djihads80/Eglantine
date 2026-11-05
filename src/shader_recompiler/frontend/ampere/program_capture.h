@@ -25,17 +25,26 @@ public:
             // (the lowering treats it as one), so it never pairs with a RET.
             const bool noinc_call = opcode == 0x944 && (instruction.words[2] & 0x400000) != 0;
             if (opcode == 0x944 && !noinc_call) {
-                has_calls = true;
                 last_call_target = std::max(last_call_target, static_cast<u32>(target / 16));
             } else {
                 last_forward_target = std::max(last_forward_target, static_cast<u32>(target / 16));
             }
+            // Every CALL but the lowering's predicated NOINC forward transfer (@P CALL.REL.NOINC
+            // over the next BRA) is a linked call, whose callee ends at a RET.
+            if (opcode == 0x944 && !(instruction.Bits(12, 4) != 7 && instruction.words[1] == 16 &&
+                                     instruction.words[2] == 0x03c00000))
+                has_calls = true;
             // The compiler ends every program with an unconditional branch to itself; with a jump
             // table (whose targets live in a constant buffer) that is the only reliable end. It
             // is also the end of a program without calls when no branch seen so far reaches past
             // it: programs whose only exits are predicated (TotK's cutscene video network loops
             // back with BRA and leaves through @P0 EXIT) have no unconditional EXIT to stop at.
-            if (opcode == 0x947 && instruction.Bits(12, 4) == 7 && target == s64{index} * 16 &&
+            // As in the lowering, a BRA.DIV (mode 2) never branches and bits 87-90 add a condition.
+            const u32 mode = instruction.Bits(32, 2);
+            const bool always_branches =
+                (mode == 3 || (mode == 0 && !instruction.Bits(91, 1))) && instruction.Bits(87, 4) == 7;
+            if (opcode == 0x947 && instruction.Bits(12, 4) == 7 && always_branches &&
+                target == s64{index} * 16 &&
                 (computed_branch || (!has_calls && index >= last_forward_target)))
                 return Result::Complete;
         }

@@ -132,5 +132,18 @@ TEST_CASE("Render targets accept texture views without an explicit sector layout
         const ImageBase viewed{view, 0x100000, 0x200000};
         REQUIRE(IsSubresource(rendered, viewed, 0x100000, RelaxedOptions{}, false, true));
         REQUIRE(ResolveOverlap(rendered, 0x100000, 0x200000, viewed, true, false, true).has_value());
+
+        // Adopting the view's layout gives the render target the descriptor's guest order, once.
+        ImageInfo adopted = rendered;
+        REQUIRE(adopted.AdoptSectorLayout(view) == legacy);
+        REQUIRE(adopted.sector_layout_known);
+        REQUIRE(adopted.legacy_sector_layout == legacy);
+        REQUIRE(adopted.native_tiling == !legacy);
+        config.load_store_hint.Assign(!legacy);
+        ImageInfo other{config};
+        other.native_tiling = other.UsesNativeSectorLayout(true);
+        REQUIRE_FALSE(adopted.AdoptSectorLayout(other));
+        REQUIRE(adopted.legacy_sector_layout == legacy);
+        REQUIRE_FALSE(ImageInfo{rendered}.AdoptSectorLayout(rendered));
     }
 }

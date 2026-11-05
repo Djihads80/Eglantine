@@ -331,8 +331,8 @@ public:
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
 
-    /// Return true when an image containing `gpu_addr` was created from a texture descriptor
-    /// selecting the legacy sector order.
+    /// Return true when the images containing `gpu_addr` whose sector layout is known all use
+    /// the legacy order (and at least one does).
     [[nodiscard]] bool UsesLegacySectorLayout(GPUVAddr gpu_addr);
 
     [[nodiscard]] bool IsRescaling() const noexcept;

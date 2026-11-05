@@ -1583,12 +1583,17 @@ bool TextureCache<P>::UsesLegacySectorLayout(GPUVAddr gpu_addr) {
     if (!cpu_addr) {
         return false;
     }
+    // Legacy only when every image here with a known layout says so: overlapping images that
+    // disagree leave the order ambiguous, and the native order stays.
     bool legacy = false;
-    ForEachImageInRegion(*cpu_addr, 1, [&legacy](ImageId, ImageBase& image) {
-        legacy = image.info.sector_layout_known && image.info.legacy_sector_layout;
-        return legacy;
+    bool native = false;
+    ForEachImageInRegion(*cpu_addr, 1, [&](ImageId, ImageBase& image) {
+        if (image.info.sector_layout_known) {
+            (image.info.legacy_sector_layout ? legacy : native) = true;
+        }
+        return legacy && native;
     });
-    return legacy;
+    return legacy && !native;
 }
 
 template <class P>
@@ -2130,6 +2135,18 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
             }
         } else if (IsSubresource(storage_info, existing_image, gpu_addr, options, broken_views,
                                  native_bgr)) {
+            // An image of unknown layout (a render target) viewed through a descriptor that
+            // names one decodes guest memory in that order from now on. Images holding GPU-written
+            // data keep theirs, so their uploads and writebacks stay in one order.
+            if (False(existing_image.flags & ImageFlagBits::GpuModified) &&
+                existing_image.info.AdoptSectorLayout(storage_info)) {
+                existing_image.flags |= ImageFlagBits::CpuModified;
+                existing_image.dirty_layers.clear();
+                existing_image.dirty_ranges.clear();
+                if (True(existing_image.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(existing_image, existing_image_id);
+                }
+            }
             image_id = existing_image_id;
             image_ids.push_back(existing_image_id);
             return !flexible_formats && existing_image.info.format == info.format;
