@@ -95,7 +95,7 @@ static const constexpr frozen::map<StringKey, frozen::string, 29> strings = {
     {FwInstallFailedCorrupted,
      QT_TR_NOOP(
          "Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart "
-         "Eden or re-install firmware.")},
+         "Eglantine or re-install firmware.")},
 
     {FwCheckErrorFirmwareMissing,
      QT_TR_NOOP(
@@ -107,9 +107,9 @@ static const constexpr frozen::map<StringKey, frozen::string, 29> strings = {
 
     // migrator
     // 17-22
-    {MigrationPromptPrefix, QT_TR_NOOP("Eden has detected user data for the following emulators:")},
+    {MigrationPromptPrefix, QT_TR_NOOP("Eglantine has detected user data for the following emulators:")},
     {MigrationPrompt,
-     QT_TR_NOOP("Would you like to migrate your data for use in Eden?\n"
+     QT_TR_NOOP("Would you like to migrate your data for use in Eglantine?\n"
                 "Select the corresponding button to migrate data from that emulator.\n"
                 "This may take a while.")},
     {MigrationTooltipClearShader, QT_TR_NOOP("Clearing shader cache is recommended for all "
@@ -121,7 +121,7 @@ static const constexpr frozen::map<StringKey, frozen::string, 29> strings = {
     {MigrationTooltipClearOld, QT_TR_NOOP("Deletes the old data directory.\nThis is recommended on "
                                           "devices with space constraints.")},
     {MigrationTooltipLinkOld,
-     QT_TR_NOOP("Creates a filesystem link between the old directory and Eden directory.\n"
+     QT_TR_NOOP("Creates a filesystem link between the old directory and Eglantine directory.\n"
                 "This is recommended if you want to share data between emulators.")},
 
     // why am I writing these comments again

@@ -7,31 +7,35 @@
 #include <chrono>
 #include <string>
 
-#include <QEventLoop>
-#include <boost/algorithm/string/replace.hpp>
-#include "common/httplib.h"
-
 #include <discord_rpc.h>
 #include <fmt/format.h>
 
 #include "common/common_types.h"
-#include "common/string_util.h"
 #include "core/core.h"
+#include "core/file_sys/patch_manager.h"
 #include "core/loader/loader.h"
-
+#include "qt_common/config/uisettings.h"
 #include "discord_impl.h"
-
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
 
 namespace DiscordRPC {
 
+namespace {
+constexpr char CLIENT_ID[] = "1566239570570514524";
+constexpr char LARGE_IMAGE[] = "logo";
+constexpr char LARGE_IMAGE_TEXT[] = "Eglantine";
+
+s64 NowSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+} // namespace
+
 DiscordImpl::DiscordImpl(Core::System& system_) : system{system_} {
     DiscordEventHandlers handlers{};
-    // The number is the client ID for Eden, it's used for images and the
+    // The number is the client ID for Eglantine, it's used for images and the
     // application name
-    Discord_Initialize("1397286652128264252", &handlers, 1, nullptr);
+    Discord_Initialize(CLIENT_ID, &handlers, 1, nullptr);
 }
 
 DiscordImpl::~DiscordImpl() {
@@ -43,94 +47,61 @@ void DiscordImpl::Pause() {
     Discord_ClearPresence();
 }
 
-std::string DiscordImpl::GetGameString(const std::string& title) {
-    // Convert to lowercase
-    std::string icon_name = Common::ToLower(title);
-
-    // Replace spaces with dashes
-    std::replace(icon_name.begin(), icon_name.end(), ' ', '-');
-    boost::replace_all(icon_name, "é", "e");
-
-    // Remove non-alphanumeric characters but keep dashes
-    std::erase_if(icon_name, [](char c) { return !std::isalnum(c) && c != '-'; });
-
-    // Remove dashes from the start and end of the string
-    icon_name.erase(icon_name.begin(), std::find_if(icon_name.begin(), icon_name.end(),
-                                                    [](int ch) { return ch != '-'; }));
-    icon_name.erase(
-        std::find_if(icon_name.rbegin(), icon_name.rend(), [](int ch) { return ch != '-'; }).base(),
-        icon_name.end());
-
-    // Remove double dashes
-    icon_name.erase(std::unique(icon_name.begin(), icon_name.end(),
-                                [](char a, char b) { return a == '-' && b == '-'; }),
-                    icon_name.end());
-
-    return icon_name;
-}
-
-static constexpr char DEFAULT_DISCORD_TEXT[] = "Eglantine is an emulator for the Nintendo Switch";
-static constexpr char DEFAULT_DISCORD_IMAGE[] =
-    "https://git.eden-emu.dev/eden-emu/eden/raw/branch/master/dist/qt_themes/default/icons/256x256/"
-    "eden.png";
-
-void DiscordImpl::UpdateGameStatus(std::string_view game_url, bool has_boxart) {
-    const std::string url = std::string{has_boxart ? game_url : DEFAULT_DISCORD_IMAGE};
-    s64 start_time = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-    DiscordRichPresence presence{};
-
-    presence.largeImageKey = url.c_str();
-    presence.largeImageText = game_title.c_str();
-    presence.smallImageKey = DEFAULT_DISCORD_IMAGE;
-    presence.smallImageText = DEFAULT_DISCORD_TEXT;
-    presence.state = game_title.c_str();
-    presence.status_display_type = DiscordStatusDisplayType_State;
-    presence.details = "Currently in game";
-    presence.startTimestamp = start_time;
-    Discord_UpdatePresence(&presence);
-}
-
 void DiscordImpl::Update() {
-    if (system.IsPoweredOn()) {
-        system.GetAppLoader().ReadTitle(game_title);
-
-        // Used to format Icon URL for yuzu website game compatibility page
-        std::string icon_name = GetGameString(game_title);
-        auto const game_url = fmt::format(
-            "https://raw.githubusercontent.com/eden-emulator/boxart/refs/heads/master/img/{}.png",
-            icon_name);
-
-        httplib::SSLClient client(game_url);
-        client.set_connection_timeout(3);
-        client.set_read_timeout(3);
-        client.set_follow_location(true);
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        httplib::Request request{
-            .method = "HEAD",
-            .path = game_url,
-        };
-
-        auto res = client.send(request);
-        UpdateGameStatus(game_url, res && res->status == 200);
-
+    const auto mode = UISettings::values.discord_presence.GetValue();
+    if (mode == static_cast<u32>(UISettings::DiscordPresence::Off)) {
+        game_start_time = 0;
+        Discord_ClearPresence();
         return;
     }
 
-    s64 start_time = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
     DiscordRichPresence presence{};
-    presence.largeImageKey = DEFAULT_DISCORD_IMAGE;
-    presence.largeImageText = DEFAULT_DISCORD_TEXT;
-    presence.status_display_type = DiscordStatusDisplayType_Name;
-    presence.details = "Currently not in game";
-    presence.startTimestamp = start_time;
-    Discord_UpdatePresence(&presence);
+    presence.largeImageKey = LARGE_IMAGE;
+    presence.largeImageText = LARGE_IMAGE_TEXT;
+
+    if (system.IsPoweredOn()) {
+        game_title.clear();
+        system.GetAppLoader().ReadTitle(game_title);
+        if (game_title.empty()) {
+            // Fall back to the same source the Qt window title uses: the control
+            // metadata (NACP) application name of the running application.
+            if (const auto program_id = system.GetApplicationProcessProgramID();
+                program_id != 0) {
+                const FileSys::PatchManager pm{program_id, system.GetFileSystemController(),
+                                               system.GetContentProvider()};
+                if (const auto metadata = pm.GetControlMetadata(); metadata.first != nullptr) {
+                    game_title = metadata.first->GetApplicationName();
+                }
+            }
+        }
+        if (game_start_time == 0) {
+            game_start_time = NowSeconds();
+        }
+        // "Playing: <title>"; if the loader gave no title, just "Playing".
+        if (game_title.empty()) {
+            presence.details = "Playing";
+        } else {
+            // Discord caps the details field at 128 bytes.
+            if (game_title.size() > 112) {
+                game_title.resize(112);
+            }
+            details_buffer = fmt::format("Playing: {}", game_title);
+            presence.details = details_buffer.c_str();
+        }
+        presence.startTimestamp = game_start_time;
+        Discord_UpdatePresence(&presence);
+        return;
+    }
+
+    game_start_time = 0;
+    if (mode == static_cast<u32>(UISettings::DiscordPresence::On)) {
+        // Not emulating but the emulator is open: show Idle.
+        presence.details = "Idle";
+        Discord_UpdatePresence(&presence);
+    } else {
+        // Only In-Game: nothing shown outside of a running game.
+        Discord_ClearPresence();
+    }
 }
+
 } // namespace DiscordRPC

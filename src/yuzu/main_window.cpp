@@ -391,7 +391,8 @@ MainWindow::MainWindow(bool has_broken_vulkan)
             std::string str_path = Common::FS::GetEdenPathString(path);
             if (str_path.starts_with(user_data_migrator.selected_emu.get_user_dir())) {
                 boost::replace_all(
-                    str_path, user_data_migrator.selected_emu.lower_name().toStdString(), "eden");
+                    str_path, user_data_migrator.selected_emu.lower_name().toStdString(),
+                    "eglantine");
                 Common::FS::SetEdenPath(path, str_path);
             }
         }
@@ -420,7 +421,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     default_theme_paths = QIcon::themeSearchPaths();
     UpdateUITheme();
 
-    SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
+    SetDiscordEnabled(UISettings::DiscordPresenceEnabled());
     discord_rpc->Update();
 
     play_time_manager = std::make_unique<PlayTime::PlayTimeManager>();
@@ -3569,7 +3570,8 @@ void MainWindow::ToggleShowGameName() {
 
 void MainWindow::OnConfigure() {
     const auto old_theme = UISettings::values.theme;
-    const bool old_discord_presence = UISettings::values.enable_discord_presence.GetValue();
+    const bool old_discord_presence = UISettings::DiscordPresenceEnabled();
+    const u32 old_discord_mode = UISettings::values.discord_presence.GetValue();
     const auto old_language_index = Settings::values.language_index.GetValue();
     const bool old_gamemode = UISettings::values.enable_gamemode.GetValue();
 #ifdef __unix__
@@ -3633,8 +3635,11 @@ void MainWindow::OnConfigure() {
     if (UISettings::values.theme != old_theme) {
         UpdateUITheme();
     }
-    if (UISettings::values.enable_discord_presence.GetValue() != old_discord_presence) {
-        SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
+    if (UISettings::DiscordPresenceEnabled() != old_discord_presence) {
+        SetDiscordEnabled(UISettings::DiscordPresenceEnabled());
+    } else if (UISettings::values.discord_presence.GetValue() != old_discord_mode) {
+        // Same enabled-state (On <-> Only In-Game): just refresh the presence.
+        discord_rpc->Update();
     }
     if (UISettings::values.enable_gamemode.GetValue() != old_gamemode) {
         SetGamemodeEnabled(UISettings::values.enable_gamemode.GetValue());
@@ -4574,6 +4579,9 @@ void MainWindow::OnApplicationChanged(u64 program_id) {
 
     UpdateWindowTitle(title_name, title_version,
                       QtCommon::system->GPU().Renderer().GetDeviceVendor());
+
+    // Refresh Discord Rich Presence now that the application (and its title) is known.
+    discord_rpc->Update();
 
     // Switch to record playtime for the running program
     if (play_time_manager)

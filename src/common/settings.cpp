@@ -133,7 +133,7 @@ void LogSettings() {
             }
         }
     }
-    LOG_INFO(Config, "Eden Configuration:");
+    LOG_INFO(Config, "Eglantine Configuration:");
     for (auto const& e : settings_list)
         LOG_INFO(Config, "{}", e);
 #define LOG_PATH(NAME) \

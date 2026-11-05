@@ -26,7 +26,7 @@
 EmuWindow_SDL3_Null::EmuWindow_SDL3_Null(InputCommon::InputSubsystem* input_subsystem_,
                                          Core::System& system_, bool fullscreen)
     : EmuWindow_SDL3{input_subsystem_, system_} {
-    const std::string window_title = fmt::format("Eden {} | {}-{} (Vulkan)", Common::g_build_name,
+    const std::string window_title = fmt::format("Eglantine {} | {}-{} (Vulkan)", Common::g_build_name,
                                                  Common::g_scm_branch, Common::g_scm_desc);
     render_window =
         SDL_CreateWindow(window_title.c_str(), Layout::ScreenUndocked::Width,
@@ -43,7 +43,7 @@ EmuWindow_SDL3_Null::EmuWindow_SDL3_Null(InputCommon::InputSubsystem* input_subs
     OnResize();
     OnMinimalClientAreaChangeRequest(GetActiveConfig().min_client_area_size);
     SDL_PumpEvents();
-    LOG_INFO(Frontend, "Eden Version: {} | {}-{} (Null)", Common::g_build_name,
+    LOG_INFO(Frontend, "Eglantine Version: {} | {}-{} (Null)", Common::g_build_name,
              Common::g_scm_branch, Common::g_scm_desc);
 }
 

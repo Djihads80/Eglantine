@@ -326,7 +326,7 @@ void FixProfiles() {
     QtCommon::Frontend::Critical(
         tr("Orphaned Profiles Detected!"),
         tr("UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON'T READ THIS!<br>"
-           "Eden has detected the following save directories with no attached profile:<br>"
+           "Eglantine has detected the following save directories with no attached profile:<br>"
            "%1<br><br>"
            "The following profiles are valid:<br>"
            "%2<br><br>"
@@ -498,7 +498,7 @@ bool CheckKeys() {
     if (!ContentManager::AreKeysPresent()) {
         QtCommon::Frontend::Information(
             tr("Keys not installed"),
-            tr("Install decryption keys and restart Eden before attempting to install firmware."));
+            tr("Install decryption keys and restart Eglantine before attempting to install firmware."));
         return false;
     }
 

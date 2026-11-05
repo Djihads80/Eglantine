@@ -40,6 +40,53 @@
            <property name="bottomMargin">
             <number>0</number>
            </property>
+           <item>
+            <widget class="QWidget" name="discord_widget" native="true">
+             <layout class="QHBoxLayout" name="discord_layout">
+              <property name="leftMargin">
+               <number>0</number>
+              </property>
+              <property name="topMargin">
+               <number>0</number>
+              </property>
+              <property name="rightMargin">
+               <number>0</number>
+              </property>
+              <property name="bottomMargin">
+               <number>0</number>
+              </property>
+              <item>
+               <widget class="QLabel" name="discord_label">
+                <property name="text">
+                 <string>Enable Discord Rich Presence</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="discord_combobox">
+                <property name="toolTip">
+                 <string>Off disables Rich Presence entirely. Only In-Game shows your status only while a game is running. On also shows Idle while the emulator is open without a game.</string>
+                </property>
+                <item>
+                 <property name="text">
+                  <string>Off</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Only In-Game</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>On</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
           </layout>
          </widget>
         </item>
