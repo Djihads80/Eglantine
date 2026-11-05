@@ -366,6 +366,7 @@ void PresentManager::PresentThread(std::stop_token token) {
     }
 }
 
+// Returns false after discarding a deferred or incompatible frame; creation exceptions propagate.
 bool PresentManager::RecreateSwapchain(Frame* frame) {
     if (swapchain.Create(*surface, frame->width, frame->height, frame->format)) {
         SetImageCount();

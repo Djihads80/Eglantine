@@ -27,6 +27,7 @@ namespace Vulkan {
 
 namespace {
 
+// Unsupported HDR format/colorspace pairs throw rather than reinterpret the guest's output as SDR.
 VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats,
                                          VkFormat requested_format) {
     if (requested_format == VK_FORMAT_R16G16B16A16_SFLOAT ||

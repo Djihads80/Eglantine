@@ -2148,6 +2148,7 @@ private:
     }
 
     // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 reference white in nits.
+    // Explicit values are capped at peak; zero selects the Switch 2 calibration default.
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
         if (Settings::values.hdr_reference_white.GetValue() > 0) {
             TipcReplyWords(ctx, {std::min(Settings::values.hdr_reference_white.GetValue(),
@@ -2163,6 +2164,7 @@ private:
     // Wire reply: u64 output format (1 = SDR, 2 = HDR), u16 peak luminance in nits.
     // MKW's SDK converts these to public formats 0/1 before DefaultDisplay tests for HDR.
     // HDR is explicitly opt-in; luminance defaults are not host-display calibration.
+    // Reports the Vulkan HDR setting, not host support for individual HDR encodings.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
         const bool hdr_enabled = Settings::values.hdr.GetValue() &&
                                  Settings::values.renderer_backend.GetValue() ==
