@@ -998,9 +998,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     // Debug: does the input hold anything? Download it once and count non-zero words.
     static const u32 sample_at = [] {
         const char* value = std::getenv("EDEN_NX2_SAMPLE_AT");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 20U;
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : ~0U;
     }();
-    if (static u32 sampled{}; sampled++ == sample_at) {
+    if (static u32 sampled{}; sample_at != ~0U && sampled++ == sample_at) {
         const auto sample = [&](const Texture::TICEntry& tic) {
             const u64 size = u64{tic.Width()} * tic.Height() * 4;
             if (const auto device = memory_manager.GpuToCpuAddress(tic.Address())) {
