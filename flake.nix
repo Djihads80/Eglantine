@@ -1,5 +1,7 @@
+# Eglantine NixOS Flake - Builds and Installs latest release on any x86_64 NixOS system
 {
-  # Eglantine NixOS Flake - Builds and Installs latest release on any x86_64 NixOS system
+  description = "Experimental Nintendo Switch 2 Emulator";
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -152,7 +154,7 @@
           '';
 
           meta = {
-            longDescription = "Experimental Nintendo Switch 2 Emulator";
+            description = "Experimental Nintendo Switch 2 Emulator";
             homepage = "https://github.com/Djihads80/Eglantine";
             license = pkgs.lib.licenses.gpl3Plus; #GPL3 license
             platforms = ["x86_64-linux"]; # unless this changes
