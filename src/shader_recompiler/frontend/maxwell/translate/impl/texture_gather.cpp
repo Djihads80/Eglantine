@@ -106,7 +106,7 @@ IR::Value MakeOffset(TranslatorVisitor& v, IR::Reg& reg, TextureType type) {
 std::pair<IR::Value, IR::Value> MakeOffsetPTP(TranslatorVisitor& v, IR::Reg& reg) {
     const IR::U32 value1{v.X(reg++)};
     const IR::U32 value2{v.X(reg++)};
-    const IR::U32 bitsize{v.ir.Imm32(6)};
+    const IR::U32 bitsize{v.ir.Imm32(v.env.IsNativeProgram() ? 8 : 6)};
     const auto make_vector{[&v, &bitsize](const IR::U32& value) {
         return v.ir.CompositeConstruct(v.ir.BitFieldExtract(value, v.ir.Imm32(0), bitsize, true),
                                        v.ir.BitFieldExtract(value, v.ir.Imm32(8), bitsize, true),

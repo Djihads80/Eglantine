@@ -195,7 +195,7 @@ std::optional<u64> GenericEnvironment::Analyze() {
     if (native_source_size) {
         // Include the converted header and a version tag to isolate this experimental ABI.
         return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
-                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000002ULL;
+                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000003ULL;
     }
     const std::optional<u64> size{TryFindSize()};
     if (!size) {

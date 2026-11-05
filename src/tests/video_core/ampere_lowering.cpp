@@ -147,4 +147,64 @@ TEST_CASE("Ampere programs go on past an EXIT that a branch jumps over", "[video
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(lowered.source_size == sizeof(code));
 }
+TEST_CASE("Ampere half texture samples keep low and high channels in order",
+          "[video_core][ampere][welcome-tour]") {
+    for (const u32 mask : {3U, 7U, 15U}) {
+        Instruction sample{{0x01017b60, 0x33c04402, 0x049e8702, 0x101fc200}};
+        sample.words[2] = (sample.words[2] & ~0xfffU) | (mask << 8) |
+                          (mask == 3 ? 255U : 2U);
+        const std::array code{sample, EXIT};
+        const auto lowered = LowerToMaxwell(code);
+        REQUIRE(static_cast<bool>(lowered));
+        size_t packs{};
+        for (const u64 word : lowered.instructions) {
+            if ((word >> 48) != 0x5c18) continue;
+            ++packs;
+            REQUIRE(((word >> 8) & 0xff) == 247);
+            REQUIRE(((word >> 20) & 0xff) == 246);
+            REQUIRE(((word >> 39) & 0x1f) == 16);
+        }
+        REQUIRE(packs == (mask == 3 ? 1U : 2U));
+    }
+}
+
+TEST_CASE("Ampere array depth samples retain their own descriptor bank",
+          "[video_core][ampere][welcome-tour]") {
+    const std::array<Instruction, 3> code{{
+        {{0x01017b60, 0x33c04402, 0x049e8702, 0x101fc200}},
+        {{0x0a0d7b60, 0xb1012400, 0x041e41ff, 0x00114400}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.required_texture_buffer == 15);
+    const u64 load = FindMaxwell(lowered, 0x4c98, 48);
+    REQUIRE(load != 0);
+    REQUIRE(((load >> 34) & 0x1f) == 4);
+    const u64 sample = FindMaxwell(lowered, 0xde, 56);
+    REQUIRE(sample != 0);
+    REQUIRE(((sample >> 20) & 0xff) == 246);
+    REQUIRE(((sample >> 28) & 7) == 3);
+    REQUIRE(((sample >> 50) & 1) == 1);
+}
+
+TEST_CASE("Ampere per-pixel gathers preserve both offset registers before aliased outputs",
+          "[video_core][ampere][welcome-tour]") {
+    const std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    const u64 gather = FindMaxwell(lowered, 0xc8, 56);
+    REQUIRE(gather != 0);
+    REQUIRE((gather & 0xff) == 250);
+    REQUIRE(((gather >> 20) & 0xff) == 246);
+    REQUIRE(((gather >> 54) & 3) == 2);
+    const auto copy = 0x5c98000000000000ULL | (u64{7} << 16) | 247 |
+                      (u64{15} << 39) | (u64{9} << 20);
+    const auto copied_offsets = std::find(lowered.instructions.begin(), lowered.instructions.end(), copy);
+    const auto sample = std::find(lowered.instructions.begin(), lowered.instructions.end(), gather);
+    REQUIRE(copied_offsets < sample);
+}
 } // namespace

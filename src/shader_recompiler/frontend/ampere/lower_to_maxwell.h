@@ -2158,18 +2158,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             break;
         }
-        case 0xb63: case 0xf63: { // TLD4 (gather), 2D without offsets or depth compare; component at bits 87-88.
+        case 0xb63: case 0xf63: { // TLD4 (gather), 2D without depth compare; component at bits 87-88.
             // 0xf63: the handle in a uniform register (bit 91), Maxwell TLD4.B with the handle in Rb.
             const bool bindless = opcode == 0xf63;
             const u32 handle = bindless ? uniform_register(insn.Bits(40, 6)) : 255;
             const u32 mask = insn.Bits(72, 4), second_dest = insn.Bits(64, 8);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 binding = insn.Bits(54, 5);
-            // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
-            // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
-            const bool offsets = insn.Bits(76, 1) != 0;
-            if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+            const u32 offset_mode = insn.Bits(76, 2);
+            const bool offsets = offset_mode != 0;
+            const bool per_pixel_offsets = offset_mode == 2;
+            if (insn.Bits(61, 3) != 1 || offset_mode == 3 || insn.Bits(78, 2) ||
+                insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
                 (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
+                (per_pixel_offsets && (!insn.Bits(60, 1) || source_a == 255 || source_b >= 245)) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
                           : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
@@ -2177,12 +2179,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return fail(index, "native texture gather mode");
             if (!bindless) result.required_texture_buffer = binding;
             // Two coordinates: x in Ra, y in Rb (the coordinate list splits evenly across them);
-            // with an offset, x and y in Ra, Ra+1 and the offset in Rb.
+            // With offsets, coordinates are in Ra:Ra+1 and offsets are in Rb (AOFFI)
+            // or Rb:Rb+1 (PerPx).
             const u32 y = !offsets ? source_b : source_a == 255 ? 255U : source_a + 1;
             emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
             emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{y} << 20));
             if (offsets) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+            }
+            if (per_pixel_offsets) {
+                emit(0x5c98000000000000ULL | predicate | 247 | (u64{15} << 39) |
+                     (u64{source_b + 1} << 20));
             }
             if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
@@ -2193,7 +2200,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) |
                  (u64{offsets ? 246U : 255U} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
-                 (u64{offsets ? 1U : 0U} << 54) | (u64{insn.Bits(87, 2)} << 56));
+                 (u64{offset_mode} << 54) | (u64{insn.Bits(87, 2)} << 56));
             }
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
@@ -2224,23 +2231,6 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
-            if (!bindless && dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
-                if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
-                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
-                    (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
-                    return fail(index, "native array depth comparison sample mode");
-                if (!bind_texture_buffer(2)) return fail(index, "native texture descriptor buffer conflict");
-                for (u32 i = 0; i < 3; ++i) {
-                    const u32 source = i < 2 ? source_a + i : source_b;
-                    emit(0x5c98000000000000ULL | predicate | (250 + i) |
-                         (u64{15} << 39) | (u64{source} << 20));
-                }
-                emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
-                     (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
-                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
-                     (u64{1} << 50) | (u64{7} << 51));
-                break;
-            }
             // General form: gather the native operand list (array index first, coordinates,
             // then LOD/bias and the depth reference) into Maxwell TEX's coordinate and meta
             // registers, sample into scratch and copy the packed components out. Native packs
@@ -2315,7 +2305,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                         if (target == 255) return;
                         emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
                         emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
-                        emit(0x5c18000000000000ULL | predicate | target | (u64{246} << 8) | (u64{247} << 20) | (u64{16} << 39));
+                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
                     };
                     pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
                     if (components > 2) {
