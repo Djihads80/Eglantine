@@ -1,0 +1,68 @@
+name: bump-version
+
+# Run it from the Actions tab. It rewrites VERSION and CHANGELOG.md and opens a "Release vX.Y.Z" PR
+# against nx2; merging that PR is the push that makes ci.yml build and publish the release.
+#
+#   major | minor | patch   start a new candidate (X.Y.Z-rc1); needs entries under [Unreleased]
+#   rc                      next candidate (-rc1 -> -rc2)
+#   release                 promote the candidate to stable (drops the -rcN)
+#
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Kind of bump
+        type: choice
+        options: [major, minor, patch, rc, release]
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out nx2
+        uses: actions/checkout@v7
+        with:
+          ref: nx2
+
+      - name: Bump version
+        id: bump
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          new=$(bash tools/ci/bump-version.sh "$BUMP")
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          git diff --stat
+
+      - name: Open release PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          branch="release/v${NEW_VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add VERSION CHANGELOG.md
+          git commit -m "Release v${NEW_VERSION}"
+          git push --force origin "$branch"
+          existing=$(gh pr list --base nx2 --head "$branch" --state open --json url --jq '.[0].url // ""')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" \
+              --title "Release v${NEW_VERSION}" \
+              --body "Automatic ${BUMP} bump to ${NEW_VERSION}. Merging this builds and publishes the release (see CHANGELOG.md for the notes)."
+            echo "Updated existing release PR: $existing"
+          else
+            gh pr create --base nx2 --head "$branch" \
+              --title "Release v${NEW_VERSION}" \
+              --body "Automatic ${BUMP} bump to ${NEW_VERSION}. Merging this builds and publishes the release (see CHANGELOG.md for the notes)."
+          fi
