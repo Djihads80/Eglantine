@@ -180,7 +180,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         return false;
     }
     constexpr u32 MinSize = 32U << 20;
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= MinSize && info.type != ImageType::e1D && info.type != ImageType::Buffer &&
            info.type != ImageType::Linear && Tegra::Nx2SparseUnwritten(gpu_addr, size);
 }
@@ -200,7 +200,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         IsHugeAstcArray(device, info) ||
         (!IsPixelFormatASTC(info.format) &&
          (!IsPixelFormatBCn(info.format) || device.IsOptimalBcnSupported()));
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return layer_uploads && size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
@@ -223,7 +223,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         return false;
     }
     constexpr u32 MinSize = 256U << 20;
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= MinSize && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
@@ -266,7 +266,7 @@ enum class SparseTilesMode {
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
     }
-    const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
+    const u64 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= (32U << 20) && Tegra::Nx2InSparseRegion(gpu_addr, size);
 }
 
@@ -4120,7 +4120,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
 ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info,
                      const VideoCommon::ImageViewInfo& view_info, GPUVAddr gpu_addr_)
     : VideoCommon::ImageViewBase{info, view_info, gpu_addr_},
-      buffer_size{VideoCommon::CalculateGuestSizeInBytes(info)} {}
+      buffer_size{static_cast<u32>(VideoCommon::CalculateGuestSizeInBytes(info))} {}
 
 ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::NullImageViewParams& params)
     : VideoCommon::ImageViewBase{params}, device{&runtime.device} {

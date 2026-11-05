@@ -578,7 +578,7 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
 
 } // Anonymous namespace
 
-u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
+u64 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
     if (info.type == ImageType::Buffer) {
         return info.size.width * BytesPerBlock(info.format);
     }
@@ -586,8 +586,9 @@ u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept {
         return info.pitch * Common::DivCeil(info.size.height, DefaultBlockHeight(info.format));
     }
     if (info.resources.layers > 1) {
+        // 64-bit: title 1's 8192x8192x68 BC6H terrain array is 5.8 GB.
         ASSERT(info.layer_stride != 0);
-        return info.layer_stride * info.resources.layers;
+        return u64{info.layer_stride} * static_cast<u64>(info.resources.layers);
     } else {
         return CalculateLayerSize(info);
     }
@@ -1684,7 +1685,7 @@ u32 MapSizeBytes(const ImageBase& image) {
         return tail * image.info.resources.layers;
     }
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
-        return image.guest_size_bytes;
+        return static_cast<u32>(image.guest_size_bytes);
     } else if (True(image.flags & ImageFlagBits::Converted)) {
         return image.converted_size_bytes;
     } else {

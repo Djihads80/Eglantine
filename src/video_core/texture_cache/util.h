@@ -32,7 +32,7 @@ struct OverlapResult {
     SubresourceExtent resources;
 };
 
-[[nodiscard]] u32 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept;
+[[nodiscard]] u64 CalculateGuestSizeInBytes(const ImageInfo& info) noexcept;
 
 [[nodiscard]] u32 CalculateUnswizzledSizeBytes(const ImageInfo& info) noexcept;
 
