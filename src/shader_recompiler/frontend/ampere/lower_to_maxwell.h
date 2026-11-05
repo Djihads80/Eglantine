@@ -58,14 +58,14 @@ inline u64 NativeRegisterCopy(u32 destination_bank, u32 destination, u32 source_
         (u64{destination_bank} << 8) | (u64{source_bank} << 10) | (u64{source} << 20);
 }
 
-// Byte uniform loads, ULEA carries to UP3, two-source F2IP and I2F.U8 of a UR byte. They stopped
-// Ocarina of Time's LOD vegetation flashing in one capture but not in the user's session, and cost
-// ~8 ms of front-thread time per frame (50.4 ms frame: fence wait 22 ms without them, 31 ms with),
-// so they are off unless EDEN_NX2_LOWER_EXTENDED=1 asks for them.
+// Byte uniform loads, ULEA carries to UP3, two-source F2IP and I2F.U8 of a UR byte. Without them
+// five of Ocarina of Time's compute programs are rejected on every dispatch (LOD vegetation). The
+// work those programs do costs front-thread time (50.4 ms frame: fence wait 22 ms without them,
+// 31 ms with), so EDEN_NX2_LOWER_EXTENDED=0 rejects them again for comparison.
 inline bool LowerExtended() {
     // Read per call: only these four forms ask, so a program's compilation pays a few getenvs.
     const char* value = std::getenv("EDEN_NX2_LOWER_EXTENDED");
-    return value != nullptr && value[0] == '1';
+    return value == nullptr || value[0] != '0';
 }
 
 struct RegisterPressure {

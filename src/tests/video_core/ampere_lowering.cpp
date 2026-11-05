@@ -384,14 +384,22 @@ TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-sourc
     const auto field = [](u64 word, u32 offset, u32 count) {
         return (word >> offset) & ((u64{1} << count) - 1);
     };
-    // These forms are opt-in (EDEN_NX2_LOWER_EXTENDED=1): they cost front-thread time and did not
-    // remove the flashes they were added for, so the default path still rejects them.
+    // These forms are lowered by default; EDEN_NX2_LOWER_EXTENDED=0 rejects them again.
+    const auto set_extended = [](const char* value) {
+#ifdef _WIN32
+        _putenv_s("EDEN_NX2_LOWER_EXTENDED", value ? value : "");
+#else
+        if (value) {
+            setenv("EDEN_NX2_LOWER_EXTENDED", value, 1);
+        } else {
+            unsetenv("EDEN_NX2_LOWER_EXTENDED");
+        }
+#endif
+    };
     constexpr Instruction ByteLoad{0x06087abb, 0x01002080, 0x08000000, 0x000fe400};
+    set_extended("0");
     CHECK_FALSE(lower({ByteLoad}));
-    struct Restore {
-        ~Restore() { unsetenv("EDEN_NX2_LOWER_EXTENDED"); }
-    } restore;
-    setenv("EDEN_NX2_LOWER_EXTENDED", "1", 1);
+    set_extended(nullptr);
     // ULDC.U8 UR8, c[0x4][UR6+0x82]: LDC.U8 (size 0) indexed by UR6's register, odd offset kept.
     const auto byte_load = lower({{0x06087abb, 0x01002080, 0x08000000, 0x000fe400}});
     INFO(byte_load.error);
