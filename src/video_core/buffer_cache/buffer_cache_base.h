@@ -519,6 +519,14 @@ public:
     NativeUniformBankShadow* native_indirect_uniform_last_ptr = nullptr;
     u64 native_indirect_uniform_draw_ticket = 0;
 
+    struct LastSyncedRange {
+        DAddr begin{};
+        DAddr end{};
+    };
+    u64 last_synced_draw_ticket = 0;
+    u32 last_synced_count = 0;
+    std::array<LastSyncedRange, 8> last_synced_ranges{};
+
     static constexpr size_t ResolvedStorageAddrCacheSize = 4096;
     struct ResolvedStorageAddrCacheEntry {
         GPUVAddr gpu_addr{};

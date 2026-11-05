@@ -185,7 +185,7 @@ private:
     void SubmitNx2ListCopies();
     void FlushSplitIdle();
 
-    void UpdateDynamicStates();
+    void UpdateDynamicStates(bool has_dynamic_vertex_input = false);
 
     void HandleTransformFeedback();
 

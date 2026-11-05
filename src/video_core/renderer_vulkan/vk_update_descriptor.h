@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -17,23 +18,29 @@ class Device;
 class Scheduler;
 
 struct DescriptorAddress {
-    VkDeviceAddress address;
-    VkDeviceSize range;
-    VkFormat format;
+    VkDeviceAddress address{};
+    VkDeviceSize range{};
+    VkFormat format{};
+    u32 pad{};
 };
 
 union DescriptorUpdateEntry {
-    DescriptorUpdateEntry() = default;
-    DescriptorUpdateEntry(VkDescriptorImageInfo image_) : image{image_} {}
+    DescriptorUpdateEntry() : raw{} {}
+    DescriptorUpdateEntry(VkDescriptorImageInfo image_) : raw{} {
+        image = image_;
+    }
     DescriptorUpdateEntry(VkDescriptorBufferInfo buffer_) : buffer{buffer_} {}
-    DescriptorUpdateEntry(VkBufferView texel_buffer_) : texel_buffer{texel_buffer_} {}
+    DescriptorUpdateEntry(VkBufferView texel_buffer_) : raw{} {
+        texel_buffer = texel_buffer_;
+    }
     DescriptorUpdateEntry(DescriptorAddress address_) : address{address_} {}
-    std::monostate empty{};
+    std::array<u64, 3> raw{};
     VkDescriptorImageInfo image;
     VkDescriptorBufferInfo buffer;
     VkBufferView texel_buffer;
     DescriptorAddress address;
 };
+static_assert(sizeof(DescriptorUpdateEntry) == 24);
 
 class UpdateDescriptorQueue final {
     // This should be plenty for the vast majority of cases. Most desktop platforms only

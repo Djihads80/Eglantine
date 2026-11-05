@@ -595,7 +595,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
     {
         Profile::Scope scope{Profile::Zone::DynamicState};
-        UpdateDynamicStates();
+        UpdateDynamicStates(pipeline->HasDynamicVertexInput());
     }
 
     query_cache.NotifySegment(true);
@@ -673,6 +673,9 @@ namespace {
 void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& memory,
                        const char* kind, u32 count) {
     static const bool trace = std::getenv("EDEN_NX2_WINDOW_TRACE") != nullptr;
+    if (!trace) [[likely]] {
+        return;
+    }
     static u32 traced{};
     const auto& regs = maxwell3d.regs;
     static const u64 skip = [] {
@@ -686,7 +689,7 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     }();
     const u64 pixel_shader =
         (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-    if (!trace || regs.rt[0].width != 3840 || traced >= 400 || seen_events++ < skip ||
+    if (regs.rt[0].width != 3840 || traced >= 400 || seen_events++ < skip ||
         (only_ps != 0 && pixel_shader != only_ps)) {
         return;
     }
@@ -1539,12 +1542,30 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
 }
 
 void RasterizerVulkan::OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) {
+    if (ranges.empty()) {
+        return;
+    }
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.ClaimCpuWrites(ranges);
+        for (const auto& [addr, size] : ranges) {
+            if (addr != 0 && size != 0) {
+                buffer_cache.WriteMemory(addr, size);
+            }
+        }
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        for (const auto& [addr, size] : ranges) {
+            if (addr != 0 && size != 0) {
+                texture_cache.WriteMemory(addr, size);
+            }
+        }
     }
     for (const auto& [addr, size] : ranges) {
-        OnCacheInvalidation(addr, size);
+        if (addr != 0 && size != 0) {
+            pipeline_cache.InvalidateRegion(addr, size);
+        }
     }
 }
 
@@ -1965,7 +1986,7 @@ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
     return DmaBufferImageCopy<true>(copy_info, buffer_operand, image_operand);
 }
 
-void RasterizerVulkan::UpdateDynamicStates() {
+void RasterizerVulkan::UpdateDynamicStates(bool has_dynamic_vertex_input) {
     auto& regs = maxwell3d->regs;
     auto& flags = maxwell3d->dirty.flags;
     const auto topology = maxwell3d->draw_manager.draw_state.topology;
@@ -2115,11 +2136,9 @@ void RasterizerVulkan::UpdateDynamicStates() {
         }
     }
 
-    if (device.IsExtVertexInputDynamicStateSupported() &&
+    if (has_dynamic_vertex_input && device.IsExtVertexInputDynamicStateSupported() &&
         (flags[Dirty::VertexInput] || flags[VideoCommon::Dirty::VertexBuffers])) {
-        if (auto* gp = pipeline_cache.CurrentGraphicsPipeline(); gp && gp->HasDynamicVertexInput()) {
-            UpdateVertexInput(regs);
-        }
+        UpdateVertexInput(regs);
     }
 }
 

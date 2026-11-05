@@ -174,10 +174,12 @@ void BufferCache<P>::TickFrame() {
     ++frame_tick;
     delayed_destruction_ring.Tick();
 
-    for (auto& buffer : async_buffers_death_ring) {
-        runtime.FreeDeferredStagingBuffer(buffer);
+    if (!async_buffers_death_ring.empty()) {
+        for (auto& buffer : async_buffers_death_ring) {
+            runtime.FreeDeferredStagingBuffer(buffer);
+        }
+        async_buffers_death_ring.clear();
     }
-    async_buffers_death_ring.clear();
 }
 
 template <class P>
@@ -231,6 +233,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size, bool keep_page_gpu
     }
     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
+    last_synced_count = 0;
 }
 
 template <class P>
@@ -2050,6 +2053,7 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     MarkVertexBuffersStale(device_addr, size);
+    last_synced_count = 0;
     gpu_modified_ranges.Add(device_addr, size);
     QueueGpuWrite(device_addr, size);
     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
@@ -2511,6 +2515,39 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    if (size == 0) {
+        return true;
+    }
+    const DAddr range_end = device_addr + size;
+    if (native_indirect_uniform_draw_ticket != 0) {
+        if (last_synced_draw_ticket != native_indirect_uniform_draw_ticket) {
+            last_synced_draw_ticket = native_indirect_uniform_draw_ticket;
+            last_synced_count = 0;
+        } else {
+            for (u32 i = 0; i < last_synced_count; ++i) {
+                if (last_synced_ranges[i].begin <= device_addr &&
+                    range_end <= last_synced_ranges[i].end) [[likely]] {
+                    return true;
+                }
+            }
+        }
+    }
+    const auto note_synced_range = [&]() {
+        if (native_indirect_uniform_draw_ticket == 0) {
+            return;
+        }
+        for (u32 i = 0; i < last_synced_count; ++i) {
+            if (device_addr <= last_synced_ranges[i].end &&
+                range_end >= last_synced_ranges[i].begin) {
+                last_synced_ranges[i].begin = (std::min)(last_synced_ranges[i].begin, device_addr);
+                last_synced_ranges[i].end = (std::max)(last_synced_ranges[i].end, range_end);
+                return;
+            }
+        }
+        if (last_synced_count < last_synced_ranges.size()) {
+            last_synced_ranges[last_synced_count++] = LastSyncedRange{device_addr, range_end};
+        }
+    };
     // An upload over a clean word of the tracker (word_manager.h) finds and changes nothing:
     // walk only the dirty ones. Verify walks every word and checks the clean words.
     const bool skip_clean = Nx2Perf::Enabled() && !Nx2Perf::Verify();
@@ -2559,6 +2596,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             });
             add_upload(upload_start, device_addr_out + range_size);
         });
+        note_synced_range();
         if (total_size_bytes == 0) {
             return true;
         }
@@ -2585,6 +2623,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             total_size_bytes += range_size;
             largest_copy = (std::max)(largest_copy, range_size);
         });
+        note_synced_range();
         if (total_size_bytes == 0) {
             return true;
         }
