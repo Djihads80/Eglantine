@@ -373,4 +373,54 @@ TEST_CASE("Ampere Ocarina sign extends, uniform shifts and carries, LEA.HI and S
     }};
     CHECK_FALSE(LowerToMaxwell(straddle));
 }
+
+TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-source F2IP",
+          "[video_core][ampere]") {
+    const auto lower = [](const Instruction& instruction) {
+        const std::array<Instruction, 2> code{{instruction, EXIT}};
+        return LowerToMaxwell(code);
+    };
+    const auto field = [](u64 word, u32 offset, u32 count) {
+        return (word >> offset) & ((u64{1} << count) - 1);
+    };
+    // ULDC.U8 UR8, c[0x4][UR6+0x82]: LDC.U8 (size 0) indexed by UR6's register, odd offset kept.
+    const auto byte_load = lower({{0x06087abb, 0x01002080, 0x08000000, 0x000fe400}});
+    INFO(byte_load.error);
+    REQUIRE(static_cast<bool>(byte_load));
+    const u64 ldc = FindMaxwell(byte_load, 0xef9, 52);
+    REQUIRE(ldc != 0);
+    CHECK(field(ldc, 48, 3) == 0);
+    CHECK(field(ldc, 20, 16) == 0x82);
+    CHECK(field(ldc, 36, 5) == 4);
+
+    // ULEA UR10, UP3, UR7, UR10, 0x2: the carry is computed in P3 (6 - 3) and merged into R239.
+    const auto lea = lower({{0x070a7291, 0x0000000a, 0x0f86103f, 0x000fe200}});
+    INFO(lea.error);
+    REQUIRE(static_cast<bool>(lea));
+    const u64 compare = FindMaxwell(lea, 0x5b6, 52);
+    REQUIRE(compare != 0);
+    CHECK(field(compare, 3, 3) == 3);
+    CHECK(std::any_of(lea.instructions.begin(), lea.instructions.end(), [&](u64 word) {
+        return (word >> 52) == 0x38e && field(word, 0, 8) == 239 && field(word, 20, 8) == 8;
+    }));
+
+    // F2IP.U8.F32.NTZ R45, R44, R21, RZ: two byte conversions, R44's shifted into byte 1.
+    const auto pack = lower({{0x2c2d7243, 0x00000015, 0x000004ff, 0x000fc400}});
+    INFO(pack.error);
+    REQUIRE(static_cast<bool>(pack));
+    CHECK(CountMaxwell(pack, 0x5cb, 52) == 2);
+    CHECK(FindMaxwell(pack, 0x384, 52) != 0);
+
+    // ULDC UR7, c[0x4][UR15+0x29]: only the indexed sum has to be aligned.
+    const auto indexed = lower({{0x0f077abb, 0x01000a40, 0x08000800, 0x000fc600}});
+    INFO(indexed.error);
+    REQUIRE(static_cast<bool>(indexed));
+    CHECK(field(FindMaxwell(indexed, 0xef9, 52), 20, 16) == 0x29);
+
+    // I2F.U8 R0, UR17.B3: Maxwell I2F with byte selector 3 (bits 41-42).
+    const auto convert = lower({{0x00097d06, 0x30000011, 0x08001000, 0x000fe200}});
+    INFO(convert.error);
+    REQUIRE(static_cast<bool>(convert));
+    CHECK(field(FindMaxwell(convert, 0x5cb, 52), 41, 2) == 3);
+}
 } // namespace
