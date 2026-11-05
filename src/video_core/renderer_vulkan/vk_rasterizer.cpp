@@ -1587,9 +1587,8 @@ void RasterizerVulkan::FlushWork() {
         }
         return static_cast<u32>(parsed - 1);
     }();
-    if ((++draw_counter & check_mask) != 0) {
-        return;
-    }
+    ++draw_counter;
+    const bool dispatch_now = (draw_counter & check_mask) == 0;
     // Keep the host GPU working while native commands are still being recorded.
     static const u32 native_flush_draws = [] {
         constexpr u32 fallback = 128;
@@ -1607,8 +1606,13 @@ void RasterizerVulkan::FlushWork() {
     const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
                                      ? native_flush_draws
                                      : DRAWS_TO_DISPATCH;
+    // The submit threshold is checked at every draw, whatever the dispatch interval: with a
+    // long one (EDEN_NX2_DISPATCH_DRAWS), recorded work would otherwise wait for the next
+    // dispatch to reach the GPU.
     if (draw_counter < draws_to_dispatch) {
-        scheduler.DispatchWork();
+        if (dispatch_now) {
+            scheduler.DispatchWork();
+        }
         return;
     }
     VideoCommon::Nx2Profile::Scope submit_scope{VideoCommon::Nx2Profile::Zone::FlushSubmit};
