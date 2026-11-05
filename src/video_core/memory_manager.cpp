@@ -322,8 +322,14 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
         std::memcpy(page_pointer, &data, sizeof(T));
         return;
     }
-
-    ASSERT(false);
+    // The block got no memory (no spare ready in time, or the pool exhausted: nx2:gpu logged
+    // which) or the address is unmapped: the write is dropped, which is not an assertion.
+    static std::atomic<u32> dropped{};
+    if (const u32 count = dropped.fetch_add(1, std::memory_order_relaxed);
+        count < 16 || (count & (count - 1)) == 0) {
+        LOG_WARNING(HW_GPU, "Write of {} bytes to unmapped GPU address {:#x} dropped ({} so far)",
+                    sizeof(T), addr, count + 1);
+    }
 }
 
 template u8 MemoryManager::Read<u8>(GPUVAddr addr) const;
