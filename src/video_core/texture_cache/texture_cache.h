@@ -2760,10 +2760,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
     };
     if (overwritten_by_clear()) {
-        new_image.flags &= ~ImageFlagBits::CpuModified;
-        if (False(new_image.flags & ImageFlagBits::Tracked)) {
-            TrackImage(new_image, new_image_id);
-        }
+        // Stays CpuModified: UpdateRenderTargets' PrepareImage drops the upload only when
+        // IsFullClear agrees the clear covers the whole image, and uploads it otherwise.
         runtime.TransitionImageLayout(new_image);
     } else {
         // TODO: Only upload what we need
