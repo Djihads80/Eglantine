@@ -1131,8 +1131,10 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                  known->second ? "decodes sRGB like the program" : "plain copy");
     }
     const Fermi2D::Config config{
-        .operation = known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
-                                   : Fermi2D::Operation::SrcCopy,
+        .operation = (shared_exponent_input && output->format == Texture::TextureFormat::B10G11R11)
+                         ? Fermi2D::Operation::SrcCopySquare
+                     : known->second ? Fermi2D::Operation::SrcCopySrgbToLinear
+                                     : Fermi2D::Operation::SrcCopy,
         .filter = Fermi2D::Filter::Bilinear,
         .must_accelerate = true,
         .dst_x0 = 0,
