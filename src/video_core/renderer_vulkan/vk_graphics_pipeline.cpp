@@ -387,7 +387,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     samplers.reserve(num_textures);
 
     namespace Profile = VideoCommon::Nx2Profile;
-    {
+    if (num_image_elements != 0 || num_textures != 0) {
         Profile::Scope scope{Profile::Zone::SyncDescriptors};
         texture_cache.SynchronizeDescriptors(false);
     }
@@ -687,17 +687,18 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                 LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping draw");
                 return false;
             }
-            WriteDescriptorBuffer(device, descriptor_buffer_layout, entries, alloc.host);
+            const bool can_diff = last_descriptor_buffer_generation == alloc.generation &&
+                                  last_descriptor_payload.size() == num_descriptor_entries;
+            if (last_descriptor_payload.size() != num_descriptor_entries) {
+                last_descriptor_payload.resize(num_descriptor_entries);
+            }
+            WriteDescriptorBuffer(device, descriptor_buffer_layout, entries, alloc.host,
+                                  last_descriptor_payload, last_descriptor_bytes, can_diff);
             descriptor_buffer_offset = alloc.offset;
             descriptor_buffer_chunk = alloc.chunk;
             last_descriptor_buffer_offset = alloc.offset;
             last_descriptor_buffer_chunk = alloc.chunk;
             last_descriptor_buffer_generation = alloc.generation;
-            last_descriptor_payload.resize(num_descriptor_entries);
-            if (num_descriptor_entries != 0) {
-                std::memcpy(last_descriptor_payload.data(), entries,
-                            num_descriptor_entries * sizeof(DescriptorUpdateEntry));
-            }
         }
     }
 

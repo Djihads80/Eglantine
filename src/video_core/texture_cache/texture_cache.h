@@ -547,7 +547,7 @@ void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compu
 
 template <class P>
 void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
-    if (!Settings::values.barrier_feedback_loops.GetValue()) {
+    if (views.empty() || !Settings::values.barrier_feedback_loops.GetValue()) {
         return;
     }
 
@@ -800,12 +800,19 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     clearing_render_targets = is_clear;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
-        for (size_t index = 0; index < NUM_RT; ++index) {
-            ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
-            PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+        if (rt_active_mask == 0) {
+            return;
         }
-        const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
-        PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
+        for (size_t index = 0; index < NUM_RT; ++index) {
+            if ((rt_active_mask & (1u << index)) != 0) {
+                ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
+                PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
+            }
+        }
+        if ((rt_active_mask & (1u << NUM_RT)) != 0) {
+            const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
+            PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
+        }
         return;
     }
 

@@ -134,6 +134,71 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
     }
 }
 
+inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLayout& layout,
+                                  const DescriptorUpdateEntry* payload, u8* host,
+                                  std::vector<DescriptorUpdateEntry>& cached_payload,
+                                  std::vector<u8>& cached_bytes, bool can_diff) {
+    const vk::Device& dev = device.GetLogical();
+    const size_t total_size = static_cast<size_t>(layout.size);
+    if (!can_diff || cached_bytes.size() != total_size) {
+        cached_bytes.resize(total_size);
+        can_diff = false;
+    }
+    u8* const cache_dst = cached_bytes.data();
+    size_t flat_index = 0;
+    for (const DescriptorBufferBinding& binding : layout.bindings) {
+        for (u32 index = 0; index < binding.count; ++index, ++flat_index) {
+            const DescriptorUpdateEntry& entry = payload[flat_index];
+            if (can_diff &&
+                std::memcmp(&cached_payload[flat_index], &entry,
+                            sizeof(DescriptorUpdateEntry)) == 0) {
+                continue;
+            }
+            cached_payload[flat_index] = entry;
+            const VkDescriptorAddressInfoEXT address_info{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT,
+                .pNext = nullptr,
+                .address = entry.address.address,
+                .range = entry.address.range,
+                .format = entry.address.format,
+            };
+            VkDescriptorGetInfoEXT get_info{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+                .pNext = nullptr,
+                .type = binding.type,
+                .data{},
+            };
+            switch (binding.type) {
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                get_info.data.pUniformBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                get_info.data.pStorageBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                get_info.data.pUniformTexelBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                get_info.data.pStorageTexelBuffer = &address_info;
+                break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                get_info.data.pCombinedImageSampler = &entry.image;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                get_info.data.pStorageImage = &entry.image;
+                break;
+            default:
+                continue;
+            }
+            dev.GetDescriptorEXT(get_info, binding.stride,
+                                 cache_dst + binding.offset + index * binding.stride);
+        }
+    }
+    if (total_size != 0) {
+        std::memcpy(host, cache_dst, total_size);
+    }
+}
+
 [[nodiscard]] inline u32 NumDescriptorEntries(const Shader::Info& info) {
     return Shader::NumDescriptors(info.constant_buffer_descriptors) +
            Shader::NumDescriptors(info.storage_buffers_descriptors) +

@@ -174,7 +174,10 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         ++ssbo_index;
     }
 
-    texture_cache.SynchronizeDescriptors(true);
+    if (!info.texture_descriptors.empty() || !info.image_descriptors.empty() ||
+        !info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) {
+        texture_cache.SynchronizeDescriptors(true);
+    }
 
     boost::container::small_vector<VideoCommon::ImageViewInOut, 64> views;
     boost::container::small_vector<VideoCommon::SamplerId, 64> samplers;
@@ -328,17 +331,18 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                 LOG_DEBUG(Render_Vulkan, "Failed to reserve descriptor memory, skipping dispatch");
                 return false;
             }
-            WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host);
+            const bool can_diff = last_descriptor_buffer_generation == alloc.generation &&
+                                  last_descriptor_payload.size() == num_descriptor_entries;
+            if (last_descriptor_payload.size() != num_descriptor_entries) {
+                last_descriptor_payload.resize(num_descriptor_entries);
+            }
+            WriteDescriptorBuffer(device, descriptor_buffer_layout, descriptor_data, alloc.host,
+                                  last_descriptor_payload, last_descriptor_bytes, can_diff);
             descriptor_buffer_offset = alloc.offset;
             descriptor_buffer_chunk = alloc.chunk;
             last_descriptor_buffer_offset = alloc.offset;
             last_descriptor_buffer_chunk = alloc.chunk;
             last_descriptor_buffer_generation = alloc.generation;
-            last_descriptor_payload.resize(num_descriptor_entries);
-            if (num_descriptor_entries != 0) {
-                std::memcpy(last_descriptor_payload.data(), descriptor_data,
-                            num_descriptor_entries * sizeof(DescriptorUpdateEntry));
-            }
         }
     }
 
