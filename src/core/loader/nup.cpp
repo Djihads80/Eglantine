@@ -136,6 +136,16 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
 
     const auto& program = nup->GetPackages()[*program_index];
     base_title_id = program.title_id;
+
+    // Title metadata lives on the base package (SPEC section 5.1), which is still present when
+    // its ExeFS is empty and the program boots from the update.
+    const auto has_metadata = [](const NupContainer::PackageInfo& package) {
+        return !package.title_name.empty() || !package.icon.empty() ||
+               !package.localized_icons.empty();
+    };
+    const auto& meta = base_index && has_metadata(nup->GetPackages()[*base_index])
+                           ? nup->GetPackages()[*base_index]
+                           : program;
     has_program = true;
 
     const auto exefs = nup->GetExeFSDir(*exefs_index);
@@ -154,18 +164,18 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
         display_version = program.display_version.empty() ? DecodeVersion(program.version)
                                                           : program.display_version;
     }
-    nacp_file = BuildNacp(program, display_version);
-    if (!program.icon.empty()) {
-        icon_file = std::make_shared<FileSys::VectorVfsFile>(program.icon, "icon.dat");
+    nacp_file = BuildNacp(meta, display_version);
+    if (!meta.icon.empty()) {
+        icon_file = std::make_shared<FileSys::VectorVfsFile>(meta.icon, "icon.dat");
     } else {
-        for (const auto& [lang, icon] : program.localized_icons) {
+        for (const auto& [lang, icon] : meta.localized_icons) {
             if (lang == "en-us") {
                 icon_file = std::make_shared<FileSys::VectorVfsFile>(icon, "icon_" + lang + ".dat");
             }
         }
-        if (icon_file == nullptr && !program.localized_icons.empty()) {
+        if (icon_file == nullptr && !meta.localized_icons.empty()) {
             icon_file = std::make_shared<FileSys::VectorVfsFile>(
-                program.localized_icons.front().second, "icon.dat");
+                meta.localized_icons.front().second, "icon.dat");
         }
     }
 
