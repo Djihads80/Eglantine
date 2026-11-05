@@ -60,6 +60,14 @@ public:
         return ContinuousSizeInternal(new_address, use_cache);
     }
 
+    /// Calls func(start, value) for every range, in address order.
+    template <typename Func>
+    void ForEachRange(Func&& func) const {
+        for (const auto& [key, value] : container) {
+            func(key, value);
+        }
+    }
+
     [[nodiscard]] ValueT GetValueAt(KeyT address) const {
         const KeyT new_address = static_cast<KeyT>(address);
         if (new_address < 0) {
