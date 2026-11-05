@@ -220,7 +220,8 @@ def command_launch(args):
     for stale in os.listdir(args.diag_dir):
         if re.match(r"^(diag-state\.json|draw-list|draw-list-\d+\.tsv|capture-\d+\.tga)$", stale):
             os.unlink(os.path.join(args.diag_dir, stale))
-    binary = args.binary or os.path.join(REPO, "build", "bin", "eden-cli")
+    default_bin = "eden-cli.exe" if os.name == "nt" else "eden-cli"
+    binary = args.binary or os.path.join(REPO, "build", "bin", default_bin)
     log = open(os.path.join(args.diag_dir, "emulator.log"), "w")
     command = [binary] + (["-c", args.config] if args.config else []) + ["-g", args.game]
     process = subprocess.Popen(command, env=environment, stdout=log,
@@ -229,9 +230,17 @@ def command_launch(args):
     if args.max_seconds:
         # A watchdog, so a forgotten run does not keep the GPU busy: kills the process group after
         # that long unless the emulator is already gone.
-        subprocess.Popen(["/bin/sh", "-c", f"sleep {args.max_seconds}; kill -TERM -{process.pid} 2>/dev/null; "
-                          f"sleep 10; kill -KILL -{process.pid} 2>/dev/null"], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.name == "nt":
+            subprocess.Popen(
+                [sys.executable, "-I", "-c",
+                 f"import subprocess, time; time.sleep({int(args.max_seconds)}); "
+                 f"subprocess.run(['taskkill', '/PID', '{process.pid}', '/T', '/F'], "
+                 f"stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"],
+                start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["/bin/sh", "-c", f"sleep {args.max_seconds}; kill -TERM -{process.pid} 2>/dev/null; "
+                              f"sleep 10; kill -KILL -{process.pid} 2>/dev/null"], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(json.dumps({"pid": process.pid, "log": log.name, "max_seconds": args.max_seconds}))
 
 
@@ -239,15 +248,22 @@ def command_stop(args):
     pid = read(os.path.join(args.diag_dir, "emulator.pid"))
     if not pid:
         sys.exit("no emulator.pid")
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        try:
+            os.killpg(int(pid), signal.SIGTERM)
+            for _ in range(50):
+                os.kill(int(pid), 0)
+                time.sleep(0.2)
+            os.killpg(int(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     try:
-        os.killpg(int(pid), signal.SIGTERM)
-        for _ in range(50):
-            os.kill(int(pid), 0)
-            time.sleep(0.2)
-        os.killpg(int(pid), signal.SIGKILL)
-    except ProcessLookupError:
+        os.unlink(os.path.join(args.diag_dir, "emulator.pid"))
+    except OSError:
         pass
-    os.unlink(os.path.join(args.diag_dir, "emulator.pid"))
     print("stopped")
 
 
