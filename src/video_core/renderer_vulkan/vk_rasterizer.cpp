@@ -766,6 +766,10 @@ void RasterizerVulkan::DrawIndirect() {
             if (!std::exchange(logged, true)) {
                 LOG_WARNING(Render_Vulkan, "Indirect task/mesh draw skipped");
             }
+            if (frame_dump.Capturing()) [[unlikely]] {
+                frame_dump.NoteSkipped("draw", "indirect task/mesh", GraphicsPrograms(),
+                                       maxwell3d->regs.rt[0].Address());
+            }
             return;
         }
         const auto indirect_buffer = buffer_cache.GetDrawIndirectBuffer();
