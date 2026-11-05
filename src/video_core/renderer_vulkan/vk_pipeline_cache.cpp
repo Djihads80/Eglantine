@@ -1306,6 +1306,33 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         return nullptr;
     }
+    // The first task/mesh programs: what they write and the buffers they read (empty meshes).
+    for (const Shader::IR::Program& program : programs) {
+        if (!program.info.is_task && !program.info.is_mesh) {
+            continue;
+        }
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) >= 48) {
+            break;
+        }
+        std::string ssbos;
+        for (const auto& desc : program.info.storage_buffers_descriptors) {
+            ssbos += fmt::format(" cb{}+{:#x}{}{}", desc.cbuf_index, desc.cbuf_offset,
+                                 desc.indirect_offset != ~0U
+                                     ? fmt::format("->{:#x}", desc.indirect_offset)
+                                     : std::string{},
+                                 desc.is_written ? "w" : "");
+        }
+        LOG_INFO(Render_Vulkan,
+                 "{} program in pipeline {:016x}: {} threads, payload {} words, {} vertices, {} "
+                 "primitives, {} vertex and {} primitive lines, global memory {} (native bounds "
+                 "{}), storage buffers:{}",
+                 program.info.is_task ? "Task" : "Mesh", hash, program.workgroup_size[0],
+                 program.mesh.payload_words, program.mesh.max_vertices, program.mesh.max_primitives,
+                 program.mesh.vertex_lines.size(), program.mesh.primitive_lines.size(),
+                 program.info.uses_global_memory, program.info.native_global_bounds,
+                 ssbos.empty() ? std::string{" none"} : ssbos);
+    }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv; // For a pipeline the driver rejects
