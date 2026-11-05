@@ -100,6 +100,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, cpu_ticks, tr("Custom CPU Ticks"),
            tr("Set a custom value of CPU ticks. Higher values can increase performance, but may "
               "cause deadlocks. A range of 77-21000 is recommended."));
+    INSERT(Settings, prefer_3d_vcache, tr("Pin Emulation Threads to 3D V-Cache CCD"),
+           tr("On dual-CCD processors with asymmetric L3 cache (such as AMD Ryzen 9 X3D), pins "
+              "emulated CPU and GPU threads to the 3D V-Cache CCD and offloads background "
+              "shader/worker threads to the secondary CCD to prevent cross-CCD latency and "
+              "cache thrashing."));
     INSERT(Settings, cpu_backend, tr("Backend:"), QString());
 
     // Cpu Debug

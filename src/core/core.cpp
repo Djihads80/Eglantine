@@ -16,6 +16,7 @@
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "common/string_util.h"
+#include "common/thread.h"
 #include "core/arm/exclusive_monitor.h"
 #include "core/core.h"
 
@@ -1125,6 +1126,7 @@ void System::NotifyApplicationChanged(u64 program_id) {
 
 void System::ApplySettings() {
     impl->RefreshTime(*this);
+    Common::RefreshThreadPolicies();
 
     if (IsPoweredOn()) {
         Renderer().RefreshBaseSettings();
