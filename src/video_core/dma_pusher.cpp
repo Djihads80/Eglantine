@@ -62,6 +62,56 @@ void DmaPusher::DispatchCalls() {
     system.GPU().OnCommandListEnd();
 }
 
+// EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
+static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
+
+namespace {
+// The words the current entry was first parsed from and where they came from, and its last
+// headers (EDEN_NX2_PB_CHECK), for the first illegal-method blocks (LogIllegalBlock).
+// EDEN_NX2_RESUME_SAME_WORDS=1: an entry resumed after an acquire continues from those words
+// instead of memory read again (which can mix two versions of a rewritten entry).
+struct EntryRecord {
+    GPUVAddr address{};
+    u32 size{};
+    size_t index{};
+    u32 channel{};
+    const char* source{"?"};
+    std::vector<Tegra::CommandHeader> words;
+    std::array<std::pair<u32, u32>, 8> headers{}; ///< Word position in the entry, raw header
+    u32 header_count{};
+    size_t resumed_at{}; ///< Resume offset of the parse in progress (0: from the start)
+};
+EntryRecord g_entry; // the GPU thread's
+
+bool ResumeSameWords() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_RESUME_SAME_WORDS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+// Before an entry's words are parsed: keep them when parsing from its start.
+void NoteEntryWords(const Tegra::CommandListHeader& header, size_t index, u32 channel,
+                    const char* source, std::span<const Tegra::CommandHeader> commands,
+                    size_t resume_offset) {
+    if (!g_record_parsed_entries && !ResumeSameWords()) {
+        return;
+    }
+    g_entry.resumed_at = resume_offset;
+    if (resume_offset != 0 && g_entry.address == header.addr && g_entry.size == header.size) {
+        return; // a resumed parse: the record keeps the first parse's words
+    }
+    g_entry.address = header.addr;
+    g_entry.size = static_cast<u32>(header.size);
+    g_entry.index = index;
+    g_entry.channel = channel;
+    g_entry.source = source;
+    g_entry.words.assign(commands.begin(), commands.end());
+    g_entry.header_count = 0;
+}
+} // Anonymous namespace
+
 bool DmaPusher::Step() {
     if (!ib_enable || dma_pushbuffer.empty()) {
         return false;
@@ -213,22 +263,36 @@ bool DmaPusher::Step() {
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
-        if (submitted) {
+        const u32 channel = static_cast<u32>(channel_state.bind_id);
+        const bool resume_same = ResumeSameWords() && command_resume_offset != 0 &&
+                                 g_entry.address == header.addr && g_entry.size == header.size &&
+                                 g_entry.words.size() == header.size;
+        if (resume_same) {
+            const std::span<const CommandHeader> commands{g_entry.words};
+            g_entry.resumed_at = command_resume_offset;
+            command_resume_offset +=
+                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
                     command_list.submitted_offsets[dma_pushbuffer_subindex],
                 header.size};
             RecordParsedEntry(header, commands);
+            NoteEntryWords(header, dma_pushbuffer_subindex, channel, "snapshot", commands, 0);
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
+            NoteEntryWords(header, dma_pushbuffer_subindex, channel, "memory (safe)", commands,
+                           command_resume_offset);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
             RecordParsedEntry(header, commands);
+            NoteEntryWords(header, dma_pushbuffer_subindex, channel, "GPU-written list copy",
+                           commands, command_resume_offset);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
@@ -236,6 +300,8 @@ bool DmaPusher::Step() {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
+            NoteEntryWords(header, dma_pushbuffer_subindex, channel, "memory", commands,
+                           command_resume_offset);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         }
@@ -290,8 +356,7 @@ static const u32 g_semaphore_watch = [] {
     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
 }();
 
-// EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
-static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
+
 
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     for (size_t index = 0; index < commands.size();) {
@@ -387,6 +452,10 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             index++;
         } else {
             auto const command_header = commands[index]; //can copy
+            if (g_record_parsed_entries) [[unlikely]] {
+                g_entry.headers[g_entry.header_count++ % g_entry.headers.size()] = {
+                    static_cast<u32>(word_offset + index), command_header.argument};
+            }
             // No command active - this is the first word of a new one
             switch (command_header.mode) {
             case SubmissionMode::Increasing:
@@ -498,10 +567,62 @@ void DmaPusher::CallMethod(u32 argument) {
     if (dma_state.method == static_cast<u32>(BufferMethods::Illegal)) {
         const u32 remaining = dma_state.method_count > 0 ? dma_state.method_count - 1 : 0;
         static std::atomic<u32> reported{};
-        if (reported.fetch_add(1) < 8) {
+        const u32 report = reported.fetch_add(1);
+        if (report < 8) {
             LOG_ERROR(HW_GPU,
                       "Illegal host method on subchannel {}: discarding {} words of the block",
                       dma_state.subchannel, remaining);
+        }
+        if (report < 4 && g_record_parsed_entries) {
+            // The entry the block is in, as parsed (its source), as submitted and as memory
+            // holds it now, around the block's header (the last one parsed).
+            const auto& [position, raw] =
+                g_entry.headers[(g_entry.header_count + g_entry.headers.size() - 1) %
+                                g_entry.headers.size()];
+            LOG_ERROR(HW_GPU,
+                      "  entry {} on channel {}: {:#x}+{:#x} words from {}, resumed at word {}; "
+                      "block header {:#010x} at word {}",
+                      g_entry.index, g_entry.channel, g_entry.address, g_entry.size,
+                      g_entry.source, g_entry.resumed_at, raw, position);
+            std::string headers;
+            for (u32 i = 0; i < (std::min)(g_entry.header_count, u32{8}); ++i) {
+                const auto& [at, word] =
+                    g_entry.headers[(g_entry.header_count - 1 - i) % g_entry.headers.size()];
+                headers += fmt::format(" {:#010x}@{}", word, at);
+            }
+            LOG_ERROR(HW_GPU, "  last headers (newest first):{}", headers);
+            std::span<const CommandHeader> submitted{};
+            if (!dma_pushbuffer.empty()) {
+                const CommandList& list = dma_pushbuffer.front();
+                if (g_entry.index < list.submitted_offsets.size() &&
+                    list.submitted_offsets[g_entry.index] + g_entry.size <=
+                        list.submitted_words.size()) {
+                    submitted = {list.submitted_words.data() + list.submitted_offsets[g_entry.index],
+                                 g_entry.size};
+                }
+            }
+            std::vector<u32> memory(g_entry.size);
+            memory_manager.ReadBlockUnsafe(g_entry.address, memory.data(),
+                                           memory.size() * sizeof(u32));
+            const u32 first = position >= 16 ? position - 16 : 0;
+            const u32 last = (std::min)(g_entry.size, first + 64);
+            for (u32 row = first; row < last; row += 8) {
+                std::string parsed_line, submitted_line, memory_line;
+                for (u32 i = row; i < (std::min)(last, row + 8); ++i) {
+                    const u32 parsed_word =
+                        i < g_entry.words.size() ? g_entry.words[i].argument : 0xdeadbeef;
+                    parsed_line += fmt::format(" {:08x}", parsed_word);
+                    submitted_line += submitted.empty() ? std::string(" --------")
+                                      : submitted[i].argument == parsed_word
+                                          ? std::string(" ........")
+                                          : fmt::format(" {:08x}", submitted[i].argument);
+                    memory_line += memory[i] == parsed_word ? std::string(" ........")
+                                                            : fmt::format(" {:08x}", memory[i]);
+                }
+                LOG_ERROR(HW_GPU, "  +{:04x} parsed   :{}", row, parsed_line);
+                LOG_ERROR(HW_GPU, "        submitted:{}", submitted_line);
+                LOG_ERROR(HW_GPU, "        memory   :{}", memory_line);
+            }
         }
         dma_state.skip_words = remaining;
         // The caller's decrement then ends the block. An inline header (no block active,
