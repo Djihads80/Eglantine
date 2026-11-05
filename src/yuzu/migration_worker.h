@@ -40,11 +40,12 @@ typedef struct Emulator {
             Common::FS::enumName##CacheDir                                                         \
     }
 
-static constexpr std::array<Emulator, 4> legacy_emus = {
+static constexpr std::array<Emulator, 5> legacy_emus = {
     STRUCT_EMU(QT_TR_NOOP("Citron"), Citron),
     STRUCT_EMU(QT_TR_NOOP("Sudachi"), Sudachi),
     STRUCT_EMU(QT_TR_NOOP("Suyu"), Suyu),
     STRUCT_EMU(QT_TR_NOOP("Yuzu"), Yuzu),
+    STRUCT_EMU(QT_TR_NOOP("LegacyEden"), LegacyEden),
 };
 
 class MigrationWorker : public QObject {
