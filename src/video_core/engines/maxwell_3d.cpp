@@ -1290,6 +1290,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                                              emit)
                 : engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);
 #if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        // Not left behind: the compute engine's front macros can run through the same JIT, and
+        // must never elide against this engine's registers.
+        engine.native_jit->SetElision(nullptr);
         if (const u32 skipped = fs.elision.skipped; skipped != 0) {
             fs.elision.skipped = 0;
             if (VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
