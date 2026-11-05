@@ -16,6 +16,7 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -254,6 +255,11 @@ public:
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
+
+    /// Staging downloads this thread makes until EndDownloadBatch share one GPU wait; their
+    /// bytes reach guest memory at EndDownloadBatch.
+    void BeginDownloadBatch();
+    void EndDownloadBatch();
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
@@ -729,6 +735,21 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+
+    /// Downloads waiting for EndDownloadBatch. Deferred staging: a submission inside the batch
+    /// must not let another download reuse it before it is read.
+    struct BatchedDownload {
+        Nx2Staging staging;
+        DAddr buffer_addr;
+        boost::container::small_vector<BufferCopy, 1> copies;
+    };
+    std::vector<BatchedDownload> batched_downloads;
+    std::thread::id download_batch_thread{};
+    bool download_batch{};
+
+    [[nodiscard]] bool InDownloadBatch() const {
+        return download_batch && download_batch_thread == std::this_thread::get_id();
+    }
 };
 
 } // namespace VideoCommon

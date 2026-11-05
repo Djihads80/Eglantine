@@ -231,6 +231,9 @@ public:
     bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);
     /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
     void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
+    /// Downloads the pages, with the dirty ones flushed here before, in one GPU wait.
+    void FlushCommandPages(GPUVAddr first_page, GPUVAddr end_page);
+    void NoteCommandPagesSynced(GPUVAddr first_page, GPUVAddr end_page);
 
 private:
 
@@ -290,6 +293,11 @@ public:
     std::condition_variable sync_cv;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
+
+    /// Command list pages FlushCommandPages downloaded (oldest replaced when full).
+    static constexpr size_t MaxFlushedCommandPages = 128;
+    std::vector<GPUVAddr> flushed_command_pages;
+    size_t flushed_command_page_next{};
 
     const bool ib_enable : 1 = true; ///< IB mode enabled
     bool dma_increment_once : 1 = false;

@@ -63,6 +63,8 @@ enum class Zone : u32 {
     UboCopy,      ///< Of BindStageBuffers: small uniform buffers copied into the stream buffer
     UboCached,    ///< Of BindStageBuffers: uniform buffers bound from the buffer cache
     FlushSubmit,  ///< Of FlushWork: the scheduler submits (Flush)
+    CommandListFlush, ///< The front downloads GPU-written command list pages (FlushCommandPages)
+    CommandListCopy,  ///< The front reads a GPU-written command list's copy (waits for the GPU)
     Count,
 };
 
@@ -75,7 +77,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
     "update index", "update vertex", "update stages", "ubo reuse", "ubo copy", "ubo cached",
-    "flush submit",
+    "flush submit", "cmd list flush", "cmd list copy",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
@@ -221,6 +223,8 @@ enum class Counter : u32 {
     CbRunWords,       ///< Pushbuffer constant buffer runs (offset + data words) sent as one entry
     CbRunEntries,     ///< Those entries
     CbBindsSkipped,   ///< Constant buffer binds not sent: same slot, buffer and size as last time
+    CommandListFlushes,    ///< GPU-written command list ranges downloaded (one GPU wait each)
+    CommandListPagesAlong, ///< Other command list pages downloaded in those waits
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -304,6 +308,9 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[23]) * 1e9 / window,
                         static_cast<double>(data.counters[24]) * 1e9 / window,
                         static_cast<double>(data.counters[25]) * 1e9 / window);
+    line += fmt::format(" | cmd list flushes {:.0f} ({:.0f} pages along)",
+                        static_cast<double>(data.counters[26]) * 1e9 / window,
+                        static_cast<double>(data.counters[27]) * 1e9 / window);
     if (data.method_calls) {
         // The ten most called engine methods (per second).
         std::array<std::pair<u32, u32>, 10> top{};

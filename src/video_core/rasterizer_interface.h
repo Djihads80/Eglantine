@@ -113,6 +113,13 @@ public:
     /// Switch 2: the front flushed this command list page with the split drained.
     virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}
 
+    /// Buffer cache flushes this thread makes until EndFlushBatch share one GPU wait, there.
+    /// False where flushes are not batched (each waits on its own).
+    virtual bool BeginFlushBatch() {
+        return false;
+    }
+    virtual void EndFlushBatch() {}
+
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
                                  VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;

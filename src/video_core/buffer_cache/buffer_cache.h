@@ -2595,6 +2595,34 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 }
 
 template <class P>
+void BufferCache<P>::BeginDownloadBatch() {
+    download_batch = true;
+    download_batch_thread = std::this_thread::get_id();
+}
+
+template <class P>
+void BufferCache<P>::EndDownloadBatch() {
+    download_batch = false;
+    if constexpr (!IS_OPENGL) {
+        if (batched_downloads.empty()) {
+            return;
+        }
+        runtime.Finish();
+        for (BatchedDownload& download : batched_downloads) {
+            const u8* const mapped_memory = download.staging.mapped_span.data();
+            for (const BufferCopy& copy : download.copies) {
+                device_memory.WriteBlockUnsafe(download.buffer_addr + copy.src_offset,
+                                               mapped_memory +
+                                                   (copy.dst_offset - download.staging.offset),
+                                               copy.size);
+            }
+            runtime.FreeDeferredStagingBuffer(download.staging);
+        }
+        batched_downloads.clear();
+    }
+}
+
+template <class P>
 void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
                                           std::span<const std::pair<DAddr, u64>> ranges) {
     boost::container::small_vector<BufferCopy, 1> copies;
@@ -2662,7 +2690,8 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
     }
 
     if constexpr (USE_MEMORY_MAPS) {
-        auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
+        const bool batched = !IS_OPENGL && InDownloadBatch();
+        auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, batched);
         const u8* const mapped_memory = download_staging.mapped_span.data();
         const std::span<BufferCopy> copies_span(copies.data(), copies.data() + copies.size());
         for (BufferCopy& copy : copies) {
@@ -2671,6 +2700,13 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
             buffer.MarkUsage(copy.src_offset, copy.size);
         }
         runtime.CopyBuffer(download_staging.buffer, buffer, copies_span, true);
+        if constexpr (!IS_OPENGL) {
+            if (batched) {
+                batched_downloads.push_back({download_staging, buffer.CpuAddr(),
+                                             {copies.begin(), copies.end()}});
+                return;
+            }
+        }
         runtime.Finish();
         for (const BufferCopy& copy : copies) {
             const DAddr copy_device_addr = buffer.CpuAddr() + copy.src_offset;

@@ -1276,6 +1276,17 @@ void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
     buffer_cache.Nx2NoteListSynced(page);
 }
 
+bool RasterizerVulkan::BeginFlushBatch() {
+    std::scoped_lock lock{buffer_cache.mutex};
+    buffer_cache.BeginDownloadBatch();
+    return true;
+}
+
+void RasterizerVulkan::EndFlushBatch() {
+    std::scoped_lock lock{buffer_cache.mutex};
+    buffer_cache.EndDownloadBatch();
+}
+
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
     if (addr == 0 || size == 0) {
         return;

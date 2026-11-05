@@ -701,6 +701,7 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         }
         GpuWrittenList where = GpuWrittenList::Synced;
         if (Tegra::Nx2IsGpuWritten(*device)) {
+            VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::CommandListCopy};
             where = rasterizer->ReadGpuWrittenCommandList(*device, part);
         }
         if (where == GpuWrittenList::Unknown) {
@@ -731,9 +732,56 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
                                      VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(first_page, end_page - first_page,
-                                   VideoCommon::CacheType::BufferCache);
+        FlushCommandPages(first_page, end_page);
     }
+    NoteCommandPagesSynced(first_page, end_page);
+}
+
+void DmaPusher::FlushCommandPages(GPUVAddr first_page, GPUVAddr end_page) {
+    // Each download waits for the GPU, and most GPU-written lists of a frame are written together
+    // before the first is read. Pages downloaded here before that are dirty again go in the same
+    // wait, and their lists then read guest memory (from sylvieistaken/selevet-eglantine
+    // bce3c83739). EDEN_NX2_CMD_BATCH=0: one range per wait.
+    namespace Profile = VideoCommon::Nx2Profile;
+    Profile::Scope scope{Profile::Zone::CommandListFlush};
+    Profile::Add(Profile::Counter::CommandListFlushes, 1);
+    static const bool batch = [] {
+        const char* value = std::getenv("EDEN_NX2_CMD_BATCH");
+        return value == nullptr || value[0] != '0';
+    }();
+    constexpr auto buffers = VideoCommon::CacheType::BufferCache;
+    if (!batch || rasterizer == nullptr || !rasterizer->BeginFlushBatch()) {
+        memory_manager.FlushRegion(first_page, end_page - first_page, buffers);
+        return;
+    }
+    memory_manager.FlushRegion(first_page, end_page - first_page, buffers);
+    boost::container::small_vector<GPUVAddr, 16> along;
+    for (const GPUVAddr page : flushed_command_pages) {
+        if ((page < first_page || page >= end_page) &&
+            memory_manager.IsMemoryDirty(page, 0x1000, buffers)) {
+            memory_manager.FlushRegion(page, 0x1000, buffers);
+            along.push_back(page);
+        }
+    }
+    rasterizer->EndFlushBatch();
+    // The split is drained: these hold every GPU write so far (a later one unsyncs them).
+    for (const GPUVAddr page : along) {
+        NoteCommandPagesSynced(page, page + 0x1000);
+    }
+    Profile::Add(Profile::Counter::CommandListPagesAlong, along.size());
+    for (GPUVAddr page = first_page; page < end_page; page += 0x1000) {
+        if (std::ranges::find(flushed_command_pages, page) != flushed_command_pages.end()) {
+            continue;
+        }
+        if (flushed_command_pages.size() < MaxFlushedCommandPages) {
+            flushed_command_pages.push_back(page);
+        } else {
+            flushed_command_pages[flushed_command_page_next++ % MaxFlushedCommandPages] = page;
+        }
+    }
+}
+
+void DmaPusher::NoteCommandPagesSynced(GPUVAddr first_page, GPUVAddr end_page) {
     if (rasterizer == nullptr) {
         return;
     }
