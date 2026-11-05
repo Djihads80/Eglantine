@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -383,6 +384,14 @@ TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-sourc
     const auto field = [](u64 word, u32 offset, u32 count) {
         return (word >> offset) & ((u64{1} << count) - 1);
     };
+    // These forms are opt-in (EDEN_NX2_LOWER_EXTENDED=1): they cost front-thread time and did not
+    // remove the flashes they were added for, so the default path still rejects them.
+    constexpr Instruction ByteLoad{0x06087abb, 0x01002080, 0x08000000, 0x000fe400};
+    CHECK_FALSE(lower({ByteLoad}));
+    struct Restore {
+        ~Restore() { unsetenv("EDEN_NX2_LOWER_EXTENDED"); }
+    } restore;
+    setenv("EDEN_NX2_LOWER_EXTENDED", "1", 1);
     // ULDC.U8 UR8, c[0x4][UR6+0x82]: LDC.U8 (size 0) indexed by UR6's register, odd offset kept.
     const auto byte_load = lower({{0x06087abb, 0x01002080, 0x08000000, 0x000fe400}});
     INFO(byte_load.error);

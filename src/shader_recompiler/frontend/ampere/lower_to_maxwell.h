@@ -58,6 +58,16 @@ inline u64 NativeRegisterCopy(u32 destination_bank, u32 destination, u32 source_
         (u64{destination_bank} << 8) | (u64{source_bank} << 10) | (u64{source} << 20);
 }
 
+// Byte uniform loads, ULEA carries to UP3, two-source F2IP and I2F.U8 of a UR byte. They stopped
+// Ocarina of Time's LOD vegetation flashing in one capture but not in the user's session, and cost
+// ~8 ms of front-thread time per frame (50.4 ms frame: fence wait 22 ms without them, 31 ms with),
+// so they are off unless EDEN_NX2_LOWER_EXTENDED=1 asks for them.
+inline bool LowerExtended() {
+    // Read per call: only these four forms ask, so a program's compilation pays a few getenvs.
+    const char* value = std::getenv("EDEN_NX2_LOWER_EXTENDED");
+    return value != nullptr && value[0] == '1';
+}
+
 struct RegisterPressure {
     Instruction instruction;
     std::vector<u64> prefix, suffix;
@@ -1051,7 +1061,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Byte and halfword loads (Ocarina of Time's compute: ULDC.U8 UR8, c[0x4][UR6+0x82])
             // map to LDC's sizes. A direct offset needs the alignment of the loaded size; an
             // indexed one only as a sum with its register (ULDC UR7, c[0x4][UR15+0x29]), as LDC.
-            const u32 alignment = opcode == 0xabb ? 1U : width >= 4 ? 4U : (width >= 2 ? 2U : 1U);
+            const u32 alignment = !LowerExtended() ? 4U
+                                  : opcode == 0xabb ? 1U
+                                  : width >= 4     ? 4U
+                                                   : (width >= 2 ? 2U : 1U);
+            if (!LowerExtended() && width < 4)
+                return fail(index, "native uniform constant load mode");
             if (target == ~0U || target == 255 || width > 5 ||
                 (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
                 bank() >= 18 || insn.Bits(38, 16) % alignment || insn.Bits(62, 2) ||
@@ -1922,7 +1937,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         case 0x243:
             // F2IP.U8.F32 Rd, Ra, Rb, Rc: Rb to byte 0, Ra to byte 1, Rc's high half above.
-            if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xc0ffU) != 0x400U)
+            if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xc0ffU) != 0x400U ||
+                (!LowerExtended() && insn.Bits(24, 8) != 255))
                 return fail(index, "native packed float-to-byte mode");
             if (insn.Bits(24, 8) != 255 || insn.Bits(64, 8) != 255 || insn.Bits(78, 2) != 3) {
                 const u32 rounding = insn.Bits(78, 2);
@@ -2819,7 +2835,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // I2F.{U,S}8 Rd, Rs.B0-B3: the byte selector (bits 60-61) as Maxwell's (41-42), for a
             // uniform source too (Ocarina of Time: I2F.U8 R0, UR17.B3).
             if ((insn.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
-                (insn.words[1] & 0xcfffff00U) || source == ~0U)
+                (insn.words[1] & (opcode != 0xd06 || LowerExtended() ? 0xcfffff00U
+                                                                     : 0xffffff00U)) ||
+                source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
             emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (is_signed << 13) | (u64{source} << 20) |
                  (u64{insn.Bits(60, 2)} << 41));
@@ -3117,7 +3135,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 carry_out = insn.Bits(81, 3);
             if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
                 (carry_out != 7 && ((opcode != 0x811 && insn.Bits(63, 1)) ||
-                                    (rewritten_uniform && opcode != 0x211))) ||
+                                    (rewritten_uniform && (opcode != 0x211 ||
+                                     (!LowerExtended() && carry_out > 1))))) ||
                 (opcode == 0x211 && insn.Bits(62, 1)) || (opcode == 0xc11 && (insn.words[1] & ~0x8000003fU)))
                 return fail(index, "native LEA carry/high mode");
             // 0x211 bit 63 negates Rb (LEA Rd, Ra, -Rb, s), as Maxwell ISCADD's bit 48.

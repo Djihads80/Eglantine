@@ -1186,11 +1186,12 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     // (Splatoon Raiders: the dialogue box corners in c1). Writes to that memory can go unnoticed by
     // the memory tracker, leaving stale host contents, so upload such a bank again on every bind:
     // once per frame left Ocarina of Time's per-draw material data stale for a frame now and then
-    // (white flashes). EDEN_NX2_BANK_REUPLOAD: 0 off, 1 once per frame, 2 every bind of a 64 KiB
-    // bank (the default), 3 every bind of any native bank (to test banks of other sizes).
+    // (white flashes). EDEN_NX2_BANK_REUPLOAD: 0 off, 1 once per frame (the default), 2 every bind
+    // of a 64 KiB bank, 3 every bind of any native bank. Every bind costs front-thread time without
+    // removing the flashes the user still saw, so it is opt-in.
     static const char bank_mode = [] {
         const char* v = std::getenv("EDEN_NX2_BANK_REUPLOAD");
-        return v != nullptr ? v[0] : '2';
+        return v != nullptr ? v[0] : '1';
     }();
     const bool native_bank = has_host_buffer && size != 0 && gpu_memory != nullptr &&
                              gpu_memory->UsesNativeTiling() &&
@@ -1206,7 +1207,17 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             mapped_size += Core::DEVICE_PAGESIZE - ((device_addr + mapped_size) & Core::DEVICE_PAGEMASK);
         }
         if (mapped_size != 0) {
-            memory_tracker.MarkRegionAsCpuModified(device_addr, (std::min<u64>)(mapped_size, size));
+            const u64 marked = (std::min<u64>)(mapped_size, size);
+            memory_tracker.MarkRegionAsCpuModified(device_addr, marked);
+            // EDEN_NX2_BANK_STATS: how much this costs, per 100k re-uploads.
+            static std::atomic<u64> uploads{0};
+            static std::atomic<u64> marked_bytes{0};
+            marked_bytes.fetch_add(marked, std::memory_order_relaxed);
+            const u64 count = uploads.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (std::getenv("EDEN_NX2_BANK_STATS") != nullptr && (count % 100000) == 0) {
+                LOG_INFO(HW_GPU, "nx2: bank re-uploads {} totalling {} MiB ({} KiB each)",
+                         count, marked_bytes.load() >> 20, marked >> 10);
+            }
         }
     }
     const bool use_fast_buffer = needs_alignment_stream
