@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -470,6 +471,12 @@ void CollectPointerSlots(const IR::Value& offset, small_vector<std::pair<u32, u3
 /// array.
 small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_addr,
                                                            Environment& env, bool& dynamic) {
+    // EDEN_NX2_POINTER_TRACK=0: only constant-offset pointers, as before the pointer arrays,
+    // loaded pointers and broadcasts (jojo-chaechae 88b158a80d, 220a985a7c, cd9ee98acd).
+    static const bool track_more = [] {
+        const char* const value = std::getenv("EDEN_NX2_POINTER_TRACK");
+        return value == nullptr || value[0] != '0';
+    }();
     small_vector<StorageBufferAddr, 4> candidates;
     small_vector<const IR::Inst*, 16> pending{low_addr.InstRecursive()};
     std::unordered_set<const IR::Inst*> visited{pending.front()};
@@ -485,7 +492,7 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
         case IR::Opcode::GetCbufU32x2: {
             const IR::Value index{inst->Arg(0)};
             const IR::Value offset{inst->Arg(1)};
-            if (index.IsImmediate() && !offset.IsImmediate()) {
+            if (track_more && index.IsImmediate() && !offset.IsImmediate()) {
                 static constexpr u32 max_slots{16};
                 small_vector<std::pair<u32, u32>, 4> slots;
                 std::unordered_set<const IR::Inst*> slot_visited;
@@ -527,7 +534,9 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
             break;
         case IR::Opcode::ShuffleIndex:
             // A pointer made uniform by broadcasting one lane's value to the subgroup.
-            enqueue(inst->Arg(0));
+            if (track_more) {
+                enqueue(inst->Arg(0));
+            }
             break;
         case IR::Opcode::CompositeExtractU32x2:
             if (inst->Arg(1).IsImmediate() && inst->Arg(1).U32() == 0) {
@@ -538,7 +547,8 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
             // A pointer loaded from the memory a constant buffer pointer points to. The binding
             // reads it again for every dispatch or draw.
             const auto holder_addr{TrackLowAddress(const_cast<IR::Inst*>(inst))};
-            if (!holder_addr || holder_addr->imm_offset < 0 || holder_addr->value.IsImmediate()) {
+            if (!track_more || !holder_addr || holder_addr->imm_offset < 0 ||
+                holder_addr->value.IsImmediate()) {
                 break;
             }
             const IR::Inst* holder{holder_addr->value.InstRecursive()};
