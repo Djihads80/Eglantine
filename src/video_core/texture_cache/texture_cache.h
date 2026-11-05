@@ -1665,6 +1665,8 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.flags &= ~ImageFlagBits::GpuModified;
+    image.modification_tick = ++modification_tick;
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
@@ -2739,8 +2741,28 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     for (const auto& copy_object : join_copies_to_do) {
         Image& overlap = slot_images[copy_object.id];
+        if (True(overlap.flags & ImageFlagBits::CpuModified)) {
+            if (!copy_object.is_alias) {
+                if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(overlap, copy_object.id);
+                }
+                UnregisterImage(copy_object.id);
+                DeleteImage(copy_object.id);
+            }
+            continue;
+        }
+        if (overlap.modification_tick <= new_image.modification_tick) {
+            if (!copy_object.is_alias) {
+                if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(overlap, copy_object.id);
+                }
+                UnregisterImage(copy_object.id);
+                DeleteImage(copy_object.id);
+            }
+            continue;
+        }
         if (copy_object.is_alias) {
-            if (!overlap.IsSafeGpuCopy()) {
+            if (!overlap.IsSafeGpuCopy() || False(overlap.flags & ImageFlagBits::GpuModified)) {
                 continue;
             }
             if (overlap.info.num_samples != new_image.info.num_samples) {
@@ -3545,6 +3567,9 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     u64 most_recent_tick = image.modification_tick;
     for (const AliasedImage& aliased : image.aliased_images) {
         ImageBase& aliased_image = slot_images[aliased.id];
+        if (True(aliased_image.flags & ImageFlagBits::CpuModified)) {
+            continue;
+        }
         if (image.modification_tick < aliased_image.modification_tick) {
             most_recent_tick = (std::max)(most_recent_tick, aliased_image.modification_tick);
             aliased_images.push_back(&aliased);
