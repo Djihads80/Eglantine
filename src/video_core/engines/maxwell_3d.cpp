@@ -1193,12 +1193,6 @@ GPUVAddr ReportAddress(std::span<const u32> regs) {
 }
 constexpr u64 ReportBytes = 16;
 
-// The engine waits for idle: the GPU work before it is done for the methods after it.
-bool IsWaitForIdle(u32 method) {
-    return method == MAXWELL3D_REG_INDEX(wait_for_idle) ||
-           method == MAXWELL3D_REG_INDEX(trigger_wfi);
-}
-
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -1304,9 +1298,6 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     // instanced draw first.
     Effect effect = fs.draw_pending ? Effect::Gpu : Effect::None;
     if (!execution_mask[method]) {
-        if (method == MAXWELL3D_REG_INDEX(trigger_wfi)) [[unlikely]] {
-            split.NoteEngineSync();
-        }
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
         if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
@@ -1328,9 +1319,6 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
     }
     std::optional<GPUVAddr> cb_write;
-    if (method == MAXWELL3D_REG_INDEX(wait_for_idle)) [[unlikely]] {
-        split.NoteEngineSync();
-    }
     fs.regs[method] = value;
     effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -1422,9 +1410,6 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     using Effect = VideoCommon::GpuSplit::Effect;
     Effect effect = fs.draw_pending ? Effect::Gpu : Effect::None;
     std::optional<GPUVAddr> cb_write;
-    if (IsWaitForIdle(method)) {
-        split.NoteEngineSync();
-    }
     if (method >= cb_data && method < cb_data + 16) {
         cb_write = ConstBufferWriteAddress(fs.regs);
         fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += amount * sizeof(u32);
@@ -1573,20 +1558,6 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         diag_before.resize(words);
         memory_manager.ReadBlockUnsafe(source, diag_before.data(), read_bytes);
     }
-    // EXPERIMENT (not for nx2): EDEN_NX2_DMA_NO_DRAIN=1 reads guest memory as it is, without
-    // waiting for the back: how much the drain costs, not a correct read.
-    static const bool no_drain = std::getenv("EDEN_NX2_DMA_NO_DRAIN") != nullptr;
-    if (no_drain) {
-        if (method == 0x158) {
-            const size_t old_size = fs.parameters.size();
-            fs.parameters.resize(old_size + words);
-            memory_manager.ReadWordsUnsafe(source, fs.parameters.data() + old_size, words);
-        } else if (ram < native_data_ram.size()) {
-            const size_t copy_words = (std::min<size_t>)(words, native_data_ram.size() - ram);
-            memory_manager.ReadWordsUnsafe(source, native_data_ram.data() + ram, copy_words);
-        }
-        return;
-    }
     if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) && !Tegra::Nx2CmdPageDiag::g_enabled &&
         FrontDmaReadEarly(split, fs, macro, method, source, ram, words)) {
         return;
@@ -1638,13 +1609,6 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
 bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, u32 macro,
                                   u32 method, GPUVAddr source, u32 ram, u32 words) {
     namespace Profile = VideoCommon::Nx2Profile;
-    // FrontDmaRead drains the back, then flushes the words if the buffer cache holds them
-    // GPU-written. Waiting for what the guest may rely on is enough (GpuSplit::ReadTarget): the
-    // writes the front can't place, the GPU work before the last wait for idle (the MME runs
-    // ahead of the pipeline: a game waits before reading what draws, dispatches and copies
-    // write) and the noted writes to these pages. Then, on pages no GPU work ever wrote
-    // (Nx2IsGpuWritten holds every GPU-written buffer range), nothing still queued or cached
-    // changes the words: read guest memory as it is.
     const u64 bytes = u64{words} * sizeof(u32);
     const bool sparse = source < Tegra::g_nx2_sparse_high.load(std::memory_order_relaxed) &&
                         Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < source + bytes;
@@ -1670,9 +1634,8 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     const auto wait_reason = target == split.Writes().LastUnknown()
                                  ? Profile::Counter::DmaReadsWaitUnknown
                              : target == write_target ? Profile::Counter::DmaReadsWaitWrite
-                                                      : Profile::Counter::DmaReadsWaitSync;
+                                                      : Profile::Counter::DmaReadsWaitGpu;
     split.WaitUntil(target, VideoCommon::DrainSite::MacroDmaWrites);
-    // GPU work after the wait for idle may have run meanwhile.
     for (size_t i = 0; i < page_count; ++i) {
         if (Tegra::Nx2IsGpuWritten(pages[i])) {
             return false;

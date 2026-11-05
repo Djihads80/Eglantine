@@ -144,7 +144,6 @@ void GpuSplit::Stop() {
     write_position = 0;
     last_writer_position = 0;
     last_sync_position = 0;
-    last_read_sync_position = 0;
     last_function_position = 0;
     writes.Reset();
     note_memory = nullptr;

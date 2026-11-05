@@ -18,8 +18,7 @@ public:
     enum class Effect : u8 {
         Unknown, ///< May write guest memory anywhere at once
         None,    ///< Writes no guest memory, or only the ranges noted with Write
-        Gpu,     ///< GPU work (draws, dispatches, copies): its results are only certain to be
-                 ///< visible to later reads once the guest synchronized after it
+        Gpu,     ///< Draws, dispatches and copies with destinations not known to the front
     };
 
     /// The effect of an entry that does both.
@@ -83,11 +82,10 @@ public:
         return 0;
     }
 
-    /// The position the back must pass before a read of [begin, end) sees what the guest may
-    /// rely on: every unknown write, the GPU work before the last synchronization (`last_sync`)
-    /// and the noted writes to the range.
-    [[nodiscard]] u64 ReadTarget(u64 begin, u64 end, u64 last_sync) const {
-        return (std::max)({unknown, (std::min)(gpu, last_sync), LastWriteTo(begin, end)});
+    /// The position the back must pass for every unlocalized writer and the noted writes to
+    /// [begin, end) to execute. Consumption does not imply completion of deferred fence writes.
+    [[nodiscard]] u64 ReadTarget(u64 begin, u64 end) const {
+        return (std::max)({unknown, gpu, LastWriteTo(begin, end)});
     }
 
     [[nodiscard]] u64 LastUnknown() const {

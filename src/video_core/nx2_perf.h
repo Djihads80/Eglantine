@@ -12,7 +12,8 @@
 
 #include "common/logging.h"
 
-// EXPERIMENT (not for nx2): GPU back-thread optimizations for Ocarina of Time, all on by default.
+// EXPERIMENT (not for nx2): GPU back-thread optimizations for Ocarina of Time.
+// split_overlap is quarantined; the other optimizations are on by default.
 // EDEN_NX2_PERF_OPT=0 turns every one off for the A/B; EDEN_NX2_PERF_OFF=<name>,... turns off
 // only those named (Opt below). EDEN_NX2_PERF_VERIFY=1 computes each optimized answer the old
 // way too, logs any difference and uses the old answer.
@@ -26,7 +27,7 @@ enum class Opt : unsigned {
     IndexRebind,       ///< Repeated vkCmdBindIndexBuffer skipped
     UsageTracker,      ///< UsageTracker::Track skips pages known to be used
     BankCheck,         ///< Native 64 KiB banks: per-frame set checked first
-    SplitOverlap,      ///< MME DMA reads wait only for the queued work they depend on
+    SplitOverlap,      ///< Quarantined: pending writes are not a proof of safe early MME reads
     FrontSleep,        ///< The split front sleeps instead of yielding while it waits
     SubmitBudget,      ///< 4096-draw native submission budget outside MoltenVK
     FragmentBarrier,   ///< FragmentBarrier deferred to the next draw that reads the pass
@@ -52,7 +53,8 @@ inline bool Enabled() {
 
 inline bool On(Opt opt) {
     static const unsigned off = [] {
-        unsigned mask = 0;
+        constexpr unsigned unsafe_split_overlap = 1U << static_cast<unsigned>(Opt::SplitOverlap);
+        unsigned mask = unsafe_split_overlap;
         if (const char* value = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD"); value && value[0] == '0') {
             mask |= 1U << static_cast<unsigned>(Opt::FramesAhead);
         }

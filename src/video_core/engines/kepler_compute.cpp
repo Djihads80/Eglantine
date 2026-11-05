@@ -1516,9 +1516,6 @@ void KeplerCompute::FrontNoteWrites(VideoCommon::GpuSplit& split, FrontState& fs
         split.NoteWrite(memory_manager,
                         (GPUVAddr{fs.registers[0x6c0] & 0x1ffffff} << 32) | fs.registers[0x6c1],
                         16);
-    } else if (method == 0x44) {
-        // WAIT_FOR_IDLE: the dispatches before it are done for the reads after it.
-        split.NoteEngineSync();
     }
 }
 

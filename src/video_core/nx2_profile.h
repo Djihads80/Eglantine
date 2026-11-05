@@ -135,7 +135,7 @@ enum class Counter : u32 {
     AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
     DmaReadsEarly,  ///< MME DMA reads without a drain (Maxwell3D::FrontDmaReadEarly)
     DmaReadsWaitUnknown, ///< Of those, waited for a write the front can't place
-    DmaReadsWaitSync,    ///< waited for GPU work before the last wait for idle
+    DmaReadsWaitGpu,     ///< waited for all queued GPU work with unknown destinations
     DmaReadsWaitWrite,   ///< waited for a noted write to the words' pages
 };
 
@@ -207,7 +207,7 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
-                        "{:.0f}, synced GPU work {:.0f}, writes to the words {:.0f})",
+                        "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
                         static_cast<double>(data.counters[8]) * 1e9 / window,
                         static_cast<double>(data.counters[9]) * 1e9 / window,
                         static_cast<double>(data.counters[10]) * 1e9 / window,

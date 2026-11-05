@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "video_core/nx2_perf.h"
 #include "video_core/split_write_tracker.h"
 
 namespace {
@@ -24,16 +25,15 @@ struct Model {
     };
     std::vector<Entry> entries;
 
-    // The last position the back must pass: unknown writes, GPU work at or before the last
-    // synchronization, and writes to [begin, end); entries it consumed don't count.
-    u64 Target(u64 begin, u64 end, u64 last_sync, u64 consumed) const {
+    // The last position the back must pass: unlocalized writes and writes to [begin, end).
+    u64 Target(u64 begin, u64 end, u64 consumed) const {
         u64 target = 0;
         for (const Entry& entry : entries) {
             if (entry.position <= consumed) {
                 continue;
             }
             const bool needed = entry.effect == Effect::Unknown ||
-                                (entry.effect == Effect::Gpu && entry.position <= last_sync) ||
+                                entry.effect == Effect::Gpu ||
                                 (entry.begin < end && begin < entry.end);
             if (needed) {
                 target = (std::max)(target, entry.position);
@@ -44,6 +44,11 @@ struct Model {
 };
 
 } // Anonymous namespace
+
+TEST_CASE("Split overlap stays disabled until asynchronous write ordering is proven",
+          "[video_core][split_writes][split_correctness]") {
+    CHECK_FALSE(VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap));
+}
 
 TEST_CASE("Split write tracker adds, overlaps and retires writes", "[video_core][split_writes]") {
     SplitWriteTracker tracker;
@@ -65,20 +70,17 @@ TEST_CASE("Split write tracker adds, overlaps and retires writes", "[video_core]
     CHECK(tracker.LastWriteTo(0x0, ~u64{0}) == 0);
 }
 
-TEST_CASE("Split write tracker waits for GPU work only up to the last sync",
+TEST_CASE("Split write tracker waits for every unlocalized writer",
           "[video_core][split_writes]") {
     SplitWriteTracker tracker;
     tracker.Entry(Effect::Gpu, 5);
     tracker.Entry(Effect::None, 6);
     tracker.Entry(Effect::Gpu, 9);
-    // No sync since the work: nothing to wait for.
-    CHECK(tracker.ReadTarget(0x1000, 0x1004, 0) == 0);
-    // A sync after the first draw only.
-    CHECK(tracker.ReadTarget(0x1000, 0x1004, 6) == 6);
-    // A sync after both.
-    CHECK(tracker.ReadTarget(0x1000, 0x1004, 12) == 9);
+    CHECK(tracker.ReadTarget(0x1000, 0x1004) == 9);
+    tracker.Entry(Effect::None, 12);
+    CHECK(tracker.ReadTarget(0x1000, 0x1004) == 9);
     tracker.Entry(Effect::Unknown, 14);
-    CHECK(tracker.ReadTarget(0x1000, 0x1004, 0) == 14);
+    CHECK(tracker.ReadTarget(0x1000, 0x1004) == 14);
 }
 
 TEST_CASE("Split write tracker collapses too many writes into an unknown one",
@@ -89,7 +91,41 @@ TEST_CASE("Split write tracker collapses too many writes into an unknown one",
         tracker.Write(i * 0x2000, i * 0x2000 + 0x1000, ++position);
     }
     CHECK(tracker.LastUnknown() == position);
-    CHECK(tracker.ReadTarget(0x100000000, 0x100001000, 0) == position);
+    CHECK(tracker.ReadTarget(0x100000000, 0x100001000) == position);
+}
+
+TEST_CASE("Split DMA read waits for a first CPU-side copy after the last sync",
+          "[video_core][split_writes][split_correctness]") {
+    SplitWriteTracker tracker;
+    constexpr u64 copy_position = 20;
+    constexpr u64 last_sync = 10;
+    tracker.Entry(Effect::None, last_sync);
+    tracker.Entry(Effect::Gpu, copy_position);
+    u32 guest_word = 0;
+    const u32 copied_word = 0x12345678;
+    const bool page_gpu_written = false;
+    const u64 target = tracker.ReadTarget(0x1000, 0x1004);
+    if (target >= copy_position) {
+        guest_word = copied_word;
+    }
+    REQUIRE_FALSE(page_gpu_written);
+    CHECK(target >= copy_position);
+    CHECK(guest_word == copied_word);
+}
+
+TEST_CASE("Split DMA page checks cannot exclude a queued first GPU writer",
+          "[video_core][split_writes][split_correctness]") {
+    SplitWriteTracker tracker;
+    constexpr u64 dispatch_position = 30;
+    tracker.Entry(Effect::Gpu, dispatch_position);
+    bool page_gpu_written = false;
+    const bool marked_before_wait = page_gpu_written;
+    const u64 target = tracker.ReadTarget(0x8000, 0x8004);
+    if (target >= dispatch_position) {
+        page_gpu_written = true;
+    }
+    REQUIRE_FALSE(marked_before_wait);
+    CHECK(page_gpu_written);
 }
 
 TEST_CASE("Split write tracker matches a model of every queued entry",
@@ -100,7 +136,6 @@ TEST_CASE("Split write tracker matches a model of every queued entry",
         Model model;
         u64 position = 0;
         u64 consumed = 0;
-        u64 last_sync = 0;
         for (int step = 0; step < 400; ++step) {
             const u64 roll = rng() % 100;
             if (roll < 55) {
@@ -120,7 +155,8 @@ TEST_CASE("Split write tracker matches a model of every queued entry",
                 }
                 model.entries.push_back({position, effect, begin, end});
             } else if (roll < 65) {
-                last_sync = position;
+                tracker.Entry(Effect::None, ++position);
+                model.entries.push_back({position, Effect::None, 0, 0});
             } else if (roll < 80) {
                 // The back moves on.
                 consumed = (std::min)(position, consumed + rng() % 32);
@@ -128,8 +164,8 @@ TEST_CASE("Split write tracker matches a model of every queued entry",
             } else {
                 const u64 begin = (rng() % 72) * 0x1000 + rng() % 0x1000;
                 const u64 end = begin + 4 + rng() % 0x2000;
-                const u64 expected = model.Target(begin, end, last_sync, consumed);
-                const u64 target = tracker.ReadTarget(begin, end, last_sync);
+                const u64 expected = model.Target(begin, end, consumed);
+                const u64 target = tracker.ReadTarget(begin, end);
                 // Never earlier than needed (the read would miss a write)...
                 REQUIRE((target <= consumed ? 0 : target) >= expected);
                 // ...never past the last entry, and no wait once the back ran everything.

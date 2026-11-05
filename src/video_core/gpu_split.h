@@ -190,18 +190,10 @@ public:
     /// commands after it are fetched.
     void NoteSync() {
         last_sync_position = write_position;
-        last_read_sync_position = write_position;
     }
     /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
     /// of it was still queued.
     bool WaitForSync();
-    /// An engine's wait for idle (3D WAIT_FOR_IDLE, TRIGGER_WFI) was just sent: the GPU work
-    /// before it is visible to the front's reads after it (ReadTarget). Command list fetches
-    /// keep to NoteSync.
-    void NoteEngineSync() {
-        last_read_sync_position = write_position;
-    }
-
     /// The entry just sent also writes [address, address + size) of `memory`, noted by device
     /// page (other mappings may alias it, and the caches keep state per page).
     void NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size);
@@ -212,16 +204,13 @@ public:
     /// Waits for the queued functions (GPU memory maps among them) before the front translates
     /// addresses, then drops the pending writes the back has run. Returns the back's position.
     u64 SettleWrites();
-    /// Ring position the back must pass before a read of the device range [begin, end) on the
-    /// front sees what the guest may rely on (SplitWriteTracker::ReadTarget).
+    /// Ring position the back must pass to execute possible writers of [begin, end).
+    /// Deferred fence writes can still be pending afterwards.
     [[nodiscard]] u64 ReadTarget(u64 begin, u64 end) const {
-        return writes.ReadTarget(begin, end, last_read_sync_position);
+        return writes.ReadTarget(begin, end);
     }
     [[nodiscard]] const SplitWriteTracker& Writes() const {
         return writes;
-    }
-    [[nodiscard]] u64 LastReadSync() const {
-        return last_read_sync_position;
     }
     /// Waits until the back consumed `position` (not what came after). Returns whether it had
     /// not yet.
@@ -302,7 +291,6 @@ private:
     u64 write_position{};
     u64 last_writer_position{};
     u64 last_sync_position{};
-    u64 last_read_sync_position{};
     u64 last_function_position{};
     SplitWriteTracker writes;
     /// NoteWrite's last translation: memory manager, GPU page, device page, the function
