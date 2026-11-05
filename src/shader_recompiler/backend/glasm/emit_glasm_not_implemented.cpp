@@ -113,4 +113,9 @@ void EmitIsbeWriteMapU32(EmitContext& ctx) {
     NotImplemented();
 }
 
+void EmitTensorMulAdd(EmitContext& ctx, IR::Inst& inst, const IR::Value& a, const IR::Value& b,
+                      const IR::Value& c) {
+    NotImplemented();
+}
+
 } // namespace Shader::Backend::GLASM

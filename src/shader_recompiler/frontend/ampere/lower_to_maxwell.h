@@ -48,6 +48,9 @@ struct LoweringOptions {
     bool geometry{};
     /// Lower matrix multiplies (HMMA) too; see LowerToMaxwellWith.
     bool tensor{};
+    /// With `tensor`: lower each HMMA to one call of a shared software helper instead of the
+    /// inline expansion (much smaller programs; see the HMMA case).
+    bool compact_tensor{};
     u64 native_code_address{};
 };
 
@@ -197,7 +200,8 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
 // native bytes. Scheduling/control words are added by the environment adapter.
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms,
                                           LoweringOptions options = {}) {
-    const bool geometry = options.geometry, tensor = options.tensor;
+    const bool geometry = options.geometry, tensor = options.tensor,
+               compact_tensor = options.compact_tensor;
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
     const u32 high_uniform_base = 216 - high_uniforms;
@@ -1574,9 +1578,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // minutes to compile, so it is only lowered when the caller asks (`tensor`: a game
             // DLSS evaluation the game's own network may draw, or Donkey Kong Bananza's programs),
             // or with EDEN_NX2_TENSOR set (the QMD still completes when rejected).
-            // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C.
+            // EDEN_NX2_TENSOR=stub keeps the rest of the program but makes every HMMA D = C, and
+            // EDEN_NX2_TENSOR=compact forces the compact form below.
             static const char* const forced_mode = std::getenv("EDEN_NX2_TENSOR");
-            const char* const mode = forced_mode ? forced_mode : tensor ? "1" : nullptr;
+            const char* const mode = forced_mode      ? forced_mode
+                                     : !tensor        ? nullptr
+                                     : compact_tensor ? "compact"
+                                                      : "1";
             if (!mode) return fail(index, "native matrix multiply (set EDEN_NX2_TENSOR to emulate)");
             const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
             const u32 shape = insn.words[2] & ~0xffU;
@@ -1586,6 +1594,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 dest + 2 > 246 || (a & (a_count - 1)) || a + a_count > 246 || (b & (b_count - 1)) ||
                 b + b_count > 246 || (c != 255 && ((c & 1) || c + 2 > 246)))
                 return fail(index, "native matrix multiply mode");
+            if (std::string_view{mode} == "compact" && native_predicate == 7) {
+                // TENSOR_MUL_ADD, not a Maxwell instruction: the SPIR-V backend calls one shared
+                // loop per program (same products, f32 sums and half rounding after every eight
+                // products as the expansion below). Bit 48 marks it, bit 49 selects K = 8. The
+                // helper shuffles across the warp, so a guarded HMMA keeps the expansion.
+                emit(0x5d30000000000000ULL | predicate | dest | (u64{a} << 8) | (u64{b} << 20) |
+                     (u64{c} << 39) | (u64{1} << 48) | (u64{depth == 8} << 49));
+                break;
+            }
             if (std::string_view{mode} == "stub") {
                 for (u32 row = 0; row < 2; ++row) {
                     if (c == 255) mov_imm(static_cast<u32>(dest) + row, 0);

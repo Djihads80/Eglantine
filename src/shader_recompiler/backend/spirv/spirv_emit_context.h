@@ -365,6 +365,7 @@ public:
     Id sample_mask{};
     Id frag_depth{};
 
+    std::array<Id, 2> software_matrix_functions{};
     std::vector<Id> interfaces;
     std::vector<std::pair<u32, spv::Op>> opcode_rewrites;
 
