@@ -38,6 +38,7 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -130,6 +131,7 @@ struct GPU::Impl {
         std::unique_lock lck{sync_request_mutex};
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
+        has_sync_requests.store(true, std::memory_order_release);
         return fence;
     }
 
@@ -151,8 +153,16 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
+        // Nx2Perf draw_preamble: the flag is set under the mutex with every enqueue and cleared
+        // under it only once the list is empty, so an empty list skips the mutex.
+        static const bool fast_check =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DrawPreamble);
+        if (fast_check && !has_sync_requests.load(std::memory_order_acquire)) {
+            return;
+        }
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty()) {
+            DEBUG_ASSERT(has_sync_requests.load(std::memory_order_relaxed));
             auto request = std::move(sync_requests.front());
             sync_requests.pop_front();
             sync_request_mutex.unlock();
@@ -161,6 +171,7 @@ struct GPU::Impl {
             sync_request_mutex.lock();
             sync_request_cv.notify_all();
         }
+        has_sync_requests.store(false, std::memory_order_relaxed);
     }
 
     [[nodiscard]] u64 GetTicks() const {
@@ -358,6 +369,7 @@ struct GPU::Impl {
     std::condition_variable sync_cv;
 
     std::list<std::function<void()>> sync_requests;
+    std::atomic<bool> has_sync_requests{};
     std::atomic<u64> current_sync_fence{};
     std::atomic<u64> present_ns{};
     u64 last_sync_fence{};

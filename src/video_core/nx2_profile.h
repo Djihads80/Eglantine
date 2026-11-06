@@ -58,6 +58,10 @@ enum class Zone : u32 {
     SplitWait,    ///< Split GPU thread: the back waits for work
     SignalOrdering, ///< SignalOrdering: mostly waiting for the buffer cache lock
     ListCopyWait,   ///< Nx2ReadListCopy: the host GPU finishing a command list copy
+    BindUniformBank,   ///< Of bind stage buffers: native 64 KiB bank page diffing
+    BindUniformStream, ///< Of bind stage buffers: uniforms streamed (small or misaligned)
+    BindUniformCached, ///< Of bind stage buffers: cached uniforms (touch, sync, usage, bind)
+    BindStorage,       ///< Of bind stage buffers: storage buffers (touch, sync, usage, bind)
     Count,
 };
 
@@ -70,6 +74,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "signal ordering",
     "list copy wait",
+    "bind uniform bank", "bind uniform stream", "bind uniform cached", "bind storage",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
@@ -97,7 +102,7 @@ struct MacroCounts {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 28> counters{}; ///< See Counter
+    std::array<u64, 30> counters{}; ///< See Counter
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -175,6 +180,8 @@ enum class Counter : u32 {
     DownloadAge3600,
     DownloadAgeOlder,
     DownloadAgeNone,
+    BindMemoHits,        ///< Nx2Perf bind_memo: binds that skipped touch, sync and usage
+    BindMemoMisses,      ///< Nx2Perf bind_memo: binds that took the full path
 };
 
 /// The fencing thread's buffer downloads (BufferCache::PopAsyncBuffers): logged by the thread
@@ -338,6 +345,11 @@ inline void Report(const char* thread_name = "GPU thread") {
                             static_cast<double>(lock_ns) * 1000.0 / window,
                             static_cast<double>(pops) * 1e9 / window,
                             static_cast<double>(written) * 1e9 / 1024.0 / window);
+    }
+    if (data.counters[static_cast<size_t>(Counter::BindMemoHits)] != 0 || data.counters[static_cast<size_t>(Counter::BindMemoMisses)] != 0) {
+        line += fmt::format(" | bind memo {:.0f} hits, {:.0f} misses",
+                            static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoHits)]) * 1e9 / window,
+                            static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoMisses)]) * 1e9 / window);
     }
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {

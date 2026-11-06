@@ -529,6 +529,26 @@ public:
     u64 last_synced_draw_ticket = 0;
     u32 last_synced_count = 0;
     std::array<LastSyncedRange, 8> last_synced_ranges{};
+    bool last_sync_deduped = false; ///< The last SynchronizeBuffer returned on last_synced_ranges
+
+    /// Nx2Perf bind_memo: the last full bind of each non-written uniform and storage buffer. A
+    /// bind of the same range with the same tracker epochs, scheduler tick and frame skips the
+    /// touch, sync and usage mark: the range was clean after the sync and nothing marked it since.
+    struct BindMemo {
+        const void* channel{};
+        BufferId buffer_id{};
+        DAddr device_addr{};
+        u32 size{};
+        bool valid{};
+        bool usage_marked{};
+        u64 cpu_epoch{};
+        u64 gpu_epoch{};
+        u64 tick{};
+        u64 frame{};
+    };
+    std::array<std::array<BindMemo, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_bind_memo{};
+    std::array<std::array<BindMemo, NUM_STORAGE_BUFFERS>, NUM_STAGES> storage_bind_memo{};
+    u64 bind_memo_mismatches = 0;
 
     static constexpr size_t ResolvedStorageAddrCacheSize = 4096;
     struct ResolvedStorageAddrCacheEntry {
@@ -663,6 +683,14 @@ private:
     }
 
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
+
+    [[nodiscard]] static bool BindMemoEnabled();
+    [[nodiscard]] bool BindMemoHit(const BindMemo& memo, Buffer& buffer, BufferId buffer_id,
+                                   DAddr device_addr, u32 size, u32 offset, const char* kind,
+                                   size_t stage, u32 index);
+    void BindMemoNote(BindMemo& memo, BufferId buffer_id, DAddr device_addr, u32 size,
+                      u64 cpu_epoch_before);
+    void BindMemoNoteUsage(BindMemo& memo);
 
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);

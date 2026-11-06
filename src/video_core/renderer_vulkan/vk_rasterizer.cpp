@@ -532,8 +532,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
         }
     };
+    const bool diag_active = VideoCommon::Nx2Diag::Active();
     SCOPE_EXIT {
-        if (VideoCommon::Nx2Diag::Active()) {
+        if (diag_active) {
             DiagRecordDraw(*maxwell3d, *gpu_memory, diag_outcome, mesh_draw);
         }
     };
@@ -606,7 +607,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     // EDEN_NX2_DIAG_SAMPLES: count the samples this draw passes while a draw list is captured. The
     // game's own occlusion counting is left alone (one occlusion query can be active at a time).
     int diag_query = -1;
-    if (VideoCommon::Nx2Diag::SamplesEnabled() && g_diag_pool != nullptr &&
+    if (diag_active && VideoCommon::Nx2Diag::SamplesEnabled() && g_diag_pool != nullptr &&
         !maxwell3d->regs.zpass_pixel_count_enable) {
         diag_query = VideoCommon::Nx2Diag::Diagnostics::Get().NextQuery();
     }
@@ -1934,9 +1935,38 @@ void RasterizerVulkan::FlushWork() {
     static constexpr u32 CHECK_MASK = 31;
 #endif // __ANDROID__
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
+#ifndef __ANDROID__
+    // Nx2Perf dispatch_batch: Ampere draws dispatch every 128 draws. EDEN_NX2_DISPATCH_MASK=<2^k-1>
+    // picks another mask for the A/B. Full chunks still dispatch on their own.
+    static constexpr u32 BATCH_CHECK_MASK = 127;
+    static_assert(DRAWS_TO_DISPATCH % (BATCH_CHECK_MASK + 1) == 0);
+    static const u32 batch_check_mask = [] {
+        if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DispatchBatch)) {
+            return CHECK_MASK;
+        }
+        const char* value = std::getenv("EDEN_NX2_DISPATCH_MASK");
+        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+            return BATCH_CHECK_MASK;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (*end != '\0' || parsed >= DRAWS_TO_DISPATCH || ((parsed + 1) & parsed) != 0) {
+            LOG_WARNING(Render_Vulkan, "Nx2Perf dispatch_batch: ignoring EDEN_NX2_DISPATCH_MASK={}",
+                        value);
+            return BATCH_CHECK_MASK;
+        }
+        return static_cast<u32>(parsed);
+    }();
+    const u32 check_mask =
+        Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ? batch_check_mask : CHECK_MASK;
+    if ((++draw_counter & check_mask) != 0) {
+        return;
+    }
+#else
     if ((++draw_counter & CHECK_MASK) != 0) {
         return;
     }
+#endif // __ANDROID__
     // Keep the host GPU working while native commands are still being recorded.
     // The 128-draw native budget is tuned for MoltenVK; desktop Vulkan takes the legacy 4096 (#161).
     static const u32 native_flush_draws = [] {

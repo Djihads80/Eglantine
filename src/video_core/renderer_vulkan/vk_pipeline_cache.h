@@ -193,6 +193,12 @@ private:
     };
     std::array<ComputeFastCacheEntry, ComputeFastCacheSize> compute_fast_cache{};
 
+    /// Nx2Perf pipeline_fast_cache: filled only by the slow path, validated by the full key and
+    /// cleared whenever pipelines are evicted.
+    static constexpr size_t GraphicsFastCacheSize = 256;
+    std::array<GraphicsPipeline*, GraphicsFastCacheSize> graphics_fast_cache{};
+    u64 graphics_fast_mismatches{};
+
     ShaderPools main_pools;
 
     Shader::Profile profile;
