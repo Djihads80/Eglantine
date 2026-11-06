@@ -74,6 +74,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDesktopServices>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -82,12 +83,14 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QInputDialog>
+#include <QLabel>
 #include <QMimeData>
 #include <QPalette>
 #include <QProgressDialog>
 #include <QScreen>
 #include <QShortcut>
 #include <QStatusBar>
+#include <QVBoxLayout>
 #include <QtConcurrentRun>
 
 #ifdef __APPLE__
@@ -544,7 +547,9 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         }
 
         if (!lp.filepath.empty()) {
-            BootGame(QString::fromStdString(lp.filepath), ApplicationAppletParameters());
+            // Frontend launches must be able to use saved settings without an interactive prompt.
+            BootGame(QString::fromStdString(lp.filepath), ApplicationAppletParameters(),
+                     StartGameType::Normal, false);
         } else if (lp.launch_setup) {
             LaunchFirmwareApplet(u64(Service::AM::AppletProgramId::Starter), std::nullopt);
         } else if (lp.launch_qlaunch) {
@@ -1903,7 +1908,7 @@ bool MainWindow::SelectAndSetCurrentUser(
 }
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
-                          StartGameType type) {
+                          StartGameType type, bool allow_recommended_settings_prompt) {
     if (nup_running && filename.toStdString() == nup_source_path) {
         QMessageBox::information(this, tr("Conversion in Progress"),
                                  tr("This game cannot be started while its dump is being "
@@ -1956,6 +1961,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     const auto loader =
         Loader::GetLoader(*QtCommon::system, v_file, params.program_id, params.program_index);
 
+    std::optional<QtConfig> per_game_config;
     if (loader != nullptr && loader->ReadProgramId(title_id) == Loader::ResultStatus::Success &&
         type == StartGameType::Normal) {
         // Load per game settings
@@ -1964,29 +1970,59 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         const auto config_file_name = title_id == 0
                                           ? Common::FS::PathToUTF8String(file_path.filename())
                                           : fmt::format("{:016X}", title_id);
-        QtConfig per_game_config(config_file_name, Config::ConfigType::PerGameConfig);
+        per_game_config.emplace(config_file_name, Config::ConfigType::PerGameConfig);
         QtCommon::system->HIDCore().ReloadInputDevices();
         QtCommon::system->ApplySettings();
     }
 
-    if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+    bool use_recommended_mkw_settings = false;
+    bool save_recommended_mkw_settings = false;
+    if (allow_recommended_settings_prompt && !UISettings::values.skip_mkw_settings_prompt &&
+        title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
         asked_recommended_mkw_settings = true;
-        use_recommended_mkw_settings =
-            QMessageBox::question(
-                this, tr("Recommended Mario Kart World settings"),
-                tr("Use the recommended settings for Mario Kart World?\n\n"
-                   "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-                   "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
-                   "FXAA.\n\n"
-                   "They apply to Mario Kart World until Eglantine is closed. Your saved settings "
-                   "are not changed."),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Recommended Mario Kart World settings"));
+        QVBoxLayout layout(&dialog);
+        QLabel description(
+            tr("Use the recommended settings for Mario Kart World?\n\n"
+               "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+               "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
+               "Choose Yes to use them for this session. Remember these settings saves them for "
+               "Mario Kart World. Skipping this prompt uses your saved settings on future launches."),
+            &dialog);
+        description.setWordWrap(true);
+        layout.addWidget(&description);
+
+        QCheckBox remember_settings(tr("Remember these settings"), &dialog);
+        remember_settings.setEnabled(per_game_config.has_value());
+        remember_settings.setToolTip(
+            tr("Choose Yes to save the recommended settings in this game's configuration."));
+        layout.addWidget(&remember_settings);
+        QCheckBox skip_prompt(tr("Skip this prompt next time"), &dialog);
+        layout.addWidget(&skip_prompt);
+
+        QDialogButtonBox buttons(QDialogButtonBox::Yes | QDialogButtonBox::No, &dialog);
+        buttons.button(QDialogButtonBox::No)->setDefault(true);
+        connect(buttons.button(QDialogButtonBox::Yes), &QPushButton::clicked, &dialog,
+                [&dialog] { dialog.done(QDialog::Accepted); });
+        connect(buttons.button(QDialogButtonBox::No), &QPushButton::clicked, &dialog,
+                &QDialog::reject);
+        layout.addWidget(&buttons);
+
+        use_recommended_mkw_settings = dialog.exec() == QDialog::Accepted;
+        save_recommended_mkw_settings =
+            use_recommended_mkw_settings && remember_settings.isChecked();
+        UISettings::values.skip_mkw_settings_prompt = skip_prompt.isChecked();
+        config->SaveAllValues();
         LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
     }
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
                                           use_recommended_mkw_settings)) {
         QtCommon::system->ApplySettings();
         Settings::UpdateGPUAccuracy();
+        if (save_recommended_mkw_settings && per_game_config) {
+            per_game_config->SaveAllValues();
+        }
         LOG_INFO(Config, "Applied recommended MKW settings after per-game configuration");
     }
     Settings::LogSettings();
