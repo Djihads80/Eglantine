@@ -1379,7 +1379,8 @@ VideoCommon::GpuSplit::Effect ClassEffect(u8 cls) {
 
 // WriterSetExec with PERF_VERIFY: the effect the old code gave an executable method's entry
 // (old) against the new one (now). The only expected difference is a draws-only method whose
-// proven draw (FrontDrawEffect) is no longer combined with the method's own Gpu class.
+// proven draw (FrontDrawEffect) is no longer combined with the method's own Gpu class. Returns
+// the old effect.
 VideoCommon::GpuSplit::Effect VerifyWriterSetExec(u32 method, VideoCommon::GpuSplit::Effect old,
                                                   VideoCommon::GpuSplit::Effect now,
                                                   bool demoted) {
@@ -1396,7 +1397,8 @@ VideoCommon::GpuSplit::Effect VerifyWriterSetExec(u32 method, VideoCommon::GpuSp
                      demotions.load(std::memory_order_relaxed),
                      differences.load(std::memory_order_relaxed));
         }
-        return now;
+        // Counted only: a verify run keeps the old effect, so it waits as the old code did.
+        return old;
     }
     if (differences.fetch_add(1, std::memory_order_relaxed) < 64) {
         LOG_ERROR(HW_GPU, "Nx2Perf writer_set_exec: method {:#x} effect {}, old {} (demoted {})",
