@@ -40,8 +40,8 @@ struct LoweredProgram {
     u32 high_uniform_registers{};
     u32 error_offset{};
     std::string_view error;
-    /// Opcodes with bits 32-39 at or above the shadow boundary in a form the shadow check skips
-    /// (an immediate, or a register it doesn't know, as ISBEWR's data was): diagnostics only.
+    /// Opcodes with bits 32-39 at or above the shadow boundary in a form the shadow check skips,
+    /// where they may name a register it doesn't know (as ISBEWR's data did): diagnostics only.
     std::vector<u32> unchecked_high_operands;
 
     explicit operator bool() const { return error.empty(); }
@@ -280,8 +280,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
-        if (!requires_shadow && opcode != 0x81c && insn.Bits(32, 8) >= shadow_boundary &&
-            insn.Bits(32, 8) < 255 &&
+        // Not the ALU opcodes (low nine bits below 0x110): only their register form, checked
+        // above, has a register there; the others an immediate, a constant buffer or a uniform
+        // register. Nor branches and calls (0x140-0x15f): an offset.
+        const u32 opcode_class = opcode & 0x1ff;
+        if (!requires_shadow && opcode_class >= 0x110 && (opcode_class & 0x1e0) != 0x140 &&
+            insn.Bits(32, 8) >= shadow_boundary && insn.Bits(32, 8) < 255 &&
             std::ranges::find(result.unchecked_high_operands, opcode) ==
                 result.unchecked_high_operands.end()) {
             result.unchecked_high_operands.push_back(opcode);

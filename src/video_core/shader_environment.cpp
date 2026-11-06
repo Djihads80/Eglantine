@@ -493,8 +493,8 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
                  .tensor = native_tensor,
                  .native_code_address = program_base + native_header_size});
     // Once per opcode: bits 32-39 name a register at or above the lowering's scratch and mirror
-    // boundary in a form the shadow check skips. Harmless for an immediate; a register there reads
-    // the lowering's own values (ISBEWR's data did: NaN attributes).
+    // boundary in a form the shadow check skips (ALU immediates and branch offsets aren't noted).
+    // A register there reads the lowering's own values (ISBEWR's data did: NaN attributes).
     if (lowered && !lowered.unchecked_high_operands.empty()) {
         static std::mutex mutex;
         static std::unordered_set<u32> logged;
