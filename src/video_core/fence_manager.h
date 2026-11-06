@@ -25,6 +25,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -132,6 +133,16 @@ public:
             return;
         }
         syncpoint_manager.IncrementGuest(value);
+        if (Nx2Perf::LandedSyncpoints()) {
+            // The host value rises on the fencing thread, after the downloads, query results and
+            // operations of every fence before it: "all recorded so far is in guest memory".
+            // The queued operation keeps SkipEmptyFence from dropping the fence. A deferred
+            // flush (this fence's or an earlier one's) is submitted now so landing isn't held.
+            SyncOperation([this, value] { syncpoint_manager.IncrementHost(value); });
+            SignalFence([] {});
+            SubmitDeferred();
+            return;
+        }
         std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
         SignalFence(std::move(func));
     }

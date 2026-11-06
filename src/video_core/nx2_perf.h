@@ -89,6 +89,13 @@ enum class Opt : unsigned {
     /// Guest CPU cores and HostTiming run on the non-V-Cache CCD; the GPU threads keep the
     /// V-Cache CCD (asymmetric L3 with V-Cache pinning only)
     GuestCcd,
+    /// The host syncpoint value rises only once everything recorded before the increment
+    /// (downloads, query results, fence operations) has landed in guest memory; vi2's early
+    /// returns on the frames-ahead path wait for the previous frame's landed value
+    LandedPrevAlways,
+    /// With PresentOneAhead: a present that skips this frame's wait first waits for the
+    /// previous frame's landed (host) syncpoint value
+    OneAheadLanded,
     Count,
 };
 
@@ -113,6 +120,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "writer_set_exec",
     "exact_noted_writes",
     "guest_ccd",
+    "landed_prev_always", "one_ahead_landed",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -120,7 +128,9 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemo) == 36 &&
               static_cast<unsigned>(Opt::WriterSetExec) == 45 &&
               static_cast<unsigned>(Opt::ExactNotedWrites) == 46 &&
-              static_cast<unsigned>(Opt::GuestCcd) == 47);
+              static_cast<unsigned>(Opt::GuestCcd) == 47 &&
+              static_cast<unsigned>(Opt::LandedPrevAlways) == 48 &&
+              static_cast<unsigned>(Opt::OneAheadLanded) == 49);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -144,7 +154,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
-                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd}) {
+                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd,
+                          Opt::LandedPrevAlways, Opt::OneAheadLanded}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -158,7 +169,7 @@ inline constexpr u64 DefaultOffMask() {
 /// guest rewrites constants the back has not read yet: incessant brightness flashes in play);
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
-/// exact_noted_writes, guest_ccd (not measured yet).
+/// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -166,13 +177,16 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
-                                  Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd);
+                                  Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
+                                  Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
 static_assert(IsOff(always_off, 45) && IsOff(DefaultOffMask(), 45));
 static_assert(IsOff(DefaultOffMask(), 36));
 static_assert(!IsOff(DefaultOffMask(), 0));
+static_assert(IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48) && IsOff(always_off, 49) &&
+              IsOff(DefaultOffMask(), 49));
 static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
@@ -245,6 +259,15 @@ inline bool Verify() {
         return value != nullptr && value[0] == '1';
     }();
     return verify;
+}
+
+/// landed_prev_always / one_ahead_landed: the host syncpoint value rises on the fencing thread,
+/// after everything recorded before it has landed. Also under EDEN_NX2_PERF_VERIFY, so vi2 can
+/// report presents that return before the previous frame landed.
+inline bool LandedSyncpoints() {
+    static const bool landed =
+        On(Opt::LandedPrevAlways) || On(Opt::OneAheadLanded) || Verify();
+    return landed;
 }
 
 } // namespace VideoCommon::Nx2Perf

@@ -31,7 +31,9 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::PipelineKeepPreloaded) ||
                                   i == Index(Opt::WriterSetExec) ||
                                   i == Index(Opt::ExactNotedWrites) ||
-                                  i == Index(Opt::GuestCcd);
+                                  i == Index(Opt::GuestCcd) ||
+                                  i == Index(Opt::LandedPrevAlways) ||
+                                  i == Index(Opt::OneAheadLanded);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -44,6 +46,15 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ExactNotedWrites)));
     REQUIRE(ParseOffMask(false, "exact_noted_writes", "", false) ==
             (always_off & ~Bit(Opt::ExactNotedWrites)));
+}
+
+TEST_CASE("Nx2Perf ON overrides always_off for the landed switches", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::LandedPrevAlways)] == "landed_prev_always");
+    REQUIRE(opt_names[Index(Opt::OneAheadLanded)] == "one_ahead_landed");
+    REQUIRE(ParseOffMask(false, "present_one_ahead,one_ahead_landed", "", false) ==
+            (always_off & ~Bit(Opt::PresentOneAhead) & ~Bit(Opt::OneAheadLanded)));
+    REQUIRE(ParseOffMask(false, "landed_prev_always", "", false) ==
+            (always_off & ~Bit(Opt::LandedPrevAlways)));
 }
 
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {
