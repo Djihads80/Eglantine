@@ -118,6 +118,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     ring = std::make_unique<u64[]>(RingWords);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
+    eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
 #ifdef ARCHITECTURE_x86_64
     // Front macros run compiled (macro_turing_jit.h) only.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
@@ -158,6 +159,7 @@ void GpuSplit::Stop() {
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
+    back_idle.store(false, std::memory_order_relaxed);
     front_waiting.store(false, std::memory_order_relaxed);
 }
 
@@ -505,6 +507,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
+            back_idle.store(true, std::memory_order_relaxed);
             // The front usually sends more within microseconds: spin briefly before sleeping.
             for (u32 spins = 0; spins < 8192 && available == read_position &&
                                 !hook_requested.load(std::memory_order_relaxed);
@@ -537,8 +540,10 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     }
                 }
                 back_waiting.store(false, std::memory_order_seq_cst);
+                back_idle.store(false, std::memory_order_relaxed);
                 continue;
             }
+            back_idle.store(false, std::memory_order_relaxed);
         }
         u64 last_store = read_position;
         // Before any entry runs, so a front that sees these entries consumed also sees this.

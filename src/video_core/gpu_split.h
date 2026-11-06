@@ -182,6 +182,9 @@ public:
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
         last_writer_position = write_position;
+        if (eager_publish) {
+            Publish(); // the fetch that waits for this entry usually follows within microseconds
+        }
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
     /// Returns whether any of it was still queued.
@@ -292,7 +295,11 @@ private:
     void Commit(size_t words, Effect effect) {
         write_position += words;
         writes.Entry(effect, write_position);
-        if (write_position - published_local >= publish_every) {
+        // EagerPublish: while the back has nothing to do, every entry goes out at once instead of
+        // waiting for the next 256-word batch (the back idled while the front filled it, then the
+        // front waited for the back to catch up).
+        if (write_position - published_local >= publish_every ||
+            (eager_publish && back_idle.load(std::memory_order_relaxed))) {
             Publish();
         }
     }
@@ -321,6 +328,7 @@ private:
 
     Core::System* system{};
     bool active{};
+    bool eager_publish{}; ///< Nx2Perf::Opt::EagerPublish, read once at Start
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -369,6 +377,7 @@ private:
     /// A position the front waits for (WaitFor): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
+    std::atomic<bool> back_idle{}; ///< The back is spinning or sleeping for work (EagerPublish)
     std::atomic<u32> wake{};
     /// The front sleeps in Backoff (#161: instead of yielding).
     alignas(128) std::atomic<bool> front_waiting{};
