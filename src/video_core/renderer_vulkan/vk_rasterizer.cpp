@@ -1411,18 +1411,36 @@ void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {
     // Below High GPU accuracy a fence runs its callback at once, so wait for an operation queued
     // behind the pending report writes instead. On the split's back the fence's submission may be
     // deferred, and the fencing thread would wait for this thread to submit it.
-    std::mutex wait_mutex;
-    std::condition_variable wait_cv;
-    bool written{};
-    fence_manager.SyncOperation([&] {
-        std::scoped_lock lock{wait_mutex};
-        written = true;
-        wait_cv.notify_all();
+    // The state outlives this call: if the wait gives up, the operation may still run later.
+    struct WaitState {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool written{};
+    };
+    const auto state = std::make_shared<WaitState>();
+    fence_manager.SyncOperation([state] {
+        std::scoped_lock lock{state->mutex};
+        state->written = true;
+        state->cv.notify_all();
     });
     fence_manager.SignalFence([] {});
     scheduler.FlushDeferred();
-    std::unique_lock lock{wait_mutex};
-    wait_cv.wait(lock, [&written] { return written; });
+    // Never hang the GPU thread on it: wait in slices, submitting deferred work again, and give up
+    // after 2 s (the read may then see older report values).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::unique_lock lock{state->mutex};
+    while (!state->cv.wait_for(lock, std::chrono::milliseconds(5),
+                               [&state] { return state->written; })) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            LOG_WARNING(Render_Vulkan, "FlushQueryResults: gave up waiting for query results "
+                                       "at {:#x} after 2 s",
+                        addr);
+            return;
+        }
+        lock.unlock();
+        scheduler.FlushDeferred();
+        lock.lock();
+    }
 }
 
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
