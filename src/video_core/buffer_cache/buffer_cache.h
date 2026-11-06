@@ -314,6 +314,10 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
             memory_tracker.MarkRegionAsPreflushable(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
             Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, true);
+            // The core consumed this trap too: ArmReadTraps arms only what the tracker counts as
+            // unarmed, so once the mark ages out the next GPU write must arm these pages again.
+            read_trapped_ranges.Subtract(
+                device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
         } else {
             if constexpr (USE_MEMORY_MAPS) {
                 cpu_read_ranges.Add(area->start_address, area->end_address - area->start_address);

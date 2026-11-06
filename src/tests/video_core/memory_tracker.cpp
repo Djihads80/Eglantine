@@ -604,6 +604,30 @@ TEST_CASE("Consumed read traps rearm on the next GPU write", "[cpu_readback][rea
     REQUIRE(traps.Arm(c, PAGE * 2));
 }
 
+TEST_CASE("A GPU write notifies the core of its unarmed pages only", "[cpu_readback][read_traps]") {
+    VideoCommon::ReadTrapTracker traps;
+    std::vector<Range> parts;
+    const auto collect = [&](u64 address, u64 size) { parts.emplace_back(address, size); };
+    REQUIRE(traps.Arm(c, PAGE * 4, collect));
+    REQUIRE(parts == std::vector<Range>{{c, PAGE * 4}});
+
+    // CPU reads consumed the second and the last page: a rewrite of the buffer arms just those.
+    traps.Subtract(c + PAGE, PAGE);
+    traps.Subtract(c + PAGE * 3, PAGE);
+    parts.clear();
+    REQUIRE(traps.Arm(c, PAGE * 4, collect));
+    REQUIRE(parts == std::vector<Range>{{c + PAGE, PAGE}, {c + PAGE * 3, PAGE}});
+
+    // A write that also reaches past the armed range notifies the new part.
+    traps.Subtract(c, PAGE);
+    parts.clear();
+    REQUIRE(traps.Arm(c, PAGE * 6, collect));
+    REQUIRE(parts == std::vector<Range>{{c, PAGE}, {c + PAGE * 4, PAGE * 2}});
+    parts.clear();
+    REQUIRE_FALSE(traps.Arm(c, PAGE * 6, collect));
+    REQUIRE(parts.empty());
+}
+
 TEST_CASE("MemoryTracker: a GPU rewrite needs a fresh CPU readback", "[cpu_readback]") {
     RasterizerInterface rasterizer;
     MemoryTracker tracker{rasterizer};
