@@ -159,6 +159,12 @@ public:
 
     size_t MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const;
 
+    /// Changes after every page table change (map, unmap, kind): an answer derived from the page
+    /// tables or the kind map at one serial holds until it changes.
+    [[nodiscard]] u64 MapSerial() const {
+        return map_serial.load(std::memory_order_acquire);
+    }
+
     bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {
         return gpu_addr < address_space_size;
     }

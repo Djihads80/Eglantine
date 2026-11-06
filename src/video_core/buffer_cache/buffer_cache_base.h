@@ -692,6 +692,22 @@ private:
     }
 
     Common::RangeSet<DAddr> read_trapped_ranges;
+
+    /// StorageBufferBinding's answers by address space, pointer, size word, alignment and access,
+    /// kept until the address space's page tables change (MemoryManager::MapSerial). Four ways
+    /// per set, most recent first. GPU thread only: the callers hold the cache's mutex.
+    struct StorageBindingMemo {
+        size_t owner;
+        GPUVAddr gpu_addr;
+        u64 next_qword;
+        u64 serial;
+        u32 alignment;
+        u32 flags;
+        Binding binding;
+    };
+    static constexpr size_t StorageBindingMemoSetBits = 9;
+    mutable std::array<std::array<StorageBindingMemo, 4>, size_t{1} << StorageBindingMemoSetBits>
+        storage_binding_memo{};
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 

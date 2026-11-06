@@ -2943,62 +2943,101 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         return NULL_BINDING;
     }
 
-    u32 size = [&]() {
-        const u32 memory_layout_size =
-            static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
-        if (table_pointer && !is_written && table_cap != 0) {
-            return (std::min)(memory_layout_size, table_cap);
-        }
-        // A native (Switch 2) compute program's pointer is bare: the word after it is another
-        // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
-        // one bound Fortune's Weave's DLSS input features to 266 bytes and dropped the rest.
-        // Only DLSS passes size from the mapping: doing it for every native dispatch binds up to
-        // 8 MiB per buffer and slows Hyrule Warriors' fights to a few fps, then hangs them.
-        if (native_pointer) {
-            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
-        }
-        const u64 next_qword = gpu_memory->Read<u64>(ssbo_addr + 8);
-        const u32 packed_size = static_cast<u32>(next_qword);
-        const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
-                                        packed_size != 0 &&
-                                        packed_size <= memory_layout_size;
-        if (next_qword_is_size) {
-            return packed_size;
-        }
-        return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+    // The binding of a pointer depends only on the address space's page tables and kind map, the
+    // size word after the pointer, the alignment and the access: keep it until the page tables
+    // change. Each miss takes the kind map's lock (GetMemoryLayoutSize) and walks the page tables
+    // for every storage buffer of every draw and dispatch. EDEN_NX2_SSBO_MEMO=0 turns it off.
+    static const bool memoize = [] {
+        const char* value = std::getenv("EDEN_NX2_SSBO_MEMO");
+        return value == nullptr || value[0] != '0';
     }();
-    if ((native_pointer || table_pointer) && size != 0) {
-        // Stop where the mapping or its device range does: the binding is one device range, and
-        // a written one isn't split into separate ranges without sparse sources.
-        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
-    }
-
-    // Alignment only applies to the offset of the buffer
+    const bool table_sized = table_pointer && !is_written && table_cap != 0;
+    const u64 next_qword =
+        native_pointer || table_sized ? 0 : gpu_memory->Read<u64>(ssbo_addr + 8);
     const u32 alignment = runtime.GetStorageBufferAlignment();
-    const GPUVAddr aligned_gpu_addr = Common::AlignDown(gpu_addr, alignment);
-    const u32 aligned_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + size;
-
-    const std::optional<DAddr> aligned_device_addr = gpu_memory->GpuToCpuAddress(aligned_gpu_addr);
-    if (!aligned_device_addr || size == 0) {
-        LOG_DEBUG(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
-        return NULL_BINDING;
+    const u32 flags =
+        (is_written ? 1U : 0U) | (native_pointer ? 2U : 0U) | (table_pointer ? 4U : 0U);
+    const size_t owner = gpu_memory->GetID() + 1;
+    // Before anything is read from the page tables: a change after it bumps the serial, so an
+    // answer built from tables in flux is never found again.
+    const u64 serial = gpu_memory->MapSerial();
+    auto& set = storage_binding_memo[((gpu_addr ^ next_qword ^ flags) * 0x9E3779B97F4A7C15ULL) >>
+                                     (64 - StorageBindingMemoSetBits)];
+    if (memoize) {
+        for (size_t way = 0; way < set.size(); ++way) {
+            const StorageBindingMemo& cached = set[way];
+            if (cached.owner == owner && cached.gpu_addr == gpu_addr &&
+                cached.next_qword == next_qword && cached.serial == serial &&
+                cached.alignment == alignment && cached.flags == flags) {
+                const Binding hit = cached.binding;
+                std::rotate(set.begin(), set.begin() + way, set.begin() + way + 1);
+                return hit;
+            }
+        }
     }
-    const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
-    ASSERT_MSG(device_addr, "Unaligned storage buffer address not found for cbuf index {}",
-               cbuf_index);
-    // The end address used for size calculation does not need to be aligned
-    const DAddr cpu_end = Common::AlignUp(*device_addr + size, Core::DEVICE_PAGESIZE);
 
-    u32 binding_size = static_cast<u32>(cpu_end - *aligned_device_addr);
-    if (is_written) {
-        binding_size = aligned_size;
+    const Binding binding = [&]() -> Binding {
+        u32 size = [&]() {
+            const u32 memory_layout_size =
+                static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
+            if (table_sized) {
+                return (std::min)(memory_layout_size, table_cap);
+            }
+            // A native (Switch 2) compute program's pointer is bare: the word after it is another
+            // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it
+            // as one bound Fortune's Weave's DLSS input features to 266 bytes and dropped the
+            // rest. Only DLSS passes size from the mapping: doing it for every native dispatch
+            // binds up to 8 MiB per buffer and slows Hyrule Warriors' fights to a few fps, then
+            // hangs them.
+            if (native_pointer) {
+                return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+            }
+            const u32 packed_size = static_cast<u32>(next_qword);
+            const bool next_qword_is_size = static_cast<u32>(next_qword >> 32) == 0 &&
+                                            packed_size != 0 &&
+                                            packed_size <= memory_layout_size;
+            if (next_qword_is_size) {
+                return packed_size;
+            }
+            return (std::min)(memory_layout_size, static_cast<u32>(8_MiB));
+        }();
+        if ((native_pointer || table_pointer) && size != 0) {
+            // Stop where the mapping or its device range does: the binding is one device range,
+            // and a written one isn't split into separate ranges without sparse sources.
+            size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
+        }
+
+        // Alignment only applies to the offset of the buffer
+        const GPUVAddr aligned_gpu_addr = Common::AlignDown(gpu_addr, alignment);
+        const u32 aligned_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + size;
+
+        const std::optional<DAddr> aligned_device_addr =
+            gpu_memory->GpuToCpuAddress(aligned_gpu_addr);
+        if (!aligned_device_addr || size == 0) {
+            LOG_DEBUG(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
+            return NULL_BINDING;
+        }
+        const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+        ASSERT_MSG(device_addr, "Unaligned storage buffer address not found for cbuf index {}",
+                   cbuf_index);
+        // The end address used for size calculation does not need to be aligned
+        const DAddr cpu_end = Common::AlignUp(*device_addr + size, Core::DEVICE_PAGESIZE);
+
+        u32 binding_size = static_cast<u32>(cpu_end - *aligned_device_addr);
+        if (is_written) {
+            binding_size = aligned_size;
+        }
+        return Binding{
+            .device_addr = *aligned_device_addr,
+            .gpu_addr = aligned_gpu_addr,
+            .size = binding_size,
+            .buffer_id = BufferId{},
+        };
+    }();
+    if (memoize) {
+        std::rotate(set.begin(), set.end() - 1, set.end());
+        set[0] = StorageBindingMemo{owner, gpu_addr, next_qword, serial, alignment, flags, binding};
     }
-    const Binding binding{
-        .device_addr = *aligned_device_addr,
-        .gpu_addr = aligned_gpu_addr,
-        .size = binding_size,
-        .buffer_id = BufferId{},
-    };
     return binding;
 }
 
