@@ -89,7 +89,12 @@ void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
 // Nx2AsyncReportsSettled), and the buffer cache never held GPU data on the page (the drained
 // read flushes only such data). `wait`: wait for those entries (a partial wait) instead of
 // giving up while the back still has them queued.
-std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr address, bool wait) {
+// `writer_set` (Opt::AcquireTriggerEarly with MacroReadWriterSet): wait for the writers only
+// (WriterReadTarget); the queued draws past them must still hold their proofs that they store
+// nothing, checked as in Maxwell3D::FrontDmaReadEarly. A failed check sets `*proof_changed`.
+std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr address, bool wait,
+                                          bool writer_set = false,
+                                          bool* proof_changed = nullptr) {
     using VideoCommon::DrainSite;
     auto& split = VideoCommon::GpuSplit::Get();
     // NoteWrite notes releases only with MacroReadEarly on: ReadTarget misses them otherwise.
@@ -117,7 +122,9 @@ std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr addres
     if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
         return std::nullopt;
     }
-    if (const u64 target = split.ReadTarget(page, page + 0x1000); split.ConsumedNow() < target) {
+    if (const u64 target = writer_set ? split.Writes().WriterReadTarget(page, page + 0x1000)
+                                      : split.ReadTarget(page, page + 0x1000);
+        split.ConsumedNow() < target) {
         if (!wait) {
             split.Publish();
             return std::nullopt;
@@ -125,6 +132,19 @@ std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr addres
         split.WaitUntil(target, DrainSite::AcquireEarly);
     }
     const u64 consumed = split.ConsumedNow();
+    if (writer_set && split.Writes().LastGpu() > consumed) {
+        const u64 epoch = g_nx2_code_epoch.load(std::memory_order_acquire);
+        if (!split.Writes().DrawsValid(consumed, epoch) ||
+            split.Writes().AnyPendingWrite(consumed, split.Writes().LastGpu(),
+                                           [](u64 begin, u64 end) {
+                                               return Nx2IsProvenCode(begin, end - begin);
+                                           })) {
+            if (proof_changed) {
+                *proof_changed = true;
+            }
+            return std::nullopt;
+        }
+    }
     // The entries just run may have written the page through the buffer cache.
     if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
         return std::nullopt;
@@ -147,10 +167,56 @@ void VerifyAcquireWord(const char* where, const Puller::PendingAcquire& acquire,
     if (count <= 64) {
         LOG_ERROR(HW_GPU,
                   "Nx2Perf acquire: {} of semaphore {:#x} (op {}, value {:#x}): word {:#x} "
-                  "without the drain, {:#x} after it; decision {} ({} mismatches)",
+                  "without the drain, {:#x} after it; decision {} ({}, {} mismatches)",
                   where, acquire.address, acquire.operation, acquire.value, early, drained,
                   acquire.Matches(early) == acquire.Matches(drained) ? "same" : "DIFFERS",
-                  count);
+                  acquire.Matches(early) ? "met early" : "not met early", count);
+    }
+}
+
+// EDEN_NX2_PERF_VERIFY with Opt::AcquireTriggerEarly: the early decision against the drained
+// one. Only "met early, NOT met drained" is an error; an unmet early word only costs the drain.
+void VerifyTriggerEarly(const Puller::PendingAcquire& acquire, std::optional<u32> early,
+                        bool proof_changed, u32 drained) {
+    static std::atomic<u64> checks{};
+    static std::atomic<u64> met_early{};
+    static std::atomic<u64> errors{};
+    static std::atomic<u64> not_met_early{};
+    static std::atomic<u64> not_met_early_met_drained{};
+    static std::atomic<u64> no_answer{};
+    static std::atomic<u64> proofs{};
+    if (!early) {
+        (proof_changed ? proofs : no_answer).fetch_add(1, std::memory_order_relaxed);
+    } else if (acquire.Matches(*early)) {
+        met_early.fetch_add(1, std::memory_order_relaxed);
+        if (!acquire.Matches(drained)) {
+            const u64 count = errors.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (count <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf acquire_trigger_early: met early, NOT met drained: semaphore "
+                          "{:#x} (op {}, value {:#x}): word {:#x} without the drain, {:#x} "
+                          "after it ({} errors)",
+                          acquire.address, acquire.operation, acquire.value, *early, drained,
+                          count);
+            }
+        }
+    } else {
+        not_met_early.fetch_add(1, std::memory_order_relaxed);
+        if (acquire.Matches(drained)) {
+            not_met_early_met_drained.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (const u64 total = checks.fetch_add(1, std::memory_order_relaxed) + 1; total % 4096 == 0) {
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf acquire_trigger_early: {} triggers: met early {} ({} met-early "
+                 "errors), drained instead: not met early {} ({} met drained), no early word "
+                 "{}, proof changed {}",
+                 total, met_early.load(std::memory_order_relaxed),
+                 errors.load(std::memory_order_relaxed),
+                 not_met_early.load(std::memory_order_relaxed),
+                 not_met_early_met_drained.load(std::memory_order_relaxed),
+                 no_answer.load(std::memory_order_relaxed),
+                 proofs.load(std::memory_order_relaxed));
     }
 }
 
@@ -430,6 +496,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
         namespace Nx2Perf = VideoCommon::Nx2Perf;
         std::optional<u32> early;
+        bool trigger_early = false;
+        bool proof_changed = false;
         if (Nx2Perf::On(Nx2Perf::Opt::AcquireEarly)) {
             early = ReadSemaphoreWordEarly(dma_pusher, acquire.address, true);
             if (early && acquire.Matches(*early) && !Nx2Perf::Verify()) {
@@ -439,10 +507,33 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 VideoCommon::GpuSplit::Get().NoteSync();
                 return;
             }
+        } else if (Nx2Perf::On(Nx2Perf::Opt::AcquireTriggerEarly)) {
+            // Only an early "met" decides: an unmet or missing early word takes the drain below.
+            trigger_early = true;
+            early = ReadSemaphoreWordEarly(dma_pusher, acquire.address, true,
+                                           Nx2Perf::On(Nx2Perf::Opt::MacroReadWriterSet),
+                                           &proof_changed);
+            const bool met = early && acquire.Matches(*early);
+            if (met && !Nx2Perf::Verify()) {
+                VideoCommon::Nx2Profile::Add(
+                    VideoCommon::Nx2Profile::Counter::AcquireTriggerEarly, 1);
+                VideoCommon::GpuSplit::Get().NoteSync();
+                return;
+            }
+            if (!met) {
+                using VideoCommon::Nx2Profile::Counter;
+                VideoCommon::Nx2Profile::Add(
+                    early           ? Counter::AcquireTriggerEarlyFallbackNotMet
+                    : proof_changed ? Counter::AcquireTriggerEarlyFallbackProof
+                                    : Counter::AcquireTriggerEarlyFallbackNoAnswer,
+                    1);
+            }
         }
         DrainBack(VideoCommon::DrainSite::AcquireTrigger);
         const u32 drained = ReadSemaphoreWord(dma_pusher, acquire.address);
-        if (early && Nx2Perf::Verify()) {
+        if (trigger_early && Nx2Perf::Verify()) {
+            VerifyTriggerEarly(acquire, early, proof_changed, drained);
+        } else if (early && Nx2Perf::Verify()) {
             VerifyAcquireWord("trigger", acquire, *early, drained);
         }
         if (acquire.Matches(drained)) {

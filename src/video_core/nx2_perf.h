@@ -75,6 +75,9 @@ enum class Opt : unsigned {
     /// Split back: a front waiting at a non-list site (macro DMA writes, early acquire, map)
     /// sees its position consumed before the back runs its idle hook
     ReleaseBeforeHook,
+    /// Semaphore acquire triggers take an early word only when it meets the value; an unmet
+    /// early word falls through to the drained decision (independent of AcquireEarly)
+    AcquireTriggerEarly,
     Count,
 };
 
@@ -94,7 +97,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_read_overlay_writers",
     "submit_while_waited",
     "gpu_core_pin",
-    "present_one_ahead", "present_guest_wait", "release_before_hook",
+    "present_one_ahead", "present_guest_wait", "release_before_hook", "acquire_trigger_early",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -121,7 +124,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::BindMemo, Opt::MacroReadOverlayWriters,
                           Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead,
                           Opt::PresentGuestWait,
-                          Opt::ReleaseBeforeHook}) {
+                          Opt::ReleaseBeforeHook,
+                          Opt::AcquireTriggerEarly}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -131,12 +135,14 @@ inline constexpr u64 DefaultOffMask() {
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
-/// present_one_ahead, present_guest_wait, release_before_hook (not measured yet).
+/// present_one_ahead, present_guest_wait, release_before_hook, acquire_trigger_early (not
+/// measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentOneAhead) |
                                   Bit(Opt::PresentGuestWait) |
-                                  Bit(Opt::ReleaseBeforeHook);
+                                  Bit(Opt::ReleaseBeforeHook) |
+                                  Bit(Opt::AcquireTriggerEarly);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));
