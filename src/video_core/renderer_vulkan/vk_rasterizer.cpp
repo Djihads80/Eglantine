@@ -68,6 +68,14 @@ using VideoCommon::ImageViewType;
 
 
 namespace {
+/// Ends the render pass for a fragment barrier FragmentBarrier deferred, before an operation that
+/// may read what the pass drew without going through GraphicsPipeline::Configure's check.
+void TakeFragmentBarrier(Scheduler& scheduler) {
+    if (scheduler.HasFragmentBarrier()) {
+        scheduler.RequestOutsideRenderPassOperationContext();
+    }
+}
+
 struct DrawParams {
     u32 base_instance;
     u32 num_instances;
@@ -932,6 +940,8 @@ void RasterizerVulkan::DrawTexture() {
         }
         return;
     }
+    // The source may be a render target this pass drew before a deferred fragment barrier.
+    TakeFragmentBarrier(scheduler);
     if (frame_dump.Capturing()) [[unlikely]] {
         FrameDumpPass(framebuffer);
     }
@@ -1690,6 +1700,19 @@ void RasterizerVulkan::WaitForIdle() {
 }
 
 void RasterizerVulkan::FragmentBarrier() {
+    // Inside a render pass, the next draw ends it only if it reads what the pass wrote (a sampled
+    // render target or storage written in the pass; GraphicsPipeline::Configure), as on MoltenVK
+    // (zortos293/Lichii #184 from #161): Ocarina of Time ended ~5,900 render passes a second
+    // here, each a tile store and load on a phone GPU. EDEN_NX2_DEFER_FRAGMENT_BARRIER=0 ends
+    // the render pass here as before.
+    static const bool defer = [] {
+        const char* value = std::getenv("EDEN_NX2_DEFER_FRAGMENT_BARRIER");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (defer && scheduler.IsRenderPassActive()) {
+        scheduler.DeferFragmentBarrier();
+        return;
+    }
     // We already put barriers when a render pass finishes
     scheduler.RequestOutsideRenderPassOperationContext();
 }
@@ -1793,6 +1816,7 @@ bool RasterizerVulkan::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surf
                                              const Tegra::Engines::Fermi2D::Surface& dst,
                                              const Tegra::Engines::Fermi2D::Config& copy_config) {
     std::scoped_lock lock{texture_cache.mutex};
+    TakeFragmentBarrier(scheduler);
     return texture_cache.BlitImage(dst, src, copy_config);
 }
 
@@ -1802,6 +1826,7 @@ bool RasterizerVulkan::AccelerateSurfaceCopyAs(const Tegra::Engines::Fermi2D::Su
                                                VideoCore::Surface::PixelFormat dst_format,
                                                const Tegra::Engines::Fermi2D::Config& copy_config) {
     std::scoped_lock lock{texture_cache.mutex};
+    TakeFragmentBarrier(scheduler);
     return texture_cache.BlitImage(dst, src, copy_config, dst_format, src_format);
 }
 

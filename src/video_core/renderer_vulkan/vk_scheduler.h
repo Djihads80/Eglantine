@@ -99,6 +99,27 @@ public:
         return state.renderpass != VK_NULL_HANDLE;
     }
 
+    /// A guest fragment barrier inside the active render pass: the pass ends at the next draw that
+    /// reads what the pass wrote (RenderPassHasStores, a sampled render target), not here.
+    void DeferFragmentBarrier() {
+        fragment_barrier_pending = state.renderpass != VK_NULL_HANDLE;
+    }
+
+    /// Whether a deferred fragment barrier waits for the end of the active render pass. Checking
+    /// does not consume it: only EndRenderPass, which records the barrier, clears it.
+    [[nodiscard]] bool HasFragmentBarrier() const {
+        return fragment_barrier_pending;
+    }
+
+    /// A draw in the active render pass writes storage memory or transform feedback.
+    void NoteRenderPassStores() {
+        render_pass_has_stores = true;
+    }
+
+    [[nodiscard]] bool RenderPassHasStores() const {
+        return render_pass_has_stores;
+    }
+
     /// Update the pipeline to the current execution context.
     bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
 
@@ -359,6 +380,8 @@ private:
 
     std::unique_ptr<MasterSemaphore> master_semaphore;
     bool graphics_pipeline_missing{};
+    bool fragment_barrier_pending{};
+    bool render_pass_has_stores{};
     std::unique_ptr<CommandPool> command_pool;
 
     VideoCommon::QueryCacheBase<QueryCacheParams>* query_cache = nullptr;

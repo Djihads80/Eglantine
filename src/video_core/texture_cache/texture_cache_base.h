@@ -247,6 +247,9 @@ public:
     /// Handle feedback loops during draws.
     void CheckFeedbackLoop(std::span<const ImageViewInOut> views);
 
+    /// Whether any of the views is of an image bound as an active render target.
+    [[nodiscard]] bool SamplesRenderTarget(std::span<const ImageViewInOut> views);
+
     /// Get the sampler from the graphics/compute descriptor table in the specified index
     Sampler* GetSampler(u32 index, bool compute);
 
