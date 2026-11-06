@@ -1774,7 +1774,23 @@ private:
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
-            if (gpu_behind) {
+            // present_one_ahead: commands run from the submit-time pushbuffer snapshot, so the
+            // previous frame's wait alone keeps the game at most one frame ahead of the back.
+            bool wait_for_this = gpu_behind;
+            if (gpu_behind && VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PresentOneAhead)) {
+                if (VideoCommon::Nx2Perf::Verify()) {
+                    if (m_one_ahead_mismatches++ < 64) {
+                        LOG_ERROR(HW_GPU,
+                                  "Nx2Perf present_one_ahead: present #{} skips the wait for ({}, "
+                                  "{:#x}) the old path makes ({} differences)",
+                                  m_presents, ~w[22], w[24], m_one_ahead_mismatches);
+                    }
+                } else {
+                    wait_for_this = false;
+                    ++m_stats.one_ahead_skips;
+                }
+            }
+            if (wait_for_this) {
                 WaitForFrame(~w[22], w[24]);
             }
         } else if (frames_ahead == 0) {
@@ -1821,10 +1837,10 @@ private:
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us, {} ran a frame ahead",
+                         "pacing {} us, {} ran a frame ahead, {} behind without this frame's wait",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600, m_stats.ran_ahead);
+                         m_stats.pace_us / 600, m_stats.ran_ahead, m_stats.one_ahead_skips);
                 m_stats = {.last_present = entered};
             }
         }
@@ -1842,9 +1858,10 @@ private:
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
-        u32 presents{}, ran_ahead{};
+        u32 presents{}, ran_ahead{}, one_ahead_skips{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
+    u32 m_one_ahead_mismatches{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 

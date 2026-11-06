@@ -68,6 +68,9 @@ enum class Opt : unsigned {
     /// host GPU has run dry, so a command list copy waits only for the tail behind it
     SubmitWhileWaited,
     GpuCorePin,         ///< The GPU front and back get a reserved V-Cache core (EDEN_NX2_GPU_PIN)
+    /// Ocarina (frames ahead): a present waits only for the previous frame, also when the GPU
+    /// threads are behind
+    PresentOneAhead,
     Count,
 };
 
@@ -87,6 +90,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_read_overlay_writers",
     "submit_while_waited",
     "gpu_core_pin",
+    "present_one_ahead",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -111,7 +115,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
                           Opt::BindMemo, Opt::MacroReadOverlayWriters,
-                          Opt::SubmitWhileWaited, Opt::GpuCorePin}) {
+                          Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -120,10 +124,11 @@ inline constexpr u64 DefaultOffMask() {
 /// Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
-/// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4).
+/// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
+/// present_one_ahead (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
-                                  Bit(Opt::GpuCorePin);
+                                  Bit(Opt::GpuCorePin) | Bit(Opt::PresentOneAhead);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));
