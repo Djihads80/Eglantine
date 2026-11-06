@@ -260,7 +260,6 @@ size_t GenericEnvironment::ReadSizeBytes() const noexcept {
 bool GenericEnvironment::CanBeSerialized() const noexcept {
     return !has_unbound_instructions;
 }
-}
 
 u64 GenericEnvironment::CalculateHash() const {
     const size_t size{ReadSizeBytes()};
