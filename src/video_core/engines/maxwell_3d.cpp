@@ -1615,7 +1615,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         diag_before.resize(words);
         memory_manager.ReadBlockUnsafe(source, diag_before.data(), read_bytes);
     }
-    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) && !Tegra::Nx2CmdPageDiag::g_enabled &&
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadEarly) && !Tegra::Nx2CmdPageDiag::g_enabled &&
         FrontDmaReadEarly(split, fs, macro, method, source, ram, words)) {
         return;
     }
@@ -1685,7 +1685,7 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     u64 write_target = 0;
     for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + bytes; page += 0x1000) {
         const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
-        if (page_count == pages.size() || !device || Tegra::Nx2IsGpuWritten(*device)) {
+        if (page_count == pages.size() || !device || Tegra::Nx2IsGpuWrittenRegion(*device)) {
             return false;
         }
         const u64 device_page = *device & ~u64{0xfff};
@@ -1700,7 +1700,7 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
                                                       : Profile::Counter::DmaReadsWaitGpu;
     split.WaitUntil(target, VideoCommon::DrainSite::MacroDmaWrites);
     for (size_t i = 0; i < page_count; ++i) {
-        if (Tegra::Nx2IsGpuWritten(pages[i])) {
+        if (Tegra::Nx2IsGpuWrittenRegion(pages[i])) {
             return false;
         }
     }

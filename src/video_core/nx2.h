@@ -28,9 +28,29 @@ inline std::atomic<bool> g_nx2_ampere{false};
 inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
 
+// The same, one bit per 1 MiB: the split front's early MME DMA reads fall back to the drain for
+// any read in a region the GPU has written. A queued dispatch can write a page of such a region
+// for the first time before its bit is set (Ocarina's indirect draw arguments did).
+inline constexpr u64 Nx2WrittenRegionBits = 20;
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenRegionBits)) / 64>
+    g_nx2_gpu_written_regions{};
+
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
         return;
+    }
+    {
+        const u64 last_region =
+            std::min<u64>((device_address + size - 1) >> Nx2WrittenRegionBits,
+                          g_nx2_gpu_written_regions.size() * 64 - 1);
+        for (u64 region = device_address >> Nx2WrittenRegionBits; region <= last_region;
+             ++region) {
+            auto& word = g_nx2_gpu_written_regions[region / 64];
+            const u64 bit = u64{1} << (region % 64);
+            if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+                word.fetch_or(bit, std::memory_order_relaxed);
+            }
+        }
     }
     const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
                                    g_nx2_gpu_written_pages.size() * 64 - 1);
@@ -119,6 +139,16 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline bool Nx2IsGpuWrittenRegion(u64 device_address) {
+    const u64 region = device_address >> Nx2WrittenRegionBits;
+    if (region >= g_nx2_gpu_written_regions.size() * 64) {
+        return false;
+    }
+    return (g_nx2_gpu_written_regions[region / 64].load(std::memory_order_relaxed) >>
+            (region % 64)) &
+           1;
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {

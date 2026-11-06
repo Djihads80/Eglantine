@@ -40,6 +40,7 @@ enum class Opt : unsigned {
     QueryDiagnostics,
     ImmediateCallbacks,
     QueryUploadScratch,
+    MacroReadEarly, ///< MME DMA reads outside GPU-written 1 MiB regions skip the full drain
     Count,
 };
 
@@ -49,6 +50,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "fragment_barrier", "fence_flush",   "frames_ahead", "pipeline_retention",
     "write_intersections", "sorted_page_batches",
     "qmd_scratch", "query_diagnostics", "immediate_callbacks", "query_upload_scratch",
+    "macro_read_early",
 };
 
 inline bool Enabled() {

@@ -331,7 +331,7 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
 }
 
 void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) {
-    if (size == 0 || !Nx2Perf::On(Nx2Perf::Opt::SplitOverlap)) {
+    if (size == 0 || !Nx2Perf::On(Nx2Perf::Opt::MacroReadEarly)) {
         return;
     }
     // While a queued function may still change the GPU mappings, the back may translate the
