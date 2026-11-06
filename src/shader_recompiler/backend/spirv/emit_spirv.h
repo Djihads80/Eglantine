@@ -80,6 +80,33 @@ constexpr u32 MESH_EMULATION_TASK_MAP_WORD = 10;
 constexpr u32 MESH_EMULATION_ATTRIBUTE_WORD = 11;
 constexpr u32 MESH_EMULATION_MAP_WORD = 12;
 
+/// What the clamp pass of an emulated task draw (EmitMeshEmulationClamp) writes ahead of its
+/// header: its mesh dispatch and its draw, bounded by its slots. A header that is not the host's
+/// dispatches and draws nothing.
+struct MeshEmulationArgs {
+    std::array<u32, 3> dispatch; ///< VkDispatchIndirectCommand of the mesh dispatch
+    u32 rejected;                ///< 1: the header was not the host's
+    std::array<u32, 4> draw;     ///< VkDrawIndirectCommand of the vertex shader's draw
+};
+static_assert(sizeof(MeshEmulationArgs) == 32);
+constexpr u32 MESH_EMULATION_ARGS_DRAW_WORD = 4;
+
+/// Push constants of the clamp pass: the header's word in its storage buffer (the args are at
+/// word 0), what the host wrote at MESH_EMULATION_CAPACITY_WORD and after, and the vertices
+/// drawn per slot.
+struct MeshEmulationClampConstants {
+    u32 header;
+    u32 capacity;
+    u32 payload_offset;
+    u32 task_map_offset;
+    u32 attribute_offset;
+    u32 map_offset;
+    u32 vertices_per_slot;
+};
+
+/// The clamp pass: a compute shader of one invocation, its storage buffer at binding 0.
+[[nodiscard]] std::vector<u32> EmitMeshEmulationClamp();
+
 /// Words per output slot of an emulated mesh program's map region (the map bytes, then the
 /// primitive count).
 [[nodiscard]] inline u32 MeshEmulationMapWords(const MeshInfo& mesh) {

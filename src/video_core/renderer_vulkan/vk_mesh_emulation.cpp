@@ -13,12 +13,20 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 
 namespace Vulkan {
 namespace {
+using Shader::Backend::SPIRV::MeshEmulationArgs;
+using Shader::Backend::SPIRV::MeshEmulationHeader;
+
 constexpr u32 CHECK_SLOTS = 256;
+constexpr VkDeviceSize CHECK_STRIDE = sizeof(MeshEmulationHeader) + sizeof(MeshEmulationArgs);
+static_assert(MeshEmulationBuffer::CHECK_ARGS_OFFSET == sizeof(MeshEmulationHeader));
+// Clamp pass descriptor sets: one per chunk.
+constexpr u32 MAX_CHUNKS = 256;
 // Mario Kart World's task workgroups launch up to ~6,000 mesh workgroups each.
 constexpr u64 MAX_FANOUT = 16384;
 }
@@ -55,6 +63,65 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
 #endif
     max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), MAX_REGION);
     alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
+    const vk::Device& logical = device.GetLogical();
+    static constexpr VkDescriptorSetLayoutBinding CLAMP_BINDING{
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .pImmutableSamplers = nullptr,
+    };
+    clamp_set_layout = logical.CreateDescriptorSetLayout(VkDescriptorSetLayoutCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .bindingCount = 1,
+        .pBindings = &CLAMP_BINDING,
+    });
+    static constexpr VkPushConstantRange CLAMP_CONSTANTS{
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .offset = 0,
+        .size = sizeof(Shader::Backend::SPIRV::MeshEmulationClampConstants),
+    };
+    clamp_layout = logical.CreatePipelineLayout(VkPipelineLayoutCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = clamp_set_layout.address(),
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &CLAMP_CONSTANTS,
+    });
+    clamp_module = BuildShader(device, Shader::Backend::SPIRV::EmitMeshEmulationClamp());
+    clamp_pipeline = logical.CreateComputePipeline(VkComputePipelineCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .stage{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = *clamp_module,
+            .pName = "main",
+            .pSpecializationInfo = nullptr,
+        },
+        .layout = *clamp_layout,
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = 0,
+    });
+    static constexpr VkDescriptorPoolSize CLAMP_POOL_SIZE{
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        .descriptorCount = MAX_CHUNKS,
+    };
+    clamp_pool = logical.CreateDescriptorPool(VkDescriptorPoolCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = MAX_CHUNKS,
+        .poolSizeCount = 1,
+        .pPoolSizes = &CLAMP_POOL_SIZE,
+    });
     breadcrumb_buffer = memory_allocator.CreateBuffer(
         VkBufferCreateInfo{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -85,7 +152,7 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
-                .size = CHECK_SLOTS * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader),
+                .size = CHECK_SLOTS * CHECK_STRIDE,
                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                 .queueFamilyIndexCount = 0,
@@ -96,7 +163,8 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
 }
 
 std::pair<VkBuffer, VkDeviceSize> MeshEmulationBuffer::CheckSlot(u64 pipeline, u32 groups,
-                                                                 bool has_task, u32 capacity) {
+                                                                 bool has_task, u32 capacity,
+                                                                 bool has_args) {
     ReportChecks();
     if (checks.size() >= CHECK_SLOTS) {
         return {};
@@ -107,8 +175,9 @@ std::pair<VkBuffer, VkDeviceSize> MeshEmulationBuffer::CheckSlot(u64 pipeline, u
         slot = (slot + 1) % CHECK_SLOTS;
     }
     next_check_slot = (slot + 1) % CHECK_SLOTS;
-    checks.push_back({scheduler.CurrentTick(), pipeline, slot, groups, capacity, has_task});
-    return {*check_buffer, slot * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader)};
+    checks.push_back(
+        {scheduler.CurrentTick(), pipeline, slot, groups, capacity, has_task, has_args});
+    return {*check_buffer, slot * CHECK_STRIDE};
 }
 
 MeshEmulationBuffer::Breadcrumb MeshEmulationBuffer::NoteDraw(u64 pipeline, u32 groups,
@@ -175,24 +244,34 @@ void MeshEmulationBuffer::ReportChecks() {
         if (!std::exchange(invalidated, true)) {
             check_buffer.Invalidate();
         }
-        Shader::Backend::SPIRV::MeshEmulationHeader header;
-        std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
-                    sizeof(header));
+        const u8* const data = check_buffer.Mapped().data() + entry.slot * CHECK_STRIDE;
+        MeshEmulationHeader header;
+        std::memcpy(&header, data, sizeof(header));
+        MeshEmulationArgs args{};
+        if (entry.has_args) {
+            std::memcpy(&args, data + CHECK_ARGS_OFFSET, sizeof(args));
+        }
+        // The clamp pass found a header that was not the host's: nothing dispatched or drawn.
+        const bool rejected = entry.has_args && args.rejected != 0;
         const bool overflow = entry.has_task && header.task_allocated > entry.capacity;
         // A header the draw's own work cannot have left (its dispatch bounded by its slots, its
         // capacity the host's): log it whole, learn nothing from it.
         const bool inconsistent =
             entry.has_task &&
             (header.dispatch[0] > entry.capacity || header.capacity != entry.capacity);
-        if (inconsistent) {
+        if (inconsistent || rejected) {
             if (inconsistent_logged++ < 16) {
                 const auto* const words = reinterpret_cast<const u32*>(&header);
                 LOG_WARNING(Render_Vulkan,
                             "Emulated mesh draw {:016x}: inconsistent header after its work ({} "
-                            "task workgroups, {} slots): {:08x} {:08x} {:08x} {:08x} | {:08x} "
-                            "{:08x} {:08x} {:08x} | {:08x} {:08x} {:08x} {:08x} {:08x} | {:08x} "
-                            "{:08x} {:08x}",
-                            entry.pipeline, entry.groups, entry.capacity, words[0], words[1],
+                            "task workgroups, {} slots; {}): {:08x} {:08x} {:08x} {:08x} | "
+                            "{:08x} {:08x} {:08x} {:08x} | {:08x} {:08x} {:08x} {:08x} {:08x} | "
+                            "{:08x} {:08x} {:08x}",
+                            entry.pipeline, entry.groups, entry.capacity,
+                            !entry.has_args ? "no clamp pass"
+                            : rejected      ? "the clamp pass dropped it"
+                                            : "spoilt after the clamp pass",
+                            words[0], words[1],
                             words[2], words[3], words[4], words[5], words[6], words[7], words[8],
                             words[9], words[10], words[11], words[12], words[13], words[14],
                             words[15]);
@@ -237,8 +316,46 @@ MeshEmulationBuffer::~MeshEmulationBuffer() {
     scheduler.SetRenderPassEndHook({});
 }
 
-MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
-    const VkDeviceSize size = Common::AlignUp(request, alignment);
+VkDescriptorSet MeshEmulationBuffer::MakeClampSet(VkBuffer buffer) {
+    const VkDescriptorSetLayout layout = *clamp_set_layout;
+    const vk::DescriptorSets sets = clamp_pool.Allocate(VkDescriptorSetAllocateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .descriptorPool = *clamp_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &layout,
+    });
+    if (sets.IsOutOfPoolMemory()) {
+        LOG_WARNING(Render_Vulkan, "Task/mesh emulation: no clamp pass for the draws of chunk {}",
+                    chunks.size());
+        return VkDescriptorSet{};
+    }
+    // The args, then the header ArgsSpace() bytes further.
+    const VkDescriptorBufferInfo info{
+        .buffer = buffer,
+        .offset = 0,
+        .range = alignment + sizeof(MeshEmulationHeader),
+    };
+    device.GetLogical().UpdateDescriptorSets(
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = sets[0],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            .pImageInfo = nullptr,
+            .pBufferInfo = &info,
+            .pTexelBufferView = nullptr,
+        },
+        {});
+    return sets[0];
+}
+
+MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request, bool args) {
+    const VkDeviceSize space = args ? alignment : 0;
+    const VkDeviceSize size = space + Common::AlignUp(request, alignment);
     const u64 tick = scheduler.CurrentTick();
     const auto take = [&](size_t index) {
         Chunk& chunk = chunks[index];
@@ -246,7 +363,11 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
         chunk.used += size;
         chunk.tick = tick;
         current = index;
-        return MeshEmulationRegion{*chunk.buffer, offset};
+        return MeshEmulationRegion{
+            .buffer = *chunk.buffer,
+            .offset = offset + space,
+            .clamp_set = args ? chunk.clamp_set : VkDescriptorSet{},
+        };
     };
     if (current < chunks.size() && chunks[current].used + size <= chunks[current].size) {
         return take(current);
@@ -260,23 +381,34 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
     }
     // Chunks long unused go before another is made (a few draws need tens of MiB).
     std::erase_if(chunks, [&](const Chunk& chunk) {
-        return scheduler.IsFree(chunk.tick) && tick - chunk.tick > 4096;
+        if (!scheduler.IsFree(chunk.tick) || tick - chunk.tick <= 4096) {
+            return false;
+        }
+        if (chunk.clamp_set) {
+            VkDescriptorSet set = chunk.clamp_set;
+            device.GetDispatchLoader().vkFreeDescriptorSets(*device.GetLogical(), *clamp_pool, 1,
+                                                            &set);
+        }
+        return true;
     });
     const VkDeviceSize chunk_size = std::bit_ceil(std::max<VkDeviceSize>(size, 4ULL << 20));
+    vk::Buffer buffer = memory_allocator.CreateBuffer(
+        VkBufferCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = chunk_size,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        },
+        MemoryUsage::DeviceLocal);
+    const VkDescriptorSet clamp_set = MakeClampSet(*buffer);
     chunks.push_back(Chunk{
-        .buffer = memory_allocator.CreateBuffer(
-            VkBufferCreateInfo{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .size = chunk_size,
-                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                .queueFamilyIndexCount = 0,
-                .pQueueFamilyIndices = nullptr,
-            },
-            MemoryUsage::DeviceLocal),
+        .buffer = std::move(buffer),
+        .clamp_set = clamp_set,
         .size = chunk_size,
     });
     if (chunks_logged++ < 64) {

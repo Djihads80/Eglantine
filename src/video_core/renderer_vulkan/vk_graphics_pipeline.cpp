@@ -56,6 +56,7 @@ using boost::container::small_vector;
 using boost::container::static_vector;
 using Shader::ImageBufferDescriptor;
 using Shader::Backend::SPIRV::MESH_DRAW_BASE_OFFSET;
+using Shader::Backend::SPIRV::MESH_EMULATION_ARGS_DRAW_WORD;
 using Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD;
 using Shader::Backend::SPIRV::MeshDrawBaseLayout;
 using Shader::Backend::SPIRV::MeshEmulationHeader;
@@ -1455,16 +1456,35 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     const u64 words{u64{header.map_offset} + u64{capacity} * stages.map_words};
     emulated_draw.groups = has_task ? groups : capacity;
     emulated_draw.size = words * sizeof(u32);
-    emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size);
-    mesh_emulation_buffer->draw = emulated_draw.region;
-    // Drawn directly: a mesh-only draw's slots are known; a task draw's are learned (Turnip
-    // lost the device on some indirect draws).
+    // A task draw's mesh dispatch and draw come from its clamp pass (args ahead of the region):
+    // a header spoilt on the GPU cannot make them larger than its slots.
+    emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size, has_task);
+    const bool clamped{emulated_draw.region.clamp_set != VkDescriptorSet{}};
+    const u32 vertices_per_slot{stages.max_primitives * 3};
+    emulated_draw.clamp = {
+        .header = static_cast<u32>(mesh_emulation_buffer->ArgsSpace() / sizeof(u32)),
+        .capacity = header.capacity,
+        .payload_offset = header.payload_offset,
+        .task_map_offset = header.task_map_offset,
+        .attribute_offset = header.attribute_offset,
+        .map_offset = header.map_offset,
+        .vertices_per_slot = vertices_per_slot,
+    };
+    mesh_emulation_buffer->draw = {
+        .buffer = emulated_draw.region.buffer,
+        .offset = clamped ? emulated_draw.region.offset - mesh_emulation_buffer->ArgsSpace() +
+                                MESH_EMULATION_ARGS_DRAW_WORD * sizeof(u32)
+                          : emulated_draw.region.offset + MESH_EMULATION_DRAW_WORD * sizeof(u32),
+    };
+    // A mesh-only draw's slots are the host's: drawn directly. A task draw's direct draw
+    // (EDEN_NX2_MESH_EMULATE_DIRECT=1) has the slots its pipeline's draws were seen to use.
+    mesh_emulation_buffer->draw_direct = !has_task;
     const u32 draw_slots{has_task ? mesh_emulation_buffer->DrawSlots(key.Hash(), groups, capacity)
                                   : capacity};
-    mesh_emulation_buffer->draw_vertices = draw_slots * stages.max_primitives * 3;
+    mesh_emulation_buffer->draw_vertices = draw_slots * vertices_per_slot;
     emulated_draw.check = has_task || mesh_emulation_buffer->Checking()
                               ? mesh_emulation_buffer->CheckSlot(key.Hash(), groups, has_task,
-                                                                 capacity)
+                                                                 capacity, clamped)
                               : std::pair<VkBuffer, VkDeviceSize>{};
     static std::atomic<u32> logged{};
     if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
@@ -1480,8 +1500,8 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
 
 namespace {
 // What an emulated task/mesh draw runs ahead of its render pass, in the scheduler's phases
-// (Scheduler::PRE_PHASES): its header and zeroed output regions, its task dispatch, its mesh
-// dispatch, then the readback of its header. Each phase's first command (`first`) orders it
+// (Scheduler::PRE_PHASES): its header, its task dispatch, its clamp pass and mesh dispatch, then
+// the readback of its header and args. Each phase's first command (`first`) orders it
 // after the phases before it for every draw of the pass with one barrier.
 struct EmulatedMeshWork {
     struct PushConstants {
@@ -1502,6 +1522,11 @@ struct EmulatedMeshWork {
     VkDeviceSize size{};
     MeshEmulationHeader header{};
     std::pair<VkBuffer, VkDeviceSize> check{};
+    VkPipeline clamp_pipeline{};
+    VkPipelineLayout clamp_layout{};
+    VkDescriptorSet clamp_set{}; ///< none: the header is dispatched and drawn from
+    u32 args_offset{};
+    Shader::Backend::SPIRV::MeshEmulationClampConstants clamp{};
     u32 groups{};
     bool has_task{};
     PushConstants push{};
@@ -1614,12 +1639,22 @@ struct EmulatedMeshWork {
         if (!descriptor_set) {
             return;
         }
+        if (has_task && clamp_set) {
+            // The mesh dispatch and the draw from the task programs' high mark, within the
+            // slots; none for a header that is not the host's.
+            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, clamp_pipeline);
+            cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, clamp_layout, 0, clamp_set,
+                                      args_offset);
+            cmdbuf.PushConstants(clamp_layout, VK_SHADER_STAGE_COMPUTE_BIT, clamp);
+            cmdbuf.Dispatch(1, 1, 1);
+            ComputeBarrier(cmdbuf);
+        }
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, descriptor_set,
                                   nullptr);
         PushTo(cmdbuf);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, mesh_pipeline);
         if (has_task) {
-            cmdbuf.DispatchIndirect(buffer, offset);
+            cmdbuf.DispatchIndirect(buffer, clamp_set ? args_offset : offset);
         } else {
             cmdbuf.Dispatch(groups, 1, 1);
         }
@@ -1640,6 +1675,15 @@ struct EmulatedMeshWork {
                                   .dstOffset = check.second,
                                   .size = sizeof(MeshEmulationHeader),
                               });
+            if (clamp_set) {
+                cmdbuf.CopyBuffer(buffer, check.first,
+                                  VkBufferCopy{
+                                      .srcOffset = args_offset,
+                                      .dstOffset =
+                                          check.second + MeshEmulationBuffer::CHECK_ARGS_OFFSET,
+                                      .size = sizeof(Shader::Backend::SPIRV::MeshEmulationArgs),
+                                  });
+            }
         }
     }
 };
@@ -1675,6 +1719,14 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
     work->size = emulated_draw.size;
     work->header = emulated_draw.header;
     work->check = emulated_draw.check;
+    if (emulated_draw.region.clamp_set) {
+        work->clamp_pipeline = mesh_emulation_buffer->ClampPipeline();
+        work->clamp_layout = mesh_emulation_buffer->ClampLayout();
+        work->clamp_set = emulated_draw.region.clamp_set;
+        work->args_offset = static_cast<u32>(emulated_draw.region.offset -
+                                             mesh_emulation_buffer->ArgsSpace());
+        work->clamp = emulated_draw.clamp;
+    }
     work->groups = emulated_draw.groups;
     work->has_task = mesh_emulation->has_task;
     work->breadcrumb = mesh_emulation_buffer->NoteDraw(key.Hash(), emulated_draw.groups,

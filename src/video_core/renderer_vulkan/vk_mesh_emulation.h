@@ -44,6 +44,10 @@ struct MeshEmulationStages {
 struct MeshEmulationRegion {
     VkBuffer buffer{};
     VkDeviceSize offset{};
+    /// With args (MeshEmulationBuffer::ArgsSpace() bytes ahead of the region): the clamp pass's
+    /// descriptor set for its chunk. None: no clamp pass (the header is dispatched and drawn
+    /// from).
+    VkDescriptorSet clamp_set{};
 };
 
 /// The storage buffers emulated task/mesh draws write and draw from: each draw takes its own
@@ -58,18 +62,35 @@ public:
     MeshEmulationBuffer(const MeshEmulationBuffer&) = delete;
     MeshEmulationBuffer& operator=(const MeshEmulationBuffer&) = delete;
 
-    /// A region of `size` bytes for the next emulated draw.
-    [[nodiscard]] MeshEmulationRegion Allocate(VkDeviceSize size);
+    /// A region of `size` bytes for the next emulated draw; with `args`, room for its
+    /// MeshEmulationArgs ArgsSpace() bytes ahead of it (outside the range its programs get).
+    [[nodiscard]] MeshEmulationRegion Allocate(VkDeviceSize size, bool args);
+
+    /// Bytes from a region's args to its header.
+    [[nodiscard]] VkDeviceSize ArgsSpace() const noexcept {
+        return alignment;
+    }
+
+    /// The clamp pass between a task dispatch and its mesh dispatch: one workgroup, push
+    /// constants Shader::Backend::SPIRV::MeshEmulationClampConstants, the region's clamp_set
+    /// with its args' offset as the dynamic offset.
+    [[nodiscard]] VkPipeline ClampPipeline() const noexcept {
+        return *clamp_pipeline;
+    }
+    [[nodiscard]] VkPipelineLayout ClampLayout() const noexcept {
+        return *clamp_layout;
+    }
 
     /// Most bytes a draw's region may span (the device's storage buffer range).
     [[nodiscard]] VkDeviceSize MaxSize() const noexcept {
         return max_size;
     }
 
-    /// The region of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
-    /// a null buffer when the draw is not emulated.
+    /// The VkDrawIndirectCommand of the draw being prepared (in its clamped args, or its
+    /// header); a null buffer when the draw is not emulated.
     MeshEmulationRegion draw{};
     u32 draw_vertices{}; ///< vertices of the direct draw of the draw being prepared
+    bool draw_direct{};  ///< drawn directly (no task program: its slots are the host's)
 
     /// Times the draws' compute work while it captures.
     FrameDump* frame_dump{};
@@ -93,10 +114,13 @@ public:
         return checking;
     }
 
-    /// Where the draw's header goes after its dispatches (a slot of the readback buffer), noted
-    /// with what the host asked for; none when the readback slots are all pending.
+    /// Where the draw's header goes after its dispatches (a slot of the readback buffer), its
+    /// clamped args (with `has_args`) CHECK_ARGS_OFFSET bytes further, noted with what the host
+    /// asked for; none when the readback slots are all pending.
     [[nodiscard]] std::pair<VkBuffer, VkDeviceSize> CheckSlot(u64 pipeline, u32 groups,
-                                                              bool has_task, u32 capacity);
+                                                              bool has_task, u32 capacity,
+                                                              bool has_args);
+    static constexpr VkDeviceSize CHECK_ARGS_OFFSET = 64;
 
     /// Mesh workgroups per task workgroup the pipeline's draws get slots for: at least
     /// `minimum`, more once its task programs launched more.
@@ -109,6 +133,7 @@ public:
 private:
     struct Chunk {
         vk::Buffer buffer;
+        VkDescriptorSet clamp_set{}; ///< none when the pool ran out
         VkDeviceSize size{};
         VkDeviceSize used{};
         u64 tick{}; ///< of its last region
@@ -121,10 +146,14 @@ private:
         u32 groups;
         u32 capacity;
         bool has_task;
+        bool has_args;
     };
 
     /// Logs the checks whose tick is done.
     void ReportChecks();
+
+    /// The clamp pass's descriptor set for a chunk's buffer (none when the pool ran out).
+    [[nodiscard]] VkDescriptorSet MakeClampSet(VkBuffer buffer);
 
     const Device& device;
     MemoryAllocator& memory_allocator;
@@ -139,6 +168,12 @@ private:
         u64 tick;
     };
     void ReportLoss();
+
+    vk::DescriptorSetLayout clamp_set_layout;
+    vk::PipelineLayout clamp_layout;
+    vk::ShaderModule clamp_module;
+    vk::Pipeline clamp_pipeline;
+    vk::DescriptorPool clamp_pool;
 
     vk::Buffer breadcrumb_buffer;
     std::mutex noted_mutex;
