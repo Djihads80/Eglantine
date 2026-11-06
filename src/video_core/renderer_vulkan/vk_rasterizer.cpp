@@ -211,6 +211,38 @@ bool IsPrimitiveRestartSupported(const Device& device, VkPrimitiveTopology topol
             (topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST &&
              device.IsPatchListPrimitiveRestartSupported()));
 }
+
+// EDEN_NX2_SKIP_COMPUTE=<shader hash>[,<shader hash>...] (16 hex digits, as frame dumps name
+// the dispatches): compute programs that don't run. To measure what one costs, or to drop an
+// effect a slow GPU can't afford: Ocarina of Time's anti-aliasing edge pass (a107e12b6771be48)
+// takes ~10 ms of the phone's ~55 ms GPU frame; skipped, its edge image stays cleared and the
+// passes after it blend nothing (the frame is not anti-aliased). Read on first use, after
+// Android's env.txt is applied.
+bool SkippedCompute(u64 shader_hash) {
+    static const std::vector<u64> skipped = [] {
+        std::vector<u64> hashes;
+        const char* const value = std::getenv("EDEN_NX2_SKIP_COMPUTE");
+        if (value == nullptr) {
+            return hashes;
+        }
+        const std::string_view text{value};
+        size_t begin = 0;
+        while (begin < text.size()) {
+            const size_t end = (std::min)(text.find(',', begin), text.size());
+            const std::string item{text.substr(begin, end - begin)};
+            char* parsed_end = nullptr;
+            const u64 hash = std::strtoull(item.c_str(), &parsed_end, 16);
+            if (!item.empty() && parsed_end != nullptr && *parsed_end == '\0') {
+                hashes.push_back(hash);
+                LOG_INFO(Render_Vulkan, "Compute program {:016x} is skipped (EDEN_NX2_SKIP_COMPUTE)",
+                         hash);
+            }
+            begin = end + 1;
+        }
+        return hashes;
+    }();
+    return !skipped.empty() && std::ranges::find(skipped, shader_hash) != skipped.end();
+}
 } // Anonymous namespace
 
 RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra::GPU& gpu_,
@@ -1144,6 +1176,13 @@ void RasterizerVulkan::DispatchCompute() {
             frame_dump.NoteSkipped("dispatch", "no pipeline", std::array{dump_program()}, 0);
         }
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
+        return;
+    }
+    if (SkippedCompute(pipeline->ShaderHash())) [[unlikely]] {
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.NoteSkipped("dispatch", "EDEN_NX2_SKIP_COMPUTE", std::array{dump_program()},
+                                   0);
+        }
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
