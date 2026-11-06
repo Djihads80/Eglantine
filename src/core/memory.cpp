@@ -506,8 +506,12 @@ struct Memory::Impl {
                 auto& shared = Core::NceStats::Shared();
                 shared.cache_protects.fetch_add(1, std::memory_order_relaxed);
                 shared.cache_protect_bytes.fetch_add(size, std::memory_order_relaxed);
-                shared.cache_protect_ticks.fetch_add(Core::NceStats::Ticks() - start,
-                                                     std::memory_order_relaxed);
+                const u64 ticks = Core::NceStats::Ticks() - start;
+                shared.cache_protect_ticks.fetch_add(ticks, std::memory_order_relaxed);
+                if (system.GetCurrentHostThreadID() < Core::Hardware::NUM_CPU_CORES) {
+                    shared.cache_protects_cores.fetch_add(1, std::memory_order_relaxed);
+                    shared.cache_protect_ticks_cores.fetch_add(ticks, std::memory_order_relaxed);
+                }
             }
             if (cached && perm != Common::MemoryPermission{}) {
                 ProtectArmedPages(vaddr, size);

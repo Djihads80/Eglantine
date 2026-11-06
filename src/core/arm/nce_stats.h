@@ -101,6 +101,8 @@ struct SharedCounters {
     std::atomic<u64> cache_protects{};      ///< RasterizerMarkRegionCached protection changes
     std::atomic<u64> cache_protect_bytes{};
     std::atomic<u64> cache_protect_ticks{};
+    std::atomic<u64> cache_protects_cores{}; ///< ... by the CPU core threads (the rest: GPU threads)
+    std::atomic<u64> cache_protect_ticks_cores{};
     std::atomic<u64> gpu_invalidate_fast{}; ///< CPU write invalidations done in place
     std::atomic<u64> gpu_invalidate_sync{}; ///< ... that waited for the GPU thread instead
     std::atomic<u64> gpu_invalidate_sync_ticks{};

@@ -154,6 +154,7 @@ CoreSnapshot Take(const CoreCounters& c) {
 
 struct SharedSnapshot {
     u64 cache_protects{}, cache_protect_bytes{}, cache_protect_ticks{};
+    u64 cache_protects_cores{}, cache_protect_ticks_cores{};
     u64 gpu_invalidate_fast{}, gpu_invalidate_sync{}, gpu_invalidate_sync_ticks{};
     u64 heap_protects{}, heap_deferred_maps{}, heap_rebuilds{}, heap_evictions{};
 };
@@ -164,6 +165,9 @@ SharedSnapshot TakeShared() {
         .cache_protects = g_shared.cache_protects.load(std::memory_order_relaxed),
         .cache_protect_bytes = g_shared.cache_protect_bytes.load(std::memory_order_relaxed),
         .cache_protect_ticks = g_shared.cache_protect_ticks.load(std::memory_order_relaxed),
+        .cache_protects_cores = g_shared.cache_protects_cores.load(std::memory_order_relaxed),
+        .cache_protect_ticks_cores =
+            g_shared.cache_protect_ticks_cores.load(std::memory_order_relaxed),
         .gpu_invalidate_fast = g_shared.gpu_invalidate_fast.load(std::memory_order_relaxed),
         .gpu_invalidate_sync = g_shared.gpu_invalidate_sync.load(std::memory_order_relaxed),
         .gpu_invalidate_sync_ticks =
@@ -381,7 +385,8 @@ void Report(double seconds, double frequency, const std::vector<CoreSnapshot>& n
     const u64 protects = shared_now.cache_protects - shared_before.cache_protects;
     const u64 syncs = shared_now.gpu_invalidate_sync - shared_before.gpu_invalidate_sync;
     LOG_INFO(Core_ARM,
-             "NCE memory: GPU cache protection changes {:.0f}/s ({:.1f} MiB/s, {:.2f} ms/s) | CPU "
+             "NCE memory: GPU cache protection changes {:.0f}/s ({:.1f} MiB/s, {:.2f} ms/s; on "
+             "CPU core threads {:.0f}/s, {:.2f} ms/s) | CPU "
              "write invalidations {:.0f}/s in place, {:.1f}/s waited for the GPU thread ({:.1f} "
              "us avg) | heap tracker: protects {:.0f}/s, maps {} ({} resident), separate heap "
              "maps back in {:.1f}/s, rebuilds {} ({} evicted)",
@@ -390,6 +395,10 @@ void Report(double seconds, double frequency, const std::vector<CoreSnapshot>& n
                  (1024.0 * 1024.0),
              1e3 * static_cast<double>(shared_now.cache_protect_ticks -
                                        shared_before.cache_protect_ticks) /
+                 frequency / seconds,
+             per_second(shared_now.cache_protects_cores - shared_before.cache_protects_cores),
+             1e3 * static_cast<double>(shared_now.cache_protect_ticks_cores -
+                                       shared_before.cache_protect_ticks_cores) /
                  frequency / seconds,
              per_second(shared_now.gpu_invalidate_fast - shared_before.gpu_invalidate_fast),
              per_second(syncs),
