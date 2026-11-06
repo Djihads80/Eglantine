@@ -1697,7 +1697,12 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         work->timing = frame_dump->TimeAhead(Scheduler::PRE_PHASES);
     }
     const Framebuffer* const framebuffer{texture_cache.GetFramebuffer()};
-    if (scheduler.HoistsRenderPasses()) {
+    // EDEN_NX2_MESH_EMULATE_PHASES=0: each draw's work in one piece, barriers and all.
+    static const bool phases = [] {
+        const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_PHASES");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (phases && scheduler.HoistsRenderPasses()) {
         // Ahead of the pass's begin, phase by phase with the pass's other emulated draws.
         const auto empty{scheduler.PrepareBeforeRenderPass(framebuffer, 1024)};
         for (size_t phase = 0; phase < Scheduler::PRE_PHASES; ++phase) {
@@ -1714,7 +1719,7 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
                 });
         }
     } else {
-        // The pass ends and resumes around the draw's work.
+        // Ahead of the pass's begin (hoisting), or the pass ends and resumes around it.
         scheduler.RecordBeforeRenderPass(framebuffer, [work](vk::CommandBuffer cmdbuf) {
             for (size_t phase = 0; phase < Scheduler::PRE_PHASES; ++phase) {
                 work->Run(cmdbuf, phase, true);
