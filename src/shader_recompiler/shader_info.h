@@ -271,6 +271,26 @@ struct MeshInfo {
     boost::container::static_vector<u32, 136> primitive_lines;
 };
 
+/// First word of a mesh workgroup's per-primitive groups in its attribute region: groups of 32
+/// vertices, then groups of 32 primitives, one 32-word line per attribute.
+[[nodiscard]] inline u32 MeshPrimitiveBase(const MeshInfo& mesh) {
+    return (mesh.max_vertices + 31) / 32 * static_cast<u32>(mesh.vertex_lines.size()) * 32;
+}
+
+/// Words of a mesh workgroup's attribute region.
+[[nodiscard]] inline u32 MeshAttributeWords(const MeshInfo& mesh) {
+    const u32 words{MeshPrimitiveBase(mesh) + (mesh.max_primitives + 31) / 32 *
+                                                  static_cast<u32>(mesh.primitive_lines.size()) *
+                                                  32};
+    return words != 0 ? words : 1;
+}
+
+/// Bytes of a mesh workgroup's map region (the primitive count, then 3 vertex indices per
+/// primitive from byte 4), kept one per word.
+[[nodiscard]] inline u32 MeshMapBytes(const MeshInfo& mesh) {
+    return 4 + 3 * mesh.max_primitives;
+}
+
 /// Most bytes an emulated shared memory buffer spans: shaders clamp their workgroup slice to it
 /// and the host binds at least min(workgroups, slices that fit) slices.
 constexpr u32 EMULATED_SHARED_MEMORY_MAX_BYTES = 256U << 20;
@@ -299,6 +319,9 @@ struct Info {
     /// Shared memory per workgroup kept in a storage buffer instead (the device has less than the
     /// program needs), bound after every other descriptor. Zero when shared memory is native.
     u32 emulated_shared_memory_size{};
+    /// Emulated task/mesh program (RuntimeInfo::mesh_emulation): its storage buffer, bound after
+    /// every other descriptor (and the emulated shared memory).
+    u32 mesh_emulation_buffers{};
 
     bool uses_workgroup_id{};
     bool uses_local_invocation_id{};

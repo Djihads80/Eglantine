@@ -88,6 +88,12 @@ struct RuntimeInfo {
     VaryingState previous_stage_stores;
     /// Fragment stage after a mesh program: generic inputs it writes per primitive.
     std::bitset<32> per_primitive_generics{};
+    /// Task/mesh emulation without VK_EXT_mesh_shader: task and mesh programs become compute
+    /// shaders writing the storage buffer of Info::mesh_emulation_buffers, drawn by a generated
+    /// vertex shader; a fragment program takes its per-primitive inputs flat.
+    bool mesh_emulation{};
+    /// Emulated mesh program fed by a task program (its payload is in the storage buffer).
+    bool mesh_emulation_task{};
     std::map<IR::Attribute, IR::Attribute> previous_stage_legacy_stores_mapping;
 
     bool convert_depth_mode{};

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdlib>
 #include <vector>
 
@@ -51,6 +52,45 @@ inline bool MeshFirstEnabled() {
     }()};
     return enabled;
 }
+
+// Task/mesh emulation (RuntimeInfo::mesh_emulation): the storage buffer of an emulated draw
+// starts with this header, written by the host before the task or mesh dispatch. Then, at the
+// offsets it names (in words): the task payloads (payload_words per task workgroup), the mesh
+// workgroups' (task workgroup, index) pairs, and per output slot (mesh workgroup) its attribute
+// region (Shader::MeshAttributeWords) and its map region (Shader::MeshMapBytes words, one per
+// byte, then the primitive count).
+struct MeshEmulationHeader {
+    std::array<u32, 3> dispatch;   ///< mesh workgroups to dispatch after a task program
+    u32 task_allocated;            ///< mesh workgroups the task programs launched
+    std::array<u32, 4> draw;       ///< VkDrawIndirectCommand of the vertex shader's draw
+    u32 capacity;                  ///< output slots
+    u32 payload_offset;
+    u32 task_map_offset;
+    u32 attribute_offset;
+    u32 map_offset;
+    std::array<u32, 3> reserved;
+};
+static_assert(sizeof(MeshEmulationHeader) == 64);
+constexpr u32 MESH_EMULATION_DISPATCH_WORD = 0;
+constexpr u32 MESH_EMULATION_ALLOCATED_WORD = 3;
+constexpr u32 MESH_EMULATION_DRAW_WORD = 4;
+constexpr u32 MESH_EMULATION_CAPACITY_WORD = 8;
+constexpr u32 MESH_EMULATION_PAYLOAD_WORD = 9;
+constexpr u32 MESH_EMULATION_TASK_MAP_WORD = 10;
+constexpr u32 MESH_EMULATION_ATTRIBUTE_WORD = 11;
+constexpr u32 MESH_EMULATION_MAP_WORD = 12;
+
+/// Words per output slot of an emulated mesh program's map region (the map bytes, then the
+/// primitive count).
+[[nodiscard]] inline u32 MeshEmulationMapWords(const MeshInfo& mesh) {
+    return MeshMapBytes(mesh) + 1;
+}
+
+/// The vertex shader of an emulated mesh draw: its vertex index is a corner of one of the
+/// max_primitives primitives of an output slot, read from the storage buffer at `binding`.
+[[nodiscard]] std::vector<u32> EmitMeshEmulationVertex(const Profile& profile,
+                                                       const MeshInfo& mesh, u32 binding,
+                                                       bool convert_depth);
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
 [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {
