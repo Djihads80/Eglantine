@@ -114,6 +114,9 @@ enum class Opt : unsigned {
     /// Split front: a native macro call whose MME DMA read only feeds its last writes (render
     /// enable) runs without waiting for the back; the back writes those from the real words
     DmaForward,
+    /// Split front: an instance loop's draw.begin right after the same one, still unpublished,
+    /// is counted into that ring entry (bits 24-31); the back adds the instances
+    DrawBeginCoalesce,
     Count,
 };
 
@@ -145,6 +148,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dirty_gather_fast",
     "handle_page_cache",
     "dma_forward",
+    "draw_begin_coalesce",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -183,7 +187,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
-                          Opt::SplitRings, Opt::BindMemoLocal}) {
+                          Opt::SplitRings, Opt::BindMemoLocal, Opt::DrawBeginCoalesce}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -200,7 +204,7 @@ inline constexpr u64 DefaultOffMask() {
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
-/// bind_memo_local (not measured yet).
+/// bind_memo_local, draw_begin_coalesce (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -209,7 +213,7 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
-                                  Bit(Opt::DmaForward) |
+                                  Bit(Opt::DmaForward) | Bit(Opt::DrawBeginCoalesce) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal);
 
@@ -225,6 +229,8 @@ static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
 static_assert(!IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48));
 static_assert(IsOff(always_off, 51) && IsOff(DefaultOffMask(), 51));
 static_assert(IsOff(always_off, 52) && IsOff(DefaultOffMask(), 52));
+static_assert(static_cast<unsigned>(Opt::DrawBeginCoalesce) == 56 && IsOff(always_off, 56) &&
+              IsOff(DefaultOffMask(), 56));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).

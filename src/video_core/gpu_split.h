@@ -156,6 +156,41 @@ public:
         Commit(1, effect);
     }
 
+    /// Nx2Perf draw_begin_coalesce: Method (MacroWrite when `direct`) for an executable write
+    /// whose immediate repeat the back can apply from a count (DrawManager::AddInstances). The
+    /// write is counted into the last entry (bits 24-31) when that one is the same word, sent by
+    /// this function, followed by nothing, still unpublished and below 255 repeats; otherwise it
+    /// is sent. With `verify` it is always sent, flagged Repeatable when it would have been
+    /// counted. Returns whether it was (or would have been) counted.
+    bool RepeatableMethod(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument,
+                          bool is_last, bool direct, Effect effect, bool verify) {
+        const u64 word = static_cast<u64>(Kind::Method) |
+                         (direct ? IsLast | Direct : (is_last ? IsLast : 0)) |
+                         (u64{method & 0xffff} << 8) | (u64{argument} << 32);
+        // The entry at write_position - 1 is unpublished while published_local is below it.
+        const bool repeat =
+            repeat_end == write_position && engine == front_engine &&
+            published_local < write_position &&
+            (ring[(write_position - 1) & RingMask] & ~(Repeatable | RepeatMask)) == word &&
+            (ring[(write_position - 1) & RingMask] & RepeatMask) != RepeatMask;
+        if (repeat && !verify) {
+            ring[(write_position - 1) & RingMask] += RepeatOne;
+            writes.Entry(effect, write_position);
+            if (eager_publish && back_idle.load(std::memory_order_relaxed)) {
+                Publish();
+            }
+            return true;
+        }
+        SelectEngine(engine);
+        u64* const entry = Reserve(1);
+        // Reserve may have wrapped: then the flagged entry would not follow the first one.
+        const bool flagged = repeat && write_position == repeat_end;
+        entry[0] = word | (flagged ? Repeatable : 0);
+        Commit(1, effect);
+        repeat_end = write_position;
+        return flagged;
+    }
+
     /// Runs `func` on the back after everything sent before it. Must be trivially copyable.
     template <typename Func>
     void Defer(const Func& func, Effect effect = Effect::Unknown) {
@@ -326,6 +361,14 @@ private:
     static constexpr u64 IsLast = 1 << 4;
     static constexpr u64 HasSegment = 1 << 5;
     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
+    /// Method, EDEN_NX2_PERF_VERIFY with draw_begin_coalesce: the front would have counted this
+    /// entry into the one before it (RepeatableMethod)
+    static constexpr u64 Repeatable = 1 << 7;
+    /// Method: how many more times the back calls it, right after the first (RepeatableMethod)
+    static constexpr u64 RepeatOne = u64{1} << 24;
+    static constexpr u64 RepeatMask = u64{0xff} << 24;
+    static_assert(((u64{0xf} | IsLast | HasSegment | Direct) & Repeatable) == 0 &&
+                  ((u64{0xffff} << 8) & RepeatMask) == 0);
 
     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
     static constexpr size_t RingMask = RingWords - 1;
@@ -385,11 +428,18 @@ private:
     void BackLoop(std::stop_token stop_token);
     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
     size_t Execute(const u64* entry, size_t words);
+    /// A Method entry with a repeat count (RepeatableMethod): the call, then the repeats.
+    void ExecuteRepeated(u64 head);
+    /// EDEN_NX2_PERF_VERIFY with draw_begin_coalesce: checks that a Repeatable entry directly
+    /// follows the same word.
+    void VerifyRepeat(u64 head);
 
     Core::System* system{};
     bool active{};
     bool eager_publish{}; ///< Nx2Perf::Opt::EagerPublish, read once at Start
     bool release_before_hook{}; ///< Nx2Perf::Opt::ReleaseBeforeHook, read once at Start
+    /// Nx2Perf::Verify() with draw_begin_coalesce, read once at Start before the back starts
+    bool verify_repeats{};
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -411,12 +461,20 @@ private:
     u64 note_function{};
     u64 published_local{};
     u64 consumed_cache{};
+    /// RepeatableMethod: the ring position after the last entry it sent
+    u64 repeat_end{~u64{0}};
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
+    /// VerifyRepeat: the last entry's word, the Repeatable entries seen and those that did not
+    /// follow the same word, since the last report
+    u64 verify_previous{};
+    u64 verify_mergeable{};
+    u64 verify_mismatches{};
+    u64 verify_report_ns{};
 
     /// Whether the back is done with the Vulkan scheduler until it gets more work: set after its
     /// idle hook ran, cleared before it executes entries.

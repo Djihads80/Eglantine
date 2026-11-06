@@ -3116,6 +3116,9 @@ public:
         void SetInlineIndexBuffer(Maxwell3D& maxwell3d, u32 index);
         void SetInlineIndexBuffer(Maxwell3D& maxwell3d, u32 method, const u32* base_start, u32 amount);
         void DrawBegin(Maxwell3D& maxwell3d);
+        /// Nx2Perf draw_begin_coalesce: the effect of `repeats` more DrawBegin calls right after
+        /// one, with no write in between.
+        void AddInstances(Maxwell3D& maxwell3d, u32 repeats);
         void DrawEnd(Maxwell3D& maxwell3d, u32 instance_count = 1, bool force_draw = false);
         void DrawIndexSmall(Maxwell3D& maxwell3d, u32 argument);
         void DrawTexture(Maxwell3D& maxwell3d);

@@ -1136,6 +1136,7 @@ struct Maxwell3D::FrontState {
     bool same_first{};  ///< Nx2Perf FrontSameFirst, read once
     bool class_table{}; ///< Nx2Perf FrontClassTable, read once
     bool writer_set_exec{}; ///< Nx2Perf WriterSetExec, read once
+    bool draw_begin_coalesce{}; ///< Nx2Perf DrawBeginCoalesce, read once
     bool verify{};      ///< Nx2Perf::Verify(), read once
     /// MacroReadWriterSet (FrontDrawEffect): the last lookup of the programs the registers bind,
     /// valid while those registers, the program epoch, the proofs and the GPU map are unchanged.
@@ -1539,6 +1540,8 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front->same_first = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontSameFirst);
         front->class_table = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontClassTable);
         front->writer_set_exec = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::WriterSetExec);
+        front->draw_begin_coalesce =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DrawBeginCoalesce);
         front->verify = VideoCommon::Nx2Perf::Verify();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
@@ -1704,7 +1707,21 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         }
         break;
     }
-    if (from_macro) {
+    if (fs.draw_begin_coalesce && method == MAXWELL3D_REG_INDEX(draw.begin) &&
+        ((value >> 26) & 3) == 1) [[unlikely]] {
+        // Nx2Perf draw_begin_coalesce: an instance loop's begin right after the same one only
+        // counts one more instance on the back (DrawManager::AddInstances). With Verify it is
+        // sent anyway, flagged for the back to check.
+        if (split.RepeatableMethod(this, method, argument, is_last_call, from_macro, effect,
+                                   fs.verify) &&
+            Profile::Enabled()) [[unlikely]] {
+            Profile::Add(Profile::Counter::DrawBeginCoalesced, 1);
+        }
+        if (!from_macro && (fs.class_table ? (cls & ClassDraw) != 0 : IsDrawMethod(method)) &&
+            FrontIsWriterDraw(fs.regs)) {
+            split.NoteWriter();
+        }
+    } else if (from_macro) {
         split.MacroWrite(this, method, argument, effect);
     } else {
         split.Method(this, method, argument, is_last_call, nullptr, effect);
