@@ -1329,6 +1329,31 @@ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType 
     if (addr == 0 || size == 0) {
         return;
     }
+    // Guest CPU writes to GPU-written memory are held back (OnCPUWrite) until a gather applies
+    // them to the caches. A download first writes the GPU's older copy over them in guest memory,
+    // and the gather then reads that back into the cache: the write is lost. Apply them first.
+    // From zortos293/Lichii 45e4cfb18d (its Yoshi demo program, written over a texel buffer a
+    // compute pass had written, read back as zeros). Only where the caches may be changed: the
+    // gather uploads, and only before a download (safe reads flush every page they read).
+    // Switch 2 programs; EDEN_NX2_FLUSH_HELD_WRITES=0 turns it off.
+    static const bool apply_held = [] {
+        const char* value = std::getenv("EDEN_NX2_FLUSH_HELD_WRITES");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (apply_held && Tegra::Nx2HeldWrites() && VideoCommon::GpuSplit::OwnsScheduler()) {
+        bool downloads = false;
+        if (True(which & VideoCommon::CacheType::BufferCache)) {
+            std::scoped_lock lock{buffer_cache.mutex};
+            downloads = buffer_cache.IsRegionGpuModified(addr, size);
+        }
+        if (!downloads && True(which & VideoCommon::CacheType::TextureCache)) {
+            std::scoped_lock lock{texture_cache.mutex};
+            downloads = texture_cache.IsRegionGpuModified(addr, size);
+        }
+        if (downloads) {
+            gpu.InvalidateGPUCache();
+        }
+    }
     if (True(which & VideoCommon::CacheType::TextureCache)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.DownloadMemory(addr, size);
