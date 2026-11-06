@@ -62,6 +62,10 @@ public:
     /// submit deferred work (logged every 2 s while it waits). False only when the back thread
     /// is not running, so nothing will submit it: the caller then submits it itself.
     bool WaitSubmitted(u64 tick);
+    /// Allows or stops DeferFlush (returns the previous state).
+    bool AllowDeferFlush(bool allow) {
+        return std::exchange(defer_flush_allowed, allow);
+    }
     /// Whether everything up to tick has been handed to the worker for submission.
     [[nodiscard]] bool IsSubmitted(u64 tick) const noexcept {
         return tick < master_semaphore->CurrentTick();
@@ -225,6 +229,7 @@ public:
 private:
     std::chrono::steady_clock::time_point last_flush{};
     bool flush_pending{};
+    bool defer_flush_allowed{true};
 
     class Command {
     public:
