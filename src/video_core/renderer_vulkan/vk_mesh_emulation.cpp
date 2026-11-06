@@ -17,6 +17,7 @@
 namespace Vulkan {
 namespace {
 constexpr u32 CHECK_SLOTS = 256;
+constexpr u64 MAX_FANOUT = 1024;
 }
 
 bool MeshEmulationEnabled(const Device& device) {
@@ -40,7 +41,8 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
     max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), 256ULL << 20);
     alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
     const char* const check = std::getenv("EDEN_NX2_MESH_EMULATE_CHECK");
-    if (check != nullptr && check[0] == '1') {
+    checking = check != nullptr && check[0] == '1';
+    {
         check_buffer = memory_allocator.CreateBuffer(
             VkBufferCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -72,6 +74,12 @@ std::pair<VkBuffer, VkDeviceSize> MeshEmulationBuffer::CheckSlot(u64 pipeline, u
     return {*check_buffer, slot * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader)};
 }
 
+u32 MeshEmulationBuffer::Fanout(u64 pipeline, u32 minimum) {
+    ReportChecks();
+    const auto it = fanouts.find(pipeline);
+    return it != fanouts.end() ? std::max(it->second, minimum) : minimum;
+}
+
 void MeshEmulationBuffer::ReportChecks() {
     if (!check_buffer || checks.empty()) {
         return;
@@ -88,7 +96,23 @@ void MeshEmulationBuffer::ReportChecks() {
         std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
                     sizeof(header));
         const bool overflow = entry.has_task && header.task_allocated > entry.capacity;
-        if ((overflow && overflows_logged++ < 32) || checks_logged++ < 64) {
+        if (entry.has_task && entry.groups != 0) {
+            // A quarter more than the most launched per task workgroup so far, in eights.
+            const u64 per_task = (u64{header.task_allocated} + entry.groups - 1) / entry.groups;
+            const u32 wanted = static_cast<u32>(
+                std::min<u64>((per_task + per_task / 4 + 7) / 8 * 8, MAX_FANOUT));
+            u32& fanout = fanouts[entry.pipeline];
+            if (wanted > fanout) {
+                if (overflow && overflows_logged < 32) {
+                    LOG_INFO(Render_Vulkan,
+                             "Emulated mesh draws {:016x}: {} mesh workgroups per task workgroup "
+                             "from now on",
+                             entry.pipeline, wanted);
+                }
+                fanout = wanted;
+            }
+        }
+        if (checking && ((overflow && overflows_logged++ < 32) || checks_logged++ < 64)) {
             LOG_INFO(Render_Vulkan,
                      "Emulated mesh draw {:016x} check: {} {} workgroups, {} mesh workgroups "
                      "launched, {} dispatched of {} slots, {} vertices drawn{}",

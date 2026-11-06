@@ -1423,7 +1423,11 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
         header_words + payload_words + slot_words > max_words) {
         return false;
     }
-    const u64 wanted{has_task ? u64{groups} * (fanout != 0 ? fanout : stages.task_threads)
+    // EDEN_NX2_MESH_EMULATE_FANOUT, else the task's threads, at first; then what the
+    // pipeline's task programs were seen to launch (read back).
+    const u64 wanted{has_task ? u64{groups} * mesh_emulation_buffer->Fanout(
+                                                  key.Hash(), fanout != 0 ? fanout
+                                                                          : stages.task_threads)
                               : u64{groups}};
     const u64 room{(max_words - header_words - payload_words) / slot_words};
     const u32 capacity{static_cast<u32>(std::min({wanted, room, u64{65535}}))};
@@ -1449,7 +1453,7 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     emulated_draw.size = words * sizeof(u32);
     emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size);
     mesh_emulation_buffer->draw = emulated_draw.region;
-    emulated_draw.check = mesh_emulation_buffer->Checking()
+    emulated_draw.check = has_task || mesh_emulation_buffer->Checking()
                               ? mesh_emulation_buffer->CheckSlot(key.Hash(), groups, has_task,
                                                                  capacity)
                               : std::pair<VkBuffer, VkDeviceSize>{};

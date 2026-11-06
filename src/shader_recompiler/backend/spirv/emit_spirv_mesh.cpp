@@ -176,8 +176,10 @@ void TaskEmulationEpilogue(EmitContext& ctx) {
         const Id room{ctx.OpSelect(ctx.U32[1], ctx.OpULessThan(ctx.U1, base, capacity),
                                    ctx.OpISub(ctx.U32[1], capacity, base), ctx.u32_zero_value)};
         const Id launched{ctx.OpUMin(ctx.U32[1], count, room)};
+        // Past the slots (base beyond them) the high mark stays at the capacity.
+        const Id end{ctx.OpUMin(ctx.U32[1], ctx.OpIAdd(ctx.U32[1], base, launched), capacity)};
         ctx.OpAtomicUMax(ctx.U32[1], EmulationWord(ctx, ctx.Const(MESH_EMULATION_DISPATCH_WORD)),
-                         scope, semantics, ctx.OpIAdd(ctx.U32[1], base, launched));
+                         scope, semantics, end);
         ctx.OpStore(ctx.mesh_emulation_shared_base, base);
         ctx.OpStore(ctx.mesh_emulation_shared_count, launched);
     });
@@ -217,8 +219,10 @@ void MeshEmulationEpilogue(EmitContext& ctx) {
         ctx.U1, ctx.OpIEqual(ctx.U1, WorkgroupIndex(ctx), ctx.u32_zero_value),
         ctx.OpIEqual(ctx.U1, LocalInvocation(ctx), ctx.u32_zero_value))};
     If(ctx, first, [&] {
-        const Id slots{
-            ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.num_workgroups), 0U)};
+        const Id slots{ctx.OpUMin(
+            ctx.U32[1],
+            ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.num_workgroups), 0U),
+            LoadEmulationWord(ctx, MESH_EMULATION_CAPACITY_WORD))};
         ctx.OpStore(EmulationWord(ctx, ctx.Const(MESH_EMULATION_DRAW_WORD)),
                     ctx.OpIMul(ctx.U32[1], slots, ctx.Const(ctx.mesh_info.max_primitives * 3)));
     });

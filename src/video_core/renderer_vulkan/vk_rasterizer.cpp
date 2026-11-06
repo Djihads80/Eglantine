@@ -451,6 +451,20 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             submitted = true;
             return;
         }
+        // Its compute and graphics pipelines can take seconds to compile on a phone: skip its
+        // draws until they are built. EDEN_NX2_MESH_EMULATE_WAIT=1 waits for them instead.
+        static const bool wait_for_build = [] {
+            const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_WAIT");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (!wait_for_build && !pipeline->IsBuilt()) {
+            if (frame_dump.Capturing()) [[unlikely]] {
+                frame_dump.NoteSkipped("draw", "emulated task/mesh pipeline building",
+                                       GraphicsPrograms(), maxwell3d->regs.rt[0].Address());
+            }
+            submitted = true;
+            return;
+        }
         pipeline->SetMeshEmulationBuffer(&mesh_emulation_buffer);
         mesh_dynamic_topology = pipeline->UsesExtendedDynamicState();
     }

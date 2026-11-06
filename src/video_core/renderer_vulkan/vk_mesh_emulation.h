@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -69,16 +70,21 @@ public:
     /// Times the draws' compute work while it captures.
     FrameDump* frame_dump{};
 
-    /// EDEN_NX2_MESH_EMULATE_CHECK=1: the headers of emulated draws are read back after their
-    /// dispatches and logged (mesh workgroups launched, dispatched and drawn).
+    /// The headers of emulated task draws are read back after their dispatches: the mesh
+    /// workgroups their task programs launched size the slots of the pipeline's next draws
+    /// (Fanout). EDEN_NX2_MESH_EMULATE_CHECK=1 reads back every draw's and logs them.
     [[nodiscard]] bool Checking() const noexcept {
-        return static_cast<bool>(check_buffer);
+        return checking;
     }
 
     /// Where the draw's header goes after its dispatches (a slot of the readback buffer), noted
-    /// with what the host asked for.
+    /// with what the host asked for; none when the readback slots are all pending.
     [[nodiscard]] std::pair<VkBuffer, VkDeviceSize> CheckSlot(u64 pipeline, u32 groups,
                                                               bool has_task, u32 capacity);
+
+    /// Mesh workgroups per task workgroup the pipeline's draws get slots for: at least
+    /// `minimum`, more once its task programs launched more.
+    [[nodiscard]] u32 Fanout(u64 pipeline, u32 minimum);
 
 private:
     struct Chunk {
@@ -105,7 +111,9 @@ private:
     Scheduler& scheduler;
     std::vector<Chunk> chunks;
     vk::Buffer check_buffer;
+    bool checking{};
     std::vector<Check> checks;
+    std::unordered_map<u64, u32> fanouts; ///< learned per pipeline
     u32 next_check_slot{};
     u32 checks_logged{};
     u32 overflows_logged{};
