@@ -1107,6 +1107,9 @@ struct Maxwell3D::FrontState {
     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
     /// The back's draw manager is in an instance loop (DrawMode::Instance): draw.end does nothing.
     bool instance_loop{};
+    bool same_first{};  ///< Nx2Perf FrontSameFirst, read once
+    bool class_table{}; ///< Nx2Perf FrontClassTable, read once
+    bool verify{};      ///< Nx2Perf::Verify(), read once
 };
 
 namespace {
@@ -1254,6 +1257,50 @@ bool FrontSkipSame() {
     }
 }
 
+// Nx2Perf FrontClassTable: the four functions above for each method, in one byte.
+constexpr u8 ClassOutsideDrawManager = 1 << 0;
+constexpr u32 ClassEffectShift = 1; ///< Two bits: GpuSplit::Effect
+constexpr u8 ClassDraw = 1 << 3;
+constexpr u8 ClassCbData = 1 << 4;
+
+u8 ComputeFrontClass(u32 method) {
+    constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    return static_cast<u8>(
+        (FrontHandledOutsideDrawManager(method) ? ClassOutsideDrawManager : 0) |
+        (static_cast<u8>(FrontMethodEffect(method)) << ClassEffectShift) |
+        (IsDrawMethod(method) ? ClassDraw : 0) |
+        (method >= cb_data && method < cb_data + 16 ? ClassCbData : 0));
+}
+
+const std::array<u8, Maxwell3D::Regs::NUM_REGS> front_class_table = [] {
+    std::array<u8, Maxwell3D::Regs::NUM_REGS> table{};
+    for (u32 method = 0; method < table.size(); ++method) {
+        table[method] = ComputeFrontClass(method);
+    }
+    return table;
+}();
+
+// The method's class from the table; with PERF_VERIFY, from the functions (logs differences).
+u8 FrontClass(u32 method, bool verify) {
+    const u8 cls = front_class_table[method];
+    if (verify) [[unlikely]] {
+        const u8 old = ComputeFrontClass(method);
+        if (old != cls) {
+            static std::atomic<u32> reports{};
+            if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_ERROR(HW_GPU, "Nx2Perf front: class table method {:#x} has {:#x}, functions {:#x}",
+                          method, cls, old);
+            }
+            return old;
+        }
+    }
+    return cls;
+}
+
+VideoCommon::GpuSplit::Effect ClassEffect(u8 cls) {
+    return static_cast<VideoCommon::GpuSplit::Effect>((cls >> ClassEffectShift) & 3);
+}
+
 } // Anonymous namespace
 
 bool Maxwell3D::FrontIsWriterDraw(const Regs& regs) {
@@ -1289,6 +1336,9 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+        front->same_first = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontSameFirst);
+        front->class_table = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontClassTable);
+        front->verify = VideoCommon::Nx2Perf::Verify();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -1314,6 +1364,25 @@ void Maxwell3D::ReleaseFront() {
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    // Nx2Perf FrontSameFirst: the same-value state write skip below, decided first. Outside
+    // Replay the value is the argument, and a tracked shadow RAM keeps it only if it holds it.
+    bool same_first = false;
+    if (fs.same_first) {
+        const bool tracked = fs.control == Regs::ShadowRamControl::Track ||
+                             fs.control == Regs::ShadowRamControl::TrackWithFilter;
+        same_first = !execution_mask[method] && fs.skip_same &&
+                     fs.control != Regs::ShadowRamControl::Replay &&
+                     fs.regs[method] == argument && (!tracked || fs.shadow[method] == argument);
+        if (same_first && !fs.verify) {
+            if (Profile::Enabled()) [[unlikely]] {
+                Profile::Add(Profile::Counter::MethodWrites, 1);
+                Profile::Add(from_macro ? Profile::Counter::MacroWrites
+                                        : Profile::Counter::DirectWrites, 1);
+                Profile::Add(Profile::Counter::SameValueWrites, 1);
+            }
+            return;
+        }
+    }
     // As ProcessShadowRam does on the back.
     u32 value = argument;
     bool shadow_kept = true;
@@ -1324,8 +1393,21 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     } else if (fs.control == Regs::ShadowRamControl::Replay) {
         value = fs.shadow[method];
     }
+    if (fs.same_first && fs.verify) [[unlikely]] {
+        const bool old_skip = !execution_mask[method] && fs.regs[method] == value &&
+                              shadow_kept && fs.skip_same;
+        if (old_skip != same_first) {
+            static std::atomic<u32> reports{};
+            if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_ERROR(HW_GPU, "Nx2Perf front: same-first method {:#x} argument {:#x} skip {}, "
+                          "old {} (control {}, regs {:#x})", method, argument, same_first, old_skip,
+                          static_cast<u32>(fs.control), fs.regs[method]);
+            }
+        }
+    }
     if (Profile::Enabled()) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
+        Profile::Add(from_macro ? Profile::Counter::MacroWrites : Profile::Counter::DirectWrites, 1);
     }
     using Effect = VideoCommon::GpuSplit::Effect;
     // What the entry may write on the back (FrontDmaRead): any method may issue a deferred
@@ -1360,8 +1442,13 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     }
     std::optional<GPUVAddr> cb_write;
     u32 cb_room{};
+    if (Profile::Enabled() && fs.regs[method] == value) [[unlikely]] {
+        Profile::AddSameExecutable(method);
+    }
     fs.regs[method] = value;
-    effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
+    const u8 cls = fs.class_table ? FrontClass(method, fs.verify) : u8{0};
+    effect = VideoCommon::SplitWriteTracker::Combine(
+        effect, fs.class_table ? ClassEffect(cls) : FrontMethodEffect(method));
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
     switch (method) {
     case MAXWELL3D_REG_INDEX(shadow_ram_control):
@@ -1389,11 +1476,13 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
         break;
     default:
-        if (method >= cb_data && method < cb_data + 16) {
+        if (fs.class_table ? (cls & ClassCbData) != 0
+                           : method >= cb_data && method < cb_data + 16) {
             cb_write = ConstBufferWriteAddress(fs.regs);
             cb_room = ConstBufferRoomWords(fs.regs);
             fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
-        } else if (!FrontHandledOutsideDrawManager(method)) {
+        } else if (fs.class_table ? (cls & ClassOutsideDrawManager) == 0
+                                  : !FrontHandledOutsideDrawManager(method)) {
             fs.draw_pending = true;
         }
         break;
@@ -1402,7 +1491,8 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         split.MacroWrite(this, method, argument, effect);
     } else {
         split.Method(this, method, argument, is_last_call, nullptr, effect);
-        if (IsDrawMethod(method) && FrontIsWriterDraw(fs.regs)) {
+        if ((fs.class_table ? (cls & ClassDraw) != 0 : IsDrawMethod(method)) &&
+            FrontIsWriterDraw(fs.regs)) {
             split.NoteWriter();
         }
     }
@@ -1428,7 +1518,23 @@ void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& spl
         }
         return;
     }
+    if (front_run_record != nullptr) [[unlikely]] {
+        front_run_record->push_back({method, argument, is_last_call ? 1U : 0U});
+    }
     FrontWrite(split, fs, method, argument, is_last_call, false);
+}
+
+void Maxwell3D::FrontCallMethodRun(Core::System& system, VideoCommon::GpuSplit& split,
+                                   u32 method, const u32* words, u32 count, bool incrementing,
+                                   u32 methods_pending) {
+    // FrontCallMethod for each word, as DmaPusher::ProcessCommands calls it word by word.
+    DEBUG_ASSERT(count <= methods_pending &&
+                 (incrementing ? method + count : method + 1) <= MacroRegistersStart);
+    auto& fs = Front(system, split);
+    for (u32 i = 0; i < count; ++i) {
+        FrontWrite(split, fs, incrementing ? method + i : method, words[i],
+                   methods_pending - i <= 1, false);
+    }
 }
 
 void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
@@ -1458,6 +1564,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     Effect effect = fs.draw_pending ? Effect::Gpu : Effect::None;
     std::optional<GPUVAddr> cb_write;
     u32 cb_room{};
+    const u8 cls = fs.class_table ? FrontClass(method, fs.verify) : u8{0};
     if (method >= cb_data && method < cb_data + 16) {
         cb_write = ConstBufferWriteAddress(fs.regs);
         cb_room = ConstBufferRoomWords(fs.regs);
@@ -1497,7 +1604,8 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             if (!execution_mask[method]) {
                 continue;
             }
-            effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
+            effect = VideoCommon::SplitWriteTracker::Combine(
+                effect, fs.class_table ? ClassEffect(cls) : FrontMethodEffect(method));
             switch (method) {
             case MAXWELL3D_REG_INDEX(shadow_ram_control):
                 fs.control = static_cast<Regs::ShadowRamControl>(argument);
@@ -1522,7 +1630,8 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
                 fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
                 break;
             default:
-                if (!FrontHandledOutsideDrawManager(method)) {
+                if (fs.class_table ? (cls & ClassOutsideDrawManager) == 0
+                                   : !FrontHandledOutsideDrawManager(method)) {
                     fs.draw_pending = true;
                 }
                 break;
@@ -1530,7 +1639,8 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         }
     }
     split.MultiMethod(this, method, base_start, amount, methods_pending, nullptr, effect);
-    if (IsDrawMethod(method) && FrontIsWriterDraw(fs.regs)) {
+    if ((fs.class_table ? (cls & ClassDraw) != 0 : IsDrawMethod(method)) &&
+        FrontIsWriterDraw(fs.regs)) {
         split.NoteWriter();
     }
     if (cb_write) {

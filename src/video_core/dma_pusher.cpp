@@ -343,6 +343,14 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            if (!dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= non_puller_methods && dma_state.method_count > 1 &&
+                g_semaphore_watch == 0 && FrontRun(commands, word_offset, index)) {
+                if (puller.HasPendingAcquire()) {
+                    return index;
+                }
+                continue;
+            }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
                 dma_state.method >= non_puller_methods &&
@@ -415,6 +423,98 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
         }
     }
     return commands.size();
+}
+
+// Nx2Perf FrontRun: the rest of an incrementing 3D command below the macro range, all of it in
+// `commands`, written on the split front in one call (Maxwell3D::FrontCallMethodRun): the same
+// FrontCallMethod sequence CallMethod makes word by word, then the state that loop leaves.
+bool DmaPusher::FrontRun(std::span<const CommandHeader> commands, size_t word_offset,
+                         size_t& index) {
+    if (!VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontRun)) {
+        return false;
+    }
+    auto& split = VideoCommon::GpuSplit::Get();
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    if (!split.Active() || !split.FrontMacros() || count > commands.size() - index ||
+        method + count > MacroRegistersStart || puller.HasPendingAcquire() ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return false;
+    }
+    auto* const subchannel = subchannels[dma_state.subchannel];
+    if (subchannel == nullptr) {
+        return false;
+    }
+    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
+    if (!maxwell3d->GetNativeMacroEngine().native_turing) {
+        return false;
+    }
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        VerifyFrontRun(*maxwell3d, commands, word_offset, index);
+        return true;
+    }
+    maxwell3d->FrontCallMethodRun(system, split, method, &commands[index].argument, count, true,
+                                  count);
+    dma_state.dma_word_offset = u64((word_offset + index + count - 1) * sizeof(u32));
+    dma_state.is_last_call = true;
+    dma_state.method = method + count;
+    dma_state.method_count = 0;
+    index += count;
+    return true;
+}
+
+// EDEN_NX2_PERF_VERIFY: the words go through the per-word path (authoritative), and the writes
+// FrontCallMethod gets and the state left are compared with what FrontRun would have made.
+void DmaPusher::VerifyFrontRun(Engines::Maxwell3D& maxwell3d,
+                               std::span<const CommandHeader> commands, size_t word_offset,
+                               size_t& index) {
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    const size_t start = index;
+    thread_local std::vector<std::array<u32, 3>> expected;
+    thread_local std::vector<std::array<u32, 3>> recorded;
+    expected.clear();
+    recorded.clear();
+    for (u32 i = 0; i < count; ++i) {
+        expected.push_back({method + i, commands[start + i].argument, count - i <= 1 ? 1U : 0U});
+    }
+    maxwell3d.front_run_record = &recorded;
+    bool acquire = false;
+    for (u32 i = 0; i < count; ++i) {
+        const auto command_header = commands[index];
+        dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
+        dma_state.is_last_call = dma_state.method_count <= 1;
+        CallMethod(command_header.argument);
+        dma_state.method += !dma_state.non_incrementing ? 1 : 0;
+        dma_state.non_incrementing |= dma_increment_once;
+        dma_state.method_count--;
+        index++;
+        if (puller.HasPendingAcquire()) {
+            acquire = true; // ProcessCommands returns here, as it would have after this word
+            break;
+        }
+    }
+    maxwell3d.front_run_record = nullptr;
+    const bool state_ok = dma_state.method == method + count && dma_state.method_count == 0 &&
+                          dma_state.is_last_call && !dma_state.non_incrementing &&
+                          index == start + count &&
+                          dma_state.dma_word_offset ==
+                              u64((word_offset + start + count - 1) * sizeof(u32));
+    if (acquire || !state_ok || recorded != expected) {
+        static std::atomic<u32> reports{};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+            size_t first = 0;
+            while (first < recorded.size() && first < expected.size() &&
+                   recorded[first] == expected[first]) {
+                ++first;
+            }
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf front: run method {:#x} count {}: {} of {} writes as expected "
+                      "(first difference at {}), state {}, acquire mid-run {}",
+                      method, count, recorded.size(), expected.size(), first,
+                      state_ok ? "same" : "differs", acquire);
+        }
+    }
 }
 
 // NVN on Switch 2 ends GPFIFO entries in the middle of a method's data and calls another command

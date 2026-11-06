@@ -48,6 +48,9 @@ enum class Opt : unsigned {
     MacroReadWriterSet, ///< Early MME reads wait only for entries that can write memory
     PreflushAging,      ///< Preflush marks the CPU stopped reading age out
     EagerPublish,       ///< The front publishes ring entries while the back is idle, and at writers
+    FrontSameFirst,     ///< Split front: same-value state writes skipped before any other work
+    FrontClassTable,    ///< Split front: executable method classes from one precomputed table
+    FrontRun,           ///< Split front: a command's direct 3D register words written in one call
     Count,
 };
 
@@ -60,13 +63,15 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_read_early",
     "acquire_early", "macro_read_cb_overlay", "macro_read_writer_set", "preflush_aging",
     "eager_publish",
+    "front_same_first", "front_class_table", "front_run",
 };
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
 inline constexpr unsigned DefaultOffMask() {
     unsigned mask = 0;
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
-                          Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish}) {
+                          Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish,
+                          Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun}) {
         mask |= 1U << static_cast<unsigned>(opt);
     }
     return mask;
