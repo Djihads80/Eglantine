@@ -1704,6 +1704,14 @@ public:
     }
 
     ~INx2Vi2Session() override {
+        if (m_release_timer) {
+            system.CoreTiming().UnscheduleEvent(m_release_timer);
+            auto& syncpoints = system.Host1x().GetSyncpointManager();
+            while (syncpoints.GetGuestSyncpointValue(m_release_syncpoint) != m_release_value) {
+                syncpoints.IncrementGuest(m_release_syncpoint);
+            }
+            NvdrvSyncpoints().FreeSyncpoint(m_release_syncpoint);
+        }
         // The vsync callback may be running on the HostTiming thread: empty its event list under
         // its lock first (it holds the state, not this session), then close the events.
         {
@@ -1822,7 +1830,10 @@ private:
         const auto waited = std::chrono::steady_clock::now();
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
-        PaceToVblank(w[12]);
+        const auto release = PresentQueue() ? QueueRelease(w[12]) : std::array<u32, 4>{};
+        if (!PresentQueue()) {
+            PaceToVblank(w[12]);
+        }
         const auto paced = std::chrono::steady_clock::now();
         if (landed_lane != LandedLane::None) {
             // After compositing and pacing, so the landing overlaps them.
@@ -1893,8 +1904,69 @@ private:
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
-                             static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
+                             static_cast<u32>(AvailableSlots >> 32), release[0], release[1],
+                             release[2], release[3]});
     }
+
+    /// Returns presentation fences instead of blocking the present thread until the next flip.
+    /// This keeps the display wait out of Wonder's CPU frame measurement.
+    /// EDEN_NX2_PRESENT_QUEUE=0 restores blocking presentation pacing.
+    static bool PresentQueue() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_PRESENT_QUEUE");
+            return value == nullptr || value[0] != '0';
+        }();
+        return enabled;
+    }
+
+    /// Returns the allocator for display release syncpoints.
+    Nvidia::NvCore::SyncpointManager& NvdrvSyncpoints() {
+        return system.ServiceManager()
+            .GetService<Nvidia::NVDRV>("nvdrv", true)
+            ->GetModule()
+            ->GetContainer()
+            .GetSyncpointManager();
+    }
+
+    /// Returns the NativeSyncHandle {~syncpoint, 0, value, 0} of a fence signalled when this frame's
+    /// swap interval has passed after the previous one (at once when the game is slower).
+    std::array<u32, 4> QueueRelease(u32 timing) {
+        if (m_release_syncpoint == ~0U) {
+            m_release_syncpoint = NvdrvSyncpoints().AllocateSyncpoint(true);
+            m_release_value = system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(
+                m_release_syncpoint);
+            m_release_timer = Core::Timing::CreateEvent(
+                "nx2:vi2 buffer release",
+                [&syncpoints = system.Host1x().GetSyncpointManager(), id = m_release_syncpoint](
+                    s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                    syncpoints.IncrementGuest(id);
+                    return std::nullopt;
+                });
+            LOG_INFO(Service, "nx2:vi2 display release syncpoint {}", m_release_syncpoint);
+        }
+        const u32 swap_interval = SwapInterval(timing);
+        const u32 hz = timing & 0xffff;
+        const u32 refresh_rate = hz >= 30 && hz <= 240 ? hz : 60;
+        if (timing != std::exchange(m_swap_word, timing)) {
+            LOG_INFO(Service, "nx2:vi2 present #{} queued swap interval {} at {} Hz",
+                     m_presents, swap_interval, refresh_rate);
+        }
+        const auto now = system.CoreTiming().GetGlobalTimeNs();
+        std::chrono::nanoseconds interval{};
+        if (Settings::values.use_speed_limit.GetValue() && Settings::SpeedLimit() != 0) {
+            interval = std::chrono::nanoseconds{
+                100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
+        }
+        m_release_time = interval.count() == 0 ? now : (std::max)(now, m_release_time);
+        system.CoreTiming().ScheduleEvent(m_release_time, m_release_timer, true);
+        m_release_time += interval;
+        return {~m_release_syncpoint, 0, ++m_release_value, 0};
+    }
+
+    u32 m_release_syncpoint{~0U};
+    u32 m_release_value{};
+    std::chrono::nanoseconds m_release_time{};
+    std::shared_ptr<Core::Timing::EventType> m_release_timer;
 
     // The console's compositor frees a buffer only once its frame's GPU fence has passed, which
     // is what keeps a game from running ahead of the GPU. This reply always reports every buffer
@@ -1923,13 +1995,8 @@ private:
     u32 m_swap_word{};
     Nx2OotTime::FrameDelta m_oot_frame_delta;
 
-    // timing: present word 12, (swap interval << 16) | refresh rate. Fire Emblem: Fortune's Weave
-    // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
-    // at every vblank it ran at double speed. EDEN_NX2_SWAP_INTERVAL=<n> forces the interval.
-    void PaceToVblank(u32 timing) {
-        if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
-            return;
-        }
+    /// Resolves the requested interval and existing title/debug overrides for both pacing paths.
+    u32 SwapInterval(u32 timing) {
         static const u32 forced_interval = [] {
             const char* value = std::getenv("EDEN_NX2_SWAP_INTERVAL");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
@@ -1945,6 +2012,17 @@ private:
         if (forced_interval != 0) {
             swap_interval = forced_interval;
         }
+        return swap_interval;
+    }
+
+    // timing: present word 12, (swap interval << 16) | refresh rate. Fire Emblem: Fortune's Weave
+    // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
+    // at every vblank it ran at double speed. EDEN_NX2_SWAP_INTERVAL=<n> forces the interval.
+    void PaceToVblank(u32 timing) {
+        if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
+            return;
+        }
+        const u32 swap_interval = SwapInterval(timing);
         const u32 refresh_rate = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service, "nx2:vi2 present #{} swap interval {} at {} Hz (word 12 = {:#x})",
@@ -2266,7 +2344,11 @@ private:
         system.GPU().RequestComposite(std::move(layers), std::move(fences));
         CaptureFrame();
         DumpRanges();
-        system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
+        // With the release fence pacing the game, limiting here would hold the present thread
+        // again (the wait the games' frame timers must not see).
+        if (!PresentQueue()) {
+            system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
+        }
         system.GetPerfStats().EndSystemFrame();
         system.GetPerfStats().BeginSystemFrame();
     }
