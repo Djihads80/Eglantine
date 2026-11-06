@@ -18,6 +18,7 @@
 #include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/errors.h"
 #include "core/file_sys/fs_directory.h"
@@ -555,6 +556,13 @@ Result FSP_SRV::OpenDataStorageWithProgramIndex(OutInterface<IStorage> out_inter
 
     auto patched_romfs = romfs_controller->OpenPatchedRomFSWithProgramIndex(
         program_id, program_index, FileSys::ContentRecordType::Program);
+
+    // Loose (extracted) dumps have no NCA in the content provider; the current program's own
+    // index still resolves to the RomFS the loader already opened.
+    if (!patched_romfs &&
+        FileSys::GetBaseTitleIDWithProgramIndex(program_id, program_index) == program_id) {
+        patched_romfs = romfs_controller->OpenRomFSCurrentProcess();
+    }
 
     if (!patched_romfs) {
         // TODO: Find the right error code to use here

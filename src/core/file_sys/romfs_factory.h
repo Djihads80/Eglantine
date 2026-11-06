@@ -4,6 +4,8 @@
 #pragma once
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "common/common_types.h"
 #include "core/file_sys/vfs/vfs_types.h"
@@ -32,6 +34,10 @@ enum class StorageId : u8 {
     NandUser = 4,
     SdCard = 5,
 };
+
+// Embedded NUP add-on content has no NCA; aoc:u lists these entries and Open() serves them.
+void SetLooseAOC(std::vector<std::pair<u64, VirtualFile>> entries);
+[[nodiscard]] std::vector<u64> GetLooseAOCTitleIDs();
 
 /// File system interface to the RomFS archive
 class RomFSFactory {

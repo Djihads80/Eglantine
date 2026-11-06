@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
+#include <mutex>
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -68,7 +69,37 @@ VirtualFile RomFSFactory::OpenPatchedRomFSWithProgramIndex(u64 title_id, u8 prog
     return OpenPatchedRomFS(res_title_id, type);
 }
 
+namespace {
+// One global set, cleared on every boot and shutdown; only one title runs at a time.
+std::mutex loose_aoc_mutex;
+std::vector<std::pair<u64, VirtualFile>> loose_aoc;
+} // namespace
+
+void SetLooseAOC(std::vector<std::pair<u64, VirtualFile>> entries) {
+    std::scoped_lock lk{loose_aoc_mutex};
+    loose_aoc = std::move(entries);
+}
+
+std::vector<u64> GetLooseAOCTitleIDs() {
+    std::scoped_lock lk{loose_aoc_mutex};
+    std::vector<u64> ids;
+    for (const auto& [id, romfs] : loose_aoc) {
+        ids.push_back(id);
+    }
+    return ids;
+}
+
 VirtualFile RomFSFactory::Open(u64 title_id, StorageId storage, ContentRecordType type) const {
+    if (type == ContentRecordType::Data) {
+        std::scoped_lock lk{loose_aoc_mutex};
+        for (const auto& [id, romfs] : loose_aoc) {
+            if (id == title_id) {
+                LOG_INFO(Service_FS, "Serving loose add-on content {:016X}", title_id);
+                return romfs;
+            }
+        }
+    }
+
     const std::shared_ptr<NCA> res = GetEntry(title_id, storage, type);
     if (res == nullptr) {
         return nullptr;

@@ -20,8 +20,36 @@
 #include "common/logging.h"
 #include "common/swap.h"
 #include "core/file_sys/vfs/vfs_offset.h"
+#include "core/file_sys/common_funcs.h"
+#include "core/file_sys/romfs.h"
 
 namespace FileSys {
+
+std::vector<std::pair<u64, VirtualFile>> NupContainer::GetAddonRomFS(u64 program_id) {
+    std::map<u64, std::size_t> selected;
+    for (std::size_t i = 0; i < packages.size(); ++i) {
+        const auto& package = packages[i];
+        if (package.kind != PackageKind::Addon ||
+            GetBaseTitleID(package.title_id) != GetBaseTitleID(program_id) ||
+            package.title_id < GetAOCBaseTitleID(program_id) || GetRomFSDir(i) == nullptr) {
+            continue;
+        }
+        const auto it = selected.find(package.title_id);
+        if (it == selected.end() || package.version > packages[it->second].version) {
+            selected[package.title_id] = i;
+        }
+    }
+    std::vector<std::pair<u64, VirtualFile>> entries;
+    for (const auto& [title_id, index] : selected) {
+        if (auto romfs = CreateRomFS(GetRomFSDir(index))) {
+            LOG_INFO(Loader, "NUP add-on content {:016X} (v{}) mounted", title_id,
+                     packages[index].version);
+            entries.emplace_back(title_id, std::move(romfs));
+        }
+    }
+    return entries;
+}
+
 namespace {
 
 constexpr u32 NoDir = 0xFFFFFFFF;
@@ -134,6 +162,7 @@ static_assert(sizeof(TlvHeader) == TlvHeaderSize);
 
 enum MetaType : u16 {
     MetaNpdm = 0x0001,
+    MetaNacp = 0x0002,
     MetaIcon = 0x0003,
     MetaDisplayVersion = 0x0004,
     MetaTitleName = 0x0005,
@@ -615,6 +644,13 @@ bool NupContainer::ParseMeta(PackageInfo& package) {
         switch (header.type) {
         case MetaNpdm:
             package.npdm.assign(payload, payload + header.size);
+            break;
+        case MetaNacp:
+            // Raw NACP carries edition launch metadata and legacy save/DLC ownership.
+            if (header.size != 0x4000) {
+                return false;
+            }
+            package.nacp.assign(payload, payload + header.size);
             break;
         case MetaIcon:
             package.icon.assign(payload, payload + header.size);
