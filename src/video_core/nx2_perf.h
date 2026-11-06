@@ -89,6 +89,10 @@ enum class Opt : unsigned {
     /// Guest CPU cores and HostTiming run on the non-V-Cache CCD; the GPU threads keep the
     /// V-Cache CCD (asymmetric L3 with V-Cache pinning only)
     GuestCcd,
+    /// With BindMemo: a memo hit is decided by the bound range's own CPU-modified bits and a
+    /// buffer create/delete epoch, not by the global tracker epochs; a new scheduler tick only
+    /// redoes the usage mark
+    BindMemoLocal,
     Count,
 };
 
@@ -113,6 +117,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "writer_set_exec",
     "exact_noted_writes",
     "guest_ccd",
+    "bind_memo_local",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -120,7 +125,8 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemo) == 36 &&
               static_cast<unsigned>(Opt::WriterSetExec) == 45 &&
               static_cast<unsigned>(Opt::ExactNotedWrites) == 46 &&
-              static_cast<unsigned>(Opt::GuestCcd) == 47);
+              static_cast<unsigned>(Opt::GuestCcd) == 47 &&
+              static_cast<unsigned>(Opt::BindMemoLocal) == 48);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -144,7 +150,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
-                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd}) {
+                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd,
+                          Opt::BindMemoLocal}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -158,7 +165,7 @@ inline constexpr u64 DefaultOffMask() {
 /// guest rewrites constants the back has not read yet: incessant brightness flashes in play);
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
-/// exact_noted_writes, guest_ccd (not measured yet).
+/// exact_noted_writes, guest_ccd, bind_memo_local (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -166,7 +173,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
-                                  Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd);
+                                  Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
+                                  Bit(Opt::BindMemoLocal);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -174,6 +182,7 @@ static_assert(IsOff(always_off, 45) && IsOff(DefaultOffMask(), 45));
 static_assert(IsOff(DefaultOffMask(), 36));
 static_assert(!IsOff(DefaultOffMask(), 0));
 static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
+static_assert(IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).

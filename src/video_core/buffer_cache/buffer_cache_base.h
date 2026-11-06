@@ -545,10 +545,14 @@ public:
         u64 gpu_epoch{};
         u64 tick{};
         u64 frame{};
+        u64 buffer_epoch{}; ///< bind_memo_local
     };
     std::array<std::array<BindMemo, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_bind_memo{};
     std::array<std::array<BindMemo, NUM_STORAGE_BUFFERS>, NUM_STAGES> storage_bind_memo{};
     u64 bind_memo_mismatches = 0;
+    /// Nx2Perf bind_memo_local: bumped by CreateBuffer and DeleteBuffer, so a memo's buffer_id
+    /// cannot name a reused slot while it is unchanged.
+    u64 buffer_epoch = 0;
 
     static constexpr size_t ResolvedStorageAddrCacheSize = 4096;
     struct ResolvedStorageAddrCacheEntry {
@@ -685,6 +689,9 @@ private:
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
 
     [[nodiscard]] static bool BindMemoEnabled();
+    [[nodiscard]] static bool BindMemoLocalEnabled();
+    /// bind_memo_local: the memo's usage mark was made on the current scheduler tick.
+    [[nodiscard]] bool BindMemoUsageCurrent(const BindMemo& memo);
     [[nodiscard]] bool BindMemoHit(const BindMemo& memo, Buffer& buffer, BufferId buffer_id,
                                    DAddr device_addr, u32 size, u32 offset, const char* kind,
                                    size_t stage, u32 index);

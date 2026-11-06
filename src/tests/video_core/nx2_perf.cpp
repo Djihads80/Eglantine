@@ -31,7 +31,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::PipelineKeepPreloaded) ||
                                   i == Index(Opt::WriterSetExec) ||
                                   i == Index(Opt::ExactNotedWrites) ||
-                                  i == Index(Opt::GuestCcd);
+                                  i == Index(Opt::GuestCcd) ||
+                                  i == Index(Opt::BindMemoLocal);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -44,6 +45,16 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ExactNotedWrites)));
     REQUIRE(ParseOffMask(false, "exact_noted_writes", "", false) ==
             (always_off & ~Bit(Opt::ExactNotedWrites)));
+}
+
+TEST_CASE("Nx2Perf bind_memo_local is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::BindMemoLocal) == 48);
+    REQUIRE(opt_names[Index(Opt::BindMemoLocal)] == "bind_memo_local");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::BindMemoLocal)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::BindMemoLocal)));
+    REQUIRE(ParseOffMask(false, "bind_memo_local", "", false) ==
+            (always_off & ~Bit(Opt::BindMemoLocal)));
+    REQUIRE(!IsOff(ParseOffMask(false, "bind_memo_local", "", false), Index(Opt::BindMemo)));
 }
 
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {
