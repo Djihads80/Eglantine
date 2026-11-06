@@ -184,6 +184,8 @@ inline constexpr u64 DefaultOffMask() {
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
 /// present_guest_wait (guest panic at load in a speed run); present_one_ahead (+9 FPS, but the
 /// guest rewrites constants the back has not read yet: incessant brightness flashes in play);
+/// frames_ahead (same hazard: the lab's flash check sees 25-40% of frames at another brightness
+/// with it on, 0 with it off; ~5 ms/frame slower at the Kokiri spawn without it);
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
@@ -191,7 +193,7 @@ inline constexpr u64 DefaultOffMask() {
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
-                                  Bit(Opt::PresentOneAhead) |
+                                  Bit(Opt::PresentOneAhead) | Bit(Opt::FramesAhead) |
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
