@@ -151,6 +151,10 @@ public:
         OnCacheInvalidation(addr, size);
     }
 
+    /// A semaphore release or report the GPU wrote straight to guest memory (any thread): newer
+    /// there than any copy of those bytes a cache holds.
+    virtual void OnGpuDirectWrite([[maybe_unused]] DAddr addr, [[maybe_unused]] u64 size) {}
+
     virtual bool TryCacheInvalidation(DAddr addr, u64 size) {
         if (MustFlushRegion(addr, size, VideoCommon::CacheType::BufferCache)) return false;
         OnCacheInvalidation(addr, size);

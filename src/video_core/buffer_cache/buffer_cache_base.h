@@ -249,6 +249,10 @@ public:
 
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
+    /// Guest memory holds newer bytes than the buffer here (a release written straight to it):
+    /// no download may write the buffer's copy over them.
+    void ForgetGpuWrite(DAddr device_addr, u64 size);
+
     /// Cancels pending downloads over the range, so a fence can't write them over newer bytes.
     void ClearDownload(DAddr base_addr, u64 size);
 

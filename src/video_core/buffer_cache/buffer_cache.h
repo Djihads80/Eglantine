@@ -240,6 +240,15 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
 }
 
 template <class P>
+void BufferCache<P>::ForgetGpuWrite(DAddr device_addr, u64 size) {
+    if (!gpu_modified_ranges.Intersects(device_addr, size)) {
+        return;
+    }
+    ClearDownload(device_addr, size);
+    gpu_modified_ranges.Subtract(device_addr, size);
+}
+
+template <class P>
 bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     const bool is_dirty = IsRegionRegistered(device_addr, size);
     if (!is_dirty) {

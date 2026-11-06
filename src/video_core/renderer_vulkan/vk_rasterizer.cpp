@@ -1506,6 +1506,24 @@ void RasterizerVulkan::OnCachedWrite(DAddr addr, u64 size) {
     pipeline_cache.InvalidateRegion(addr, size);
 }
 
+void RasterizerVulkan::OnGpuDirectWrite(DAddr addr, u64 size) {
+    // Releases and reports are written to guest memory, not to the buffers: where a buffer's
+    // range is GPU-written, its copy of these bytes is older, and a download (a semaphore read
+    // flushes first) writes it back over the release (suspected in Ocarina of Time's 9 s wait
+    // on a semaphore 19 releases behind its neighbours). Such ranges drop these bytes.
+    // Switch 2 programs; EDEN_NX2_RELEASE_KEEP=0 turns it off.
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_RELEASE_KEEP");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!enabled || addr == 0 || size == 0 ||
+        !Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::scoped_lock lock{buffer_cache.mutex};
+    buffer_cache.ForgetGpuWrite(addr, size);
+}
+
 bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) return true;
     {
