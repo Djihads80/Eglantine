@@ -2239,16 +2239,26 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
                     (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
                     return fail(index, "native array depth comparison sample mode");
-                if (!bind_texture_buffer(binding)) return fail(index, "native texture descriptor buffer conflict");
-                for (u32 i = 0; i < 3; ++i) {
-                    const u32 source = i < 2 ? source_a + i : source_b;
-                    emit(0x5c98000000000000ULL | predicate | (250 + i) |
-                         (u64{15} << 39) | (u64{source} << 20));
+                // A second descriptor buffer is read bindless: TEX.B takes the handle, loaded from
+                // that buffer, as its first meta register, then the depth reference.
+                const bool second_buffer = !bind_texture_buffer(binding);
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                for (u32 i = 0; i < 3; ++i) copy(250 + i, i < 2 ? source_a + i : source_b);
+                if (second_buffer) {
+                    emit(0x4c98000000070000ULL | 246 | (u64{15} << 39) | (u64{insn.Bits(40, 14)} << 20) |
+                         (u64{binding} << 34));
+                    copy(247, source_b + 1);
+                    emit(0xde80000000000000ULL | predicate | dest | (u64{250} << 8) | (u64{246} << 20) |
+                         (u64{3} << 28) | (u64{1} << 31) | (u64{insn.Bits(90, 1)} << 49) |
+                         (u64{1} << 50) | (u64{7} << 51));
+                } else {
+                    emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
+                         (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
+                         (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                         (u64{1} << 50) | (u64{7} << 51));
                 }
-                emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
-                     (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
-                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
-                     (u64{1} << 50) | (u64{7} << 51));
                 break;
             }
             // General form: gather the native operand list (array index first, coordinates,
