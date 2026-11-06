@@ -59,6 +59,13 @@ public:
     bool DeferFlush();
     /// Submits deferred work (the split's back, from its idle hook).
     void FlushDeferred();
+    /// Whether a deferred submission waits (DeferFlush), and since when.
+    [[nodiscard]] bool HasDeferredFlush() const noexcept {
+        return flush_pending;
+    }
+    [[nodiscard]] std::chrono::steady_clock::time_point DeferredSince() const noexcept {
+        return deferred_since;
+    }
     /// Threads other than the split's back: waits until tick is submitted, asking the back to
     /// submit deferred work (logged every 2 s while it waits). False only when the back thread
     /// is not running, so nothing will submit it: the caller then submits it itself.
@@ -288,6 +295,7 @@ public:
 
 private:
     std::chrono::steady_clock::time_point last_flush{};
+    std::chrono::steady_clock::time_point deferred_since{}; ///< When flush_pending was set
     bool flush_pending{};
 
     class Command {

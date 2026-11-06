@@ -124,6 +124,7 @@ struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, 64> counters{}; ///< See Counter
     std::array<u64, static_cast<size_t>(FlushOrigin::Count)> flushes{};
+    u64 hook_flushes_skipped{}; ///< Nx2Perf hook_lazy_flush: deferred submits the idle hook left
     u64 list_copy_done_ns{}; ///< Command list copies the front waited for: recorded to done
     u64 list_copy_done_count{};
     /// Executable methods the front sent with the value the register held (approximate top 16,
@@ -347,6 +348,13 @@ inline void AddFlush() {
     }
 }
 
+/// Nx2Perf hook_lazy_flush: the split back's idle hook left a deferred submit pending.
+inline void AddHookFlushSkipped() {
+    if (Enabled()) {
+        ++t_data.hook_flushes_skipped;
+    }
+}
+
 /// The front waited for a command list copy recorded at `recorded` (Now; 0 when not profiling)
 /// and it is done now.
 inline void AddListCopyDone(u64 recorded) {
@@ -523,6 +531,10 @@ inline void Report(const char* thread_name = "GPU thread") {
     if (!flushes.empty()) {
         flushes.pop_back();
         line += " | submits by origin:" + flushes;
+    }
+    if (data.hook_flushes_skipped != 0) {
+        line += fmt::format(" | idle hook submits skipped {:.0f}/s",
+                            static_cast<double>(data.hook_flushes_skipped) * 1e9 / window);
     }
     if (data.list_copy_done_count != 0) {
         line += fmt::format(" | list copy: {:.0f} us from submit to done ({:.0f}/s)",

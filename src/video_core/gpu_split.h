@@ -62,6 +62,16 @@ inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> 
     "gp sync fence", "map",           "front start", "front verify",
 };
 
+/// Why the split's back runs its idle hook (Nx2Perf hook_lazy_flush submits deferred work at
+/// once only for the first three).
+enum class IdleHookReason : u32 {
+    Sleep,       ///< The back is about to sleep for work (Drain waits for this one)
+    Requested,   ///< hook_requested: a drain or Scheduler::WaitSubmitted asked
+    WaitResults, ///< The front waits for this position at a site that needs GPU results
+    WaitMemory,  ///< The front waits at a site reading only guest memory (macro DMA writes, ...)
+    BatchEnd,    ///< A batch ended and nobody waits for it
+};
+
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
 // CPU's commands, parses command lists and runs the puller; engine method calls and everything
 // behind them (register state, macros, draws, the rasterizer and its caches) run in order on a
@@ -100,7 +110,7 @@ public:
         return Get().BackRunning() ? on_back_thread : on_gpu_thread;
     }
     /// Called on the back before it sleeps waiting for work (the rasterizer submits deferred work).
-    void SetIdleHook(void (*hook)(void*), void* argument) {
+    void SetIdleHook(void (*hook)(void*, IdleHookReason), void* argument) {
         idle_hook = hook;
         idle_argument = argument;
     }
@@ -118,6 +128,30 @@ public:
         return wait_target.load(std::memory_order_relaxed) != ~u64{0} ||
                hook_requested.load(std::memory_order_relaxed) ||
                front_waiting.load(std::memory_order_relaxed);
+    }
+
+    /// Nx2Perf hook_lazy_flush: how long a deferred submit may stay pending while the back works
+    /// (EDEN_NX2_HOOK_FLUSH_US, default 1000 us), in steady clock nanoseconds.
+    static s64 HookFlushDeadlineNs();
+    /// Back, hook_lazy_flush: the idle hook left the deferred submit pending since `since_ns`
+    /// (steady clock).
+    void NoteLazySkip(s64 since_ns) {
+        if (lazy_skip_since.load(std::memory_order_relaxed) == 0) {
+            lazy_skip_since.store(since_ns, std::memory_order_relaxed);
+        }
+    }
+    /// The scheduler submitted: no skipped deferred submit is pending.
+    void ClearLazySkip() {
+        if (lazy_skip_since.load(std::memory_order_relaxed) != 0) [[unlikely]] {
+            lazy_skip_since.store(0, std::memory_order_relaxed);
+        }
+    }
+    /// EDEN_NX2_PERF_VERIFY, any thread: logs when a deferred submit the idle hook skipped is
+    /// still pending past HookFlushDeadlineNs at `where` (a missed submit).
+    void CheckLazySkip(const char* where) const {
+        if (lazy_skip_since.load(std::memory_order_relaxed) != 0) [[unlikely]] {
+            ReportLazySkip(where);
+        }
     }
 
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
@@ -416,7 +450,10 @@ private:
     /// idle hook (ReleaseBeforeHook).
     bool ReleaseFirst(u64 target);
     /// The idle hook (deferred submits), timed as its own profiler zone.
-    void RunIdleHook();
+    void RunIdleHook(IdleHookReason reason);
+    /// Back: the hook reason for a front waiting at the position just reached.
+    IdleHookReason WaitReason() const;
+    void ReportLazySkip(const char* where) const;
     /// After the back stored `consumed`: wakes a front sleeping in Backoff.
     void NotifyFront() {
         if (front_waiting.load(std::memory_order_seq_cst)) {
@@ -486,7 +523,7 @@ private:
     static GpuSplit instance;
     static inline thread_local bool on_back_thread{};
     static inline thread_local bool on_gpu_thread{};
-    void (*idle_hook)(void*){};
+    void (*idle_hook)(void*, IdleHookReason){};
     void* idle_argument{};
     alignas(64) std::atomic<bool> hook_requested{};
     std::atomic<bool> back_running{};
@@ -502,6 +539,11 @@ private:
     /// ReleaseBeforeHook: the wait_target of a wait whose caller never uses the scheduler (macro
     /// DMA writes, early acquire, map), stored before wait_target; ~0 otherwise.
     std::atomic<u64> wait_release_first{~u64{0}};
+    /// The DrainSite of the front's current WaitFor, stored before wait_target.
+    std::atomic<u32> wait_site{};
+    /// hook_lazy_flush: when the deferred submit the idle hook skipped became pending (steady
+    /// clock ns), 0 when none is.
+    std::atomic<s64> lazy_skip_since{};
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<bool> back_idle{}; ///< The back is spinning or sleeping for work (EagerPublish)
     std::atomic<u32> wake{};

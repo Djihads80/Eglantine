@@ -69,6 +69,7 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
     AllocateNewContext();
     last_flush = std::chrono::steady_clock::now();
     flush_pending = false;
+    VideoCommon::GpuSplit::Get().ClearLazySkip();
     return signal_value;
 }
 
@@ -85,9 +86,15 @@ bool Scheduler::DeferFlush() {
         }
         return VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) ? s64{5000} : s64{500};
     }();
-    if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
-        std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
+    if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread()) {
         return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_flush >= std::chrono::microseconds{interval_us}) {
+        return false;
+    }
+    if (!flush_pending) {
+        deferred_since = now;
     }
     flush_pending = true;
     return true;
@@ -104,6 +111,9 @@ bool Scheduler::WaitSubmitted(u64 tick) {
         return true;
     }
     auto& split = VideoCommon::GpuSplit::Get();
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        split.CheckLazySkip("WaitSubmitted (fence wait)");
+    }
     split.RequestIdleHook();
     // No time limit: the back can spend seconds on one entry (a large shader's translation),
     // and a fence reported as submitted before it is would release its downloads too early.
@@ -136,6 +146,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitExecution(signal_semaphore, wait_semaphore);
+    VideoCommon::GpuSplit::Get().ClearLazySkip();
     Wait(presubmit_tick);
     AllocateNewContext();
 }

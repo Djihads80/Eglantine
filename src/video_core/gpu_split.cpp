@@ -227,6 +227,9 @@ void GpuSplit::Drain(DrainSite site) {
     if (!active) {
         return;
     }
+    if (Nx2Perf::Verify()) [[unlikely]] {
+        CheckLazySkip("Drain");
+    }
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position && BackQuiet()) {
         return;
@@ -279,6 +282,7 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     if (release_first) {
         wait_release_first.store(target, std::memory_order_relaxed);
     }
+    wait_site.store(static_cast<u32>(site), std::memory_order_relaxed);
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
     const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
@@ -664,9 +668,55 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
     return 1;
 }
 
-void GpuSplit::RunIdleHook() {
+void GpuSplit::RunIdleHook(IdleHookReason reason) {
     Nx2Profile::Scope scope{Nx2Profile::Zone::BackIdleHook};
-    idle_hook(idle_argument);
+    idle_hook(idle_argument, reason);
+}
+
+IdleHookReason GpuSplit::WaitReason() const {
+    if (hook_requested.load(std::memory_order_relaxed)) {
+        return IdleHookReason::Requested;
+    }
+    // wait_target was read with acquire: the site stored before it is visible. A stale target
+    // (a wait already over) may pair with a newer site, which only picks the hook's timing.
+    switch (static_cast<DrainSite>(wait_site.load(std::memory_order_relaxed))) {
+    case DrainSite::MacroDmaWrites:
+    case DrainSite::AcquireEarly:
+    case DrainSite::Map:
+        return IdleHookReason::WaitMemory;
+    default:
+        return IdleHookReason::WaitResults;
+    }
+}
+
+s64 GpuSplit::HookFlushDeadlineNs() {
+    static const s64 deadline_ns = [] {
+        const char* value = std::getenv("EDEN_NX2_HOOK_FLUSH_US");
+        const s64 us = value != nullptr ? static_cast<s64>(std::atoll(value)) : s64{1000};
+        return std::max<s64>(us, 0) * 1000;
+    }();
+    return deadline_ns;
+}
+
+void GpuSplit::ReportLazySkip(const char* where) const {
+    const s64 since = lazy_skip_since.load(std::memory_order_relaxed);
+    if (since == 0) {
+        return;
+    }
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (now - since <= HookFlushDeadlineNs()) {
+        return;
+    }
+    static std::atomic<u64> missed{};
+    const u64 count = missed.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64 || (count & (count - 1)) == 0) {
+        LOG_ERROR(HW_GPU,
+                  "Nx2Perf hook_lazy_flush: {} found a skipped deferred submit pending for {} us "
+                  "(deadline {} us; {} missed submits so far)",
+                  where, (now - since) / 1000, HookFlushDeadlineNs() / 1000, count);
+    }
 }
 
 void GpuSplit::BackLoop(std::stop_token stop_token) {
@@ -702,7 +752,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // too, so the deferred submit can't overlap whatever the front does next.
                 if (!back_quiet.load(std::memory_order_relaxed)) {
                     if (idle_hook != nullptr) {
-                        RunIdleHook();
+                        RunIdleHook(IdleHookReason::Sleep);
                     }
                     back_quiet.store(true, std::memory_order_release);
                 }
@@ -741,7 +791,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if (hook_requested.load(std::memory_order_relaxed) &&
                 idle_hook != nullptr) [[unlikely]] {
                 hook_requested.store(false, std::memory_order_seq_cst);
-                RunIdleHook();
+                RunIdleHook(IdleHookReason::Requested);
             }
             // Hand ring space back now and then while working through a long batch, and at once
             // when the front waits for this position (WaitForWriters).
@@ -752,13 +802,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 const bool release_first =
                     idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
                 if (idle_hook != nullptr && read_position >= target && !release_first) {
-                    RunIdleHook();
+                    RunIdleHook(WaitReason());
                 }
                 consumed.store(read_position, std::memory_order_seq_cst);
                 last_store = read_position;
                 NotifyFront();
                 if (release_first) {
-                    RunIdleHook();
+                    RunIdleHook(WaitReason());
                 }
             }
         }
@@ -767,13 +817,17 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         const u64 target = wait_target.load(std::memory_order_acquire);
         const bool release_first =
             idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
+        const IdleHookReason reason =
+            read_position >= target ? WaitReason()
+            : hook_requested.load(std::memory_order_relaxed) ? IdleHookReason::Requested
+                                                             : IdleHookReason::BatchEnd;
         if (idle_hook != nullptr && !release_first) {
-            RunIdleHook();
+            RunIdleHook(reason);
         }
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
         if (release_first) {
-            RunIdleHook();
+            RunIdleHook(reason);
         }
     }
     back_running.store(false, std::memory_order_seq_cst);
