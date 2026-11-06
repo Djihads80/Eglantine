@@ -178,7 +178,12 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
         if (xfb_varying) {
             ctx.Decorate(id, spv::Decoration::XfbBuffer, xfb_varying->buffer);
             ctx.Decorate(id, spv::Decoration::XfbStride, xfb_varying->stride);
-            ctx.Decorate(id, spv::Decoration::Offset, xfb_varying->offset);
+            // A varying that starts inside a vector is emitted as its own variable with a Component
+            // decoration, so its byte offset is the vector's offset plus the components it skips.
+            // Without this the split piece writes over the first component of the vector and the
+            // guest reads values it never wrote (Ocarina of Time stalls waiting on the fence).
+            ctx.Decorate(id, spv::Decoration::Offset,
+                         xfb_varying->offset + static_cast<u32>(element) * 4U);
             if (ctx.stage == Stage::Geometry && xfb_varying->stream != 0) {
                 ctx.Decorate(id, spv::Decoration::Stream, xfb_varying->stream);
             }
