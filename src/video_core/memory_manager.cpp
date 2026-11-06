@@ -117,6 +117,9 @@ inline void MemoryManager::SetBigPageContinuous(size_t big_page_index, bool valu
 }
 
 GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size, PTEKind kind, MemoryManager::EntryType entry_type) {
+    // Seqlock open: lock-free readers (GpuToCpuAddress's cache, MaxContinuousRange) retry a
+    // walk whose serial moved, so a mutation in flight is never read as a torn table.
+    map_serial.fetch_add(1, std::memory_order_release);
     [[maybe_unused]] u64 remaining_size{size};
     if (entry_type == EntryType::Mapped) {
         page_table.ReserveRange(gpu_addr, size);
@@ -158,6 +161,8 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
 }
 
 GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size, PTEKind kind, MemoryManager::EntryType entry_type) {
+    // Seqlock open, as in PageTableOp above.
+    map_serial.fetch_add(1, std::memory_order_release);
     [[maybe_unused]] u64 remaining_size{size};
     GPUVAddr modified_start{};
     u64 modified_size{};
