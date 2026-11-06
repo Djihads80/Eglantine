@@ -49,6 +49,7 @@ struct State {
     std::wstring model_dir;
     std::vector<std::string> instance_extensions;
     std::vector<std::string> device_extensions;
+    std::vector<std::string> optional_device_extensions;
     bool started{};
     bool attached{};
     sl::FrameToken* current_frame_token{};
@@ -461,9 +462,10 @@ bool Start() {
             }
         }
         for (const auto& ext : reflex_dev_exts) {
-            if (std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
-                state.device_extensions.push_back(ext);
-                LOG_INFO(Render_Vulkan, "Adding Reflex device extension: {}", ext);
+            if (std::ranges::find(state.optional_device_extensions, ext) == state.optional_device_extensions.end() &&
+                std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
+                state.optional_device_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding Reflex optional device extension: {}", ext);
             }
         }
     }
@@ -487,9 +489,10 @@ bool Start() {
             }
         }
         for (const auto& ext : pcl_dev_exts) {
-            if (std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
-                state.device_extensions.push_back(ext);
-                LOG_INFO(Render_Vulkan, "Adding PCL device extension: {}", ext);
+            if (std::ranges::find(state.optional_device_extensions, ext) == state.optional_device_extensions.end() &&
+                std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
+                state.optional_device_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding PCL optional device extension: {}", ext);
             }
         }
     }
@@ -517,6 +520,11 @@ std::vector<std::string> InstanceExtensions() {
 std::vector<std::string> DeviceExtensions() {
     const State& state = GetState();
     return state.started ? state.device_extensions : std::vector<std::string>{};
+}
+
+std::vector<std::string> OptionalDeviceExtensions() {
+    const State& state = GetState();
+    return state.started ? state.optional_device_extensions : std::vector<std::string>{};
 }
 
 bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice device,
@@ -654,6 +662,9 @@ void Stop() {
     }
     const sl::Result result = state.api.shutdown();
     state.api = {};
+    state.instance_extensions.clear();
+    state.device_extensions.clear();
+    state.optional_device_extensions.clear();
     state.started = false;
     state.attached = false;
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline stopped (result {})", static_cast<int>(result));
@@ -699,17 +710,15 @@ void NotifyRenderSubmitStart(const sl::FrameToken* frame) {
         return;
     }
     State& state = GetState();
-    {
-        std::lock_guard lock(state.token_mutex);
-        if (state.render_submit_started) {
-            return;
-        }
-        state.render_submit_started = true;
+    std::lock_guard lock(state.token_mutex);
+    if (state.render_submit_started) {
+        return;
     }
     // Sleep to pace the frame just before GPU submission
     ReflexSleep(frame);
     SetReflexMarker(sl::PCLMarker::eSimulationEnd, frame);
     SetReflexMarker(sl::PCLMarker::eRenderSubmitStart, frame);
+    state.render_submit_started = true;
 }
 
 void SetReflexMarker(sl::PCLMarker marker, const sl::FrameToken* frame) {

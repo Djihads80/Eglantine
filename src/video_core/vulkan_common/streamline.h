@@ -53,6 +53,7 @@ bool Start();
 /// Instance and device extensions DLSS asks for (empty when Streamline isn't running).
 [[nodiscard]] std::vector<std::string> InstanceExtensions();
 [[nodiscard]] std::vector<std::string> DeviceExtensions();
+[[nodiscard]] std::vector<std::string> OptionalDeviceExtensions();
 
 /// Hands the renderer's device to Streamline and routes the swapchain calls through it, as
 /// Streamline's manual hooking needs. Stops Streamline and returns false when DLSS can't run.
