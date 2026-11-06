@@ -181,6 +181,10 @@ public:
     [[nodiscard]] u64 LastWriter() const {
         return writer;
     }
+    /// How many noted ranges are pending (at MaxWrites they collapse into an unknown write).
+    [[nodiscard]] size_t PendingWrites() const {
+        return writes.size();
+    }
 
     void Reset() {
         writes.clear();

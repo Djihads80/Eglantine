@@ -388,6 +388,7 @@ bool GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u
         return false;
     }
     constexpr GPUVAddr page_mask = ~GPUVAddr{0xfff};
+    const bool exact = Nx2Perf::On(Nx2Perf::Opt::ExactNotedWrites);
     for (GPUVAddr page = address & page_mask; page < address + size; page += 0x1000) {
         if (&memory != note_memory || page != note_page || note_function != last_function_position) {
             const std::optional<DAddr> device = memory.GpuToCpuAddress(page);
@@ -401,9 +402,33 @@ bool GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u
             note_device = *device & page_mask;
             note_function = last_function_position;
         }
-        writes.Write(note_device, note_device + 0x1000, write_position, kind);
+        // ExactNotedWrites: only the bytes in this page. Exact ranges merge less, so past half
+        // of MaxWrites they go back to whole pages before the overflow makes them unknown.
+        if (exact && writes.PendingWrites() < SplitWriteTracker::MaxWrites / 2) {
+            writes.Write(note_device + ((std::max)(page, address) - page),
+                         note_device + ((std::min)(page + 0x1000, address + size) - page),
+                         write_position, kind);
+        } else {
+            writes.Write(note_device, note_device + 0x1000, write_position, kind);
+        }
     }
     return true;
+}
+
+u64 GpuSplit::VerifyExactRead(bool differed) {
+    static std::atomic<u64> reads{};
+    static std::atomic<u64> mismatches{};
+    const u64 differed_so_far =
+        differed ? mismatches.fetch_add(1, std::memory_order_relaxed) + 1
+                 : mismatches.load(std::memory_order_relaxed);
+    const u64 count = reads.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((count & 4095) == 0 || count <= 1 || (differed && differed_so_far <= 64)) {
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf exact_noted_writes: {} reads with an exact target below the page "
+                 "target, {} differed",
+                 count, differed_so_far);
+    }
+    return differed_so_far;
 }
 
 void GpuSplit::NoteConstBufferWrite(const Tegra::MemoryManager& memory, GPUVAddr address,
