@@ -80,9 +80,11 @@ bool ResumeSameWords() {
 // instead of reading memory again, and an entry of it resumed after an acquire continues from
 // them. Games write lists they submitted before releasing the acquire soon after the submit;
 // after a long wait the game may have reused that memory for later frames. Ocarina of Time
-// defaults to 500 ms: on the phone its lists run about a second after their submit, and with the
-// GPU split a list copied again 2.2 s after its submit held a later frame's acquire (38 releases
-// ahead), on which every channel deadlocked.
+// defaults to 1 ms, that is it always keeps its copies: it rewrites a list's memory for a frame
+// two ahead in under 500 ms, and on the phone its lists run 0.5-2 s after their submit. A list
+// copied again at a resume while younger than 500 ms waited for 0x8e1, where its submit-time
+// words waited for the 0x8bb the semaphore already held: every channel deadlocked after the
+// save loaded.
 u64 ResnapshotMaxAgeNs() {
     static const s64 forced = [] {
         const char* value = std::getenv("EDEN_NX2_RESNAPSHOT_AGE_MS");
@@ -93,7 +95,7 @@ u64 ResnapshotMaxAgeNs() {
     }
     constexpr u64 OcarinaOfTime = 0x0400486024DEC000ULL;
     const u64 program = Tegra::g_nx2_program_id.load(std::memory_order_relaxed);
-    const u64 limit = program == OcarinaOfTime ? u64{500'000'000} : u64{0};
+    const u64 limit = program == OcarinaOfTime ? u64{1'000'000} : u64{0};
     // Once per title: which limit applies.
     if (static std::atomic<u64> logged{~u64{0}};
         logged.load(std::memory_order_relaxed) != program &&
