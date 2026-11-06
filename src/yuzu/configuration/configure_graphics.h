@@ -60,6 +60,12 @@ public:
     void ApplyConfiguration() override;
     void SetConfiguration() override;
 
+    /// Memory of the selected Vulkan device in bytes, 0 with another backend or if unknown.
+    [[nodiscard]] u64 SelectedDeviceMemory() const;
+
+signals:
+    void DeviceMemoryChanged(u64 bytes);
+
 private:
     void changeEvent(QEvent* event) override;
     void RetranslateUI();

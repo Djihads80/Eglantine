@@ -204,6 +204,12 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Selects whether the emulator should prefer to conserve memory or make maximum usage "
               "of available video memory for performance.\nAggressive mode may impact performance "
               "of other applications such as recording software."));
+    INSERT(Settings, texture_cache_memory_limit, tr("Texture Cache Memory Limit:"),
+           tr("The most video memory the texture cache fills before it starts removing textures "
+              "that were not used recently.\nAuto uses three quarters of the GPU's memory. A "
+              "lower limit leaves room for other programs but removed textures have to be "
+              "loaded again, which can cause stutter. The emulator always keeps some memory "
+              "free, so a limit close to the GPU's memory is not reached."));
     INSERT(Settings, skip_cpu_inner_invalidation, tr("Skip CPU Inner Invalidation"),
            tr("Skips certain cache invalidations during memory updates, reducing CPU usage and "
               "improving latency. This may cause soft-crashes."));

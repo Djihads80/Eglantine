@@ -132,6 +132,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 largest_upload{};    ///< Largest of them
     u64 layer_uploads{};     ///< Of them, uploads of only the written layers
     bool native_thresholds_applied{};
+    u64 device_memory_total{}; ///< Device memory the memory limit is a share of (0: unknown)
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};
@@ -148,9 +149,6 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
-    /// The most device memory the collector lets the cache fill before it collects in earnest,
-    /// on every GPU (ApplyThresholdOverrides).
-    static constexpr u64 MaxCriticalMemory = 5_GiB;
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
 
     using Runtime = typename P::Runtime;
@@ -542,7 +540,11 @@ private:
 
     DAddr virtual_invalid_space{};
 
-    /// Applies EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB and logs the thresholds.
+    /// The device's memory budget, or its device-local memory when the API reports no budget.
+    [[nodiscard]] u64 QueryDeviceMemory();
+
+    /// Applies the memory limit setting and EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB,
+    /// and logs the thresholds.
     void ApplyThresholdOverrides(bool log = true);
 
     /// The CPU address an image at gpu_addr is keyed by: its backing, or a fixed stand-in.

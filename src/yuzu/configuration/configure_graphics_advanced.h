@@ -6,7 +6,10 @@
 #include <memory>
 #include <vector>
 #include <QWidget>
+#include "common/common_types.h"
 #include "yuzu/configuration/configuration_shared.h"
+
+class QLabel;
 
 namespace Core {
 class System;
@@ -18,6 +21,7 @@ class ConfigureGraphicsAdvanced;
 
 namespace ConfigurationShared {
 class Builder;
+class Widget;
 }
 
 class ConfigureGraphicsAdvanced : public ConfigurationShared::Tab {
@@ -34,6 +38,9 @@ public:
 
     void ExposeComputeOption();
 
+    /// Sets the memory of the selected GPU the texture cache memory limit is checked against.
+    void SetDeviceMemory(u64 bytes);
+
 private:
     void Setup(const ConfigurationShared::Builder& builder);
     void changeEvent(QEvent* event) override;
@@ -45,5 +52,10 @@ private:
 
     std::vector<std::function<void(bool)>> apply_funcs;
 
+    void UpdateMemoryLimit();
+
     QWidget* checkbox_enable_compute_pipelines{};
+    ConfigurationShared::Widget* memory_limit_widget{};
+    QLabel* memory_limit_note{};
+    u64 device_memory{};
 };

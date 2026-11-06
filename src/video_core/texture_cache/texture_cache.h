@@ -26,6 +26,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/image_view_base.h"
+#include "video_core/texture_cache/memory_limits.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
@@ -71,7 +72,8 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
     void(slot_samplers.insert(runtime, sampler_descriptor));
 
     if constexpr (HAS_DEVICE_MEMORY_INFO) {
-        const s64 device_local_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+        device_memory_total = QueryDeviceMemory();
+        const s64 device_local_memory = static_cast<s64>(device_memory_total);
         const s64 min_spacing_expected = device_local_memory - 1_GiB;
         const s64 min_spacing_critical = device_local_memory - 512_MiB;
         const s64 mem_threshold = (std::min)(device_local_memory, TARGET_THRESHOLD);
@@ -253,11 +255,23 @@ void TextureCache<P>::RunGarbageCollector() {
 }
 
 template <class P>
+u64 TextureCache<P>::QueryDeviceMemory() {
+    if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+        const u64 budget = runtime.GetDeviceMemoryBudget();
+        if (budget > 2_GiB) {
+            return budget;
+        }
+    }
+    return runtime.GetDeviceLocalMemory();
+}
+
+template <class P>
 void TextureCache<P>::ApplyThresholdOverrides(bool log) {
-    // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
-    // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
-    // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+    // Past what a frame needs, more device memory only keeps the textures of earlier scenes, so
+    // collect from the memory limit on rather than near the card's budget.
+    const u32 limit_mib = Settings::values.texture_cache_memory_limit.GetValue();
+    critical_memory = (std::min)(
+        critical_memory, TextureCacheMemory::ResolveLimit(limit_mib, device_memory_total));
     expected_memory =
         (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
     minimum_memory =
@@ -272,6 +286,13 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     if (log) {
         LOG_INFO(HW_GPU, "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",
                  expected_memory >> 20, critical_memory >> 20, minimum_memory >> 20);
+        if (TextureCacheMemory::IsBelowRecommended(limit_mib, device_memory_total)) {
+            LOG_WARNING(HW_GPU,
+                        "Texture cache memory limit {} MiB is under the recommended {} MiB: "
+                        "textures may be evicted and decoded again",
+                        limit_mib,
+                        TextureCacheMemory::RecommendedLimit(device_memory_total) >> 20);
+        }
     }
 }
 
@@ -291,7 +312,7 @@ void TextureCache<P>::TickFrame() {
         // measured from the driver, so collect only near the device budget instead.
         if (!native_thresholds_applied && gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
             native_thresholds_applied = true;
-            const u64 device_local = runtime.GetDeviceLocalMemory();
+            const u64 device_local = device_memory_total;
             critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
             expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
             ApplyThresholdOverrides();
@@ -329,6 +350,7 @@ void TextureCache<P>::TickFrame() {
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
+                    device_memory_total = budget;
                     const u64 old_critical = critical_memory;
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {

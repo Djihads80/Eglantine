@@ -553,6 +553,15 @@ struct Values {
                                                            "vram_usage_mode",
                                                            Category::RendererAdvanced};
 
+    /// Device memory in MiB the texture cache may fill before it collects in earnest; 0 is Auto.
+    SwitchableSetting<u32, true> texture_cache_memory_limit{linkage,
+                                                            0,
+                                                            0,
+                                                            1048576,
+                                                            "texture_cache_memory_limit",
+                                                            Category::RendererAdvanced,
+                                                            Specialization::Countable};
+
     SwitchableSetting<NvdecEmulation> nvdec_emulation{linkage, NvdecEmulation::Cpu,
                                                       "nvdec_emulation", Category::RendererAdvanced};
 

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -23,8 +24,9 @@ class QWindow;
 
 namespace VkDeviceInfo {
 Record::Record(std::string_view name_, const std::vector<VkPresentModeKHR>& vsync_modes_,
-               bool has_broken_compute_)
-    : name{name_}, vsync_support{vsync_modes_}, has_broken_compute{has_broken_compute_} {}
+               bool has_broken_compute_, u64 device_local_memory_)
+    : name{name_}, vsync_support{vsync_modes_}, has_broken_compute{has_broken_compute_},
+      device_local_memory{device_local_memory_} {}
 
 Record::~Record() = default;
 
@@ -72,7 +74,21 @@ void PopulateRecords(std::vector<Record>& records, QWindow* window) try {
 
         name = fmt::format("{} ({})", name, driver_string);
 
-        records.push_back(VkDeviceInfo::Record(name, present_modes, has_broken_compute));
+        // The largest device-local heap, which the emulator also treats as the main one. An
+        // integrated GPU's heap is system memory, of which the emulator uses a fixed share.
+        u64 device_local_memory{};
+        const auto memory = physical_device.GetMemoryProperties().memoryProperties;
+        for (u32 heap = 0; heap < memory.memoryHeapCount; ++heap) {
+            if ((memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+                device_local_memory = (std::max<u64>)(device_local_memory, memory.memoryHeaps[heap].size);
+            }
+        }
+        if (properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            device_local_memory = (std::min<u64>)(device_local_memory, u64{4} << 30);
+        }
+
+        records.push_back(
+            VkDeviceInfo::Record(name, present_modes, has_broken_compute, device_local_memory));
     }
 } catch (const Vulkan::vk::Exception& exception) {
     LOG_ERROR(Frontend, "Failed to enumerate devices with error: {}", exception.what());
