@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 
 #include "common/bit_field.h"
+#include "common/scope_exit.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -1509,9 +1510,22 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
     // can run their programs before any of them draws, so each has its own descriptor set.
     const auto descriptor_set_slot{std::make_shared<VkDescriptorSet>()};
     const Framebuffer* const framebuffer{texture_cache.GetFramebuffer()};
+    FrameDump* const frame_dump{mesh_emulation_buffer->frame_dump};
+    const auto timing{frame_dump && frame_dump->Capturing() ? frame_dump->TimeAhead()
+                                                            : std::nullopt};
     scheduler.RecordBeforeRenderPass(framebuffer, [this, descriptor_data, draw = emulated_draw, push,
-                                                   push_constants, descriptor_set_slot](
-                                                      vk::CommandBuffer cmdbuf) {
+                                                   push_constants, descriptor_set_slot,
+                                                   timing](vk::CommandBuffer cmdbuf) {
+        if (timing) {
+            cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing->first,
+                                  timing->second);
+        }
+        SCOPE_EXIT {
+            if (timing) {
+                cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing->first,
+                                      timing->second + 1);
+            }
+        };
         if (!is_built.load(std::memory_order::relaxed)) {
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });

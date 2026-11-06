@@ -12,6 +12,7 @@
 namespace Vulkan {
 
 class Device;
+class FrameDump;
 class MemoryAllocator;
 class Scheduler;
 
@@ -64,6 +65,9 @@ public:
     /// The region of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
     /// a null buffer when the draw is not emulated.
     MeshEmulationRegion draw{};
+
+    /// Times the draws' compute work while it captures.
+    FrameDump* frame_dump{};
 
     /// EDEN_NX2_MESH_EMULATE_CHECK=1: the headers of emulated draws are read back after their
     /// dispatches and logged (mesh workgroups launched, dispatched and drawn).

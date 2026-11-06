@@ -277,6 +277,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       frame_dump(device, memory_allocator, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
+    mesh_emulation_buffer.frame_dump = &frame_dump;
     // Emulated task/mesh draws record their compute work ahead of their render pass's begin when
     // they can. EDEN_NX2_MESH_EMULATE_HOIST=0: the pass ends and resumes around it instead.
     scheduler.EnableRenderPassHoisting(MeshEmulationEnabled(device) && [] {
