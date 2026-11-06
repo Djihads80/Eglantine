@@ -51,6 +51,9 @@ enum class Opt : unsigned {
     FrontSameFirst,     ///< Split front: same-value state writes skipped before any other work
     FrontClassTable,    ///< Split front: executable method classes from one precomputed table
     FrontRun,           ///< Split front: a command's direct 3D register words written in one call
+    MacroBatch,  ///< Front macro writes buffered in the JIT, same-value ones dropped inline
+    MacroBorrow, ///< Front macros read their parameters from the command words in place
+    MacroState,  ///< The front macro JIT keeps its State across calls
     Count,
 };
 
@@ -64,6 +67,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "acquire_early", "macro_read_cb_overlay", "macro_read_writer_set", "preflush_aging",
     "eager_publish",
     "front_same_first", "front_class_table", "front_run",
+    "macro_batch", "macro_borrow", "macro_state",
 };
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
@@ -71,7 +75,8 @@ inline constexpr unsigned DefaultOffMask() {
     unsigned mask = 0;
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
                           Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish,
-                          Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun}) {
+                          Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
+                          Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState}) {
         mask |= 1U << static_cast<unsigned>(opt);
     }
     return mask;
