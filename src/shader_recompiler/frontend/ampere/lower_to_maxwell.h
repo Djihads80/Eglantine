@@ -96,6 +96,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x233: operand(16); operand(24); operand(32); break;
     case 0xa20: case 0x621: case 0x808: case 0x923: operand(16); operand(24); break;
     case 0x209: operand(16); operand(24); operand(32); break;
+    case 0xc24: // IMAD with a uniform multiplier: Rd, Ra and the addend Rc are registers
     case 0xa23: case 0x623: case 0x423: operand(16); operand(24); operand(64); break;
     case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break;
     case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break;

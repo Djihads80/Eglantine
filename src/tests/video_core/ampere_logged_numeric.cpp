@@ -294,6 +294,32 @@ TEST_CASE("Logged Kirby FMUL preserves high guest registers across uniform mirro
     }
 }
 
+TEST_CASE("Logged Ocarina uniform IMAD preserves high destinations across uniform mirrors",
+          "[video_core][ampere][logged_numeric][ocarina]") {
+    // Kakariko graveyard pixel shaders: IMAD R229 = R29 * UR10 + RZ (and R225 = R49 * UR10)
+    // were rejected with "native register shadowing mode", so the draw was skipped.
+    constexpr std::array multiplies{
+        Instruction{{0x1de57c24, 0x0000000a, 0x0f8e02ff, 0x000fe200}},
+        Instruction{{0x31e17c24, 0x0000000a, 0x0f8e02ff, 0x000fe200}},
+    };
+    const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
+    for (const auto& multiply : multiplies) {
+        const auto pressure = Shader::Ampere::PrepareRegisterPressure(multiply, 216);
+        REQUIRE(pressure.valid);
+        CHECK(pressure.instruction.Bits(16, 8) == 212 + multiply.Bits(16, 8) % 4);
+        CHECK(pressure.instruction.Bits(24, 8) == multiply.Bits(24, 8));
+        CHECK(pressure.instruction.words[1] == multiply.words[1]);
+        CHECK(pressure.instruction.words[2] == multiply.words[2]);
+        REQUIRE(pressure.prefix.size() == 8);
+        REQUIRE(pressure.suffix.size() == 8);
+        const auto lowered = LowerToMaxwell(std::array{uniform_marker, multiply, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        CHECK(std::equal(pressure.prefix.begin(), pressure.prefix.end(),
+                         lowered.instructions.begin()));
+    }
+}
+
 TEST_CASE("Logged Kirby global loads preserve high destinations across uniform mirrors",
           "[video_core][ampere][logged_numeric][kirby]") {
     constexpr std::array loads{
