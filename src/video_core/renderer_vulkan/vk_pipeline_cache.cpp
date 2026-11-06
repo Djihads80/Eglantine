@@ -1127,7 +1127,12 @@ void PipelineCache::EvictUnusedPipelines() {
     }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
+    // Nx2Perf pipeline_keep_preloaded: the ones built at boot from the used list that this
+    // session has not drawn with yet keep LastUse() == 0; they are kept, not rebuilt on the walk.
+    const bool keep_preloaded =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineKeepPreloaded);
     size_t evicted = 0;
+    size_t kept = 0;
     for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
         GraphicsPipeline* const pipeline = it->second.get();
         if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
@@ -1135,12 +1140,24 @@ void PipelineCache::EvictUnusedPipelines() {
             ++it;
             continue;
         }
+        if (keep_preloaded && !used_this_session.contains(pipeline)) {
+            ++kept;
+            ++it;
+            continue;
+        }
         if (used_this_session.erase(pipeline) != 0) {
             used_and_evicted.insert(it->first.Hash());
         }
+        evicted_keys.insert(it->first.Hash());
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         it = graphics_cache.erase(it);
         ++evicted;
+    }
+    if (keep_preloaded && VideoCommon::Nx2Perf::Verify()) {
+        // Eviction only frees driver memory, so there is no wrong answer to fall back from.
+        LOG_INFO(Render_Vulkan,
+                 "Nx2Perf pipeline_keep_preloaded: old rule would evict {}, kept {} never-used",
+                 evicted + kept, kept);
     }
     if (evicted == 0) {
         return;
@@ -1343,24 +1360,29 @@ namespace {
 // Pipelines built on the GPU thread at run time (shader translation; the driver compile is on
 // workers): every one over 2 ms is logged, and the total every 10 s, to tell how much of the
 // stutter on new content is translation.
-void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_point begin) {
+void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_point begin,
+                           bool after_eviction) {
     static std::chrono::steady_clock::duration total{};
-    static u32 count{}, logged{};
+    static u32 count{}, logged{}, rebuilt{};
     static auto window = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = now - begin;
     total += elapsed;
     ++count;
+    rebuilt += after_eviction ? 1 : 0;
     const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
     if (elapsed > std::chrono::milliseconds{2} && logged < 400) {
         ++logged;
         LOG_INFO(Render_Vulkan, "{} pipeline built on the GPU thread in {:.1f} ms", kind, ms(elapsed));
     }
     if (now - window > std::chrono::seconds{10}) {
-        LOG_INFO(Render_Vulkan, "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread",
-                 count, ms(total));
+        LOG_INFO(Render_Vulkan,
+                 "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread, "
+                 "{} rebuilt after eviction",
+                 count, ms(total), rebuilt);
         total = {};
         count = 0;
+        rebuilt = 0;
         window = now;
     }
 }
@@ -1368,8 +1390,9 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     const auto begin = std::chrono::steady_clock::now();
+    const bool after_eviction = evicted_keys.contains(graphics_key.Hash());
     SCOPE_EXIT {
-        ReportRuntimePipeline("Graphics", begin);
+        ReportRuntimePipeline("Graphics", begin, after_eviction);
     };
     GraphicsEnvironments environments;
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
@@ -1404,7 +1427,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const ComputePipelineCacheKey& key, const ShaderInfo* shader) {
     const auto begin = std::chrono::steady_clock::now();
     SCOPE_EXIT {
-        ReportRuntimePipeline("Compute", begin);
+        ReportRuntimePipeline("Compute", begin, false);
     };
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};

@@ -78,6 +78,8 @@ enum class Opt : unsigned {
     /// Semaphore acquire triggers take an early word only when it meets the value; an unmet
     /// early word falls through to the drained decision (independent of AcquireEarly)
     AcquireTriggerEarly,
+    /// Pipeline eviction keeps the ones built at boot that this session has not drawn with yet
+    PipelineKeepPreloaded,
     Count,
 };
 
@@ -98,6 +100,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "submit_while_waited",
     "gpu_core_pin",
     "present_one_ahead", "present_guest_wait", "release_before_hook", "acquire_trigger_early",
+    "pipeline_keep_preloaded",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -125,7 +128,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead,
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
-                          Opt::AcquireTriggerEarly}) {
+                          Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -136,14 +139,16 @@ inline constexpr u64 DefaultOffMask() {
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
 /// present_guest_wait (guest panic at load in a speed run); release_before_hook (+0.0 FPS);
-/// acquire_trigger_early (+0.2 FPS).
+/// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
                                   Bit(Opt::ReleaseBeforeHook) |
-                                  Bit(Opt::AcquireTriggerEarly);
+                                  Bit(Opt::AcquireTriggerEarly) |
+                                  Bit(Opt::PipelineKeepPreloaded);
 
 static_assert(IsOff(always_off, 33));
+static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
 static_assert(IsOff(DefaultOffMask(), 36));
 static_assert(!IsOff(DefaultOffMask(), 0));
 
