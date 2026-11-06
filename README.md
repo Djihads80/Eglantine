@@ -21,7 +21,7 @@ It's written in C++ with portability in mind, with builds for Windows, Linux and
 
 <p align="center">
     </a>
-    <a href="https://discord.gg/jCCZ58VExk">
+    <a href="https://discord.gg/XkS5NVPTUY">
         <img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white"
             alt="Discord">
     </a>
