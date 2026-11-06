@@ -51,6 +51,7 @@ add_executable(tests
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
     core/nx2_debug_server.cpp
+    core/wonder_fps_patch.cpp
     core/nx2_movie_pacing.cpp
     core/nx2_gpu_memory_registry.cpp
     core/priority_queue.cpp

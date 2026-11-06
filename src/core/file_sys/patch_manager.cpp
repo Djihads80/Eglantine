@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 
@@ -27,6 +28,7 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/ips_layer.h"
 #include "core/file_sys/patch_manager.h"
+#include "core/file_sys/wonder_fps_patch.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs/vfs_cached.h"
@@ -460,6 +462,10 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
 }
 
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
+    if (title_id == Settings::WonderSwitch2ProgramId && name == "main") {
+        Settings::wonder_fps_active.store(0, std::memory_order_relaxed);
+        Settings::wonder_dynamic_fps_active.store(false, std::memory_order_relaxed);
+    }
     if (nso.size() < sizeof(Loader::NSOHeader)) {
         return nso;
     }
@@ -489,10 +495,32 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
 
     LOG_INFO(Loader, "Patching NSO for name={}, build_id={}", name, build_id);
 
+    const auto patch_wonder = [&](std::vector<u8>& out) {
+        // Apply after external mods so the earlier standalone Wonder test patch cannot pin this
+        // selector to 60 FPS. Validate every instruction before changing any of them.
+        if (title_id == Settings::WonderSwitch2ProgramId && name == "main") {
+            const auto target = Settings::values.wonder_fps.GetValue();
+            const char* dynamic_env = std::getenv("EDEN_WONDER_DYNAMIC_FPS");
+            const bool dynamic = dynamic_env && std::string_view{dynamic_env} == "1";
+            if (ApplyWonderFpsPatch(out, title_id, build_id, target, dynamic)) {
+                const u32 fps = target;
+                Settings::wonder_fps_active.store(fps, std::memory_order_relaxed);
+                Settings::wonder_dynamic_fps_generation.fetch_add(1, std::memory_order_relaxed);
+                Settings::wonder_dynamic_fps_active.store(dynamic, std::memory_order_release);
+                LOG_INFO(Loader, "Wonder experimental dynamic simulation: {}", dynamic);
+                LOG_INFO(Loader, "    - Applying built-in Wonder {} FPS patch", fps);
+            } else {
+                LOG_WARNING(Loader, "Wonder FPS patch skipped: unsupported build or instructions ({})",
+                            build_id);
+            }
+        }
+    };
     const auto load_dir = GetModificationLoadRoot();
     if (load_dir == nullptr) {
         LOG_ERROR(Loader, "Cannot load mods for invalid title_id={:016X}", title_id);
-        return nso;
+        auto out = nso;
+        patch_wonder(out);
+        return out;
     }
 
     auto patch_dirs = load_dir->GetSubdirectories();
@@ -582,6 +610,7 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         return nso;
     }
 
+    patch_wonder(out);
     std::memcpy(out.data(), &header, sizeof(header));
     return out;
 }
@@ -595,6 +624,10 @@ bool PatchManager::HasNSOPatch(const BuildID& build_id_, std::string_view name) 
     if (std::ranges::any_of(BUILTIN_PATCHES, [&](const BuiltinPatch& patch) {
             return patch.title_id == title_id && patch.module == name;
         })) {
+        return true;
+    }
+    if (title_id == Settings::WonderSwitch2ProgramId && name == "main" &&
+        build_id == WonderFpsBuildId) {
         return true;
     }
 

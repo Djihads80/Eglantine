@@ -11,6 +11,7 @@
 #include <array>
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "common/game_fps.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/settings_common.h"
@@ -946,7 +947,13 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
         return;
     }
 
-    const std::string key = AdjustKey(setting->GetLabel());
+    // Older Wonder configs stored a preset index. Read it only when the numeric key is absent.
+    const std::string numeric_key = AdjustKey(setting->GetLabel());
+    const bool legacy_wonder = setting->Id() == Settings::values.wonder_fps.Id() &&
+                               ReadStringSetting(numeric_key).empty() &&
+                               ReadStringSetting(numeric_key + "\\use_global").empty() &&
+                               ReadStringSetting(numeric_key + "\\default").empty();
+    const std::string key = legacy_wonder ? AdjustKey("wonder_fps") : numeric_key;
     const std::string default_value(setting->DefaultToString());
 
     if (setting->Id() == Settings::values.mcp_token.Id()) {
@@ -966,7 +973,13 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     if (global || !use_global) {
         const bool is_default = ReadBooleanSetting(std::string(key).append("\\default"), std::make_optional(true));
         if (!is_default) {
-            setting->LoadString(ReadStringSetting(key, default_value));
+            if (legacy_wonder) {
+                const auto preset = ReadUnsignedIntegerSetting(key, 1);
+                const auto fps = Settings::WonderFpsValue(static_cast<Settings::WonderFps>(preset));
+                setting->LoadString(std::to_string(fps));
+            } else {
+                setting->LoadString(ReadStringSetting(key, default_value));
+            }
         } else {
             // Empty string resets the Setting to default
             setting->LoadString("");

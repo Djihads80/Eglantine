@@ -124,7 +124,7 @@ void ConfigurePerGame::BuildSettingTabs() {
         system, vk_device_records, [&]() { graphics_advanced_tab->ExposeComputeOption(); },
         [](Settings::AspectRatio, Settings::ResolutionSetup) {}, tab_group, *builder, this);
     frame_gen_tab = std::make_unique<ConfigureFrameGeneration>(system, tab_group, *builder, this);
-    system_tab = std::make_unique<ConfigureSystem>(system, tab_group, *builder, this);
+    system_tab = std::make_unique<ConfigureSystem>(system, tab_group, *builder, this, title_id);
     applets_tab = std::make_unique<ConfigureApplets>(system, tab_group, *builder, this);
 }
 
