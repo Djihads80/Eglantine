@@ -507,10 +507,21 @@ public:
         bool mapped{};               ///< The page has a backing pointer.
         bool rasterizer{};           ///< The page is GPU-cached; the GPU caches were invalidated.
         bool separate_heap_mapped{}; ///< A non-resident separate-heap page was mapped in.
+        bool read_trap{};            ///< A read of an armed read trap: GPU writes downloaded.
     };
 
-    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
+    /**
+     * Handles an NCE guest fault on the page at vaddr. A write (or an access whose kind is not
+     * known) to a GPU-cached page invalidates the GPU caches of the page. A read (is_read, from
+     * the fault's ESR) of an armed read trap downloads the GPU's writes to it and disarms it
+     * instead (EDEN_NX2_NCE_READ_TRAPS=0: every fault is taken as a write).
+     */
+    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_read = false,
                        NceInvalidateResult* result = nullptr);
+
+    /// An NCE fault that keeps coming back on a page a read trap was armed on, which is no longer
+    /// GPU-cached: gives it an uncached page's permissions. Returns whether it did.
+    bool RepairNceReadTrapPage(Common::ProcessAddress vaddr);
 
     /// Whether the page at vaddr is GPU-cached (its host pages are write-protected).
     bool IsRasterizerCachedPage(Common::ProcessAddress vaddr) const;

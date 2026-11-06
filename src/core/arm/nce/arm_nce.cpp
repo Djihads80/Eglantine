@@ -118,6 +118,16 @@ bool IsWritePermissionFault(u64 esr) {
     return data_abort && write && !cache_maintenance && dfsc >= 0x0c && dfsc <= 0x0f;
 }
 
+// A data abort on a read (not a cache maintenance instruction): a load from a page without read
+// permission, such as an armed read trap. Without an ESR record (0) it is not taken as one.
+bool IsReadFault(u64 esr) {
+    const u64 ec = esr >> 26;
+    const bool data_abort = ec == 0x24 || ec == 0x25;
+    const bool write = ((esr >> 6) & 1) != 0;
+    const bool cache_maintenance = ((esr >> 8) & 1) != 0;
+    return data_abort && !write && !cache_maintenance;
+}
+
 // EDEN_NCE_EMULATE_WRITES=<n>: emulate up to n stores per GPU-cached page (in a row on a core)
 // before invalidating it. EDEN_NCE_FAULT_AHEAD=<n>: after a write fault on the GPU-cached page
 // following the previous one, invalidate the next n pages too. Read once, after env.txt.
@@ -250,6 +260,7 @@ void NoteGuestAccessFault(ArmNce* core, const mcontext_t& host_ctx, const siginf
     u8 probe{};
     const bool readable = SafeRead(address, &probe, sizeof(probe));
     const char* lifted = invalidate.rasterizer             ? "GPU cache invalidate"
+                         : invalidate.read_trap            ? "read trap taken"
                          : invalidate.separate_heap_mapped ? "separate heap mapped in"
                                                            : "nothing (protection unchanged)";
     Kernel::KThread* const thread = core->m_running_thread;
@@ -486,12 +497,13 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
         (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
     auto& memory = core->m_running_thread->GetOwnerProcess()->GetMemory();
 
+    const u64 esr = FaultEsr(host_ctx);
+
     // A store to a GPU-cached page.
     const u32 emulate_budget = g_emulate_writes.load(std::memory_order_relaxed);
     const u32 ahead = g_fault_ahead.load(std::memory_order_relaxed);
     bool sequential = false;
     if (stats || emulate_budget != 0 || ahead != 0) {
-        const u64 esr = FaultEsr(host_ctx);
         if (IsWritePermissionFault(esr) && memory.IsRasterizerCachedPage(addr)) {
             const u64 page = GetInteger(addr);
             sequential = page == core->m_last_raster_page + Memory::YUZU_PAGESIZE;
@@ -535,8 +547,18 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
         NceStats::t_invalidate_waited = false;
     }
     Memory::Memory::NceInvalidateResult invalidate{};
-    const bool handled = memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, &invalidate);
+    const bool handled =
+        memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, IsReadFault(esr), &invalidate);
     NoteGuestAccessFault(core, host_ctx, info, invalidate, handled);
+    if (handled && !invalidate.rasterizer && !invalidate.read_trap &&
+        !invalidate.separate_heap_mapped && core->m_repeat_fault_count % 16 == 0 &&
+        memory.RepairNceReadTrapPage(addr)) {
+        // Nothing lifted the fault 16 times in a row on a page a read trap protected once.
+        LOG_WARNING(Core_ARM,
+                    "NCE fault repeated {} times on a page that left the GPU caches with a read "
+                    "trap's protection ({:#x}, PC {:#x}): made read-write",
+                    core->m_repeat_fault_count, GetInteger(addr), host_ctx.pc);
+    }
     if (handled) {
         if (invalidate.rasterizer && sequential && ahead != 0) {
             // A writer going through GPU-cached pages in order: take the next ones' faults now.
@@ -550,6 +572,7 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
             const auto kind = invalidate.rasterizer
                                   ? (NceStats::t_invalidate_waited ? NceStats::Fault::RasterizerWait
                                                                    : NceStats::Fault::Rasterizer)
+                              : invalidate.read_trap            ? NceStats::Fault::ReadTrap
                               : invalidate.separate_heap_mapped ? NceStats::Fault::SeparateHeap
                                                                 : NceStats::Fault::Mapped;
             NceStats::RecordFault(core->m_core_index, kind, NceStats::Ticks() - start);

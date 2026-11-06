@@ -51,6 +51,7 @@ enum class Fault : u32 {
     Mapped,       ///< A mapped page with nothing to fix (protection already lifted)
     Unhandled,    ///< An unmapped address: the access is skipped or the thread stops
     Alignment,    ///< SIGBUS: the instruction is interpreted
+    ReadTrap,     ///< A read of a GPU-written page: its GPU writes are downloaded (read trap)
     Count,
 };
 

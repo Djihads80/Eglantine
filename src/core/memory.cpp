@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <span>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -73,6 +75,11 @@ struct Memory::Impl {
 #else
         host_buffer = std::addressof(system.DeviceMemory().buffer);
 #endif
+        if (process.IsApplication()) {
+            LOG_INFO(HW_Memory, "Read traps on GPU-written pages: {}{}",
+                     ReadTrapsEnabled() ? "on" : "off",
+                     Settings::IsNceEnabled() ? " (NCE, EDEN_NX2_NCE_READ_TRAPS)" : "");
+        }
     }
 
     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
@@ -578,8 +585,10 @@ struct Memory::Impl {
 
     /// Read traps replace reactive flushing's blanket read protection of every cached page: only
     /// pages the GPU writes are protected, and each one only until its first read
-    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE every fault is taken as a write, so they
-    /// are not used there.
+    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE the fault handler tells a read from a
+    /// write by the fault's ESR and takes a read of an armed page here (TakeNceReadTrap);
+    /// EDEN_NX2_NCE_READ_TRAPS=0 turns them off there alone, and every NCE fault on a GPU-cached
+    /// page is taken as a write again.
     bool ReadTrapsEnabled() const {
         static const bool disabled = [] {
             const char* value = std::getenv("EDEN_NX2_READ_TRAPS");
@@ -587,7 +596,16 @@ struct Memory::Impl {
         }();
         return !disabled && current_page_table->fastmem_arena &&
                !Settings::values.use_reactive_flushing.GetValue() &&
-               Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce;
+               (Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce ||
+                NceReadTrapsAllowed());
+    }
+
+    static bool NceReadTrapsAllowed() {
+        static const bool allowed = [] {
+            const char* value = std::getenv("EDEN_NX2_NCE_READ_TRAPS");
+            return value == nullptr || value[0] != '0';
+        }();
+        return allowed;
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
@@ -618,6 +636,9 @@ struct Memory::Impl {
                 continue;
             }
             armed_read_trap_count.fetch_add(1, std::memory_order_relaxed);
+            if (Settings::IsNceEnabled()) {
+                read_trap_pages.insert(page);
+            }
             if (run_pages == 0) {
                 run_begin = page;
             }
@@ -654,6 +675,115 @@ struct Memory::Impl {
             it = armed_read_traps.erase(it);
             armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
         }
+    }
+
+    bool IsArmedReadTrap(u64 page) {
+        if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
+            return false;
+        }
+        std::scoped_lock lk{read_trap_mutex};
+        return armed_read_traps.contains(page);
+    }
+
+    /// Memory::InvalidateNCE, a read fault on a GPU-cached page: when the page is an armed read
+    /// trap, the GPU's writes to it are downloaded (OnCPURead, which also marks the range
+    /// Preflushable, so later GPU writes to it are copied back at fences) and only then is the
+    /// trap disarmed, leaving the page read-only so that a write still faults. Unlike the slow
+    /// path (HandleRasterizerDownload) the page stays unreadable until the download is in guest
+    /// memory, and one core takes a trap at a time: another core reading the page meanwhile
+    /// faults and waits here instead of reading stale data. Returns whether the page was a trap.
+    bool TakeNceReadTrap(u64 vaddr) {
+        const u64 page = vaddr >> YUZU_PAGEBITS;
+        if (!IsArmedReadTrap(page)) {
+            return false;
+        }
+        std::scoped_lock lk{nce_read_trap_mutex};
+        if (!IsArmedReadTrap(page)) {
+            return true; // Another core took it while this one waited: the data is in.
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const u64 page_address = page << YUZU_PAGEBITS;
+        const u8* const p = GetPointerImpl(page_address, [] {}, [] {});
+        if (!gpu_device_memory) [[unlikely]] {
+            gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        if (p != nullptr) {
+            gpu_device_memory->ApplyOpOnPointer(p, nce_read_trap_scratch, [&](DAddr address) {
+                (void)system.GPU().OnCPURead(address, YUZU_PAGESIZE);
+            });
+        }
+        DisarmNceReadTrap(page);
+        NoteNceReadTrap(std::chrono::steady_clock::now() - start);
+        return true;
+    }
+
+    /// TakeNceReadTrap: the page back to read-only, or read-write when it left the GPU caches
+    /// meanwhile (as RasterizerMarkRegionCached leaves an uncached page), so that an uncached
+    /// page is never left read-only: no fault on it could lift that.
+    void DisarmNceReadTrap(u64 page) {
+        std::scoped_lock lk{read_trap_mutex};
+        if (armed_read_traps.erase(page) == 0) {
+            return; // A slow-path read disarmed it meanwhile.
+        }
+        armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
+        const auto is_cached = [&] {
+            return std::as_const(current_page_table->entries)[page].Type() ==
+                   Common::PageType::RasterizerCachedMemory;
+        };
+        const bool cached = is_cached();
+        host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                             cached ? Common::MemoryPermission::Read
+                                    : Common::MemoryPermission::ReadWrite);
+        if (cached && !is_cached()) {
+            host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                 Common::MemoryPermission::ReadWrite);
+        }
+    }
+
+    /// A fault that keeps coming back on a page a read trap was armed on, which is no longer
+    /// GPU-cached: a trap's protection change raced the page leaving the caches, and no fault
+    /// handling would lift it. Gives the page an uncached page's permissions.
+    bool RepairNceReadTrapPage(u64 vaddr) {
+        const u64 page = vaddr >> YUZU_PAGEBITS;
+        std::scoped_lock lk{read_trap_mutex};
+        if (!read_trap_pages.contains(page) ||
+            std::as_const(current_page_table->entries)[page].Type() != Common::PageType::Memory) {
+            return false;
+        }
+        host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                             Common::MemoryPermission::ReadWrite);
+        return true;
+    }
+
+    /// NCE read traps taken, logged every 10 s (or at the first trap after that): how many a
+    /// second and what they cost the faulting core. Under nce_read_trap_mutex.
+    void NoteNceReadTrap(std::chrono::steady_clock::duration taken) {
+        auto& window = nce_read_trap_window;
+        const auto now = std::chrono::steady_clock::now();
+        if (window.total_traps == 0) {
+            window.since = now; // The first one is logged at once.
+        }
+        ++window.count;
+        ++window.total_traps;
+        window.taken += taken;
+        window.max_taken = (std::max)(window.max_taken, taken);
+        const auto elapsed = now - window.since;
+        if (window.total_traps != 1 && elapsed < std::chrono::seconds{10}) {
+            return;
+        }
+        using Micros = std::chrono::duration<double, std::micro>;
+        const double seconds = std::chrono::duration<double>(elapsed).count();
+        LOG_INFO(HW_Memory,
+                 "NCE read traps: {} in {:.1f} s ({:.1f}/s), {:.0f} us avg, {:.0f} us max, {} "
+                 "since start, {} armed now",
+                 window.count, seconds, seconds > 0.0 ? window.count / seconds : 0.0,
+                 Micros(window.taken).count() / static_cast<double>(window.count),
+                 Micros(window.max_taken).count(), window.total_traps,
+                 armed_read_trap_count.load(std::memory_order_relaxed));
+        window.since = now;
+        window.count = 0;
+        window.taken = {};
+        window.max_taken = {};
     }
 
     /**
@@ -1019,6 +1149,18 @@ struct Memory::Impl {
     std::set<u64> armed_read_traps;
     std::atomic<size_t> armed_read_trap_count{};
     std::mutex read_trap_mutex;
+    /// NCE: every page a read trap was armed on (RepairNceReadTrapPage). Under read_trap_mutex.
+    std::unordered_set<u64> read_trap_pages;
+    /// NCE: held while a core takes a read trap (TakeNceReadTrap), with what only it uses.
+    std::mutex nce_read_trap_mutex;
+    Common::ScratchBuffer<u32> nce_read_trap_scratch;
+    struct NceReadTrapWindow {
+        std::chrono::steady_clock::time_point since{};
+        u64 count{};
+        u64 total_traps{};
+        std::chrono::steady_clock::duration taken{};
+        std::chrono::steady_clock::duration max_taken{};
+    } nce_read_trap_window;
     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
@@ -1219,7 +1361,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_read,
                            NceInvalidateResult* result) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
@@ -1232,11 +1374,23 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer) {
+
+    [[maybe_unused]] bool separate_heap_mapped = false;
+    bool read_trap = false;
+    if (rasterizer && is_read && ptr != nullptr && impl->ReadTrapsEnabled()) {
+        // A read: an armed read trap has GPU-written data to download, and a GPU-cached page
+        // the heap tracker unmapped only needs mapping back in. Neither invalidates the caches;
+        // anything else is taken as a write below, as before read traps.
+        read_trap = impl->TakeNceReadTrap(GetInteger(vaddr));
+#ifdef __ANDROID__
+        separate_heap_mapped = impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
+#endif
+    }
+    const bool invalidated = rasterizer && !read_trap && !separate_heap_mapped;
+    if (invalidated) {
         impl->InvalidateGPUMemory(ptr, size);
     }
 
-    [[maybe_unused]] bool separate_heap_mapped = false;
 #ifdef __ANDROID__
     if (!rasterizer && mapped) {
         separate_heap_mapped = impl->host_buffer->DeferredMapSeparateHeap(GetInteger(vaddr));
@@ -1244,11 +1398,16 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
 #endif
     if (result) {
         *result = {.mapped = mapped && ptr != nullptr,
-                   .rasterizer = rasterizer,
-                   .separate_heap_mapped = separate_heap_mapped};
+                   .rasterizer = invalidated,
+                   .separate_heap_mapped = separate_heap_mapped,
+                   .read_trap = read_trap};
     }
 
     return mapped && ptr != nullptr;
+}
+
+bool Memory::RepairNceReadTrapPage(Common::ProcessAddress vaddr) {
+    return impl->RepairNceReadTrapPage(GetInteger(vaddr));
 }
 
 bool Memory::IsRasterizerCachedPage(Common::ProcessAddress vaddr) const {

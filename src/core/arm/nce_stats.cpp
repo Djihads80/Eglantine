@@ -332,7 +332,7 @@ void Report(double seconds, double frequency, const std::vector<CoreSnapshot>& n
             static constexpr std::array<const char*, static_cast<size_t>(Fault::Count)> names{
                 "GPU-cached write", "GPU-cached write waiting for the GPU thread",
                 "GPU-cached store emulated", "separate heap", "mapped", "unhandled",
-                "alignment"};
+                "alignment", "GPU-written read trap"};
             std::string text;
             for (size_t i = 0; i < names.size(); ++i) {
                 const u64 count = d(a.fault_count[i], b.fault_count[i]);
