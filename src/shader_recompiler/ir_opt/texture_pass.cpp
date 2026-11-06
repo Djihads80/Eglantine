@@ -435,9 +435,11 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
         if (IsMemoryLoad(inst->GetOpcode())) {
             continue;
         }
-        // Nor is a texture result (a sample whose register a phi of the handle shares): its
-        // coordinates lead to constant buffer floats, not to a handle.
-        if (StableDynamicHandles() && IsTextureInstruction(*inst)) {
+        // Nor is a texture result or floating-point math (a phi of the handle shares their
+        // register on paths that don't sample): they lead to constant buffer floats, not to a
+        // handle.
+        if (StableDynamicHandles() &&
+            (IsTextureInstruction(*inst) || IR::NameOf(inst->GetOpcode()).starts_with("FP"))) {
             continue;
         }
         for (size_t arg = inst->NumArgs(); arg--;) {
