@@ -233,6 +233,7 @@ enum class Counter : u32 {
     /// after the frame's first bind (bytes the default path uploads one frame late)
     BankRechecksSkippedByFrame,
     BankLateChanges,
+    CbWordsNoted, ///< Constant buffer words the front kept for the overlay (MacroReadCbOverlay)
     Count,
 };
 
@@ -479,6 +480,7 @@ inline void Report(const char* thread_name = "GPU thread") {
                         per_second(Counter::DmaReadsWaitWriteOtherPageOnly),
                         per_second(Counter::DmaReadsWaitWriteCbLost),
                         per_second(Counter::DmaReadsWaitWriteCbOlder));
+    line += fmt::format(" | cb words noted {:.0f}/s", per_second(Counter::CbWordsNoted));
     std::string flushes;
     for (size_t i = 0; i < data.flushes.size(); ++i) {
         if (data.flushes[i] != 0) {

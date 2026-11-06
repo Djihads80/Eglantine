@@ -99,6 +99,9 @@ enum class Opt : unsigned {
     /// With PresentOneAhead: a present that skips this frame's wait first waits for the
     /// previous frame's landed (host) syncpoint value
     OneAheadLanded,
+    /// Split front: queued constant buffer words, noted writes and draw epochs in preallocated
+    /// rings instead of std::deque (one heap block per element on MSVC)
+    SplitRings,
     Count,
 };
 
@@ -125,6 +128,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "guest_ccd",
     "bank_once_per_frame",
     "landed_prev_always", "one_ahead_landed",
+    "split_rings",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -135,7 +139,8 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::GuestCcd) == 47 &&
               static_cast<unsigned>(Opt::BankOncePerFrame) == 48 &&
               static_cast<unsigned>(Opt::LandedPrevAlways) == 49 &&
-              static_cast<unsigned>(Opt::OneAheadLanded) == 50);
+              static_cast<unsigned>(Opt::OneAheadLanded) == 50 &&
+              static_cast<unsigned>(Opt::SplitRings) == 51);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -160,7 +165,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd,
-                          Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded}) {
+                          Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
+                          Opt::SplitRings}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -174,7 +180,8 @@ inline constexpr u64 DefaultOffMask() {
 /// guest rewrites constants the back has not read yet: incessant brightness flashes in play);
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
-/// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed (not measured yet).
+/// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings (not
+/// measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -183,7 +190,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
-                                  Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded);
+                                  Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
+                                  Bit(Opt::SplitRings);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -195,6 +203,7 @@ static_assert(IsOff(always_off, 49) && IsOff(DefaultOffMask(), 49) && IsOff(alwa
 static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
 // bank_once_per_frame is on by default; SAFE turns it off (suspected of the flashes).
 static_assert(!IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48));
+static_assert(IsOff(always_off, 51) && IsOff(DefaultOffMask(), 51));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).

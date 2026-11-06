@@ -123,6 +123,11 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     writes.SetSeparateKinds(Nx2Perf::On(Nx2Perf::Opt::MacroReadOverlayWriters) &&
                             Nx2Perf::On(Nx2Perf::Opt::MacroReadCbOverlay) &&
                             Nx2Perf::On(Nx2Perf::Opt::MacroReadWriterSet));
+    const SplitRingMode ring_mode = !Nx2Perf::On(Nx2Perf::Opt::SplitRings) ? SplitRingMode::Off
+                                    : Nx2Perf::Verify()                     ? SplitRingMode::Verify
+                                                                            : SplitRingMode::On;
+    writes.SetRings(ring_mode);
+    cb_words.SetRings(ring_mode);
 #ifdef ARCHITECTURE_x86_64
     // Front macros run compiled (macro_turing_jit.h) only.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
@@ -152,7 +157,7 @@ void GpuSplit::Stop() {
     last_function_position = 0;
     writes.Reset();
     async_writes.clear();
-    cb_words.clear();
+    cb_words.Clear();
     cb_words_lost = 0;
     note_memory = nullptr;
     note_page = ~GPUVAddr{0};
@@ -439,7 +444,7 @@ void GpuSplit::NoteConstBufferWrite(const Tegra::MemoryManager& memory, GPUVAddr
     if (!noted || stored == 0 || !Nx2Perf::On(Nx2Perf::Opt::MacroReadCbOverlay)) {
         return;
     }
-    if ((address & 3) != 0 || cb_words.size() + stored > MaxConstBufferWords) {
+    if ((address & 3) != 0 || cb_words.Size() + stored > MaxConstBufferWords) {
         cb_words_lost = write_position;
         return;
     }
@@ -456,29 +461,19 @@ void GpuSplit::NoteConstBufferWrite(const Tegra::MemoryManager& memory, GPUVAddr
             } else if (const std::optional<DAddr> device = memory.GpuToCpuAddress(page)) {
                 device_page = *device & page_mask;
             } else {
+                Nx2Profile::Add(Nx2Profile::Counter::CbWordsNoted, i);
                 cb_words_lost = write_position;
                 return;
             }
         }
-        cb_words.push_back({device_page + (word_address & 0xfff), write_position, words[i]});
+        cb_words.Push({device_page + (word_address & 0xfff), write_position, words[i]});
     }
+    Nx2Profile::Add(Nx2Profile::Counter::CbWordsNoted, stored);
 }
 
 void GpuSplit::OverlayConstBufferWords(u64 consumed_position, u64 begin, u64 size,
                                        u8* out) const {
-    const u64 end = begin + size;
-    for (const ConstBufferWord& word : cb_words) {
-        if (word.position <= consumed_position) {
-            continue;
-        }
-        const u64 low = (std::max)(word.device, begin);
-        const u64 high = (std::min)(word.device + sizeof(u32), end);
-        if (low < high) {
-            std::memcpy(out + (low - begin),
-                        reinterpret_cast<const u8*>(&word.value) + (low - word.device),
-                        high - low);
-        }
-    }
+    cb_words.Overlay(consumed_position, begin, size, out);
 }
 
 u64 GpuSplit::SettleWrites() {
@@ -489,9 +484,7 @@ u64 GpuSplit::SettleWrites() {
 u64 GpuSplit::RetireWrites() {
     consumed_cache = consumed.load(std::memory_order_acquire);
     writes.Retire(consumed_cache);
-    while (!cb_words.empty() && cb_words.front().position <= consumed_cache) {
-        cb_words.pop_front();
-    }
+    cb_words.Retire(consumed_cache);
     return consumed_cache;
 }
 

@@ -398,13 +398,8 @@ private:
     u64 last_function_position{};
     SplitWriteTracker writes;
     /// MacroReadCbOverlay: queued constant buffer words, oldest first, popped by RetireWrites.
-    struct ConstBufferWord {
-        u64 device;
-        u64 position;
-        u32 value;
-    };
-    static constexpr size_t MaxConstBufferWords = 4096;
-    std::deque<ConstBufferWord> cb_words;
+    static constexpr size_t MaxConstBufferWords = SplitConstBufferWords::MaxWords;
+    SplitConstBufferWords cb_words;
     u64 cb_words_lost{}; ///< Newest position of a constant buffer word not kept
     /// NoteWrite's last translation: memory manager, GPU page, device page, the function
     /// position it was made at (a later function may remap).
