@@ -48,6 +48,10 @@ public:
     }
 
     void Gather(std::function<void(PAddr, size_t)>& callback) {
+        // Gatherers may run on more than one thread (the GPU thread, the split's back, a reader
+        // that flushes first): one swapping or clearing front_buffer while another iterates it
+        // loses the CPU writes it held. Collect keeps using guard only.
+        std::scoped_lock gather_lk(gather_guard);
         {
             std::scoped_lock lk(guard);
             TransformAddress t = current.exchange(default_transform, std::memory_order_relaxed);
@@ -115,6 +119,7 @@ private:
 
     std::atomic<TransformAddress> current{};
     std::mutex guard;
+    std::mutex gather_guard;
     std::vector<TransformAddress> back_buffer;
     std::vector<TransformAddress> front_buffer;
 };
