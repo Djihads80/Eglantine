@@ -25,6 +25,7 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::MacroReadOverlayWriters) ||
                                   i == Index(Opt::GpuCorePin) ||
                                   i == Index(Opt::PresentGuestWait) ||
+                                  i == Index(Opt::PresentOneAhead) ||
                                   i == Index(Opt::ReleaseBeforeHook) ||
                                   i == Index(Opt::AcquireTriggerEarly) ||
                                   i == Index(Opt::PipelineKeepPreloaded) ||
