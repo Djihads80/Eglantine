@@ -93,8 +93,9 @@ public:
     void TimeBegin();
     void TimeEnd(bool dispatch);
     /// GPU time of work recorded ahead of the next draw's render pass (emulated task/mesh
-    /// dispatches): the pool and first of the two queries it writes, none when not timing.
-    [[nodiscard]] std::optional<std::pair<VkQueryPool, u32>> TimeAhead();
+    /// dispatches), in `pairs` parts: the pool and first of the two queries each part writes,
+    /// none when not timing.
+    [[nodiscard]] std::optional<std::pair<VkQueryPool, u32>> TimeAhead(u32 pairs = 1);
     /// Waits for pending readbacks and writes them once they pass the staging budget.
     void DrainIfFull();
     void TickFrame();

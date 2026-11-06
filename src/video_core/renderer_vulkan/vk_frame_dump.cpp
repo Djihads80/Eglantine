@@ -623,19 +623,21 @@ void FrameDump::TimeEnd(bool dispatch) {
     pending_begin = ~0U;
 }
 
-std::optional<std::pair<VkQueryPool, u32>> FrameDump::TimeAhead() {
-    if (!capturing || !timing || next_query + 2 > MAX_TIMESTAMPS) {
+std::optional<std::pair<VkQueryPool, u32>> FrameDump::TimeAhead(u32 pairs) {
+    if (!capturing || !timing || next_query + pairs * 2 > MAX_TIMESTAMPS) {
         return std::nullopt;
     }
     const u32 begin = next_query;
-    next_query += 2;
+    next_query += pairs * 2;
     // Counted with the draw it precedes, not yet noted.
-    timed.push_back({.begin = begin,
-                     .end = begin + 1,
-                     .number = draws,
-                     .pass = pass_index,
-                     .dispatch = false,
-                     .ahead = true});
+    for (u32 pair = 0; pair < pairs; ++pair) {
+        timed.push_back({.begin = begin + pair * 2,
+                         .end = begin + pair * 2 + 1,
+                         .number = draws,
+                         .pass = pass_index,
+                         .dispatch = false,
+                         .ahead = true});
+    }
     return std::pair{*timestamps, begin};
 }
 

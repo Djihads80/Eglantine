@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -238,14 +239,39 @@ void Scheduler::CommitRenderPassBegin() {
     begin_pending = false;
     std::unique_ptr<CommandChunk> pass = std::move(chunk);
     chunk = std::move(outer_chunk);
-    if (pre_chunk) {
+    for (std::unique_ptr<CommandChunk>& phase : pre_chunks) {
+        if (!phase) {
+            continue;
+        }
+        if (phase->Empty()) {
+            PushChunk(std::move(phase)); // to the reserve
+            continue;
+        }
         PushChunk(std::move(chunk));
-        chunk = std::move(pre_chunk);
+        chunk = std::move(phase);
     }
     RecordRenderPassBegin();
     PushChunk(std::move(chunk));
     PushChunk(std::move(pass));
     chunk = TakeChunk();
+}
+
+std::array<bool, Scheduler::PRE_PHASES> Scheduler::PrepareBeforeRenderPass(
+    const Framebuffer* framebuffer, size_t bytes) {
+    RequestRenderpass(framebuffer);
+    const bool room = std::ranges::all_of(pre_chunks, [bytes](const auto& phase) {
+        return !phase || phase->HasRoom(bytes);
+    });
+    if (!begin_pending || !room) {
+        // Its begin is handed over (or full): it ends, and begins again lazily after the work.
+        EndRenderPass();
+        RequestRenderpass(framebuffer);
+    }
+    std::array<bool, PRE_PHASES> empty{};
+    for (size_t phase = 0; phase < PRE_PHASES; ++phase) {
+        empty[phase] = !pre_chunks[phase] || pre_chunks[phase]->Empty();
+    }
+    return empty;
 }
 
 std::unique_ptr<Scheduler::CommandChunk> Scheduler::TakeChunk() {

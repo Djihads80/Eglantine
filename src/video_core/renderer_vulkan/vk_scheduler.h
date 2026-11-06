@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <queue>
 
 #include "common/alignment.h"
+#include "common/assert.h"
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
@@ -106,22 +108,46 @@ public:
     template <typename T>
         requires std::is_invocable_v<T, vk::CommandBuffer>
     void RecordBeforeRenderPass(const Framebuffer* framebuffer, T&& c) {
+        if (hoisting) {
+            PrepareBeforeRenderPass(framebuffer, 1024);
+            RecordBeforeRenderPass(PRE_PHASES - 1, std::forward<T>(c));
+            return;
+        }
         RequestRenderpass(framebuffer);
+        EndRenderPass();
+        Record(std::forward<T>(c));
+        RequestRenderpass(framebuffer);
+    }
+
+    /// With hoisting, the work ahead of a pending begin runs in phases: a phase's commands run
+    /// after every command of the phases before it, so the draws of one pass order their stages
+    /// with one barrier each (recorded by the phase's first command).
+    static constexpr size_t PRE_PHASES = 4;
+
+    [[nodiscard]] bool HoistsRenderPasses() const noexcept {
+        return hoisting;
+    }
+
+    /// Makes the render pass of `framebuffer` take work ahead of its begin, `bytes` in each phase
+    /// (hoisting): ends it and begins it again lazily when its begin was handed over already, or
+    /// a phase lacks the room. Returns which phases hold nothing yet.
+    std::array<bool, PRE_PHASES> PrepareBeforeRenderPass(const Framebuffer* framebuffer,
+                                                         size_t bytes);
+
+    /// Records `command` in `phase` of the work ahead of the pending begin
+    /// (PrepareBeforeRenderPass made room for it).
+    template <typename T>
+        requires std::is_invocable_v<T, vk::CommandBuffer>
+    void RecordBeforeRenderPass(size_t phase, T&& c) {
         auto command = [command = std::move(c)](vk::CommandBuffer cmdbuf, vk::CommandBuffer) {
             command(cmdbuf);
         };
-        if (begin_pending) {
-            if (!pre_chunk) {
-                pre_chunk = TakeChunk();
-            }
-            if (pre_chunk->Record(command)) {
-                return;
-            }
-            CommitRenderPassBegin();
+        std::unique_ptr<CommandChunk>& target = pre_chunks[phase];
+        if (!target) {
+            target = TakeChunk();
         }
-        EndRenderPass();
-        RecordWithUploadBuffer(std::move(command));
-        RequestRenderpass(framebuffer);
+        const bool recorded = target->Record(command);
+        ASSERT(recorded);
     }
 
     /// Returns true when a render pass is currently active in the scheduler state.
@@ -336,6 +362,10 @@ private:
             return command_offset == 0;
         }
 
+        bool HasRoom(size_t bytes) const {
+            return command_offset + bytes <= sizeof(data);
+        }
+
         bool HasSubmit() const {
             return submit;
         }
@@ -430,7 +460,7 @@ private:
     bool begin_pending{};
     PendingBegin pending_begin;
     std::unique_ptr<CommandChunk> outer_chunk;
-    std::unique_ptr<CommandChunk> pre_chunk;
+    std::array<std::unique_ptr<CommandChunk>, PRE_PHASES> pre_chunks;
 
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;

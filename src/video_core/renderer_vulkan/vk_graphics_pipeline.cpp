@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <memory>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <span>
@@ -1469,9 +1471,12 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     return true;
 }
 
-bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& rescaling,
-                                                 const RenderAreaPushConstant& render_area) {
-    const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
+namespace {
+// What an emulated task/mesh draw runs ahead of its render pass, in the scheduler's phases
+// (Scheduler::PRE_PHASES): its header and zeroed output regions, its task dispatch, its mesh
+// dispatch, then the readback of its header. Each phase's first command (`first`) orders it
+// after the phases before it for every draw of the pass with one barrier.
+struct EmulatedMeshWork {
     struct PushConstants {
         std::array<u32, Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS> rescaling;
         f32 down_factor;
@@ -1480,7 +1485,201 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         bool uses_draw_base;
         MeshDrawBaseLayout draw_base;
     };
-    PushConstants push{
+
+    std::function<VkDescriptorSet()> commit; ///< the draw's descriptor set (null: not built)
+    VkPipelineLayout layout{};
+    VkPipeline task_pipeline{};
+    VkPipeline mesh_pipeline{};
+    VkBuffer buffer{};
+    VkDeviceSize offset{};
+    VkDeviceSize size{};
+    MeshEmulationHeader header{};
+    std::pair<VkBuffer, VkDeviceSize> check{};
+    u32 groups{};
+    bool has_task{};
+    PushConstants push{};
+    std::optional<std::pair<VkQueryPool, u32>> timing; ///< a query pair per phase
+    VkDescriptorSet descriptor_set{};                  ///< from phase 0
+
+    static constexpr VkShaderStageFlags PUSH_STAGES{VK_SHADER_STAGE_ALL_GRAPHICS |
+                                                    VK_SHADER_STAGE_COMPUTE_BIT};
+
+    void PushTo(vk::CommandBuffer cmdbuf) const {
+        cmdbuf.PushConstants(layout, PUSH_STAGES, RESCALING_LAYOUT_WORDS_OFFSET,
+                             sizeof(push.rescaling), push.rescaling.data());
+        cmdbuf.PushConstants(layout, PUSH_STAGES, RESCALING_LAYOUT_DOWN_FACTOR_OFFSET,
+                             sizeof(push.down_factor), &push.down_factor);
+        if (push.uses_render_area) {
+            cmdbuf.PushConstants(layout, PUSH_STAGES, RENDERAREA_LAYOUT_OFFSET,
+                                 sizeof(push.render_area), push.render_area.data());
+        }
+        if (push.uses_draw_base) {
+            cmdbuf.PushConstants(layout, PUSH_STAGES, MESH_DRAW_BASE_OFFSET,
+                                 sizeof(push.draw_base), &push.draw_base);
+        }
+    }
+
+    void Timestamp(vk::CommandBuffer cmdbuf, size_t phase, u32 end) const {
+        if (timing) {
+            cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing->first,
+                                  timing->second + static_cast<u32>(phase) * 2 + end);
+        }
+    }
+
+    void Run(vk::CommandBuffer cmdbuf, size_t phase, bool first) {
+        Timestamp(cmdbuf, phase, 0);
+        switch (phase) {
+        case 0:
+            Prepare(cmdbuf, first);
+            break;
+        case 1:
+            Task(cmdbuf, first);
+            break;
+        case 2:
+            Mesh(cmdbuf, first);
+            break;
+        case 3:
+            Readback(cmdbuf, first);
+            break;
+        }
+        Timestamp(cmdbuf, phase, 1);
+    }
+
+    void Prepare(vk::CommandBuffer cmdbuf, bool first) {
+        if (first) {
+            // What the guest wrote for the programs: they read it from compute shaders now.
+            static constexpr VkMemoryBarrier WRITE_BARRIER{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            };
+            cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   0, WRITE_BARRIER);
+        }
+        descriptor_set = commit();
+        if (!descriptor_set) {
+            return;
+        }
+        cmdbuf.UpdateBuffer(buffer, offset, sizeof(header), &header);
+        // The output regions start zeroed: what a mesh program leaves unwritten (vertices or
+        // map bytes its primitives still name) is not another draw's data.
+        const VkDeviceSize outputs{VkDeviceSize{header.attribute_offset} * sizeof(u32)};
+        cmdbuf.FillBuffer(buffer, offset + outputs, size - outputs, 0);
+    }
+
+    static void ComputeBarrier(vk::CommandBuffer cmdbuf) {
+        // The headers and zeroed regions, and the task dispatches' writes (indirect mesh
+        // dispatches).
+        static constexpr VkMemoryBarrier BARRIER{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                             VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                               0, BARRIER);
+    }
+
+    void Task(vk::CommandBuffer cmdbuf, bool first) const {
+        if (first) {
+            ComputeBarrier(cmdbuf);
+        }
+        if (!has_task || !descriptor_set) {
+            return;
+        }
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, descriptor_set,
+                                  nullptr);
+        PushTo(cmdbuf);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, task_pipeline);
+        cmdbuf.Dispatch(groups, 1, 1);
+    }
+
+    void Mesh(vk::CommandBuffer cmdbuf, bool first) const {
+        if (first) {
+            ComputeBarrier(cmdbuf);
+        }
+        if (!descriptor_set) {
+            return;
+        }
+        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, descriptor_set,
+                                  nullptr);
+        PushTo(cmdbuf);
+        cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, mesh_pipeline);
+        if (has_task) {
+            cmdbuf.DispatchIndirect(buffer, offset);
+        } else {
+            cmdbuf.Dispatch(groups, 1, 1);
+        }
+    }
+
+    void Readback(vk::CommandBuffer cmdbuf, bool first) const {
+        if (first) {
+            // The mesh dispatches' output, for the vertex shaders, the draws and the readbacks.
+            static constexpr VkMemoryBarrier MESH_BARRIER{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                 VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   0, MESH_BARRIER);
+        }
+        if (check.first && descriptor_set) {
+            cmdbuf.CopyBuffer(buffer, check.first,
+                              VkBufferCopy{
+                                  .srcOffset = offset,
+                                  .dstOffset = check.second,
+                                  .size = sizeof(MeshEmulationHeader),
+                              });
+        }
+    }
+};
+} // Anonymous namespace
+
+bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& rescaling,
+                                                 const RenderAreaPushConstant& render_area) {
+    const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
+    // Draws of one pass can run their programs before any of them draws: each has its own work
+    // and descriptor set.
+    const auto work{std::make_shared<EmulatedMeshWork>()};
+    // On the worker: the pipelines once built, and the draw's descriptor set.
+    work->commit = [this, descriptor_data, raw = work.get()]() -> VkDescriptorSet {
+        if (!is_built.load(std::memory_order::relaxed)) {
+            std::unique_lock lock{build_mutex};
+            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+        }
+        if (!pipeline || !mesh_emulation->mesh_pipeline ||
+            (mesh_emulation->has_task && !mesh_emulation->task_pipeline)) {
+            return VkDescriptorSet{};
+        }
+        raw->task_pipeline = mesh_emulation->has_task ? *mesh_emulation->task_pipeline
+                                                      : VkPipeline{};
+        raw->mesh_pipeline = *mesh_emulation->mesh_pipeline;
+        const VkDescriptorSet descriptor_set{descriptor_allocator.Commit()};
+        device.GetLogical().UpdateDescriptorSet(descriptor_set, *descriptor_update_template,
+                                                descriptor_data);
+        return descriptor_set;
+    };
+    work->layout = *pipeline_layout;
+    work->buffer = emulated_draw.region.buffer;
+    work->offset = emulated_draw.region.offset;
+    work->size = emulated_draw.size;
+    work->header = emulated_draw.header;
+    work->check = emulated_draw.check;
+    work->groups = emulated_draw.groups;
+    work->has_task = mesh_emulation->has_task;
+    work->push = {
         .rescaling = rescaling.Data(),
         .down_factor = texture_cache.IsRescaling() ? Settings::values.resolution_info.down_factor
                                                    : 1.0f,
@@ -1489,132 +1688,42 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         .uses_draw_base = MeshFirstEnabled(),
         .draw_base = {},
     };
-    if (push.uses_draw_base) {
+    if (work->push.uses_draw_base) {
         const u32 first{maxwell3d->draw_manager.draw_state.vertex_buffer.first};
-        (stage_infos[0].is_task ? push.draw_base.task : push.draw_base.mesh) = first;
+        (stage_infos[0].is_task ? work->push.draw_base.task : work->push.draw_base.mesh) = first;
     }
-    static constexpr VkShaderStageFlags push_stages{VK_SHADER_STAGE_ALL_GRAPHICS |
-                                                    VK_SHADER_STAGE_COMPUTE_BIT};
-    const auto push_constants = [this](vk::CommandBuffer cmdbuf, const PushConstants& values) {
-        cmdbuf.PushConstants(*pipeline_layout, push_stages, RESCALING_LAYOUT_WORDS_OFFSET,
-                             sizeof(values.rescaling), values.rescaling.data());
-        cmdbuf.PushConstants(*pipeline_layout, push_stages, RESCALING_LAYOUT_DOWN_FACTOR_OFFSET,
-                             sizeof(values.down_factor), &values.down_factor);
-        if (values.uses_render_area) {
-            cmdbuf.PushConstants(*pipeline_layout, push_stages, RENDERAREA_LAYOUT_OFFSET,
-                                 sizeof(values.render_area), values.render_area.data());
-        }
-        if (values.uses_draw_base) {
-            cmdbuf.PushConstants(*pipeline_layout, push_stages, MESH_DRAW_BASE_OFFSET,
-                                 sizeof(values.draw_base), &values.draw_base);
-        }
-    };
-    // The task and mesh programs run before the draw's render pass: ahead of its begin when it
-    // is not recorded yet, otherwise the pass ends and resumes after them. Draws of one pass
-    // can run their programs before any of them draws, so each has its own descriptor set.
-    const auto descriptor_set_slot{std::make_shared<VkDescriptorSet>()};
+    if (FrameDump* const frame_dump{mesh_emulation_buffer->frame_dump};
+        frame_dump && frame_dump->Capturing()) {
+        work->timing = frame_dump->TimeAhead(Scheduler::PRE_PHASES);
+    }
     const Framebuffer* const framebuffer{texture_cache.GetFramebuffer()};
-    FrameDump* const frame_dump{mesh_emulation_buffer->frame_dump};
-    const auto timing{frame_dump && frame_dump->Capturing() ? frame_dump->TimeAhead()
-                                                            : std::nullopt};
-    scheduler.RecordBeforeRenderPass(framebuffer, [this, descriptor_data, draw = emulated_draw, push,
-                                                   push_constants, descriptor_set_slot,
-                                                   timing](vk::CommandBuffer cmdbuf) {
-        if (timing) {
-            cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing->first,
-                                  timing->second);
-        }
-        SCOPE_EXIT {
-            if (timing) {
-                cmdbuf.WriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timing->first,
-                                      timing->second + 1);
+    if (scheduler.HoistsRenderPasses()) {
+        // Ahead of the pass's begin, phase by phase with the pass's other emulated draws.
+        const auto empty{scheduler.PrepareBeforeRenderPass(framebuffer, 1024)};
+        for (size_t phase = 0; phase < Scheduler::PRE_PHASES; ++phase) {
+            // A phase without work for this draw still gets its barrier from its first draw.
+            // (Timed, every phase writes its timestamps.)
+            const bool idle{(phase == 1 && !work->has_task) ||
+                            (phase == 3 && !work->check.first)};
+            if (idle && !empty[phase] && !work->timing) {
+                continue;
             }
-        };
-        if (!is_built.load(std::memory_order::relaxed)) {
-            std::unique_lock lock{build_mutex};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+            scheduler.RecordBeforeRenderPass(
+                phase, [work, phase, first = empty[phase]](vk::CommandBuffer cmdbuf) {
+                    work->Run(cmdbuf, phase, first);
+                });
         }
-        if (!pipeline || !mesh_emulation->mesh_pipeline ||
-            (mesh_emulation->has_task && !mesh_emulation->task_pipeline)) {
-            return;
-        }
-        const VkDescriptorSet descriptor_set{descriptor_allocator.Commit()};
-        device.GetLogical().UpdateDescriptorSet(descriptor_set, *descriptor_update_template,
-                                                descriptor_data);
-        *descriptor_set_slot = descriptor_set;
-        // What the guest wrote for the programs: they read it from compute shaders now.
-        static constexpr VkMemoryBarrier WRITE_BARRIER{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-        };
-        cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                               0, WRITE_BARRIER);
-        cmdbuf.UpdateBuffer(draw.region.buffer, draw.region.offset, sizeof(draw.header),
-                            &draw.header);
-        // The output regions start zeroed: what a mesh program leaves unwritten (vertices or
-        // map bytes its primitives still name) is not another draw's data.
-        const VkDeviceSize outputs{VkDeviceSize{draw.header.attribute_offset} * sizeof(u32)};
-        cmdbuf.FillBuffer(draw.region.buffer, draw.region.offset + outputs, draw.size - outputs,
-                          0);
-        static constexpr VkMemoryBarrier HEADER_BARRIER{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-        };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, HEADER_BARRIER);
-        cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_layout, 0,
-                                  descriptor_set, nullptr);
-        push_constants(cmdbuf, push);
-        if (mesh_emulation->has_task) {
-            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->task_pipeline);
-            cmdbuf.Dispatch(draw.groups, 1, 1);
-            static constexpr VkMemoryBarrier TASK_BARRIER{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                .pNext = nullptr,
-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                                 VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
-            };
-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                                       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                                   0, TASK_BARRIER);
-            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->mesh_pipeline);
-            cmdbuf.DispatchIndirect(draw.region.buffer, draw.region.offset);
-        } else {
-            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->mesh_pipeline);
-            cmdbuf.Dispatch(draw.groups, 1, 1);
-        }
-        static constexpr VkMemoryBarrier MESH_BARRIER{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
-                             VK_ACCESS_TRANSFER_READ_BIT,
-        };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                               VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               0, MESH_BARRIER);
-        if (draw.check.first) {
-            cmdbuf.CopyBuffer(draw.region.buffer, draw.check.first,
-                              VkBufferCopy{
-                                  .srcOffset = draw.region.offset,
-                                  .dstOffset = draw.check.second,
-                                  .size = sizeof(MeshEmulationHeader),
-                              });
-        }
-    });
+    } else {
+        // The pass ends and resumes around the draw's work.
+        scheduler.RecordBeforeRenderPass(framebuffer, [work](vk::CommandBuffer cmdbuf) {
+            for (size_t phase = 0; phase < Scheduler::PRE_PHASES; ++phase) {
+                work->Run(cmdbuf, phase, true);
+            }
+        });
+    }
     const bool bind_pipeline{scheduler.UpdateGraphicsPipeline(this)};
-    scheduler.Record([this, bind_pipeline, push, push_constants,
-                      descriptor_set_slot](vk::CommandBuffer cmdbuf) {
-        const VkDescriptorSet descriptor_set{*descriptor_set_slot};
+    scheduler.Record([this, bind_pipeline, work](vk::CommandBuffer cmdbuf) {
+        const VkDescriptorSet descriptor_set{work->descriptor_set};
         if (bind_pipeline) {
             scheduler.SetGraphicsPipelineMissing(!descriptor_set);
             if (!descriptor_set) {
@@ -1625,7 +1734,7 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
             scheduler.SetGraphicsPipelineMissing(true);
             return;
         }
-        push_constants(cmdbuf, push);
+        work->PushTo(cmdbuf);
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline_layout, 0,
                                   descriptor_set, nullptr);
     });
