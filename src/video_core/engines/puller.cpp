@@ -209,6 +209,26 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
         LOG_WARNING(HW_GPU, "  channel {} waits in {}", dma_pusher.channel_state.bind_id,
                     dma_pusher.DescribeCurrentEntry());
+        // The QMDs that release the word (queue syncs): whether one waits for dependencies or
+        // already ran with an older payload. Their table belongs to the thread running engine
+        // methods, this one without the split.
+        if (!VideoCommon::GpuSplit::Get().Active()) {
+            u32 listed = 0;
+            NativeQmdScheduler::ForEachReleaseTo(
+                pending_acquire->address, [&](u64 qmd, bool loaded, bool scheduled, bool completed,
+                                              s32 dependencies, s32 deferred, u32 payload) {
+                    if (listed++ < 8) {
+                        LOG_WARNING(HW_GPU,
+                                    "  QMD {:#x} releases it: payload {:#x}, loaded {} scheduled "
+                                    "{} completed {}, {} dependencies, {} deferred",
+                                    qmd, payload, loaded, scheduled, completed, dependencies,
+                                    deferred);
+                    }
+                });
+            if (listed == 0) {
+                LOG_WARNING(HW_GPU, "  no QMD seen releases it");
+            }
+        }
     }
     return false;
 }

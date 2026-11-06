@@ -92,9 +92,16 @@ u64 ResnapshotMaxAgeNs() {
         return static_cast<u64>(forced) * 1'000'000;
     }
     constexpr u64 OcarinaOfTime = 0x0400486024DEC000ULL;
-    return Tegra::g_nx2_program_id.load(std::memory_order_relaxed) == OcarinaOfTime
-               ? u64{500'000'000}
-               : u64{0};
+    const u64 program = Tegra::g_nx2_program_id.load(std::memory_order_relaxed);
+    const u64 limit = program == OcarinaOfTime ? u64{500'000'000} : u64{0};
+    // Once per title: which limit applies.
+    if (static std::atomic<u64> logged{~u64{0}};
+        logged.load(std::memory_order_relaxed) != program &&
+        logged.exchange(program, std::memory_order_relaxed) != program) {
+        LOG_INFO(HW_GPU, "Command list copies: program {:016X} keeps copies older than {} ms{}",
+                 program, limit / 1'000'000, limit == 0 ? " (no limit)" : "");
+    }
+    return limit;
 }
 
 u64 SteadyNs() {
@@ -826,10 +833,11 @@ std::string DmaPusher::DescribeCurrentEntry() {
     static constexpr std::array copies{"at submit", "again when queued", "again at a resume"};
     std::string text = fmt::format(
         "entry {} of {} at {:#x}+{:#x} words, stopped at word {}; list copied {}, submitted {} ms "
-        "ago",
+        "ago{}",
         dma_pushbuffer_subindex, list.command_lists.size(), header.addr.Value(),
         header.size.Value(), command_resume_offset, copies[(std::min<size_t>)(list.copied_at, 2)],
-        list.submit_ns != 0 ? (SteadyNs() - list.submit_ns) / 1'000'000 : 0);
+        list.submit_ns != 0 ? (SteadyNs() - list.submit_ns) / 1'000'000 : 0,
+        KeepsCopy(list) ? " (old enough to keep that copy now)" : "");
     if (record_parsed_entries && entry_record.address == header.addr) {
         text += fmt::format(", parsed from {}", entry_record.source);
     }

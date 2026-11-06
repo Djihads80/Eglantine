@@ -19,6 +19,25 @@ public:
     struct RejectShaderDispatch { bool operator()(const Descriptor&) const { return false; } };
     // Optional diagnostics: called with "load"/"count"/"defer"/"run" events.
     std::function<void(std::string_view, Address, std::int32_t)> trace;
+    // Called when a schedule reloads a QMD still waiting for dependencies: the waiting launch,
+    // and the releases other queues wait on, are dropped.
+    std::function<void(Address, std::int32_t)> dropped;
+
+    /// The QMDs whose release slots write `destination`, with their state (diagnostics; the
+    /// thread running the QMDs only).
+    template <typename Out>
+    static void ForEachReleaseTo(Address destination, Out&& out) {
+        for (const auto& [address, state] : states) {
+            for (const Word base : ReleaseSlots) {
+                const Word flags = state.descriptor[base + 1];
+                if ((flags & (1U << 23)) &&
+                    ((Address{flags & 0xff} << 32) | state.descriptor[base]) == destination) {
+                    out(address, state.loaded, state.scheduled, state.completed,
+                        state.dependencies, state.deferred, state.descriptor[base + 2]);
+                }
+            }
+        }
+    }
     template <typename Read, typename Release>
     std::string_view Signal(Address address, Word argument, Read read, Release release) {
         return Signal(address, argument, read, release, RejectShaderDispatch{});
@@ -41,6 +60,10 @@ public:
             }
             auto& state = states[request.address];
             if (request.action == 3 || request.action == 2) {
+                if (request.action == 3 && state.loaded && state.scheduled && !state.completed &&
+                    dropped) {
+                    dropped(request.address, state.dependencies);
+                }
                 if (request.action == 3 || !state.loaded) {
                     if (!read(request.address, state.descriptor)) return "unmapped QMD";
                     const auto& qmd = state.descriptor;

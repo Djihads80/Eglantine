@@ -54,6 +54,15 @@ KeplerCompute::KeplerCompute(MemoryManager& memory_manager_)
                      fmt::ptr(this), memory_manager.GetID());
         };
     }
+    native_qmd.dropped = [this](u64 address, s32 dependencies) {
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
+            LOG_WARNING(HW_GPU,
+                        "QMD {:#x} scheduled again while its last launch waits for {} "
+                        "dependencies (as {}): that launch and its releases are dropped",
+                        address, dependencies, memory_manager.GetID());
+        }
+    };
     execution_mask.reset();
     execution_mask[KEPLER_COMPUTE_REG_INDEX(exec_upload)] = true;
     execution_mask[KEPLER_COMPUTE_REG_INDEX(data_upload)] = true;
