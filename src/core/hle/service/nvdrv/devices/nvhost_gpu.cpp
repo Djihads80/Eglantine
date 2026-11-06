@@ -456,10 +456,20 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             entries.submitted_words.resize(words);
             entries.submitted_offsets.reserve(entries.command_lists.size());
             size_t offset = 0;
-            for (const auto& entry : entries.command_lists) {
+            for (u32 i = 0; i < entries.command_lists.size(); ++i) {
+                const auto& entry = entries.command_lists[i];
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
-                channel_state->memory_manager->ReadBlockUnsafe(
-                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                // GMMU maps run on the GPU thread (GPU::MapInOrder): an entry on addresses a
+                // queued map changes would copy as zeros (Pokopia's first lists). DmaPusher::Push
+                // copies it after the map instead.
+                const u64 bytes = static_cast<u64>(entry.size) * sizeof(u32);
+                if (system.GPU().IsMapPending(entry.addr, bytes)) {
+                    entries.deferred_entries.push_back(i);
+                } else {
+                    channel_state->memory_manager->ReadBlockUnsafe(
+                        entry.addr, entries.submitted_words.data() + offset,
+                        entry.size * sizeof(u32));
+                }
                 offset += entry.size;
             }
         }
