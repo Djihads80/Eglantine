@@ -135,12 +135,11 @@ inline constexpr u64 DefaultOffMask() {
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
-/// present_one_ahead, present_guest_wait, release_before_hook, acquire_trigger_early (not
-/// measured yet).
+/// present_guest_wait (guest panic at load in a speed run); release_before_hook (+0.0 FPS);
+/// acquire_trigger_early (+0.2 FPS).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
-                                  Bit(Opt::GpuCorePin) | Bit(Opt::PresentOneAhead) |
-                                  Bit(Opt::PresentGuestWait) |
+                                  Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly);
 
