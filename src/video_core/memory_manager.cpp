@@ -586,6 +586,18 @@ void MemoryManager::WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, s
     }
 }
 
+void MemoryManager::FlushQueryResults(GPUVAddr gpu_addr, size_t size) const {
+    constexpr GPUVAddr flush_page = 0x1000;
+    const GPUVAddr end = gpu_addr + size;
+    for (GPUVAddr begin = gpu_addr; begin < end;) {
+        const GPUVAddr page_end = (std::min)((begin & ~(flush_page - 1)) + flush_page, end);
+        if (const auto device = GpuToCpuAddress(begin)) {
+            rasterizer->FlushQueryResults(*device, page_end - begin);
+        }
+        begin = page_end;
+    }
+}
+
 void MemoryManager::FlushRegion(GPUVAddr gpu_addr, size_t size,
                                 VideoCommon::CacheType which) const {
     auto do_nothing = [&]([[maybe_unused]] std::size_t page_index,

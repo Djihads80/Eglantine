@@ -98,6 +98,11 @@ public:
     virtual void FlushRegion(DAddr addr, u64 size,
                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
 
+    /// Writes the region's query reports to guest memory, waiting for pending host results.
+    virtual void FlushQueryResults(DAddr addr, u64 size) {
+        FlushRegion(addr, size, VideoCommon::CacheType::QueryCache);
+    }
+
     /// Switch 2, from the GPU thread's front: where a GPU-written command list's words are.
     enum class GpuWrittenList {
         Unknown, ///< Neither: the caller drains, flushes the page and notes it synced

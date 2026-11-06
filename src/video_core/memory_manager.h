@@ -150,6 +150,9 @@ public:
     GPUVAddr MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_big_pages = true);
     void Unmap(GPUVAddr gpu_addr, std::size_t size);
 
+    /// Writes the query reports in the range to guest memory, waiting for pending host results.
+    void FlushQueryResults(GPUVAddr gpu_addr, size_t size) const;
+
     void FlushRegion(GPUVAddr gpu_addr, size_t size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
 

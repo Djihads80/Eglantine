@@ -1445,7 +1445,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // stale values. It belongs to the split's back, so flush only there.
                     if (!VideoCommon::GpuSplit::Get().Active() ||
                         VideoCommon::GpuSplit::OnBackThread()) {
-                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+                        memory.FlushQueryResults(source, read_bytes);
                     }
                     static u32 dma_logs{};
                     if (dma_logs < 400) {

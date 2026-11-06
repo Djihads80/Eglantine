@@ -1633,7 +1633,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
             if (flush_buffers) {
                 memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
             }
-            memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+            memory->FlushQueryResults(source, read_bytes);
         },
         VideoCommon::DrainSite::MacroDmaFlush);
     if (diag_before.empty()) {

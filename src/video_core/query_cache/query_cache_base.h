@@ -63,14 +63,19 @@ public:
     }
 
     void FlushRegion(VAddr addr, std::size_t size) {
+        if (SemiFlushRegion(addr, size)) {
+            RequestGuestHostSync();
+        }
+    }
+
+    /// Writes out the finalized reports in the region. True when some still wait for host results.
+    bool SemiFlushRegion(VAddr addr, std::size_t size) {
         bool result = false;
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
             result |= SemiFlushQueryDirty(location);
             return result;
         });
-        if (result) {
-            RequestGuestHostSync();
-        }
+        return result;
     }
 
     static u64 BuildMask(std::span<const QueryType> types) {

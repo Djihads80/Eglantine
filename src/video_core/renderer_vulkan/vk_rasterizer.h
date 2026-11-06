@@ -99,6 +99,7 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void FlushQueryResults(DAddr addr, u64 size) override;
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out,
                                              bool past_sync) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
