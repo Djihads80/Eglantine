@@ -647,8 +647,15 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
                    std::string_view::npos) {
             DescribeNativeResources(qmd);
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
-            return UpscaleInsteadOfNativeProgram();
+            if (UpscaleInsteadOfNativeProgram()) {
+                return true;
+            }
+            FollowPhotoUpscale();
+            return UpscaleFromConstBuffers();
         }
+    }
+    if (dispatched && !dlss_chain.active && photo_upscale.window_left != 0) {
+        UpscaleFromConstBuffers();
     }
     if (output_pass) {
         return FinishDlssEvaluation() || dispatched;
@@ -1061,7 +1068,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             for (u32 second = first + 4; from && second < 0x120; second += 4) {
                 if (memory_manager.Read<u32>(cbuf_address + second) == 0) continue;
                 const auto to = image(second);
-                if (upscale_pair(from, to)) {
+                if (to && to->Width() >= 1024 && upscale_pair(from, to)) {
                     input = from;
                     output = to;
                     break;
@@ -1268,6 +1275,176 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                  done ? "blitted" : "not accelerated");
     }
     return done;
+}
+
+bool KeplerCompute::ReadConstBufferWords(u32 slot, std::vector<u32>& words) const {
+    words.clear();
+    const auto& cbuf = launch_description.const_buffer_config[slot];
+    const GPUVAddr address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
+    const u32 size = (std::min)(static_cast<u32>(cbuf.size.Value()), 0x2000U);
+    if (address == 0 || size < sizeof(u32) || !memory_manager.IsFullyMappedRange(address, size)) {
+        return false;
+    }
+    words.resize(size / sizeof(u32));
+    memory_manager.ReadBlockUnsafe(address, words.data(), words.size() * sizeof(u32));
+    return true;
+}
+
+namespace {
+bool PhotoUpscaleEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PHOTO_UPSCALE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+std::optional<Tegra::RenderTargetFormat> ColorRenderFormat(Texture::TextureFormat format) {
+    using RTFormat = Tegra::RenderTargetFormat;
+    switch (format) {
+    case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+    case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+    case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+    case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+    default: return std::nullopt;
+    }
+}
+
+Fermi2D::Surface BlockLinearSurface(const Texture::TICEntry& tic, Tegra::RenderTargetFormat format) {
+    Fermi2D::Surface result{};
+    result.format = format;
+    result.linear = Fermi2D::MemoryLayout::BlockLinear;
+    result.block_width.Assign(tic.block_width);
+    result.block_height.Assign(tic.block_height);
+    result.block_depth.Assign(tic.block_depth);
+    result.depth = 1;
+    result.width = tic.Width();
+    result.height = tic.Height();
+    result.addr_upper = static_cast<u32>(tic.Address() >> 32);
+    result.addr_lower = static_cast<u32>(tic.Address());
+    return result;
+}
+
+constexpr u32 PHOTO_UPSCALE_WATCH_DISPATCHES = 64;
+} // Anonymous namespace
+
+// Mario Kart World docked draws its photo mode at 2560x1440 and upscales it to 3840x2160 with a
+// network of tensor-core passes. Without it the 4K image stays empty and only the UI drawn over it
+// shows. The first rejected pass of an evaluation starts a window of dispatches in which a pass
+// with both images in its constant buffers has its result replaced by a blit of one to the other.
+void KeplerCompute::FollowPhotoUpscale() {
+    if (PhotoUpscaleEnabled() && photo_upscale.window_left == 0) {
+        photo_upscale.window_left = PHOTO_UPSCALE_WATCH_DISPATCHES;
+        ++photo_upscale.evaluations;
+    }
+}
+
+bool KeplerCompute::UpscaleFromConstBuffers() {
+    auto& watch = photo_upscale;
+    if (!PhotoUpscaleEnabled() || watch.window_left == 0) {
+        return false;
+    }
+    const GPUVAddr program = regs.code_loc.Address();
+    // Once the pass that has both images is known, only it is looked at, at the same places; until
+    // then every constant buffer is searched, for a few evaluations.
+    const bool known = watch.output_program != 0;
+    if ((known && program != watch.output_program) || (!known && watch.evaluations > 6)) {
+        return false;
+    }
+    --watch.window_left;
+    struct Image {
+        Texture::TICEntry tic;
+        u32 slot;
+        u32 offset;
+    };
+    std::vector<Image> images;
+    std::vector<u32> words;
+    const auto add = [&](u32 slot, u32 offset, u32 word) {
+        const u32 tic_index = word & 0xfffff;
+        if (word == 0 || tic_index == 0 || tic_index > regs.tic.limit) {
+            return;
+        }
+        const auto tic = GetTICEntry(tic_index);
+        const bool plain_2d = tic.texture_type == Texture::TextureType::Texture2D ||
+                              tic.texture_type == Texture::TextureType::Texture2DNoMipmap;
+        if (!plain_2d || tic.Address() == 0 || !tic.IsBlockLinear() || tic.Width() < 1280 ||
+            !ColorRenderFormat(tic.format) ||
+            std::ranges::any_of(images, [&](const auto& image) {
+                return image.tic.Address() == tic.Address();
+            })) {
+            return;
+        }
+        images.push_back({tic, slot, offset});
+    };
+    if (known) {
+        if (ReadConstBufferWords(watch.slot, words)) {
+            for (const u32 offset : {watch.input_offset, watch.output_offset}) {
+                if (offset / sizeof(u32) < words.size()) {
+                    add(watch.slot, offset, words[offset / sizeof(u32)]);
+                }
+            }
+        }
+    } else {
+        std::unordered_set<u32> tried;
+        for (u32 slot = 0; slot < NumConstBuffers; ++slot) {
+            if (!ReadConstBufferWords(slot, words)) {
+                continue;
+            }
+            for (u32 i = 0; i < words.size(); ++i) {
+                if (tried.insert(words[i]).second) {
+                    add(slot, i * sizeof(u32), words[i]);
+                }
+            }
+        }
+    }
+    for (const auto& from : images) {
+        for (const auto& to : images) {
+            // The same picture at 1.5 times the size (2560x1440 to 3840x2160).
+            if (to.tic.Width() * 2 != from.tic.Width() * 3 ||
+                to.tic.Height() * 2 != from.tic.Height() * 3) {
+                continue;
+            }
+            const Fermi2D::Config config{
+                .operation = Fermi2D::Operation::SrcCopy,
+                .filter = Fermi2D::Filter::Bilinear,
+                .must_accelerate = true,
+                .dst_x0 = 0,
+                .dst_y0 = 0,
+                .dst_x1 = static_cast<s32>(to.tic.Width()),
+                .dst_y1 = static_cast<s32>(to.tic.Height()),
+                .src_x0 = 0,
+                .src_y0 = 0,
+                .src_x1 = static_cast<s32>(from.tic.Width()),
+                .src_y1 = static_cast<s32>(from.tic.Height()),
+            };
+            const bool done = rasterizer->AccelerateSurfaceCopy(
+                BlockLinearSurface(from.tic, *ColorRenderFormat(from.tic.format)),
+                BlockLinearSurface(to.tic, *ColorRenderFormat(to.tic.format)), config);
+            if (from.tic.Address() != watch.last_input || to.tic.Address() != watch.last_output) {
+                watch.last_input = from.tic.Address();
+                watch.last_output = to.tic.Address();
+                LOG_INFO(HW_GPU,
+                         "Photo upscale: program {:#x} cbuf{}+{:#x} {:#x} {}x{} format {:#x} "
+                         "-> cbuf{}+{:#x} {:#x} {}x{} format {:#x}: {}",
+                         program, from.slot, from.offset,
+                         from.tic.Address(), from.tic.Width(), from.tic.Height(),
+                         static_cast<u32>(from.tic.format.Value()), to.slot, to.offset,
+                         to.tic.Address(), to.tic.Width(), to.tic.Height(),
+                         static_cast<u32>(to.tic.format.Value()), done ? "blitted" : "not accelerated");
+            }
+            if (done) {
+                if (!known && from.slot == to.slot) {
+                    watch.output_program = program;
+                    watch.slot = from.slot;
+                    watch.input_offset = from.offset;
+                    watch.output_offset = to.offset;
+                }
+                watch.window_left = 0;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void KeplerCompute::ProcessLaunch() {

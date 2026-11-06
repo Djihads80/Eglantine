@@ -10090,7 +10090,7 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="96"/>
-        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eden or re-install firmware.</source>
+        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eglantine or re-install firmware.</source>
         <translation>펌웨어 설치가 취소되었습니다. 펌웨어 상태가 좋지 않거나 손상되었을 수 있습니다. Eden을 재시작하거나 펌웨어를 재설치하세요.</translation>
     </message>
     <message>
@@ -10105,12 +10105,12 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="110"/>
-        <source>Eden has detected user data for the following emulators:</source>
+        <source>Eglantine has detected user data for the following emulators:</source>
         <translation>Eden은 다음 에뮬레이터에 대한 유저 데이터를 발견했습니다:</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="112"/>
-        <source>Would you like to migrate your data for use in Eden?
+        <source>Would you like to migrate your data for use in Eglantine?
 Select the corresponding button to migrate data from that emulator.
 This may take a while.</source>
         <translation>Eden에서 사용하기 위해 데이터를 마이그레이션하겠습니까?
@@ -10139,7 +10139,7 @@ This is recommended on devices with space constraints.</source>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="124"/>
-        <source>Creates a filesystem link between the old directory and Eden directory.
+        <source>Creates a filesystem link between the old directory and Eglantine directory.
 This is recommended if you want to share data between emulators.</source>
         <translation>이전 디렉터리와 Eden 디렉터리 사이를 연결할 파일 시스템을 생성합니다.
 에뮬레이터 간에 데이터를 공유하려는 경우 이 방법을 권장합니다.</translation>
