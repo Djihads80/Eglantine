@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -725,6 +726,24 @@ bool PipelineCache::IsIndirectResetShader() const {
            info->lowered_native->diagnostic_key == reset_key;
 }
 
+namespace {
+size_t GraphicsFastCacheSlot(const GraphicsPipelineCacheKey& key, size_t size) {
+    const auto* const bytes = reinterpret_cast<const u8*>(&key);
+    const size_t length = key.Size();
+    u64 hash = 0x9e3779b97f4a7c15ULL;
+    size_t offset = 0;
+    for (; offset + sizeof(u64) <= length; offset += sizeof(u64)) {
+        u64 word;
+        std::memcpy(&word, bytes + offset, sizeof(word));
+        hash = (hash ^ word) * 0xff51afd7ed558ccdULL;
+    }
+    for (; offset < length; ++offset) {
+        hash = (hash ^ bytes[offset]) * 0xc4ceb9fe1a85ec53ULL;
+    }
+    return static_cast<size_t>(hash ^ (hash >> 29)) & (size - 1);
+}
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
@@ -742,7 +761,46 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
             return BuiltPipeline(current_pipeline);
         }
     }
-    return CurrentGraphicsPipelineSlowPath();
+    static const bool fast_cache =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineFastCache);
+    if (!fast_cache) {
+        return CurrentGraphicsPipelineSlowPath();
+    }
+    // Every cached pipeline went through the slow path, so used_this_session already holds it.
+    GraphicsPipeline*& fast_entry =
+        graphics_fast_cache[GraphicsFastCacheSlot(graphics_key, GraphicsFastCacheSize)];
+    if (fast_entry != nullptr && fast_entry->Key() == graphics_key) {
+        bool use_fast = true;
+        if (VideoCommon::Nx2Perf::Verify()) {
+            const auto it = graphics_cache.find(graphics_key);
+            GraphicsPipeline* const slow = it != graphics_cache.end() ? it->second.get() : nullptr;
+            if (slow != fast_entry) {
+                use_fast = false;
+                if (graphics_fast_mismatches++ < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf pipeline_fast_cache: fast={} cache={} key={:016x} "
+                              "mismatches={}",
+                              fmt::ptr(fast_entry), fmt::ptr(slow), graphics_key.Hash(),
+                              graphics_fast_mismatches);
+                }
+                fast_entry = nullptr;
+            }
+        }
+        if (use_fast) {
+            GraphicsPipeline* const pipeline = fast_entry;
+            if (current_pipeline) {
+                current_pipeline->AddTransition(pipeline);
+            }
+            current_pipeline = pipeline;
+            current_pipeline->MarkUsed(frame_count);
+            return BuiltPipeline(current_pipeline);
+        }
+    }
+    GraphicsPipeline* const result = CurrentGraphicsPipelineSlowPath();
+    if (current_pipeline != nullptr && current_pipeline->Key() == graphics_key) {
+        fast_entry = current_pipeline;
+    }
+    return result;
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() {
@@ -1092,6 +1150,7 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
+    graphics_fast_cache.fill(nullptr);
     LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
              EvictAfterFrames, graphics_cache.size());
 }

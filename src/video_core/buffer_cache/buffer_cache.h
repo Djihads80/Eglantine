@@ -1285,6 +1285,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     if (bank_mode != '0' && has_host_buffer && size != 0 && gpu_memory != nullptr &&
         gpu_memory->UsesNativeTiling() &&
         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000)) {
+        Nx2Profile::Scope bank_scope{Nx2Profile::Zone::BindUniformBank};
         // The bank size is only an upper limit: stop at the end of the mapped memory.
         // Only mark 4 KiB pages whose guest bytes actually changed since the last upload so
         // unchanged banks do not toggle VirtualProtect or break the Vulkan render pass on every draw.
@@ -1355,6 +1356,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
             && !memory_tracker.IsRegionGpuModified(device_addr, size));
     if (use_fast_buffer) {
+        Nx2Profile::Scope stream_scope{Nx2Profile::Zone::BindUniformStream};
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
                 // Fast path for Nvidia
@@ -1391,6 +1393,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         }
         return;
     }
+    Nx2Profile::Scope cached_scope{Nx2Profile::Zone::BindUniformCached};
     TouchBuffer(buffer, binding.buffer_id);
     // Classic cached path
     if (SynchronizeBuffer(buffer, device_addr, size)) {
@@ -1503,6 +1506,7 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
     };
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
+        Nx2Profile::Scope storage_scope{Nx2Profile::Zone::BindStorage};
         const Binding& binding = channel_state->storage_buffers[stage][index];
         const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
         if (BindMultiRangeStorage(binding, is_written, graphics_segments)) {

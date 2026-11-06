@@ -47,6 +47,10 @@ enum class Opt : unsigned {
     MacroReadCbOverlay, ///< Early MME reads overlay queued constant buffer words instead of waiting
     MacroReadWriterSet, ///< Early MME reads wait only for entries that can write memory
     PreflushAging,      ///< Preflush marks the CPU stopped reading age out
+    DispatchBatch,      ///< Ampere draws dispatch the scheduler every 128 draws instead of 32
+    PipelineFastCache,  ///< Direct-mapped graphics pipeline cache in front of the slow path
+    DrawPreamble,       ///< GPU::TickWork skips the sync mutex when no request is queued
+    BindMemo,           ///< Unchanged non-written binds skip touch, sync and usage across draws
     Count,
 };
 
@@ -58,13 +62,15 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "qmd_scratch", "query_diagnostics", "immediate_callbacks", "query_upload_scratch",
     "macro_read_early",
     "acquire_early", "macro_read_cb_overlay", "macro_read_writer_set", "preflush_aging",
+    "dispatch_batch", "pipeline_fast_cache", "draw_preamble", "bind_memo",
 };
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
 inline constexpr unsigned DefaultOffMask() {
     unsigned mask = 0;
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
-                          Opt::MacroReadWriterSet, Opt::PreflushAging}) {
+                          Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::DispatchBatch,
+                          Opt::PipelineFastCache, Opt::DrawPreamble, Opt::BindMemo}) {
         mask |= 1U << static_cast<unsigned>(opt);
     }
     return mask;
