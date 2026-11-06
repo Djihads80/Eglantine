@@ -167,6 +167,29 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                  pending_acquire->value, current);
         return true;
     }
+    // A ring round that never lands. The flip-counter semaphores advance in lockstep as a
+    // depth-19 ring of fence-carried releases, and every stuck wait's target is exactly
+    // current + 19: the value the next round writes, already committed by the game's
+    // protocol (2026-11-06 hangs: 0x1a25b at 0x1a248, 0x10d05 at 0x10cf2, 0x2657d at
+    // 0x2656a — all 19). When every carrier channel is itself parked behind such an
+    // acquire, the fence chain holds no future release and nothing ever recovers. Complete
+    // the round ourselves: write the target the game already queued, notify the waiters.
+    if (pending_acquire->reported &&
+        static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
+            GpuSemaphoreOperation::AcquireEqual &&
+        pending_acquire->value > current && pending_acquire->value - current <= 0x40) {
+        const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
+        if (device) {
+            dma_pusher.memory_manager.Write<u32>(pending_acquire->address, pending_acquire->value);
+            Nx2SemaphoreWaiters::Get().OnWrite(*device, pending_acquire->value, "ring-rescue");
+            LOG_INFO(HW_GPU,
+                     "Channel {} acquire satisfied by ring rescue: semaphore {:#x} advanced "
+                     "{:#x} -> {:#x}",
+                     dma_pusher.channel_state.bind_id, pending_acquire->address, current,
+                     pending_acquire->value);
+            return true;
+        }
+    }
     return false;
 }
 
