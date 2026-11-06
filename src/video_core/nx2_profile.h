@@ -102,7 +102,7 @@ struct MacroCounts {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 32> counters{}; ///< See Counter
+    std::array<u64, 64> counters{}; ///< See Counter
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -184,7 +184,19 @@ enum class Counter : u32 {
     BindMemoMisses,      ///< Nx2Perf bind_memo: binds that took the full path
     DmaReadsWriterSet,   ///< Of DmaReadsEarly: read with proven draws still queued (MacroReadWriterSet)
     DmaReadsWriterSetFallback, ///< Drained instead: a queued proven draw's proof no longer held
+    DmaReadsOverlayNoWait, ///< Of DmaReadsEarly: constant buffer overlay reads with no wait
+    DmaReadsOverlayWaited, ///< Of DmaReadsEarly: constant buffer overlay reads after a wait
+    /// Of DmaReadsWaitWrite, why the overlay did not apply: an Other write to the pages is
+    /// queued, queued constant buffer words were not kept, or the constant buffer write is
+    /// older than the unknown and GPU (or writer) target
+    DmaReadsWaitWriteOther,
+    DmaReadsWaitWriteCbLost,
+    DmaReadsWaitWriteCbOlder,
+    DmaReadsOverlayFallback, ///< Overlay reads drained instead: a queued proven draw's proof changed
+    Count,
 };
+
+static_assert(static_cast<size_t>(Counter::Count) <= std::tuple_size_v<decltype(ThreadData::counters)>);
 
 /// The fencing thread's buffer downloads (BufferCache::PopAsyncBuffers): logged by the thread
 /// that makes the fences.
@@ -356,6 +368,15 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | MME DMA reads past proven draws {:.0f} ({:.0f} drained: proof changed)",
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSet)]) * 1e9 / window,
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSetFallback)]) * 1e9 / window);
+    line += fmt::format(" | MME DMA overlay reads {:.0f} without a wait, {:.0f} after one ({:.0f} "
+                        "drained: proof changed) | writes to the words waits: other write {:.0f}, "
+                        "constant buffer words lost {:.0f}, constant buffer write older {:.0f}",
+                        per_second(Counter::DmaReadsOverlayNoWait),
+                        per_second(Counter::DmaReadsOverlayWaited),
+                        per_second(Counter::DmaReadsOverlayFallback),
+                        per_second(Counter::DmaReadsWaitWriteOther),
+                        per_second(Counter::DmaReadsWaitWriteCbLost),
+                        per_second(Counter::DmaReadsWaitWriteCbOlder));
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {
         if (data.drain_count[i] != 0) {
