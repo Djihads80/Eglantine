@@ -65,6 +65,15 @@ public:
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
+    /// Whether a write to `method` can write memory (a dispatch, upload or report): with the
+    /// native class, every method besides those that only store their value; macros always.
+    [[nodiscard]] bool MayWriteMemory(u32 method) const {
+        if (method >= native_plain_methods.size()) {
+            return true;
+        }
+        return native_mode ? !native_plain_methods[method] : execution_mask[method];
+    }
+
     /// The channel's MME data RAM, shared with its 3D engine.
     void SetNativeDataRam(std::array<u32, 0xc00>* data_ram) { native_data_ram = data_ram; }
     void SetNativeMacroMode(MacroEngine* shared_macro, std::span<u32> positions, NativeMacroContext* context = nullptr) {
@@ -248,8 +257,11 @@ public:
     bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched
     /// are emulated: in a game DLSS evaluation when the game's own network may draw, and always
-    /// for Donkey Kong Bananza.
+    /// for Donkey Kong Bananza and Ocarina of Time.
     [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
+    /// Whether those matrix multiplies use the compact software form (one shared helper per
+    /// program) instead of the inline expansion: Ocarina of Time's network.
+    [[nodiscard]] bool UsesCompactTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
@@ -264,6 +276,7 @@ public:
 private:
     struct FrontState;
     FrontState& Front(VideoCommon::GpuSplit& split);
+    void ReleaseFront();
     void FrontApply(FrontState& state, u32 method, u32 argument);
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
@@ -280,6 +293,7 @@ private:
     void CheckDlssNetwork();
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
+    std::pair<std::vector<u32>, std::vector<u32>> NativeImageHandles(GPUVAddr program);
     bool UpscaleInsteadOfNativeProgram();
     bool ReadConstBufferWords(u32 slot, std::vector<u32>& words) const;
     void FollowPhotoUpscale();

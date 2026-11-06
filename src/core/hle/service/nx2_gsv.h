@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -32,6 +33,7 @@
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "video_core/nx2_diag.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -2047,19 +2049,59 @@ private:
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
+    // With EDEN_NX2_DIAG_DIR a draw-list capture also saves the next present as capture-<n>.tga there.
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        if (m_capture_pending->load()) {
+            return;
+        }
+        std::string path;
+        if (VideoCommon::Nx2Diag::Active() && !VideoCommon::Nx2Diag::DrawListDir().empty()) {
+            if (const auto id = VideoCommon::Nx2Diag::Diagnostics::Get().TakeScreenshotRequest()) {
+                path = fmt::format("{}/capture-{}.tga", VideoCommon::Nx2Diag::DrawListDir().string(), *id);
+            }
+        }
+        // A "burst" file holding N in <dir> saves the next N presents instead (one-frame artifacts).
+        if (directory != nullptr && (m_presents % 30) == 0) {
+            const auto burst = std::filesystem::path{directory} / "burst";
+            if (std::FILE* file = std::fopen(burst.string().c_str(), "r")) {
+                int count = 0;
+                if (std::fscanf(file, "%d", &count) == 1 && count > 0) {
+                    m_burst_left = static_cast<u32>(count);
+                }
+                std::fclose(file);
+                std::error_code ec;
+                std::filesystem::remove(burst, ec);
+            }
+        }
+        if (path.empty() && directory != nullptr &&
+            (m_burst_left > 0 || (m_presents % 120) == 1)) {
+            path = fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
+            if (m_burst_left > 0 && !m_capture_pending->load()) {
+                m_burst_left--;
+            }
+        }
+        // EDEN_NX2_FLASH_WATCH=1: examine every present instead of saving them, and keep only the
+        // frames with a burst of near-white pixels (a one-frame white flash of a lit surface).
+        static const bool flash_watch = std::getenv("EDEN_NX2_FLASH_WATCH") != nullptr;
+        std::string watch_dir;
+        if (flash_watch && directory != nullptr && m_burst_left == 0) {
+            watch_dir = directory;
+            path = watch_dir + "/flash-watch.tga";
+            if (m_last_capture == nullptr) {
+                m_last_capture = std::make_shared<std::vector<u8>>();
+            }
+        }
+        if (path.empty() || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
         auto pixels = std::make_shared<std::vector<u8>>(layout.width * layout.height * 4);
-        const std::string path =
-            fmt::format("{}/nx2-frame-{:05}.tga", directory, m_presents);
         auto pending = m_capture_pending; // the screenshot callback can outlive the session
         system.GPU().Renderer().RequestScreenshot(
             pixels->data(),
-            [pixels, layout, path, pending](bool invert_y) {
+            [pixels, layout, path, watch_dir, present = m_presents, white_state = m_white_state,
+             last_capture = m_last_capture, pending](bool invert_y) {
                 std::array<u8, 18> header{};
                 header[2] = 2; // uncompressed true colour
                 header[12] = static_cast<u8>(layout.width);
@@ -2069,6 +2111,43 @@ private:
                 header[16] = 32;
                 // Descriptor bit 5: rows top to bottom. invert_y means the data is bottom-up.
                 header[17] = invert_y ? 0x08 : 0x28;
+                // A white flash is a spike of near-white pixels; a normal frame of this game has
+                // none (measured: 0 against 7175 on a flashed frame), so a saved frame is a flash.
+                u32 white = 0;
+                for (size_t i = 0; i + 3 < pixels->size(); i += 4) {
+                    const u8* const p = pixels->data() + i;
+                    white += std::min({p[0], p[1], p[2]}) > 245;
+                }
+                if (!watch_dir.empty()) {
+                    // The scene's own mist is bright, so a flash is a spike against the last
+                    // presents, not a high count on its own.
+                    const u32 median = white_state->Median();
+                    const bool flash = white > 1500 && white > 2 * median + 200;
+                    if (flash) {
+                        LOG_INFO(Service,
+                                 "nx2: flash watch: present {} has {} near-white pixels (median {})",
+                                 present, white, median);
+                        const auto saved = fmt::format("{}/flash-{:05}.tga", watch_dir, present);
+                        if (std::FILE* file = std::fopen(saved.c_str(), "wb")) {
+                            std::fwrite(header.data(), 1, header.size(), file);
+                            std::fwrite(pixels->data(), 1, pixels->size(), file);
+                            std::fclose(file);
+                        }
+                        // The present before it, to diff against.
+                        if (last_capture != nullptr && last_capture->size() == pixels->size()) {
+                            const auto before = fmt::format("{}/before-{:05}.tga", watch_dir, present);
+                            if (std::FILE* file = std::fopen(before.c_str(), "wb")) {
+                                std::fwrite(header.data(), 1, header.size(), file);
+                                std::fwrite(last_capture->data(), 1, last_capture->size(), file);
+                                std::fclose(file);
+                            }
+                        }
+                    }
+                    white_state->Push(white);
+                    last_capture->assign(pixels->begin(), pixels->end());
+                    pending->store(false);
+                    return;
+                }
                 if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
                     std::fwrite(header.data(), 1, header.size(), file);
                     std::fwrite(pixels->data(), 1, pixels->size(), file);
@@ -2339,6 +2418,24 @@ private:
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
+    u32 m_burst_left{}; // presents still to save for a burst capture
+    // Near-white pixel counts of the last presents, for the flash watcher's spike test.
+    struct WhiteHistory {
+        std::array<u32, 16> counts{};
+        size_t next{};
+        u32 last{};
+        void Push(u32 white) {
+            std::swap(counts[next], last);
+            next = (next + 1) % counts.size();
+        }
+        u32 Median() const {
+            std::array<u32, 16> sorted = counts;
+            std::sort(sorted.begin(), sorted.end());
+            return sorted[sorted.size() / 2];
+        }
+    };
+    std::shared_ptr<WhiteHistory> m_white_state = std::make_shared<WhiteHistory>();
+    std::shared_ptr<std::vector<u8>> m_last_capture; // pixels of the previous present (flash watch)
 };
 
 // True the first time a Switch 2 video command is seen, so each one is logged once in full and new

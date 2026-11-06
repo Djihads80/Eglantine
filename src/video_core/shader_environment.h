@@ -67,6 +67,9 @@ public:
 
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
+    [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
+                                                          u32 indirect) override;
+
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
@@ -91,7 +94,9 @@ public:
 
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
 
-    void Serialize(std::ofstream& file) const;
+    /// with_mesh_state: also the mesh registers and pass-through header of task and mesh
+    /// programs (only the mesh pipeline file carries them).
+    void Serialize(std::ofstream& file, bool with_mesh_state = false) const;
 
     bool HasHLEMacroState() const override {
         return has_hle_engine_state;
@@ -108,6 +113,8 @@ protected:
     size_t native_source_size{};
     /// Lower matrix multiplies too (KeplerCompute::EmulatesNativeTensorPrograms).
     bool native_tensor{};
+    /// ... in the compact form (KeplerCompute::UsesCompactTensorPrograms).
+    bool native_compact_tensor{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
 
     Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
@@ -209,7 +216,7 @@ public:
     FileEnvironment& operator=(const FileEnvironment&) = delete;
     FileEnvironment(const FileEnvironment&) = delete;
 
-    void Deserialize(std::ifstream& file);
+    void Deserialize(std::ifstream& file, bool with_mesh_state = false);
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
 
@@ -218,6 +225,9 @@ public:
     [[nodiscard]] bool IsNativeProgram() const override;
 
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
+
+    [[nodiscard]] bool IsCbufIndirectStorageBufferPointer(u32 index, u32 offset,
+                                                          u32 indirect) override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
@@ -264,17 +274,21 @@ private:
 };
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
-                       const std::filesystem::path& filename, u32 cache_version);
+                       const std::filesystem::path& filename, u32 cache_version,
+                       bool with_mesh_state = false);
 
 template <typename Key, typename Envs>
     requires std::is_trivially_copyable_v<Key>
         && std::has_unique_object_representations_v<Key>
-void SerializePipeline(const Key& key, const Envs& envs, const std::filesystem::path& filename, u32 cache_version) {
-    SerializePipeline(std::span(reinterpret_cast<const char*>(&key), sizeof(key)), std::span(envs.data(), envs.size()), filename, cache_version);
+void SerializePipeline(const Key& key, const Envs& envs, const std::filesystem::path& filename, u32 cache_version,
+                       bool with_mesh_state = false) {
+    SerializePipeline(std::span(reinterpret_cast<const char*>(&key), sizeof(key)), std::span(envs.data(), envs.size()), filename, cache_version,
+                      with_mesh_state);
 }
 
 void LoadPipelines(std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics);
+    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics,
+    bool with_mesh_state = false);
 
 } // namespace VideoCommon

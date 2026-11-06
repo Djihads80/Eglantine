@@ -8,6 +8,7 @@ add_executable(tests
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
+    common/event.cpp
     common/fibers.cpp
     common/game_presets.cpp
     common/host_memory.cpp
@@ -30,6 +31,7 @@ add_executable(tests
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
     video_core/ampere_lowering.cpp
+    video_core/spirv_software_matrix.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
     video_core/ampere_gradient.cpp
@@ -41,6 +43,7 @@ add_executable(tests
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
     video_core/global_address_tracking.cpp
+    video_core/global_atomic_routing.cpp
     video_core/nvn_storage_descriptor.cpp
     video_core/ampere_f2i.cpp
     video_core/ampere_ldc.cpp

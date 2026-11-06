@@ -330,7 +330,12 @@ GraphicsPipeline::GraphicsPipeline(
         try {
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
-            LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
+            LOG_CRITICAL(Render_Vulkan,
+                         "Graphics pipeline build failed: {} (stages: tcs={} tes={} geom={}, "
+                         "patch control points {}, device max patch size {})",
+                         exception.what(), spv_modules[1] ? 1 : 0, spv_modules[2] ? 1 : 0,
+                         spv_modules[3] ? 1 : 0, key.state.patch_control_points_minus_one.Value() + 1,
+                         device.GetMaxTessellationPatchSize());
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
@@ -357,11 +362,22 @@ GraphicsPipeline::GraphicsPipeline(
     }};
     // Before the build: it frees the modules this looks at.
     configure_func = ConfigureFunc(spv_modules, stage_infos);
+    build_task = std::move(func);
     if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
+        worker_thread->QueueWork([this] { RunBuild(); });
     } else {
-        func();
+        RunBuild();
     }
+}
+
+void GraphicsPipeline::RunBuild() {
+    // A draw or dispatch that needs the pipeline builds it on the scheduler thread instead of
+    // waiting for the worker queue, which can hold hundreds of builds, to reach it.
+    if (build_claimed.exchange(true)) {
+        return;
+    }
+    build_task();
+    build_task = nullptr;
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -394,7 +410,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             for (const auto& desc : info.storage_buffers_descriptors) {
                 ASSERT(desc.count == 1);
                 buffer_cache.BindGraphicsStorageBuffer(stage, ssbo_index, desc.cbuf_index,
-                                                       desc.cbuf_offset, desc.is_written);
+                                                       desc.cbuf_offset, desc.is_written,
+                                                       desc.indirect_offset);
                 ++ssbo_index;
             }
         }
@@ -680,6 +697,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
+            RunBuild();
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });
@@ -720,6 +738,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
             cmdbuf.BindDescriptorBuffersEXT(binding_info);
         }
         if (bind_pipeline) {
+            scheduler.SetGraphicsPipelineMissing(!pipeline);
             if (!pipeline) {
                 return;
             }
@@ -860,7 +879,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .patchControlPoints = key.state.patch_control_points_minus_one.Value() + 1,
+        .patchControlPoints = std::min(key.state.patch_control_points_minus_one.Value() + 1,
+                                       device.GetMaxTessellationPatchSize()),
     };
     std::array<VkViewportSwizzleNV, Maxwell::NumViewports> swizzles;
     std::ranges::transform(key.state.viewport_swizzles, swizzles.begin(), UnpackViewportSwizzle);
