@@ -1195,6 +1195,14 @@ GPUVAddr ConstBufferWriteAddress(std::span<const u32> regs) {
            regs[MAXWELL3D_REG_INDEX(const_buffer.offset)];
 }
 
+// How many of the next constant buffer data words land before the bank's end (ProcessCBMultiData
+// drops the rest).
+u32 ConstBufferRoomWords(std::span<const u32> regs) {
+    const u32 offset = regs[MAXWELL3D_REG_INDEX(const_buffer.offset)];
+    const u32 size = regs[MAXWELL3D_REG_INDEX(const_buffer.size)];
+    return offset < size ? (size - offset) / sizeof(u32) : 0;
+}
+
 // A report and what it may write: payload and timestamp.
 GPUVAddr ReportAddress(std::span<const u32> regs) {
     return (GPUVAddr{regs[MAXWELL3D_REG_INDEX(report_semaphore.address_high)]} << 32) |
@@ -1351,6 +1359,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
     }
     std::optional<GPUVAddr> cb_write;
+    u32 cb_room{};
     fs.regs[method] = value;
     effect = VideoCommon::SplitWriteTracker::Combine(effect, FrontMethodEffect(method));
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -1382,6 +1391,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     default:
         if (method >= cb_data && method < cb_data + 16) {
             cb_write = ConstBufferWriteAddress(fs.regs);
+            cb_room = ConstBufferRoomWords(fs.regs);
             fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
         } else if (!FrontHandledOutsideDrawManager(method)) {
             fs.draw_pending = true;
@@ -1397,7 +1407,8 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         }
     }
     if (cb_write) {
-        split.NoteWrite(memory_manager, *cb_write, sizeof(u32));
+        // The back writes the value after its shadow RAM step (ProcessCBData), as `value` here.
+        split.NoteConstBufferWrite(memory_manager, *cb_write, &value, 1, (std::min)(cb_room, 1U));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query)) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
         NoteLateReport(split, memory_manager, fs.regs);
@@ -1446,8 +1457,10 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     using Effect = VideoCommon::GpuSplit::Effect;
     Effect effect = fs.draw_pending ? Effect::Gpu : Effect::None;
     std::optional<GPUVAddr> cb_write;
+    u32 cb_room{};
     if (method >= cb_data && method < cb_data + 16) {
         cb_write = ConstBufferWriteAddress(fs.regs);
+        cb_room = ConstBufferRoomWords(fs.regs);
         fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += amount * sizeof(u32);
     } else if (method == MAXWELL3D_REG_INDEX(inline_data)) {
         // Upload data only.
@@ -1521,7 +1534,8 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         split.NoteWriter();
     }
     if (cb_write) {
-        split.NoteWrite(memory_manager, *cb_write, u64{amount} * sizeof(u32));
+        split.NoteConstBufferWrite(memory_manager, *cb_write, base_start, amount,
+                                   (std::min)(cb_room, amount));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query) && amount != 0) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
         NoteLateReport(split, memory_manager, fs.regs);
@@ -1700,9 +1714,12 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     const u64 consumed = split.SettleWrites();
     std::array<u64, 5> pages;
     std::array<std::pair<u64, u64>, 5> read_ranges; // device bytes read in each page
+    std::array<u64, 5> read_offsets;                 // their byte offsets in the read
     size_t page_count = 0;
     u64 target = 0;
     u64 write_target = 0;
+    u64 other_write_target = 0; // noted writes other than constant buffer data
+    using WriteKind = VideoCommon::SplitWriteTracker::WriteKind;
     for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + bytes; page += 0x1000) {
         const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
         if (page_count == pages.size() || !device || Tegra::Nx2IsGpuWrittenRegion(*device) ||
@@ -1713,10 +1730,28 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
         const GPUVAddr read_begin = (std::max)(page, source);
         const GPUVAddr read_end = (std::min)(page + 0x1000, source + bytes);
         read_ranges[page_count] = {device_page + (read_begin - page), read_end - read_begin};
+        read_offsets[page_count] = read_begin - source;
         pages[page_count++] = device_page;
         target = (std::max)(target, split.ReadTarget(device_page, device_page + 0x1000));
         write_target = (std::max)(write_target,
                                   split.Writes().LastWriteTo(device_page, device_page + 0x1000));
+        other_write_target = (std::max)(
+            other_write_target,
+            split.Writes().LastWriteTo(device_page, device_page + 0x1000, WriteKind::Other));
+    }
+    // MacroReadCbOverlay: when the only queued writes noted to these pages are constant buffer
+    // data, wait only for the unknown and GPU writers, then lay the queued words over what memory
+    // holds. Invariant: after those, the entries still queued write the read bytes only through
+    // noted writes (Effect::None), so no writer but the queued constant buffer words (kept in
+    // order, by device address like the tracker) touches them before the back runs those words.
+    // Async writes are checked below as before.
+    const u64 unlocalized_target =
+        (std::max)(split.Writes().LastUnknown(), split.Writes().LastGpu());
+    const bool overlay = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadCbOverlay) &&
+                         write_target > unlocalized_target && other_write_target == 0 &&
+                         split.ConstBufferWordsKept(consumed);
+    if (overlay) {
+        target = unlocalized_target;
     }
     const auto wait_reason = target == split.Writes().LastUnknown()
                                  ? Profile::Counter::DmaReadsWaitUnknown
@@ -1744,7 +1779,28 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             Profile::Add(wait_reason, 1);
         }
     }
+    // Words the back ran up to consumed_now are in memory; the newer ones come from the overlay.
+    const auto apply_overlay = [&](u32* out) {
+        for (size_t i = 0; i < page_count; ++i) {
+            split.OverlayConstBufferWords(consumed_now, read_ranges[i].first, read_ranges[i].second,
+                                          reinterpret_cast<u8*>(out) + read_offsets[i]);
+        }
+    };
     if (!VideoCommon::Nx2Perf::Verify()) [[likely]] {
+        if (overlay) {
+            auto& words_read = fs.dma_words;
+            words_read.resize(words);
+            memory_manager.ReadWordsUnsafe(source, words_read.data(), words);
+            apply_overlay(words_read.data());
+            if (method == 0x158) {
+                fs.parameters.insert(fs.parameters.end(), words_read.begin(), words_read.end());
+            } else if (ram < native_data_ram.size()) {
+                const size_t copy_words = (std::min<size_t>)(words, native_data_ram.size() - ram);
+                std::memcpy(native_data_ram.data() + ram, words_read.data(),
+                            copy_words * sizeof(u32));
+            }
+            return true;
+        }
         if (method == 0x158) {
             const size_t old_size = fs.parameters.size();
             fs.parameters.resize(old_size + words);
@@ -1758,6 +1814,9 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     auto& read = fs.dma_words;
     read.resize(words);
     memory_manager.ReadWordsUnsafe(source, read.data(), words);
+    if (overlay) {
+        apply_overlay(read.data());
+    }
     // The old path: drain, flush, read again. Its words are the ones used.
     split.Drain(VideoCommon::DrainSite::MacroDmaRead);
     const bool verify_flush_buffers =
@@ -1777,8 +1836,9 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             ++logged;
             LOG_ERROR(HW_GPU,
                       "Nx2Perf split: macro {:#x} DMA read of {} words at {:#x}: word {} is "
-                      "{:#x} without the drain, {:#x} after it",
-                      macro, words, source, i, read[i], drained);
+                      "{:#x} without the drain{}, {:#x} after it",
+                      macro, words, source, i, read[i],
+                      overlay ? " (constant buffer overlay)" : "", drained);
         }
         read[i] = drained;
     }
