@@ -1623,13 +1623,19 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     if (VideoCommon::Nx2Profile::Enabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
-    if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-        split.Run(
-            [memory = &memory_manager, source, read_bytes] {
+    // Occlusion reports and semaphore writes held in the query cache land before the read, or
+    // macros read stale counts and the guest culls visible objects. The query cache belongs to
+    // the back, so this runs there, in one call with the buffer flush.
+    const bool flush_buffers =
+        memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache);
+    split.Run(
+        [memory = &memory_manager, source, read_bytes, flush_buffers] {
+            if (flush_buffers) {
                 memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
-            },
-            VideoCommon::DrainSite::MacroDmaFlush);
-    }
+            }
+            memory->FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+        },
+        VideoCommon::DrainSite::MacroDmaFlush);
     if (diag_before.empty()) {
         if (method == 0x158) {
             const size_t old_size = fs.parameters.size();
