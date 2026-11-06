@@ -481,20 +481,14 @@ void BufferCacheRuntime::Wait(u64 tick) {
 
 namespace {
 // EDEN_NX2_LIST_WAIT_SPIN_US=<us>: how long a wait for a GPU-written command list's copy polls
-// the GPU's progress before it sleeps in the driver's wait (0: at once, as before). The thread
-// parsing command lists can do nothing else meanwhile, and each copy ends within a millisecond
-// or so, but a driver wait on the phone wakes long after: Ocarina of Time reads ~450 such lists a
-// second, ~700 us of waiting each. On by default on Android only (a core polls instead of
-// sleeping for those waits).
+// the GPU's progress before it sleeps in the driver's wait (default 0: at once). The phone's
+// logs showed polling doesn't pay there: Ocarina of Time reads ~500 such copies a second, ~460
+// of them done already, and the ~34 that wait do so ~10 ms each for a GPU that is behind (2-4%
+// ended within 1.5 ms of polling), so the core only burned power the GPU shares.
 std::chrono::microseconds ListWaitSpin() {
     static const std::chrono::microseconds spin{[] {
-#ifdef __ANDROID__
-        constexpr long fallback = 1500;
-#else
-        constexpr long fallback = 0;
-#endif
         const char* const value = std::getenv("EDEN_NX2_LIST_WAIT_SPIN_US");
-        return value != nullptr ? std::strtol(value, nullptr, 10) : fallback;
+        return value != nullptr ? std::strtol(value, nullptr, 10) : 0L;
     }()};
     return spin;
 }
