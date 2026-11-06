@@ -1759,6 +1759,11 @@ private:
             frames_ahead = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FramesAhead) ? 1 : 0;
         }
         const auto entered = std::chrono::steady_clock::now();
+        // landed_prev_always / one_ahead_landed: before the reply, wait for the previous frame's
+        // host syncpoint value (its downloads and reports in guest memory), not only its guest one.
+        LandedLane landed_lane = LandedLane::None;
+        const u32 previous_fence_id = m_previous_fence_id;
+        const u32 previous_fence_value = m_previous_fence_value;
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
             LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
                       m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
@@ -1773,6 +1778,14 @@ private:
             const bool gpu_behind = frames_ahead == 1 && m_previous_fence_id < 192 &&
                                     !system.Host1x().GetSyncpointManager().IsReadyGuest(
                                         m_previous_fence_id, m_previous_fence_value);
+            if (frames_ahead == 1 && !gpu_behind && m_previous_fence_id < 192 &&
+                VideoCommon::Nx2Perf::LandedSyncpoints() &&
+                !system.Host1x().GetSyncpointManager().IsReadyHost(m_previous_fence_id,
+                                                                   m_previous_fence_value)) {
+                // Recorded but not landed: this present returns early without this frame.
+                landed_lane = LandedLane::PrevAlways;
+                ++m_stats.landed_lag;
+            }
             WaitForFrame(m_previous_fence_id, m_previous_fence_value);
             // present_one_ahead: commands run from the submit-time pushbuffer snapshot, so the
             // previous frame's wait alone keeps the game at most one frame ahead of the back.
@@ -1789,6 +1802,13 @@ private:
                     wait_for_this = false;
                     ++m_stats.one_ahead_skips;
                 }
+                if ((VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::OneAheadLanded) ||
+                     VideoCommon::Nx2Perf::Verify()) &&
+                    !system.Host1x().GetSyncpointManager().IsReadyHost(m_previous_fence_id,
+                                                                       m_previous_fence_value)) {
+                    landed_lane = LandedLane::OneAhead;
+                    ++m_stats.landed_lag;
+                }
             }
             if (wait_for_this) {
                 WaitForFrame(~w[22], w[24]);
@@ -1803,6 +1823,18 @@ private:
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank(w[12]);
         const auto paced = std::chrono::steady_clock::now();
+        if (landed_lane != LandedLane::None) {
+            // After compositing and pacing, so the landing overlaps them.
+            const bool prev_always = landed_lane == LandedLane::PrevAlways;
+            if (VideoCommon::Nx2Perf::Verify()) {
+                NoteLandedLag(prev_always ? "landed_prev_always" : "one_ahead_landed",
+                              previous_fence_id, previous_fence_value);
+            } else if (VideoCommon::Nx2Perf::On(prev_always
+                                                    ? VideoCommon::Nx2Perf::Opt::LandedPrevAlways
+                                                    : VideoCommon::Nx2Perf::Opt::OneAheadLanded)) {
+                m_stats.landed_us += WaitForLanded(previous_fence_id, previous_fence_value);
+            }
+        }
         if (const auto* const process = system.ApplicationProcess(); process != nullptr) {
             if (const u64 address = process->GetOotDeltaAddress(); address != 0) {
                 system.ApplicationMemory().Write32(
@@ -1837,10 +1869,14 @@ private:
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us, {} ran a frame ahead, {} behind without this frame's wait",
+                         "pacing {} us, {} ran a frame ahead, {} behind without this frame's wait, "
+                         "{} early before the previous frame landed ({} us waited for landing, "
+                         "{} gave up, {} verify differences so far)",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600, m_stats.ran_ahead, m_stats.one_ahead_skips);
+                         m_stats.pace_us / 600, m_stats.ran_ahead, m_stats.one_ahead_skips,
+                         m_stats.landed_lag, m_stats.landed_us, m_stats.landed_gave_up,
+                         m_landed_mismatches);
                 m_stats = {.last_present = entered};
             }
         }
@@ -1857,11 +1893,14 @@ private:
     u32 m_wait_timeouts{};
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
-        long long max_frame_us{}, hitches{};
-        u32 presents{}, ran_ahead{}, one_ahead_skips{};
+        long long max_frame_us{}, hitches{}, landed_us{};
+        u32 presents{}, ran_ahead{}, one_ahead_skips{}, landed_lag{}, landed_gave_up{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_one_ahead_mismatches{};
+    enum class LandedLane { None, PrevAlways, OneAhead };
+    u64 m_landed_mismatches{};
+    u32 m_landed_timeouts{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 
@@ -2032,6 +2071,91 @@ private:
                          .count());
         }
         return syncpoints.IsReadyGuest(fence_id, fence_value);
+    }
+
+    /// landed_prev_always / one_ahead_landed: waits until the fence's host value is reached,
+    /// which (Nx2Perf::LandedSyncpoints) rises only once everything recorded before it has
+    /// landed in guest memory. Gives up 16 ms after a GPU channel was seen suspended, or after
+    /// 250 ms without host progress (a syncpoint only the guest value advances).
+    /// Returns the microseconds waited.
+    long long WaitForLanded(u32 fence_id, u32 fence_value) {
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        if (fence_id >= 192 || syncpoints.IsReadyHost(fence_id, fence_value)) {
+            return 0;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        auto deadline = start + std::chrono::milliseconds{250};
+        struct Wake {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done{};
+        };
+        auto wake = std::make_shared<Wake>();
+        syncpoints.RegisterHostAction(fence_id, fence_value, [wake] {
+            {
+                std::scoped_lock lk{wake->mutex};
+                wake->done = true;
+            }
+            wake->cv.notify_all();
+        });
+        std::unique_lock lk{wake->mutex};
+        bool gpu_waited = false;
+        bool gave_up = false;
+        u32 last_syncpoint = syncpoints.GetHostSyncpointValue(fence_id);
+        while (!wake->done && system.IsPoweredOn()) {
+            const auto now = std::chrono::steady_clock::now();
+            gpu_waited |= system.GPU().HasSuspendedChannels();
+            if (now >= deadline || (gpu_waited && now - start > std::chrono::milliseconds{16})) {
+                gave_up = true;
+                break;
+            }
+            if (const u32 current = syncpoints.GetHostSyncpointValue(fence_id);
+                current != last_syncpoint) {
+                last_syncpoint = current;
+                deadline = (std::max)(deadline, now + std::chrono::milliseconds{250});
+            }
+            wake->cv.wait_for(lk, std::chrono::milliseconds{2});
+        }
+        lk.unlock();
+        if (gave_up) {
+            ++m_stats.landed_gave_up;
+            if (m_landed_timeouts++ < 64) {
+                LOG_WARNING(Service,
+                            "nx2:vi2 present #{} fence ({}, {}) not landed (host {}, guest {}){}",
+                            m_presents, fence_id, fence_value,
+                            syncpoints.GetHostSyncpointValue(fence_id),
+                            syncpoints.GetGuestSyncpointValue(fence_id),
+                            gpu_waited ? ", a GPU channel waits" : "");
+            }
+        }
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now() - start)
+            .count();
+    }
+
+    /// EDEN_NX2_PERF_VERIFY for landed_prev_always / one_ahead_landed: the reply goes out without
+    /// the landed wait; logs (first 64) how long after it the previous frame landed.
+    void NoteLandedLag(const char* lane, u32 fence_id, u32 fence_value) {
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        if (fence_id >= 192 || syncpoints.IsReadyHost(fence_id, fence_value)) {
+            return;
+        }
+        const u64 count = ++m_landed_mismatches;
+        if (count > 64) {
+            return;
+        }
+        const auto returned = std::chrono::steady_clock::now();
+        syncpoints.RegisterHostAction(
+            fence_id, fence_value, [lane, present = m_presents, returned, count] {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf {}: present #{} returned before N-1 landed (lag {} us, {} "
+                          "differences)",
+                          lane, present,
+                          std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - returned)
+                              .count(),
+                          count);
+            });
     }
 
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
