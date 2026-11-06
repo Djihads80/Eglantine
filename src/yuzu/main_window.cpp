@@ -1995,7 +1995,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
                 this, tr("Recommended Ocarina of Time settings"),
                 tr("Use the recommended settings for Ocarina of Time?\n\n"
                    "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-                   "reactive flushing on, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                   "reactive flushing on, FIFO Relaxed VSync, docked mode, ScaleForce, and "
                    "FXAA.\n\n"
                    "They apply to Ocarina of Time until Eglantine is closed. Your saved settings "
                    "are not changed."),

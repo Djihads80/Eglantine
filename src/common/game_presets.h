@@ -48,7 +48,7 @@ inline void SetOcarinaOfTimeRecommendedSettings(Values& settings, bool global) {
     session(settings.vram_usage_mode, VramUsageMode::Conservative);
     session(settings.use_reactive_flushing, true);
     session(settings.vsync_mode, VSyncMode::FifoRelaxed);
-    session(settings.use_docked_mode, ConsoleMode::Handheld);
+    session(settings.use_docked_mode, ConsoleMode::Docked);
     session(settings.scaling_filter, ScalingFilter::ScaleForce);
     session(settings.anti_aliasing, AntiAliasing::Fxaa);
 }
