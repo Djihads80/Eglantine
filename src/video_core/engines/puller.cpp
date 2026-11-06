@@ -261,6 +261,9 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
 void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
     const auto semaphoreOperationMask = 0xF;
     const auto op = GpuSemaphoreOperation(regs.semaphore_trigger & semaphoreOperationMask);
+    // Deadlock hunt: arm the EDEN_NX2_SEM_TRACE write watch on the first semaphore op, so
+    // the flip-counter cadence is logged from boot, not just after a stuck acquire.
+    Nx2SemaphoreWaiters::Get().MaybeArmWatchFromEnv();
     // EDEN_NX2_SEM_WATCH=<gpu address>: log every release/acquire on the 16 bytes there.
     static const GPUVAddr watch = [] {
         const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
