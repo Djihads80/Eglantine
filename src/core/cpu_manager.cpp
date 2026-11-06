@@ -98,9 +98,20 @@ namespace {
 // Switch 2 program keeps six of them busy. To A/B what that costs the GPU thread:
 // EDEN_NCE_CORE_CPUS=<list> (e.g. 0-5) keeps them on these CPUs, leaving the others (the
 // phone's prime cores) to the rest; EDEN_NCE_CORE_PRIORITY=normal|high|veryhigh puts them below
-// the GPU threads (critical), which then win a contended CPU. Not re-applied when the app
-// refreshes its thread policies (on resume).
+// the GPU threads (critical), which then win a contended CPU; EDEN_NCE_CORE_ADPF=0 leaves them
+// out of the ADPF render session, whose boost packs them onto the prime cores with the GPU
+// threads. Not re-applied when the app refreshes its thread policies (on resume).
 void PlaceCoreThread(std::size_t core) {
+    static const bool adpf = [] {
+        const char* value = std::getenv("EDEN_NCE_CORE_ADPF");
+        return value == nullptr || value[0] != '0';
+    }();
+    if (!adpf) {
+        Common::SetCurrentThreadToAllCores();
+        if (core == 0) {
+            LOG_INFO(Core, "CPU core threads outside the ADPF session (EDEN_NCE_CORE_ADPF=0)");
+        }
+    }
     static const std::string cpus = [] {
         const char* value = std::getenv("EDEN_NCE_CORE_CPUS");
         return std::string{value != nullptr ? value : ""};
