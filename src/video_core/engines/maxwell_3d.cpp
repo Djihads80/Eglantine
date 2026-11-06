@@ -1109,6 +1109,7 @@ struct Maxwell3D::FrontState {
     bool instance_loop{};
     bool same_first{};  ///< Nx2Perf FrontSameFirst, read once
     bool class_table{}; ///< Nx2Perf FrontClassTable, read once
+    bool writer_set_exec{}; ///< Nx2Perf WriterSetExec, read once
     bool verify{};      ///< Nx2Perf::Verify(), read once
     /// MacroReadWriterSet (FrontDrawEffect): the last lookup of the programs the registers bind,
     /// valid while those registers, the program epoch, the proofs and the GPU map are unchanged.
@@ -1349,6 +1350,70 @@ VideoCommon::GpuSplit::Effect ClassEffect(u8 cls) {
            method != MAXWELL3D_REG_INDEX(draw_texture.src_y0);
 }
 
+// WriterSetExec with PERF_VERIFY: the effect the old code gave an executable method's entry
+// (old) against the new one (now). The only expected difference is a draws-only method whose
+// proven draw (FrontDrawEffect) is no longer combined with the method's own Gpu class.
+VideoCommon::GpuSplit::Effect VerifyWriterSetExec(u32 method, VideoCommon::GpuSplit::Effect old,
+                                                  VideoCommon::GpuSplit::Effect now,
+                                                  bool demoted) {
+    using Effect = VideoCommon::GpuSplit::Effect;
+    static std::atomic<u64> demotions{};
+    static std::atomic<u64> differences{};
+    if (old == now) {
+        return now;
+    }
+    if (demoted && old == Effect::Gpu && now == Effect::Draw) {
+        if (((demotions.fetch_add(1, std::memory_order_relaxed) + 1) & 0xfffff) == 0) {
+            LOG_INFO(HW_GPU, "Nx2Perf writer_set_exec: {} draw-manager entries kept as proven "
+                     "draws, {} other differences",
+                     demotions.load(std::memory_order_relaxed),
+                     differences.load(std::memory_order_relaxed));
+        }
+        return now;
+    }
+    if (differences.fetch_add(1, std::memory_order_relaxed) < 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf writer_set_exec: method {:#x} effect {}, old {} (demoted {})",
+                  method, static_cast<u32>(now), static_cast<u32>(old), demoted);
+    }
+    return old;
+}
+
+// The effect of an executable method's entry: what it had before (effect, a deferred draw) and
+// what the method may write. A draws-only method draws with the bound programs, so it is Gpu
+// only when FrontDrawEffect (draw_effect) cannot prove them non-writing. Without WriterSetExec
+// the method's own class is combined as well, which keeps every such entry Gpu.
+template <typename DrawEffect>
+VideoCommon::GpuSplit::Effect FrontExecEffect(VideoCommon::GpuSplit::Effect effect, u32 method,
+                                              u8 cls, bool class_table, bool writer_set_exec,
+                                              bool verify, DrawEffect&& draw_effect) {
+    using Effect = VideoCommon::GpuSplit::Effect;
+    using VideoCommon::SplitWriteTracker;
+    if (!writer_set_exec) {
+        effect = SplitWriteTracker::Combine(effect,
+                                            class_table ? ClassEffect(cls) : FrontMethodEffect(method));
+        Effect method_effect = FrontMethodEffect(method);
+        if (method_effect == Effect::Gpu && FrontDrawsOnly(method)) {
+            method_effect = draw_effect();
+        }
+        return SplitWriteTracker::Combine(effect, method_effect);
+    }
+    const Effect class_effect = class_table ? ClassEffect(cls) : FrontMethodEffect(method);
+    Effect m = class_effect;
+    const bool demoted = m == Effect::Gpu && FrontDrawsOnly(method);
+    if (demoted) {
+        m = draw_effect();
+    }
+    const Effect now = SplitWriteTracker::Combine(effect, m);
+    if (verify) [[unlikely]] {
+        // FrontClass returns the computed class under verify, so class_effect is
+        // FrontMethodEffect(method) and m is the old code's method_effect.
+        const Effect old =
+            SplitWriteTracker::Combine(SplitWriteTracker::Combine(effect, class_effect), m);
+        return VerifyWriterSetExec(method, old, now, demoted);
+    }
+    return now;
+}
+
 } // Anonymous namespace
 
 bool Maxwell3D::Nx2DrawProgramsOf(const Regs& regs, bool native, u64 memory_id, u64 map_serial,
@@ -1447,6 +1512,7 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
         front->same_first = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontSameFirst);
         front->class_table = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontClassTable);
+        front->writer_set_exec = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::WriterSetExec);
         front->verify = VideoCommon::Nx2Perf::Verify();
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
@@ -1559,16 +1625,11 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     }
     fs.regs[method] = value;
     const u8 cls = fs.class_table ? FrontClass(method, fs.verify) : u8{0};
-    effect = VideoCommon::SplitWriteTracker::Combine(
-        effect, fs.class_table ? ClassEffect(cls) : FrontMethodEffect(method));
     if (IsDrawProgramRegister(method)) {
         fs.draw_key_valid = false;
     }
-    Effect method_effect = FrontMethodEffect(method);
-    if (method_effect == Effect::Gpu && FrontDrawsOnly(method)) {
-        method_effect = FrontDrawEffect(split, fs);
-    }
-    effect = VideoCommon::SplitWriteTracker::Combine(effect, method_effect);
+    effect = FrontExecEffect(effect, method, cls, fs.class_table, fs.writer_set_exec, fs.verify,
+                             [&] { return FrontDrawEffect(split, fs); });
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
     switch (method) {
     case MAXWELL3D_REG_INDEX(shadow_ram_control):
@@ -1749,13 +1810,8 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             if (!execution_mask[method]) {
                 continue;
             }
-            effect = VideoCommon::SplitWriteTracker::Combine(
-                effect, fs.class_table ? ClassEffect(cls) : FrontMethodEffect(method));
-            Effect method_effect = FrontMethodEffect(method);
-            if (method_effect == Effect::Gpu && FrontDrawsOnly(method)) {
-                method_effect = FrontDrawEffect(split, fs);
-            }
-            effect = VideoCommon::SplitWriteTracker::Combine(effect, method_effect);
+            effect = FrontExecEffect(effect, method, cls, fs.class_table, fs.writer_set_exec,
+                                     fs.verify, [&] { return FrontDrawEffect(split, fs); });
             switch (method) {
             case MAXWELL3D_REG_INDEX(shadow_ram_control):
                 fs.control = static_cast<Regs::ShadowRamControl>(argument);
