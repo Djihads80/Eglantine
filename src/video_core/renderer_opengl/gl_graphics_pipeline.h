@@ -151,6 +151,7 @@ private:
     std::array<u32, 5> num_texture_buffers{};
     std::array<u32, 5> num_image_buffers{};
 
+    u64 storage_buffer_alignment{};
     bool use_storage_buffers{};
     bool writes_global_memory{};
     bool uses_local_memory{};

@@ -455,7 +455,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                                            return cbuf < cbufs.size() && cbufs[cbuf].enabled
                                                       ? cbufs[cbuf].address
                                                       : GPUVAddr{};
-                                       }),
+                                       },
+                                       device.GetStorageBufferAlignment()),
                                    via_header_index);
             }
             ASSERT(cbufs[desc.cbuf_index].enabled);
