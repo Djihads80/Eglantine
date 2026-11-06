@@ -7,7 +7,9 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "core/file_sys/fs_save_data_types.h"
@@ -54,6 +56,8 @@ private:
     ProgramId program_id;
     VirtualDir dir;
     bool auto_create{true};
+    mutable std::mutex backup_mutex;
+    mutable std::unordered_set<std::string> backed_up_saves;
 };
 
 } // namespace FileSys

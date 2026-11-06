@@ -502,6 +502,7 @@ class SettingsFragmentPresenter(
             add(ShortSetting.RENDERER_TURBO_SPEED_LIMIT.key)
             add(ShortSetting.RENDERER_SLOW_SPEED_LIMIT.key)
             add(BooleanSetting.USE_DOCKED_MODE.key)
+            add(BooleanSetting.AUTOMATIC_SAVE_DATA_BACKUPS.key)
             add(IntSetting.REGION_INDEX.key)
             add(IntSetting.LANGUAGE_INDEX.key)
             add(BooleanSetting.USE_CUSTOM_RTC.key)

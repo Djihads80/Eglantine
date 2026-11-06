@@ -8,13 +8,16 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
-#include <thread>
-#include <filesystem>
 #include <cstring>
-#include <string>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <ranges>
+#include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include "common/assert.h"
@@ -25,7 +28,6 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
-#include <ranges>
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -41,6 +43,8 @@
 namespace VideoCommon {
 
 constexpr std::array<char, 8> MAGIC_NUMBER{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
+constexpr u64 MaxSerializedEnvironmentSize = 64 * 1024 * 1024;
+constexpr u64 MaxSerializedPipelineSize = 64 * 1024 * 1024;
 
 constexpr size_t INST_SIZE = sizeof(u64);
 
@@ -794,7 +798,7 @@ u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
 }
 
-void FileEnvironment::Deserialize(std::ifstream& file) {
+void FileEnvironment::Deserialize(std::ifstream& file, u64 max_bytes) {
     u64 code_size{};
     u64 num_texture_types{};
     u64 num_texture_pixel_formats{};
@@ -817,6 +821,46 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         .read(reinterpret_cast<char*>(&read_highest), sizeof(read_highest))
         .read(reinterpret_cast<char*>(&viewport_transform_state), sizeof(viewport_transform_state))
         .read(reinterpret_cast<char*>(&stage), sizeof(stage));
+
+    max_bytes = std::min(max_bytes, MaxSerializedEnvironmentSize);
+    u64 serialized_size = sizeof(code_size) + sizeof(num_texture_types) +
+                          sizeof(num_texture_pixel_formats) + sizeof(num_cbuf_values) +
+                          sizeof(num_cbuf_replacement_values) + sizeof(local_memory_size) +
+                          sizeof(texture_bound) + sizeof(start_address) + sizeof(read_lowest) +
+                          sizeof(read_highest) + sizeof(viewport_transform_state) + sizeof(stage);
+    const auto add_serialized_size = [&serialized_size, max_bytes](u64 count, u64 item_size) {
+        if (item_size == 0 || serialized_size > max_bytes ||
+            count > (max_bytes - serialized_size) / item_size) {
+            return false;
+        }
+        serialized_size += count * item_size;
+        return true;
+    };
+    if (static_cast<u32>(stage) > static_cast<u32>(Shader::Stage::Mesh)) {
+        throw std::ios_base::failure("Invalid shader stage in pipeline cache");
+    }
+    if (!add_serialized_size(code_size, sizeof(u8)) ||
+        !add_serialized_size(num_texture_types, sizeof(u32) + sizeof(Shader::TextureType)) ||
+        !add_serialized_size(num_texture_pixel_formats,
+                             sizeof(u32) + sizeof(Shader::TexturePixelFormat)) ||
+        !add_serialized_size(num_cbuf_values, sizeof(u64) + sizeof(u32)) ||
+        !add_serialized_size(num_cbuf_replacement_values,
+                             sizeof(u64) + sizeof(Shader::ReplaceConstant))) {
+        throw std::ios_base::failure("Invalid shader cache entry size");
+    }
+    if (stage == Shader::Stage::Compute) {
+        if (!add_serialized_size(1, sizeof(workgroup_size) + sizeof(shared_memory_size))) {
+            throw std::ios_base::failure("Invalid compute shader cache entry size");
+        }
+    } else {
+        const u64 graphics_state_size = sizeof(sph) +
+                                        (stage == Shader::Stage::Geometry
+                                             ? sizeof(gp_passthrough_mask)
+                                             : 0);
+        if (!add_serialized_size(1, graphics_state_size)) {
+            throw std::ios_base::failure("Invalid graphics shader cache entry size");
+        }
+    }
     code.resize(Common::DivCeil(code_size, sizeof(u64)));
     file.read(reinterpret_cast<char*>(code.data()), code_size);
     for (size_t i = 0; i < num_texture_types; ++i) {
@@ -959,41 +1003,52 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
 }
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
-                       const std::filesystem::path& filename, u32 cache_version) try {
-    std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
-    file.exceptions(std::ifstream::failbit);
-    if (!file.is_open()) {
-        LOG_ERROR(Common_Filesystem, "Failed to open pipeline cache file {}",
-                  Common::FS::PathToUTF8String(filename));
-        return;
-    }
-    if (file.tellp() == 0) {
-        // Write header
-        file.write(MAGIC_NUMBER.data(), MAGIC_NUMBER.size())
-            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
-    }
-    if (!std::ranges::all_of(envs, &GenericEnvironment::CanBeSerialized)) {
-        return;
-    }
-    const u32 num_envs{static_cast<u32>(envs.size())};
-    file.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
-    for (const GenericEnvironment* const env : envs) {
-        env->Serialize(file);
-    }
-    file.write(key.data(), key.size_bytes());
-
-} catch (const std::ios_base::failure& e) {
-    LOG_ERROR(Common_Filesystem, "{}", e.what());
-    if (!Common::FS::RemoveFile(filename)) {
-        LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
-                  Common::FS::PathToUTF8String(filename));
+                       const std::filesystem::path& filename, u32 cache_version) {
+    std::ofstream file;
+    std::streamoff append_offset = -1;
+    try {
+        file.open(filename, std::ios::binary | std::ios::ate | std::ios::app);
+        file.exceptions(std::ifstream::failbit);
+        if (!file.is_open()) {
+            LOG_ERROR(Common_Filesystem, "Failed to open pipeline cache file {}",
+                      Common::FS::PathToUTF8String(filename));
+            return;
+        }
+        append_offset = static_cast<std::streamoff>(file.tellp());
+        if (append_offset == 0) {
+            // Write header
+            file.write(MAGIC_NUMBER.data(), MAGIC_NUMBER.size())
+                .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
+        }
+        if (!std::ranges::all_of(envs, &GenericEnvironment::CanBeSerialized)) {
+            return;
+        }
+        const u32 num_envs{static_cast<u32>(envs.size())};
+        file.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
+        for (const GenericEnvironment* const env : envs) {
+            env->Serialize(file);
+        }
+        file.write(key.data(), key.size_bytes());
+    } catch (const std::ios_base::failure& e) {
+        file.exceptions(std::ios::goodbit);
+        file.close();
+        if (append_offset >= 0) {
+            std::error_code ec;
+            std::filesystem::resize_file(filename, static_cast<u64>(append_offset), ec);
+            if (ec) {
+                LOG_ERROR(Common_Filesystem,
+                          "Failed to roll back incomplete pipeline cache write for {}: {}",
+                          Common::FS::PathToUTF8String(filename), ec.message());
+            }
+        }
+        LOG_ERROR(Common_Filesystem, "{}", e.what());
     }
 }
 
 void LoadPipelines(
     std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) try {
+    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         return;
@@ -1002,48 +1057,133 @@ void LoadPipelines(
     const auto end{file.tellg()};
     file.seekg(0, std::ios::beg);
 
-    std::array<char, 8> magic_number;
-    u32 cache_version;
-    file.read(magic_number.data(), magic_number.size())
-        .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
-    if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
-        file.close();
-        if (Common::FS::RemoveFile(filename)) {
-            if (magic_number != MAGIC_NUMBER) {
-                LOG_ERROR(Common_Filesystem, "Invalid pipeline cache file");
+    const auto quarantine_file = [&filename] {
+        std::error_code ec;
+        const auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
+        for (u32 attempt = 0; attempt < 1000; ++attempt) {
+            auto quarantined = filename;
+            if (attempt == 0) {
+                quarantined += ".invalid";
+            } else {
+                quarantined += fmt::format(".invalid-{}-{}", timestamp, attempt);
             }
-            if (cache_version != expected_cache_version) {
-                LOG_INFO(Common_Filesystem, "Deleting old pipeline cache");
+            if (std::filesystem::exists(quarantined, ec)) {
+                if (ec) {
+                    break;
+                }
+                continue;
             }
-        } else {
-            LOG_ERROR(Common_Filesystem,
-                      "Invalid pipeline cache file and failed to delete it in \"{}\"",
-                      Common::FS::PathToUTF8String(filename));
+            if (ec) {
+                break;
+            }
+            std::filesystem::rename(filename, quarantined, ec);
+            if (!ec) {
+                LOG_WARNING(Common_Filesystem,
+                            "Moved invalid pipeline cache to {}; valid cache entries will be rebuilt",
+                            Common::FS::PathToUTF8String(quarantined));
+                return;
+            }
+            if (ec != std::errc::file_exists) {
+                break;
+            }
+            ec.clear();
         }
-        return;
-    }
-    while (file.tellg() != end) {
-        if (stop_loading.stop_requested()) {
+        LOG_ERROR(Common_Filesystem, "Could not quarantine invalid pipeline cache {}: {}",
+                  Common::FS::PathToUTF8String(filename), ec.message());
+    };
+    const auto truncate_to = [&filename, &quarantine_file](std::streamoff size) {
+        std::error_code ec;
+        std::filesystem::resize_file(filename, static_cast<u64>(size), ec);
+        if (ec) {
+            LOG_ERROR(Common_Filesystem,
+                      "Could not recover the valid prefix of pipeline cache {}: {}",
+                      Common::FS::PathToUTF8String(filename), ec.message());
+            quarantine_file();
+            return false;
+        }
+        return true;
+    };
+
+    std::streamoff last_valid_offset = 0;
+    try {
+        std::array<char, 8> magic_number;
+        u32 cache_version{};
+        file.read(magic_number.data(), magic_number.size())
+            .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
+        if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
+            file.close();
+            if (magic_number != MAGIC_NUMBER) {
+                LOG_WARNING(Common_Filesystem, "Invalid pipeline cache header");
+            } else {
+                LOG_INFO(Common_Filesystem, "Pipeline cache version changed; preserving old cache");
+            }
+            quarantine_file();
             return;
         }
-        u32 num_envs{};
-        file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
-        std::vector<FileEnvironment> envs(num_envs);
-        for (FileEnvironment& env : envs) {
-            env.Deserialize(file);
+        last_valid_offset = static_cast<std::streamoff>(file.tellg());
+        while (file.tellg() != end) {
+            if (stop_loading.stop_requested()) {
+                return;
+            }
+            const auto record_offset = static_cast<std::streamoff>(file.tellg());
+            u32 num_envs{};
+            file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
+            if (num_envs == 0 || num_envs > 8) {
+                file.close();
+                truncate_to(last_valid_offset);
+                LOG_WARNING(Common_Filesystem,
+                            "Stopped loading shader cache at an invalid pipeline record; kept valid entries");
+                return;
+            }
+            std::vector<FileEnvironment> envs(num_envs);
+            for (FileEnvironment& env : envs) {
+                const auto env_offset = static_cast<std::streamoff>(file.tellg());
+                if (env_offset < record_offset || env_offset >= end) {
+                    throw std::ios_base::failure("Invalid shader cache environment offset");
+                }
+                const auto record_bytes = static_cast<u64>(env_offset - record_offset);
+                if (record_bytes >= MaxSerializedPipelineSize) {
+                    throw std::ios_base::failure("Shader cache pipeline exceeds size limit");
+                }
+                const auto remaining_file_bytes = static_cast<u64>(end - env_offset);
+                const auto remaining_pipeline_bytes = MaxSerializedPipelineSize - record_bytes;
+                env.Deserialize(file,
+                                std::min(remaining_file_bytes, remaining_pipeline_bytes));
+            }
+            if (envs.front().ShaderStage() == Shader::Stage::Compute) {
+                load_compute(file, std::move(envs.front()));
+            } else {
+                load_graphics(file, std::move(envs));
+            }
+            last_valid_offset = static_cast<std::streamoff>(file.tellg());
+            if (last_valid_offset <= record_offset || last_valid_offset > end) {
+                file.close();
+                truncate_to(record_offset);
+                LOG_WARNING(Common_Filesystem,
+                            "Stopped loading shader cache after an invalid pipeline record");
+                return;
+            }
         }
-        if (envs.front().ShaderStage() == Shader::Stage::Compute) {
-            load_compute(file, std::move(envs.front()));
+    } catch (const std::exception& e) {
+        file.exceptions(std::ios::goodbit);
+        file.close();
+        if (last_valid_offset > 0 && last_valid_offset < end) {
+            truncate_to(last_valid_offset);
+            LOG_WARNING(Common_Filesystem,
+                        "Recovered shader cache by discarding an incomplete final record: {}",
+                        e.what());
+        } else if (last_valid_offset == 0) {
+            quarantine_file();
+            LOG_WARNING(Common_Filesystem,
+                        "Could not read shader cache; preserved the file for recovery: {}",
+                        e.what());
         } else {
-            load_graphics(file, std::move(envs));
+            LOG_WARNING(Common_Filesystem,
+                        "Could not finish loading shader cache; keeping the complete cache file: {}",
+                        e.what());
         }
-    }
-
-} catch (const std::ios_base::failure& e) {
-    LOG_ERROR(Common_Filesystem, "{}", e.what());
-    if (!Common::FS::RemoveFile(filename)) {
-        LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
-                  Common::FS::PathToUTF8String(filename));
     }
 }
 

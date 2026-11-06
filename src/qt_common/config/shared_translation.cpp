@@ -334,6 +334,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "their resolution, details and supported controllers and depending on this setting.\n"
               "Setting to Handheld can help improve performance for low end systems."));
     INSERT(Settings, current_user, QString(), QString());
+    INSERT(Settings, automatic_save_data_backups, tr("Automatically back up save data"),
+           tr("Keeps the two most recent verified backups for each game and user before the save is opened."));
 
     // Controls
 

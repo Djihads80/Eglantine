@@ -776,6 +776,9 @@ struct Values {
 
     Setting<s32> current_user{linkage, 0, "current_user", Category::System};
 
+    Setting<bool> automatic_save_data_backups{linkage, false, "automatic_save_data_backups",
+                                              Category::System};
+
     SwitchableSetting<ConsoleMode> use_docked_mode{linkage,
                                                    ConsoleMode::Handheld,
                                                    "use_docked_mode",

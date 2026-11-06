@@ -51,6 +51,7 @@ class VfsFilesystem;
 
 enum class GameListOpenTarget {
     SaveData,
+    SaveBackups,
     ModData,
 };
 

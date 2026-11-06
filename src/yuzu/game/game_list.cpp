@@ -463,6 +463,7 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
         context_menu.addAction(tr("Start Game without Custom Configuration"));
     context_menu.addSeparator();
     QAction* open_save_location = context_menu.addAction(tr("Open Save Data Location"));
+    QAction* open_save_backups = context_menu.addAction(tr("Open Save Backups"));
     QAction* open_mod_location = context_menu.addAction(tr("Open Mod Data Location"));
     QAction* open_transferable_shader_cache =
         context_menu.addAction(tr("Open Transferable Pipeline Cache"));
@@ -517,6 +518,7 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     favorite->setCheckable(true);
     favorite->setChecked(UISettings::values.favorited_ids.contains(program_id));
     open_save_location->setVisible(program_id != 0);
+    open_save_backups->setVisible(program_id != 0);
     open_mod_location->setVisible(program_id != 0);
     open_transferable_shader_cache->setVisible(program_id != 0);
     remove_update->setVisible(program_id != 0);
@@ -530,6 +532,9 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, program_id]() { ToggleFavorite(program_id); });
     connect(open_save_location, &QAction::triggered, this, [this, program_id, path]() {
         emit OpenFolderRequested(program_id, GameListOpenTarget::SaveData, path);
+    });
+    connect(open_save_backups, &QAction::triggered, this, [this, program_id, path]() {
+        emit OpenFolderRequested(program_id, GameListOpenTarget::SaveBackups, path);
     });
     connect(start_game, &QAction::triggered, this,
             [this, path]() { emit BootGame(QString::fromStdString(path), StartGameType::Normal); });

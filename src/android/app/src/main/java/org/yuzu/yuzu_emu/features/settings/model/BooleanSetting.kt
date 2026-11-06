@@ -21,6 +21,7 @@ enum class BooleanSetting(override val key: String) : AbstractBooleanSetting {
     RESCALE_HACK("rescale_hack"),
     CPUOPT_UNSAFE_HOST_MMU("cpuopt_unsafe_host_mmu"),
     USE_DOCKED_MODE("use_docked_mode"),
+    AUTOMATIC_SAVE_DATA_BACKUPS("automatic_save_data_backups"),
     USE_AUTO_STUB("use_auto_stub"),
     RENDERER_USE_DISK_SHADER_CACHE("use_disk_shader_cache"),
     RENDERER_FORCE_MAX_CLOCK("force_max_clock"),
