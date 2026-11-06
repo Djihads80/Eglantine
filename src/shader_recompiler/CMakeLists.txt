@@ -25,6 +25,7 @@ add_library(shader_recompiler STATIC
     backend/spirv/emit_spirv_select.cpp
     backend/spirv/emit_spirv_shared_memory.cpp
     backend/spirv/emit_spirv_mesh.cpp
+    backend/spirv/emit_spirv_mesh_clamp.cpp
     backend/spirv/emit_spirv_mesh_vertex.cpp
     backend/spirv/emit_spirv_special.cpp
     backend/spirv/emit_spirv_tensor.cpp

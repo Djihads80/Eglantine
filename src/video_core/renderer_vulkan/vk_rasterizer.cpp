@@ -808,17 +808,17 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
         if (mesh_draw && mesh_emulation_buffer.draw.buffer) {
-            // Emulated: the mesh program's dispatch wrote the draw (vk_mesh_emulation.h).
+            // Emulated: the clamp pass after the task dispatch wrote the draw (vk_mesh_emulation.h).
             const VkBuffer buffer{mesh_emulation_buffer.draw.buffer};
-            const VkDeviceSize offset{mesh_emulation_buffer.draw.offset +
-                                      Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD *
-                                          sizeof(u32)};
+            const VkDeviceSize offset{mesh_emulation_buffer.draw.offset};
             const bool set_topology{mesh_dynamic_topology};
             const bool clear_vertex_input{mesh_dynamic_vertex_input};
-            // An indirect draw of the count its mesh dispatch wrote. EDEN_NX2_MESH_EMULATE_DIRECT=1:
-            // a direct draw of the slots the draw may use (unused ones are zeroed, their
-            // primitives culled). Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the compute
-            // work but draws nothing.
+            // A task draw: an indirect draw of the slots its mesh dispatch had, from its clamp
+            // pass (within its slots, whatever its header holds). EDEN_NX2_MESH_EMULATE_DIRECT=1:
+            // a direct draw of the slots its pipeline's draws were seen to use (the vertex shader
+            // culls slots past the dispatched ones). A mesh-only draw's slots are the host's:
+            // drawn directly. Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the compute work
+            // but draws nothing.
             static const bool no_draw = [] {
                 const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_NODRAW");
                 return value != nullptr && value[0] == '1';
@@ -832,8 +832,9 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                 return;
             }
             const u32 direct_vertices{mesh_emulation_buffer.draw_vertices};
+            const bool draw_direct{direct || mesh_emulation_buffer.draw_direct};
             scheduler.Record([this, buffer, offset, set_topology, clear_vertex_input,
-                              direct_vertices](vk::CommandBuffer cmdbuf) {
+                              direct_vertices, draw_direct](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
                     return;
                 }
@@ -845,7 +846,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                     // guest's vertex streams hold during a mesh draw.
                     cmdbuf.SetVertexInputEXT({}, {});
                 }
-                if (direct) {
+                if (draw_direct) {
                     cmdbuf.Draw(direct_vertices, 1, 0, 0);
                     return;
                 }

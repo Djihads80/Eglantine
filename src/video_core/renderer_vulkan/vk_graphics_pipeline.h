@@ -286,6 +286,8 @@ private:
         Shader::Backend::SPIRV::MeshEmulationHeader header{};
         MeshEmulationRegion region{};
         std::pair<VkBuffer, VkDeviceSize> check{}; ///< readback slot (EDEN_NX2_MESH_EMULATE_CHECK)
+        /// The clamp pass's push constants (a task draw whose region has a clamp_set).
+        Shader::Backend::SPIRV::MeshEmulationClampConstants clamp{};
         VkDeviceSize size{};
         u32 groups{}; ///< task workgroups, or mesh workgroups without a task program
     };
