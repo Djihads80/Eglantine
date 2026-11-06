@@ -245,6 +245,9 @@ enum class Counter : u32 {
     BankRechecksSkippedByFrame,
     BankLateChanges,
     CbWordsNoted, ///< Constant buffer words the front kept for the overlay (MacroReadCbOverlay)
+    /// Nx2Perf draw_begin_coalesce: draw.begin writes counted into the entry before them (with
+    /// EDEN_NX2_PERF_VERIFY: that would have been)
+    DrawBeginCoalesced,
     Count,
 };
 
@@ -433,6 +436,10 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" | front 3D writes: direct {:.0f}, from macros {:.0f}",
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::DirectWrites)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::MacroWrites)]) * 1e9 / window);
+    }
+    if (data.counters[static_cast<size_t>(Counter::DrawBeginCoalesced)] != 0) {
+        line += fmt::format(" | draw.begin coalesced {:.0f}",
+                            per_second(Counter::DrawBeginCoalesced));
     }
     if (data.counters[static_cast<size_t>(Counter::SameExecutableWrites)] != 0) {
         auto slots = data.same_executable;

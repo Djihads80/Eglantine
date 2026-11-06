@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <thread>
 
@@ -116,6 +117,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     system = &system_;
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
     ring = std::make_unique<u64[]>(RingWords);
+    verify_repeats = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::DrawBeginCoalesce);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
@@ -163,6 +165,7 @@ void GpuSplit::Stop() {
     note_page = ~GPUVAddr{0};
     published_local = 0;
     consumed_cache = 0;
+    repeat_end = ~u64{0};
     publish_every = PublishEvery;
     front_engine = nullptr;
     back_engine = nullptr;
@@ -488,8 +491,60 @@ u64 GpuSplit::RetireWrites() {
     return consumed_cache;
 }
 
+void GpuSplit::ExecuteRepeated(u64 head) {
+    // Only Maxwell3D's draw.begin is sent with a count (Maxwell3D::FrontWrite), without a
+    // segment. Every path below would consume the sink and call it, once per entry.
+    using Tegra::Engines::Maxwell3D;
+    auto* const maxwell3d = static_cast<Maxwell3D*>(back_engine);
+    Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+    maxwell3d->ConsumeSink(*system);
+    maxwell3d->CallMethod(*system, static_cast<u32>((head >> 8) & 0xffff),
+                          static_cast<u32>(head >> 32), (head & IsLast) != 0);
+    maxwell3d->draw_manager.AddInstances(*maxwell3d,
+                                         static_cast<u32>((head & RepeatMask) >> 24));
+}
+
+void GpuSplit::VerifyRepeat(u64 head) {
+    const u64 word = head & ~Repeatable;
+    if ((head & Repeatable) != 0) {
+        ++verify_mergeable;
+        if (verify_previous != word) {
+            static std::atomic<u64> differences{};
+            const u64 count = differences.fetch_add(1, std::memory_order_relaxed) + 1;
+            ++verify_mismatches;
+            if (count <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf draw_begin_coalesce: mergeable entry {:#x} after {:#x}, not "
+                          "the same draw.begin ({} so far)",
+                          head, verify_previous, count);
+            }
+        }
+        if ((verify_mergeable & 1023) == 0) {
+            const u64 now = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count());
+            if (verify_report_ns == 0) {
+                verify_report_ns = now;
+            } else if (now - verify_report_ns >= 1'000'000'000) {
+                const double seconds = static_cast<double>(now - verify_report_ns) / 1e9;
+                LOG_INFO(HW_GPU,
+                         "Nx2Perf draw_begin_coalesce: {:.0f} mergeable draw.begin entries/s, {} "
+                         "not after the same one",
+                         static_cast<double>(verify_mergeable) / seconds, verify_mismatches);
+                verify_report_ns = now;
+                verify_mergeable = 0;
+                verify_mismatches = 0;
+            }
+        }
+    }
+    verify_previous = word;
+}
+
 size_t GpuSplit::Execute(const u64* entry, size_t words) {
     const u64 head = entry[0];
+    if (verify_repeats) [[unlikely]] {
+        VerifyRepeat(head);
+    }
     switch (static_cast<Kind>(head & 0xf)) {
     case Kind::Wrap:
         return 0;
@@ -497,6 +552,10 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
         back_engine = reinterpret_cast<Tegra::Engines::EngineInterface*>(entry[1]);
         return 2;
     case Kind::Method: {
+        if ((head & RepeatMask) != 0) [[unlikely]] {
+            ExecuteRepeated(head);
+            return 1;
+        }
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
