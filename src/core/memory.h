@@ -489,6 +489,24 @@ public:
      */
     void RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size);
 
+    /// Nx2Perf war_guard_probe (video_core/nx2_war_probe.h): one arm's page counts.
+    struct Nx2WarProbeArmResult {
+        u64 armed{};            ///< Pages write-protected by this arm
+        u64 guarded{};          ///< Pages still protected from an earlier arm
+        u64 unprotected{};      ///< Pages the tracker leaves writable (CPU-written since upload)
+        u64 overflow{};         ///< Pages the probe's fixed set could not hold, in total
+        u64 bank_guarded{};     ///< Bank pages among the writable ones
+        u64 bank_tracked{};     ///< Bank pages the tracker protects itself
+        u64 bank_unguardable{}; ///< Bank pages neither (no CPU mapping, never cached)
+    };
+
+    /**
+     * war_guard_probe, after vi2's wait: write-protects the pages the tracker leaves writable, so
+     * the next guest write of each one takes the slow path once and gets its permission back.
+     * bank_cpu_pages (guest page numbers of the native uniform banks) only label the traps.
+     */
+    Nx2WarProbeArmResult Nx2WarProbeArm(std::span<const u64> bank_cpu_pages);
+
     /**
      * Marks each page within the specified address range as debug or non-debug.
      * Debug addresses are not accessible from fastmem pointers.

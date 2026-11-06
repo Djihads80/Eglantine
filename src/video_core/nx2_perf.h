@@ -118,6 +118,9 @@ enum class Opt : unsigned {
     /// Guest-visible syncpoint values rise on the fencing thread with the host value, once
     /// everything recorded before the increment has landed in guest memory
     GuestLandedSyncpoints,
+    /// Measurement only: after vi2's Ocarina reply, write-protects CPU-written GPU pages and the
+    /// native uniform bank pages to time the guest's first access of them (nx2_war_probe.h)
+    WarGuardProbe,
     Count,
 };
 
@@ -150,6 +153,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "handle_page_cache",
     "dma_forward",
     "guest_landed_syncpoints",
+    "war_guard_probe",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -162,7 +166,8 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::LandedPrevAlways) == 49 &&
               static_cast<unsigned>(Opt::OneAheadLanded) == 50 &&
               static_cast<unsigned>(Opt::SplitRings) == 51 &&
-              static_cast<unsigned>(Opt::BindMemoLocal) == 52);
+              static_cast<unsigned>(Opt::BindMemoLocal) == 52 &&
+              static_cast<unsigned>(Opt::WarGuardProbe) == 56);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -188,7 +193,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
-                          Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints}) {
+                          Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
+                          Opt::WarGuardProbe}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -205,7 +211,8 @@ inline constexpr u64 DefaultOffMask() {
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
-/// bind_memo_local, guest_landed_syncpoints (not measured yet).
+/// bind_memo_local, guest_landed_syncpoints (not measured yet); war_guard_probe (measurement,
+/// adds page traps).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -217,7 +224,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::DmaForward) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
-                                  Bit(Opt::GuestLandedSyncpoints);
+                                  Bit(Opt::GuestLandedSyncpoints) |
+                                  Bit(Opt::WarGuardProbe);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -233,6 +241,8 @@ static_assert(IsOff(always_off, 51) && IsOff(DefaultOffMask(), 51));
 static_assert(IsOff(always_off, 52) && IsOff(DefaultOffMask(), 52));
 static_assert(static_cast<unsigned>(Opt::GuestLandedSyncpoints) == 56 && IsOff(always_off, 56) &&
               IsOff(DefaultOffMask(), 56));
+static_assert(static_cast<unsigned>(Opt::WarGuardProbe) == 57 && IsOff(always_off, 57) &&
+              IsOff(DefaultOffMask(), 57));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).
