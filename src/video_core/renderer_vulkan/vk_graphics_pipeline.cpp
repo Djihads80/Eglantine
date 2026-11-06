@@ -810,6 +810,7 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
             cmdbuf.BindDescriptorBuffersEXT(binding_info);
         }
         if (bind_pipeline) {
+            scheduler.SetGraphicsPipelineMissing(!pipeline);
             if (!pipeline) {
                 return;
             }
