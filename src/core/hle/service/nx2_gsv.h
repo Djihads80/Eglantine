@@ -2847,8 +2847,8 @@ private:
         if (m_event == nullptr) {
             m_event = m_context.CreateEvent(fmt::format("{}:Ready", GetServiceName()));
             // The client attaches it auto-clearing, so one signal is consumed by the first wait:
-            // while the input queue has room, re-signal every 4 ms; a spurious wake only makes it
-            // check again.
+            // while the input queue has room or a finished frame waits, re-signal every 4 ms; a
+            // spurious wake only makes it check again.
             {
                 std::scoped_lock lk{m_ready->mutex};
                 m_ready->event = m_event;
@@ -2858,7 +2858,9 @@ private:
                 [ready = m_ready, &kernel = system.Kernel()](
                     s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                     std::scoped_lock lk{ready->mutex};
-                    if (ready->event != nullptr && ready->room.load(std::memory_order_relaxed)) {
+                    if (ready->event != nullptr &&
+                        (ready->room.load(std::memory_order_relaxed) ||
+                         ready->output_ready.load(std::memory_order_relaxed))) {
                         ready->event->Signal(kernel);
                     }
                     return std::nullopt;
@@ -3068,6 +3070,7 @@ private:
                 }
                 m_outputs.clear();
             }
+            m_ready->output_ready.store(!m_outputs.empty(), std::memory_order_relaxed);
         }
         m_cv.notify_one();
         TipcReplyWords(ctx, {});
@@ -3108,6 +3111,7 @@ private:
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
+                m_ready->output_ready.store(!m_outputs.empty(), std::memory_order_relaxed);
                 // AV1: words 1-2 hold the configured size, as fefw's decoder replies.
                 width = m_av1 ? m_width : output->width;
                 height = m_av1 ? m_height : output->height;
@@ -3246,6 +3250,7 @@ private:
                     m_ready->room.store(false, std::memory_order_relaxed);
                 }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
+                SignalOutput();
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
                     LOG_INFO(Service, "{} frame {} ({}x{}, pts {} us{}) in image {}",
@@ -3310,6 +3315,18 @@ private:
                     m_decoded.back().end = true;
                 }
             }
+        }
+    }
+
+    // A finished frame waits for the client: wake it now, whatever the input queue holds. It
+    // waits on one event for both input room and finished frames; signalled only while the
+    // input queue had room, it woke on its own timeout when the queue stayed full (pavelgajdo,
+    // Lichii-Android 3943fe4e8b).
+    void SignalOutput() {
+        m_ready->output_ready.store(true, std::memory_order_relaxed);
+        std::scoped_lock lk{m_ready->mutex};
+        if (m_ready->event != nullptr) {
+            m_ready->event->Signal(system.Kernel());
         }
     }
 
@@ -3452,6 +3469,7 @@ private:
         std::mutex mutex;
         Kernel::KEvent* event{};
         std::atomic<bool> room{true}; ///< The input queue takes more frames
+        std::atomic<bool> output_ready{false}; ///< Finished frames wait to be fetched (213)
     };
 
     KernelHelpers::ServiceContext m_context;
