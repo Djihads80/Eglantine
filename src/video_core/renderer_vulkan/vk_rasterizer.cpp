@@ -488,10 +488,11 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     const auto& vp = regs.viewport_transform[0];
     const auto& sc = regs.scissor_test[0];
     LOG_INFO(HW_GPU,
-             "nx2 window {} rt0={:#x} count={} clear={:#x} color=({},{},{},{}) mask_common={} "
+             "nx2 window {} rt0={:#x} fmt={:#x} count={} clear={:#x} color=({},{},{},{}) mask_common={} "
              "mask0={:#x} rt_count={} vp scale=({},{}) translate=({},{}) scissor en={} x={}..{} "
              "y={}..{} blend0={} vs={:#x} ps={:#x} rasterize={}",
-             kind, regs.rt[0].Address(), count, regs.clear_surface.raw, regs.clear_color[0],
+             kind, regs.rt[0].Address(), static_cast<u32>(regs.rt[0].format), count,
+             regs.clear_surface.raw, regs.clear_color[0],
              regs.clear_color[1], regs.clear_color[2], regs.clear_color[3], regs.color_mask_common,
              regs.color_mask[0].raw, regs.rt_control.count.Value(), vp.scale_x, vp.scale_y,
              vp.translate_x, vp.translate_y, sc.enable, sc.min_x.Value(), sc.max_x.Value(),
