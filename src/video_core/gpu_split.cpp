@@ -738,6 +738,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
+            if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                Nx2Perf::FenceTimeline::BeginBackIdle();
+            }
             back_idle.store(true, std::memory_order_relaxed);
             // The front usually sends more within microseconds: spin briefly before sleeping.
             for (u32 spins = 0; spins < 8192 && available == read_position &&
@@ -772,9 +775,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 }
                 back_waiting.store(false, std::memory_order_seq_cst);
                 back_idle.store(false, std::memory_order_relaxed);
+                if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                    Nx2Perf::FenceTimeline::EndBackIdle();
+                }
                 continue;
             }
             back_idle.store(false, std::memory_order_relaxed);
+            if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                Nx2Perf::FenceTimeline::EndBackIdle();
+            }
         }
         u64 last_store = read_position;
         // Before any entry runs, so a front that sees these entries consumed also sees this.
