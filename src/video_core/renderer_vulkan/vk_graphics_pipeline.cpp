@@ -1697,10 +1697,11 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         work->timing = frame_dump->TimeAhead(Scheduler::PRE_PHASES);
     }
     const Framebuffer* const framebuffer{texture_cache.GetFramebuffer()};
-    // EDEN_NX2_MESH_EMULATE_PHASES=0: each draw's work in one piece, barriers and all.
+    // EDEN_NX2_MESH_EMULATE_PHASES=1: the work of a pass's draws batched by phase (off until
+    // checked on more devices: each draw's work in one piece, barriers and all).
     static const bool phases = [] {
         const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_PHASES");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     if (phases && scheduler.HoistsRenderPasses()) {
         // Ahead of the pass's begin, phase by phase with the pass's other emulated draws.
