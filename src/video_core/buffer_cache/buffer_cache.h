@@ -2914,6 +2914,44 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     replace(channel_state->compute_uniform_buffers);
     replace(channel_state->compute_storage_buffers);
 
+    // The other channels keep their own bindings, and the resolved buffer ids survive across
+    // draws there. Left alone, a stale id would address whatever buffer reuses this slot next
+    // (Ocarina of Time draws from several channels: descriptors ended up ~100 MiB past 128 KiB
+    // buffers and the GPU faulted).
+    for (const size_t other_id : active_channel_ids) {
+        BufferCacheChannelInfo& other = channel_storage[other_id];
+        if (&other == channel_state) {
+            continue;
+        }
+        bool other_dirty_index = false;
+        if (other.index_buffer.buffer_id == buffer_id) {
+            other.index_buffer.buffer_id = BufferId{};
+            other_dirty_index = true;
+        }
+        auto& other_flags = other.maxwell3d.dirty.flags;
+        for (u32 index = 0; index < other.vertex_buffers.size(); index++) {
+            if (other.vertex_buffers[index].buffer_id == buffer_id) {
+                other.vertex_buffers[index].buffer_id = BufferId{};
+                other_flags[Dirty::VertexBuffers] = true;
+                other_flags[Dirty::VertexBuffer0 + index] = true;
+            }
+        }
+        if (other_dirty_index) {
+            other_flags[Dirty::IndexBuffer] = true;
+        }
+        std::ranges::for_each(other.uniform_buffers, replace);
+        other.unresolved_uniform_buffers.fill(~u32{0});
+        std::ranges::for_each(other.storage_buffers, replace);
+        replace(other.transform_feedback_buffers);
+        replace(other.compute_uniform_buffers);
+        replace(other.compute_storage_buffers);
+        if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
+            other.dirty_uniform_buffers.fill(~u32{0});
+            other.uniform_buffer_binding_sizes.fill({});
+        }
+        other.has_deleted_buffers = true;
+    }
+
     // Mark the whole buffer as CPU written to stop tracking CPU writes
     if (!do_not_mark) {
         Buffer& buffer = slot_buffers[buffer_id];
