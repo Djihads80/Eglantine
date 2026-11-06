@@ -236,9 +236,11 @@ struct MacroEngine {
         }
         uploaded_macro_code[method].push_back(data);
     }
-    // Clear the code associated with a method.
+    // Clears the code associated with a method: for Turing macros, sets where the next upload
+    // writes (word offset = instruction index * 3, clamped to the RAM size, in 64 bits so a huge
+    // index cannot wrap back into live code); otherwise drops the per-method code and cache entry.
     inline void ClearCode(u32 method) noexcept {
-        if (native_turing) { native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size()); return; }
+        if (native_turing) { native_write_offset = u64{method} * 3 < native_code.size() ? method * 3 : static_cast<u32>(native_code.size()); return; }
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
     }
@@ -255,7 +257,9 @@ struct MacroEngine {
     bool native_turing{};
     bool native_execution_failed{};
     u32 native_write_offset{};
-    std::array<u32, 0x3000> native_code{};
+    // Turing macro RAM, 3 words per instruction. Ocarina of Time binds entries at instruction
+    // 0x1010 and later, past the old 0x3000 words (0x1000 instructions).
+    std::array<u32, 0x8000> native_code{};
     TuringMacroInterpreter native_interpreter;
     std::vector<u32> native_fifo;
     // Calls replayed instead of interpreted (macro_memo.h), and what the current call wrote.
