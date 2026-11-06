@@ -147,4 +147,21 @@ TEST_CASE("Ampere programs go on past an EXIT that a branch jumps over", "[video
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(lowered.source_size == sizeof(code));
 }
+
+TEST_CASE("Ampere TLD4 lowers per-pixel offsets", "[video_core][ampere]") {
+    // Welcome Tour's TLD4.PTP instruction: x/y in R4/R5 and packed per-tap offsets in R8/R9.
+    const std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+
+    const u64 gather = FindMaxwell(lowered, 0xc8, 56);
+    REQUIRE(gather != 0);
+    CHECK(((gather >> 28) & 7) == 2); // 2D
+    CHECK(((gather >> 20) & 0xff) == 246); // packed PTP offsets in the meta register
+    CHECK(((gather >> 54) & 3) == 2); // per-pixel offsets
+}
 } // namespace
