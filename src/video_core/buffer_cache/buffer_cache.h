@@ -101,21 +101,12 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
 }
 
 /// End-of-frame bookkeeping: retires async buffer downloads, drops stale uniform ranges and
-/// the occasional threshold report, and — with PreflushPerFrame() — drains this frame's
-/// queued Preflushable ranges into the set the next fence downloads.
+/// the occasional threshold report.
 template <class P>
 void BufferCache<P>::TickFrame() {
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
     if (!channel_state) {
         return;
-    }
-    // PreflushPerFrame(): the frame boundary is where this frame's Preflushable writes become
-    // the next fence's downloads (one commit per frame, not one per compute fence).
-    if (PreflushPerFrame() && !pending_preflush_adds.Empty()) {
-        pending_preflush_adds.ForEach([&](DAddr start, DAddr end) {
-            uncommitted_gpu_modified_ranges.Add(start, end - start);
-        });
-        pending_preflush_adds.Clear();
     }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
@@ -280,10 +271,7 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     // rest of the range still needs this flush. With LazyPreflushDownloads nothing downloads at
     // fences, so this fast path must not claim the data is already back: every read of a
     // GPU-modified range flushes (preemtive false) through OnCPURead's synchronous flush.
-    // A range still pending its frame drain (PreflushPerFrame) is likewise not back yet.
     if (!LazyPreflushDownloads() && memory_tracker.IsRegionPreflushable(device_addr, size) &&
-        !pending_preflush_adds.Intersects(device_addr_start_aligned,
-                                          device_addr_end_aligned - device_addr_start_aligned) &&
         !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
                                           device_addr_end_aligned - device_addr_start_aligned)) {
         area->preemtive = true;

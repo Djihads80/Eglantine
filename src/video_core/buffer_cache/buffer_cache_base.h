@@ -611,20 +611,6 @@ private:
         return value != nullptr && value[0] == '1';
     }
 
-    /// Reads EDEN_NX2_PREFLUSH_PER_FRAME=1 once (see PreflushPerFrame).
-    static bool EnvPreflushPerFrame() {
-        const char* const value = std::getenv("EDEN_NX2_PREFLUSH_PER_FRAME");
-        return value != nullptr && value[0] == '1';
-    }
-
-    /// Reads EDEN_NX2_PREFLUSH_MIN_BYTES once: the byte threshold under which a Preflushable
-    /// range still downloads at every fence; one page when unset or unparsable.
-    static u64 EnvPreflushPerFrameMinBytes() {
-        const char* const value = std::getenv("EDEN_NX2_PREFLUSH_MIN_BYTES");
-        const long parsed = value == nullptr ? 4096 : std::atol(value);
-        return parsed <= 0 ? u64{4096} : static_cast<u64>(parsed);
-    }
-
     /// EDEN_NX2_LAZY_PREFLUSH=1: ranges the guest CPU has read once (Preflushable) are not
     /// re-downloaded at every fence either. Every fence that follows a GPU write to such a range
     /// copies it back whether anything reads it again or not; Ocarina of Time read GPU-written
@@ -670,13 +656,6 @@ private:
     /// of the rest. Queuing the whole range when any page of it was Preflushable copied whole
     /// written storage buffers (up to 8 MiB) back at every fence: ~5 GB/s in title 1's forest.
     /// With LazyPreflushDownloads nothing is queued at fences at all; reads flush on demand.
-    /// With PreflushPerFrame() the Preflushable parts go to pending_preflush_adds, which
-    /// TickFrame drains into the uncommitted set once per frame: Switch 2 titles signal a
-    /// fence per compute dispatch (thousands a second), so per-fence copying of ranges the
-    /// guest reads (Ocarina of Time: 571 reads/s of single pages; 135k copies at 1.9 GiB/s
-    /// serving them) moves the same bytes dozens of times between two reads. One commit per
-    /// frame keeps a read's data at most one frame old (the eager scheme's own lag, per
-    /// fence, is barely better at 60 fps) for a fraction of the copies.
     void QueueGpuWrite(DAddr device_addr, u64 size) {
         if (AsyncBufferDownloads()) {
             uncommitted_gpu_modified_ranges.Add(device_addr, size);
@@ -697,40 +676,12 @@ private:
             if (lower > cursor) {
                 ArmReadTraps(cursor, lower - cursor);
             }
-            // Throttle by the size of the whole marked region, not the written part: a
-            // region's pages must all move with the same timing. Readers treat a mark as
-            // one structure (a doorbell page plus its payload — throttling only the large
-            // writes gave the guest CPU a half-fresh snapshot and washed out the screen);
-            // small regions stay fence-fresh, large ones frame-fresh as a whole. A
-            // throttled write also arms its read traps: a read that lands before the frame
-            // drain force-flushes instead of trusting host memory whose age oscillated
-            // frame to frame (the screen's gamma flipped between two states).
-            if (PreflushPerFrame() && range_size > PreflushPerFrameMinBytes()) {
-                pending_preflush_adds.Add(lower, upper - lower);
-                ArmReadTraps(lower, upper - lower);
-            } else {
-                uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
-            }
+            uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
             cursor = upper;
         });
         if (cursor < end) {
             ArmReadTraps(cursor, end - cursor);
         }
-    }
-
-    /// EDEN_NX2_PREFLUSH_PER_FRAME=1: drain Preflushable download ranges once per frame
-    /// (TickFrame) instead of committing them at every fence. See QueueGpuWrite.
-    bool PreflushPerFrame() const {
-        static const bool per_frame = EnvPreflushPerFrame();
-        return per_frame;
-    }
-
-    /// EDEN_NX2_PREFLUSH_MIN_BYTES=<n>: with PreflushPerFrame, ranges at most this large
-    /// still download at every fence (freshness-critical parameters); larger ones once per
-    /// frame. Default one page.
-    static u64 PreflushPerFrameMinBytes() {
-        static const u64 min_bytes = EnvPreflushPerFrameMinBytes();
-        return min_bytes;
     }
 
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their
@@ -752,8 +703,6 @@ private:
     Common::RangeSet<DAddr> read_trapped_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
-    /// With PreflushPerFrame(): Preflushable ranges GPU-written since the last TickFrame.
-    Common::RangeSet<DAddr> pending_preflush_adds;
 
     // Async Buffers
     std::deque<std::optional<Async_Buffer>> async_buffers;
