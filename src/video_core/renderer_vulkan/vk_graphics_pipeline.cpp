@@ -1452,7 +1452,9 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     }
     MeshEmulationHeader& header{emulated_draw.header};
     header = {};
-    header.dispatch = {0, 1, 1};
+    // A task draw's dispatch is its task programs' high mark; a mesh-only draw dispatches every
+    // slot (the vertex shader reads it to cull slots past it).
+    header.dispatch = {has_task ? 0U : capacity, 1, 1};
     header.draw = {0, 1, 0, 0};
     header.capacity = capacity;
     header.payload_offset = static_cast<u32>(header_words);
@@ -1586,11 +1588,9 @@ struct EmulatedMeshWork {
         if (!descriptor_set) {
             return;
         }
+        // The mesh programs clear their slots' map regions themselves (only the dispatched
+        // slots: a full fill was tens of MB per draw in Mario Kart World).
         cmdbuf.UpdateBuffer(buffer, offset, sizeof(header), &header);
-        // The output regions start zeroed: what a mesh program leaves unwritten (vertices or
-        // map bytes its primitives still name) is not another draw's data.
-        const VkDeviceSize outputs{VkDeviceSize{header.attribute_offset} * sizeof(u32)};
-        cmdbuf.FillBuffer(buffer, offset + outputs, size - outputs, 0);
     }
 
     static void ComputeBarrier(vk::CommandBuffer cmdbuf) {

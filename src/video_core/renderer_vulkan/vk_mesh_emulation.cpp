@@ -9,6 +9,7 @@
 
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -33,14 +34,26 @@ bool MeshEmulationEnabled(const Device& device) {
     if (forced >= 0) {
         return forced == 1;
     }
-    return !device.IsExtMeshShaderSupported();
+    if (device.IsExtMeshShaderSupported()) {
+        return false;
+    }
+    // Mario Kart World's task programs launch tens of thousands of mesh workgroups a draw:
+    // emulated, a third of its frame rate on a phone, for distant trees not missed without.
+    static constexpr u64 MARIO_KART_WORLD = 0x0400C3F00006E000ULL;
+    return Settings::GetCurrentProgramID() != MARIO_KART_WORLD;
 }
 
 MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator& memory_allocator_,
                                          Scheduler& scheduler_)
     : device{device_}, memory_allocator{memory_allocator_}, scheduler{scheduler_} {
     const VkDeviceSize range = device.GetMaxStorageBufferRange();
-    max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), 256ULL << 20);
+#ifdef __ANDROID__
+    // A phone's GPU memory is its RAM: a draw past this drops mesh workgroups instead.
+    constexpr VkDeviceSize MAX_REGION = 32ULL << 20;
+#else
+    constexpr VkDeviceSize MAX_REGION = 256ULL << 20;
+#endif
+    max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), MAX_REGION);
     alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
     breadcrumb_buffer = memory_allocator.CreateBuffer(
         VkBufferCreateInfo{
