@@ -4,7 +4,8 @@ Branch `stable/oot-playable-no-crash-2026-11-05` freezes the first state of `loc
 plays The Legend of Zelda: Ocarina of Time (Switch 2, `0400486024DEC000`) without crashing.
 Test system: Windows 11, Ryzen 9 9950X3D, RTX 5090, GPU accuracy Low, GPU thread split on.
 
-Everyone whose work is in this state is credited in [CREDITS_OOT.md](CREDITS_OOT.md).
+**How we got here:** [OOT_WORKFLOW.md](OOT_WORKFLOW.md), the method in one page.
+**Who made it:** [CREDITS_OOT.md](CREDITS_OOT.md).
 
 ## What works
 
