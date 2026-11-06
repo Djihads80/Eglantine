@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <utility>
 #include <vector>
@@ -67,6 +68,9 @@ public:
         if (IsPageUsed(page, offset, size)) {
             return true;
         }
+        if (page == page_end) {
+            return false;
+        }
         for (size_t i = page + 1; i < page_end; i++) {
             if (pages[i] != 0) {
                 return true;
@@ -78,21 +82,26 @@ public:
     }
 
 private:
-    void TrackPage(u64 page, u64 offset, u64 size) noexcept {
+    // One bit per 64 bytes: set every bit that the bytes [offset, offset + size) touch within
+    // the page, including partly covered units at both ends.
+    static u64 PageMask(u64 offset, u64 size) noexcept {
         const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
+        const size_t end_in_page = std::min<size_t>(
+            offset_in_page + std::min<u64>(size, BUFFER_PAGE_BYTES), BUFFER_PAGE_BYTES);
+        if (end_in_page <= offset_in_page) {
+            return 0;
+        }
         const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t mask = ~u64{0} >> (64 - num_bits);
-        pages[page] |= (~u64{0} & mask) << first_bit;
+        const size_t last_bit = (end_in_page - 1) >> BUFFER_BYTES_PER_BITSHIFT;
+        return (~u64{0} >> (63 - (last_bit - first_bit))) << first_bit;
+    }
+
+    void TrackPage(u64 page, u64 offset, u64 size) noexcept {
+        pages[page] |= PageMask(offset, size);
     }
 
     bool IsPageUsed(u64 page, u64 offset, u64 size) const noexcept {
-        const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
-        const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t mask = ~u64{0} >> (64 - num_bits);
-        const size_t mask2 = (~u64{0} & mask) << first_bit;
-        return (pages[page] & mask2) != 0;
+        return (pages[page] & PageMask(offset, size)) != 0;
     }
 
 private:

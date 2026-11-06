@@ -272,7 +272,10 @@ struct FileBackend final : public Backend {
                 boost::replace_all(message, username, "user");
         }
 #endif
-        bytes_written += file->WriteSpan(std::span<const char>{message.begin(), message.end()});
+        // Threads log without a shared lock; fwrite locks the stream, these counters are atomic.
+        const auto written = file->WriteSpan(std::span<const char>{message.begin(), message.end()});
+        const auto total_written =
+            bytes_written.fetch_add(written, std::memory_order_relaxed) + written;
 
         // Option to log each line rather than 4k buffers
         if (Settings::values.log_flush_line.GetValue())
@@ -281,7 +284,7 @@ struct FileBackend final : public Backend {
         using namespace Common::Literals;
         // Prevent logs from exceeding a set maximum size in the event that log entries are spammed.
         const auto write_limit = Settings::values.extended_logging.GetValue() ? 1_GiB : 100_MiB;
-        const bool write_limit_exceeded = bytes_written > write_limit;
+        const bool write_limit_exceeded = total_written > write_limit;
         if (entry.log_level >= Level::Error || write_limit_exceeded) {
             // Stop writing after the write limit is exceeded.
             // Don't close the file so we can print a stacktrace if necessary
@@ -296,8 +299,8 @@ struct FileBackend final : public Backend {
     }
 private:
     std::optional<FS::IOFile> file;
-    std::size_t bytes_written = 0;
-    bool enabled = true;
+    std::atomic<std::size_t> bytes_written = 0;
+    std::atomic_bool enabled = true;
 };
 #endif
 #ifdef _WIN32

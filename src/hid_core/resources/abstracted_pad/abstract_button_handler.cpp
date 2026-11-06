@@ -79,6 +79,9 @@ void NpadAbstractButtonHandler::UpdateAllButtonLifo() {
     Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
     for (std::size_t i = 0; i < AruidIndexMax; i++) {
         auto* data = applet_resource_holder->applet_resource->GetAruidDataByIndex(i);
+        if (data == nullptr || !data->flag.is_assigned) {
+            continue;
+        }
         auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
         UpdateButtonLifo(npad_entry, data->aruid);
     }
@@ -88,6 +91,9 @@ void NpadAbstractButtonHandler::UpdateCoreBatteryState() {
     Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
     for (std::size_t i = 0; i < AruidIndexMax; i++) {
         auto* data = applet_resource_holder->applet_resource->GetAruidDataByIndex(i);
+        if (data == nullptr || !data->flag.is_assigned) {
+            continue;
+        }
         auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
         UpdateButtonLifo(npad_entry, data->aruid);
     }

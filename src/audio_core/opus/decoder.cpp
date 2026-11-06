@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
+
 #include "audio_core/opus/decoder.h"
 #include "audio_core/opus/hardware_opus.h"
 #include "audio_core/opus/parameters.h"
@@ -117,8 +119,10 @@ Result OpusDecoder::DecodeInterleaved(u32* out_data_size, u64* out_time_taken,
 
     R_UNLESS(input_data.size_bytes() > sizeof(OpusPacketHeader), ResultInputDataTooSmall);
 
-    auto* header_p{reinterpret_cast<const OpusPacketHeader*>(input_data.data())};
-    OpusPacketHeader header{ReverseHeader(*header_p)};
+    // Guest input has no alignment guarantee.
+    OpusPacketHeader header_raw;
+    std::memcpy(&header_raw, input_data.data(), sizeof(header_raw));
+    OpusPacketHeader header{ReverseHeader(header_raw)};
 
     R_UNLESS(in_data.size_bytes() >= header.size &&
                  header.size + sizeof(OpusPacketHeader) <= input_data.size_bytes(),
@@ -160,8 +164,10 @@ Result OpusDecoder::DecodeInterleavedForMultiStream(u32* out_data_size, u64* out
 
     R_UNLESS(input_data.size_bytes() > sizeof(OpusPacketHeader), ResultInputDataTooSmall);
 
-    auto* header_p{reinterpret_cast<const OpusPacketHeader*>(input_data.data())};
-    OpusPacketHeader header{ReverseHeader(*header_p)};
+    // Guest input has no alignment guarantee.
+    OpusPacketHeader header_raw;
+    std::memcpy(&header_raw, input_data.data(), sizeof(header_raw));
+    OpusPacketHeader header{ReverseHeader(header_raw)};
 
     LOG_TRACE(Service_Audio, "header size {:#x} input data size {:#x} in_data size {:#x}",
               header.size, input_data.size_bytes(), in_data.size_bytes());

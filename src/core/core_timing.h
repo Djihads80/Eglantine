@@ -149,7 +149,7 @@ public:
     s64 timer_resolution_ns;
 #endif
     u64 event_fifo_id = 0;
-    s64 pause_end_time{};
+    std::atomic<s64> pause_end_time{};
     /// Cycle timing
     u64 cpu_ticks{};
     s64 downcount{};
