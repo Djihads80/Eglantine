@@ -1,5 +1,8 @@
 # Ocarina of Time: stable, playable state (2026-11-05)
 
+> [!WARNING]
+> **This is a RESULT FIRST fork.** Changes land here once they work in game, measured and tested, before anyone else has reviewed the code. Much of it is AI-assisted and has not been peer-reviewed. Expect rough edges, and don't take a change here as accepted by upstream Eglantine. Code meant for upstream goes through its normal review there.
+
 Branch `stable/oot-playable-no-crash-2026-11-05` freezes the first state of `local-combined` that
 plays The Legend of Zelda: Ocarina of Time (Switch 2, `0400486024DEC000`) without crashing.
 Test system: Windows 11, Ryzen 9 9950X3D, RTX 5090, GPU accuracy Low, GPU thread split on.

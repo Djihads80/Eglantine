@@ -7,6 +7,10 @@ in game and checked against the safe path, and a fix that only compiles isn't do
 
 To claim a task, open an issue on this fork with its title, or comment on an existing one.
 
+This is a RESULT FIRST fork: code lands once it works in game, before review, and much of it is
+AI-assisted. **Reviewing what's already here is a contribution too.** Point out anything wrong
+in an issue or PR.
+
 ## No emulator knowledge needed
 
 **1. Test other areas and GPUs.** Play Hyrule Field, a dungeon, Kakariko, a cutscene. Report

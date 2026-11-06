@@ -17,6 +17,9 @@
 > - [Help wanted: open tasks, easiest first](OOT_HELP_WANTED.md)
 > - [Credits](CREDITS_OOT.md)
 
+> [!WARNING]
+> **This is a RESULT FIRST fork.** Changes land here once they work in game, measured and tested, before anyone else has reviewed the code. Much of it is AI-assisted and has not been peer-reviewed. Expect rough edges, and don't take a change here as accepted by upstream Eglantine. Code meant for upstream goes through its normal review there.
+
 
 <h1 align="center">
   <br>
