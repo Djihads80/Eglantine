@@ -211,6 +211,10 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     }
 }
 
+/// Handles a write to a macro method or its ARGS register: accumulates the call's parameter
+/// words and dispatches the macro when the call is complete, choosing between the stack
+/// snapshot path (parameters copied at arrival) and the per-call vector that accurate mode
+/// refreshes in place.
 void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call) {
     if (executing_macro == 0) {
         // A macro call must begin by writing the macro method's register, not its argument.
@@ -228,9 +232,19 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
     // (and the macro memo stores the parameters after it ran). Only accurate GPU mode rewrites
     // the parameters in place (RefreshParameters), so it keeps the vector.
     // EDEN_NX2_MACRO_COPY=1: always use the vector (for comparisons).
+    // EDEN_NX2_MACRO_STACK_HIGH=1: the stack path in accurate mode too — the parameter copy
+    // snapshots the words at arrival, so nothing can rewrite them under the macro and the
+    // per-call vector/segment bookkeeping (and RefreshParameters re-reads) are not needed.
+    // Ocarina of Time makes ~900k single-run macro calls a second; the vector path costs
+    // ~100-200 ns of plumbing per call on the GPU thread for a semantic (re-fetch at use)
+    // that a snapshot satisfies for every macro the title runs.
     static const bool always_copy = std::getenv("EDEN_NX2_MACRO_COPY") != nullptr;
+    static const bool stack_in_high = [] {
+        const char* value = std::getenv("EDEN_NX2_MACRO_STACK_HIGH");
+        return value != nullptr && value[0] == '1';
+    }();
     if (is_last_call && macro_params.empty() && amount <= 64 && !always_copy &&
-        !Settings::IsGPULevelHigh()) {
+        (!Settings::IsGPULevelHigh() || stack_in_high)) {
         std::array<u32, 64> parameters;
         std::copy_n(base_start, amount, parameters.begin());
         ConsumeSink(system);

@@ -117,6 +117,9 @@ inline void MemoryManager::SetBigPageContinuous(size_t big_page_index, bool valu
 }
 
 GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size, PTEKind kind, MemoryManager::EntryType entry_type) {
+    // Seqlock open: lock-free readers (GpuToCpuAddress's cache, MaxContinuousRange) retry a
+    // walk whose serial moved, so a mutation in flight is never read as a torn table.
+    map_serial.fetch_add(1, std::memory_order_release);
     [[maybe_unused]] u64 remaining_size{size};
     if (entry_type == EntryType::Mapped) {
         page_table.ReserveRange(gpu_addr, size);
@@ -158,6 +161,8 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
 }
 
 GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr dev_addr, size_t size, PTEKind kind, MemoryManager::EntryType entry_type) {
+    // Seqlock open, as in PageTableOp above.
+    map_serial.fetch_add(1, std::memory_order_release);
     [[maybe_unused]] u64 remaining_size{size};
     GPUVAddr modified_start{};
     u64 modified_size{};
@@ -583,6 +588,16 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
     return result;
 }
 
+/// Reads EDEN_NX2_MEMSTATS once: whether the MaxContinuousRange cache logs its hit/miss and
+/// page-table-change counters (see MaxContinuousRange below).
+static bool MemstatsEnabled() {
+    static const bool on = std::getenv("EDEN_NX2_MEMSTATS") != nullptr;
+    return on;
+}
+
+/// Length of the largest continuously mapped range starting at gpu_addr and not exceeding
+/// size, answered from a per-thread direct-mapped cache invalidated by page-table changes;
+/// with EDEN_NX2_MEMSTATS=1, hit/miss and remap counters are logged every 500k queries.
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // Native storage buffers ask this for up to 8 MiB on each bind, ~70,000 times a second in
     // title 1's forest (17% of the GPU thread walking pages): keep answers per thread until the
@@ -594,12 +609,34 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
         u64 serial;
         size_t result;
     };
-    thread_local std::array<Entry, 64> cache{};
+    // 1024 entries: Ocarina of Time binds more distinct (address, size) pairs than 64 held —
+    // a vista run thrashed 22% of ~85k queries/s with a stable page table (785 serial changes,
+    // all at boot; measured with EDEN_NX2_MEMSTATS), each miss re-walking up to 8 MiB.
+    thread_local std::array<Entry, 1024> cache{};
     const u64 serial = map_serial.load(std::memory_order_acquire);
-    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
+    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 54];
+    // EDEN_NX2_MEMSTATS=1: per-thread hit/miss and page-table-change counts, logged every
+    // 500k queries (finds whether the miss cost of this cache is thrash or remaps).
+    thread_local u64 stat_queries{}, stat_hits{}, stat_misses{}, stat_serials{}, stat_last_serial{};
+    const bool stats = MemstatsEnabled();
+    if (stats) [[unlikely]] {
+        ++stat_queries;
+        stat_serials += serial != stat_last_serial;
+        stat_last_serial = serial;
+    }
     if (entry.owner == unique_identifier + 1 && entry.gpu_addr == gpu_addr && entry.size == size &&
         entry.serial == serial) {
+        if (stats) [[unlikely]] {
+            if (++stat_hits % 500000 == 0) {
+                LOG_INFO(HW_GPU,
+                         "MaxContinuousRange: {} queries ({} hit, {} miss, {} serial changes)",
+                         stat_queries, stat_hits, stat_misses, stat_serials);
+            }
+        }
         return entry.result;
+    }
+    if (stats) [[unlikely]] {
+        ++stat_misses;
     }
     const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
     entry = {unique_identifier + 1, gpu_addr, size, serial, result};

@@ -605,6 +605,25 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
+    /// Reads EDEN_NX2_LAZY_PREFLUSH=1 once (see LazyPreflushDownloads).
+    static bool EnvLazyPreflush() {
+        const char* const value = std::getenv("EDEN_NX2_LAZY_PREFLUSH");
+        return value != nullptr && value[0] == '1';
+    }
+
+    /// EDEN_NX2_LAZY_PREFLUSH=1: ranges the guest CPU has read once (Preflushable) are not
+    /// re-downloaded at every fence either. Every fence that follows a GPU write to such a range
+    /// copies it back whether anything reads it again or not; Ocarina of Time read GPU-written
+    /// memory ~3 times a second (single pages, via OnCPURead) while its Preflushable ranges
+    /// were copied back at 1.9 GiB/s in 135k copies/s (forest scenes, GPU thread saturated).
+    /// Instead each GPU write arms the guest read traps over the whole range (the generation
+    /// bump alone invalidates the cores' rasterizer read areas), and a read flushes once,
+    /// synchronously, through OnCPURead — the path a first read already takes.
+    bool LazyPreflushDownloads() const {
+        static const bool lazy = EnvLazyPreflush();
+        return lazy;
+    }
+
     /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU
     /// has read (Preflushable, set by the first reactive flush) always are: later reads skip the
     /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
@@ -636,9 +655,14 @@ private:
     /// A GPU write: queues its Preflushable parts for download at the next fence and traps reads
     /// of the rest. Queuing the whole range when any page of it was Preflushable copied whole
     /// written storage buffers (up to 8 MiB) back at every fence: ~5 GB/s in title 1's forest.
+    /// With LazyPreflushDownloads nothing is queued at fences at all; reads flush on demand.
     void QueueGpuWrite(DAddr device_addr, u64 size) {
         if (AsyncBufferDownloads()) {
             uncommitted_gpu_modified_ranges.Add(device_addr, size);
+            return;
+        }
+        if (LazyPreflushDownloads()) {
+            ArmReadTraps(device_addr, size);
             return;
         }
         const DAddr end = device_addr + size;

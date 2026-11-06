@@ -100,6 +100,8 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
     }
 }
 
+/// End-of-frame bookkeeping: retires async buffer downloads, drops stale uniform ranges and
+/// the occasional threshold report.
 template <class P>
 void BufferCache<P>::TickFrame() {
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
@@ -253,6 +255,9 @@ bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     return false;
 }
 
+/// Resolves the guest read of [device_addr, device_addr + size) to a download area: page
+/// aligned, and marked preemtive (no synchronous flush needed) only when the data is already
+/// back in guest memory — downloaded at a fence and not still pending a frame drain.
 template <class P>
 std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DAddr device_addr,
                                                                               u64 size) {
@@ -263,8 +268,10 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
     // Preflushable data is downloaded at fences, but only where it is marked (QueueGpuWrite): the
-    // rest of the range still needs this flush.
-    if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
+    // rest of the range still needs this flush. With LazyPreflushDownloads nothing downloads at
+    // fences, so this fast path must not claim the data is already back: every read of a
+    // GPU-modified range flushes (preemtive false) through OnCPURead's synchronous flush.
+    if (!LazyPreflushDownloads() && memory_tracker.IsRegionPreflushable(device_addr, size) &&
         !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
                                           device_addr_end_aligned - device_addr_start_aligned)) {
         area->preemtive = true;
