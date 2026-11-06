@@ -109,7 +109,13 @@ std::pair<Id, std::optional<std::pair<Id, Id>>> GlobalCall(EmitContext& ctx, IR:
                 function = ctx.SplitGlobalFunction(kind, write, 0);
             }
             if (Sirit::ValidId(function)) {
-                return {function, std::make_pair(ctx.Def(split->first), ctx.Const(split->second))};
+                Id offset{ctx.Constant(ctx.U64, u64{split->offset})};
+                if (!split->product.IsEmpty()) {
+                    offset = split->offset == 0
+                                 ? ctx.Def(split->product)
+                                 : ctx.OpIAdd(ctx.U64, ctx.Def(split->product), offset);
+                }
+                return {function, std::make_pair(ctx.Def(split->base), offset)};
             }
         }
     }

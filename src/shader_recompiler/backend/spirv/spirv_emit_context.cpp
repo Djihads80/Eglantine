@@ -1063,10 +1063,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
             OpBranchConditional(cond, then_label, else_label);
             AddLabel(then_label);
             const Id ssbo_id{ssbos[index].*ssbo_member};
-            Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, ssbo_addr))};
+            Id ssbo_distance{OpISub(U64, addr, ssbo_addr)};
             if (Sirit::ValidId(split_offset)) {
-                ssbo_offset = OpIAdd(U32[1], ssbo_offset, split_offset);
+                ssbo_distance = OpIAdd(U64, ssbo_distance, split_offset);
             }
+            const Id ssbo_offset{OpUConvert(U32[1], ssbo_distance)};
             const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
             const Id ssbo_pointer{OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index)};
             callback(ssbo_pointer);
@@ -1116,10 +1117,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         }
     }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
-        const Id function_type{split ? TypeFunction(type, U64, U32[1]) : TypeFunction(type, U64)};
+        const Id function_type{split ? TypeFunction(type, U64, U64) : TypeFunction(type, U64)};
         const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
         const Id addr{OpFunctionParameter(U64)};
-        split_offset = split ? OpFunctionParameter(U32[1]) : Id{};
+        split_offset = split ? OpFunctionParameter(U64) : Id{};
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
         OpReturnValue(ConstantNull(type));
@@ -1128,11 +1129,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         return func_id;
     }};
     const auto define_write{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
-        const Id function_type{split ? TypeFunction(void_id, U64, U32[1], type)
+        const Id function_type{split ? TypeFunction(void_id, U64, U64, type)
                                      : TypeFunction(void_id, U64, type)};
         const Id func_id{OpFunction(void_id, spv::FunctionControlMask::MaskNone, function_type)};
         const Id addr{OpFunctionParameter(U64)};
-        split_offset = split ? OpFunctionParameter(U32[1]) : Id{};
+        split_offset = split ? OpFunctionParameter(U64) : Id{};
         const Id data{OpFunctionParameter(type)};
         define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
             OpStore(ssbo_pointer, data);
@@ -1302,21 +1303,73 @@ bool EmitContext::GlobalSplitEnabled() {
     return enabled;
 }
 
-std::optional<std::pair<IR::Value, u32>> EmitContext::SplitGlobalAddress(const IR::Inst& inst) {
-    const IR::Value address{inst.Arg(0)};
+std::optional<EmitContext::SplitAddress> EmitContext::SplitGlobalAddress(const IR::Inst& inst) {
+    // EDEN_NX2_GLOBAL_BY_POINTER_WIDE=0: not for a pointer plus a product.
+    static const bool wide = [] {
+        const char* const value = std::getenv("EDEN_NX2_GLOBAL_BY_POINTER_WIDE");
+        return value == nullptr || value[0] != '0';
+    }();
+    IR::Value address{inst.Arg(0)};
     if (address.IsImmediate()) {
         return std::nullopt;
     }
+    SplitAddress split{};
+    bool constant_offset{};
     const IR::Inst* const add{address.InstRecursive()};
-    if (add->GetOpcode() != IR::Opcode::IAdd64 || !add->Arg(1).IsImmediate() ||
-        add->Arg(0).IsImmediate()) {
+    if (add->GetOpcode() == IR::Opcode::IAdd64 && add->Arg(1).IsImmediate() &&
+        !add->Arg(0).IsImmediate()) {
+        const u64 offset{add->Arg(1).U64()};
+        if (offset >= 0x80000000ULL) {
+            return std::nullopt;
+        }
+        split.offset = static_cast<u32>(offset);
+        constant_offset = true;
+        address = add->Arg(0);
+    }
+    if (wide) {
+        // The register pair IMADWIDE_nx2 wrote, read back as an address:
+        // PackUint2x32(CompositeConstruct(Extract(Unpack(sum), 0), Extract(Unpack(sum), 1))).
+        IR::Value sum{address};
+        const IR::Inst* const pack{address.InstRecursive()};
+        if (pack->GetOpcode() == IR::Opcode::PackUint2x32 && !pack->Arg(0).IsImmediate()) {
+            const IR::Inst* const words{pack->Arg(0).InstRecursive()};
+            if (words->GetOpcode() == IR::Opcode::CompositeConstructU32x2 &&
+                !words->Arg(0).IsImmediate() && !words->Arg(1).IsImmediate()) {
+                const IR::Inst* const low{words->Arg(0).InstRecursive()};
+                const IR::Inst* const high{words->Arg(1).InstRecursive()};
+                if (low->GetOpcode() == IR::Opcode::CompositeExtractU32x2 &&
+                    high->GetOpcode() == IR::Opcode::CompositeExtractU32x2 &&
+                    low->Arg(1).IsImmediate() && low->Arg(1).U32() == 0 &&
+                    high->Arg(1).IsImmediate() && high->Arg(1).U32() == 1 &&
+                    !low->Arg(0).IsImmediate() && !high->Arg(0).IsImmediate() &&
+                    low->Arg(0).InstRecursive() == high->Arg(0).InstRecursive()) {
+                    const IR::Inst* const unpack{low->Arg(0).InstRecursive()};
+                    if (unpack->GetOpcode() == IR::Opcode::UnpackUint2x32) {
+                        sum = unpack->Arg(0);
+                    }
+                }
+            }
+        }
+        if (!sum.IsImmediate()) {
+            const IR::Inst* const sum_inst{sum.InstRecursive()};
+            if (sum_inst->GetOpcode() == IR::Opcode::IAdd64 && !sum_inst->Arg(0).IsImmediate() &&
+                !sum_inst->Arg(1).IsImmediate()) {
+                for (size_t operand = 0; operand < 2; ++operand) {
+                    if (sum_inst->Arg(operand).InstRecursive()->GetOpcode() ==
+                        IR::Opcode::UMulWide32) {
+                        split.base = sum_inst->Arg(1 - operand);
+                        split.product = sum_inst->Arg(operand);
+                        return split;
+                    }
+                }
+            }
+        }
+    }
+    if (!constant_offset) {
         return std::nullopt;
     }
-    const u64 offset{add->Arg(1).U64()};
-    if (offset >= 0x80000000ULL) {
-        return std::nullopt;
-    }
-    return std::make_pair(add->Arg(0), static_cast<u32>(offset));
+    split.base = address;
+    return split;
 }
 
 void EmitContext::InitGlobalBases() {

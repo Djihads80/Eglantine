@@ -405,9 +405,14 @@ public:
     std::vector<Id> global_base_vars;
     const Info* global_base_info{};
 
-    /// A global access's address as a pointer and a constant offset below 2 GiB.
-    [[nodiscard]] static std::optional<std::pair<IR::Value, u32>> SplitGlobalAddress(
-        const IR::Inst& inst);
+    /// A global access's address as a pointer plus an offset: a constant below 2 GiB, and with
+    /// EDEN_NX2_GLOBAL_BY_POINTER_WIDE a 64-bit product too (IMADWIDE_nx2: pointer + a * b).
+    struct SplitAddress {
+        IR::Value base;
+        IR::Value product; ///< Empty without one
+        u32 offset{};
+    };
+    [[nodiscard]] static std::optional<SplitAddress> SplitGlobalAddress(const IR::Inst& inst);
     [[nodiscard]] static bool GlobalSplitEnabled();
     [[nodiscard]] static bool GlobalBasesHoisted(const Info& info);
     /// The base address of storage buffer descriptor `index` (from its constant buffer pointer,
