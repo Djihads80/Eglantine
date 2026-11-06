@@ -1231,6 +1231,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                      (u64{right_high ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
+            // Right funnel of two uniform registers: USHF.R.U32 URd, URa, n, URb with both words
+            // set (Ocarina's tessellation programs). The mirror of the left funnel in the
+            // non-uniform case, high word in Rc.
+            if (insn.words[2] == (0x08001200U | high) && low != 63 && high != 63 && low_ok &&
+                high_ok && dst_ok && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg | (u64{low_reg} << 8) |
+                     (u64{high_reg} << 39) | (u64{insn.words[1]} << 20));
+                break;
+            }
             const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high_ok;
             const bool low_result = insn.words[2] == 0x0800063f && low_ok;
             if (!dst_ok || insn.words[1] > 32 || (!high_result && !low_result))
