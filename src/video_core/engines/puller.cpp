@@ -70,6 +70,11 @@ void OnBackRelease(DmaPusher& dma_pusher, GPUVAddr address, const Func& func) {
     }
     split.Defer(func, VideoCommon::GpuSplit::Effect::None);
     split.NoteWrite(dma_pusher.memory_manager, address, 16);
+    // Fence releases go through the query cache and land later than the back runs them: reads of
+    // the page take the drained path (lichii #179).
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
+        Nx2MarkLateWritten(*device, 16);
+    }
 }
 
 void DrainBack() {
@@ -278,6 +283,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                       [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
                           rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
                           if (mirror != 0) {
+            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
+                Nx2MarkLateWritten(*device, 16);
+            }
                               rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
                           }
                       });

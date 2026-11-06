@@ -1202,6 +1202,22 @@ GPUVAddr ReportAddress(std::span<const u32> regs) {
 }
 constexpr u64 ReportBytes = 16;
 
+// Counters and timed releases are written when the host query completes, not when the back runs
+// them: mark their pages GPU-written so early MME DMA reads of them take the drained path, which
+// waits for the query results (lichii #179). Short payload releases land when the back runs them.
+void MarkLateReport(const MemoryManager& memory, std::span<const u32> regs) {
+    using Report = Maxwell3D::Regs::ReportSemaphore;
+    decltype(Report::query) query{};
+    query.raw = regs[MAXWELL3D_REG_INDEX(report_semaphore.query)];
+    if (query.operation == Report::Operation::Release && query.short_query != 0 &&
+        query.report == Report::Report::Payload) {
+        return;
+    }
+    if (const auto device = memory.GpuToCpuAddress(ReportAddress(regs))) {
+        Tegra::Nx2MarkLateWritten(*device, ReportBytes);
+    }
+}
+
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -1383,6 +1399,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         split.NoteWrite(memory_manager, *cb_write, sizeof(u32));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query)) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
+        MarkLateReport(memory_manager, fs.regs);
     }
 }
 
@@ -1506,6 +1523,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         split.NoteWrite(memory_manager, *cb_write, u64{amount} * sizeof(u32));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query) && amount != 0) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
+        MarkLateReport(memory_manager, fs.regs);
     }
 }
 
@@ -1685,7 +1703,8 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     u64 write_target = 0;
     for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + bytes; page += 0x1000) {
         const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
-        if (page_count == pages.size() || !device || Tegra::Nx2IsGpuWrittenRegion(*device)) {
+        if (page_count == pages.size() || !device || Tegra::Nx2IsGpuWrittenRegion(*device) ||
+            Tegra::Nx2IsGpuWritten(*device)) {
             return false;
         }
         const u64 device_page = *device & ~u64{0xfff};
@@ -1700,7 +1719,7 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
                                                       : Profile::Counter::DmaReadsWaitGpu;
     split.WaitUntil(target, VideoCommon::DrainSite::MacroDmaWrites);
     for (size_t i = 0; i < page_count; ++i) {
-        if (Tegra::Nx2IsGpuWrittenRegion(pages[i])) {
+        if (Tegra::Nx2IsGpuWrittenRegion(pages[i]) || Tegra::Nx2IsGpuWritten(pages[i])) {
             return false;
         }
     }

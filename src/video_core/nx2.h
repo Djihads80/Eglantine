@@ -141,6 +141,24 @@ inline void Nx2ClearGpuWrittenPages() {
     g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
 }
 
+// Reports and fence releases land when the host query or fence completes, after the back ran
+// them. Mark only their own pages: they are small and scattered, and marking their 1 MiB regions
+// sent unrelated macro reads through the drain.
+inline void Nx2MarkLateWritten(u64 device_address, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_gpu_written_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        auto& word = g_nx2_gpu_written_pages[page / 64];
+        const u64 bit = u64{1} << (page % 64);
+        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+            word.fetch_or(bit, std::memory_order_relaxed);
+        }
+    }
+}
+
 [[nodiscard]] inline bool Nx2IsGpuWrittenRegion(u64 device_address) {
     const u64 region = device_address >> Nx2WrittenRegionBits;
     if (region >= g_nx2_gpu_written_regions.size() * 64) {
