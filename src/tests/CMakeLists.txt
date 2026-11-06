@@ -49,6 +49,7 @@ add_executable(tests
     video_core/ampere_ldc.cpp
     video_core/ampere_vote.cpp
     video_core/shader_attributes.cpp
+    video_core/spirv_atomic_retry.cpp
     video_core/indirect_reset.cpp
     input_common/calibration_configuration_job.cpp
 )
