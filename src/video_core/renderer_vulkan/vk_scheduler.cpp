@@ -511,7 +511,16 @@ void Scheduler::InvalidateState() {
 void Scheduler::EndPendingOperations() {
     // Pause, don't reset: a submission can land between a guest's counter reset and its report,
     // and resetting here would drop the samples counted so far (the report then reads too low).
-    query_cache->CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
+    // EDEN_NX2_ZPASS_RESET=1 resets as before, for A/B.
+    static const bool reset_counter = [] {
+        const char* const value = std::getenv("EDEN_NX2_ZPASS_RESET");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (reset_counter) {
+        query_cache->CounterReset(VideoCommon::QueryType::ZPassPixelCount64);
+    } else {
+        query_cache->CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
+    }
     EndRenderPass();
 }
 
