@@ -3220,6 +3220,12 @@ public:
                          u32 argument, bool is_last_call);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                               const u32* base_start, u32 amount, u32 methods_pending);
+    /// Nx2Perf FrontRun: FrontCallMethod for `count` words of one command below the macro
+    /// range, `methods_pending` of the command's words left at the first one.
+    void FrontCallMethodRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                            const u32* words, u32 count, bool incrementing, u32 methods_pending);
+    /// EDEN_NX2_PERF_VERIFY (FrontRun): FrontCallMethod appends its register writes here.
+    std::vector<std::array<u32, 3>>* front_run_record{};
 
     [[nodiscard]] static bool FrontIsWriterDraw(const Regs& regs);
     [[nodiscard]] static bool FrontIsWriterDraw(const std::array<u32, Regs::NUM_REGS>& regs) {

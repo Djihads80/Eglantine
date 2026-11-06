@@ -3,11 +3,13 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 #include "common/common_types.h"
 #include "video_core/gpu_split.h"
@@ -81,7 +83,10 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 15> counters{}; ///< See Counter
+    std::array<u64, 18> counters{}; ///< See Counter
+    /// Executable methods the front sent with the value the register held (approximate top 16,
+    /// space-saving: a new method takes the least counted slot and inherits its count).
+    std::array<std::pair<u32, u64>, 16> same_executable{};
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_ns{};
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_count{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
@@ -140,6 +145,9 @@ enum class Counter : u32 {
     ListChecks,          ///< Command list fetches waiting only for their writers (ListTarget)
     ListWaits,           ///< Of those, the back still had them queued
     ListWaitsUnknown,    ///< Of ListWaits: for a write the front can't place
+    DirectWrites,        ///< 3D register writes the split front sent from command lists
+    MacroWrites,         ///< 3D register writes the split front's macros sent
+    SameExecutableWrites, ///< Executable writes the front sent with the register's value
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -153,6 +161,27 @@ inline void Add(Counter counter, u64 amount) {
     if (Enabled()) {
         t_data.counters[static_cast<size_t>(counter)] += amount;
     }
+}
+
+/// An executable 3D method the front sent with the value the register held (same_executable).
+inline void AddSameExecutable(u32 method) {
+    if (!Enabled()) {
+        return;
+    }
+    auto& slots = t_data.same_executable;
+    ++t_data.counters[static_cast<size_t>(Counter::SameExecutableWrites)];
+    size_t least = 0;
+    for (size_t i = 0; i < slots.size(); ++i) {
+        if (slots[i].second != 0 && slots[i].first == method) {
+            ++slots[i].second;
+            return;
+        }
+        if (slots[i].second < slots[least].second) {
+            least = i;
+        }
+    }
+    slots[least].first = method;
+    ++slots[least].second;
 }
 
 /// The front waited for the back since `start` (Now) for `site`.
@@ -220,6 +249,25 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[12]) * 1e9 / window,
                         static_cast<double>(data.counters[13]) * 1e9 / window,
                         static_cast<double>(data.counters[14]) * 1e9 / window);
+    if (data.counters[15] != 0 || data.counters[16] != 0) {
+        line += fmt::format(" | front 3D writes: direct {:.0f}, from macros {:.0f}",
+                            static_cast<double>(data.counters[15]) * 1e9 / window,
+                            static_cast<double>(data.counters[16]) * 1e9 / window);
+    }
+    if (data.counters[17] != 0) {
+        auto slots = data.same_executable;
+        std::sort(slots.begin(), slots.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        line += fmt::format(" | same-value executable writes sent {:.0f}, top:",
+                            static_cast<double>(data.counters[17]) * 1e9 / window);
+        for (const auto& [method, count] : slots) {
+            if (count != 0) {
+                line += fmt::format(" {:#x} {:.0f},", method,
+                                    static_cast<double>(count) * 1e9 / window);
+            }
+        }
+        line.pop_back();
+    }
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {
         if (data.drain_count[i] != 0) {

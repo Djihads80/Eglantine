@@ -32,6 +32,10 @@ namespace Control {
 struct ChannelState;
 }
 
+namespace Engines {
+class Maxwell3D;
+}
+
 class GPU;
 class MemoryManager;
 
@@ -194,6 +198,9 @@ private:
 
     void CallMethod(u32 argument);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
+    bool FrontRun(std::span<const CommandHeader> commands, size_t word_offset, size_t& index);
+    void VerifyFrontRun(Engines::Maxwell3D& maxwell3d, std::span<const CommandHeader> commands,
+                        size_t word_offset, size_t& index);
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;
