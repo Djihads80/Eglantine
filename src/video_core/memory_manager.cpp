@@ -672,11 +672,15 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // keep that per page and thread until the page table changes. The serial is read before the
     // walk, so an answer from a walk that raced a change is dropped at the next call.
     // EDEN_NX2_RUN_CACHE=0 keeps answers per address instead, =2 checks every answer against a
-    // walk (differences logged), =3 drops every run at each page table change.
+    // walk (differences logged), =3 drops every run at each page table change, =-1 caches
+    // nothing (every call walks the pages).
     static const char mode = [] {
         const char* const value = std::getenv("EDEN_NX2_RUN_CACHE");
         return value == nullptr ? '1' : value[0];
     }();
+    if (mode == '-') {
+        return MaxContinuousRangeUncached(gpu_addr, size);
+    }
     const size_t owner = unique_identifier + 1;
     const u64 serial = map_serial.load(std::memory_order_acquire);
     if (mode == '0') {
