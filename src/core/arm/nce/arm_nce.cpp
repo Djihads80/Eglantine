@@ -16,11 +16,13 @@
 #include <vector>
 
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/signal_chain.h"
 #include "core/arm/debug.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/interpreter_visitor.h"
 #include "core/arm/nce/patcher.h"
+#include "core/arm/nce_stats.h"
 #include "core/core.h"
 #include "core/memory.h"
 
@@ -429,6 +431,14 @@ bool ArmNce::HandleGuestAlignmentFault(GuestContext* guest_ctx, void* raw_info, 
     auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
     auto* fpctx = GetFloatingPointState(host_ctx);
     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+    const bool stats = NceStats::Enabled();
+    const u64 start = stats ? NceStats::Ticks() : 0;
+    SCOPE_EXIT {
+        if (stats) {
+            NceStats::RecordFault(guest_ctx->parent->m_core_index, NceStats::Fault::Alignment,
+                                  NceStats::Ticks() - start);
+        }
+    };
 
     // Match and execute an instruction.
     auto next_pc = MatchAndExecuteOneInstruction(memory, &host_ctx, fpctx);
@@ -443,6 +453,8 @@ bool ArmNce::HandleGuestAlignmentFault(GuestContext* guest_ctx, void* raw_info, 
 
 bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, void* raw_context) {
     auto* info = static_cast<siginfo_t*>(raw_info);
+    const bool stats = NceStats::Enabled();
+    const u64 start = stats ? NceStats::Ticks() : 0;
 
     // Try to handle an invalid access.
     // TODO: handle accesses which split a page?
@@ -454,12 +466,24 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     NoteGuestAccessFault(guest_ctx->parent, static_cast<ucontext_t*>(raw_context)->uc_mcontext,
                          info, invalidate, handled);
     if (handled) {
+        if (stats) {
+            const auto kind = invalidate.rasterizer             ? NceStats::Fault::Rasterizer
+                              : invalidate.separate_heap_mapped ? NceStats::Fault::SeparateHeap
+                                                                : NceStats::Fault::Mapped;
+            NceStats::RecordFault(guest_ctx->parent->m_core_index, kind,
+                                  NceStats::Ticks() - start);
+        }
         // We handled the access successfully and are returning to guest code.
         return true;
     }
 
     // We couldn't handle the access.
-    return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
+    const size_t core = guest_ctx->parent->m_core_index;
+    const bool resume = HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
+    if (stats) {
+        NceStats::RecordFault(core, NceStats::Fault::Unhandled, NceStats::Ticks() - start);
+    }
+    return resume;
 }
 
 void ArmNce::HandleHostAlignmentFault(int sig, void* raw_info, void* raw_context) {
@@ -512,11 +536,32 @@ HaltReason ArmNce::RunThread(Kernel::KThread* thread) {
 
     // TODO: finding and creating the post handler needs to be locked
     // to deal with dynamic loading of NROs.
+    const bool stats = NceStats::Enabled();
     const auto& post_handlers = process->GetPostHandlers();
     if (auto it = post_handlers.find(m_guest_ctx.pc); it != post_handlers.end()) {
+        if (stats) {
+            NceStats::Enter(m_core_index, NceStats::State::Guest);
+            NceStats::Add(NceStats::Counters(m_core_index).runs, 1);
+        }
         hr = ReturnToRunCodeByTrampoline(thread_params, &m_guest_ctx, it->second);
     } else {
+        if (stats) {
+            NceStats::Enter(m_core_index, NceStats::State::Guest);
+            auto& counters = NceStats::Counters(m_core_index);
+            NceStats::Add(counters.runs, 1);
+            NceStats::Add(counters.signal_entries, 1);
+        }
         hr = ReturnToRunCodeByExceptionLevelChange(m_thread_id, thread_params);  // Android: Use "process handle SIGUSR2 -n true -p true -s false" (and SIGURG) in LLDB when debugging
+    }
+    if (stats) {
+        NceStats::Enter(m_core_index, NceStats::State::Host);
+        auto& counters = NceStats::Counters(m_core_index);
+        if (True(hr & HaltReason::SupervisorCall)) {
+            NceStats::Add(counters.svc_exits, 1);
+        }
+        if (True(hr & HaltReason::BreakLoop)) {
+            NceStats::Add(counters.interrupt_exits, 1);
+        }
     }
 
     // Critical section for thread cleanup
@@ -705,6 +750,10 @@ void ArmNce::SignalInterrupt(Kernel::KThread* thread) {
         // We should signal to the running thread.
         // The running thread will unlock the thread context.
         syscall(SYS_tkill, m_thread_id, BreakFromRunCodeSignal);
+        if (NceStats::Enabled() && m_core_index < NceStats::MaxCores) {
+            NceStats::Counters(m_core_index)
+                .interrupt_signals.fetch_add(1, std::memory_order_relaxed);
+        }
     } else {
         // If the thread is no longer running, we have nothing to do.
         UnlockThreadParameters(params);

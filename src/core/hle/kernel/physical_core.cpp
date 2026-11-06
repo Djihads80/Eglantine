@@ -9,6 +9,7 @@
 #include <thread>
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "core/arm/nce_stats.h"
 #include "core/core.h"
 #include "core/debugger/debugger.h"
 #include "core/hle/kernel/k_process.h"
@@ -154,8 +155,18 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
 
         // Handle system calls.
         if (supervisor_call) {
+            const bool stats = Core::NceStats::Enabled();
+            if (stats) {
+                Core::NceStats::Enter(m_core_index, Core::NceStats::State::Svc,
+                                      interface->GetSvcNumber());
+            }
             // Perform call.
             Svc::Call(system, interface->GetSvcNumber());
+            if (stats) {
+                // The thread may have moved to another core while it waited.
+                Core::NceStats::Enter(kernel.CurrentPhysicalCoreIndex(),
+                                      Core::NceStats::State::Host);
+            }
             return;
         }
 
@@ -232,6 +243,11 @@ void PhysicalCore::Idle() {
         const char* text = std::getenv("EDEN_NX2_IDLE_SPIN_US");
         return text ? std::strtoll(text, nullptr, 10) : 0LL;
     }()};
+    const bool stats = Core::NceStats::Enabled();
+    if (stats) {
+        Core::NceStats::Enter(m_core_index, Core::NceStats::State::Idle);
+        Core::NceStats::Add(Core::NceStats::Counters(m_core_index).idle_calls, 1);
+    }
     if (spin.count() > 0) {
         const auto deadline = std::chrono::steady_clock::now() + spin;
         while (!m_is_interrupted.load(std::memory_order_acquire) &&
@@ -240,7 +256,25 @@ void PhysicalCore::Idle() {
         }
     }
     std::unique_lock lk{m_guard};
-    m_on_interrupt.wait(lk, [this] { return m_is_interrupted.load(); });
+    bool slept = false;
+    m_on_interrupt.wait(lk, [this, &slept] {
+        if (m_is_interrupted.load()) {
+            return true;
+        }
+        slept = true;
+        return false;
+    });
+    if (stats) {
+        if (slept && m_core_index < Core::NceStats::MaxCores) {
+            auto& counters = Core::NceStats::Counters(m_core_index);
+            const u64 latency =
+                Core::NceStats::Ticks() - m_interrupt_ticks.load(std::memory_order_relaxed);
+            Core::NceStats::Add(counters.idle_wakes, 1);
+            Core::NceStats::Add(counters.wake_ticks, latency);
+            Core::NceStats::Max(counters.wake_max_ticks, latency);
+        }
+        Core::NceStats::Enter(m_core_index, Core::NceStats::State::Host);
+    }
 }
 
 bool PhysicalCore::IsInterrupted() const {
@@ -257,12 +291,20 @@ void PhysicalCore::Interrupt() {
 
     // Add interrupt flag.
     m_is_interrupted = true;
+    const bool stats = Core::NceStats::Enabled();
+    if (stats) {
+        m_interrupt_ticks.store(Core::NceStats::Ticks(), std::memory_order_relaxed);
+    }
 
     // Interrupt ourselves.
     m_on_interrupt.notify_one();
 
     // If there is no thread running, we are done.
     if (arm_interface == nullptr) {
+        if (stats && m_core_index < Core::NceStats::MaxCores) {
+            Core::NceStats::Counters(m_core_index)
+                .interrupt_idle.fetch_add(1, std::memory_order_relaxed);
+        }
         return;
     }
 

@@ -27,6 +27,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/swap.h"
+#include "core/arm/nce_stats.h"
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/gpu_dirty_memory_manager.h"
@@ -498,7 +499,16 @@ struct Memory::Impl {
             if (!cached) {
                 perm |= Common::MemoryPermission::Write;
             }
+            const bool stats = Core::NceStats::Enabled();
+            const u64 start = stats ? Core::NceStats::Ticks() : 0;
             host_buffer->Protect(vaddr, size, perm);
+            if (stats) {
+                auto& shared = Core::NceStats::Shared();
+                shared.cache_protects.fetch_add(1, std::memory_order_relaxed);
+                shared.cache_protect_bytes.fetch_add(size, std::memory_order_relaxed);
+                shared.cache_protect_ticks.fetch_add(Core::NceStats::Ticks() - start,
+                                                     std::memory_order_relaxed);
+            }
             if (cached && perm != Common::MemoryPermission{}) {
                 ProtectArmedPages(vaddr, size);
             }

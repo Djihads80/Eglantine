@@ -8,6 +8,8 @@ add_library(core STATIC
     arm/arm_interface.cpp
     arm/arm_interface.h
     arm/debug.cpp
+    arm/nce_stats.cpp
+    arm/nce_stats.h
     arm/debug.h
     arm/exclusive_monitor.cpp
     arm/exclusive_monitor.h

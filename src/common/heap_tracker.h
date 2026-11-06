@@ -48,6 +48,18 @@ struct SeparateHeapMapTickComparator {
     }
 };
 
+/// For EDEN_NCE_STATS: relaxed counters, any thread.
+struct HeapTrackerCounters {
+    std::atomic<u64> protects{};      ///< Protect calls
+    std::atomic<u64> deferred_maps{}; ///< Separate heap mappings mapped (back) in on a fault
+    std::atomic<u64> rebuilds{};
+    std::atomic<u64> evictions{};     ///< Resident mappings unmapped by rebuilds
+    std::atomic<s64> map_count{};
+    std::atomic<s64> resident_map_count{};
+};
+
+HeapTrackerCounters& GetHeapTrackerCounters();
+
 class HeapTracker {
 public:
     explicit HeapTracker(Common::HostMemory& buffer);
@@ -83,6 +95,8 @@ private:
     AddrTree::iterator GetNearestHeapMapLocked(VAddr offset);
 
     void RebuildSeparateHeapAddressSpace();
+
+    void PublishCountsLocked();
 
 private:
     Common::HostMemory& m_buffer;

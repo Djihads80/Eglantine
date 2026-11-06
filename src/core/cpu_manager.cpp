@@ -8,6 +8,7 @@
 #include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/settings.h"
+#include "core/arm/nce_stats.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
@@ -87,6 +88,8 @@ CpuManager::CpuManager(System& system_) : system{system_} {}
 CpuManager::~CpuManager() = default;
 
 void CpuManager::Initialize() {
+    // After env.txt (System::Load): EDEN_NCE_STATS.
+    Core::NceStats::Init();
     num_cores = is_multicore ? Core::Hardware::NUM_CPU_CORES : 1;
     gpu_barrier.emplace(num_cores + 1);
     for (std::size_t core = 0; core < num_cores; core++)

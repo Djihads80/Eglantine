@@ -18,6 +18,7 @@
 #include "common/assert.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
+#include "core/arm/nce_stats.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/frontend/emu_window.h"
@@ -284,13 +285,24 @@ struct GPU::Impl {
     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
         if (preserve_gpu_writes) {
             VideoCore::RasterizerInterface* rasterizer = renderer->ReadRasterizer();
+            const bool stats = Core::NceStats::Enabled();
             if (!rasterizer->TryCacheInvalidation(addr, size)) {
+                const u64 start = stats ? Core::NceStats::Ticks() : 0;
                 const u64 fence = RequestSyncOperation([rasterizer, addr, size] {
                     rasterizer->FlushRegion(addr, size, VideoCommon::CacheType::BufferCache);
                     rasterizer->OnCacheInvalidation(addr, size);
                 });
                 gpu_thread.TickGPU(is_async);
                 WaitForSyncOperation(fence);
+                if (stats) {
+                    auto& shared = Core::NceStats::Shared();
+                    shared.gpu_invalidate_sync.fetch_add(1, std::memory_order_relaxed);
+                    shared.gpu_invalidate_sync_ticks.fetch_add(Core::NceStats::Ticks() - start,
+                                                               std::memory_order_relaxed);
+                }
+            } else if (stats) {
+                Core::NceStats::Shared().gpu_invalidate_fast.fetch_add(1,
+                                                                      std::memory_order_relaxed);
             }
             return;
         }

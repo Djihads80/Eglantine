@@ -28,7 +28,18 @@ s64 GetMaxPermissibleResidentMapCount() {
     return std::max<s64>(value - 20000, 0);
 }
 
+HeapTrackerCounters g_counters;
+
 } // namespace
+
+HeapTrackerCounters& GetHeapTrackerCounters() {
+    return g_counters;
+}
+
+void HeapTracker::PublishCountsLocked() {
+    g_counters.map_count.store(m_map_count, std::memory_order_relaxed);
+    g_counters.resident_map_count.store(m_resident_map_count, std::memory_order_relaxed);
+}
 
 HeapTracker::HeapTracker(Common::HostMemory& buffer)
     : m_buffer(buffer), m_max_resident_map_count(GetMaxPermissibleResidentMapCount()) {}
@@ -58,6 +69,7 @@ void HeapTracker::Map(size_t virtual_offset, size_t host_offset, size_t length,
         // Insert into mappings.
         m_map_count++;
         m_mappings.insert(*map);
+        this->PublishCountsLocked();
     }
 
     // Finally, map.
@@ -96,6 +108,7 @@ void HeapTracker::Unmap(size_t virtual_offset, size_t size, bool is_separate_hea
             // Free the item.
             delete item;
         }
+        this->PublishCountsLocked();
     }
 
     // Unmap pages.
@@ -103,6 +116,8 @@ void HeapTracker::Unmap(size_t virtual_offset, size_t size, bool is_separate_hea
 }
 
 void HeapTracker::Protect(size_t virtual_offset, size_t size, MemoryPermission perm) {
+    g_counters.protects.fetch_add(1, std::memory_order_relaxed);
+
     // Ensure no rebuild occurs while reprotecting.
     std::shared_lock lk{m_rebuild_lock};
 
@@ -193,7 +208,9 @@ bool HeapTracker::DeferredMapSeparateHeap(size_t virtual_offset) {
         it->is_resident = true;
         m_resident_map_count++;
         m_resident_mappings.insert(*it);
+        this->PublishCountsLocked();
     }
+    g_counters.deferred_maps.fetch_add(1, std::memory_order_relaxed);
 
     if (rebuild_required) {
         // A rebuild was required, so perform it now.
@@ -225,7 +242,10 @@ void HeapTracker::RebuildSeparateHeapAddressSpace() {
         // Advance.
         ASSERT(--m_resident_map_count >= 0);
         it = m_resident_mappings.erase(it);
+        g_counters.evictions.fetch_add(1, std::memory_order_relaxed);
     }
+    g_counters.rebuilds.fetch_add(1, std::memory_order_relaxed);
+    this->PublishCountsLocked();
 }
 
 void HeapTracker::SplitHeapMap(VAddr offset, size_t size) {
@@ -269,6 +289,7 @@ void HeapTracker::SplitHeapMapLocked(VAddr offset) {
         m_resident_map_count++;
         m_resident_mappings.insert(*right);
     }
+    this->PublishCountsLocked();
 }
 
 HeapTracker::AddrTree::iterator HeapTracker::GetNearestHeapMapLocked(VAddr offset) {

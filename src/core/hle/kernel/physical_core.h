@@ -73,6 +73,7 @@ private:
     Core::ArmInterface* m_arm_interface{};
     KThread* m_current_thread{};
     std::atomic<bool> m_is_interrupted{};
+    std::atomic<u64> m_interrupt_ticks{}; ///< When Interrupt last ran (EDEN_NCE_STATS)
     bool m_is_single_core{};
 };
 
