@@ -145,6 +145,22 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 8),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
     }
+    // A passed equality never returns. These semaphores are monotonically bumped counters,
+    // and with the emulator's looser channel ordering the writers can already be past an
+    // AcquireEqual target by the time the waiting channel reaches it (2026-11-06 hang:
+    // channels wanting 0x48 while the word read 0xac) — hardware orders the channel against
+    // the writers, we cannot. Once the wait has outlived the warning threshold, take the
+    // greater-or-equal reading the game's protocol implies instead of parking forever.
+    if (pending_acquire->reported &&
+        static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
+            GpuSemaphoreOperation::AcquireEqual &&
+        current > pending_acquire->value) {
+        LOG_INFO(HW_GPU,
+                 "Channel {} acquire satisfied by passage: semaphore {:#x} wanted {:#x}, now {:#x}",
+                 dma_pusher.channel_state.bind_id, pending_acquire->address,
+                 pending_acquire->value, current);
+        return true;
+    }
     return false;
 }
 
