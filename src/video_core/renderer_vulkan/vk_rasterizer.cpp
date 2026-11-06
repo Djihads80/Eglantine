@@ -212,12 +212,12 @@ bool IsPrimitiveRestartSupported(const Device& device, VkPrimitiveTopology topol
              device.IsPatchListPrimitiveRestartSupported()));
 }
 
-// EDEN_NX2_SKIP_COMPUTE=<shader hash>[,<shader hash>...] (16 hex digits, as frame dumps name
-// the dispatches): compute programs that don't run. To measure what one costs, or to drop an
-// effect a slow GPU can't afford: Ocarina of Time's anti-aliasing edge pass (a107e12b6771be48)
-// takes ~10 ms of the phone's ~55 ms GPU frame; skipped, its edge image stays cleared and the
-// passes after it blend nothing (the frame is not anti-aliased). Read on first use, after
-// Android's env.txt is applied.
+// EDEN_NX2_SKIP_COMPUTE=<hash>[,<hash>...] (16 hex digits: a shader hash, as frame dumps name
+// the dispatches, or a native program key, as shader dumps name the files): compute programs
+// that don't run. To measure what one costs, or to drop an effect a slow GPU can't afford:
+// Ocarina of Time's anti-aliasing edge pass (native key 8475d671e6967428) takes ~10 ms of the
+// phone's ~55 ms GPU frame; skipped, its edge image stays cleared and the passes after it blend
+// nothing (the frame is not anti-aliased). Read on first use, after Android's env.txt is applied.
 bool SkippedCompute(u64 shader_hash) {
     static const std::vector<u64> skipped = [] {
         std::vector<u64> hashes;
@@ -1178,7 +1178,11 @@ void RasterizerVulkan::DispatchCompute() {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;
     }
-    if (SkippedCompute(pipeline->ShaderHash())) [[unlikely]] {
+    // By the shader hash (of the lowered code, as frame dumps name dispatches) or the native
+    // program key (of the game's own code, as EDEN_NX2_SHADER_DUMP names files), which stays
+    // the same when the lowering changes.
+    if (SkippedCompute(pipeline->ShaderHash()) || (native_key != 0 && SkippedCompute(native_key)))
+        [[unlikely]] {
         if (frame_dump.Capturing()) [[unlikely]] {
             frame_dump.NoteSkipped("dispatch", "EDEN_NX2_SKIP_COMPUTE", std::array{dump_program()},
                                    0);
