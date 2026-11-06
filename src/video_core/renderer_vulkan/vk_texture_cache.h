@@ -108,10 +108,10 @@ public:
                    Tegra::Engines::Fermi2D::Operation operation);
 
     /// Stands in for a DLSS evaluation: temporal upscale of input_color (render_size on the host)
-    /// into dst, with FSR 3.1 when given the depth, else with the temporal stand-in. False when dst
-    /// cannot take it.
+    /// into dst, with FSR 3.1 when given the depth (reversed or not), else with the temporal
+    /// stand-in. False when dst cannot take it.
     bool TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& input_color,
-                         ImageView& motion_vectors, ImageView* depth,
+                         ImageView& motion_vectors, ImageView* depth, bool depth_reversed,
                          std::array<u32, 2> render_size, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale);
 
@@ -213,7 +213,7 @@ public:
 
     /// FSR 3.1 in place of a DLSS evaluation (TemporalUpscale), created on first use.
     bool UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
-                         ImageView& motion_vectors, ImageView& depth,
+                         ImageView& motion_vectors, ImageView& depth, bool depth_reversed,
                          std::array<u32, 2> render_size, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale);
     std::unique_ptr<Fsr3Upscaler> fsr3_upscaler;
@@ -229,7 +229,7 @@ public:
     /// NVIDIA's DLSS (through NVIDIA Streamline) in place of the game's,
     /// before FSR 3.1, when the setting is on. Returns false to fall back to FSR 3.1.
     bool UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageView& input_color,
-                         ImageView& motion_vectors, ImageView& depth,
+                         ImageView& motion_vectors, ImageView& depth, bool depth_reversed,
                          std::array<u32, 2> render_size, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale, bool reset);
     std::unique_ptr<StreamlineDlssUpscaler> dlss_upscaler;

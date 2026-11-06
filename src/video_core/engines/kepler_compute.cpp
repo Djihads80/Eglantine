@@ -8,6 +8,7 @@
 #include <atomic>
 #include <bit>
 #include <bitset>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <optional>
@@ -642,7 +643,7 @@ VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
 
 bool KeplerCompute::EmulatesNativeTensorPrograms() const {
     if (dlss_chain.active) {
-        return dlss_chain.failure == VideoCore::GameDlssReason::None &&
+        return dlss_network_translated && dlss_chain.failure == VideoCore::GameDlssReason::None &&
                GameDlssBlocker() == VideoCore::GameDlssReason::None;
     }
     // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
@@ -807,8 +808,9 @@ bool KeplerCompute::FinishDlssEvaluation() {
     return UpscaleInsteadOfNativeProgram();
 }
 
-// Fortune's Weave's last DLSS network pass: it reads the input colour (the first pass's) through
-// cbuf0+0x328 and writes the upscaled image through +0x348.
+// The last DLSS network pass reads the input colour (the first pass's) through cbuf0+0x328 and
+// writes the output through +0x348: larger in Fortune's Weave, the same size in Fast Fusion's menus
+// (DLAA).
 bool KeplerCompute::IsDlssOutputPass() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     if (cbuf.size.Value() < 0x34c) {
@@ -824,7 +826,8 @@ bool KeplerCompute::IsDlssOutputPass() {
     };
     const auto input = image(0x328), output = image(0x348);
     return input && output && input->Address() == dlss_motion_color && output->Address() != 0 &&
-           input->format == output->format && output->Width() > input->Width();
+           output->Address() != input->Address() && input->format == output->format &&
+           output->Width() >= input->Width() && output->Height() >= input->Height();
 }
 
 // Logs the images a rejected program's handles (constant bank 0, bytes 0x80-0x11c) point to, so a
@@ -853,10 +856,14 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
 
 std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
-// Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
-// at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
-// input's size) at +0x298 and this frame's camera jitter (x, y; input pixels, Halton bases 2 and 3
-// less 0.5) at +0x1b0.
+// The first pass of a DLSS evaluation reads its inputs through cbuf0, with this frame's camera
+// jitter (x, y; input pixels, Halton bases 2 and 3 less 0.5) at +0x1b0. Fire Emblem: Fortune's
+// Weave's (rejected, before the network) has the input colour (B10G11R11) at +0x278, its motion
+// vectors (R16G16 float, UV offsets) at +0x290 and its depth (Z32, reversed) at +0x298. Fast
+// Fusion's (its menus draw the vehicles with DLAA) has the colour (R16G16B16A16 float) at +0x278,
+// the motion vectors (R16G16 float) at +0x284 with their scale to input pixels at +0x198 (half the
+// input's size: they are in NDC), the depth (D24S8) at +0x288 and whether it is reversed at
+// +0x218. The motion vectors and depth are the colour's size.
 bool KeplerCompute::RememberDlssMotionVectors() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     if (cbuf.size.Value() < 0x294) return false;
@@ -866,24 +873,52 @@ bool KeplerCompute::RememberDlssMotionVectors() {
         if (tic_index > regs.tic.limit) return std::nullopt;
         return GetTICEntry(tic_index);
     };
-    const auto color = image(0x278), motion = image(0x290);
-    if (!color || !motion || color->format != Texture::TextureFormat::B10G11R11 ||
-        motion->format != Texture::TextureFormat::R16G16 || motion->Address() == 0 ||
-        motion->Width() != color->Width() || motion->Height() != color->Height() ||
-        !motion->IsBlockLinear())
+    const auto value = [&](u32 offset) {
+        return std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + offset));
+    };
+    const auto color = image(0x278);
+    if (!color) return false;
+    const auto fits = [&](const std::optional<Texture::TICEntry>& tic) {
+        return tic && tic->Address() != 0 && tic->Width() == color->Width() &&
+               tic->Height() == color->Height() && tic->IsBlockLinear();
+    };
+    using Texture::TextureFormat;
+    std::optional<Texture::TICEntry> motion, depth;
+    std::array<f32, 2> motion_scale{1.0f, 1.0f};
+    bool depth_reversed = true;
+    if (color->format == TextureFormat::B10G11R11) {
+        motion = image(0x290);
+        depth = cbuf.size.Value() >= 0x29c ? image(0x298) : std::nullopt;
+        if (!fits(depth) || depth->format != TextureFormat::Z32) {
+            depth.reset();
+        }
+    } else if (color->format == TextureFormat::R16G16B16A16) {
+        motion = image(0x284);
+        depth = image(0x288);
+        if (!fits(depth) || (depth->format != TextureFormat::S8Z24 &&
+                             depth->format != TextureFormat::Z24S8 &&
+                             depth->format != TextureFormat::X8Z24 &&
+                             depth->format != TextureFormat::Z32)) {
+            return false;
+        }
+        motion_scale = {value(0x198) / static_cast<f32>(color->Width()),
+                        value(0x19c) / static_cast<f32>(color->Height())};
+        if (!std::isfinite(motion_scale[0]) || !std::isfinite(motion_scale[1]) ||
+            motion_scale[0] == 0.0f || motion_scale[1] == 0.0f) {
+            return false;
+        }
+        depth_reversed = memory_manager.Read<u32>(cbuf_address + 0x218) != 0;
+    } else {
         return false;
+    }
+    if (!fits(motion) || motion->format != TextureFormat::R16G16) return false;
     dlss_motion_vectors = *motion;
     dlss_motion_color = color->Address();
-    const auto depth = cbuf.size.Value() >= 0x29c ? image(0x298) : std::nullopt;
-    if (depth && depth->format == Texture::TextureFormat::Z32 && depth->Address() != 0 &&
-        depth->Width() == color->Width() && depth->Height() == color->Height() &&
-        depth->IsBlockLinear()) {
-        dlss_depth = *depth;
-    } else {
-        dlss_depth.reset();
-    }
-    dlss_jitter = {std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b0)),
-                   std::bit_cast<f32>(memory_manager.Read<u32>(cbuf_address + 0x1b4))};
+    dlss_motion_scale = motion_scale;
+    dlss_depth = depth;
+    dlss_depth_reversed = depth_reversed;
+    dlss_network_translated = color->format == TextureFormat::B10G11R11;
+    dlss_jitter = {value(0x1b0), value(0x1b4)};
     return true;
 }
 
@@ -894,7 +929,8 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
-// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
+// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair. A DLSS
+// evaluation's output may also be the input's size (Fast Fusion's menus).
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -910,13 +946,19 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                to->IsBlockLinear();
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
-    bool fortunes_weave = false;
+    bool dlss_evaluation = false;
     if (!upscale_pair(input, output)) {
         input = image(0x328);
         output = image(0x348);
-        fortunes_weave = upscale_pair(input, output);
+        dlss_evaluation =
+            upscale_pair(input, output) ||
+            (input && output && dlss_motion_vectors && input->Address() == dlss_motion_color &&
+             input->format == output->format && output->Address() != 0 &&
+             output->Address() != input->Address() && output->Width() == input->Width() &&
+             output->Height() == input->Height() && input->IsBlockLinear() &&
+             output->IsBlockLinear());
     }
-    if (!upscale_pair(input, output)) {
+    if (!dlss_evaluation && !upscale_pair(input, output)) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
@@ -1054,22 +1096,23 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             source.format = static_cast<RTFormat>(std::strtoul(value, nullptr, 16));
         }
     }
-    // Fortune's Weave: a temporal upscale along its motion vectors that undoes this frame's camera
-    // jitter (both from the frame's first DLSS pass) and accumulates the frames as DLSS would.
-    // EDEN_NX2_TEMPORAL_UPSCALE=0 blits instead.
+    // A DLSS evaluation: a temporal upscale along its motion vectors that undoes this frame's
+    // camera jitter (both from the frame's first DLSS pass) and accumulates the frames as DLSS
+    // would. EDEN_NX2_TEMPORAL_UPSCALE=0 blits instead.
     const auto upscale_temporally = [&] {
         static const bool enabled = [] {
             const char* value = std::getenv("EDEN_NX2_TEMPORAL_UPSCALE");
             return value == nullptr || std::string_view{value} != "0";
         }();
-        if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
+        if (!dlss_evaluation || !enabled || !dlss_motion_vectors ||
             dlss_motion_color != input->Address())
             return false;
         Fermi2D::Surface motion = surface(*dlss_motion_vectors);
         motion.format = RTFormat::R16G16_FLOAT;
         return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
                                                      dlss_depth ? &*dlss_depth : nullptr,
-                                                     dlss_jitter, {1.0f, 1.0f});
+                                                     dlss_depth_reversed, dlss_jitter,
+                                                     dlss_motion_scale);
     };
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);

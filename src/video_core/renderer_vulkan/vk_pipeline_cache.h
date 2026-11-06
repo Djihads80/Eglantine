@@ -128,7 +128,11 @@ public:
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 
-    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
+    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline);
+
+    /// Whether the game has been drawing on the current render target for a while, so that a draw
+    /// skipped now will be redrawn soon. Records the target's use, so it runs for every draw.
+    [[nodiscard]] bool IsTargetRedrawn();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
@@ -172,6 +176,16 @@ private:
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
     void EvictUnusedPipelines();
     u64 frame_count{};
+
+    struct TargetUse {
+        u64 first_frame; ///< First frame of the current run of frames drawing on the target
+        u64 last_frame;
+    };
+    std::unordered_map<u64, TargetUse> target_uses; ///< By TargetKey
+    u64 last_target{};
+    u64 last_target_frame{~u64{0}};
+    bool last_target_redrawn{};
+
     std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
     std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
 

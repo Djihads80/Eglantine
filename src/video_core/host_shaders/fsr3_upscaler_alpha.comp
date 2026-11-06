@@ -1,0 +1,87 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460 core
+#extension GL_EXT_samplerless_texture_functions : require
+
+// DLSS can upscale the colour's alpha (Fast Fusion blends its menu vehicles over the menu with it);
+// FSR 3.1 writes 1. Carry the input's alpha into FSR's output: sampled where the output pixel lies
+// in the unjittered frame, then blended with the previous result along FSR's dilated motion vectors
+// and kept within the alpha around the sample, so edges settle on their coverage instead of
+// following the camera jitter.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform texture2D input_color;
+layout(binding = 1) uniform texture2D dilated_motion_vectors; // UV offsets to the previous frame
+layout(binding = 2) uniform texture2D history;
+layout(binding = 3, r16f) uniform writeonly image2D next_history;
+layout(binding = 4, rgba16f) uniform image2D upscaled_output;
+
+// The start of cbFSR3Upscaler (ffx_fsr3upscaler_callbacks_glsl.h).
+layout(binding = 5, std140) uniform Constants {
+    ivec2 render_size;
+    ivec2 previous_render_size;
+    ivec2 upscale_size;
+    ivec2 previous_upscale_size;
+    ivec2 max_render_size;
+    ivec2 max_upscale_size;
+    vec4 device_to_view_depth;
+    vec2 jitter; // input texel k shows the frame at k + 0.5 - jitter
+    vec2 previous_jitter;
+    vec2 motion_vector_scale;
+    vec2 downscale_factor;
+    vec2 motion_vector_jitter_cancellation;
+    float tan_half_fov;
+    float jitter_phase_count;
+    float delta_time;
+    float delta_pre_exposure;
+    float view_space_to_meters;
+    float frame_index; // 0 when the history starts over
+};
+
+layout(binding = 1001) uniform sampler linear_clamp;
+
+// The share of this frame's alpha in the result, as a temporal anti-aliasing resolve takes it.
+const float CURRENT_WEIGHT = 0.1;
+
+// Alpha as blending takes it: 0 to 1, and 0 for what the game left undefined (NaN), which would
+// otherwise stay in the history.
+float Coverage(float alpha) {
+    return isnan(alpha) ? 0.0 : clamp(alpha, 0.0, 1.0);
+}
+
+void main() {
+    const ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(position, upscale_size))) {
+        return;
+    }
+    const vec2 uv = (vec2(position) + 0.5) / vec2(upscale_size);
+    const vec2 sample_uv = uv + jitter / vec2(render_size);
+    const ivec2 center = ivec2(sample_uv * vec2(render_size));
+    float lowest = 1.0;
+    float highest = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const ivec2 texel = clamp(center + ivec2(x, y), ivec2(0), render_size - 1);
+            const float alpha = Coverage(texelFetch(input_color, texel, 0).a);
+            lowest = min(lowest, alpha);
+            highest = max(highest, alpha);
+        }
+    }
+    const float current = clamp(
+        Coverage(textureLod(sampler2D(input_color, linear_clamp), sample_uv, 0.0).a), lowest,
+        highest);
+
+    float alpha = current;
+    const ivec2 motion_texel = clamp(ivec2(uv * vec2(render_size)), ivec2(0), render_size - 1);
+    const vec2 previous = uv + texelFetch(dilated_motion_vectors, motion_texel, 0).xy;
+    if (frame_index > 0.0 && all(greaterThanEqual(previous, vec2(0.0))) &&
+        all(lessThanEqual(previous, vec2(1.0)))) {
+        const float remembered =
+            Coverage(textureLod(sampler2D(history, linear_clamp), previous, 0.0).r);
+        alpha = mix(clamp(remembered, lowest, highest), current, CURRENT_WEIGHT);
+    }
+    imageStore(next_history, position, vec4(alpha));
+    imageStore(upscaled_output, position, vec4(imageLoad(upscaled_output, position).rgb, alpha));
+}

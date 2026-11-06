@@ -308,13 +308,19 @@ private:
         VideoCore::GameDlssStatus status{};
     } dlss_chain;
 
-    /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
-    /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
-    /// colour image and camera jitter they go with.
+    /// Motion vectors and depth of the frame's DLSS evaluation, from its first pass (run earlier in
+    /// the frame than the network pass the stand-in replaces), with the input colour image and
+    /// camera jitter they go with, what turns the motion vectors into UV offsets, and whether the
+    /// depth is reversed.
     std::optional<Texture::TICEntry> dlss_motion_vectors;
     std::optional<Texture::TICEntry> dlss_depth;
     GPUVAddr dlss_motion_color{};
     std::array<f32, 2> dlss_jitter{};
+    std::array<f32, 2> dlss_motion_scale{1.0f, 1.0f};
+    bool dlss_depth_reversed{true};
+    /// Whether the evaluation's network is translated when it may draw: Fortune's Weave's. Fast
+    /// Fusion's took the host driver 13 s to compile, freezing its menu.
+    bool dlss_network_translated{true};
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;
     std::array<u32, 0xc00>* native_data_ram{};

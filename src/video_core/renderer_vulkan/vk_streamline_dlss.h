@@ -30,7 +30,8 @@ public:
 
     struct Inputs {
         Image color;          ///< Jittered linear colour at the render size.
-        Image depth;          ///< Device depth (reversed) at the render size.
+        Image depth;          ///< Device depth at the render size.
+        bool depth_reversed;  ///< Whether the depth is reversed (1 near, 0 far).
         Image motion_vectors; ///< Motion to the previous frame at the render size.
         VkExtent2D render_size;
         VkExtent2D upscale_size;

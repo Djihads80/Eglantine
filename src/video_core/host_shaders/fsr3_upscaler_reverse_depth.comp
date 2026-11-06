@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 460 core
+#extension GL_EXT_samplerless_texture_functions : require
+
+// FSR 3.1's passes are built for reversed depth (FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH): reverse
+// a game's standard depth (0 near, 1 far) for them.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform texture2D depth;
+layout(binding = 1, r32f) uniform writeonly image2D reversed_depth;
+
+void main() {
+    const ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(position, imageSize(reversed_depth)))) {
+        return;
+    }
+    imageStore(reversed_depth, position, vec4(1.0 - texelFetch(depth, position, 0).r));
+}

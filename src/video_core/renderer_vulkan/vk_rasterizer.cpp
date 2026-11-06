@@ -1439,9 +1439,10 @@ std::optional<VideoCore::GameDlssProbe> RasterizerVulkan::ProbeGameDlssOutput(
 bool RasterizerVulkan::AccelerateTemporalUpscale(
     const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
     const Tegra::Engines::Fermi2D::Surface& motion_vectors, const Tegra::Texture::TICEntry* depth,
-    std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
+    bool depth_reversed, std::array<f32, 2> jitter, std::array<f32, 2> motion_scale) {
     std::scoped_lock lock{texture_cache.mutex};
-    return texture_cache.TemporalUpscale(dst, src, motion_vectors, depth, jitter, motion_scale);
+    return texture_cache.TemporalUpscale(dst, src, motion_vectors, depth, depth_reversed, jitter,
+                                         motion_scale);
 }
 
 Tegra::Engines::AccelerateDMAInterface& RasterizerVulkan::AccessAccelerateDMA() {

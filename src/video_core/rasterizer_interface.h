@@ -183,12 +183,12 @@ public:
 
     /// Stand-in for a DLSS evaluation: temporal upscale of src into dst along motion_vectors
     /// (jitter in src pixels; motion_scale turns a motion vector into a UV offset to the previous
-    /// frame), with the frame's depth when known. False when unsupported; the caller then falls
-    /// back to AccelerateSurfaceCopy.
+    /// frame), with the frame's depth (reversed or not) when known. False when unsupported; the
+    /// caller then falls back to AccelerateSurfaceCopy.
     [[nodiscard]] virtual bool AccelerateTemporalUpscale(
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,
         const Tegra::Engines::Fermi2D::Surface& motion_vectors,
-        const Tegra::Texture::TICEntry* depth, std::array<f32, 2> jitter,
+        const Tegra::Texture::TICEntry* depth, bool depth_reversed, std::array<f32, 2> jitter,
         std::array<f32, 2> motion_scale) {
         return false;
     }
