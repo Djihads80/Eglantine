@@ -594,12 +594,37 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
         u64 serial;
         size_t result;
     };
-    thread_local std::array<Entry, 64> cache{};
+    // 1024 entries: Ocarina of Time binds more distinct (address, size) pairs than 64 held —
+    // a vista run thrashed 22% of ~85k queries/s with a stable page table (785 serial changes,
+    // all at boot; measured with EDEN_NX2_MEMSTATS), each miss re-walking up to 8 MiB.
+    thread_local std::array<Entry, 1024> cache{};
     const u64 serial = map_serial.load(std::memory_order_acquire);
-    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
+    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 54];
+    // EDEN_NX2_MEMSTATS=1: per-thread hit/miss and page-table-change counts, logged every
+    // 500k queries (finds whether the miss cost of this cache is thrash or remaps).
+    thread_local u64 stat_queries{}, stat_hits{}, stat_misses{}, stat_serials{}, stat_last_serial{};
+    const bool stats = [] {
+        static const bool on = std::getenv("EDEN_NX2_MEMSTATS") != nullptr;
+        return on;
+    }();
+    if (stats) [[unlikely]] {
+        ++stat_queries;
+        stat_serials += serial != stat_last_serial;
+        stat_last_serial = serial;
+    }
     if (entry.owner == unique_identifier + 1 && entry.gpu_addr == gpu_addr && entry.size == size &&
         entry.serial == serial) {
+        if (stats) [[unlikely]] {
+            if (++stat_hits % 500000 == 0) {
+                LOG_INFO(HW_GPU,
+                         "MaxContinuousRange: {} queries ({} hit, {} miss, {} serial changes)",
+                         stat_queries, stat_hits, stat_misses, stat_serials);
+            }
+        }
         return entry.result;
+    }
+    if (stats) [[unlikely]] {
+        ++stat_misses;
     }
     const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
     entry = {unique_identifier + 1, gpu_addr, size, serial, result};
