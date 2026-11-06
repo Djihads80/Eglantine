@@ -36,6 +36,9 @@ enum class Type {
 
 template <class DeviceTracker, size_t stack_words, size_t size_bytes>
 struct WordManager {
+    /// Changed page runs (address, size): the tracker's batch type, so they go to it uncopied.
+    using CollectedRanges = std::vector<std::pair<VAddr, size_t>>;
+
     static constexpr size_t num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
 
     /// Marks every page CPU-dirty and counts the words that still need an upload.
@@ -138,7 +141,7 @@ struct WordManager {
         std::span<u64> state_words = Span(type);
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
-        std::vector<std::pair<VAddr, u64>> ranges;
+        CollectedRanges ranges;
         const bool affects_upload = type == Type::CPU || type == Type::CachedCPU;
         IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
             const u64 before_cpu = affects_upload ? CpuWord(index) : 0;
@@ -194,7 +197,7 @@ struct WordManager {
             func(cpu_addr + pending_offset * BYTES_PER_PAGE,
                  (pending_pointer - pending_offset) * BYTES_PER_PAGE);
         };
-        std::vector<std::pair<VAddr, u64>> ranges;
+        CollectedRanges ranges;
         const bool affects_upload = clear && (type == Type::CPU || type == Type::CachedCPU);
         IterateWords(offset, size, [&](size_t index, u64 mask) {
             const u64 before_cpu = affects_upload ? CpuWord(index) : 0;
@@ -284,7 +287,7 @@ struct WordManager {
         auto const cached_words = Span(Type::CachedCPU);
         auto const untracked_words = Span(Type::Untracked);
         auto const cpu_words = Span(Type::CPU);
-        std::vector<std::pair<VAddr, u64>> ranges;
+        CollectedRanges ranges;
         for (u64 word_index = 0; word_index < num_words; ++word_index) {
             const u64 before_cpu = cpu_words[word_index];
             const u64 before_untracked = untracked_words[word_index];
@@ -308,7 +311,7 @@ struct WordManager {
     /// @param current_bits   Current state of the word
     /// @param new_bits       New state of the word
     /// @tparam add_to_tracker True when the tracker should start tracking the new pages
-    void CollectChangedRanges(bool add_to_tracker, u64 word_index, u64 current_bits, u64 new_bits, std::vector<std::pair<VAddr, u64>>& out_ranges) const {
+    void CollectChangedRanges(bool add_to_tracker, u64 word_index, u64 current_bits, u64 new_bits, CollectedRanges& out_ranges) const {
         u64 changed_bits = (add_to_tracker ? current_bits : ~current_bits) & new_bits;
         VAddr addr = cpu_addr + word_index * BYTES_PER_WORD;
         IteratePages(changed_bits, [&](size_t offset, size_t size) {
@@ -316,27 +319,24 @@ struct WordManager {
         });
     }
 
-    void ApplyCollectedRanges(std::vector<std::pair<VAddr, u64>>& ranges, int delta) const {
+    void ApplyCollectedRanges(CollectedRanges& ranges, int delta) const {
         if (ranges.empty())
             return;
         std::sort(ranges.begin(), ranges.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-        // Coalesce adjacent/contiguous ranges
-        std::vector<std::pair<VAddr, size_t>> coalesced;
-        coalesced.reserve(ranges.size());
-        VAddr cur_addr = ranges[0].first;
-        size_t cur_size = static_cast<size_t>(ranges[0].second);
+        // Coalesce adjacent/contiguous ranges where they lie: sorted runs with gaps between them,
+        // which UpdatePagesCachedBatch takes as they are instead of copying, sorting and merging
+        // them again.
+        size_t last = 0;
         for (size_t i = 1; i < ranges.size(); ++i) {
-            if (cur_addr + cur_size == ranges[i].first) {
-                cur_size += static_cast<size_t>(ranges[i].second);
+            if (ranges[last].first + ranges[last].second == ranges[i].first) {
+                ranges[last].second += ranges[i].second;
             } else {
-                coalesced.emplace_back(cur_addr, cur_size);
-                cur_addr = ranges[i].first;
-                cur_size = static_cast<size_t>(ranges[i].second);
+                ranges[++last] = ranges[i];
             }
         }
-        coalesced.emplace_back(cur_addr, cur_size);
+        ranges.resize(last + 1);
         // Use batch API to reduce lock acquisitions and contention.
-        tracker->UpdatePagesCachedBatch(coalesced, delta);
+        tracker->UpdatePagesCachedBatch(ranges, delta);
         ranges.clear();
     }
 

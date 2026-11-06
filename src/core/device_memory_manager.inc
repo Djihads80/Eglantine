@@ -712,6 +712,22 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedBatch(std::span<const std::pa
     if (ranges.empty()) {
         return;
     }
+    // Runs already sorted with gaps between them (the buffer tracker's) are what the sort and
+    // merge below would produce: use them as they are instead of two heap copies.
+    const bool separated =
+        std::ranges::adjacent_find(ranges, [](const auto& a, const auto& b) {
+            return a.first > b.first || a.first + a.second >= b.first;
+        }) == ranges.end();
+    if (separated) {
+        const DAddr lock_begin = ranges.front().first;
+        const DAddr lock_end = ranges.back().first + ranges.back().second;
+        Common::ScopedRangeLock lk(counter_guard, lock_begin,
+                                   static_cast<size_t>(lock_end - lock_begin));
+        for (const auto& [addr, size] : ranges) {
+            UpdatePagesCachedCountNoLock(addr, size, delta);
+        }
+        return;
+    }
     // Make a local copy and sort by address
     std::vector<std::pair<DAddr, size_t>> tmp(ranges.begin(), ranges.end());
     std::sort(tmp.begin(), tmp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
