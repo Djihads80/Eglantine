@@ -1534,6 +1534,11 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
                                0, WRITE_BARRIER);
         cmdbuf.UpdateBuffer(draw.region.buffer, draw.region.offset, sizeof(draw.header),
                             &draw.header);
+        // The output regions start zeroed: what a mesh program leaves unwritten (vertices or
+        // map bytes its primitives still name) is not another draw's data.
+        const VkDeviceSize outputs{VkDeviceSize{draw.header.attribute_offset} * sizeof(u32)};
+        cmdbuf.FillBuffer(draw.region.buffer, draw.region.offset + outputs, draw.size - outputs,
+                          0);
         static constexpr VkMemoryBarrier HEADER_BARRIER{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
