@@ -31,7 +31,8 @@ void insertionSort5(inout float a[5]) {
 }
 
 vec2 sampleMotionMedian(vec2 uv) {
-    vec2 texel = inv_render_size;
+    // The motion field is at the flow's (half) resolution: step in its texels.
+    vec2 texel = 1.0 / vec2(textureSize(MotionVectors, 0));
 
     // textureGather returns 2├ù2 quads: (x-0.5, y-0.5) to (x+0.5, y+0.5)
     // We use 4 gathers offset to cover the 3├ù3 region
@@ -78,12 +79,14 @@ void main() {
 
     vec2 uv = (vec2(pixel_coord) + 0.5) * inv_render_size;
 
-    // Median-filtered motion vector (reduces outlier jitter)
-    vec2 motion = sampleMotionMedian(uv) * (flow_scale * inv_render_size);
+    // Median-filtered motion vector (reduces outlier jitter). The flow stores, per current-frame
+    // pixel, the offset in flow texels to where it was in the previous frame; convert to UV.
+    vec2 motion = sampleMotionMedian(uv) / vec2(textureSize(MotionVectors, 0));
 
-    // Forward and backward warped coordinates
-    vec2 forward_uv  = clamp(uv - motion * blend_factor,        0.0, 1.0);
-    vec2 backward_uv = clamp(uv + motion * (1.0 - blend_factor), 0.0, 1.0);
+    // A point at uv at time blend_factor was at uv + motion * t in the previous frame and is
+    // at uv - motion * (1 - t) in the current one.
+    vec2 forward_uv  = clamp(uv + motion * blend_factor,         0.0, 1.0);
+    vec2 backward_uv = clamp(uv - motion * (1.0 - blend_factor), 0.0, 1.0);
 
     vec4 forward_color  = texture(PreviousFrame, forward_uv);
     vec4 backward_color = texture(CurrentFrame,  backward_uv);
@@ -99,7 +102,7 @@ void main() {
     // ΓöÇΓöÇ Anti-flicker: blend with un-warped centre pixel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     float motion_magnitude = length(motion * render_size);
     float direct_weight = exp(-motion_magnitude * 0.5);
-    vec4 center_color = mix(texture(CurrentFrame, uv), texture(PreviousFrame, uv), blend_factor);
+    vec4 center_color = mix(texture(PreviousFrame, uv), texture(CurrentFrame, uv), blend_factor);
     interpolated = mix(interpolated, center_color, direct_weight * 0.3);
 
     imageStore(OutGeneratedFrame, pixel_coord, interpolated);
