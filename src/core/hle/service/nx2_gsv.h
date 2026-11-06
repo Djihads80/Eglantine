@@ -1917,10 +1917,17 @@ private:
         // ahead, where it rewrote memory the GPU thread hadn't read yet (misread commands, then
         // a freeze or crash; rubberbanding while moving). Title 1 runs ahead without either.
         constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
+        // Ocarina of Time waited ~12 ms of each frame here for this frame's fence (zortos293/
+        // Lichii #184, from #161): it runs a frame ahead, as with EDEN_NX2_FRAMES_AHEAD=1, which
+        // still waits for this frame too while the GPU is behind. EDEN_NX2_FRAMES_AHEAD=0 waits
+        // for this frame as before.
+        constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
         int frames_ahead = frames_ahead_setting;
-        if (frames_ahead == -1 &&
-            system.GetApplicationProcessProgramID() == DonkeyKongBananzaProgramId) {
+        const u64 app_program_id = system.GetApplicationProcessProgramID();
+        if (frames_ahead == -1 && app_program_id == DonkeyKongBananzaProgramId) {
             frames_ahead = 0;
+        } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId) {
+            frames_ahead = 1;
         }
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead == 2) {
