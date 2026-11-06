@@ -2716,6 +2716,10 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
     if (is_written) {
         binding_size = aligned_size;
     }
+    if constexpr (requires { runtime.GetMaxStorageBufferRange(); }) {
+        // The 256 MiB compute cap is above the 128 MiB every device guarantees.
+        binding_size = (std::min)(binding_size, runtime.GetMaxStorageBufferRange());
+    }
     const Binding binding{
         .device_addr = *aligned_device_addr,
         .gpu_addr = aligned_gpu_addr,
