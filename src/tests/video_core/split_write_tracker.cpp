@@ -83,6 +83,22 @@ TEST_CASE("Split write tracker waits for every unlocalized writer",
     CHECK(tracker.ReadTarget(0x1000, 0x1004) == 14);
 }
 
+TEST_CASE("Split write tracker keeps the kind of constant buffer writes",
+          "[video_core][split_writes]") {
+    using Kind = SplitWriteTracker::WriteKind;
+    SplitWriteTracker tracker;
+    tracker.Write(0x1000, 0x2000, 3, Kind::ConstantBuffer);
+    tracker.Write(0x1000, 0x2000, 4, Kind::ConstantBuffer);
+    CHECK(tracker.LastWriteTo(0x1000, 0x1004) == 4);
+    CHECK(tracker.LastWriteTo(0x1000, 0x1004, Kind::Other) == 0);
+    // A merged range that mixes kinds is Other.
+    tracker.Write(0x2000, 0x3000, 5);
+    CHECK(tracker.LastWriteTo(0x1000, 0x1004, Kind::Other) == 5);
+    tracker.Write(0x8000, 0x9000, 6, Kind::ConstantBuffer);
+    CHECK(tracker.LastWriteTo(0x8000, 0x8004, Kind::Other) == 0);
+    CHECK(tracker.LastWriteTo(0x8000, 0x8004, Kind::ConstantBuffer) == 6);
+}
+
 TEST_CASE("Split write tracker collapses too many writes into an unknown one",
           "[video_core][split_writes]") {
     SplitWriteTracker tracker;

@@ -21,6 +21,13 @@ public:
         Gpu,     ///< Draws, dispatches and copies with destinations not known to the front
     };
 
+    /// What a noted write stores: constant buffer data the front queued (its words are known to
+    /// the front) or anything else.
+    enum class WriteKind : u8 {
+        Other,
+        ConstantBuffer,
+    };
+
     /// The effect of an entry that does both.
     [[nodiscard]] static constexpr Effect Combine(Effect a, Effect b) {
         if (a == Effect::Unknown || b == Effect::Unknown) {
@@ -42,8 +49,8 @@ public:
 
     /// The entry that ends at `end` writes the guest memory in [begin, end_address). Ends never
     /// decrease. A write next to or over the previous one joins it (conservative: the joined
-    /// range retires with the later write).
-    void Write(u64 begin, u64 end_address, u64 end) {
+    /// range retires with the later write; one that mixes kinds is Other).
+    void Write(u64 begin, u64 end_address, u64 end, WriteKind kind = WriteKind::Other) {
         if (begin >= end_address) {
             return;
         }
@@ -53,6 +60,9 @@ public:
                 last.begin = (std::min)(last.begin, begin);
                 last.end = (std::max)(last.end, end_address);
                 last.position = end;
+                if (last.kind != kind) {
+                    last.kind = WriteKind::Other;
+                }
                 return;
             }
         }
@@ -61,7 +71,7 @@ public:
             writes.clear();
             return;
         }
-        writes.push_back({begin, end_address, end});
+        writes.push_back({begin, end_address, end, kind});
     }
 
     /// Drops the writes the back has run (it consumed `consumed` words).
@@ -76,6 +86,16 @@ public:
         // Positions grow towards the back: the newest overlap is the latest.
         for (auto it = writes.rbegin(); it != writes.rend(); ++it) {
             if (it->begin < end && begin < it->end) {
+                return it->position;
+            }
+        }
+        return 0;
+    }
+
+    /// LastWriteTo for the noted writes of `kind` only.
+    [[nodiscard]] u64 LastWriteTo(u64 begin, u64 end, WriteKind kind) const {
+        for (auto it = writes.rbegin(); it != writes.rend(); ++it) {
+            if (it->kind == kind && it->begin < end && begin < it->end) {
                 return it->position;
             }
         }
@@ -106,6 +126,7 @@ private:
         u64 begin;
         u64 end;
         u64 position;
+        WriteKind kind;
     };
     std::deque<PendingWrite> writes;
     u64 unknown{};

@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -117,6 +118,7 @@ public:
     /// `segment`: the engine's current_dma_segment for the call, when the engine reads it.
     /// `effect`: what the entry may write (SplitWriteTracker; unknown unless the caller knows).
     using Effect = SplitWriteTracker::Effect;
+    using WriteKind = SplitWriteTracker::WriteKind;
     void Method(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument, bool is_last,
                 const GPUVAddr* segment, Effect effect = Effect::Unknown) {
         SelectEngine(engine);
@@ -196,8 +198,24 @@ public:
     /// of it was still queued.
     bool WaitForSync();
     /// The entry just sent also writes [address, address + size) of `memory`, noted by device
-    /// page (other mappings may alias it, and the caches keep state per page).
-    void NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size);
+    /// page (other mappings may alias it, and the caches keep state per page). Returns whether
+    /// it was noted by range (not as an unknown write).
+    bool NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size,
+                   WriteKind kind = WriteKind::Other);
+    /// The entry just sent writes the constant buffer data `words` (`count` of them, the first
+    /// `stored` land: the rest fall past the bank) at `address`. With MacroReadCbOverlay the
+    /// stored words are kept by device address until the back ran the entry
+    /// (OverlayConstBufferWords).
+    void NoteConstBufferWrite(const Tegra::MemoryManager& memory, GPUVAddr address,
+                              const u32* words, u32 count, u32 stored);
+    /// Whether every constant buffer word queued after `consumed_position` is kept (none was
+    /// dropped).
+    [[nodiscard]] bool ConstBufferWordsKept(u64 consumed_position) const {
+        return cb_words_lost <= consumed_position;
+    }
+    /// Copies the kept constant buffer words queued after `consumed_position` over the bytes
+    /// `out` holds for the device range [begin, begin + size), oldest first: the newest wins.
+    void OverlayConstBufferWords(u64 consumed_position, u64 begin, u64 size, u8* out) const;
     /// The entry just sent writes guest memory the front can't tell.
     void NoteUnknownWrite() {
         writes.Entry(Effect::Unknown, write_position);
@@ -330,6 +348,15 @@ private:
     u64 last_sync_position{};
     u64 last_function_position{};
     SplitWriteTracker writes;
+    /// MacroReadCbOverlay: queued constant buffer words, oldest first, popped by RetireWrites.
+    struct ConstBufferWord {
+        u64 device;
+        u64 position;
+        u32 value;
+    };
+    static constexpr size_t MaxConstBufferWords = 4096;
+    std::deque<ConstBufferWord> cb_words;
+    u64 cb_words_lost{}; ///< Newest position of a constant buffer word not kept
     /// NoteWrite's last translation: memory manager, GPU page, device page, the function
     /// position it was made at (a later function may remap).
     const Tegra::MemoryManager* note_memory{};

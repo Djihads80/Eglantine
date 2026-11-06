@@ -147,6 +147,8 @@ void GpuSplit::Stop() {
     last_function_position = 0;
     writes.Reset();
     async_writes.clear();
+    cb_words.clear();
+    cb_words_lost = 0;
     note_memory = nullptr;
     note_page = ~GPUVAddr{0};
     published_local = 0;
@@ -331,9 +333,10 @@ void GpuSplit::DeferFunction(std::function<void()>&& func) {
     last_function_position = write_position;
 }
 
-void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size) {
+bool GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size,
+                         WriteKind kind) {
     if (size == 0 || !Nx2Perf::On(Nx2Perf::Opt::MacroReadEarly)) {
-        return;
+        return false;
     }
     // While a queued function may still change the GPU mappings, the back may translate the
     // address differently. Sparse pages are written through their own backing.
@@ -341,7 +344,7 @@ void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u
                         Tegra::g_nx2_sparse_low.load(std::memory_order_relaxed) < address + size;
     if (last_function_position > consumed_cache || sparse) {
         writes.Entry(Effect::Unknown, write_position);
-        return;
+        return false;
     }
     constexpr GPUVAddr page_mask = ~GPUVAddr{0xfff};
     for (GPUVAddr page = address & page_mask; page < address + size; page += 0x1000) {
@@ -350,14 +353,65 @@ void GpuSplit::NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u
             if (!device) {
                 note_memory = nullptr;
                 writes.Entry(Effect::Unknown, write_position);
-                return;
+                return false;
             }
             note_memory = &memory;
             note_page = page;
             note_device = *device & page_mask;
             note_function = last_function_position;
         }
-        writes.Write(note_device, note_device + 0x1000, write_position);
+        writes.Write(note_device, note_device + 0x1000, write_position, kind);
+    }
+    return true;
+}
+
+void GpuSplit::NoteConstBufferWrite(const Tegra::MemoryManager& memory, GPUVAddr address,
+                                    const u32* words, u32 count, u32 stored) {
+    const bool noted =
+        NoteWrite(memory, address, u64{count} * sizeof(u32), WriteKind::ConstantBuffer);
+    // Not noted by range: an unknown write, which early reads wait for anyway.
+    if (!noted || stored == 0 || !Nx2Perf::On(Nx2Perf::Opt::MacroReadCbOverlay)) {
+        return;
+    }
+    if ((address & 3) != 0 || cb_words.size() + stored > MaxConstBufferWords) {
+        cb_words_lost = write_position;
+        return;
+    }
+    // NoteWrite translated these pages with no queued function pending: as the back will.
+    constexpr GPUVAddr page_mask = ~GPUVAddr{0xfff};
+    GPUVAddr page = ~GPUVAddr{0};
+    u64 device_page = 0;
+    for (u32 i = 0; i < stored; ++i) {
+        const GPUVAddr word_address = address + u64{i} * sizeof(u32);
+        if ((word_address & page_mask) != page) {
+            page = word_address & page_mask;
+            if (&memory == note_memory && page == note_page) {
+                device_page = note_device;
+            } else if (const std::optional<DAddr> device = memory.GpuToCpuAddress(page)) {
+                device_page = *device & page_mask;
+            } else {
+                cb_words_lost = write_position;
+                return;
+            }
+        }
+        cb_words.push_back({device_page + (word_address & 0xfff), write_position, words[i]});
+    }
+}
+
+void GpuSplit::OverlayConstBufferWords(u64 consumed_position, u64 begin, u64 size,
+                                       u8* out) const {
+    const u64 end = begin + size;
+    for (const ConstBufferWord& word : cb_words) {
+        if (word.position <= consumed_position) {
+            continue;
+        }
+        const u64 low = (std::max)(word.device, begin);
+        const u64 high = (std::min)(word.device + sizeof(u32), end);
+        if (low < high) {
+            std::memcpy(out + (low - begin),
+                        reinterpret_cast<const u8*>(&word.value) + (low - word.device),
+                        high - low);
+        }
     }
 }
 
@@ -369,6 +423,9 @@ u64 GpuSplit::SettleWrites() {
 u64 GpuSplit::RetireWrites() {
     consumed_cache = consumed.load(std::memory_order_acquire);
     writes.Retire(consumed_cache);
+    while (!cb_words.empty() && cb_words.front().position <= consumed_cache) {
+        cb_words.pop_front();
+    }
     return consumed_cache;
 }
 
