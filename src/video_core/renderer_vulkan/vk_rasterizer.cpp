@@ -526,6 +526,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     query_cache.NotifySegment(true);
     HandleTransformFeedback();
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+    scheduler.HangWatchGraphics(pipeline->ShaderHashes());
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         if (frame_dump.Capturing()) [[unlikely]] {
@@ -1355,6 +1356,7 @@ void RasterizerVulkan::DispatchCompute() {
     if (frame_dump.Capturing()) [[unlikely]] {
         frame_dump.TimeBegin();
     }
+    scheduler.HangWatchCompute(pipeline->ShaderHash(), native_key);
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
     if (indirect_address) {
         // DispatchIndirect

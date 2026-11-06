@@ -29,6 +29,13 @@ std::chrono::microseconds GpuWaitSpin() {
 }
 
 MasterSemaphore::MasterSemaphore(const Device& device_) : device(device_) {
+    // Read here, when the renderer starts (after Android's env.txt), not at library load.
+    if (const char* const value = std::getenv("EDEN_NX2_HANG_WATCH");
+        value != nullptr && value[0] != '\0' && value[0] != '0') {
+        hang_watch = true;
+        LOG_INFO(Render_Vulkan, "Hang watch on (EDEN_NX2_HANG_WATCH): GPU waits over 3 s are "
+                                "reported with the unfinished submissions' pipelines");
+    }
     if (!device.HasTimelineSemaphore()) {
         static constexpr VkFenceCreateInfo fence_ci{
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = nullptr, .flags = 0};
@@ -130,6 +137,15 @@ void MasterSemaphore::Wait(u64 tick) {
 
     // If none of the above is hit, fallback to a regular wait
     try {
+        if (hang_watch) {
+            constexpr u64 interval_ns = 3'000'000'000ULL;
+            for (u64 waited_s = 3; !semaphore.Wait(tick, interval_ns); waited_s += 3) {
+                Refresh();
+                if (on_stall && waited_s <= 30) {
+                    on_stall(tick, KnownGpuTick(), CurrentTick(), waited_s);
+                }
+            }
+        }
         while (!semaphore.Wait(tick)) {
         }
     } catch (const vk::Exception& exception) {

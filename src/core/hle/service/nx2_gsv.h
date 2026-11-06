@@ -2702,6 +2702,8 @@ private:
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
     static constexpr u64 SummaryFrames = 150;    // AV1: a state line every 150 frames (5 s)
     static constexpr std::chrono::seconds StallReport{2};
+    /// How often frames an asynchronous (MediaCodec) decoder finished are collected while idle.
+    static constexpr std::chrono::milliseconds AsyncPollInterval{4};
     static constexpr u32 EmptyOutputResult = 0x1c286f; // 213: nothing finished
     static constexpr u32 InputBusyResult = 0x1c266f;   // 109: input queue full (fefw)
 
@@ -2845,8 +2847,8 @@ private:
         if (m_event == nullptr) {
             m_event = m_context.CreateEvent(fmt::format("{}:Ready", GetServiceName()));
             // The client attaches it auto-clearing, so one signal is consumed by the first wait:
-            // while the input queue has room, re-signal every 4 ms; a spurious wake only makes it
-            // check again.
+            // while the input queue has room or a finished frame waits, re-signal every 4 ms; a
+            // spurious wake only makes it check again.
             {
                 std::scoped_lock lk{m_ready->mutex};
                 m_ready->event = m_event;
@@ -2856,7 +2858,9 @@ private:
                 [ready = m_ready, &kernel = system.Kernel()](
                     s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                     std::scoped_lock lk{ready->mutex};
-                    if (ready->event != nullptr && ready->room.load(std::memory_order_relaxed)) {
+                    if (ready->event != nullptr &&
+                        (ready->room.load(std::memory_order_relaxed) ||
+                         ready->output_ready.load(std::memory_order_relaxed))) {
                         ready->event->Signal(kernel);
                     }
                     return std::nullopt;
@@ -3066,6 +3070,7 @@ private:
                 }
                 m_outputs.clear();
             }
+            m_ready->output_ready.store(!m_outputs.empty(), std::memory_order_relaxed);
         }
         m_cv.notify_one();
         TipcReplyWords(ctx, {});
@@ -3106,6 +3111,7 @@ private:
             if (!m_outputs.empty()) {
                 output = m_outputs.front();
                 m_outputs.pop_front();
+                m_ready->output_ready.store(!m_outputs.empty(), std::memory_order_relaxed);
                 // AV1: words 1-2 hold the configured size, as fefw's decoder replies.
                 width = m_av1 ? m_width : output->width;
                 height = m_av1 ? m_height : output->height;
@@ -3166,7 +3172,24 @@ private:
                 return m_quit || m_flush || (!m_decoded.empty() && !m_free.empty()) ||
                        (!m_inputs.empty() && m_decoded.size() < MaxDecodedAhead);
             };
-            if (!m_cv.wait_for(lk, StallReport, ready)) {
+            if (decoder && decoder->HasPendingOutput() && m_decoded.size() < MaxDecodedAhead) {
+                // A hardware decoder finishes frames on its own: collect them while idle, or a
+                // client that waits for the next frame before it submits more input never gets
+                // it (pavelgajdo, Lichii-Android 8bce98ae84).
+                if (!m_cv.wait_for(lk, AsyncPollInterval, ready)) {
+                    lk.unlock();
+                    pictures.clear();
+                    decoder->Poll(pictures);
+                    lk.lock();
+                    if (!m_flush) {
+                        for (auto& picture : pictures) {
+                            const u64 pts = picture.pts;
+                            m_decoded.push_back({std::move(picture), pts, false});
+                        }
+                    }
+                    continue;
+                }
+            } else if (!m_cv.wait_for(lk, StallReport, ready)) {
                 // A movie that stops: say once what it waits on (input, a release or a frame).
                 if ((m_av1 || Tracing()) && m_frames_out != 0 && !m_stream_ended &&
                     stall_reported != m_frames_out) {
@@ -3227,6 +3250,7 @@ private:
                     m_ready->room.store(false, std::memory_order_relaxed);
                 }
                 system.Host1x().GetSyncpointManager().IncrementGuest(m_syncpoint);
+                SignalOutput();
                 ++m_frames_out;
                 if (m_frames_out == 1 || (m_frames_out % 600) == 0 || frame.end) {
                     LOG_INFO(Service, "{} frame {} ({}x{}, pts {} us{}) in image {}",
@@ -3253,9 +3277,11 @@ private:
                 LOG_INFO(Service, "{} empty codec, detected H.264 stream: using \"{}\"",
                          GetServiceName(), codec);
             }
+            const u32 width = m_width;
+            const u32 height = m_height;
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
-                decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
+                decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec, width, height);
             }
             pictures.clear();
             const auto decode_start = std::chrono::steady_clock::now();
@@ -3271,7 +3297,8 @@ private:
             if (!input.end) {
                 m_decode_time += decode_time;
                 ++m_timed_decodes;
-                if (pictures.empty()) {
+                // (A hardware decoder's frame comes out later, through Poll.)
+                if (pictures.empty() && !decoder->HasPendingOutput()) {
                     ++m_no_picture;
                 }
             }
@@ -3288,6 +3315,18 @@ private:
                     m_decoded.back().end = true;
                 }
             }
+        }
+    }
+
+    // A finished frame waits for the client: wake it now, whatever the input queue holds. It
+    // waits on one event for both input room and finished frames; signalled only while the
+    // input queue had room, it woke on its own timeout when the queue stayed full (pavelgajdo,
+    // Lichii-Android 3943fe4e8b).
+    void SignalOutput() {
+        m_ready->output_ready.store(true, std::memory_order_relaxed);
+        std::scoped_lock lk{m_ready->mutex};
+        if (m_ready->event != nullptr) {
+            m_ready->event->Signal(system.Kernel());
         }
     }
 
@@ -3430,6 +3469,7 @@ private:
         std::mutex mutex;
         Kernel::KEvent* event{};
         std::atomic<bool> room{true}; ///< The input queue takes more frames
+        std::atomic<bool> output_ready{false}; ///< Finished frames wait to be fetched (213)
     };
 
     KernelHelpers::ServiceContext m_context;

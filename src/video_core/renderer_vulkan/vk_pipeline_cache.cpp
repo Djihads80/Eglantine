@@ -159,6 +159,18 @@ Shader::AttributeType AttributeType(const FixedPipelineState& state, size_t inde
     return Shader::AttributeType::Disabled;
 }
 
+// Whether every pipeline's SPIR-V is written before the driver compiles it, as
+// <title id>_<shader hash>.spv in the dump directory: the gpu_log_shader_dumps setting, or
+// EDEN_NX2_SPIRV_DUMP=1 where the setting is out of reach (Android; pavelgajdo, Lichii-Android
+// 492774519b). EDEN_NX2_DUMP_SPIRV covers only the SPIR-V a driver rejects. Read at each build.
+bool DumpsPipelineSpirv() {
+    if (Settings::values.gpu_log_shader_dumps.GetValue()) {
+        return true;
+    }
+    const char* const value = std::getenv("EDEN_NX2_SPIRV_DUMP");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 // EDEN_NX2_MESH_EMULATE_DUMP=1: the shaders of emulated task/mesh pipelines are written to
 // dump/mesh_emulation/<pipeline>_<task|mesh|vertex>.spv (spirv-val, spirv-dis).
 void DumpMeshEmulationSpirv(u64 pipeline, std::string_view stage, std::span<const u32> code) {
@@ -1564,9 +1576,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
 
         // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
-        // is independent and gated only by gpu_log_shader_dumps.
+        // is independent and gated only by gpu_log_shader_dumps (or EDEN_NX2_SPIRV_DUMP).
         const bool should_log = GPU::Logging::IsActive();
-        const bool should_dump = Settings::values.gpu_log_shader_dumps.GetValue();
+        const bool should_dump = DumpsPipelineSpirv();
         if (should_log || should_dump) {
             static constexpr std::array stage_names{"vertex", "tess_control", "tess_eval", "geometry", "fragment"};
             const std::string shader_name = fmt::format("shader_{:016x}_{}", key.unique_hashes[index], stage_names[stage_index]);
@@ -1986,7 +1998,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();
-    const bool should_dump = Settings::values.gpu_log_shader_dumps.GetValue();
+    const bool should_dump = DumpsPipelineSpirv();
     if (should_log || should_dump) {
         const std::string shader_name = fmt::format("shader_{:016x}_compute", key.unique_hash);
         if (should_log) {

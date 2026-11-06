@@ -10,6 +10,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <queue>
@@ -59,6 +60,14 @@ public:
     /// Waits for a tick to be hit on the GPU
     void Wait(u64 tick);
 
+    /// EDEN_NX2_HANG_WATCH=1 (read when the renderer starts): a wait for a GPU tick that lasts
+    /// more than 3 s calls on_stall (waited tick, tick the GPU reached, next tick to be
+    /// submitted, seconds waited), every 3 s up to 30 s.
+    [[nodiscard]] bool HangWatch() const noexcept {
+        return hang_watch;
+    }
+    std::function<void(u64, u64, u64, u64)> on_stall;
+
     /// Submits the device graphics queue, updating the tick as necessary
     VkResult SubmitQueue(vk::CommandBuffer& cmdbuf, vk::CommandBuffer& upload_cmdbuf,
                          VkSemaphore signal_semaphore, VkSemaphore wait_semaphore, u64 host_tick);
@@ -80,6 +89,7 @@ private:
     vk::Semaphore semaphore;          ///< Timeline semaphore.
     std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
     std::atomic<u64> current_tick{1}; ///< Current logical tick.
+    bool hang_watch{};                ///< EDEN_NX2_HANG_WATCH
     std::mutex wait_mutex;
     std::mutex free_mutex;
     std::condition_variable_any wait_cv;
