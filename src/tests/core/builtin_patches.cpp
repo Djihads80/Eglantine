@@ -183,6 +183,68 @@ TEST_CASE("Built-in Max Resolution patch defers to a user mod at the same offset
     }
 }
 
+namespace {
+
+constexpr std::string_view RealTime = "Real-time speed (built-in)";
+constexpr std::array<std::pair<size_t, u32>, 4> RealTimeOriginals{{
+    {0x3C461E0, 0x00000000},
+    {0x3C461E4, 0x00000000},
+    {0x3C461E8, 0x00000000},
+    {0x6E6CC4, 0x1E201828},
+}};
+
+std::vector<u8> MakeRealTimeMain() {
+    std::vector<u8> nso(sizeof(Loader::NSOHeader) + 0x3C47000);
+    Loader::NSOHeader header{};
+    header.magic = Common::MakeMagic('N', 'S', 'O', '0');
+    header.build_id = OcarinaBuildId;
+    std::memcpy(nso.data(), &header, sizeof(header));
+    for (const auto& [offset, word] : RealTimeOriginals) {
+        std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + offset, &word, sizeof(word));
+    }
+    return nso;
+}
+
+u32 ModuleWord(const std::vector<u8>& nso, size_t offset) {
+    u32 word;
+    std::memcpy(&word, nso.data() + sizeof(Loader::NSOHeader) + offset, sizeof(word));
+    return word;
+}
+
+} // Anonymous namespace
+
+TEST_CASE("Built-in real-time patch applies all of its words or none", "[patch_manager]") {
+    PatchManagerTestContext context;
+    auto nso = MakeRealTimeMain();
+
+    SECTION("All words apply, on by default") {
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x3C461E0) == 0x3F800000);
+        REQUIRE(ModuleWord(patched, 0x3C461E4) == 0x1CFFFFE8);
+        REQUIRE(ModuleWord(patched, 0x3C461E8) == 0x172A82B8);
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x14D57D48);
+    }
+
+    SECTION("One changed word leaves the hook out") {
+        const u32 other = 0xD503201F;
+        std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + 0x3C461E4, &other, sizeof(other));
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x3C461E0) == 0x00000000);
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x1E201828);
+    }
+
+    SECTION("Disabled in Add-Ons skips") {
+        Settings::values.disabled_addons[OcarinaTitleId] = {std::string{RealTime}};
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        REQUIRE(ModuleWord(patched, 0x6E6CC4) == 0x1E201828);
+    }
+
+    SECTION("It is one Add-Ons entry") {
+        const auto patches = context.Manager().GetPatches();
+        REQUIRE(std::ranges::count(patches, RealTime, &FileSys::Patch::name) == 1);
+    }
+}
+
 TEST_CASE("Built-in Max Resolution patch is listed and loaded for Ocarina's main",
           "[patch_manager]") {
     PatchManagerTestContext context;

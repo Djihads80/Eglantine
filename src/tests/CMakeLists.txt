@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    core/nx2_oot_time.cpp
     core/builtin_patches.cpp
     core/system_test_context.h
     video_core/gpu_timestamp.cpp
