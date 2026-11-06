@@ -169,7 +169,8 @@ void DumpMeshEmulationSpirv(u64 pipeline, std::string_view stage, std::span<cons
     if (!dumps) {
         return;
     }
-    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir) / "mesh_emulation";
+    // Next to the frame dumps (EdenDir/dump), not in the DumpDir setting.
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "dump" / "mesh_emulation";
     if (!Common::FS::CreateDirs(dir)) {
         return;
     }
