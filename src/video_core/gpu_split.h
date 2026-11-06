@@ -264,10 +264,13 @@ private:
         }
     }
     void WaitForSpace(size_t words);
-    /// Sleeps a while on the back thread handing ring space back.
-    void SleepOnBack();
+    /// Sleeps a while on the back thread handing ring space back (or, `until_quiet`, going
+    /// quiet: BackQuiet).
+    void SleepOnBack(bool until_quiet = false);
     /// Back side: hands the ring up to `position` back, waking a sleeping front.
     void HandBack(u64 position);
+    /// Back side: wakes the front if it sleeps in SleepOnBack.
+    void WakeFront();
     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
         // Words queued (QueueWord) go first, before the engine is compared: their entry selects
         // their own engine, which may differ from this one, and from front_engine as it is now.

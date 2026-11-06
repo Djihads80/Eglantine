@@ -89,12 +89,27 @@ void WakeWord(std::atomic<u32>& word) {
 
 // Phones sleep in the waits below on futexes: spinning or yielding, the front kept a big core
 // busy and the phone hot. The back parks on a raw futex too (libc++'s std::atomic::wait can miss
-// a notify). Desktop keeps the spin, yield and std::atomic waits.
+// a notify). Desktop keeps the spins and the back's std::atomic wait; its front sleeps on the futex
+// too unless EDEN_NX2_SPLIT_SLEEP=0 (FrontSleeps).
 #ifdef __ANDROID__
 constexpr bool SleepingWaits = true;
 #else
 constexpr bool SleepingWaits = false;
 #endif
+
+// The front sleeps in its waits for the back (SleepOnBack) on desktop too: yielding in a loop,
+// it kept a core busy for as long as the back took (13.6 ms of CPU a frame on an 8-core CPU
+// without SMT, 4.5 ms sleeping). EDEN_NX2_SPLIT_SLEEP=0 yields as before on desktop.
+bool FrontSleeps() {
+    static const bool sleeps = [] {
+        if constexpr (SleepingWaits) {
+            return true;
+        }
+        const char* value = std::getenv("EDEN_NX2_SPLIT_SLEEP");
+        return value == nullptr || value[0] != '0';
+    }();
+    return sleeps;
+}
 
 // Wakes the back thread parked on `wake`.
 void WakeBack(std::atomic<u32>& wake) {
@@ -304,22 +319,25 @@ void GpuSplit::RequestIdleHook() {
     WakeBack(wake);
 }
 
-void GpuSplit::SleepOnBack() {
+void GpuSplit::SleepOnBack(bool until_quiet) {
     // Re-wake a back thread whose wake-up was lost (it froze Mario Kart World on Android with the
     // front waiting here and the back parked).
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
         WakeBack(wake);
     }
-    if constexpr (!SleepingWaits) {
+    if (!FrontSleeps()) {
         std::this_thread::yield();
         return;
     }
-    // The back bumps `drained` after storing `consumed` when it sees front_waiting: read it
-    // before the last look at `consumed`, so a store in between ends the wait at once.
+    // The back bumps `drained` (WakeFront) after storing `consumed` or back_quiet, and when it
+    // stops, if it sees front_waiting: read it before the last look at them, so a store in
+    // between ends the wait at once.
     front_waiting.store(true, std::memory_order_seq_cst);
     const u32 seen = drained.load(std::memory_order_seq_cst);
-    if (consumed.load(std::memory_order_seq_cst) == consumed_cache) {
+    if (consumed.load(std::memory_order_seq_cst) == consumed_cache &&
+        back_running.load(std::memory_order_seq_cst) &&
+        !(until_quiet && back_quiet.load(std::memory_order_seq_cst))) {
         WaitWord(drained, seen, std::chrono::milliseconds{2});
     }
     front_waiting.store(false, std::memory_order_relaxed);
@@ -397,8 +415,8 @@ void GpuSplit::Drain(Nx2Profile::Zone zone) {
             Pause();
         } else {
             // Sleep instead of spinning on: the front spent most of each frame here, keeping a big
-            // core busy and the phone hot.
-            SleepOnBack();
+            // core busy and the phone hot. With everything consumed, it waits for back_quiet.
+            SleepOnBack(consumed_cache == write_position);
             if ((SleepingWaits || (spins & 1023) == 0) &&
                 std::chrono::steady_clock::now() >= next_report) {
                 next_report += std::chrono::seconds{5};
@@ -442,8 +460,13 @@ bool GpuSplit::WaitForPosition(u64 position) {
 }
 
 void GpuSplit::HandBack(u64 position) {
-    // Seq_cst store and load against SleepOnBack's: one of the two sides sees the other.
     consumed.store(position, std::memory_order_seq_cst);
+    WakeFront();
+}
+
+void GpuSplit::WakeFront() {
+    // Seq_cst against SleepOnBack's front_waiting store and loads: either the front sees the
+    // store made before this, or this sees it waiting and moves `drained` on.
     if (front_waiting.load(std::memory_order_seq_cst)) {
         drained.fetch_add(1, std::memory_order_seq_cst);
         WakeWord(drained);
@@ -608,7 +631,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     if (idle_hook != nullptr) {
                         idle_hook(idle_argument);
                     }
-                    back_quiet.store(true, std::memory_order_release);
+                    back_quiet.store(true, std::memory_order_seq_cst);
+                    // A front draining may wait for this (SleepOnBack).
+                    WakeFront();
                 }
                 available = published.load(std::memory_order_acquire);
             }
@@ -661,7 +686,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         HandBack(read_position);
     }
     g_back_busy.store(false, std::memory_order_release);
-    back_running.store(false, std::memory_order_release);
+    back_running.store(false, std::memory_order_seq_cst);
+    WakeFront();
 }
 
 } // namespace VideoCommon
