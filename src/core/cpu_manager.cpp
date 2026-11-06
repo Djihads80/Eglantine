@@ -168,7 +168,16 @@ void PlaceCoreThread(std::size_t core) {
     }
     static const std::string cpus = [] {
         const char* value = std::getenv("EDEN_NCE_CORE_CPUS");
-        const std::string text{value != nullptr ? value : ""};
+        std::string text{value != nullptr ? value : ""};
+#ifdef __ANDROID__
+        // Switch 2 programs keep six core threads busy: "auto" unless set ("off": not placed).
+        if (value == nullptr && Settings::CurrentProgramIsSwitch2()) {
+            text = "auto";
+        }
+#endif
+        if (text == "off") {
+            return std::string{};
+        }
         if (text != "auto") {
             return text;
         }
