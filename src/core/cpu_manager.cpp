@@ -21,9 +21,14 @@
 
 #ifdef __linux__
 #include <cerrno>
+#include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <sched.h>
 #include <string>
+#include <unistd.h>
+#include <utility>
+#include <vector>
 #include "common/logging.h"
 #endif
 
@@ -101,6 +106,55 @@ namespace {
 // the GPU threads (critical), which then win a contended CPU; EDEN_NCE_CORE_ADPF=0 leaves them
 // out of the ADPF render session, whose boost packs them onto the prime cores with the GPU
 // threads. Not re-applied when the app refreshes its thread policies (on resume).
+//
+// EDEN_NCE_CORE_CPUS=auto: every CPU the process may use except the fastest cluster, of those at
+// least half as fast as it, when that leaves 4 or more (Snapdragon 8 Elite: 0-5, its two prime
+// cores left to the GPU threads); otherwise the core threads are not placed.
+std::string AutoCoreCpus() {
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(getpid(), sizeof(allowed), &allowed) != 0) {
+        return {};
+    }
+    const auto read_all = [&](const char* leaf) {
+        std::vector<std::pair<int, long long>> values;
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            if (!CPU_ISSET(cpu, &allowed)) {
+                continue;
+            }
+            const std::string path =
+                "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/" + leaf;
+            long long value = 0;
+            if (!(std::ifstream{path} >> value) || value <= 0) {
+                return std::vector<std::pair<int, long long>>{};
+            }
+            values.emplace_back(cpu, value);
+        }
+        return values;
+    };
+    // Capacities, or maximum frequencies where those are missing or all alike.
+    auto speeds = read_all("cpu_capacity");
+    const bool uniform = std::all_of(speeds.begin(), speeds.end(), [&](const auto& entry) {
+        return entry.second == speeds.front().second;
+    });
+    if (uniform) {
+        speeds = read_all("cpufreq/cpuinfo_max_freq");
+    }
+    long long fastest = 0;
+    for (const auto& [cpu, speed] : speeds) {
+        fastest = (std::max)(fastest, speed);
+    }
+    std::string list;
+    size_t count = 0;
+    for (const auto& [cpu, speed] : speeds) {
+        if (speed < fastest && speed * 2 >= fastest) {
+            list += (list.empty() ? "" : ",") + std::to_string(cpu);
+            ++count;
+        }
+    }
+    return count >= 4 ? list : std::string{};
+}
+
 void PlaceCoreThread(std::size_t core) {
     static const bool adpf = [] {
         const char* value = std::getenv("EDEN_NCE_CORE_ADPF");
@@ -114,7 +168,14 @@ void PlaceCoreThread(std::size_t core) {
     }
     static const std::string cpus = [] {
         const char* value = std::getenv("EDEN_NCE_CORE_CPUS");
-        return std::string{value != nullptr ? value : ""};
+        const std::string text{value != nullptr ? value : ""};
+        if (text != "auto") {
+            return text;
+        }
+        const std::string list = AutoCoreCpus();
+        LOG_INFO(Core, "EDEN_NCE_CORE_CPUS=auto: {}",
+                 list.empty() ? std::string{"no slower cluster of 4+ CPUs, not placed"} : list);
+        return list;
     }();
     static const std::string priority = [] {
         const char* value = std::getenv("EDEN_NCE_CORE_PRIORITY");
