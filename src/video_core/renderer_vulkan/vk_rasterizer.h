@@ -183,6 +183,9 @@ private:
     void Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline);
 
     void FlushWork();
+    /// Nx2Perf submit_while_waited, at FlushWork's dispatch check: submits the recorded draws
+    /// when the front waits for the back or the host GPU has caught up. True when it submitted.
+    bool SubmitWhileWaited();
 
     /// Records the copies of the command list pages the work just recorded wrote and submits, so
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
@@ -259,6 +262,11 @@ private:
     boost::container::static_vector<VkSampler, MAX_TEXTURES> sampler_handles;
 
     u32 draw_counter = 0;
+    /// Nx2Perf submit_while_waited (read once) and its draw minimums: while the front waits
+    /// (EDEN_NX2_SUBMIT_WAITED_DRAWS) and once the host GPU is idle (EDEN_NX2_SUBMIT_IDLE_DRAWS).
+    bool submit_while_waited{};
+    u32 submit_waited_draws{64};
+    u32 submit_idle_draws{128};
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
 };
 

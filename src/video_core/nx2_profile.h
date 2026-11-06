@@ -99,10 +99,28 @@ struct MacroCounts {
     u64 dma_reads;  ///< MME_DMA_READ(_FIFOED) emits
 };
 
+/// Why the Vulkan scheduler submitted (Scheduler::Flush): the caller tags it with FlushOriginTag.
+enum class FlushOrigin : u32 {
+    Other,
+    Waited,   ///< Nx2Perf submit_while_waited: the front waited for the back
+    GpuIdle,  ///< Nx2Perf submit_while_waited: the host GPU had finished everything submitted
+    Budget,   ///< FlushWork's draw budget
+    Fence,    ///< FlushCommands (fences with downloads or queries), not deferred
+    ListCopy, ///< Command list copies (SubmitNx2ListCopies, DMA copies)
+    IdleHook, ///< The split back's idle hook submitting deferred work
+    Count,
+};
+
+inline constexpr std::array<const char*, static_cast<size_t>(FlushOrigin::Count)>
+    flush_origin_names{"other", "waited", "gpu idle", "budget", "fence", "list copy", "idle hook"};
+
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, 32> counters{}; ///< See Counter
+    std::array<u64, static_cast<size_t>(FlushOrigin::Count)> flushes{};
+    u64 list_copy_done_ns{}; ///< Command list copies the front waited for: recorded to done
+    u64 list_copy_done_count{};
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -248,6 +266,47 @@ inline void AddDrain(DrainSite site, u64 start) {
     }
 }
 
+inline thread_local FlushOrigin t_flush_origin{FlushOrigin::Other};
+
+/// Tags the scheduler submissions made in its scope (only while profiling); nests.
+class FlushOriginTag {
+public:
+    explicit FlushOriginTag(FlushOrigin origin) : enabled{Enabled()} {
+        if (enabled) {
+            previous = t_flush_origin;
+            t_flush_origin = origin;
+        }
+    }
+    ~FlushOriginTag() {
+        if (enabled) {
+            t_flush_origin = previous;
+        }
+    }
+
+    FlushOriginTag(const FlushOriginTag&) = delete;
+    FlushOriginTag& operator=(const FlushOriginTag&) = delete;
+
+private:
+    bool enabled;
+    FlushOrigin previous{};
+};
+
+/// Scheduler::Flush: one submission, counted by the current tag.
+inline void AddFlush() {
+    if (Enabled()) {
+        ++t_data.flushes[static_cast<size_t>(t_flush_origin)];
+    }
+}
+
+/// The front waited for a command list copy recorded at `recorded` (Now; 0 when not profiling)
+/// and it is done now.
+inline void AddListCopyDone(u64 recorded) {
+    if (Enabled() && recorded != 0) {
+        t_data.list_copy_done_ns += Now() - recorded;
+        ++t_data.list_copy_done_count;
+    }
+}
+
 /// Called by the GPU thread (and the split's back thread) between commands: logs and resets
 /// the totals every 10 s.
 inline void Report(const char* thread_name = "GPU thread") {
@@ -356,6 +415,23 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | MME DMA reads past proven draws {:.0f} ({:.0f} drained: proof changed)",
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSet)]) * 1e9 / window,
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSetFallback)]) * 1e9 / window);
+    std::string flushes;
+    for (size_t i = 0; i < data.flushes.size(); ++i) {
+        if (data.flushes[i] != 0) {
+            flushes += fmt::format(" {} {:.0f},", flush_origin_names[i],
+                                   static_cast<double>(data.flushes[i]) * 1e9 / window);
+        }
+    }
+    if (!flushes.empty()) {
+        flushes.pop_back();
+        line += " | submits by origin:" + flushes;
+    }
+    if (data.list_copy_done_count != 0) {
+        line += fmt::format(" | list copy: {:.0f} us from submit to done ({:.0f}/s)",
+                            static_cast<double>(data.list_copy_done_ns) / 1000.0 /
+                                static_cast<double>(data.list_copy_done_count),
+                            static_cast<double>(data.list_copy_done_count) * 1e9 / window);
+    }
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {
         if (data.drain_count[i] != 0) {

@@ -256,6 +256,25 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<RasterizerVulkan*>(argument)->FlushSplitIdle(); },
         this);
+    submit_while_waited =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SubmitWhileWaited);
+    if (submit_while_waited) {
+        const auto draws = [](const char* name, u32 fallback) {
+            const char* value = std::getenv(name);
+            if (value == nullptr || value[0] < '0' || value[0] > '9') {
+                return fallback;
+            }
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(value, &end, 10);
+            return *end == '\0' ? static_cast<u32>(std::clamp(parsed, 1UL, 1'048'576UL))
+                                : fallback;
+        };
+        submit_waited_draws = draws("EDEN_NX2_SUBMIT_WAITED_DRAWS", 64);
+        submit_idle_draws = draws("EDEN_NX2_SUBMIT_IDLE_DRAWS", 128);
+        LOG_INFO(Render_Vulkan, "Nx2Perf submit_while_waited: {} draws while the front waits, {} "
+                                "once the GPU is idle",
+                 submit_waited_draws, submit_idle_draws);
+    }
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -1411,6 +1430,7 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
     // the longer DeferFlush interval (#161).
     if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
         (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) || !scheduler.DeferFlush())) {
+        VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::ListCopy};
         scheduler.Flush();
     }
 }
@@ -1420,6 +1440,7 @@ void RasterizerVulkan::FlushSplitIdle() {
         std::scoped_lock lock{buffer_cache.mutex};
         SubmitNx2ListCopies();
     }
+    VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::IdleHook};
     scheduler.FlushDeferred();
 }
 
@@ -1770,6 +1791,7 @@ void RasterizerVulkan::FlushCommands() {
     // Fences with downloads or queries come here right after queueing: ~9,400 a second in
     // Hyrule Warriors: Age of Imprisonment fights. Batched like the fences themselves.
     if (!scheduler.DeferFlush()) {
+        VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::Fence};
         scheduler.Flush();
     }
 }
@@ -1979,6 +2001,9 @@ void RasterizerVulkan::FlushWork() {
     static constexpr u32 CHECK_MASK = 31;
 #endif // __ANDROID__
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
+    if (submit_while_waited) {
+        scheduler.NoteDraw();
+    }
 #ifndef __ANDROID__
     // Nx2Perf dispatch_batch: Ampere draws dispatch every 128 draws. EDEN_NX2_DISPATCH_MASK=<2^k-1>
     // picks another mask for the A/B. Full chunks still dispatch on their own.
@@ -2011,6 +2036,11 @@ void RasterizerVulkan::FlushWork() {
         return;
     }
 #endif // __ANDROID__
+    if (submit_while_waited && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+        VideoCommon::GpuSplit::OnBackThread() && SubmitWhileWaited()) {
+        draw_counter = 0;
+        return;
+    }
     // Keep the host GPU working while native commands are still being recorded.
     // The 128-draw native budget is tuned for MoltenVK; desktop Vulkan takes the legacy 4096 (#161).
     static const u32 native_flush_draws = [] {
@@ -2033,8 +2063,48 @@ void RasterizerVulkan::FlushWork() {
         scheduler.DispatchWork();
         return;
     }
-    scheduler.Flush();
+    {
+        VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::Budget};
+        scheduler.Flush();
+    }
     draw_counter = 0;
+}
+
+bool RasterizerVulkan::SubmitWhileWaited() {
+    // A command list copy or a fence submitted later waits behind everything recorded since the
+    // last submission: the host GPU starts on it now while the front can't use the time, or the
+    // GPU would sit idle. The same commands in the same order; only the submissions move, at a
+    // draw boundary on the back, as fences and list copies already submit.
+    namespace Profile = VideoCommon::Nx2Profile;
+    const u32 draws = scheduler.DrawsSinceSubmit();
+    Profile::FlushOrigin origin;
+    if (draws >= submit_waited_draws && VideoCommon::GpuSplit::Get().FrontWaitsForBack()) {
+        origin = Profile::FlushOrigin::Waited;
+    } else if (draws >= submit_idle_draws && scheduler.GpuCaughtUp()) {
+        origin = Profile::FlushOrigin::GpuIdle;
+    } else {
+        return false;
+    }
+    Profile::FlushOriginTag tag{origin};
+    if (!VideoCommon::Nx2Perf::Verify()) {
+        scheduler.Flush();
+        return true;
+    }
+    // No answer to compare: the submission must end the pass and advance one tick, as any.
+    const u64 tick = scheduler.CurrentTick();
+    scheduler.Flush();
+    if (scheduler.CurrentTick() != tick + 1 || scheduler.IsRenderPassActive() ||
+        scheduler.DrawsSinceSubmit() != 0) {
+        static std::atomic<u64> mismatches{};
+        if (const u64 count = mismatches.fetch_add(1, std::memory_order_relaxed) + 1; count <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf submit_while_waited: tick {} -> {}, render pass {}, {} draws left "
+                      "after the submit ({} so far)",
+                      tick, scheduler.CurrentTick(), scheduler.IsRenderPassActive(),
+                      scheduler.DrawsSinceSubmit(), count);
+        }
+    }
+    return true;
 }
 
 AccelerateDMA::AccelerateDMA(BufferCache& buffer_cache_, TextureCache& texture_cache_,
@@ -2051,6 +2121,7 @@ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 
     buffer_cache.Nx2CollectListCopies(true);
     const bool copied = buffer_cache.DMACopy(src_address, dest_address, amount);
     if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+        VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::ListCopy};
         scheduler.Flush();
     }
     buffer_cache.Nx2CollectListCopies(false);

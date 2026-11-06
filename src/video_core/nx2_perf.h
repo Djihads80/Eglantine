@@ -59,6 +59,9 @@ enum class Opt : unsigned {
     PipelineFastCache,  ///< Direct-mapped graphics pipeline cache in front of the slow path
     DrawPreamble,       ///< GPU::TickWork skips the sync mutex when no request is queued
     BindMemo,           ///< Unchanged non-written binds skip touch, sync and usage across draws
+    /// Split back, Ampere: submits recorded draws while the front waits for the back or the
+    /// host GPU has run dry, so a command list copy waits only for the tail behind it
+    SubmitWhileWaited,
     Count,
 };
 
@@ -75,6 +78,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_batch", "macro_borrow", "macro_state",
     "download_batch",
     "dispatch_batch", "pipeline_fast_cache", "draw_preamble", "bind_memo",
+    "submit_while_waited",
 };
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
@@ -85,7 +89,7 @@ inline constexpr unsigned DefaultOffMask() {
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
-                          Opt::BindMemo}) {
+                          Opt::BindMemo, Opt::SubmitWhileWaited}) {
         mask |= 1U << static_cast<unsigned>(opt);
     }
     return mask;
@@ -105,10 +109,12 @@ inline bool On(Opt opt) {
         // set back to off (split_overlap stays quarantined either way).
         // Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
         // reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
-        // dispatch_batch (delays GPU work; suspected of the flashes, no verify mode).
+        // dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
+        // submit_while_waited (not measured yet).
         constexpr unsigned always_off = (1U << static_cast<unsigned>(Opt::SplitOverlap)) |
                                         (1U << static_cast<unsigned>(Opt::AcquireEarly)) |
-                                        (1U << static_cast<unsigned>(Opt::DispatchBatch));
+                                        (1U << static_cast<unsigned>(Opt::DispatchBatch)) |
+                                        (1U << static_cast<unsigned>(Opt::SubmitWhileWaited));
         unsigned mask = std::getenv("EDEN_NX2_PERF_SAFE") != nullptr ? DefaultOffMask() | always_off
                                                                  : always_off;
         std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";

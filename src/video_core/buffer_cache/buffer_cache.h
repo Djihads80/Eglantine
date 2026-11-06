@@ -2466,6 +2466,7 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             entry.copy = staging;
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
+            entry.copy_time = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
             entry.copy_begin = static_cast<u32>(begin - page);
             entry.copy_end = static_cast<u32>(end - page);
         }
@@ -2499,6 +2500,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
         };
         u64 tick{};
         u64 writes{};
+        u64 copy_time{};
         {
             std::scoped_lock lock{nx2_list_mutex};
             const auto it = nx2_list_pages.find(page);
@@ -2532,12 +2534,14 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
             }
             tick = entry.copy_tick;
             writes = entry.copy_writes;
+            copy_time = entry.copy_time;
         }
         // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
         {
             Nx2Profile::Scope profile_scope{Nx2Profile::Zone::ListCopyWait};
             runtime.WaitSubmittedTick(tick);
         }
+        Nx2Profile::AddListCopyDone(copy_time);
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
