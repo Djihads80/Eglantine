@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -251,6 +252,11 @@ public:
 
     /// Reports a device loss.
     void ReportLoss() const;
+
+    /// Called by ReportLoss before it waits (diagnostics of what the GPU was doing).
+    void SetLossReporter(std::function<void()> reporter) const {
+        loss_reporter = std::move(reporter);
+    }
 
     /// Reports a shader to Nsight Aftermath.
     void SaveShader(std::span<const u32> spirv) const;
@@ -1363,6 +1369,7 @@ private:
 
     /// Nsight Aftermath GPU crash tracker
     std::unique_ptr<NsightAftermathTracker> nsight_aftermath_tracker;
+    mutable std::function<void()> loss_reporter;
 };
 
 } // namespace Vulkan

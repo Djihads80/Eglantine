@@ -259,7 +259,9 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
                                    StateTracker& state_tracker_, Scheduler& scheduler_)
     : gpu{gpu_}, device_memory{device_memory_}, device{device_},
       memory_allocator{memory_allocator_}, state_tracker{state_tracker_}, scheduler{scheduler_},
-      staging_pool(device, memory_allocator, scheduler), descriptor_pool(device, scheduler),
+      staging_pool(device, memory_allocator, scheduler),
+      mesh_emulation_buffer(device, memory_allocator, scheduler),
+      descriptor_pool(device, scheduler),
       guest_descriptor_queue(device, UpdateDescriptorQueue::GUEST_FRAME_PAYLOAD_SIZE,
                              device.IsExtDescriptorBufferSupported()),
       compute_pass_descriptor_queue(device, UpdateDescriptorQueue::COMPUTE_FRAME_PAYLOAD_SIZE),
@@ -287,6 +289,13 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
         [this](const std::function<void(DAddr, size_t)>& callback) {
             gpu.ForEachPendingCpuWrite(callback);
         });
+    mesh_emulation_buffer.frame_dump = &frame_dump;
+    // Emulated task/mesh draws record their compute work ahead of their render pass's begin when
+    // they can. EDEN_NX2_MESH_EMULATE_HOIST=0: the pass ends and resumes around it instead.
+    scheduler.EnableRenderPassHoisting(MeshEmulationEnabled(device) && [] {
+        const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_HOIST");
+        return value == nullptr || value[0] != '0';
+    }());
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
@@ -429,6 +438,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
+    mesh_emulation_buffer.draw = {};
     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
     // to compare the same scene with and without them in one run.
@@ -439,13 +449,38 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     if (no_mesh_file && (no_mesh_check++ % 1024) == 0) {
         no_mesh = std::filesystem::exists(no_mesh_file);
     }
-    if (mesh_draw && (no_mesh || !device.IsExtMeshShaderSupported())) {
+    if (mesh_draw &&
+        (no_mesh || (!pipeline->IsMeshEmulated() && !device.IsExtMeshShaderSupported()))) {
         report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
+    if (mesh_draw && pipeline->IsMeshEmulated()) {
+        if (pipeline->MeshGroups(is_indexed) == 0) {
+            // No workgroups: nothing to draw, and no render pass to break for it.
+            submitted = true;
+            return;
+        }
+        // Its compute and graphics pipelines can take seconds to compile on a phone: skip its
+        // draws until they are built. EDEN_NX2_MESH_EMULATE_WAIT=1 waits for them instead.
+        static const bool wait_for_build = [] {
+            const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_WAIT");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (!wait_for_build && !pipeline->IsBuilt()) {
+            if (frame_dump.Capturing()) [[unlikely]] {
+                frame_dump.NoteSkipped("draw", "emulated task/mesh pipeline building",
+                                       GraphicsPrograms(), maxwell3d->regs.rt[0].Address());
+            }
+            submitted = true;
+            return;
+        }
+        pipeline->SetMeshEmulationBuffer(&mesh_emulation_buffer);
+        mesh_dynamic_topology = pipeline->UsesExtendedDynamicState();
+        mesh_dynamic_vertex_input = pipeline->HasDynamicVertexInput();
+    }
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
         maxwell3d->regs, pipeline->HasDynamicVertexInput());
     if (repack_dirty) {
@@ -772,6 +807,59 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
+        if (mesh_draw && mesh_emulation_buffer.draw.buffer) {
+            // Emulated: the mesh program's dispatch wrote the draw (vk_mesh_emulation.h).
+            const VkBuffer buffer{mesh_emulation_buffer.draw.buffer};
+            const VkDeviceSize offset{mesh_emulation_buffer.draw.offset +
+                                      Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD *
+                                          sizeof(u32)};
+            const bool set_topology{mesh_dynamic_topology};
+            const bool clear_vertex_input{mesh_dynamic_vertex_input};
+            // An indirect draw of the count its mesh dispatch wrote. EDEN_NX2_MESH_EMULATE_DIRECT=1:
+            // a direct draw of the slots the draw may use (unused ones are zeroed, their
+            // primitives culled). Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the compute
+            // work but draws nothing.
+            static const bool no_draw = [] {
+                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_NODRAW");
+                return value != nullptr && value[0] == '1';
+            }();
+            static const bool direct = [] {
+                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_DIRECT");
+                return value != nullptr && value[0] == '1';
+            }();
+            mesh_emulation_buffer.NoteDrawInPass();
+            if (no_draw) {
+                return;
+            }
+            const u32 direct_vertices{mesh_emulation_buffer.draw_vertices};
+            scheduler.Record([this, buffer, offset, set_topology, clear_vertex_input,
+                              direct_vertices](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
+                if (set_topology) {
+                    cmdbuf.SetPrimitiveTopologyEXT(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                }
+                if (clear_vertex_input) {
+                    // The vertex shader reads no attributes: none are fetched from whatever the
+                    // guest's vertex streams hold during a mesh draw.
+                    cmdbuf.SetVertexInputEXT({}, {});
+                }
+                if (direct) {
+                    cmdbuf.Draw(direct_vertices, 1, 0, 0);
+                    return;
+                }
+                cmdbuf.DrawIndirect(buffer, offset, 1, sizeof(VkDrawIndirectCommand));
+            });
+            if (set_topology) {
+                // The next draw sets the guest's again.
+                state_tracker.InvalidatePrimitiveTopology();
+            }
+            if (clear_vertex_input) {
+                maxwell3d->dirty.flags[Dirty::VertexInput] = true;
+            }
+            return;
+        }
         if (mesh_draw) {
             // NVN launches workgroups [first, first + count). DrawMeshTasksEXT starts at 0, so the
             // first stage adds first from a push constant (MeshFirstEnabled). The count is the raw
@@ -2727,10 +2815,12 @@ std::string RasterizerVulkan::DrawStateJson(const GraphicsPipeline& pipeline) co
         dynamic_alpha_to_coverage ? alpha_to_coverage_enable
                                   : alpha_to_coverage && pipeline.SupportsAlphaToCoverage();
     return fmt::format(
-        R"("fs":"{:016x}","mesh":{},"topo":{},"vb":[{},{}],"ib":[{},{}],"inst":{},"blend":[{}],)"
+        R"("fs":"{:016x}","mesh":{},"mesh_emu":{},"topo":{},"vb":[{},{}],"ib":[{},{}],"inst":{},)"
+        R"("blend":[{}],)"
         R"("per_target":{},"iterated":{},"const":[{},{},{},{}],"alpha_test":[{},{}],"a2c":[{},{}],)"
         R"("color0":{},"kill":{},"depth":[{},{},{}])",
-        pipeline.ShaderHashes()[5], pipeline.IsMeshPipeline(), static_cast<u32>(draw.topology),
+        pipeline.ShaderHashes()[5], pipeline.IsMeshPipeline(), pipeline.IsMeshEmulated(),
+        static_cast<u32>(draw.topology),
         draw.vertex_buffer.first,
         draw.vertex_buffer.count, draw.index_buffer.first, draw.index_buffer.count,
         draw.instance_count, targets, regs.blend_per_target_enabled != 0,

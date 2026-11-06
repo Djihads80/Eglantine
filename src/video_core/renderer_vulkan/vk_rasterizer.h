@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
+#include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -252,6 +253,7 @@ private:
     Scheduler& scheduler;
 
     StagingBufferPool staging_pool;
+    MeshEmulationBuffer mesh_emulation_buffer;
     DescriptorPool descriptor_pool;
     GuestDescriptorQueue guest_descriptor_queue;
     ComputePassDescriptorQueue compute_pass_descriptor_queue;
@@ -278,6 +280,8 @@ private:
 
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    bool mesh_dynamic_topology{}; ///< its pipeline takes the topology dynamically
+    bool mesh_dynamic_vertex_input{}; ///< its pipeline takes the vertex input dynamically
     /// The scene's colour target this frame so far and the last frame's (LastSceneColor).
     VideoCore::SceneColorTarget scene_color{};
     VideoCore::SceneColorTarget last_scene_color{};

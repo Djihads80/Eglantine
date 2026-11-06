@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <queue>
 
 #include "common/alignment.h"
+#include "common/assert.h"
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
 #include "common/settings.h"
@@ -94,6 +96,60 @@ public:
     /// of a renderpass.
     void RequestOutsideRenderPassOperationContext();
 
+    /// Render passes begin lazily: until their first command is handed to the worker, work can go
+    /// before them (RecordBeforeRenderPass) without ending them. For emulated task/mesh draws.
+    void EnableRenderPassHoisting(bool enable) noexcept {
+        hoisting = enable;
+    }
+
+    /// Records `command`, an operation allowed only outside a render pass, before the render pass
+    /// of `framebuffer` the next commands draw in: ahead of its begin while that is not recorded
+    /// yet (hoisting), otherwise the pass ends and begins again after it.
+    template <typename T>
+        requires std::is_invocable_v<T, vk::CommandBuffer>
+    void RecordBeforeRenderPass(const Framebuffer* framebuffer, T&& c) {
+        if (hoisting) {
+            PrepareBeforeRenderPass(framebuffer, 1024);
+            RecordBeforeRenderPass(PRE_PHASES - 1, std::forward<T>(c));
+            return;
+        }
+        RequestRenderpass(framebuffer);
+        EndRenderPass();
+        Record(std::forward<T>(c));
+        RequestRenderpass(framebuffer);
+    }
+
+    /// With hoisting, the work ahead of a pending begin runs in phases: a phase's commands run
+    /// after every command of the phases before it, so the draws of one pass order their stages
+    /// with one barrier each (recorded by the phase's first command).
+    static constexpr size_t PRE_PHASES = 4;
+
+    [[nodiscard]] bool HoistsRenderPasses() const noexcept {
+        return hoisting;
+    }
+
+    /// Makes the render pass of `framebuffer` take work ahead of its begin, `bytes` in each phase
+    /// (hoisting): ends it and begins it again lazily when its begin was handed over already, or
+    /// a phase lacks the room. Returns which phases hold nothing yet.
+    std::array<bool, PRE_PHASES> PrepareBeforeRenderPass(const Framebuffer* framebuffer,
+                                                         size_t bytes);
+
+    /// Records `command` in `phase` of the work ahead of the pending begin
+    /// (PrepareBeforeRenderPass made room for it).
+    template <typename T>
+        requires std::is_invocable_v<T, vk::CommandBuffer>
+    void RecordBeforeRenderPass(size_t phase, T&& c) {
+        auto command = [command = std::move(c)](vk::CommandBuffer cmdbuf, vk::CommandBuffer) {
+            command(cmdbuf);
+        };
+        std::unique_ptr<CommandChunk>& target = pre_chunks[phase];
+        if (!target) {
+            target = TakeChunk();
+        }
+        const bool recorded = target->Record(command);
+        ASSERT(recorded);
+    }
+
     /// Returns true when a render pass is currently active in the scheduler state.
     bool IsRenderPassActive() const {
         return state.renderpass != VK_NULL_HANDLE;
@@ -135,6 +191,12 @@ public:
     /// Update the rescaling state. Returns true if the state has to be updated.
     bool UpdateRescaling(bool is_rescaling);
 
+    /// The next graphics pipeline pushes its down factor again (a pipeline with another push
+    /// constant layout was bound).
+    void InvalidateRescaling() noexcept {
+        state.rescaling_defined = false;
+    }
+
     /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
     bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
 
@@ -144,6 +206,11 @@ public:
     /// Assigns the query cache.
     void SetQueryCache(VideoCommon::QueryCacheBase<QueryCacheParams>& query_cache_) {
         query_cache = &query_cache_;
+    }
+
+    /// Called after a render pass's end is recorded, outside it (diagnostic breadcrumbs).
+    void SetRenderPassEndHook(std::function<void()>&& func) {
+        on_render_pass_end = std::move(func);
     }
 
     // Registers a callback to perform on queue submission.
@@ -321,6 +388,10 @@ private:
             return command_offset == 0;
         }
 
+        bool HasRoom(size_t bytes) const {
+            return command_offset + bytes <= sizeof(data);
+        }
+
         bool HasSubmit() const {
             return submit;
         }
@@ -358,6 +429,19 @@ private:
     void BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
                              const VkClearValue* clear_values, u32 clear_value_count);
 
+    /// Records the begin of the current render pass (lazy with hoisting).
+    void RecordRenderPassBegin();
+
+    /// Hands the main stream, the work recorded before the pending render pass, its begin and
+    /// its commands to the worker, in that order.
+    void CommitRenderPassBegin();
+
+    /// A chunk from the reserve.
+    std::unique_ptr<CommandChunk> TakeChunk();
+
+    /// Queues a chunk for the worker (an empty one goes back to the reserve).
+    void PushChunk(std::unique_ptr<CommandChunk> work);
+
     /// If a deferred clear is pending.
     void RealizeDeferredClear();
 
@@ -391,8 +475,24 @@ private:
 
     DeferredClear deferred_clear;
 
+    // Render pass hoisting (EnableRenderPassHoisting): the pending begin of the current render
+    // pass, the main stream up to it, and the work recorded before it.
+    struct PendingBegin {
+        VkRenderPass renderpass{};
+        VkFramebuffer framebuffer{};
+        VkExtent2D render_area{};
+        std::array<VkClearValue, 9> clear_values{};
+        u32 clear_value_count{};
+    };
+    bool hoisting{};
+    bool begin_pending{};
+    PendingBegin pending_begin;
+    std::unique_ptr<CommandChunk> outer_chunk;
+    std::array<std::unique_ptr<CommandChunk>, PRE_PHASES> pre_chunks;
+
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;
+    std::function<void()> on_render_pass_end;
 
     State state;
     u64 recording_epoch = 0;

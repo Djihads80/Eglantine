@@ -492,6 +492,20 @@ public:
     std::array<Id, 2> mesh_outputs_marker{};
     std::array<Id, 4> mesh_tasks_marker{};
 
+    // Emulated task/mesh programs (RuntimeInfo::mesh_emulation): compute shaders whose task
+    // payloads and mesh output regions are in a storage buffer (MeshEmulationHeader). The
+    // prologue computes this workgroup's word offsets in it.
+    bool mesh_emulated{};
+    Id mesh_emulation_buffer{};
+    Id mesh_emulation_u32{};         ///< pointer type to one of its words
+    Id mesh_emulation_index{};       ///< mesh: workgroup index within its task's launch
+    Id mesh_emulation_payload{};     ///< mesh after a task: first word of the task's payload
+    Id mesh_emulation_attributes{};  ///< mesh: first word of the slot's attribute region
+    Id mesh_emulation_map{};         ///< mesh: first word of the slot's map region
+    Id mesh_emulation_counter{};     ///< private loop counter
+    Id mesh_emulation_shared_base{}; ///< task: first mesh workgroup it launched
+    Id mesh_emulation_shared_count{}; ///< task: mesh workgroups it launched within capacity
+
     Id load_const_func_u8{};
     Id load_const_func_u16{};
     Id load_const_func_u32{};
@@ -535,6 +549,7 @@ private:
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
     void DefineMesh(const IR::Program& program);
+    void DefineMeshEmulationBuffer(u32& binding);
 };
 
 } // namespace Shader::Backend::SPIRV

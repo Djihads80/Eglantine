@@ -12,6 +12,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <string_view>
@@ -91,6 +92,10 @@ public:
     /// GPU time: timestamps around each draw and dispatch recorded while capturing ("gpu_*" lines).
     void TimeBegin();
     void TimeEnd(bool dispatch);
+    /// GPU time of work recorded ahead of the next draw's render pass (emulated task/mesh
+    /// dispatches), in `pairs` parts: the pool and first of the two queries each part writes,
+    /// none when not timing.
+    [[nodiscard]] std::optional<std::pair<VkQueryPool, u32>> TimeAhead(u32 pairs = 1);
     /// Waits for pending readbacks and writes them once they pass the staging budget.
     void DrainIfFull();
     void TickFrame();
@@ -198,6 +203,7 @@ private:
         u32 number; ///< Draw or dispatch number
         u32 pass;
         bool dispatch;
+        bool ahead{}; ///< TimeAhead: emulated task/mesh work ("mesh_work")
     };
     vk::QueryPool timestamps;
     std::vector<Timed> timed;

@@ -111,6 +111,16 @@ Id DefineVariable(EmitContext& ctx, Id type, std::optional<spv::BuiltIn> builtin
     return id;
 }
 
+// A variable of an emulated task/mesh program (a compute shader): only SPIR-V 1.4 lists other
+// storage classes than Input and Output in the entry point.
+Id DefineEmulationVariable(EmitContext& ctx, Id type, spv::StorageClass storage_class) {
+    const Id id{ctx.AddGlobalVariable(ctx.TypePointer(storage_class, type), storage_class)};
+    if (ctx.profile.supported_spirv >= 0x00010400) {
+        ctx.interfaces.push_back(id);
+    }
+    return id;
+}
+
 u32 NumVertices(InputTopology input_topology) {
     switch (input_topology) {
     case InputTopology::Points:
@@ -507,6 +517,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         // After every other descriptor: the host appends the buffer in the same place.
         Decorate(shared_memory_u32, spv::Decoration::Binding, storage_binding++);
     }
+    DefineMeshEmulationBuffer(storage_binding);
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program);
@@ -1998,7 +2009,12 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         const bool is_integer = input_type == AttributeType::SignedInt ||
                                 input_type == AttributeType::UnsignedInt;
         if (runtime_info.per_primitive_generics.test(index)) {
-            // Written per primitive by a mesh program: constant over the primitive.
+            // Written per primitive by a mesh program: constant over the primitive. Emulated, the
+            // vertex shader gives the three corners of a primitive the same value.
+            if (runtime_info.mesh_emulation) {
+                Decorate(id, spv::Decoration::Flat);
+                continue;
+            }
             AddExtension("SPV_EXT_mesh_shader");
             AddCapability(spv::Capability::MeshShadingEXT);
             Decorate(id, spv::Decoration::PerPrimitiveEXT);
@@ -2039,28 +2055,57 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         return;
     }
-    AddExtension("SPV_EXT_mesh_shader");
-    AddCapability(spv::Capability::MeshShadingEXT);
+    mesh_emulated = runtime_info.mesh_emulation;
+    if (!mesh_emulated) {
+        AddExtension("SPV_EXT_mesh_shader");
+        AddCapability(spv::Capability::MeshShadingEXT);
+    }
     mesh_info = program.mesh;
     mesh_threads = program.workgroup_size[0];
-    // The task's output region, which its mesh workgroups read as their input region.
-    const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
-    mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
-                                  spv::StorageClass::TaskPayloadWorkgroupEXT);
-    Name(mesh_payload, "task_payload");
-    mesh_payload_u32 = TypePointer(spv::StorageClass::TaskPayloadWorkgroupEXT, U32[1]);
+    // The task's output region, which its mesh workgroups read as their input region. Emulated,
+    // a task program copies it to the storage buffer at the end and its mesh programs read it
+    // there; without a task program it is never written, as natively.
+    if (!mesh_emulated || stage == Stage::Task || !runtime_info.mesh_emulation_task) {
+        const spv::StorageClass payload_class{mesh_emulated
+                                                  ? spv::StorageClass::Workgroup
+                                                  : spv::StorageClass::TaskPayloadWorkgroupEXT};
+        const Id payload_type{TypeArray(U32[1], Const(mesh_info.payload_words))};
+        mesh_payload = mesh_emulated ? DefineEmulationVariable(*this, payload_type, payload_class)
+                                     : DefineVariable(*this, payload_type, std::nullopt,
+                                                      payload_class);
+        Name(mesh_payload, "task_payload");
+        mesh_payload_u32 = TypePointer(payload_class, U32[1]);
+    }
+    if (mesh_emulated) {
+        mesh_emulation_counter =
+            DefineEmulationVariable(*this, U32[1], spv::StorageClass::Private);
+        Name(mesh_emulation_counter, "mesh_emulation_counter");
+        if (!Sirit::ValidId(workgroup_id)) {
+            workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
+        }
+        if (!Sirit::ValidId(num_workgroups)) {
+            num_workgroups = DefineInput(*this, U32[3], false, spv::BuiltIn::NumWorkgroups);
+        }
+    }
     if (stage == Stage::Task) {
+        if (mesh_emulated) {
+            mesh_emulation_shared_base =
+                DefineEmulationVariable(*this, U32[1], spv::StorageClass::Workgroup);
+            Name(mesh_emulation_shared_base, "mesh_emulation_base");
+            mesh_emulation_shared_count =
+                DefineEmulationVariable(*this, U32[1], spv::StorageClass::Workgroup);
+            Name(mesh_emulation_shared_count, "mesh_emulation_count");
+        }
         return;
     }
     // Output attribute region: groups of 32 vertices, then groups of 32 primitives, one 32-word
     // line per attribute. The map region keeps one map byte per word.
-    const u32 vertex_lines{static_cast<u32>(mesh_info.vertex_lines.size())};
-    const u32 primitive_lines{static_cast<u32>(mesh_info.primitive_lines.size())};
-    mesh_primitive_base = Common::DivCeil(mesh_info.max_vertices, 32U) * vertex_lines * 32;
-    mesh_attribute_words = (std::max)(
-        mesh_primitive_base + Common::DivCeil(mesh_info.max_primitives, 32U) * primitive_lines * 32,
-        1U);
-    mesh_map_bytes = 4 + 3 * mesh_info.max_primitives;
+    mesh_primitive_base = MeshPrimitiveBase(mesh_info);
+    mesh_attribute_words = MeshAttributeWords(mesh_info);
+    mesh_map_bytes = MeshMapBytes(mesh_info);
+    if (mesh_emulated) {
+        return; // the regions are in the storage buffer, read by the vertex shader
+    }
     mesh_shared_u32 = TypePointer(spv::StorageClass::Workgroup, U32[1]);
     mesh_attributes = DefineVariable(*this, TypeArray(U32[1], Const(mesh_attribute_words)),
                                      std::nullopt, spv::StorageClass::Workgroup);
@@ -2141,6 +2186,32 @@ void EmitContext::DefineMesh(const IR::Program& program) {
     }
     for (const u32 line : mesh_info.primitive_lines) {
         mesh_primitive_targets.push_back(target(line, true));
+    }
+}
+
+void EmitContext::DefineMeshEmulationBuffer(u32& binding) {
+    if (!mesh_emulated) {
+        return;
+    }
+    AddExtension("SPV_KHR_storage_buffer_storage_class");
+    // SPIR-V types are unique: these are the u32 storage buffers' ones, decorated once.
+    const Id array_type{TypeRuntimeArray(U32[1])};
+    const Id struct_type{TypeStruct(array_type)};
+    if (!Sirit::ValidId(storage_types.U32.array) && !emulates_shared_memory) {
+        Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+        Decorate(struct_type, spv::Decoration::Block);
+        MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+    }
+    mesh_emulation_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+    mesh_emulation_buffer =
+        AddGlobalVariable(TypePointer(spv::StorageClass::StorageBuffer, struct_type),
+                          spv::StorageClass::StorageBuffer);
+    // After every other descriptor: the host appends the buffer in the same place.
+    Decorate(mesh_emulation_buffer, spv::Decoration::Binding, binding++);
+    Decorate(mesh_emulation_buffer, spv::Decoration::DescriptorSet, 0U);
+    Name(mesh_emulation_buffer, "mesh_emulation");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(mesh_emulation_buffer);
     }
 }
 

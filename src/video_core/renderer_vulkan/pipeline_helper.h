@@ -182,7 +182,7 @@ inline void DumpSpirv(std::string_view subdir, std::string_view name, std::span<
            Shader::NumDescriptors(info.image_buffer_descriptors) +
            Shader::NumDescriptors(info.texture_descriptors) +
            Shader::NumDescriptors(info.image_descriptors) +
-           (info.emulated_shared_memory_size != 0 ? 1U : 0U);
+           (info.emulated_shared_memory_size != 0 ? 1U : 0U) + info.mesh_emulation_buffers;
 }
 
 class DescriptorLayoutBuilder {
@@ -291,10 +291,11 @@ public:
         const VkPushConstantRange range{
             .stageFlags = static_cast<VkShaderStageFlags>(
                 is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
-                           : (uses_mesh ? VK_SHADER_STAGE_ALL_GRAPHICS |
-                                              VK_SHADER_STAGE_TASK_BIT_EXT |
-                                              VK_SHADER_STAGE_MESH_BIT_EXT
-                                        : VK_SHADER_STAGE_ALL_GRAPHICS)),
+                : mesh_emulation
+                    ? VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT
+                    : (uses_mesh ? VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT |
+                                       VK_SHADER_STAGE_MESH_BIT_EXT
+                                 : VK_SHADER_STAGE_ALL_GRAPHICS)),
             .offset = 0,
             .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
                     static_cast<u32>(sizeof(RenderAreaLayout)),
@@ -310,8 +311,14 @@ public:
         });
     }
 
+    /// A graphics pipeline whose task and mesh programs run as compute shaders: the push
+    /// constants reach them too.
+    void EnableMeshEmulation() noexcept {
+        mesh_emulation = true;
+    }
+
     void Add(const Shader::Info& info, VkShaderStageFlags stage) {
-        is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        is_compute |= !mesh_emulation && (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
         uses_mesh |= (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
 
         Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, info.constant_buffer_descriptors);
@@ -326,6 +333,16 @@ public:
                 u32 count{1};
             };
             Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, std::array<SharedMemoryBuffer, 1>{});
+        }
+        if (info.mesh_emulation_buffers != 0) {
+            // Task/mesh emulation's storage buffer: last too. The vertex shader drawing a mesh
+            // program's output reads it.
+            struct MeshEmulationBuffer {
+                u32 count{1};
+            };
+            const VkShaderStageFlags stages{stage |
+                                            (info.is_mesh ? VK_SHADER_STAGE_VERTEX_BIT : 0U)};
+            Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages, std::array<MeshEmulationBuffer, 1>{});
         }
     }
 
@@ -358,6 +375,7 @@ private:
     const Device* device{};
     bool is_compute{};
     bool uses_mesh{};
+    bool mesh_emulation{};
     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
     u32 binding{};

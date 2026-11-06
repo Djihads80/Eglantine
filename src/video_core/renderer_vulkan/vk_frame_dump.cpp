@@ -623,6 +623,24 @@ void FrameDump::TimeEnd(bool dispatch) {
     pending_begin = ~0U;
 }
 
+std::optional<std::pair<VkQueryPool, u32>> FrameDump::TimeAhead(u32 pairs) {
+    if (!capturing || !timing || next_query + pairs * 2 > MAX_TIMESTAMPS) {
+        return std::nullopt;
+    }
+    const u32 begin = next_query;
+    next_query += pairs * 2;
+    // Counted with the draw it precedes, not yet noted.
+    for (u32 pair = 0; pair < pairs; ++pair) {
+        timed.push_back({.begin = begin + pair * 2,
+                         .end = begin + pair * 2 + 1,
+                         .number = draws,
+                         .pass = pass_index,
+                         .dispatch = false,
+                         .ahead = true});
+    }
+    return std::pair{*timestamps, begin};
+}
+
 void FrameDump::ReportTimes() {
     if (!timing || timed.empty()) {
         return;
@@ -642,7 +660,12 @@ void FrameDump::ReportTimes() {
         double us{};
         u32 draws{};
         u32 dispatches{};
+        double mesh_us{};
     };
+    const auto what = [](const Timed& item) {
+        return item.ahead ? "mesh_work" : item.dispatch ? "dispatch" : "draw";
+    };
+    double mesh_us{};
     std::map<u32, PassTime> passes;
     std::vector<std::pair<double, const Timed*>> items;
     double total_us{};
@@ -652,29 +675,37 @@ void FrameDump::ReportTimes() {
         const double us = end > begin ? static_cast<double>(end - begin) * ns_per_tick / 1000.0 : 0.0;
         PassTime& pass = passes[item.pass];
         pass.us += us;
-        ++(item.dispatch ? pass.dispatches : pass.draws);
+        if (item.ahead) {
+            pass.mesh_us += us;
+            mesh_us += us;
+        } else {
+            ++(item.dispatch ? pass.dispatches : pass.draws);
+        }
         total_us += us;
         items.emplace_back(us, &item);
     }
     for (const auto& [index, pass] : passes) {
         Enqueue({.tags = fmt::format(
-                     R"({{"kind":"gpu_pass","pass":{},"us":{:.1f},"draws":{},"dispatches":{}}})",
-                     index, pass.us, pass.draws, pass.dispatches)});
+                     R"({{"kind":"gpu_pass","pass":{},"us":{:.1f},"draws":{},"dispatches":{},)"
+                     R"("mesh_work_us":{:.1f}}})",
+                     index, pass.us, pass.draws, pass.dispatches, pass.mesh_us)});
     }
     std::ranges::sort(items, [](const auto& a, const auto& b) { return a.first > b.first; });
     items.resize((std::min<size_t>)(items.size(), 64));
     for (const auto& [us, item] : items) {
         Enqueue({.tags = fmt::format(
                      R"({{"kind":"gpu_item","what":"{}","number":{},"pass":{},"us":{:.1f}}})",
-                     item->dispatch ? "dispatch" : "draw", item->number, item->pass, us)});
+                     what(*item), item->number, item->pass, us)});
     }
     std::string top;
     for (size_t i = 0; i < (std::min<size_t>)(items.size(), 8); ++i) {
-        top += fmt::format(" {} {} (pass {}) {:.0f} us;", items[i].second->dispatch ? "dispatch" : "draw",
+        top += fmt::format(" {} {} (pass {}) {:.0f} us;", what(*items[i].second),
                            items[i].second->number, items[i].second->pass, items[i].first);
     }
-    LOG_INFO(Render_Vulkan, "Frame dump: {:.1f} ms of GPU time in {} draws and dispatches; most:{}",
-             total_us / 1000.0, timed.size(), top);
+    LOG_INFO(Render_Vulkan,
+             "Frame dump: {:.1f} ms of GPU time in {} draws and dispatches ({:.1f} ms of it "
+             "emulated task/mesh work); most:{}",
+             total_us / 1000.0, timed.size(), mesh_us / 1000.0, top);
 }
 
 void FrameDump::CapturePresent(ImageView& view) {

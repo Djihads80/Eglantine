@@ -39,6 +39,7 @@
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -156,6 +157,28 @@ Shader::AttributeType AttributeType(const FixedPipelineState& state, size_t inde
         return Shader::AttributeType::UnsignedInt;
     }
     return Shader::AttributeType::Disabled;
+}
+
+// EDEN_NX2_MESH_EMULATE_DUMP=1: the shaders of emulated task/mesh pipelines are written to
+// dump/mesh_emulation/<pipeline>_<task|mesh|vertex>.spv (spirv-val, spirv-dis).
+void DumpMeshEmulationSpirv(u64 pipeline, std::string_view stage, std::span<const u32> code) {
+    static const bool dumps = [] {
+        const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_DUMP");
+        return value != nullptr && value[0] != '0';
+    }();
+    if (!dumps) {
+        return;
+    }
+    // Next to the frame dumps (EdenDir/dump), not in the DumpDir setting.
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "dump" / "mesh_emulation";
+    if (!Common::FS::CreateDirs(dir)) {
+        return;
+    }
+    Common::FS::IOFile file{dir / fmt::format("{:016x}_{}.spv", pipeline, stage),
+                            Common::FS::FileAccessMode::Write, Common::FS::FileType::BinaryFile};
+    if (file.IsOpen()) {
+        void(file.WriteSpan(code));
+    }
 }
 
 Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> programs,
@@ -475,6 +498,14 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         subgroup_stage_bit(VK_SHADER_STAGE_MESH_BIT_EXT, Shader::Stage::Mesh)};
     if (driver_id == VK_DRIVER_ID_MESA_TURNIP) {
         supported_subgroup_stages &= ~(1u << static_cast<u32>(Shader::Stage::Geometry));
+    }
+    if (MeshEmulationEnabled(device)) {
+        // Emulated task and mesh programs are compute shaders.
+        const u32 compute{subgroup_stage_bit(VK_SHADER_STAGE_COMPUTE_BIT, Shader::Stage::Compute)};
+        const u32 mesh_stages{(1u << static_cast<u32>(Shader::Stage::Task)) |
+                              (1u << static_cast<u32>(Shader::Stage::Mesh))};
+        supported_subgroup_stages = (supported_subgroup_stages & ~mesh_stages) |
+                                    (compute != 0 ? mesh_stages : 0u);
     }
     profile = Shader::Profile{
         .supported_spirv = device.SupportedSpirvVersion(),
@@ -1233,6 +1264,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
     // Layer passthrough generation for devices without VK_EXT_shader_viewport_index_layer
     Shader::IR::Program* layer_source_program{};
+    // Task/mesh programs without VK_EXT_mesh_shader (or EDEN_NX2_MESH_EMULATE=1): compute shaders
+    // and a generated vertex shader (vk_mesh_emulation.h).
+    const bool mesh_emulation{MeshEmulationEnabled(device)};
 
     for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
@@ -1264,7 +1298,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         // skipped (see the pipeline check in the rasterizer).
         if ((env.ShaderStage() == Shader::Stage::Task ||
              env.ShaderStage() == Shader::Stage::Mesh) &&
-            !device.IsExtMeshShaderSupported()) {
+            !device.IsExtMeshShaderSupported() && !mesh_emulation) {
             return nullptr;
         }
 
@@ -1295,10 +1329,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     }
     // Task and mesh programs need VK_EXT_mesh_shader with both stages: without it, don't hand the
     // driver a pipeline it doesn't support (the rasterizer skips the draw).
-    if (!device.IsExtMeshShaderSupported() &&
-        std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
-            return program.info.is_task || program.info.is_mesh;
-        })) {
+    const bool has_mesh{std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
+        return program.info.is_task || program.info.is_mesh;
+    })};
+    if (!device.IsExtMeshShaderSupported() && !mesh_emulation && has_mesh) {
         // Pipelines are built on worker threads too.
         static std::atomic_bool reported{};
         if (!reported.exchange(true, std::memory_order_relaxed)) {
@@ -1342,6 +1376,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
+    std::unique_ptr<MeshEmulationStages> emulation;
+    if (mesh_emulation && has_mesh) {
+        if (!profile.unified_descriptor_binding) {
+            return nullptr;
+        }
+        emulation = std::make_unique<MeshEmulationStages>();
+    }
     for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0; index < Maxwell::MaxShaderProgram;
          ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
@@ -1355,11 +1396,50 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const size_t stage_index{index - 1};
         infos[stage_index] = &program.info;
 
-        const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
+        auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
+        const bool emulated_stage{emulation && (program.info.is_task || program.info.is_mesh)};
+        if (emulation) {
+            // Task and mesh programs become compute shaders; the fragment program takes per-
+            // primitive inputs flat.
+            runtime_info.mesh_emulation = true;
+            if (emulated_stage) {
+                program.info.mesh_emulation_buffers = 1;
+            }
+            runtime_info.mesh_emulation_task =
+                program.info.is_mesh && previous_stage && previous_stage->info.is_task;
+        }
         ConvertLegacyToGeneric(program, runtime_info);
         const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
         device.SaveShader(code);
-        modules[stage_index] = BuildShader(device, code);
+        if (emulated_stage) {
+            vk::ShaderModule module{BuildShader(device, code)};
+            if (program.info.is_task) {
+                emulation->has_task = true;
+                emulation->task_module = std::move(module);
+                emulation->task_threads = program.workgroup_size[0];
+                emulation->payload_words = program.mesh.payload_words;
+            } else {
+                emulation->mesh_module = std::move(module);
+                emulation->payload_words = program.mesh.payload_words;
+                emulation->attribute_words = Shader::MeshAttributeWords(program.mesh);
+                emulation->map_words = Shader::Backend::SPIRV::MeshEmulationMapWords(program.mesh);
+                emulation->max_primitives = program.mesh.max_primitives;
+                // The vertex shader drawing its output, in the vertex slot. It reads the mesh
+                // program's storage buffer: its last binding.
+                const bool convert_depth{runtime_info.convert_depth_mode &&
+                                         !profile.support_native_ndc};
+                const std::vector<u32> vertex_code{Shader::Backend::SPIRV::EmitMeshEmulationVertex(
+                    profile, program.mesh, binding.unified - 1, convert_depth)};
+                modules[0] = BuildShader(device, vertex_code);
+                DumpMeshEmulationSpirv(hash, "vertex", vertex_code);
+                if (DumpsSpirv()) {
+                    spirv[0] = vertex_code;
+                }
+            }
+            DumpMeshEmulationSpirv(hash, program.info.is_task ? "task" : "mesh", code);
+        } else {
+            modules[stage_index] = BuildShader(device, code);
+        }
         if (DumpsSpirv()) {
             spirv[stage_index] = code; // For DumpFailedPipeline
         }
@@ -1388,11 +1468,21 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
         previous_stage = &program;
     }
+    if (emulation) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 48) {
+            LOG_INFO(Render_Vulkan,
+                     "Task/mesh pipeline {:016x} emulated: {} task threads, {} payload words, {} "
+                     "attribute and {} map words per mesh workgroup, {} primitives",
+                     hash, emulation->task_threads, emulation->payload_words,
+                     emulation->attribute_words, emulation->map_words, emulation->max_primitives);
+        }
+    }
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
-        render_pass_cache, key, std::move(modules), infos, std::move(spirv));
+        render_pass_cache, key, std::move(modules), infos, std::move(spirv), std::move(emulation));
 
 } catch (const Shader::Exception& exception) {
     auto hash = key.Hash();
