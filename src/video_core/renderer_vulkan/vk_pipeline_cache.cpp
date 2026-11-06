@@ -498,6 +498,14 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     if (driver_id == VK_DRIVER_ID_MESA_TURNIP) {
         supported_subgroup_stages &= ~(1u << static_cast<u32>(Shader::Stage::Geometry));
     }
+    if (MeshEmulationEnabled(device)) {
+        // Emulated task and mesh programs are compute shaders.
+        const u32 compute{subgroup_stage_bit(VK_SHADER_STAGE_COMPUTE_BIT, Shader::Stage::Compute)};
+        const u32 mesh_stages{(1u << static_cast<u32>(Shader::Stage::Task)) |
+                              (1u << static_cast<u32>(Shader::Stage::Mesh))};
+        supported_subgroup_stages = (supported_subgroup_stages & ~mesh_stages) |
+                                    (compute != 0 ? mesh_stages : 0u);
+    }
     profile = Shader::Profile{
         .supported_spirv = device.SupportedSpirvVersion(),
         .unified_descriptor_binding = true,

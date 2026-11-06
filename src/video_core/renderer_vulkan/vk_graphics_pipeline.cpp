@@ -1348,7 +1348,21 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
 }
 
 void GraphicsPipeline::MakeEmulatedMeshPipelines() {
-    const auto make = [&](const vk::ShaderModule& module) {
+    static constexpr VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .requiredSubgroupSize = GuestWarpSize,
+    };
+    const auto make = [&](const vk::ShaderModule& module, bool task) {
+        // As for compute pipelines: guest warps where warp-level ops observe the size.
+        const auto info{std::ranges::find_if(stage_infos, [task](const Shader::Info& stage) {
+            return task ? stage.is_task : stage.is_mesh;
+        })};
+        const bool uses_warp_ops = info->uses_subgroup_vote || info->uses_subgroup_invocation_id ||
+                                   info->uses_subgroup_shuffles || info->uses_subgroup_mask ||
+                                   info->uses_quad_shuffles || info->uses_fswzadd;
+        const bool guest_warps = uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
+                                 device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT);
         return device.GetLogical().CreateComputePipeline(
             {
                 .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -1356,7 +1370,7 @@ void GraphicsPipeline::MakeEmulatedMeshPipelines() {
                 .flags = 0,
                 .stage{
                     .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                    .pNext = nullptr,
+                    .pNext = guest_warps ? &subgroup_size_ci : nullptr,
                     .flags = 0,
                     .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                     .module = *module,
@@ -1370,9 +1384,9 @@ void GraphicsPipeline::MakeEmulatedMeshPipelines() {
             *pipeline_cache);
     };
     if (mesh_emulation->task_module) {
-        mesh_emulation->task_pipeline = make(mesh_emulation->task_module);
+        mesh_emulation->task_pipeline = make(mesh_emulation->task_module, true);
     }
-    mesh_emulation->mesh_pipeline = make(mesh_emulation->mesh_module);
+    mesh_emulation->mesh_pipeline = make(mesh_emulation->mesh_module, false);
 }
 
 bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
@@ -1390,7 +1404,9 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     const u64 slot_words{u64{stages.attribute_words} + stages.map_words + (has_task ? 2 : 0)};
     const u64 max_words{mesh_emulation_buffer->MaxSize() / sizeof(u32)};
     const u64 header_words{sizeof(MeshEmulationHeader) / sizeof(u32)};
-    if (header_words + payload_words + slot_words > max_words) {
+    // Past the device's dispatch limit (or the buffer): garbage, as natively.
+    if (groups > device.GetMaxComputeWorkGroupCount()[0] ||
+        header_words + payload_words + slot_words > max_words) {
         return false;
     }
     const u64 wanted{has_task ? u64{groups} * (fanout != 0 ? fanout : stages.task_threads)
