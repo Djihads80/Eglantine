@@ -422,7 +422,9 @@ struct System::Impl {
 #endif
         // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
         // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE without an environment).
-        if (Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
+        // Its EDEN_NX2_GPU_PROFILE static was read at library load, before env.txt.
+        if (std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr ||
+            Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
                                "gpu_profile")) {
             VideoCommon::Nx2Profile::g_enabled.store(true, std::memory_order_relaxed);
             LOG_INFO(Core, "GPU thread profile on (gpu_profile file)");
