@@ -1118,6 +1118,21 @@ bool FrontVerifyEnabled() {
     return verify;
 }
 
+// The front macro switches (Nx2Perf), read once.
+struct FrontMacroSwitches {
+    bool batch;
+    bool borrow;
+    bool keep_state;
+    bool verify;
+};
+const FrontMacroSwitches& FrontMacroOptions() {
+    using VideoCommon::Nx2Perf::On;
+    using VideoCommon::Nx2Perf::Opt;
+    static const FrontMacroSwitches switches{On(Opt::MacroBatch), On(Opt::MacroBorrow),
+                                             On(Opt::MacroState), VideoCommon::Nx2Perf::Verify()};
+    return switches;
+}
+
 // Executable methods ProcessMethodCall handles itself; the rest go to the draw manager.
 bool FrontHandledOutsideDrawManager(u32 method) {
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -1425,6 +1440,28 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
                                      u32 methods_pending) {
     auto& fs = Front(system, split);
     if (method >= MacroRegistersStart) {
+        const auto& options = FrontMacroOptions();
+        if (options.borrow && amount != 0 && amount == methods_pending &&
+            fs.executing_macro == 0 && fs.parameters.empty()) {
+            // The whole call in this run: the macro reads the words where they are.
+            fs.executing_macro = method;
+            if (!options.verify) [[likely]] {
+                FrontRunMacro(system, split, fs, {base_start, amount});
+                return;
+            }
+            static std::vector<u32> copy;
+            copy.assign(base_start, base_start + amount);
+            FrontRunMacro(system, split, fs, {base_start, amount});
+            static u64 differences{};
+            if (std::memcmp(copy.data(), base_start, amount * sizeof(u32)) != 0 &&
+                ++differences <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf macro: macro {:#x}'s {} borrowed parameters changed during "
+                          "the call ({} calls so far)",
+                          method, amount, differences);
+            }
+            return;
+        }
         if (fs.executing_macro == 0) {
             fs.executing_macro = method;
         }
@@ -1529,35 +1566,92 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
 }
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
-                              FrontState& fs) {
+                              FrontState& fs, std::span<const u32> borrowed) {
 #ifdef ARCHITECTURE_x86_64
+    namespace Profile = VideoCommon::Nx2Profile;
     const u32 method = fs.executing_macro;
     fs.executing_macro = 0;
     auto& engine = GetNativeMacroEngine();
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
+    const auto& options = FrontMacroOptions();
+    const bool profile = Profile::Enabled();
+    u64 writes_before{};
+    u64 same_before{};
+    u64 ring_before{};
+    u32 dma_reads{};
+    if (profile) [[unlikely]] {
+        writes_before = Profile::CounterValue(Profile::Counter::MethodWrites);
+        same_before = Profile::CounterValue(Profile::Counter::SameValueWrites);
+        ring_before = split.WritePosition();
+    }
     {
-        VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+        Profile::Scope profile_scope{Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
         if (!engine.native_jit) {
             engine.native_jit = std::make_shared<TuringMacroJit>();
         }
-        engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        const size_t parameter_count = fs.parameters.size();
+        engine.native_jit->Prepare(engine.native_code, engine.native_code_generation,
+                                   options.batch);
+        const size_t parameter_count = borrowed.empty() ? fs.parameters.size() : borrowed.size();
+        // The early return FrontWrite takes for a write that changes nothing: it reads and
+        // writes only fs.regs/fs.shadow at the method, so a batched write sees the earlier ones.
+        const auto same_value = [&fs, this](u32 address, u32 value) {
+            if (execution_mask[address] || !fs.skip_same) {
+                return false;
+            }
+            if (fs.control == Regs::ShadowRamControl::Track ||
+                fs.control == Regs::ShadowRamControl::TrackWithFilter) {
+                return fs.shadow[address] == value && fs.regs[address] == value;
+            }
+            const u32 stored =
+                fs.control == Regs::ShadowRamControl::Replay ? fs.shadow[address] : value;
+            return fs.regs[address] == stored;
+        };
         const auto result = engine.native_jit->Execute(
-            start, fs.parameters, std::span<u32>{native_data_ram},
+            start, fs.parameters, borrowed, std::span<u32>{native_data_ram},
             [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
             [&](u32 address, u32 value) {
                 if (address >= MacroRegistersStart) {
                     return false;
                 }
-                FrontWrite(split, fs, address, value, true, true);
+                if (!options.batch || !same_value(address, value)) {
+                    FrontWrite(split, fs, address, value, true, true);
+                } else if (!options.verify) [[likely]] {
+                    if (profile) [[unlikely]] {
+                        Profile::Add(Profile::Counter::MethodWrites, 1);
+                        Profile::Add(Profile::Counter::SameValueWrites, 1);
+                    }
+                } else {
+                    const u64 ring = split.WritePosition();
+                    const u32 reg = fs.regs[address];
+                    const u32 shadow = fs.shadow[address];
+                    const auto control = fs.control;
+                    FrontWrite(split, fs, address, value, true, true);
+                    static u64 differences{};
+                    if ((split.WritePosition() != ring || fs.regs[address] != reg ||
+                         fs.shadow[address] != shadow || fs.control != control) &&
+                        ++differences <= 64) {
+                        LOG_ERROR(HW_GPU,
+                                  "Nx2Perf macro: macro {:#x} write {:#x} = {:#x} taken as same "
+                                  "value: register {:#x} -> {:#x}, shadow {:#x} -> {:#x}, ring "
+                                  "words {} ({} so far)",
+                                  method, address, value, reg, fs.regs[address], shadow,
+                                  fs.shadow[address], split.WritePosition() - ring, differences);
+                    }
+                }
                 // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
                 if (address == 0x157 || address == 0x158) {
+                    // The read waits for the back, which may write the borrowed words.
+                    if (!borrowed.empty() && fs.parameters.empty()) {
+                        fs.parameters.assign(borrowed.begin(), borrowed.end());
+                    }
+                    ++dma_reads;
                     FrontDmaRead(split, fs, method, address, value);
                 }
                 return true;
-            });
+            },
+            {.batch_emits = options.batch, .keep_state = options.keep_state});
         if (!result.success) {
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
@@ -1572,6 +1666,12 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         if (FrontIsWriterDraw(fs.regs)) {
             split.NoteWriter();
         }
+    }
+    if (profile) [[unlikely]] {
+        Profile::AddMacro((method - MacroRegistersStart) >> 1,
+                          Profile::CounterValue(Profile::Counter::MethodWrites) - writes_before,
+                          Profile::CounterValue(Profile::Counter::SameValueWrites) - same_before,
+                          split.WritePosition() - ring_before, dma_reads);
     }
     if (FrontVerifyEnabled() && (++fs.calls & 4095) == 0) [[unlikely]] {
         FrontVerify(split, fs);

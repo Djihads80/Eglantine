@@ -228,6 +228,10 @@ public:
         }
         return newest;
     }
+    /// Front: the ring position after the last entry sent.
+    [[nodiscard]] u64 WritePosition() const {
+        return write_position;
+    }
     /// The back's position right now.
     [[nodiscard]] u64 ConsumedNow() const {
         return consumed.load(std::memory_order_acquire);

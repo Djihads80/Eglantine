@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <numeric>
 #include <string>
 #include <unordered_set>
 
@@ -78,12 +80,22 @@ inline u64 Now() {
     return static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
 }
 
+/// One 3D macro start id's ((method - 0xe00) / 2) calls on the split front (FrontRunMacro).
+struct MacroCounts {
+    u64 calls;
+    u64 writes;     ///< Methods the macro emitted
+    u64 same_value; ///< Of those, dropped as same-value writes
+    u64 ring_words; ///< Ring words sent during the call (writes, DMA read flushes, draws)
+    u64 dma_reads;  ///< MME_DMA_READ(_FIFOED) emits
+};
+
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
     std::array<u64, 15> counters{}; ///< See Counter
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_ns{};
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_count{};
+    std::array<MacroCounts, 128> macros{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -153,6 +165,19 @@ inline void Add(Counter counter, u64 amount) {
     if (Enabled()) {
         t_data.counters[static_cast<size_t>(counter)] += amount;
     }
+}
+
+inline u64 CounterValue(Counter counter) {
+    return t_data.counters[static_cast<size_t>(counter)];
+}
+
+inline void AddMacro(u32 id, u64 writes, u64 same_value, u64 ring_words, u64 dma_reads) {
+    MacroCounts& counts = t_data.macros[id % t_data.macros.size()];
+    ++counts.calls;
+    counts.writes += writes;
+    counts.same_value += same_value;
+    counts.ring_words += ring_words;
+    counts.dma_reads += dma_reads;
 }
 
 /// The front waited for the back since `start` (Now) for `site`.
@@ -233,6 +258,26 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += " | waits for the back by site:" + drains;
     }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
+    std::array<u32, std::tuple_size_v<decltype(data.macros)>> order;
+    std::iota(order.begin(), order.end(), 0U);
+    std::partial_sort(order.begin(), order.begin() + 12, order.end(), [&data](u32 a, u32 b) {
+        return data.macros[a].calls > data.macros[b].calls;
+    });
+    std::string macros;
+    for (size_t i = 0; i < 12 && data.macros[order[i]].calls != 0; ++i) {
+        const MacroCounts& counts = data.macros[order[i]];
+        const double calls = static_cast<double>(counts.calls);
+        macros += fmt::format("\n  macro {:#04x}: {:>9.0f} calls/s, {:5.2f} writes/call ({:5.2f} same "
+                              "value), {:5.2f} ring words/call, {:7.0f} DMA reads/s",
+                              order[i], calls * 1e9 / window,
+                              static_cast<double>(counts.writes) / calls,
+                              static_cast<double>(counts.same_value) / calls,
+                              static_cast<double>(counts.ring_words) / calls,
+                              static_cast<double>(counts.dma_reads) * 1e9 / window);
+    }
+    if (!macros.empty()) {
+        LOG_INFO(HW_GPU, "{} macros per second (top 12 by calls):{}", thread_name, macros);
+    }
     data = {};
     data.window_start = now;
 }
