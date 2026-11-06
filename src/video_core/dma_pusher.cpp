@@ -29,6 +29,9 @@
 
 namespace Tegra {
 
+
+constexpr u32 MacroRegistersStart = 0xE00;
+
 // Compute dispatches, uploads and reports and DMA copies write the command lists
 // ReadGpuWrittenCommands reads. Plain native compute state (Frizti 99b3b49) does not.
 bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
@@ -45,8 +48,6 @@ bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::
     }
     return false;
 }
-
-constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
