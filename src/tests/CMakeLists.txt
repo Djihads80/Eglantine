@@ -8,6 +8,7 @@ add_executable(tests
     core/nx2_oot_time.cpp
     video_core/unbacked_image_policy.cpp
     core/builtin_patches.cpp
+    core/gpu_dirty_memory_manager.cpp
     core/system_test_context.h
     video_core/gpu_timestamp.cpp
     video_core/oot_visual_workaround.cpp

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/device_memory_manager.h"
+#include "video_core/nx2_perf.h"
 
 namespace Core {
 
@@ -64,6 +65,13 @@ public:
     }
 
     void Gather(std::function<void(PAddr, size_t)>& callback) {
+        // Nothing collected: back_buffer only grows (under guard) while current holds a valid
+        // address, and only Gather resets current, so an invalid current means both are empty.
+        // Every fence gathers each core's manager; most find nothing.
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DirtyGatherFast) &&
+            !IsValid(current.load(std::memory_order_acquire).address)) {
+            return;
+        }
         // FlushRegion also gathers off the GPU thread (host1x video decode reads); serialize
         // gatherers so one cannot swap or clear front_buffer while another iterates it.
         std::scoped_lock gather_lk(gather_guard);

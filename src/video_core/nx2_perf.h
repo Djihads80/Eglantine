@@ -106,6 +106,11 @@ enum class Opt : unsigned {
     /// buffer create/delete epoch, not by the global tracker epochs; a new scheduler tick only
     /// redoes the usage mark
     BindMemoLocal,
+    /// GPUDirtyMemoryManager::Gather returns without its locks when nothing was collected
+    DirtyGatherFast,
+    /// Texture handles of one draw stage read through one translated constant buffer page,
+    /// not a GPU page walk per handle
+    HandlePageCache,
     Count,
 };
 
@@ -134,6 +139,8 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "landed_prev_always", "one_ahead_landed",
     "split_rings",
     "bind_memo_local",
+    "dirty_gather_fast",
+    "handle_page_cache",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
