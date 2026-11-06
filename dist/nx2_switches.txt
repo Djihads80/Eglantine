@@ -36,3 +36,13 @@ EDEN_NX2_FENCE_BATCH=1
 #EDEN_NX2_SPLIT_SKIP=1
 #EDEN_NX2_AUTO_STUB=1
 #EDEN_NX2_KEEP_ASTC=1
+# Size the temporary ASTC decode images exactly (=0) instead of rounding them up to a multiple of 64
+# texels so textures of nearly the same size share one.
+#EDEN_NX2_ASTC_SCRATCH_BUCKET=0
+# Submit after the ASTC decode (=0) instead of recording the decode and the BC encode in one submit.
+#EDEN_NX2_ASTC_ONE_SUBMIT=0
+# Only move finished ASTC decode images back to the pool once a frame, and drop the newest one when
+# the pool is full (=0), instead of when a texture asks for one and evicting the oldest.
+#EDEN_NX2_ASTC_POOL_V2=0
+# Only reuse an ASTC decode image of exactly the size asked for (=0), not a larger one.
+#EDEN_NX2_ASTC_POOL_FIT=0
