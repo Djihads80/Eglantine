@@ -35,6 +35,7 @@
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/nx2.h"
 #include "video_core/delayed_destruction_ring.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -80,6 +81,9 @@ enum class ObtainBufferOperation : u32 {
     MarkAsWritten = 1,
     DiscardWrite = 2,
     MarkQuery = 3,
+    /// The buffer is written on the GPU by what follows: record the write tick (a direct host
+    /// read waits for it) without marking the range modified or trapping its reads.
+    NoteGpuWrite = 4,
 };
 
 static constexpr BufferId NULL_BUFFER_ID{0};
@@ -491,6 +495,8 @@ private:
 
     void TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept;
 
+    void RefreshMultiRangeSegments(std::vector<MultiRangeSegment>& pool);
+
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
 
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
@@ -504,6 +510,12 @@ private:
     void DownloadBufferMemory(Buffer& buffer_id);
 
     void DownloadBufferMemory(Buffer& buffer_id, DAddr device_addr, u64 size);
+
+    /// Records that commands now recorded write `buffer` (for direct host reads).
+    void NoteGpuWrite(Buffer& buffer);
+
+    /// Downloads the GPU-written data of `buffer` in `ranges`, waiting for the GPU once.
+    void DownloadBufferRanges(Buffer& buffer, std::span<const std::pair<DAddr, u64>> ranges);
 
     /// Downloads the GPU-written data of several buffers with one wait for the GPU.
     void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
@@ -561,6 +573,16 @@ private:
 
     boost::container::small_vector<BufferCopy, 4> upload_copies;
 
+    /// Ranges SynchronizeBuffer left with nothing to upload, at their region's CPU write
+    /// generation (direct mapped by address and size).
+    struct SyncedRange {
+        const Buffer* buffer;
+        DAddr device_addr;
+        u32 size;
+        u64 generation;
+    };
+    std::array<SyncedRange, 256> synced_ranges{};
+
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
 
@@ -570,7 +592,8 @@ private:
     /// dispatch, the fencing thread holding the buffer cache while it wrote them), while its CPU
     /// read GPU-written memory at most 64 times in 200 s (counted with reactive flushing) and
     /// the native MME's DMA reads never touched those pages. Without them a fence costs ~1 us
-    /// instead of ~5 and draw setup ~7% less. EDEN_NX2_BUFFER_DOWNLOADS=0/1 forces it.
+    /// instead of ~5 and draw setup ~7% less. The titles that do read those pages back are listed
+    /// in Nx2NeedsBufferDownloads (nx2.h). EDEN_NX2_BUFFER_DOWNLOADS=0/1 overrides both.
     bool AsyncBufferDownloads() const {
         static const int forced = [] {
             const char* value = std::getenv("EDEN_NX2_BUFFER_DOWNLOADS");
@@ -579,7 +602,8 @@ private:
         if (forced >= 0) {
             return forced == 1;
         }
-        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
+        return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling() ||
+               Tegra::Nx2NeedsBufferDownloads();
     }
 
     /// Whether a GPU write to this range is copied back at the next fence. Ranges the guest CPU

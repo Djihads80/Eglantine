@@ -24,6 +24,7 @@
 #include "common/scope_exit.h"
 
 #if defined(__linux__)
+#include <linux/falloc.h>
 #include <sys/random.h>
 #elif defined(__APPLE__)
 #include <sys/types.h>
@@ -243,6 +244,8 @@ public:
 
     u8* backing_base{};
     u8* virtual_base{};
+
+    void ReleaseBackingRegion(size_t, size_t) const {}
 
 private:
     /// Release all resources in the object
@@ -668,6 +671,27 @@ public:
     u8* virtual_base{reinterpret_cast<u8*>(MAP_FAILED)};
     u8* virtual_map_base{reinterpret_cast<u8*>(MAP_FAILED)};
 
+    void ReleaseBackingRegion(size_t physical_offset, size_t length) const {
+        // Punching holes frees the memfd's pages for every mapping of it; without a memfd the
+        // backing is private anonymous memory, which MADV_DONTNEED frees.
+        constexpr size_t page = 4096;
+        const size_t begin = (physical_offset + page - 1) & ~(page - 1);
+        const size_t end = (physical_offset + length) & ~(page - 1);
+        if (end <= begin) {
+            return;
+        }
+#ifdef __linux__
+        if (fd > 0) {
+            fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(begin),
+                      static_cast<off_t>(end - begin));
+            return;
+        }
+#endif
+        {
+            madvise(backing_base + begin, end - begin, MADV_DONTNEED);
+        }
+    }
+
 private:
     /// Release all resources in the object
     void Release() {
@@ -893,6 +917,12 @@ void HostMemory::ForgetContents() {
         if ((granules[index].load(std::memory_order_relaxed) & GranuleUsed) != 0) {
             granules[index].fetch_or(GranuleDirty, std::memory_order_release);
         }
+    }
+}
+
+void HostMemory::ReleaseBackingRegion(size_t physical_offset, size_t length) const {
+    if (impl) {
+        impl->ReleaseBackingRegion(physical_offset, length);
     }
 }
 

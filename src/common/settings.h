@@ -364,6 +364,12 @@ struct Values {
                                                     Specialization::Default,
                                                     true,
                                                     true};
+    // Upstream's command list series (copies of lists at submit, and of lists the GPU writes).
+    // On Android, Mario Kart World runs without it unless its own custom settings turn it on
+    // (nvdrv.cpp): on an Odin 3 it cost ~45 ms of GPU-thread waiting a second there and caused
+    // flicker.
+    SwitchableSetting<bool> nx2_command_lists{linkage, true, "nx2_command_lists",
+                                              Category::RendererHacks};
     SwitchableSetting<int, true> fsr_sharpening_slider{linkage,
 #ifdef __ANDROID__
                                                        0,
@@ -609,8 +615,14 @@ struct Values {
 
     // Mario Kart World: select a fixed or dynamic in-game frame-rate mode (loader/nso.cpp).
     SwitchableSetting<bool> mkw_30fps{linkage, false, "mkw_30fps", Category::RendererAdvanced};
+    SwitchableSetting<bool> mkw_60fps{linkage, false, "mkw_60fps", Category::RendererAdvanced};
     SwitchableSetting<bool> mkw_dynamic_fps{linkage, false, "mkw_dynamic_fps",
                                             Category::RendererAdvanced};
+    // Mario Kart World: shorter LOD distances and fewer shadow cascades (loader/nso.cpp).
+    SwitchableSetting<bool> mkw_lod_distance{linkage, false, "mkw_lod_distance",
+                                             Category::RendererAdvanced};
+    SwitchableSetting<bool> mkw_shadow_cascades{linkage, false, "mkw_shadow_cascades",
+                                                Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
 #ifdef __ANDROID__
@@ -672,8 +684,24 @@ struct Values {
     SwitchableSetting<bool> emulate_bgr565{linkage, false, "emulate_bgr565",
                                             Category::RendererHacks};
 
-    SwitchableSetting<bool> use_asynchronous_shaders{linkage, false, "use_asynchronous_shaders",
+    // On by default on Android (pipelines building on the GPU thread stall a phone for 100s of
+    // ms); desktop keeps it off.
+    SwitchableSetting<bool> use_asynchronous_shaders{linkage,
+#ifdef __ANDROID__
+                                                     true,
+#else
+                                                     false,
+#endif
+                                                     "use_asynchronous_shaders",
                                                      Category::RendererHacks};
+    /// Large compressed textures keep their mip levels from 1 on (half resolution): less video
+    /// memory, slightly blurrier textures up close.
+    SwitchableSetting<bool> reduce_texture_resolution{linkage, false, "reduce_texture_resolution",
+                                                      Category::RendererHacks};
+    /// GPU-only guest memory (Switch 2) a texture was uploaded from is released afterwards, the
+    /// host image holding the data: less RAM, experimental.
+    SwitchableSetting<bool> release_gpu_only_memory{linkage, false, "release_gpu_only_memory",
+                                                    Category::RendererHacks};
 
     SwitchableSetting<GpuUnswizzleSize> gpu_unswizzle_texture_size{linkage,
                                                   GpuUnswizzleSize::Large,

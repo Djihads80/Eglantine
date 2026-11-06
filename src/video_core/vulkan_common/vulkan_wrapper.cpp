@@ -555,8 +555,40 @@ void Buffer::SetObjectNameEXT(const char* name) const {
     SetObjectName(dld, owner, handle, VK_OBJECT_TYPE_BUFFER, name);
 }
 
+std::span<const u8> Buffer::HostView() {
+    if (!host_view.empty()) {
+        return host_view;
+    }
+    if (allocator == nullptr || allocation == nullptr) {
+        return {};
+    }
+    VkMemoryPropertyFlags flags{};
+    vmaGetAllocationMemoryProperties(allocator, allocation, &flags);
+    if ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        return {};
+    }
+    void* data{};
+    if (vmaMapMemory(allocator, allocation, &data) != VK_SUCCESS || data == nullptr) {
+        return {};
+    }
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(allocator, allocation, &info);
+    host_view = std::span<u8>{static_cast<u8*>(data), static_cast<size_t>(info.size)};
+    host_view_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    return host_view;
+}
+
+void Buffer::InvalidateHostView() const {
+    if (!host_view.empty() && !host_view_coherent) {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+    }
+}
+
 void Buffer::Release() const noexcept {
     if (handle) {
+        if (!host_view.empty()) {
+            vmaUnmapMemory(allocator, allocation);
+        }
         vmaDestroyBuffer(allocator, handle, allocation);
     }
 }

@@ -99,6 +99,11 @@ public:
         compiled_generation = generation;
     }
 
+    /// Always true here; the ARM64 port (macro_turing_jit_arm64.h) can give up on a program.
+    bool Usable() const {
+        return true;
+    }
+
     template <typename Read, typename Emit>
     Result Execute(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read read,
                    Emit emit) {
@@ -299,6 +304,8 @@ private:
         }
 
         void Instruction(Word pc, Word count, const Decoded& d) {
+            // Keep the failing PC available for diagnostics; it used to stay zero.
+            mov(dword[st + offsetof(State, fail_pc)], pc);
             // FIFO loads, in lane order.
             for (Word i = 0; i < 2; ++i) {
                 const Xbyak::Reg32 load = i == 0 ? r12d : r13d;

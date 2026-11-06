@@ -397,7 +397,7 @@ void PresentManager::DiscardFrame(Frame* frame) {
 }
 
 void PresentManager::CopyToSwapchain(Frame* frame) {
-    bool requires_recreation = false;
+    bool requires_recreation = surface_recreation_pending;
 
     for (u32 attempt = 0; attempt < MAX_PRESENT_ATTEMPTS; ++attempt) {
         try {
@@ -407,12 +407,29 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
                 surface = CreateSurface(instance, render_window.GetWindowInfo());
 #endif
                 RecreateSwapchain(frame);
+                surface_recreation_pending = false;
             }
 
             // Draw to swapchain.
             return CopyToSwapchainImpl(frame);
         } catch (const vk::Exception& except) {
-            if (except.GetResult() != VK_ERROR_SURFACE_LOST_KHR) {
+            if (requires_recreation) {
+                // The window is gone (the app went to the background on Android): drop this
+                // frame and try again with the next one rather than end the process.
+                static u32 logged{};
+                if (logged++ < 8) {
+                    LOG_WARNING(Render_Vulkan, "Surface could not be recreated ({}); retrying",
+                                except.what());
+                }
+                surface_recreation_pending = true;
+                break;
+            }
+            // The window can change while the swapchain is recreated: the counts it reads can
+            // change between calls (VK_INCOMPLETE), and the surface can go out of date or stay in
+            // use. Only worth another try, not the abort an uncaught exception ends in here.
+            const VkResult result = except.GetResult();
+            if (result != VK_ERROR_SURFACE_LOST_KHR && result != VK_INCOMPLETE &&
+                result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
                 throw;
             }
 
@@ -432,6 +449,11 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
         swapchain.GetWidth() != frame->width || swapchain.GetHeight() != frame->height;
     if (is_suboptimal || size_changed) {
         RecreateSwapchain(frame);
+    }
+    if (!swapchain.IsCreated()) {
+        // Recreation skips a minimized window, so an earlier failed one has nothing to replace it.
+        DiscardFrame(frame);
+        return;
     }
 
     while (swapchain.AcquireNextImage(!use_present_thread)) {

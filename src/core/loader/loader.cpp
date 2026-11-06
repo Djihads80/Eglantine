@@ -115,6 +115,11 @@ bool HasApplicationProgramContent(const std::shared_ptr<FileSys::NSP>& nsp) {
         return false;
     }
 
+    // An extracted-type NSP (a packed dump, .nx2) holds its ExeFS directly, with no NCAs.
+    if (nsp->IsExtractedType()) {
+        return nsp->GetProgramStatus() == ResultStatus::Success;
+    }
+
     const auto& ncas = nsp->GetNCAs();
     return std::any_of(ncas.cbegin(), ncas.cend(), [](const auto& title_entry) {
         const auto& nca_map = title_entry.second;
@@ -171,15 +176,23 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
         if (nup.GetStatus() != ResultStatus::Success) {
             return false;
         }
+        const auto has_usable_exefs = [&nup](std::size_t index) {
+            const auto exefs = nup.GetExeFSDir(index);
+            return exefs != nullptr && exefs->GetFile("main") != nullptr &&
+                   exefs->GetFile("main.npdm") != nullptr;
+        };
         // A base package boots normally; a standalone update (no base) carries
         // a complete patched tree and boots on its own (SPEC section 4.1.2).
         if (const auto base = nup.FindBasePackage();
             base.has_value() && nup.GetExeFSDir(*base) != nullptr) {
-            return true;
+            const auto update = nup.FindBestUpdatePackage();
+            return has_usable_exefs(update && nup.GetExeFSDir(*update) != nullptr
+                                        ? *update
+                                        : *base);
         }
         if (const auto update = nup.FindBestUpdatePackage();
             update.has_value() && nup.GetExeFSDir(*update) != nullptr) {
-            return true;
+            return has_usable_exefs(*update);
         }
         return false;
     }
@@ -215,6 +228,8 @@ FileType GuessFromFilename(const std::string& name) {
         return FileType::NUP;
     else if (extension == "nsz")
         return FileType::NSZ;
+    else if (extension == "nx2") // a packed Switch 2 dump: an extracted-type NSP
+        return FileType::NSP;
     else if (extension == "kip")
         return FileType::KIP;
     return FileType::Unknown;

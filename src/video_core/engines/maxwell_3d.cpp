@@ -28,6 +28,9 @@
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+#include "video_core/macro_turing_jit_arm64.h"
+#endif
 
 namespace Tegra::Engines {
 
@@ -316,12 +319,22 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
 void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     const auto control = shadow_state.shadow_ram_control;
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
-    // CallMethod does.
+    // CallMethod does. A deferred instanced draw is issued before the first write that is not
+    // part of its loop (ProcessDirtyRegisters); without one when the sink is consumed, none can
+    // appear while it is (only draw methods make one), so the check is made once.
     const bool skip_same = SkipSameValueWrites();
+    const bool deferred_draw = draw_manager.HasDeferredDraw();
     const auto process = [&](u32 method, u32 value) {
-        if (!skip_same || regs.reg_array[method] != value) {
-            ProcessDirtyRegisters(method, value);
+        if (skip_same && regs.reg_array[method] == value) {
+            return;
         }
+        if (deferred_draw) [[unlikely]] {
+            ProcessDirtyRegisters(method, value);
+            return;
+        }
+        regs.reg_array[method] = value;
+        for (auto const& table : dirty.tables)
+            dirty.flags[table[method]] = true;
     };
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
@@ -591,9 +604,16 @@ void Maxwell3D::ProcessMacroUpload(u32 data) {
 void Maxwell3D::ProcessMacroBind(u32 data) {
     const auto positions = GetNativeMacroPositions();
     const u32 index = regs.load_mme.start_address_ptr++;
-    if (index < positions.size()) {
-        positions[index] = data;
+    if (index >= positions.size()) {
+        static std::atomic<u32> rejected{};
+        if (rejected.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU,
+                      "Rejecting out-of-range macro bind: index={:#x}, entries={}, data={:#x}",
+                      index, positions.size(), data);
+        }
+        return;
     }
+    positions[index] = data;
 }
 
 void Maxwell3D::ProcessFirmwareCall4() {
@@ -845,6 +865,15 @@ struct Maxwell3D::FrontState {
     /// then can it have a deferred instanced draw to issue at the end of a macro.
     bool draw_pending{true};
     bool skip_same{}; ///< SkipSameValueWrites() && FrontSkipSame(), read once
+    /// Per bind group: the raw config and constant buffer size/address of the last bind sent;
+    /// a bind equal to it changes nothing on the back (ProcessCBBind) and is not sent.
+    std::array<std::array<u32, 4>, 5> last_bind{};
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+    /// Methods whose emits the macro JIT must always call back for (TuringMacroJit::Elision):
+    /// executable ones, the MME DMA reads (FrontDmaRead) and the macro range.
+    std::array<u8, TuringMacroJit::MustCallMethods> jit_must_call{};
+    TuringMacroJit::Elision elision{};
+#endif
 };
 
 namespace {
@@ -891,6 +920,51 @@ bool FrontHandledOutsideDrawManager(u32 method) {
     }
 }
 
+// EDEN_NX2_JIT_SKIP_SAME=0: the ARM64 macro JIT calls back for every emit; the same-value
+// writes are then skipped in FrontWrite as before (A/B switch for the in-JIT elision).
+bool JitSkipSameEnabled() {
+    static const bool skip = [] {
+        const char* value = std::getenv("EDEN_NX2_JIT_SKIP_SAME");
+        return value == nullptr || value[0] != '0';
+    }();
+    return skip;
+}
+
+// EDEN_NX2_CB_BIND_SKIP=0: send a constant buffer bind even when its stage's bind group holds
+// the same configuration, buffer address and size as the last bind sent (ProcessCBBind would
+// set the same binding again).
+bool CbBindSkipEnabled() {
+    static const bool skip = [] {
+        const char* value = std::getenv("EDEN_NX2_CB_BIND_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    return skip;
+}
+
+constexpr u32 BindGroupStride = MAXWELL3D_REG_INDEX(bind_groups[1].raw_config) -
+                                MAXWELL3D_REG_INDEX(bind_groups[0].raw_config);
+
+// EDEN_NX2_CB_BATCH=0: a front macro's constant buffer data words (CB_DATA) go to the back one
+// by one (CallMethod each) instead of as one multi-method entry per run.
+bool CbBatchEnabled() {
+    static const bool batch = [] {
+        const char* value = std::getenv("EDEN_NX2_CB_BATCH");
+        return value == nullptr || value[0] != '0';
+    }();
+    return batch;
+}
+
+// EDEN_NX2_MACRO_SINK=0: the back runs every write a front macro makes through CallMethod at
+// once (GpuSplit::MacroWrite), instead of putting state writes in its method sink like the
+// pushbuffer's and applying them before the next executable method.
+bool MacroSinkEnabled() {
+    static const bool sink = [] {
+        const char* value = std::getenv("EDEN_NX2_MACRO_SINK");
+        return value == nullptr || value[0] != '0';
+    }();
+    return sink;
+}
+
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
 bool FrontSkipSame() {
     static const bool skip = [] {
@@ -913,6 +987,16 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         std::memcpy(front->shadow.data(), shadow_state.reg_array.data(), sizeof(front->shadow));
         front->control = shadow_state.shadow_ram_control;
         front->skip_same = SkipSameValueWrites() && FrontSkipSame();
+        for (auto& bind : front->last_bind) {
+            bind.fill(~u32{0});
+        }
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        for (u32 method = 0; method < front->jit_must_call.size(); ++method) {
+            const bool dma_read = method == 0x157 || method == 0x158;
+            front->jit_must_call[method] =
+                method >= Regs::NUM_REGS || execution_mask[method] || dma_read ? 1 : 0;
+        }
+#endif
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -925,6 +1009,21 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    // A macro's constant buffer data: a run of words goes as one multi-method entry, which the
+    // back uploads with ProcessCBMultiData as it does the pushbuffer's runs: the same bytes at
+    // the same offsets, without touching the data register or its shadow copy (nor does the
+    // front then). Not in replay mode, where a word written is the shadow RAM's.
+    constexpr u32 cb_data_first = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    if (from_macro && method >= cb_data_first && method < cb_data_first + 16 &&
+        fs.control != Regs::ShadowRamControl::Replay && CbBatchEnabled()) {
+        if (Profile::Enabled()) [[unlikely]] {
+            Profile::Add(Profile::Counter::MethodWrites, 1);
+            Profile::Add(Profile::Counter::MacroWrites, 1);
+        }
+        fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
+        split.QueueWord(this, cb_data_first, argument);
+        return;
+    }
     // As ProcessShadowRam does on the back.
     u32 value = argument;
     bool shadow_kept = true;
@@ -937,6 +1036,9 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     }
     if (Profile::Enabled()) [[unlikely]] {
         Profile::Add(Profile::Counter::MethodWrites, 1);
+        if (from_macro) {
+            Profile::Add(Profile::Counter::MacroWrites, 1);
+        }
     }
     if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
         fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
@@ -980,6 +1082,26 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         case MAXWELL3D_REG_INDEX(falcon[4]):
             fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
             break;
+        case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
+        case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config): {
+            // ProcessCBBind sets the stage's slot from this configuration and the constant
+            // buffer registers: the same ones as last time set the binding it already has.
+            const size_t stage = (method - MAXWELL3D_REG_INDEX(bind_groups[0].raw_config)) / BindGroupStride;
+            const std::array<u32, 4> bind{value, fs.regs[MAXWELL3D_REG_INDEX(const_buffer.size)],
+                                          fs.regs[MAXWELL3D_REG_INDEX(const_buffer.address_high)],
+                                          fs.regs[MAXWELL3D_REG_INDEX(const_buffer.address_low)]};
+            if (fs.last_bind[stage] == bind && CbBindSkipEnabled()) {
+                if (Profile::Enabled()) [[unlikely]] {
+                    Profile::Add(Profile::Counter::CbBindsSkipped, 1);
+                }
+                return;
+            }
+            fs.last_bind[stage] = bind;
+            break;
+        }
         default:
             if (method >= cb_data && method < cb_data + 16) {
                 fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
@@ -989,9 +1111,12 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             break;
         }
     }
-    if (from_macro) {
+    if (from_macro && (execution_mask[method] || !MacroSinkEnabled())) {
         split.MacroWrite(this, method, argument);
     } else {
+        // A state write: the back sinks it and applies it (shadow RAM, same-value skip, dirty
+        // flags) before the next executable method, as CallMethod would have at once. The
+        // macro's end consumes the sink too (FinishFrontMacro).
         split.Method(this, method, argument, is_last_call, nullptr);
     }
 }
@@ -1090,6 +1215,15 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             case MAXWELL3D_REG_INDEX(falcon[4]):
                 fs.regs[MAXWELL3D_REG_INDEX(shadow_scratch)] = 1;
                 break;
+            case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[3].raw_config):
+            case MAXWELL3D_REG_INDEX(bind_groups[4].raw_config):
+                // Bound on the back word by word, not through FrontWrite: forget the last bind.
+                fs.last_bind[(method - MAXWELL3D_REG_INDEX(bind_groups[0].raw_config)) / BindGroupStride]
+                    .fill(~u32{0});
+                break;
             default:
                 if (!FrontHandledOutsideDrawManager(method)) {
                     fs.draw_pending = true;
@@ -1103,7 +1237,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
 
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                               FrontState& fs) {
-#ifdef ARCHITECTURE_x86_64
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
     const u32 method = fs.executing_macro;
     fs.executing_macro = 0;
     auto& engine = GetNativeMacroEngine();
@@ -1117,24 +1251,64 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         }
         engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
         const size_t parameter_count = fs.parameters.size();
-        const auto result = engine.native_jit->Execute(
-            start, fs.parameters, std::span<u32>{native_data_ram},
-            [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
-            [&](u32 address, u32 value) {
-                if (address >= MacroRegistersStart) {
-                    return false;
-                }
-                FrontWrite(split, fs, address, value, true, true);
-                // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
-                if (address == 0x157 || address == 0x158) {
-                    FrontDmaRead(split, fs, address, value);
-                }
-                return true;
-            });
+        const auto read = [&fs](u32 address) {
+            return address < Regs::NUM_REGS ? fs.regs[address] : 0U;
+        };
+        const auto emit = [&](u32 address, u32 value) {
+            if (address >= MacroRegistersStart) {
+                return false;
+            }
+            FrontWrite(split, fs, address, value, true, true);
+            // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
+            if (address == 0x157 || address == 0x158) {
+                FrontDmaRead(split, fs, address, value);
+            }
+            return true;
+        };
+        // The ARM64 code stops being used when it differs from the interpreter on a checked
+        // call (or could not be compiled): the front interprets the macros then. With macros
+        // on the front the back never runs them, so the interpreter is the front's.
+        const bool jit = engine.native_jit->Usable();
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        // Same-value state writes are elided inside the compiled code, as FrontWrite would skip
+        // them (never when the front sends them all, EDEN_NX2_SPLIT_SKIP=0).
+        if (jit && fs.skip_same && JitSkipSameEnabled()) {
+            fs.elision = TuringMacroJit::Elision{
+                .must_call = fs.jit_must_call.data(),
+                .regs = fs.regs.data(),
+                .shadow = fs.shadow.data(),
+                .control = reinterpret_cast<const u32*>(&fs.control),
+                .skipped = 0,
+            };
+            engine.native_jit->SetElision(&fs.elision);
+        } else {
+            engine.native_jit->SetElision(nullptr);
+        }
+#endif
+        const auto result =
+            jit ? engine.native_jit->Execute(start, fs.parameters, std::span<u32>{native_data_ram}, read,
+                                             emit)
+                : engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+        // Not left behind: the compute engine's front macros can run through the same JIT, and
+        // must never elide against this engine's registers.
+        engine.native_jit->SetElision(nullptr);
+        if (const u32 skipped = fs.elision.skipped; skipped != 0) {
+            fs.elision.skipped = 0;
+            if (VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
+                namespace Profile = VideoCommon::Nx2Profile;
+                Profile::Add(Profile::Counter::MethodWrites, skipped);
+                Profile::Add(Profile::Counter::MacroWrites, skipped);
+                Profile::Add(Profile::Counter::SameValueWrites, skipped);
+                Profile::Add(Profile::Counter::JitSkippedWrites, skipped);
+            }
+        }
+#endif
         if (!result.success) {
             engine.native_execution_failed = true;
-            LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
-                      start, result.consumed, parameter_count, result.error);
+            LOG_ERROR(HW_GPU, "Native MME ({}, split front) failed: start={:#x}, consumed={}/{}, error={}",
+                      jit ? "JIT" : "interpreter", start, result.consumed, parameter_count,
+                      result.error);
         }
     }
     fs.parameters.clear();
@@ -1155,7 +1329,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
+    split.Drain(VideoCommon::Nx2Profile::Zone::SplitDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);
@@ -1232,6 +1406,62 @@ void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
     if ((checks & 63) == 1) {
         LOG_INFO(HW_GPU, "Split front register checks: {} done, {} differences", checks, differences);
     }
+}
+
+bool Maxwell3D::FrontLoadConstantRun(Core::System& system, VideoCommon::GpuSplit& split,
+                                     u32 first_method, const u32* words, u32 count) {
+    namespace Profile = VideoCommon::Nx2Profile;
+    constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+    auto& fs = Front(system, split);
+    if (fs.control == Regs::ShadowRamControl::Replay) {
+        return false; // A word written is then the shadow RAM's: word by word (FrontWrite)
+    }
+    const bool tracked = fs.control == Regs::ShadowRamControl::Track ||
+                         fs.control == Regs::ShadowRamControl::TrackWithFilter;
+    // What FrontWrite mirrors for each word: the shadow RAM, the register, the offset the data
+    // words advance. The back makes the same changes in LoadConstantRun.
+    for (u32 i = 0; i < count; ++i) {
+        const u32 method = first_method + i;
+        const u32 word = words[i];
+        if (tracked) {
+            fs.shadow[method] = word;
+        }
+        fs.regs[method] = word;
+        if (method != cb_offset) {
+            fs.regs[cb_offset] += sizeof(u32);
+        }
+    }
+    if (Profile::Enabled()) [[unlikely]] {
+        Profile::Add(Profile::Counter::MethodWrites, count);
+    }
+    split.ConstantRun(this, first_method, words, count);
+    return true;
+}
+
+void Maxwell3D::LoadConstantRun(Core::System& system, u32 first_method, const u32* words,
+                                u32 count) {
+    constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+    u32 index = 0;
+    if (first_method == cb_offset) {
+        // The offset: a state write, as CallMethod applies it (shadow RAM, same-value skip,
+        // dirty flags).
+        CallMethod(system, cb_offset, words[0], count == 1);
+        index = 1;
+    }
+    const u32 data_count = count - index;
+    if (data_count == 0) {
+        return;
+    }
+    // The data words: the shadow RAM, register and dirty flags per word as CallMethod makes
+    // them, then one upload from the offset (ProcessCBData per word advances it the same).
+    std::array<u32, MaxConstantRun> values;
+    for (u32 i = 0; i < data_count; ++i) {
+        const u32 method = first_method + index + i;
+        const u32 value = ProcessShadowRam(method, words[index + i]);
+        ProcessDirtyRegisters(method, value);
+        values[i] = value;
+    }
+    ProcessCBMultiData(values.data(), data_count);
 }
 
 void Maxwell3D::FinishFrontMacro(Core::System& system) {

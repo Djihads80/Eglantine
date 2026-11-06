@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -19,6 +20,49 @@ namespace Tegra {
 // Set once a Switch 2 (Ampere, NVN2) driver is talking to the GPU. Its command streams use
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};
+
+// The running title, for the few places that must behave differently per game.
+inline std::atomic<u64> g_nx2_program_id{0};
+
+// EDEN_NX2_HELD_WRITES=0 turns off, for Switch 2 programs: applying the guest CPU writes held
+// back from GPU-written memory before each submitted command list, and applying them byte for
+// byte (OnCachedWrite) instead of re-uploading whole pages over GPU data never copied back.
+inline bool Nx2HeldWritesEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_HELD_WRITES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+inline bool Nx2HeldWrites() {
+    return g_nx2_ampere.load(std::memory_order_relaxed) && Nx2HeldWritesEnabled();
+}
+
+// nx2_command_lists, set once per game start (nvdrv's Module; EDEN_NX2_COMMAND_LISTS=0/1
+// overrides it). Off, the command list series is: no copy of a list's words at submit
+// (nvhost_gpu), and no copies or flushes of lists on GPU-written pages (DmaPusher's
+// IsGpuWrittenCommands, ReadGpuWrittenCommands). Lists are then read from guest memory when they
+// run, as before the series.
+inline std::atomic<bool> g_nx2_command_lists{true};
+
+inline bool Nx2CommandLists() {
+    return g_nx2_command_lists.load(std::memory_order_relaxed);
+}
+
+// Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
+// see, so their buffers must be copied back to guest memory at every fence
+// (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
+// Pokopia: with the copy-back off its sky is black or flickers. Open work: find what reads it,
+// then the list goes.
+inline bool Nx2NeedsBufferDownloads() {
+    switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
+    case 0x0400A3A01EE4C000ULL:
+        return true;
+    default:
+        return false;
+    }
+}
 
 // Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
@@ -282,6 +326,37 @@ inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
     }
     --it;
     return gpu_address + size <= it->first + it->second.size;
+}
+
+// GPU-only regions nx2:gpu backs whole (214 without the sparse flag), start -> size: the texture
+// cache gives back the guest memory of images it uploaded from them (release_gpu_only_memory).
+inline std::mutex g_nx2_gpu_only_mutex;
+inline std::map<u64, u64> g_nx2_gpu_only_regions;
+
+inline void Nx2GpuOnlyRegionCreated(u64 gpu_address, u64 size) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions[gpu_address] = size;
+}
+
+inline void Nx2GpuOnlyRegionDestroyed(u64 gpu_address) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions.erase(gpu_address);
+}
+
+/// A new emulation session: the previous game's GPU-only regions are gone too.
+inline void Nx2ClearGpuOnlyRegions() {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    g_nx2_gpu_only_regions.clear();
+}
+
+inline bool Nx2InGpuOnlyRegion(u64 gpu_address, u64 size) {
+    std::scoped_lock lk{g_nx2_gpu_only_mutex};
+    auto it = g_nx2_gpu_only_regions.upper_bound(gpu_address);
+    if (size == 0 || it == g_nx2_gpu_only_regions.begin()) {
+        return false;
+    }
+    --it;
+    return gpu_address + size <= it->first + it->second;
 }
 
 /// The GPU renders into [gpu_address, +size): count its blocks as written, so images made there

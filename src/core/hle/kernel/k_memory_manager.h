@@ -110,7 +110,9 @@ public:
 
             {
                 KScopedLightLock lk(m_pool_locks[static_cast<size_t>(manager.GetPool())]);
-                manager.Close(address, cur_pages);
+                manager.Close(address, cur_pages, [this](KPhysicalAddress freed, size_t count) {
+                    ReleaseFreedPages(freed, count);
+                });
             }
 
             num_pages -= cur_pages;
@@ -291,12 +293,19 @@ private:
             }
         }
 
-        void Close(KPhysicalAddress address, size_t num_pages) {
+        // `on_free` sees each run of pages whose last reference went, before they're free.
+        template <typename OnFree>
+        void Close(KPhysicalAddress address, size_t num_pages, OnFree&& on_free) {
             size_t index = this->GetPageOffset(address);
             const size_t end = index + num_pages;
 
             size_t free_start = 0;
             size_t free_count = 0;
+            const auto free_run = [&] {
+                const KPhysicalAddress run = m_heap.GetAddress() + free_start * PageSize;
+                on_free(run, free_count);
+                this->Free(run, free_count);
+            };
             while (index < end) {
                 ASSERT(m_page_reference_counts[index] > 0);
                 const RefCount ref_count = (--m_page_reference_counts[index]);
@@ -311,7 +320,7 @@ private:
                     }
                 } else {
                     if (free_count > 0) {
-                        this->Free(m_heap.GetAddress() + free_start * PageSize, free_count);
+                        free_run();
                         free_count = 0;
                     }
                 }
@@ -320,7 +329,7 @@ private:
             }
 
             if (free_count > 0) {
-                this->Free(m_heap.GetAddress() + free_start * PageSize, free_count);
+                free_run();
             }
         }
 
@@ -366,6 +375,10 @@ private:
 private:
     template <typename T>
     using PoolArray = std::array<T, static_cast<size_t>(Pool::Count)>;
+
+    // Gives the host memory behind pages whose last reference just went back to the system,
+    // under the pool lock before they can be allocated again. They read as zero from then on.
+    void ReleaseFreedPages(KPhysicalAddress address, size_t num_pages);
 
     Core::System& m_system;
     const KMemoryLayout& m_memory_layout;

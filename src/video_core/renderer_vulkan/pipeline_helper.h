@@ -6,8 +6,18 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <optional>
+#include <span>
+#include <string_view>
+
+#include <fmt/format.h>
+
+#include "common/fs/file.h"
+#include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 
 #include <boost/container/small_vector.hpp>
 
@@ -134,13 +144,45 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
     }
 }
 
+/// Whether SPIR-V the driver rejects, and that of emulated shared memory shaders, is dumped: on
+/// Android (no other way to get at it) unless EDEN_NX2_DUMP_SPIRV=0, elsewhere with
+/// EDEN_NX2_DUMP_SPIRV=1.
+[[nodiscard]] inline bool DumpsSpirv() {
+    static const bool dumps = [] {
+        const char* value = std::getenv("EDEN_NX2_DUMP_SPIRV");
+#ifdef __ANDROID__
+        return value == nullptr || value[0] != '0';
+#else
+        return value != nullptr && value[0] != '0';
+#endif
+    }();
+    return dumps;
+}
+
+/// Writes SPIR-V to dump/<subdir>/<name>.spv, for spirv-val and spirv-dis (see DumpsSpirv).
+inline void DumpSpirv(std::string_view subdir, std::string_view name, std::span<const u32> code) {
+    if (!DumpsSpirv()) {
+        return;
+    }
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir) / subdir;
+    if (code.empty() || !Common::FS::CreateDirs(dir)) {
+        return;
+    }
+    Common::FS::IOFile file{dir / fmt::format("{}.spv", name), Common::FS::FileAccessMode::Write,
+                            Common::FS::FileType::BinaryFile};
+    if (file.IsOpen()) {
+        void(file.WriteSpan(code));
+    }
+}
+
 [[nodiscard]] inline u32 NumDescriptorEntries(const Shader::Info& info) {
     return Shader::NumDescriptors(info.constant_buffer_descriptors) +
            Shader::NumDescriptors(info.storage_buffers_descriptors) +
            Shader::NumDescriptors(info.texture_buffer_descriptors) +
            Shader::NumDescriptors(info.image_buffer_descriptors) +
            Shader::NumDescriptors(info.texture_descriptors) +
-           Shader::NumDescriptors(info.image_descriptors);
+           Shader::NumDescriptors(info.image_descriptors) +
+           (info.emulated_shared_memory_size != 0 ? 1U : 0U);
 }
 
 class DescriptorLayoutBuilder {
@@ -273,6 +315,13 @@ public:
         Add(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, stage, info.image_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stage, info.texture_descriptors);
         Add(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, stage, info.image_descriptors);
+        if (info.emulated_shared_memory_size != 0) {
+            // Emulated shared memory's storage buffer: last, as in the SPIR-V
+            struct SharedMemoryBuffer {
+                u32 count{1};
+            };
+            Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, std::array<SharedMemoryBuffer, 1>{});
+        }
     }
 
 private:

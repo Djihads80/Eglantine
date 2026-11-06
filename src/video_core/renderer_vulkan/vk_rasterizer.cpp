@@ -1035,7 +1035,7 @@ void RasterizerVulkan::DispatchCompute() {
         buffer_cache.Nx2CollectListCopies(false);
     };
     if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
-                             texture_cache)) {
+                             texture_cache, staging_pool)) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
         return;
     }
@@ -1271,6 +1271,23 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+}
+
+void RasterizerVulkan::OnCachedWrite(DAddr addr, u64 size) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(addr, size);
+    }
+    {
+        // Copies just these bytes in: marking the pages CPU-modified instead re-uploads them
+        // whole from guest memory, over what the GPU wrote there and never copied back.
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.CachedWriteMemory(addr, size);
     }
     pipeline_cache.InvalidateRegion(addr, size);
 }
@@ -1545,8 +1562,10 @@ void RasterizerVulkan::LoadDiskResources(u64 title_id, std::stop_token stop_load
 
 void RasterizerVulkan::FlushWork() {
 #ifdef __ANDROID__
+    // Dispatched every 32 draws (was 4): waking the worker cost 5.6% of the GPU back thread in
+    // Mario Kart World. Submitted every 512 still, to keep a phone GPU fed.
     static constexpr u32 DRAWS_TO_DISPATCH = 512;
-    static constexpr u32 CHECK_MASK = 3;
+    static constexpr u32 CHECK_MASK = 31;
 #else
     // Every 32 draws (was 8): each dispatch woke the worker thread, and Switch 2 titles make
     // ~55,000 draws a second. A full chunk is dispatched on its own (Scheduler::Record).
@@ -1555,9 +1574,21 @@ void RasterizerVulkan::FlushWork() {
 #endif // __ANDROID__
 
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
-    if ((++draw_counter & CHECK_MASK) != 0) {
-        return;
-    }
+    // EDEN_NX2_DISPATCH_DRAWS=<power of two, 1-1024>: draws between dispatches to the worker
+    // (each is a chunk hand-over and, when it sleeps, a wake-up).
+    static const u32 check_mask = [] {
+        const char* value = std::getenv("EDEN_NX2_DISPATCH_DRAWS");
+        if (value == nullptr || value[0] < '0' || value[0] > '9') {
+            return CHECK_MASK;
+        }
+        const unsigned long parsed = std::strtoul(value, nullptr, 10);
+        if (parsed == 0 || parsed > 1024 || (parsed & (parsed - 1)) != 0) {
+            return CHECK_MASK;
+        }
+        return static_cast<u32>(parsed - 1);
+    }();
+    ++draw_counter;
+    const bool dispatch_now = (draw_counter & check_mask) == 0;
     // Keep the host GPU working while native commands are still being recorded.
     static const u32 native_flush_draws = [] {
         constexpr u32 fallback = 128;
@@ -1575,10 +1606,17 @@ void RasterizerVulkan::FlushWork() {
     const u32 draws_to_dispatch = Tegra::g_nx2_ampere.load(std::memory_order_relaxed)
                                      ? native_flush_draws
                                      : DRAWS_TO_DISPATCH;
+    // The submit threshold is checked at every draw, whatever the dispatch interval: with a
+    // long one (EDEN_NX2_DISPATCH_DRAWS), recorded work would otherwise wait for the next
+    // dispatch to reach the GPU.
     if (draw_counter < draws_to_dispatch) {
-        scheduler.DispatchWork();
+        if (dispatch_now) {
+            scheduler.DispatchWork();
+        }
         return;
     }
+    VideoCommon::Nx2Profile::Scope submit_scope{VideoCommon::Nx2Profile::Zone::FlushSubmit};
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Submits, 1);
     scheduler.Flush();
     draw_counter = 0;
 }
@@ -1610,6 +1648,11 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     const auto image_id = texture_cache.DmaImageId(image_operand, IS_IMAGE_UPLOAD);
     if (image_id == VideoCommon::NULL_IMAGE_ID) {
+        return false;
+    }
+    // A host image without its top levels takes no copy by guest level: the emulated copy goes
+    // through guest memory, and the image uploads the levels it keeps from there.
+    if (texture_cache.IsTrimmed(image_id)) {
         return false;
     }
     const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);

@@ -18,9 +18,7 @@ Id SharedPointer(EmitContext& ctx, Id offset, u32 index_offset = 0) {
     if (index_offset > 0) {
         index = ctx.OpIAdd(ctx.U32[1], index, ctx.Const(index_offset));
     }
-    return ctx.uses_explicit_workgroup_layout
-               ? ctx.OpAccessChain(ctx.shared_u32, ctx.shared_memory_u32, ctx.u32_zero_value, index)
-               : ctx.OpAccessChain(ctx.shared_u32, ctx.shared_memory_u32, index);
+    return ctx.SharedWordPointer(index);
 }
 
 Id StorageIndex(EmitContext& ctx, const IR::Value& offset, size_t element_size) {

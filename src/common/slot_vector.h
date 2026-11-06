@@ -124,9 +124,16 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] SlotId insert(Args&&... args) noexcept {
+    [[nodiscard]] SlotId insert(Args&&... args) {
         const u32 index = FreeValueIndex();
-        new (&values[index].object) T(std::forward<Args>(args)...);
+        try {
+            new (&values[index].object) T(std::forward<Args>(args)...);
+        } catch (...) {
+            // A constructor may throw (a texture the GPU cannot allocate): keep the slot free and
+            // let the caller handle it, instead of terminating at a noexcept boundary.
+            free_list.push_back(index);
+            throw;
+        }
         SetStorageBit(index);
 
         return SlotId{index};
@@ -136,6 +143,12 @@ public:
         values[id.Value()].object.~T();
         free_list.push_back(id.Value());
         ResetStorageBit(id.Value());
+    }
+
+    /// Returns true when id refers to a slot that currently holds an object.
+    [[nodiscard]] bool contains(SlotId id) const noexcept {
+        return id && id.Value() / 64 < stored_bitset.size() &&
+               ((stored_bitset[id.Value() / 64] >> (id.Value() % 64)) & 1) != 0;
     }
 
     [[nodiscard]] Iterator begin() noexcept {

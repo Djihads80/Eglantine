@@ -62,13 +62,19 @@ object GameHelper {
             if (isValid) {
                 val scanDepth = if (gameDir.deepScan) 3 else 1
 
-                addGamesRecursive(
-                    games,
-                    gamesByProgramId,
-                    FileUtil.listFiles(gameDirUri),
-                    scanDepth,
-                    mountedContainerUris
-                )
+                val gameDirFiles = FileUtil.listFiles(gameDirUri)
+                val looseMain = findLooseExeFsMain(gameDirFiles)
+                if (looseMain != null) {
+                    addLooseExeFsGame(games, gamesByProgramId, looseMain)
+                } else {
+                    addGamesRecursive(
+                        games,
+                        gamesByProgramId,
+                        gameDirFiles,
+                        scanDepth,
+                        mountedContainerUris
+                    )
+                }
             } else {
                 badDirs.add(index)
             }
@@ -109,7 +115,7 @@ object GameHelper {
 
     // File extensions considered as external content, buuut should
     // be done better imo.
-    private val externalContentExtensions = setOf("nsp", "xci", "nsz", "xcz")
+    private val externalContentExtensions = setOf("nsp", "xci", "nsz", "xcz", "nup")
 
     private fun scanContentContainersRecursive(
         files: Array<MinimalDocumentFile>,
@@ -149,13 +155,21 @@ object GameHelper {
 
         files.forEach {
             if (it.isDirectory) {
-                addGamesRecursive(
-                    games,
-                    gamesByProgramId,
-                    FileUtil.listFiles(it.uri),
-                    depth - 1,
-                    mountedContainerUris
-                )
+                val children = FileUtil.listFiles(it.uri)
+                // A loose ExeFS dump (how Switch 2 titles boot) is a game, not a folder to scan.
+                // Checked at every depth, shallow scans too: main is one or two levels down.
+                val looseMain = findLooseExeFsMain(children)
+                if (looseMain != null) {
+                    addLooseExeFsGame(games, gamesByProgramId, looseMain)
+                } else {
+                    addGamesRecursive(
+                        games,
+                        gamesByProgramId,
+                        children,
+                        depth - 1,
+                        mountedContainerUris
+                    )
+                }
             } else {
                 val extension = FileUtil.getExtension(it.uri).lowercase()
                 val filePath = it.uri.toString()
@@ -188,6 +202,48 @@ object GameHelper {
                 }
             }
         }
+    }
+
+    /**
+     * main of a loose ExeFS dump: main and main.npdm side by side in [files], or in their
+     * exefs/ subdirectory. Null for anything else.
+     */
+    fun findLooseExeFsMain(files: Array<MinimalDocumentFile>): Uri? {
+        fun mainOf(entries: Array<MinimalDocumentFile>): Uri? {
+            val main = entries.firstOrNull { !it.isDirectory && it.filename == "main" }
+                ?: return null
+            val hasNpdm = entries.any { !it.isDirectory && it.filename == "main.npdm" }
+            return if (hasNpdm) main.uri else null
+        }
+
+        mainOf(files)?.let { return it }
+        val exefs = files.firstOrNull {
+            it.isDirectory && it.filename.equals("exefs", ignoreCase = true)
+        } ?: return null
+        return mainOf(FileUtil.listFiles(exefs.uri))
+    }
+
+    private fun addLooseExeFsGame(
+        games: MutableList<Game>,
+        gamesByProgramId: MutableMap<String, Game>,
+        mainUri: Uri
+    ) {
+        val game = getGame(mainUri, true, false) ?: return
+        games.add(game)
+        if (game.programId != "0") {
+            gamesByProgramId[game.programId] = game
+        }
+    }
+
+    // Name of a loose ExeFS dump's folder: the one holding exefs/, else the one holding main.
+    private fun looseExeFsDumpName(mainPath: String): String? {
+        val dir = FileUtil.getParentUri(mainPath) ?: return null
+        val dirName = FileUtil.getFilename(dir.toUri())
+        if (!dirName.equals("exefs", ignoreCase = true)) {
+            return dirName
+        }
+        val titleDir = FileUtil.getParentUri(dir) ?: return dirName
+        return FileUtil.getFilename(titleDir.toUri())
     }
 
     private fun mountExternalContentDirectories(mountedContainerUris: MutableSet<String>) {
@@ -272,15 +328,18 @@ object GameHelper {
 
         var name = GameMetadata.getTitle(filePath)
 
-        // If the game's title field is empty, use the filename.
+        // If the game's title field is empty, use the filename (for a loose ExeFS, its folder's).
         if (name.isEmpty()) {
             name = FileUtil.getFilename(uri)
+            if (name == "main") {
+                name = looseExeFsDumpName(filePath) ?: name
+            }
         }
         var programId = GameMetadata.getProgramId(filePath)
 
         // If the game's ID field is empty, use the filename without extension.
         if (programId.isEmpty()) {
-            programId = name.substring(0, name.lastIndexOf("."))
+            programId = name.substringBeforeLast(".")
         }
 
         val newGame = Game(

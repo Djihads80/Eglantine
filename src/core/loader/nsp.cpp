@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <initializer_list>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/common_types.h"
@@ -16,6 +19,7 @@
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/submission_package.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/deconstructed_rom_directory.h"
@@ -23,6 +27,38 @@
 #include "core/loader/nsp.h"
 
 namespace Loader {
+
+namespace {
+
+std::string PackageStem(const FileSys::VirtualFile& package) {
+    const auto& name = package->GetName();
+    return name.substr(0, name.rfind('.'));
+}
+
+// A packed dump (.nx2) has control data only if its dump had sidecars. Cover art and a NACP can
+// also sit next to the package: "<package name>.png" (.jpg, .jpeg, .bmp), "<package name>.nacp".
+FileSys::VirtualFile FindPackageSidecar(const FileSys::VirtualFile& package,
+                                        std::initializer_list<std::string_view> extensions) {
+    const auto dir = package != nullptr ? package->GetContainingDirectory() : nullptr;
+    if (dir == nullptr) {
+        return nullptr;
+    }
+    const auto stem = PackageStem(package);
+    // One listing of the directory for all the extensions (a content directory on Android is
+    // listed by every lookup).
+    const auto files = dir->GetFiles();
+    for (const auto extension : extensions) {
+        const std::string wanted = stem + '.' + std::string{extension};
+        for (const auto& file : files) {
+            if (file != nullptr && file->GetName() == wanted) {
+                return file;
+            }
+        }
+    }
+    return nullptr;
+}
+
+} // Anonymous namespace
 
 AppLoader_NSP::AppLoader_NSP(FileSys::VirtualFile file_,
                              const Service::FileSystem::FileSystemController& fsc,
@@ -35,7 +71,27 @@ AppLoader_NSP::AppLoader_NSP(FileSys::VirtualFile file_,
     }
 
     if (nsp->IsExtractedType()) {
-        secondary_loader = std::make_unique<AppLoader_DeconstructedRomDirectory>(nsp->GetExeFS(), false);
+        // A packed dump (.nx2): title, icon and version come from its sidecars and RomFS
+        secondary_loader =
+            std::make_unique<AppLoader_DeconstructedRomDirectory>(nsp->GetExeFS(), false, true);
+
+        // Else from sidecars next to the package, looked up now: the Read* functions are also
+        // called from guest service calls, which on Android must not reach the content URI
+        // lookups (JNI) a package outside the app's storage needs.
+        std::vector<u8> icon;
+        if (secondary_loader->ReadIcon(icon) != ResultStatus::Success) {
+            icon_file = FindPackageSidecar(file, {"png", "jpg", "jpeg", "bmp"});
+            if (icon_file != nullptr) {
+                icon_file = std::make_shared<FileSys::VectorVfsFile>(icon_file->ReadAllBytes(),
+                                                                     icon_file->GetName());
+            }
+        }
+        FileSys::NACP control;
+        if (secondary_loader->ReadControlData(control) != ResultStatus::Success) {
+            if (const auto sidecar = FindPackageSidecar(file, {"nacp"})) {
+                nacp_file = std::make_unique<FileSys::NACP>(sidecar);
+            }
+        }
     } else {
         const auto control_nca =
             nsp->GetNCA(FileSys::GetBaseTitleID(nsp->GetProgramTitleID()), FileSys::ContentRecordType::Control);
@@ -228,6 +284,9 @@ ResultStatus AppLoader_NSP::ReadProgramIds(std::vector<u64>& out_program_ids) {
 
 ResultStatus AppLoader_NSP::ReadIcon(std::vector<u8>& buffer) {
     if (icon_file == nullptr) {
+        if (nsp->IsExtractedType() && secondary_loader != nullptr) {
+            return secondary_loader->ReadIcon(buffer);
+        }
         return ResultStatus::ErrorNoControl;
     }
 
@@ -237,6 +296,15 @@ ResultStatus AppLoader_NSP::ReadIcon(std::vector<u8>& buffer) {
 
 ResultStatus AppLoader_NSP::ReadTitle(std::string& title) {
     if (nacp_file == nullptr) {
+        if (nsp->IsExtractedType()) {
+            if (secondary_loader != nullptr &&
+                secondary_loader->ReadTitle(title) == ResultStatus::Success && !title.empty()) {
+                return ResultStatus::Success;
+            }
+            // The package is named after its dump folder when packed
+            title = PackageStem(file);
+            return ResultStatus::Success;
+        }
         return ResultStatus::ErrorNoControl;
     }
 
@@ -246,11 +314,21 @@ ResultStatus AppLoader_NSP::ReadTitle(std::string& title) {
 
 ResultStatus AppLoader_NSP::ReadControlData(FileSys::NACP& nacp) {
     if (nacp_file == nullptr) {
+        if (nsp->IsExtractedType() && secondary_loader != nullptr) {
+            return secondary_loader->ReadControlData(nacp);
+        }
         return ResultStatus::ErrorNoControl;
     }
 
     nacp = *nacp_file;
     return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_NSP::ReadDisplayVersion(std::string& version) {
+    if (nsp->IsExtractedType() && secondary_loader != nullptr) {
+        return secondary_loader->ReadDisplayVersion(version);
+    }
+    return AppLoader::ReadDisplayVersion(version);
 }
 
 ResultStatus AppLoader_NSP::ReadManualRomFS(FileSys::VirtualFile& out_file) {

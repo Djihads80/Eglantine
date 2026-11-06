@@ -18,6 +18,15 @@ static jmethodID s_get_size;
 static jmethodID s_is_directory;
 static jmethodID s_file_exists;
 static jmethodID s_open_content_uri;
+static jmethodID s_list_children;
+
+// A child of a content URI directory, as listed by the document provider.
+struct ContentEntry {
+    std::string name;
+    std::string uri;
+    bool is_directory;
+    std::int64_t size; // -1 when the provider does not report it
+};
 
 enum class OpenMode {
     Read,
@@ -42,5 +51,6 @@ bool IsDirectory(const std::string& filepath);
 bool Exists(const std::string& filepath);
 std::string GetParentDirectory(const std::string& filepath);
 std::string GetFilename(const std::string& filepath);
+std::vector<ContentEntry> ListChildren(const std::string& dir_path);
 
 } // namespace Common::FS::Android

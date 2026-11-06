@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 #ifdef _MSC_VER
@@ -13,6 +16,16 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#pragma comment(lib, "Synchronization.lib")
+#elif defined(__linux__)
+#include <climits>
+#include <ctime>
+#include <dlfcn.h>
+#include <linux/futex.h>
+#include <pthread.h>
+#include <unwind.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 #include <cstdio>
 
@@ -22,6 +35,7 @@
 #include "core/core.h"
 #include "video_core/engines/engine_interface.h"
 #include "video_core/gpu_split.h"
+#include "video_core/semaphore_ledger.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 
@@ -39,6 +53,56 @@ void Pause() {
 #else
     std::this_thread::yield();
 #endif
+}
+
+// Sleeps until `word` moves on from `seen`, for at most `timeout`: a lost wake-up costs one
+// timeout instead of a hang. Raw futexes: libc++ skips the wake syscall when its own waiter count
+// for the address is zero, so its notify can't pair with these waits.
+void WaitWord(std::atomic<u32>& word, u32 seen, std::chrono::microseconds timeout) {
+    static_assert(sizeof(std::atomic<u32>) == sizeof(u32));
+#if defined(_WIN32)
+    WaitOnAddress(&word, &seen, sizeof(seen),
+                  static_cast<DWORD>(std::max<s64>(timeout.count() / 1000, 1)));
+#elif defined(__linux__)
+    timespec ts{};
+    ts.tv_sec = static_cast<time_t>(timeout.count() / 1'000'000);
+    ts.tv_nsec = static_cast<long>(timeout.count() % 1'000'000) * 1000;
+    syscall(SYS_futex, reinterpret_cast<u32*>(&word), FUTEX_WAIT_PRIVATE, seen, &ts, nullptr, 0);
+#else
+    (void)word;
+    (void)seen;
+    (void)timeout;
+    std::this_thread::yield();
+#endif
+}
+
+void WakeWord(std::atomic<u32>& word) {
+#if defined(_WIN32)
+    WakeByAddressAll(&word);
+#elif defined(__linux__)
+    syscall(SYS_futex, reinterpret_cast<u32*>(&word), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr,
+            0);
+#else
+    (void)word;
+#endif
+}
+
+// Phones sleep in the waits below on futexes: spinning or yielding, the front kept a big core
+// busy and the phone hot. The back parks on a raw futex too (libc++'s std::atomic::wait can miss
+// a notify). Desktop keeps the spin, yield and std::atomic waits.
+#ifdef __ANDROID__
+constexpr bool SleepingWaits = true;
+#else
+constexpr bool SleepingWaits = false;
+#endif
+
+// Wakes the back thread parked on `wake`.
+void WakeBack(std::atomic<u32>& wake) {
+    if constexpr (SleepingWaits) {
+        WakeWord(wake);
+    } else {
+        wake.notify_all();
+    }
 }
 
 [[maybe_unused]] std::atomic<u32> g_back_thread_id{};
@@ -77,6 +141,48 @@ void GpuSplit::CheckOwner(const char* where) {
                                                      reinterpret_cast<uintptr_t>(module)));
     }
     std::fflush(stderr);
+#elif defined(__linux__)
+    if (!g_back_busy.load(std::memory_order_acquire)) {
+        return;
+    }
+    const u32 thread = static_cast<u32>(gettid());
+    if (thread == g_back_thread_id.load(std::memory_order_relaxed)) {
+        return;
+    }
+    static std::atomic<u32> reports{};
+    if (reports.fetch_add(1) >= 12) {
+        return;
+    }
+    char name[16] = "?";
+    pthread_getname_np(pthread_self(), name, sizeof(name));
+    struct Frames {
+        std::array<void*, 32> pcs{};
+        size_t count{};
+    } frames;
+    _Unwind_Backtrace(
+        [](_Unwind_Context* context, void* arg) {
+            auto& f = *static_cast<Frames*>(arg);
+            if (f.count == f.pcs.size()) {
+                return _URC_END_OF_STACK;
+            }
+            f.pcs[f.count++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
+            return _URC_NO_REASON;
+        },
+        &frames);
+    std::string stack;
+    for (size_t i = 1; i < frames.count; ++i) {
+        Dl_info info{};
+        const auto pc = reinterpret_cast<uintptr_t>(frames.pcs[i]);
+        if (dladdr(frames.pcs[i], &info) != 0 && info.dli_fname != nullptr) {
+            const char* base = std::strrchr(info.dli_fname, '/');
+            stack += fmt::format(" {}+{:#x}", base ? base + 1 : info.dli_fname,
+                                 pc - reinterpret_cast<uintptr_t>(info.dli_fbase));
+        } else {
+            stack += fmt::format(" {:#x}", pc);
+        }
+    }
+    LOG_ERROR(HW_GPU, "GPU split owner check: {} on thread {} ({}) while the back runs:{}", where,
+              thread, name, stack);
 #else
     (void)where;
 #endif
@@ -114,8 +220,9 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     ring = std::make_unique<u64[]>(RingWords);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
-#ifdef ARCHITECTURE_x86_64
-    // Front macros run compiled (macro_turing_jit.h) only.
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
+    // Front macros run compiled (macro_turing_jit.h, macro_turing_jit_arm64.h), or interpreted
+    // where the ARM64 code is not used.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");
     front_macros = mode == '2' && (jit == nullptr || jit[0] != '0');
 #endif
@@ -129,7 +236,7 @@ void GpuSplit::Stop() {
     }
     back_thread.request_stop();
     wake.fetch_add(1, std::memory_order_seq_cst);
-    wake.notify_one();
+    WakeBack(wake);
     back_thread.join();
     active = false;
     // The split is static and outlives the emulation session. The next session's back thread
@@ -145,9 +252,13 @@ void GpuSplit::Stop() {
     front_engine = nullptr;
     back_engine = nullptr;
     front_macros = false;
+    pending_count = 0;
+    // Its entries carry ring positions (orders) of this session: stale once they restart.
+    Tegra::Nx2SemaphoreLedger::Get().Clear();
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
+    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -178,12 +289,51 @@ void GpuSplit::WaitForSpace(size_t words) {
         if (spins < 4096) {
             Pause();
         } else {
-            std::this_thread::yield();
+            SleepOnBack();
         }
     }
 }
 
+void GpuSplit::RequestIdleHook() {
+    hook_requested.store(true, std::memory_order_seq_cst);
+    wake.fetch_add(1, std::memory_order_seq_cst);
+    WakeBack(wake);
+}
+
+void GpuSplit::SleepOnBack() {
+    // Re-wake a back thread whose wake-up was lost (it froze Mario Kart World on Android with the
+    // front waiting here and the back parked).
+    if (back_waiting.load(std::memory_order_seq_cst)) {
+        wake.fetch_add(1, std::memory_order_seq_cst);
+        WakeBack(wake);
+    }
+    if constexpr (!SleepingWaits) {
+        std::this_thread::yield();
+        return;
+    }
+    // The back bumps `drained` after storing `consumed` when it sees front_waiting: read it
+    // before the last look at `consumed`, so a store in between ends the wait at once.
+    front_waiting.store(true, std::memory_order_seq_cst);
+    const u32 seen = drained.load(std::memory_order_seq_cst);
+    if (consumed.load(std::memory_order_seq_cst) == consumed_cache) {
+        WaitWord(drained, seen, std::chrono::milliseconds{2});
+    }
+    front_waiting.store(false, std::memory_order_relaxed);
+}
+
+void GpuSplit::FlushPending() {
+    const u32 count = pending_count;
+    if (count == 0) {
+        return;
+    }
+    pending_count = 0;
+    Nx2Profile::Add(Nx2Profile::Counter::CbBatchWords, count);
+    Nx2Profile::Add(Nx2Profile::Counter::CbBatchEntries, 1);
+    MultiMethod(pending_engine, pending_method, pending_words.data(), count, count, nullptr);
+}
+
 void GpuSplit::Publish() {
+    FlushPending();
     if (published_local == write_position) {
         return;
     }
@@ -192,17 +342,23 @@ void GpuSplit::Publish() {
     published.store(write_position, std::memory_order_seq_cst);
     if (back_waiting.load(std::memory_order_seq_cst)) {
         wake.fetch_add(1, std::memory_order_seq_cst);
-        wake.notify_one();
+        WakeBack(wake);
     }
 }
 
 void GpuSplit::Drain() {
+    Drain(Nx2Profile::Zone::SplitDrain);
+}
+
+void GpuSplit::Drain(Nx2Profile::Zone zone) {
+    FlushPending();
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position && BackQuiet()) {
         return;
     }
     Publish();
-    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    Nx2Profile::Scope scope{zone};
+    auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     // Everything consumed is not enough: the back submits deferred work (Scheduler::DeferFlush)
     // from its idle hook afterwards, and the caller may use the scheduler once this returns.
     bool hook_asked = false;
@@ -218,15 +374,28 @@ void GpuSplit::Drain() {
                 hook_asked = true;
             }
         }
-        if (spins < 16384) {
+        if (spins < (SleepingWaits ? 8192U : 16384U)) {
             Pause();
         } else {
-            std::this_thread::yield();
+            // Sleep instead of spinning on: the front spent most of each frame here, keeping a big
+            // core busy and the phone hot.
+            SleepOnBack();
+            if ((SleepingWaits || (spins & 1023) == 0) &&
+                std::chrono::steady_clock::now() >= next_report) {
+                next_report += std::chrono::seconds{5};
+                LOG_WARNING(HW_GPU,
+                            "GPU split drain waiting on the back thread: {} of {} words consumed, "
+                            "back {} ({})",
+                            consumed_cache, write_position,
+                            back_waiting.load() ? "parked" : "running",
+                            g_back_busy.load() ? "inside a command" : "between batches");
+            }
         }
     }
 }
 
 bool GpuSplit::WaitForWriters() {
+    FlushPending();
     const u64 target = std::min(last_writer_position, write_position);
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache >= target) {
@@ -234,6 +403,7 @@ bool GpuSplit::WaitForWriters() {
     }
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
+    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWriters};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
@@ -243,8 +413,17 @@ bool GpuSplit::WaitForWriters() {
         if (spins < 16384) {
             Pause();
         } else {
-            std::this_thread::yield();
+            SleepOnBack();
         }
+    }
+}
+
+void GpuSplit::HandBack(u64 position) {
+    // Seq_cst store and load against SleepOnBack's: one of the two sides sees the other.
+    consumed.store(position, std::memory_order_seq_cst);
+    if (front_waiting.load(std::memory_order_seq_cst)) {
+        drained.fetch_add(1, std::memory_order_seq_cst);
+        WakeWord(drained);
     }
 }
 
@@ -259,6 +438,7 @@ void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
 void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                            u32 amount, u32 methods_pending, const GPUVAddr* segment) {
     SelectEngine(engine);
+    Nx2Profile::Add(Nx2Profile::Counter::MultiWords, amount);
     // Long runs (constant buffer and inline uploads) go in pieces, as when a method's data
     // continues in the next GPFIFO entry.
     while (amount > 0) {
@@ -279,6 +459,20 @@ void GpuSplit::MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, 
         amount -= piece;
         methods_pending -= piece;
     }
+}
+
+void GpuSplit::ConstantRun(Tegra::Engines::EngineInterface* engine, u32 first_method,
+                           const u32* words, u32 count) {
+    SelectEngine(engine);
+    const size_t size = 1 + (size_t{count} + 1) / 2;
+    u64* const entry = Reserve(size);
+    entry[0] = static_cast<u64>(Kind::ConstantRun) | (u64{first_method & 0xffff} << 8) |
+               (u64{count} << 32);
+    entry[size - 1] = 0;
+    std::memcpy(entry + 1, words, size_t{count} * sizeof(u32));
+    Commit(size);
+    Nx2Profile::Add(Nx2Profile::Counter::CbRunWords, count);
+    Nx2Profile::Add(Nx2Profile::Counter::CbRunEntries, 1);
 }
 
 void GpuSplit::DeferFunction(std::function<void()>&& func) {
@@ -302,13 +496,18 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 argument = static_cast<u32>(head >> 32);
         auto* const engine = back_engine;
         if ((head & Direct) != 0) {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
+            Nx2Profile::CountMethod(method);
             engine->ConsumeSink(*system);
             engine->CallMethod(*system, method, argument, true);
         } else if (!engine->execution_mask[method]) {
+            Nx2Profile::Add(Nx2Profile::Counter::BackSinkWrites, 1);
             engine->method_sink.emplace_back(method, argument);
         } else {
-            Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
+            Nx2Profile::Add(Nx2Profile::Counter::BackMethodCalls, 1);
+            Nx2Profile::CountMethod(method);
             engine->ConsumeSink(*system);
             if ((head & HasSegment) != 0) {
                 engine->current_dma_segment = entry[1];
@@ -321,8 +520,9 @@ size_t GpuSplit::Execute(const u64* entry) {
         const u32 method = static_cast<u32>((head >> 8) & 0xffff);
         const u32 amount = static_cast<u32>(head >> 32);
         const size_t data = (head & HasSegment) != 0 ? 3 : 2;
+        Nx2Profile::CountMethod(method, amount);
         auto* const engine = back_engine;
-        Nx2Profile::Scope method_scope{Nx2Profile::Zone::Method};
+        Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
         engine->ConsumeSink(*system);
         if ((head & HasSegment) != 0) {
             engine->current_dma_segment = entry[2];
@@ -331,8 +531,19 @@ size_t GpuSplit::Execute(const u64* entry) {
                                 amount, static_cast<u32>(entry[1]));
         return data + (amount + 1) / 2;
     }
+    case Kind::ConstantRun: {
+        const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+        const u32 count = static_cast<u32>(head >> 32);
+        auto* const engine = back_engine;
+        Nx2Profile::SampledScope<4> method_scope{Nx2Profile::Zone::Method};
+        Nx2Profile::CountMethod(method, count);
+        engine->ConsumeSink(*system);
+        engine->LoadConstantRun(*system, method, reinterpret_cast<const u32*>(entry + 1), count);
+        return 1 + (size_t{count} + 1) / 2;
+    }
     case Kind::Call: {
         const size_t payload = static_cast<size_t>((head >> 8) & 0xffffff);
+        Nx2Profile::Add(Nx2Profile::Counter::BackDeferredCalls, 1);
         reinterpret_cast<void (*)(const u64*)>(entry[1])(entry + 2);
         return 2 + payload;
     }
@@ -349,6 +560,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     system->RegisterHostThread();
 #ifdef _WIN32
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
+#elif defined(__linux__)
+    g_back_thread_id.store(static_cast<u32>(gettid()), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
     while (!stop_token.stop_requested()) {
@@ -384,7 +597,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // A request made after the hook ran (RequestIdleHook) runs it before sleeping.
                 if (available == read_position && !stop_token.stop_requested() &&
                     !hook_requested.load(std::memory_order_seq_cst)) {
-                    wake.wait(seen, std::memory_order_seq_cst);
+                    if constexpr (SleepingWaits) {
+                        // A futex, not std::atomic::wait: libc++ spins with sched_yield first,
+                        // and parks waiters in a shared table where a notify could miss this one.
+                        WaitWord(wake, seen, std::chrono::milliseconds{2});
+                    } else {
+                        wake.wait(seen, std::memory_order_seq_cst);
+                    }
                 }
                 back_waiting.store(false, std::memory_order_relaxed);
                 continue;
@@ -408,12 +627,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if ((read_position - last_store >= 4096 ||
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
-                consumed.store(read_position, std::memory_order_release);
+                HandBack(read_position);
                 last_store = read_position;
             }
         }
         g_back_busy.store(false, std::memory_order_release);
-        consumed.store(read_position, std::memory_order_release);
+        HandBack(read_position);
     }
     back_running.store(false, std::memory_order_release);
 }

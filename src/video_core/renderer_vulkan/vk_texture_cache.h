@@ -478,6 +478,18 @@ public:
     /// layers that have memory afterwards (a cap per image can leave some out).
     std::vector<u32> BindLayers(std::span<const u32> layers);
 
+    /// Host memory the image takes, for the texture cache's total (none while unbacked): a
+    /// trimmed or converted image takes nothing like its guest size.
+    [[nodiscard]] std::optional<u64> HostMemoryBytes() const noexcept {
+        if (!original_image) {
+            return std::nullopt;
+        }
+        if (True(flags & VideoCommon::ImageFlagBits::Unbacked)) {
+            return 0;
+        }
+        return original_image.MemorySize();
+    }
+
     /// SparseTiles images: gives the host sparse blocks under `rects` (and the mip tail, for
     /// levels in it) device memory where they have none yet. False if that failed.
     bool BindTiles(std::span<const VideoCommon::LevelRect> rects);

@@ -28,8 +28,11 @@ namespace Loader {
 class AppLoader_DeconstructedRomDirectory final : public AppLoader {
 public:
     explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile main_file, bool override_update_ = false);
-    // Overload to accept exefs directory. Must contain 'main' and 'main.npdm'
-    explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory, bool override_update_ = false);
+    // Overload to accept exefs directory. Must contain 'main' and 'main.npdm'. read_dump_metadata
+    // also takes the title, icon and version from the directory, as for a loose dump: set for a
+    // packed dump (.nx2), whose files have no containing directory to find them from.
+    explicit AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory, bool override_update_ = false,
+                                                 bool read_dump_metadata = false);
 
     /**
      * Identifies whether or not the given file is a deconstructed ROM directory.
@@ -61,6 +64,8 @@ private:
     /// The loose RomFS next to the ExeFS, found (and built) on first use.
     const FileSys::VirtualFile& LooseRomFS();
 
+    void ReadDumpMetadata(const FileSys::VirtualDir& file_dir);
+
     FileSys::ProgramMetadata metadata;
     FileSys::VirtualFile romfs;
     FileSys::VirtualDir romfs_exefs_dir; ///< Where LooseRomFS looks
@@ -71,6 +76,7 @@ private:
     std::string name;
     std::optional<FileSys::NACP> control; ///< control.nacp next to the dump, if it has one
     std::string romfs_version;            ///< "1.8.0" from the RomFS's Product.180 tables, if any
+    bool romfs_version_pending{};         ///< A packed dump's RomFS version, read when asked for
     u64 title_id{};
     bool override_update;
 

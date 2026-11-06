@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <functional>
@@ -18,6 +19,10 @@ class System;
 
 namespace Tegra::Engines {
 class EngineInterface;
+}
+
+namespace VideoCommon::Nx2Profile {
+enum class Zone : u32;
 }
 
 namespace VideoCommon {
@@ -69,11 +74,7 @@ public:
         return back_running.load(std::memory_order_acquire);
     }
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
-    void RequestIdleHook() {
-        hook_requested.store(true, std::memory_order_seq_cst);
-        wake.fetch_add(1, std::memory_order_seq_cst);
-        wake.notify_one();
-    }
+    void RequestIdleHook();
 
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
     /// commands read without cache flushes). Called by the front between commands.
@@ -97,6 +98,25 @@ public:
     }
     void MultiMethod(Tegra::Engines::EngineInterface* engine, u32 method, const u32* words,
                      u32 amount, u32 methods_pending, const GPUVAddr* segment);
+    /// A word of a run of one engine method (a macro's constant buffer data): goes with the
+    /// words queued before it as one multi-method entry, sent before anything else enters the
+    /// ring (Reserve, Publish, Drain and WaitForWriters flush it), so the order is kept.
+    void QueueWord(Tegra::Engines::EngineInterface* engine, u32 method, u32 word) {
+        if (pending_count != 0 && (engine != pending_engine || method != pending_method ||
+                                   pending_count == PendingWords)) [[unlikely]] {
+            FlushPending();
+        }
+        if (pending_count == 0) {
+            pending_engine = engine;
+            pending_method = method;
+        }
+        pending_words[pending_count++] = word;
+    }
+    void FlushPending();
+    /// A pushbuffer run of `count` incrementing methods from `first_method` within the 3D
+    /// engine's constant buffer offset and data registers (EngineInterface::LoadConstantRun).
+    void ConstantRun(Tegra::Engines::EngineInterface* engine, u32 first_method, const u32* words,
+                     u32 count);
     /// A write made by a macro: CallMethod without the method sink, as the engines' macros do.
     void MacroWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 argument) {
         SelectEngine(engine);
@@ -126,8 +146,21 @@ public:
 
     /// Makes what was sent visible to the back.
     void Publish();
-    /// Waits until the back executed everything sent so far.
+    /// Waits until the back executed everything sent so far. `zone`: the profile zone the wait
+    /// counts as (SplitDrain, or SplitDmaRead for a macro DMA read).
     void Drain();
+    void Drain(Nx2Profile::Zone zone);
+
+    /// Front thread: the ring position after everything sent so far (an entry sent now ends
+    /// below the position returned after it is sent).
+    [[nodiscard]] u64 WritePosition() const {
+        return write_position;
+    }
+    /// Front thread: the ring position the back has executed up to (as last seen; refreshed).
+    [[nodiscard]] u64 Consumed() {
+        consumed_cache = consumed.load(std::memory_order_acquire);
+        return consumed_cache;
+    }
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
@@ -144,6 +177,7 @@ private:
         Method, ///< Bits 8-23 method, 32-63 argument; flags IsLast, HasSegment (word 1)
         Multi,  ///< Bits 8-23 method, 32-63 amount; word 1 methods pending, [segment], words
         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
+        ConstantRun, ///< Bits 8-23 first method, 32-63 count; then the words (two per u64)
     };
     static constexpr u64 IsLast = 1 << 4;
     static constexpr u64 HasSegment = 1 << 5;
@@ -161,6 +195,9 @@ private:
 
     /// Room for an entry of `words` at the write position (never across the ring's end).
     u64* Reserve(size_t words) {
+        if (pending_count != 0) [[unlikely]] {
+            FlushPending();
+        }
         const size_t index = write_position & RingMask;
         if (index + words <= RingWords && write_position + words - consumed_cache <= RingWords)
             [[likely]] {
@@ -176,7 +213,16 @@ private:
         }
     }
     void WaitForSpace(size_t words);
+    /// Sleeps a while on the back thread handing ring space back.
+    void SleepOnBack();
+    /// Back side: hands the ring up to `position` back, waking a sleeping front.
+    void HandBack(u64 position);
     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
+        // Words queued (QueueWord) go first, before the engine is compared: their entry selects
+        // their own engine, which may differ from this one, and from front_engine as it is now.
+        if (pending_count != 0) [[unlikely]] {
+            FlushPending();
+        }
         if (engine != front_engine) [[unlikely]] {
             SwitchEngine(engine);
         }
@@ -199,6 +245,12 @@ private:
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// QueueWord: a run not yet sent.
+    static constexpr u32 PendingWords = 256;
+    std::array<u32, PendingWords> pending_words{};
+    u32 pending_count{};
+    u32 pending_method{};
+    Tegra::Engines::EngineInterface* pending_engine{};
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
@@ -227,6 +279,10 @@ private:
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<u32> wake{};
+    /// Set while the front sleeps on the back thread; the back bumps `drained` when it hands ring
+    /// space back then.
+    alignas(64) std::atomic<bool> front_waiting{};
+    std::atomic<u32> drained{};
     std::jthread back_thread;
 };
 

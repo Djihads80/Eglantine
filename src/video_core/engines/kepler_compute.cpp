@@ -31,6 +31,9 @@
 #ifdef ARCHITECTURE_x86_64
 #include "video_core/macro_turing_jit.h"
 #endif
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+#include "video_core/macro_turing_jit_arm64.h"
+#endif
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 
@@ -180,8 +183,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             CallMethod(system, address, value, true);
             return true;
         };
-#ifdef ARCHITECTURE_x86_64
-        // Compiled macro code, as for 3D macros (macro_turing_jit.h); EDEN_NX2_MME_JIT=0 off.
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
+        // Compiled macro code, as for 3D macros (macro_turing_jit.h, macro_turing_jit_arm64.h);
+        // EDEN_NX2_MME_JIT=0 off.
         static const bool use_jit = [] {
             const char* value = std::getenv("EDEN_NX2_MME_JIT");
             return value == nullptr || value[0] != '0';
@@ -192,6 +196,8 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
             }
             native_macro->native_jit->Prepare(native_macro->native_code,
                                               native_macro->native_code_generation);
+        }
+        if (use_jit && !watched && native_macro->native_jit->Usable()) {
             const auto result = native_macro->native_jit->Execute(
                 start, native_parameters,
                 std::span<u32>{*native_macro->native_interpreter.active_dram},
@@ -622,7 +628,20 @@ constexpr u32 DLSS_CHECK_MISMATCH_PERCENT = 3;
 // shaders 32 threads wide.
 VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
     using VideoCore::GameDlssReason;
-    static const bool forced_replacement = std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr;
+    // On Android the replacement is the default: compiling the network's emulated tensor passes
+    // took Turnip from 3.1 to 7.6 GB in 4 s on a 24 GB phone and crashed it (Fire Emblem:
+    // Fortune's Weave). EDEN_NX2_GAME_DLSS=1 tries the game's network there.
+    static const bool forced_replacement = [] {
+        if (std::getenv("EDEN_NX2_DLSS_REPLACEMENT") != nullptr) {
+            return true;
+        }
+#ifdef __ANDROID__
+        const char* const game = std::getenv("EDEN_NX2_GAME_DLSS");
+        return game == nullptr || game[0] != '1';
+#else
+        return false;
+#endif
+    }();
     if (forced_replacement) {
         return GameDlssReason::TurnedOff;
     }
@@ -1251,7 +1270,7 @@ void KeplerCompute::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuS
 
 void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                                   FrontState& fs) {
-#ifdef ARCHITECTURE_x86_64
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
     const auto positions = FrontMacroPositions(fs);
     const u32 start = positions[((*fs.executing_macro - 0xe00) / 2) % positions.size()];
     fs.executing_macro.reset();
@@ -1264,23 +1283,28 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         macro.native_jit = std::make_shared<TuringMacroJit>();
     }
     macro.native_jit->Prepare(macro.native_code, macro.native_code_generation);
-    const auto result = macro.native_jit->Execute(
-        start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram},
-        [&fs](u32 address) {
-            return address < fs.registers.size() ? fs.registers[address] : 0U;
-        },
-        [&](u32 address, u32 value) {
-            if (address >= 0xe00) {
-                return false;
-            }
-            FrontApply(fs, address, value);
-            split.MacroWrite(this, address, value);
-            return true;
-        });
+    const auto read = [&fs](u32 address) {
+        return address < fs.registers.size() ? fs.registers[address] : 0U;
+    };
+    const auto emit = [&](u32 address, u32 value) {
+        if (address >= 0xe00) {
+            return false;
+        }
+        FrontApply(fs, address, value);
+        split.MacroWrite(this, address, value);
+        return true;
+    };
+    // As Maxwell3D::FrontRunMacro: interpreted when the ARM64 code is not used.
+    const bool jit = macro.native_jit->Usable();
+    const auto result =
+        jit ? macro.native_jit->Execute(start, fs.parameters,
+                                        std::span<u32>{*macro.native_interpreter.active_dram},
+                                        read, emit)
+            : macro.native_interpreter.Execute(macro.native_code, start, fs.parameters, read, emit);
     if (!result.success) {
         macro.native_execution_failed = true;
-        LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: compute start={:#x}, consumed={}, error={}",
-                  start, result.consumed, result.error);
+        LOG_ERROR(HW_GPU, "Native MME ({}, split front) failed: compute start={:#x}, consumed={}, error={}",
+                  jit ? "JIT" : "interpreter", start, result.consumed, result.error);
     }
 #else
     fs.executing_macro.reset();

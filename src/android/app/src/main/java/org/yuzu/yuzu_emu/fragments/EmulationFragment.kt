@@ -239,7 +239,9 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
             handleEmuReadyIntent(intent)
             return
         } else if (intentUri != null) {
-            intentGame = if (Game.extensions.contains(FileUtil.getExtension(intentUri))) {
+            intentGame = if (Game.extensions.contains(FileUtil.getExtension(intentUri)) ||
+                FileUtil.getFilename(intentUri) == "main" // a loose ExeFS
+            ) {
                 GameHelper.getGame(requireActivity().intent.data!!, false)
             } else {
                 null

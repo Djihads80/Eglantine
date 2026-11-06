@@ -142,7 +142,8 @@ void StagingBufferPool::TickFrame() {
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
-    if (AreRegionsActive(Region(free_iterator) + 1,
+    // free_iterator 0: nothing is known free yet, region 0 included (see the wrap below).
+    if (AreRegionsActive(free_iterator == 0 ? 0 : Region(free_iterator) + 1,
                          (std::min)(Region(iterator + size) + 1, NUM_SYNCS))) {
         // Avoid waiting for the previous usages to be free
         return GetStagingBuffer(size, MemoryUsage::Upload);
@@ -161,7 +162,10 @@ StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
         free_iterator = size;
 
         if (AreRegionsActive(0, Region(size) + 1)) {
-            // Avoid waiting for the previous usages to be free
+            // Avoid waiting for the previous usages to be free. Region 0 is still in use: with
+            // free_iterator at `size`, a next request this size or smaller skipped the check and
+            // got offset 0 while the GPU still read it. The next request checks region 0 again.
+            free_iterator = 0;
             return GetStagingBuffer(size, MemoryUsage::Upload);
         }
     }
@@ -274,13 +278,57 @@ StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage 
 }
 
 void StagingBufferPool::ReleaseCache(MemoryUsage usage) {
+#ifdef __ANDROID__
+    // Every size each frame: one of 64 per frame, 16 buffers at most, kept the buffers a burst of
+    // uploads made (Mario Kart World loading a course) for many seconds, on a phone whose GPU
+    // memory is its RAM. Desktop keeps the one size a frame.
+    auto& cache = GetCache(usage);
+    for (size_t log2 = 0; log2 < NUM_LEVELS; ++log2) {
+        if (!cache[log2].entries.empty()) {
+            ReleaseLevel(cache, log2);
+        }
+    }
+#else
     ReleaseLevel(GetCache(usage), current_delete_level);
+#endif
+}
+
+u64 StagingBufferPool::CachedBytes(MemoryUsage usage) const {
+    const auto& cache = usage == MemoryUsage::DeviceLocal ? device_local_cache
+                        : usage == MemoryUsage::Upload    ? upload_cache
+                                                          : download_cache;
+    u64 bytes = 0;
+    for (size_t log2 = 0; log2 < NUM_LEVELS; ++log2) {
+        bytes += static_cast<u64>(cache[log2].entries.size()) << log2;
+    }
+    return bytes;
 }
 
 void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
-    constexpr size_t deletions_per_tick = 16;
     auto& staging = cache[log2];
     auto& entries = staging.entries;
+#ifdef __ANDROID__
+    // A few idle buffers of each small size stay for reuse; the rest go once the GPU is done with
+    // them and they sat unused for a while (so steady uploads don't recreate buffers every frame).
+    // None of 16 MiB or more: power-of-two sizes made one image's upload a 1-2 GiB buffer, and
+    // keeping one of each such size held 4 GiB on a phone through Mario Kart World's races.
+    constexpr u64 idle_ticks = 64;
+    const size_t keep = log2 >= 24 ? 0 : 4;
+    const u64 current_tick = scheduler.CurrentTick();
+    size_t kept = 0;
+    std::erase_if(entries, [&](const StagingBuffer& entry) {
+        if (entry.deferred || !scheduler.IsFree(entry.tick)) {
+            return false;
+        }
+        if (current_tick - entry.tick < idle_ticks || kept < keep) {
+            ++kept;
+            return false;
+        }
+        return true;
+    });
+    const size_t new_size = entries.size();
+#else
+    constexpr size_t deletions_per_tick = 16;
     const size_t old_size = entries.size();
 
     const auto is_deletable = [this](const StagingBuffer& entry) {
@@ -294,6 +342,7 @@ void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
 
     const size_t new_size = entries.size();
     staging.delete_index += deletions_per_tick;
+#endif
     if (staging.delete_index >= new_size) {
         staging.delete_index = 0;
     }

@@ -400,8 +400,9 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     ctx.OpBranch(continue_block);
 
     ctx.AddLabel(continue_block);
-    const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
-                                    : ctx.OpAccessChain(element_pointer, base, index)};
+    const Id word_pointer{is_shared   ? ctx.SharedWordPointer(index)
+                          : is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
+                                      : ctx.OpAccessChain(element_pointer, base, index)};
     if (value_type.value == ctx.F32[2].value) {
         const Id u32_value{ctx.OpLoad(ctx.U32[1], word_pointer)};
         const Id value{ctx.OpUnpackHalf2x16(ctx.F32[2], u32_value)};
@@ -491,6 +492,19 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineImageBuffers(program.info, image_binding);
     DefineTextures(program.info, texture_binding, bindings.texture_scaling_index);
     DefineImages(program.info, image_binding, bindings.image_scaling_index);
+    if (emulates_shared_memory && Sirit::ValidId(shared_memory_u32)) {
+        // SPIR-V types are unique, so the emulated buffer's are the u32 storage buffers' ones:
+        // decorate them only when DefineStorageBuffers did not (twice is invalid).
+        if (!Sirit::ValidId(storage_types.U32.array)) {
+            const Id array_type{TypeRuntimeArray(U32[1])};
+            Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+            const Id struct_type{TypeStruct(array_type)};
+            Decorate(struct_type, spv::Decoration::Block);
+            MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+        }
+        // After every other descriptor: the host appends the buffer in the same place.
+        Decorate(shared_memory_u32, spv::Decoration::Binding, storage_binding++);
+    }
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program.info);
@@ -499,6 +513,33 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
 }
 
 EmitContext::~EmitContext() = default;
+
+Id EmitContext::SharedWordPointer(Id word_index) {
+    if (emulates_shared_memory) {
+        // This workgroup's slice: linear workgroup index x + nx * (y + ny * z).
+        const Id id{OpLoad(U32[3], workgroup_id)};
+        const Id count{OpLoad(U32[3], num_workgroups)};
+        const Id x{OpCompositeExtract(U32[1], id, 0U)};
+        const Id y{OpCompositeExtract(U32[1], id, 1U)};
+        const Id z{OpCompositeExtract(U32[1], id, 2U)};
+        const Id nx{OpCompositeExtract(U32[1], count, 0U)};
+        const Id ny{OpCompositeExtract(U32[1], count, 1U)};
+        const Id linear{OpIAdd(U32[1], x, OpIMul(U32[1], nx, OpIAdd(U32[1], y, OpIMul(U32[1], ny, z))))};
+        // Never past the buffer, which a write there can turn into a GPU fault (device lost): an
+        // indirect dispatch can have more workgroups than slices, and a program can address past
+        // its shared memory size. The host binds at least this many slices.
+        const u32 slices{EmulatedSharedMemorySlices(
+            shared_memory_words * 4, EmulatedSharedMemoryMaxBytes(profile.emulated_shared_memory_max_bytes))};
+        const Id slice{OpUMin(U32[1], linear, Const(slices - 1))};
+        const Id word{OpUMin(U32[1], word_index, Const(shared_memory_words - 1))};
+        const Id base{OpIMul(U32[1], slice, Const(shared_memory_words))};
+        return OpAccessChain(shared_u32, shared_memory_u32, u32_zero_value,
+                             OpIAdd(U32[1], base, word));
+    }
+    return uses_explicit_workgroup_layout
+               ? OpAccessChain(shared_u32, shared_memory_u32, u32_zero_value, word_index)
+               : OpAccessChain(shared_u32, shared_memory_u32, word_index);
+}
 
 Id EmitContext::Def(const IR::Value& value) {
     if (!value.IsImmediate()) {
@@ -611,6 +652,10 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         profile.support_explicit_workgroup_layout &&
         (!program.info.uses_int8 || profile.support_workgroup_layout_8bit_access) &&
         (!program.info.uses_int16 || profile.support_workgroup_layout_16bit_access);
+    emulates_shared_memory = program.info.emulated_shared_memory_size != 0;
+    if (emulates_shared_memory) {
+        uses_explicit_workgroup_layout = false;
+    }
     if (program.shared_memory_size == 0) {
         return;
     }
@@ -650,13 +695,35 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         std::tie(shared_memory_u32x4, shared_u32x4, std::ignore) = make(U32[4], 16);
         return;
     }
-    const u32 num_elements{Common::DivCeil(program.shared_memory_size, 4U)};
-    const Id type{TypeArray(U32[1], Const(num_elements))};
-    shared_memory_u32_type = TypePointer(spv::StorageClass::Workgroup, type);
+    if (emulates_shared_memory) {
+        // More shared memory than the device has (48 KB Switch 2 programs on a 32 KB Adreno): a
+        // storage buffer holds a slice per workgroup (SharedWordPointer). Its binding comes last,
+        // see the constructor.
+        shared_memory_words = Common::DivCeil(program.info.emulated_shared_memory_size, 4U);
+        // Decorated in the constructor: these are the u32 storage buffers' types too.
+        const Id struct_type{TypeStruct(TypeRuntimeArray(U32[1]))};
+        shared_memory_u32_type = TypePointer(spv::StorageClass::StorageBuffer, struct_type);
+        shared_u32 = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+        shared_memory_u32 =
+            AddGlobalVariable(shared_memory_u32_type, spv::StorageClass::StorageBuffer);
+        Decorate(shared_memory_u32, spv::Decoration::DescriptorSet, 0U);
+        Name(shared_memory_u32, "shared_memory_emulation");
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(shared_memory_u32);
+        }
+        if (!Sirit::ValidId(workgroup_id)) {
+            workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
+        }
+        num_workgroups = DefineInput(*this, U32[3], false, spv::BuiltIn::NumWorkgroups);
+    } else {
+        const u32 num_elements{Common::DivCeil(program.shared_memory_size, 4U)};
+        const Id type{TypeArray(U32[1], Const(num_elements))};
+        shared_memory_u32_type = TypePointer(spv::StorageClass::Workgroup, type);
 
-    shared_u32 = TypePointer(spv::StorageClass::Workgroup, U32[1]);
-    shared_memory_u32 = AddGlobalVariable(shared_memory_u32_type, spv::StorageClass::Workgroup);
-    interfaces.push_back(shared_memory_u32);
+        shared_u32 = TypePointer(spv::StorageClass::Workgroup, U32[1]);
+        shared_memory_u32 = AddGlobalVariable(shared_memory_u32_type, spv::StorageClass::Workgroup);
+        interfaces.push_back(shared_memory_u32);
+    }
 
     const Id func_type{TypeFunction(void_id, U32[1], U32[1])};
     const auto make_function{[&](u32 mask, u32 size) {
@@ -679,7 +746,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         OpBranch(continue_block);
 
         AddLabel(continue_block);
-        const Id word_pointer{OpAccessChain(shared_u32, shared_memory_u32, word_offset)};
+        const Id word_pointer{SharedWordPointer(word_offset)};
         const Id old_value{OpLoad(U32[1], word_pointer)};
         const Id new_value{OpBitFieldInsert(U32[1], old_value, insert_value, bit_offset, count)};
         const Id atomic_res{OpAtomicCompareExchange(U32[1], word_pointer, Const(1U), u32_zero_value,

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <span>
@@ -267,6 +268,24 @@ struct MeshInfo {
     boost::container::static_vector<u32, 136> primitive_lines;
 };
 
+/// Most bytes an emulated shared memory buffer spans: shaders clamp their workgroup slice to it
+/// and the host binds at least min(workgroups, slices that fit) slices.
+constexpr u32 EMULATED_SHARED_MEMORY_MAX_BYTES = 256U << 20;
+
+/// The limit on a host whose storage buffer range is `max_storage_buffer_range` (0: unknown,
+/// the fixed limit): the shader's clamp and the host's binding must agree on it.
+[[nodiscard]] constexpr u32 EmulatedSharedMemoryMaxBytes(u64 max_storage_buffer_range) {
+    return max_storage_buffer_range == 0
+               ? EMULATED_SHARED_MEMORY_MAX_BYTES
+               : static_cast<u32>((std::min)(u64{EMULATED_SHARED_MEMORY_MAX_BYTES},
+                                              max_storage_buffer_range));
+}
+
+[[nodiscard]] constexpr u32 EmulatedSharedMemorySlices(u32 bytes_per_workgroup,
+                                                       u32 max_bytes = EMULATED_SHARED_MEMORY_MAX_BYTES) {
+    return bytes_per_workgroup == 0 ? 1U : (std::max)(max_bytes / bytes_per_workgroup, 1U);
+}
+
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
@@ -274,6 +293,10 @@ struct Info {
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
+    /// Shared memory per workgroup kept in a storage buffer instead (the device has less than the
+    /// program needs), bound after every other descriptor. Zero when shared memory is native.
+    u32 emulated_shared_memory_size{};
+
     bool uses_workgroup_id{};
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};

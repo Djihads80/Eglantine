@@ -110,6 +110,9 @@ bool DmaPusher::Step() {
     auto& current_command = command_list.command_lists[dma_pushbuffer_subindex];
     const CommandListHeader& header = current_command;
     dma_state.dma_get = header.addr;
+    if (command_resume_offset == 0) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::GpfifoEntries, 1);
+    }
 
     if (signal_sync && !synced) {
         std::unique_lock lk(sync_mutex);
@@ -178,7 +181,11 @@ bool DmaPusher::Step() {
         // billions of instances and lost the device loading a race).
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-        if (!gpu_written && VideoCommon::GpuSplit::Get().Active() &&
+        // Only with the command list series on (nx2_command_lists): without it no page is ever
+        // marked, IsGpuWrittenCommands is always false, and the wait (for every compute dispatch
+        // or copy queued for the back) ran for every entry, ~130,000 times a second, for nothing.
+        if (!gpu_written && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+            Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
@@ -244,6 +251,9 @@ bool DmaPusher::Step() {
             }
         }
         parked_methods.clear();
+        // A rejected block cannot continue past its submission; do not let its skip eat the
+        // headers of the next one.
+        dma_state.skip_words = 0;
         dma_pushbuffer.pop_front();
         dma_pushbuffer_subindex = 0;
     } else {
@@ -274,6 +284,16 @@ static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != 
 
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
     for (size_t index = 0; index < commands.size();) {
+        // Discard the rest of a command block that was rejected (illegal method). The block's
+        // declared count still tells where the next header starts, so the stream stays aligned
+        // instead of running thousands of bogus methods.
+        if (dma_state.skip_words != 0) {
+            const u32 skip =
+                static_cast<u32>(std::min<std::size_t>(dma_state.skip_words, commands.size() - index));
+            index += skip;
+            dma_state.skip_words -= skip;
+            continue;
+        }
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {
             auto const& command_header = commands[index]; //must ref (MUltiMethod re)
@@ -287,6 +307,38 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            // A whole incrementing run within the 3D engine's constant buffer offset and data
+            // registers goes to the split's back as one entry (Maxwell3D::LoadConstantRun), not
+            // a method call per word. EDEN_NX2_CB_BATCH_PB=0 turns it off.
+            static const bool cb_runs = [] {
+                const char* value = std::getenv("EDEN_NX2_CB_BATCH_PB");
+                return value == nullptr || value[0] != '0';
+            }();
+            using Engines::Maxwell3D;
+            constexpr u32 cb_offset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+            constexpr u32 cb_last = MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15;
+            if (cb_runs && !dma_state.non_incrementing && !dma_increment_once &&
+                dma_state.method >= cb_offset && dma_state.method <= cb_last &&
+                dma_state.method_count <= Engines::Maxwell3D::MaxConstantRun &&
+                dma_state.method_count <= cb_last - dma_state.method + 1 &&
+                index + dma_state.method_count <= commands.size() && g_semaphore_watch == 0 &&
+                subchannel_type[dma_state.subchannel] == Engines::EngineTypes::Maxwell3D &&
+                subchannels[dma_state.subchannel] != nullptr) {
+                auto& split = VideoCommon::GpuSplit::Get();
+                auto* const maxwell3d =
+                    static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+                if (split.Active() && split.FrontMacros() &&
+                    maxwell3d->GetNativeMacroEngine().native_turing &&
+                    maxwell3d->FrontLoadConstantRun(system, split, dma_state.method,
+                                                    &commands[index].argument,
+                                                    dma_state.method_count)) {
+                    index += dma_state.method_count;
+                    dma_state.method += dma_state.method_count;
+                    dma_state.method_count = 0;
+                    dma_state.is_last_call = true;
+                    continue;
+                }
+            }
             // Fast-path batching for consecutive non-execution methods in increasing mode
             if (!dma_state.non_incrementing && !dma_increment_once &&
                 dma_state.method >= non_puller_methods &&
@@ -428,6 +480,25 @@ bool DmaPusher::WantsSegment() const {
 }
 
 void DmaPusher::CallMethod(u32 argument) {
+    // Method 0x1 is illegal in the host class: a stream that reaches it has been misparsed (for
+    // example, a split method continued into a different command buffer). Discard the rest of
+    // the block using its declared count instead of running thousands of bogus methods against
+    // the engines; the next header then parses from an aligned position.
+    if (dma_state.method == static_cast<u32>(BufferMethods::Illegal)) {
+        const u32 remaining = dma_state.method_count > 0 ? dma_state.method_count - 1 : 0;
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU,
+                      "Illegal host method on subchannel {}: discarding {} words of the block",
+                      dma_state.subchannel, remaining);
+        }
+        dma_state.skip_words = remaining;
+        // The caller's decrement then ends the block. An inline header (no block active,
+        // method_count 0) must stay at 0: at 1 its next word would be read as data.
+        dma_state.method_count = dma_state.method_count > 0 ? 1 : 0;
+        dma_state.non_incrementing = false;
+        return;
+    }
     if (g_semaphore_watch != 0) [[unlikely]] {
         WatchArgument(dma_state.method, argument);
     }
@@ -558,7 +629,8 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
 }
 
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || !Tegra::Nx2CommandLists() ||
+        size == 0) {
         return false;
     }
     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
@@ -578,8 +650,8 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
     // second in a Mario Kart World race, during which the back had nothing to do). Pages
     // FlushGpuWrittenCommands flushed whole and no GPU work wrote since are read from guest
     // memory.
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || count == 0 ||
-        rasterizer == nullptr) {
+    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || !Tegra::Nx2CommandLists() ||
+        count == 0 || rasterizer == nullptr) {
         return false;
     }
     const GPUVAddr end = address + u64{count} * sizeof(u32);

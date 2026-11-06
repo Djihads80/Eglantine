@@ -48,6 +48,47 @@ using VideoCore::Surface::PixelFormat;
 using VideoCore::Surface::SurfaceType;
 using namespace Common::Literals;
 
+// A host image that keeps only mip levels >= host_level_offset (TrimmedLevels) takes the plain
+// upload copies of those levels, renumbered so host level 0 is guest level host_level_offset.
+template <typename Copies>
+void TrimHostLevels(u32 host_level_offset, Copies& copies) {
+    if (host_level_offset == 0) {
+        return;
+    }
+    const s32 skip = static_cast<s32>(host_level_offset);
+    copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                [skip](const auto& copy) {
+                                    return copy.image_subresource.base_level < skip;
+                                }),
+                 copies.end());
+    for (auto& copy : copies) {
+        copy.image_subresource.base_level -= skip;
+    }
+}
+
+// Image to image copies by guest level, either side possibly keeping only levels >= its
+// host_level_offset: levels renumbered to each side's host levels (same extents), and copies of
+// levels a side doesn't keep dropped. Copying a level a host image lacks is invalid Vulkan, and
+// Turnip crashed on it once reduce_texture_resolution trimmed most compressed textures.
+template <typename Copies>
+void TrimImageCopies(u32 dst_level_offset, u32 src_level_offset, Copies& copies) {
+    if (dst_level_offset == 0 && src_level_offset == 0) {
+        return;
+    }
+    const s32 dst_skip = static_cast<s32>(dst_level_offset);
+    const s32 src_skip = static_cast<s32>(src_level_offset);
+    copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                [dst_skip, src_skip](const auto& copy) {
+                                    return copy.dst_subresource.base_level < dst_skip ||
+                                           copy.src_subresource.base_level < src_skip;
+                                }),
+                 copies.end());
+    for (auto& copy : copies) {
+        copy.dst_subresource.base_level -= dst_skip;
+        copy.src_subresource.base_level -= src_skip;
+    }
+}
+
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
@@ -390,7 +431,7 @@ void TextureCache<P>::TickFrame() {
         std::vector<std::pair<u64, const Image*>> largest;
         std::map<u32, std::pair<u64, u32>> by_format;
         for (const auto [image_id, image] : slot_images) {
-            const u64 bytes = GetScaledImageSizeBytes(*image);
+            const u64 bytes = ImageMemoryBytes(*image);
             image_bytes += bytes;
             ++images;
             if (debug_stats) {
@@ -405,9 +446,9 @@ void TextureCache<P>::TickFrame() {
                  image_bytes >> 20);
         std::partial_sort(largest.begin(), largest.begin() + std::min<size_t>(12, largest.size()),
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-        for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
+        for (size_t i = 0; i < std::min<size_t>(8, largest.size()); ++i) {
             const Image& image = *largest[i].second;
-            LOG_DEBUG(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
+            LOG_INFO(HW_GPU, "  {} MiB: {:#x} {}x{}x{} layers {} levels {} format {} type {} flags {:#x}",
                      largest[i].first >> 20, image.gpu_addr, image.info.size.width, image.info.size.height,
                      image.info.size.depth, image.info.resources.layers, image.info.resources.levels,
                      static_cast<u32>(image.info.format), static_cast<u32>(image.info.type),
@@ -417,7 +458,7 @@ void TextureCache<P>::TickFrame() {
         for (const auto& [format, total] : by_format) formats.emplace_back(total.first, format);
         std::sort(formats.rbegin(), formats.rend());
         for (size_t i = 0; i < std::min<size_t>(8, formats.size()); ++i) {
-            LOG_DEBUG(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
+            LOG_INFO(HW_GPU, "  format {}: {} MiB in {} images", formats[i].second, formats[i].first >> 20,
                      by_format[formats[i].second].second);
         }
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
@@ -1713,6 +1754,8 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         UploadImageContents(image, staging);
         runtime.InsertUploadMemoryBarrier();
     }
+    // Before the cold hint: memory given back is not hinted (the image is GPU modified then).
+    ReleaseGpuOnlyMemory(image);
     // The host GPU has its own copy now and the guest rarely reads this memory again: TickFrame
     // marks it cold, so the OS pages it out before anything else when it needs RAM (title 1
     // streams several GB of textures through it).
@@ -1762,6 +1805,40 @@ bool TextureCache<P>::UploadInChunks(Image& image) {
     }
     runtime.InsertUploadMemoryBarrier();
     return true;
+}
+
+template <class P>
+void TextureCache<P>::ReleaseGpuOnlyMemory(Image& image) {
+    // release_gpu_only_memory: a Switch 2 texture in GPU-only memory (regions nx2:gpu backs, whole
+    // or sparse) is never read by the guest CPU, and once uploaded its host image holds the data.
+    // Mario Kart World kept textures and render targets there twice, in RAM and on the GPU.
+    if (!Settings::values.release_gpu_only_memory.GetValue() ||
+        !Settings::CurrentProgramIsSwitch2() || image.info.num_samples != 1 ||
+        True(image.flags & (ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
+                            ImageFlagBits::SparseLayers | ImageFlagBits::Unbacked |
+                            ImageFlagBits::Sparse | ImageFlagBits::Remapped |
+                            ImageFlagBits::Rescaled | ImageFlagBits::CpuModified)) ||
+        !(Tegra::Nx2InGpuOnlyRegion(image.gpu_addr, image.guest_size_bytes) ||
+          Tegra::Nx2InSparseRegion(image.gpu_addr, image.guest_size_bytes))) {
+        return;
+    }
+    if (True(image.flags & ImageFlagBits::TrimmedLevels)) {
+        // Only the levels the host doesn't keep (most of the bytes): nothing reads them, and the
+        // image uploads the levels it keeps from the guest memory left, after an eviction too.
+        const LevelArray offsets = CalculateMipLevelOffsets(image.info);
+        const u64 dropped = offsets[image.host_level_offset];
+        const u64 layer_stride =
+            image.info.resources.layers > 1 ? image.info.layer_stride : image.guest_size_bytes;
+        for (s32 layer = 0; layer < image.info.resources.layers; ++layer) {
+            device_memory.ReleaseMemory(image.cpu_addr + layer * layer_stride, dropped);
+        }
+        return;
+    }
+    // The whole image, marked GPU modified: whatever reads that memory through the caches
+    // (flushes, eviction) downloads it back first. Only images the host keeps byte for byte as
+    // the guest does, so a download restores them.
+    MarkModification(image);
+    device_memory.ReleaseMemory(image.cpu_addr, image.guest_size_bytes);
 }
 
 template <class P>
@@ -1948,7 +2025,14 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             // Plain formats: each layer unswizzled on its own into its layer of the image.
             ImageInfo layer_info = image.info;
             layer_info.resources.layers = 1;
-            const size_t layer_size = CalculateUnswizzledSizeBytes(layer_info);
+            // Only the levels the host keeps (TrimmedLevels): a dropped 8192x8192 level 0 alone
+            // would be 64 MB of staging per layer.
+            const s32 first_level = static_cast<s32>(image.host_level_offset);
+            ImageInfo host_layer_info = layer_info;
+            host_layer_info.size.width = (std::max)(layer_info.size.width >> first_level, 1U);
+            host_layer_info.size.height = (std::max)(layer_info.size.height >> first_level, 1U);
+            host_layer_info.resources.levels -= first_level;
+            const size_t layer_size = CalculateUnswizzledSizeBytes(host_layer_info);
             auto staging = runtime.UploadStagingBuffer(layer_size * layers.size());
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
@@ -1958,7 +2042,8 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
                                  &swizzle_data_buffer);
                 auto layer_copies =
                     UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
-                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                                   staging.mapped_span.subspan(i * layer_size, layer_size),
+                                   first_level);
                 for (BufferImageCopy copy : layer_copies) {
                     copy.buffer_offset += i * layer_size;
                     copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
@@ -2031,9 +2116,11 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+        TrimHostLevels(image.host_level_offset, copies);
         image.UploadMemory(staging, copies);
     } else {
-        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
+        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data,
+                                           mapped_span, static_cast<s32>(image.host_level_offset));
         image.UploadMemory(staging, copies);
     }
 }
@@ -2223,6 +2310,17 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
             return image.SparseBoundBytes();
         }
         return 0;
+    }
+    // A trimmed image (reduce_texture_resolution, or too large for the host) counts what its host
+    // image really takes, where the runtime knows it: a quarter of its guest size or less.
+    // Counted at guest size, Mario Kart World's trimmed terrain arrays kept the total over the
+    // critical limit for whole races, and the collector evicted (and re-uploaded) thousands of
+    // textures every few seconds. Other images count as before.
+    if constexpr (requires { image.HostMemoryBytes(); }) {
+        if (const std::optional<u64> host_bytes = image.HostMemoryBytes();
+            host_bytes && True(image.flags & ImageFlagBits::TrimmedLevels)) {
+            return Common::AlignUp(*host_bytes, 1024);
+        }
     }
     u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
     if ((IsPixelFormatASTC(image.info.format) &&
@@ -2468,6 +2566,9 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
+    if (!image_id) {
+        return ImageId{}; // Could not be created (see JoinImages)
+    }
     const Image& image = slot_images[image_id];
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
@@ -2589,7 +2690,21 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    ImageId new_image_id;
+    try {
+        new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    } catch (const std::exception& e) {
+        // The host cannot hold it at all: an 8192x8192x68 BC6H virtual texture is 6 GB on a
+        // driver with a 4 GB allocation limit and no real sparse images (Adreno). Sample it as
+        // the null image rather than aborting; nothing has been joined into it yet.
+        static u32 logged{};
+        if (logged++ < 16) {
+            LOG_ERROR(HW_GPU, "Image {}x{}x{} ({} levels) at {:#x} could not be created ({}); using the null image",
+                      new_info.size.width, new_info.size.height, new_info.resources.layers,
+                      new_info.resources.levels, gpu_addr, e.what());
+        }
+        return ImageId{};
+    }
     Image& new_image = slot_images[new_image_id];
 
     new_image.allocation_tick = frame_tick;
@@ -2698,10 +2813,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             const u32 up_scale = can_rescale ? resolution.up_scale : 1;
             const u32 down_shift = can_rescale ? resolution.down_shift : 0;
             auto copies = MakeShrinkImageCopies(new_info, overlap.info, base, up_scale, down_shift);
-            if (overlap.info.num_samples != new_image.info.num_samples) {
-                runtime.CopyImageMSAA(new_image, overlap, copies);
-            } else {
-                runtime.CopyImage(new_image, overlap, copies);
+            TrimImageCopies(new_image.host_level_offset, overlap.host_level_offset, copies);
+            if (!copies.empty()) {
+                if (overlap.info.num_samples != new_image.info.num_samples) {
+                    runtime.CopyImageMSAA(new_image, overlap, copies);
+                } else {
+                    runtime.CopyImage(new_image, overlap, copies);
+                }
             }
             new_image.modification_tick = overlap.modification_tick;
         }
@@ -2776,6 +2894,9 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             dst_id = InsertImage(dst_info, dst_addr, RelaxedOptions{});
         }
     } while (has_deleted_images);
+    if (!src_id || !dst_id) {
+        return std::nullopt; // An image that could not be created (see JoinImages)
+    }
     const ImageBase& src_image = slot_images[src_id];
     const ImageBase& dst_image = slot_images[dst_id];
     const bool native_bgr = runtime.HasNativeBgr();
@@ -2791,6 +2912,9 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             src_id = FindOrInsertImage(src_info, src_addr, RelaxedOptions{});
             dst_id = FindOrInsertImage(dst_info, dst_addr, RelaxedOptions{});
         } while (has_deleted_images);
+        if (!src_id || !dst_id) {
+            return std::nullopt;
+        }
     }
     return {BlitImages{
         .dst_id = dst_id,
@@ -2907,6 +3031,21 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
 
 template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
+    if (info.size.width == 0 || info.size.height == 0 || info.size.depth == 0) {
+        // No render target, as for a garbage one below: NULL_IMAGE_VIEW_ID is the null view
+        // (slot 0, a valid id), which BindRenderTarget would attach, and it has no format.
+        return ImageViewId{};
+    }
+    // Render target registers filled by garbage commands (sizes like 2147487260x2147485323, or
+    // 0x0 with 36232 layers): creating the image would abort.
+    static constexpr u32 MaxRenderTargetSize = 32768;
+    static constexpr s32 MaxRenderTargetLayers = 2048;
+    if (info.size.width > MaxRenderTargetSize || info.size.height > MaxRenderTargetSize ||
+        info.resources.layers > MaxRenderTargetLayers) {
+        LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}", info.size.width,
+                  info.size.height, info.resources.layers, gpu_addr);
+        return ImageViewId{}; // No render target: the null view has no format to size
+    }
     ImageId image_id{};
     bool delete_state = has_deleted_images;
     do {
@@ -3513,6 +3652,9 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
+    if (image_id == NULL_IMAGE_ID) {
+        return; // See PrepareImageView
+    }
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
@@ -3567,7 +3709,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
 template <class P>
 void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modification,
                                        bool invalidate) {
-    if (!image_view_id) {
+    // The null view stands for textures that are unmapped or could not be created: it has no
+    // contents to upload (its image's format is invalid).
+    if (!image_view_id || image_view_id == NULL_IMAGE_VIEW_ID) {
         return;
     }
     const ImageViewBase& image_view = slot_image_views[image_view_id];
@@ -3588,6 +3732,10 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
     if (dst.info.astc_opaque != src.info.astc_opaque) {
         // BC1 and BC3 blocks differ in size, so the host can't copy between them; both hold the
         // same guest data, which is uploaded from guest memory instead.
+        return;
+    }
+    TrimImageCopies(dst.host_level_offset, src.host_level_offset, copies);
+    if (copies.empty()) {
         return;
     }
     const bool is_rescaled = True(src.flags & ImageFlagBits::Rescaled);

@@ -54,17 +54,21 @@ public:
         return registry;
     }
 
-    void Register(u64 address, u64 size) {
-        MapAt(address, address, size);
+    /// Returns the mapping's generation: what UnregisterIfUnchanged needs to undo this very
+    /// registration and not one made since over the range.
+    u64 Register(u64 address, u64 size) {
+        return MapAt(address, address, size);
     }
 
-    void MapAt(u64 gpu_address, u64 cpu_address, u64 size) {
+    u64 MapAt(u64 gpu_address, u64 cpu_address, u64 size) {
         std::scoped_lock lk{mutex};
         TrimMappings(gpu_address, size);
-        mappings.push_back({gpu_address, cpu_address, size});
+        const u64 generation = ++next_generation;
+        mappings.push_back({gpu_address, cpu_address, size, generation});
         for (auto& [owner, listener] : listeners) {
             listener.map(gpu_address, cpu_address, size);
         }
+        return generation;
     }
 
     // NormalUnmapGpuMemory4K, or destroying the memory: the GPU range stops reaching it.
@@ -74,6 +78,37 @@ public:
         for (auto& [owner, listener] : listeners) {
             listener.unmap(gpu_address, size);
         }
+    }
+
+    // Undoes Register(address, size) if that mapping is still in place: unmaps it (on the GPU
+    // thread, after the command lists already submitted) and releases its backing unless another
+    // mapping of the same range shares it. A mapping made since over the range replaced it, and
+    // its GPU range and backing belong to that one now: then nothing is done (false).
+    /// `generation`: Register's result for the mapping to undo. A mapping made since over the
+    /// range (another Register, or 211 at the address) has a newer one and is left alone.
+    bool UnregisterIfUnchanged(u64 address, u64 size, u64 generation) {
+        bool shared{};
+        {
+            std::scoped_lock lk{mutex};
+            const auto it = std::ranges::find_if(mappings, [&](const Mapping& m) {
+                return m.gpu_address == address && m.cpu_address == address && m.size == size &&
+                       m.generation == generation;
+            });
+            if (it == mappings.end()) {
+                return false;
+            }
+            mappings.erase(it);
+            shared = std::ranges::any_of(mappings, [&](const Mapping& m) {
+                return m.cpu_address == address && m.size == size;
+            });
+            for (auto& [owner, listener] : listeners) {
+                listener.unmap(address, size);
+            }
+        }
+        if (!shared) {
+            ReleaseBacking(address, size);
+        }
+        return true;
     }
 
     // Backing memory [cpu_address, +size) is about to be freed (its GPU mappings are gone): each
@@ -252,7 +287,9 @@ private:
         u64 gpu_address;
         u64 cpu_address;
         u64 size;
+        u64 generation; ///< Which registration this is (MapAt's result)
     };
+    u64 next_generation{};
 
     struct Listeners {
         Listener map;

@@ -97,24 +97,38 @@ template <class Runtime, class DeviceMemory>
     }
     Reuse& reuse = UniformStreamReuseState<typename Runtime::StreamUniformRef>();
     typename Reuse::Slot& slot = reuse.slots[stage][index];
-    u8* const scratch = reuse.scratch.data();
-    device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+    // The guest bytes are compared in place when they are contiguous in host memory (one
+    // read instead of a copy and a read; nearly every bind compares equal); otherwise through
+    // the scratch copy. EDEN_NX2_UBO_DIRECT=0 always copies first.
+    static const bool direct = [] {
+        const char* value = std::getenv("EDEN_NX2_UBO_DIRECT");
+        return value == nullptr || value[0] != '0';
+    }();
+    const u8* bytes = direct ? device_memory.GetSpan(device_addr, size) : nullptr;
+    if (bytes == nullptr) {
+        u8* const scratch = reuse.scratch.data();
+        device_memory.ReadBlockUnsafe(device_addr, scratch, size);
+        bytes = scratch;
+    }
 
     const bool same_bytes =
-        slot.size == size && std::memcmp(slot.bytes.data(), scratch, size) == 0;
+        slot.size == size && std::memcmp(slot.bytes.data(), bytes, size) == 0;
     if (same_bytes && slot.tick == runtime.CurrentTick()) {
         runtime.RebindStreamUniform(slot.ref, size);
         return true;
     }
+    if (!same_bytes) {
+        // One snapshot, the slot's copy, which the stream is then written from: the guest may
+        // write the range meanwhile, and two reads of it could leave the stream and the copy
+        // (what the next bind compares against) different.
+        slot.size = size;
+        std::memcpy(slot.bytes.data(), bytes, size);
+    }
     const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
-    std::memcpy(span.data(), scratch, size);
+    std::memcpy(span.data(), slot.bytes.data(), size);
     slot.ref = runtime.LastStreamUniformRef();
     // After the allocation: the tick the stream region is tagged with is the one current now.
     slot.tick = runtime.CurrentTick();
-    if (!same_bytes) {
-        slot.size = size;
-        std::memcpy(slot.bytes.data(), scratch, size);
-    }
     return true;
 }
 

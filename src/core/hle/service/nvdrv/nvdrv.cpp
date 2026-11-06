@@ -5,9 +5,12 @@
 // SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstdlib>
 #include <utility>
 
 #include <fmt/ranges.h>
+#include "common/game_presets.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -134,9 +137,34 @@ Module::Module(Core::System& system)
     Tegra::Nx2ClearSemaphoreRegions();
     Tegra::Nx2ClearSparseRegions();
     Tegra::Nx2ClearGpuWrittenPages();
+    Tegra::Nx2ClearGpuOnlyRegions();
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;
     Core::g_nx2_present_count = 0;
+    LOG_INFO(Service_NVDRV, "Switch 2 held CPU writes before command lists: {} (EDEN_NX2_HELD_WRITES)",
+             Tegra::Nx2HeldWritesEnabled() ? "on" : "off");
+    {
+        // Read once per game start; EDEN_NX2_COMMAND_LISTS=0/1 overrides the setting.
+        bool command_lists = Settings::values.nx2_command_lists.GetValue();
+#ifdef __ANDROID__
+        // On an Odin 3 the copies cost Mario Kart World ~45 ms of GPU-thread waiting a second
+        // and caused flicker, so it runs without them unless its own custom settings turn them
+        // on. Other games need them: Ocarina of Time deadlocks on the lists it rewrites.
+        if (system.GetApplicationProcessProgramID() == Settings::MarioKartWorldProgramId &&
+            Settings::values.nx2_command_lists.UsingGlobal()) {
+            command_lists = false;
+        }
+#endif
+        const char* const override_value = std::getenv("EDEN_NX2_COMMAND_LISTS");
+        if (override_value != nullptr && override_value[0] != '\0') {
+            command_lists = override_value[0] != '0';
+        }
+        Tegra::g_nx2_command_lists = command_lists;
+        LOG_INFO(Service_NVDRV, "Switch 2 command list fixes: {} ({})", command_lists ? "on" : "off",
+                 override_value != nullptr && override_value[0] != '\0'
+                     ? "EDEN_NX2_COMMAND_LISTS"
+                     : "nx2_command_lists");
+    }
     nx2_stub_builder = [this, &system](DeviceFD fd, const std::string& name) {
         auto device = std::make_shared<Devices::nx2_stub_device>(system, name);
         open_files.emplace(fd, device);

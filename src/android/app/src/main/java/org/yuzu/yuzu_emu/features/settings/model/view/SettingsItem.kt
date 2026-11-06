@@ -779,6 +779,55 @@ abstract class SettingsItem(
                 )
             )
             put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_REDUCE_TEXTURE_RESOLUTION,
+                    titleId = R.string.renderer_reduce_texture_resolution,
+                    descriptionId = R.string.renderer_reduce_texture_resolution_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_RELEASE_GPU_ONLY_MEMORY,
+                    titleId = R.string.renderer_release_gpu_only_memory,
+                    descriptionId = R.string.renderer_release_gpu_only_memory_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_NX2_COMMAND_LISTS,
+                    titleId = R.string.renderer_nx2_command_lists,
+                    descriptionId = R.string.renderer_nx2_command_lists_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_30FPS,
+                    titleId = R.string.renderer_mkw_30fps,
+                    descriptionId = R.string.renderer_mkw_30fps_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_60FPS,
+                    titleId = R.string.renderer_mkw_60fps,
+                    descriptionId = R.string.renderer_mkw_60fps_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_LOD_DISTANCE,
+                    titleId = R.string.renderer_mkw_lod_distance,
+                    descriptionId = R.string.renderer_mkw_lod_distance_description
+                )
+            )
+            put(
+                SwitchSetting(
+                    BooleanSetting.RENDERER_MKW_SHADOW_CASCADES,
+                    titleId = R.string.renderer_mkw_shadow_cascades,
+                    descriptionId = R.string.renderer_mkw_shadow_cascades_description
+                )
+            )
+            put(
                 SingleChoiceSetting(
                     IntSetting.FAST_GPU_TIME,
                     titleId = R.string.fast_gpu_time,

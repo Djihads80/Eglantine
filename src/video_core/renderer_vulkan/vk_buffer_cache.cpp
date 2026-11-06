@@ -437,6 +437,7 @@ u32 BufferCacheRuntime::GetStorageBufferAlignment() const {
 }
 
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
+    multi_range_buffers.TickFrame(scheduler);
     for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
         if (scheduler.IsFree(it->LastUsageTick())) {
             it->ResetUsageTracking();
@@ -446,6 +447,24 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noe
 
 u64 BufferCacheRuntime::CurrentTick() {
     return scheduler.CurrentTick();
+}
+
+bool BufferCacheRuntime::CanReadBuffersDirectly() const noexcept {
+    // Phones only: desktop integrated GPUs keep the staging copy.
+#ifdef __ANDROID__
+    // EDEN_NX2_DIRECT_DOWNLOADS=0 copies every download.
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_DIRECT_DOWNLOADS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled && device.IsIntegrated();
+#else
+    return false;
+#endif
+}
+
+void BufferCacheRuntime::WaitTick(u64 tick) {
+    scheduler.Wait(tick);
 }
 
 bool BufferCacheRuntime::IsFree(u64 tick) {

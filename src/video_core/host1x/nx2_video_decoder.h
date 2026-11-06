@@ -35,9 +35,13 @@ enum class Nx2PictureFormat : u32 {
 /// Checks if stream data begins with an H.264 Annex-B start code or avcC/MP4 length-prefixed NALUs.
 bool IsH264Stream(std::span<const u8> data);
 
+/// Whether `mime` names AV1 ("video/av1", "video/av01").
+bool Nx2IsAv1Mime(std::string_view mime);
+
 /// The decoder behind the Switch 2 video decoder service (nn::codec::video): FFmpeg decodes the
-/// elementary stream the game demuxed, in software or on the host GPU (NVDEC emulation setting).
-/// Used from one thread at a time.
+/// elementary stream the game demuxed, in software or on the host GPU (NVDEC emulation setting),
+/// and on Android libgav1 decodes AV1, which its FFmpeg package lacks. Used from one thread at a
+/// time.
 class Nx2VideoDecoder {
 public:
     /// mime: the codec name nn::codec sends with Configure ("video/vp9", "video/vp8", ...).

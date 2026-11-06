@@ -39,7 +39,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  Common::ThreadWorker* thread_worker,
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
-                                 vk::ShaderModule spv_module_, u64 shader_hash_)
+                                 vk::ShaderModule spv_module_, u64 shader_hash_,
+                                 std::vector<u32> spirv)
     : device{device_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
@@ -55,7 +56,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     builder.Add(info, VK_SHADER_STAGE_COMPUTE_BIT);
 
     uses_push_descriptor = builder.CanUsePushDescriptor();
-    uses_descriptor_buffer = builder.CanUseDescriptorBuffer() && descriptor_buffer_ring.IsValid();
+    // Emulated shared memory's scratch buffer has no device address for a descriptor buffer.
+    uses_descriptor_buffer = builder.CanUseDescriptorBuffer() && descriptor_buffer_ring.IsValid() &&
+                             info.emulated_shared_memory_size == 0;
     descriptor_set_layout =
         builder.CreateDescriptorSetLayout(uses_push_descriptor, uses_descriptor_buffer);
     if (uses_descriptor_buffer) {
@@ -80,7 +83,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
     }
 
-    auto func{[this, shader_notify, pipeline_statistics] {
+    // The SPIR-V is kept only while the pipeline builds, for a driver that rejects it.
+    auto func{[this, shader_notify, pipeline_statistics, spirv = std::move(spirv)] {
         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
             .pNext = nullptr,
@@ -123,6 +127,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
                          exception.what());
+            DumpSpirv("failed_pipelines", fmt::format("{:016x}_compute", shader_hash), spirv);
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
@@ -161,7 +166,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
 
 bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
-                                BufferCache& buffer_cache, TextureCache& texture_cache) {
+                                BufferCache& buffer_cache, TextureCache& texture_cache,
+                                StagingBufferPool& staging_pool) {
     guest_descriptor_queue.Acquire(scheduler, num_descriptor_entries, uses_descriptor_buffer);
 
     buffer_cache.SetComputeUniformBufferState(info.constant_buffer_mask, &uniform_buffer_sizes);
@@ -281,6 +287,70 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const VideoCommon::ImageViewInOut* views_it{views.data()};
     PushImageDescriptors(texture_cache, guest_descriptor_queue, info, rescaling, samplers_it,
                          views_it);
+    if (info.emulated_shared_memory_size != 0) {
+        // Emulated shared memory, a slice per workgroup, as many as the shader may address (it
+        // clamps to them). An indirect dispatch's size is only known on the GPU: all of them.
+        const auto& qmd{kepler_compute.launch_description};
+        // As many slices as the shader clamps to, within the host's storage buffer range (the
+        // same limit the shader was compiled with).
+        const u32 max_bytes =
+            Shader::EmulatedSharedMemoryMaxBytes(device.GetMaxStorageBufferRange());
+        const u64 slices =
+            Shader::EmulatedSharedMemorySlices(info.emulated_shared_memory_size, max_bytes);
+        const bool indirect = static_cast<bool>(kepler_compute.GetIndirectComputeAddress());
+        u64 workgroups = static_cast<u64>(qmd.grid_dim_x.Value()) * qmd.grid_dim_y.Value() *
+                         qmd.grid_dim_z.Value();
+        if (indirect) {
+            workgroups = slices;
+        } else if (workgroups == 0) {
+            workgroups = 1; // Nothing runs: one slice keeps the binding valid
+        } else if (workgroups > slices) {
+            // The shader clamps its slice index: workgroups past the last slice share it within
+            // this one dispatch (the limit is the host's storage buffer range). Not split here
+            // (the program reads its workgroup id); reported so it is known to happen.
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(Render_Vulkan,
+                            "Compute dispatch of {} workgroups with {} bytes of emulated shared "
+                            "memory each: only {} slices fit, the rest share the last",
+                            workgroups, info.emulated_shared_memory_size, slices);
+            }
+        }
+        const u64 size = (std::min)(workgroups, slices) * info.emulated_shared_memory_size;
+        // EDEN_NX2_SCRATCH_REUSE=0: a region per dispatch, as before.
+        static const bool reuse = [] {
+            const char* value = std::getenv("EDEN_NX2_SCRATCH_REUSE");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (reuse && workgroups >= slices) {
+            // The whole range: one region per tick for this pipeline, not one per dispatch (an
+            // indirect dispatch does not know its workgroup count; several in one tick took a
+            // full-size region each). Dispatches that share it are ordered by a barrier.
+            if (shared_scratch_tick != scheduler.CurrentTick() || shared_scratch_size < size) {
+                shared_scratch = staging_pool.Request(size, MemoryUsage::DeviceLocal);
+                shared_scratch_tick = scheduler.CurrentTick();
+                shared_scratch_size = size;
+            } else {
+                // The dispatch runs outside the render pass; so must its barrier (the
+                // rasterizer leaves the pass after Configure).
+                scheduler.RequestOutsideRenderPassOperationContext();
+                scheduler.Record([](vk::CommandBuffer cmdbuf) {
+                    static constexpr VkMemoryBarrier barrier{
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .pNext = nullptr,
+                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    };
+                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
+                });
+            }
+            guest_descriptor_queue.AddBuffer(shared_scratch.buffer, shared_scratch.offset, size);
+        } else {
+            const StagingBufferRef scratch{staging_pool.Request(size, MemoryUsage::DeviceLocal)};
+            guest_descriptor_queue.AddBuffer(scratch.buffer, scratch.offset, size);
+        }
+    }
 
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built

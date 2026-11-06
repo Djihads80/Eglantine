@@ -1026,8 +1026,13 @@ FN_MAX_LIMIT_LIST
         return device_access_memory;
     }
 
+    /// With VK_EXT_memory_budget from the driver, or VMA's allocations without it.
     bool CanReportMemoryUsage() const {
+#ifdef __ANDROID__
+        return extensions.memory_budget || allocator != nullptr;
+#else
         return extensions.memory_budget;
+#endif
     }
 
     u64 GetDeviceMemoryUsage() const;
@@ -1042,6 +1047,11 @@ FN_MAX_LIMIT_LIST
     /// allocation in (the unused part of its blocks). GetDeviceMemoryUsage() does not count it,
     /// yet the driver does: with the heap at its budget it is not available to new images.
     u64 GetDeviceMemorySlack() const;
+
+    /// Most bytes a sparse (unbacked) resource may span.
+    u64 GetSparseAddressSpaceSize() const {
+        return properties.properties.limits.sparseAddressSpaceSize;
+    }
 
     u32 GetSetsPerPool() const {
         return sets_per_pool;

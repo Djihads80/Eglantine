@@ -19,6 +19,9 @@
 #include "common/x64/xbyak.h"
 #include "video_core/macro_turing_jit.h"
 #endif
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+#include "video_core/macro_turing_jit_arm64.h"
+#endif
 
 #include "common/assert.h"
 #include "common/scope_exit.h"
@@ -1466,9 +1469,11 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 }
                 return true;
             };
-#ifdef ARCHITECTURE_x86_64
-        // Macro code runs compiled to x86-64 (macro_turing_jit.h) instead of through the memo
-        // and the interpreter; EDEN_NX2_MME_JIT=0 goes back to those.
+#if defined(ARCHITECTURE_x86_64) || (defined(ARCHITECTURE_arm64) && defined(__ANDROID__))
+        // Macro code runs compiled to x86-64 or ARM64 (macro_turing_jit.h,
+        // macro_turing_jit_arm64.h) instead of through the memo and the interpreter;
+        // EDEN_NX2_MME_JIT=0 goes back to those, as does ARM64 code that did not match the
+        // interpreter on its checked calls.
         static const bool use_jit = [] {
             const char* value = std::getenv("EDEN_NX2_MME_JIT");
             return value == nullptr || value[0] != '0';
@@ -1478,6 +1483,8 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 native_jit = std::make_shared<TuringMacroJit>();
             }
             native_jit->Prepare(native_code, native_code_generation);
+        }
+        if (use_jit && native_jit->Usable()) {
             fifo.assign(parameters.begin(), parameters.end());
             const auto result = native_jit->Execute(
                 method, fifo, std::span<u32>{*native_interpreter.active_dram},
@@ -1487,8 +1494,9 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                 emit);
             if (!result.success) {
                 native_execution_failed = true;
-                LOG_ERROR(HW_GPU, "Native MME (JIT) failed: start={:#x}, consumed={}/{}, error={}",
-                          method, result.consumed, parameters.size(), result.error);
+                LOG_ERROR(HW_GPU,
+                          "Native MME (JIT) failed: start={:#x}, pc={:#x}, consumed={}/{}, error={}",
+                          method, result.pc, result.consumed, parameters.size(), result.error);
             }
             return;
         }

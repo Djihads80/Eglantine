@@ -24,6 +24,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/literals.h"
+#include "common/memory_detect.h"
 #include <ranges>
 #include "common/settings.h"
 #include "common/settings_enums.h"
@@ -1597,9 +1598,17 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.multiviewMeshShader = VK_FALSE;
     features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
     features.mesh_shader.meshShaderQueries = VK_FALSE;
+    const bool has_mesh_extension = extensions.mesh_shader;
+    const bool task_shader = features.mesh_shader.taskShader != VK_FALSE;
+    const bool mesh_shader = features.mesh_shader.meshShader != VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
+    LOG_INFO(Render_Vulkan,
+             "VK_EXT_mesh_shader: extension {}, taskShader {}, meshShader {}: Switch 2 task/mesh "
+             "draws {}",
+             has_mesh_extension ? "present" : "absent", task_shader, mesh_shader,
+             extensions.mesh_shader ? "on" : "skipped");
 
     // VK_KHR_shader_quad_control
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
@@ -1715,6 +1724,23 @@ void Device::ReleaseCustomBorderColorSamplers(size_t count) const {
 }
 
 u64 Device::GetDeviceMemoryUsage() const {
+    // Without VK_EXT_memory_budget (Qualcomm's driver), what VMA's allocations use. The caches'
+    // own estimate counted sparse and unbacked images at their full size: Mario Kart World
+    // "used" 8.5 GB with 4.7 GB allocated, and evicted textures nonstop until the phone ran out of
+    // memory. Android only (CanReportMemoryUsage).
+#ifdef __ANDROID__
+    if (!extensions.memory_budget) {
+        u64 used{};
+        if (allocator != nullptr) {
+            std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
+            vmaGetHeapBudgets(allocator, heap_budgets.data());
+            for (const size_t heap : valid_heap_memory) {
+                used += heap_budgets[heap].statistics.allocationBytes;
+            }
+        }
+        return used;
+    }
+#endif
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
@@ -1740,9 +1766,23 @@ u64 Device::GetDeviceMemorySlack() const {
 }
 
 u64 Device::GetDeviceMemoryBudget() const {
+#ifdef ANDROID
+    // A phone GPU shares the system's RAM with the guest (12 GiB for a Switch 2 program): a
+    // fifth of it (at least 4 GiB), ~4.7 GiB on a 24 GiB phone. Without VK_EXT_memory_budget
+    // (Qualcomm) the integrated default of 4 GiB was under what Mario Kart World keeps in use;
+    // with it, a Turnip build reported ~9 GiB, and the textures it let in got the game killed
+    // for want of memory. Even with a quarter, loading a race (16-17 GB for the process, the
+    // guest's own peak) left the phone without memory.
+    const u64 integrated_budget =
+        (std::max<u64>)(Common::GetMemInfo().TotalPhysicalMemory / 5, u64{4} << 30);
+    if (!extensions.memory_budget) {
+        return is_integrated ? integrated_budget : 0;
+    }
+#else
     if (!extensions.memory_budget) {
         return 0;
     }
+#endif
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
@@ -1768,7 +1808,12 @@ u64 Device::GetDeviceMemoryBudget() const {
         // budget): following it let the texture cache fill that much RAM before collecting, and
         // kept ASTC uncompressed. Its budget is at most the share CollectPhysicalMemoryInfo
         // gives it (4 GiB, 6 GiB with aggressive VRAM use).
+#ifdef ANDROID
+        // On a phone: a quarter of the RAM (see above).
+        result = (std::min)(result, integrated_budget);
+#else
         result = (std::min)(result, device_access_memory);
+#endif
     }
     return result;
 }

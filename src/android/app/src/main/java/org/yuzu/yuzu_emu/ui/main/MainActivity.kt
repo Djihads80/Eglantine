@@ -33,6 +33,8 @@ import org.yuzu.yuzu_emu.dialogs.NetPlayDialog
 import org.yuzu.yuzu_emu.features.settings.model.Settings
 import org.yuzu.yuzu_emu.fragments.AddGameFolderDialogFragment
 import org.yuzu.yuzu_emu.fragments.MessageDialogFragment
+import org.yuzu.yuzu_emu.fragments.ProgressDialogFragment
+import org.yuzu.yuzu_emu.HomeNavigationDirections
 import org.yuzu.yuzu_emu.model.AddonViewModel
 import org.yuzu.yuzu_emu.model.DriverViewModel
 import org.yuzu.yuzu_emu.model.GamesViewModel
@@ -404,6 +406,87 @@ class MainActivity : AppCompatActivity(), ThemeProvider {
                 processExternalContentDir(result)
             }
         }
+
+    // "Load file": boots a picked file without adding it to the library. A loose ExeFS main also
+    // needs its folder (main.npdm, sdk, subsdk*, romfs/), which picking one file does not grant:
+    // it boots when a granted tree holds it, else the folder is asked for.
+    val loadGameFile =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { result ->
+            if (result != null) {
+                processLoadGameFile(result)
+            }
+        }
+
+    val loadLooseExeFsFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { result ->
+            if (result != null) {
+                processLooseExeFsFolder(result)
+            }
+        }
+
+    private fun processLoadGameFile(result: Uri) {
+        val filename = FileUtil.getFilename(result)
+        if (filename != "main" && filename != "main.npdm") {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    result,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: SecurityException) {
+                // Not persistable: the grant still lasts while the app runs
+            }
+            bootGameUri { result }
+            return
+        }
+
+        val treeUri = FileUtil.getTreeDocumentUri(result)
+        if (treeUri == null) {
+            MessageDialogFragment.newInstance(
+                this,
+                titleId = R.string.loose_exefs_folder_access,
+                descriptionId = R.string.loose_exefs_folder_access_description,
+                positiveAction = { loadLooseExeFsFolder.launch(null) }
+            ).show(supportFragmentManager, MessageDialogFragment.TAG)
+            return
+        }
+        bootGameUri {
+            FileUtil.getParentUri(treeUri.toString())?.let {
+                GameHelper.findLooseExeFsMain(FileUtil.listFiles(it.toUri()))
+            }
+        }
+    }
+
+    private fun processLooseExeFsFolder(result: Uri) {
+        contentResolver.takePersistableUriPermission(
+            result,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION
+        )
+        bootGameUri { GameHelper.findLooseExeFsMain(FileUtil.listFiles(result)) }
+    }
+
+    // Identifies the game off the main thread (a loose ExeFS indexes its whole RomFS through the
+    // document provider, which takes a while) and boots it.
+    private fun bootGameUri(findGameUri: () -> Uri?) {
+        ProgressDialogFragment.newInstance(this, R.string.loading_game) { _, _ ->
+            val gameUri = findGameUri()
+                ?: return@newInstance MessageDialogFragment.newInstance(
+                    titleId = R.string.load_file_failed,
+                    descriptionId = R.string.loose_exefs_not_found
+                )
+            val game = GameHelper.getGame(gameUri, false)
+                ?: return@newInstance MessageDialogFragment.newInstance(
+                    titleId = R.string.load_file_failed,
+                    descriptionId = R.string.load_file_invalid
+                )
+            withContext(Dispatchers.Main) {
+                val navHostFragment = supportFragmentManager
+                    .findFragmentById(R.id.fragment_container) as NavHostFragment
+                navHostFragment.navController.navigate(
+                    HomeNavigationDirections.actionGlobalEmulationActivity(game, true)
+                )
+            }
+        }.show(supportFragmentManager, ProgressDialogFragment.TAG)
+    }
 
     fun processGamesDir(result: Uri, calledFromGameFragment: Boolean = false) {
         contentResolver.takePersistableUriPermission(

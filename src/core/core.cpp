@@ -3,6 +3,8 @@
 
 #include <array>
 #include <cstdlib>
+#include <fstream>
+#include <string>
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -11,6 +13,7 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -69,6 +72,7 @@
 #include "hid_core/hid_core.h"
 #include "network/network.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/renderer_base.h"
 #include "video_core/video_core.h"
 
@@ -109,7 +113,17 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
     }
 
     if (Common::FS::IsDir(path)) {
-        return vfs->OpenFile(path + "/main", FileSys::OpenMode::Read);
+        // A loose ExeFS: main in the directory, else in its exefs/ subdirectory. Looked up through
+        // the directory, since a content URI on Android cannot have "/main" appended.
+        const auto dir = vfs->OpenDirectory(path, FileSys::OpenMode::Read);
+        if (dir == nullptr) {
+            return nullptr;
+        }
+        if (auto main = dir->GetFile("main")) {
+            return main;
+        }
+        const auto exefs = dir->GetSubdirectory("exefs");
+        return exefs != nullptr ? exefs->GetFile("main") : nullptr;
     }
 
     return vfs->OpenFile(path, FileSys::OpenMode::Read);
@@ -373,6 +387,46 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetGlobal(false);
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
+#ifdef __ANDROID__
+        // Android only: desktop users set the environment, and desktop keeps upstream's defaults.
+        // The KEY=VALUE lines of an env.txt in the user directory become environment variables:
+        // the EDEN_NX2_* switches, which Android has no other way to set. Each is read the first
+        // time it is used, so a change takes a restart of the app.
+        if (std::ifstream env{Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "env.txt"}) {
+            for (std::string line; std::getline(env, line);) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+                    line.pop_back();
+                }
+                const size_t equals = line.find('=');
+                if (line.empty() || line[0] == '#' || equals == std::string::npos || equals == 0) {
+                    continue;
+                }
+                const std::string key = line.substr(0, equals);
+                const std::string value = line.substr(equals + 1);
+#ifdef _WIN32
+                _putenv_s(key.c_str(), value.c_str());
+#else
+                setenv(key.c_str(), value.c_str(), 1);
+#endif
+                LOG_INFO(Core, "env.txt: {}={}", key, value);
+            }
+        }
+        // A gpu_profile file in the user directory turns the GPU threads' profile on: their time
+        // per zone every 10 s in the log (EDEN_NX2_GPU_PROFILE, for Android).
+        if (Common::FS::Exists(Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) /
+                               "gpu_profile")) {
+            VideoCommon::Nx2Profile::g_enabled.store(true, std::memory_order_relaxed);
+            LOG_INFO(Core, "GPU thread profile on (gpu_profile file)");
+        }
+        // Switch 2 titles build thousands of pipelines while they play: build them asynchronously
+        // (a hitch-free frame instead of a GPU thread stall), unless set for this game itself.
+        if (switch2_program && Settings::values.use_asynchronous_shaders.UsingGlobal() &&
+            !Settings::values.use_asynchronous_shaders.GetValue()) {
+            LOG_INFO(Core, "Switch 2 program: building shaders asynchronously");
+            Settings::values.use_asynchronous_shaders.SetGlobal(false);
+            Settings::values.use_asynchronous_shaders.SetValue(true);
+        }
+#endif
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz

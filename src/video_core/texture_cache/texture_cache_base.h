@@ -195,6 +195,10 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     /// Image::BindLayers, with the memory it binds counted in total_used_memory.
     std::vector<u32> BindSparseLayers(Image& image, std::span<const u32> layers);
 
+    /// release_gpu_only_memory: gives back the guest memory of an uploaded image in Switch 2
+    /// GPU-only memory, the host image holding the data from then on.
+    void ReleaseGpuOnlyMemory(Image& image);
+
     /// Uploads `layers` of the image from guest memory.
     void UploadLayers(Image& image, std::span<const u32> layers);
 
@@ -319,6 +323,11 @@ public:
     void PopAsyncFlushes();
 
     [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload);
+
+    /// Whether the host image keeps only some of the guest image's levels.
+    [[nodiscard]] bool IsTrimmed(ImageId image_id) const noexcept {
+        return True(slot_images[image_id].flags & ImageFlagBits::TrimmedLevels);
+    }
 
     [[nodiscard]] std::pair<Image*, BufferImageCopy> DmaBufferImageCopy(
         const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,

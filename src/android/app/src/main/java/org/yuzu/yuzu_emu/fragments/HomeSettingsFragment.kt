@@ -260,6 +260,14 @@ class HomeSettingsFragment : Fragment() {
             )
             add(
                 HomeSetting(
+                    R.string.load_file,
+                    R.string.load_file_description,
+                    R.drawable.ic_folder_open,
+                    { mainActivity.loadGameFile.launch(arrayOf("*/*")) }
+                )
+            )
+            add(
+                HomeSetting(
                     R.string.verify_installed_content,
                     R.string.verify_installed_content_description,
                     R.drawable.ic_check_circle,

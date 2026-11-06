@@ -283,16 +283,36 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, mkw_30fps, tr("Mario Kart World: 30 FPS mode"),
            tr("Forces the game to use its native 30 FPS mode at normal game speed. "
               "Takes effect after restarting the game."));
+    INSERT(Settings, mkw_60fps, tr("Mario Kart World: 60 FPS mode"),
+           tr("Always renders at 60 fps. Slower hardware runs the game in slow motion. "
+              "Takes effect after restarting the game; the 30 FPS mode takes precedence."));
     INSERT(Settings, mkw_dynamic_fps, tr("Mario Kart World: dynamic FPS (experimental)"),
            tr("Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain "
-              "normal game speed. Takes effect after restarting the game and takes precedence over "
-              "the 30 FPS mode."));
+              "normal game speed. Takes effect after restarting the game; the 30 and 60 FPS modes "
+              "take precedence."));
+    INSERT(Settings, mkw_lod_distance, tr("Mario Kart World: shorter LOD distance"),
+           tr("Objects switch to lower detail at half the distance (the game's default ratio "
+              "instead of 2.0). Fewer, lighter draws. Takes effect after restarting the game."));
+    INSERT(Settings, mkw_shadow_cascades, tr("Mario Kart World: fewer shadow cascades"),
+           tr("Drops the farthest dynamic shadow cascade (160-250 m). Takes effect after "
+              "restarting the game."));
     INSERT(Settings, barrier_feedback_loops, tr("Barrier feedback loops"),
            tr("Improves rendering of transparency effects in specific games."));
     INSERT(Settings, enable_buffer_history, tr("Enable buffer history"),
            tr("Enables access to previous buffer states.\nThis option may improve rendering "
               "quality and performance consistency in some games."));
     INSERT(Settings, fix_bloom_effects, tr("Fix bloom effects"), tr("Removes bloom in Burnout."));
+    INSERT(Settings, nx2_command_lists, tr("Switch 2 command list fixes"),
+           tr("Upstream's fixes for Switch 2 command lists the game rewrites after submitting. Off "
+              "on phones: on an Odin 3 they cost ~45 ms of GPU-thread waiting per second in Mario "
+              "Kart World and caused flicker. Takes effect when a game starts."));
+    INSERT(Settings, reduce_texture_resolution, tr("Reduce texture resolution"),
+           tr("Large compressed textures keep their mip levels from the second one on: a quarter "
+              "of the video memory, slightly blurrier up close."));
+    INSERT(Settings, release_gpu_only_memory, tr("Release GPU-only memory (experimental)"),
+           tr("Switch 2 textures in GPU-only memory give back their guest memory once uploaded, "
+              "the host image holding the data. Saves RAM; may break titles that read that "
+              "memory directly."));
 
     // Renderer (Extensions)
     INSERT(Settings, dyna_state, tr("Extended Dynamic State"),
