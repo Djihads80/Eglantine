@@ -126,6 +126,49 @@ inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::
     rb.PushCopyObjects(ctx, *client);
 }
 
+class INx2GsvSession1121 final : public ServiceFramework<INx2GsvSession1121> {
+public:
+    explicit INx2GsvSession1121(Core::System& system_)
+        : ServiceFramework{system_, "nx2:gsv:1121"} {
+        static const FunctionInfo functions[] = {
+            {0, &INx2GsvSession1121::Handshake, "Handshake"},
+            {11, &INx2GsvSession1121::Probe, "Probe"},
+        };
+        RegisterHandlersTipc(functions);
+    }
+
+private:
+    /**
+     * @brief Validate TIPC command 0 and echo its 64-bit handshake token.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
+    void Handshake(HLERequestContext& ctx) {
+        const auto* words = ctx.CommandBuffer();
+        if (words[0] != 0x10 || words[1] != 2) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw(Kernel::ResultInvalidCombination.raw);
+            return;
+        }
+        TipcHandshake(ctx, "nx2:gsv:1121");
+    }
+
+    /**
+     * @brief Validate TIPC command 11 and reply with a stubbed 64-bit zero value.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
+    void Probe(HLERequestContext& ctx) {
+        const auto* words = ctx.CommandBuffer();
+        if (words[0] != 0x1b || words[1] != 4) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw(Kernel::ResultInvalidCombination.raw);
+            return;
+        }
+        LOG_DEBUG(Service, "(STUBBED) nx2:gsv:1121 TIPC 11 args={:#x}, {:#x}",
+                  u64{words[2]} | (u64{words[3]} << 32), u64{words[4]} | (u64{words[5]} << 32));
+        TipcReplyWords(ctx, {0, 0});
+    }
+};
+
 // Placeholder for the Switch 2 NVIDIA driver server (nn::nvsrv). It has no handlers, so every
 // command (CMIF or TIPC) gets an empty success and is logged through the nx2: prefix.
 class INx2NvsrvSession final : public ServiceFramework<INx2NvsrvSession> {
@@ -3063,7 +3106,7 @@ public:
             {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetFeatureVersion"},
             {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1112"},
             {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1113"},
-            {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
+            {1121, &INx2GraphicsSystemSession::OpenSession1121, "OpenSession1121"},
             {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1203"},
             {1212, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool1212"},
             {1501, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1501"},
@@ -3135,6 +3178,24 @@ private:
     void SetFeatureVersion(HLERequestContext& ctx) {
         LOG_INFO(Service, "nx2:gsv TIPC 1111 value {:#x}", ctx.CommandBuffer()[2]);
         TipcReplyWords(ctx, {});
+    }
+
+    /**
+     * @brief Validate TIPC command 1121 and move a new raw session handle into the reply.
+     * @param ctx Request and reply context; invalid headers receive ResultInvalidCombination.
+     */
+    void OpenSession1121(HLERequestContext& ctx) {
+        const auto* words = ctx.CommandBuffer();
+        if (words[0] != 0x471 || words[1] != 0) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw(Kernel::ResultInvalidCombination.raw);
+            return;
+        }
+        auto* client = CreateRawSession(system, ctx, std::make_shared<INx2GsvSession1121>(system));
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
+        rb.PushRaw(ResultSuccess.raw);
+        ctx.AddMoveObject(client);
+        LOG_INFO(Service, "nx2:gsv TIPC 1121 opened a session");
     }
 
     std::set<u32> m_address_spaces;        ///< Ids attached with 434
