@@ -466,12 +466,6 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
-    // An emulated task/mesh draw is timed with its compute work (recorded by Configure).
-    const bool time_from_configure{frame_dump.Capturing() && mesh_draw &&
-                                   pipeline->IsMeshEmulated()};
-    if (time_from_configure) [[unlikely]] {
-        frame_dump.TimeBegin();
-    }
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
@@ -508,9 +502,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         if (frame_dump.Capturing()) [[unlikely]] {
-            if (!time_from_configure) {
-                frame_dump.TimeBegin();
-            }
+            frame_dump.TimeBegin();
             draw_func();
             frame_dump.TimeEnd(false);
         } else {
