@@ -114,6 +114,12 @@ public:
     /// Update the rescaling state. Returns true if the state has to be updated.
     bool UpdateRescaling(bool is_rescaling);
 
+    /// The next graphics pipeline pushes its down factor again (a pipeline with another push
+    /// constant layout was bound).
+    void InvalidateRescaling() noexcept {
+        state.rescaling_defined = false;
+    }
+
     /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
     bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
 

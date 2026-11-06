@@ -280,6 +280,11 @@ public:
         return Exchange(Dirty::LineRasterizationMode, false);
     }
 
+    /// A draw set a topology of its own (emulated task/mesh draws).
+    void InvalidatePrimitiveTopology() {
+        current_topology = INVALID_TOPOLOGY;
+    }
+
     bool ChangePrimitiveTopology(Maxwell::PrimitiveTopology new_topology) {
         const bool has_changed = current_topology != new_topology;
         current_topology = new_topology;

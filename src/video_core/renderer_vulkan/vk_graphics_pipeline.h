@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <type_traits>
@@ -23,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -86,7 +88,8 @@ public:
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
         const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
-        std::array<std::vector<u32>, NUM_STAGES> spirv = {});
+        std::array<std::vector<u32>, NUM_STAGES> spirv = {},
+        std::unique_ptr<MeshEmulationStages> mesh_emulation = nullptr);
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
     bool SupportsAlphaToCoverage() const noexcept {
@@ -109,6 +112,23 @@ public:
     /// Switch 2 task/mesh pipeline: drawn with vkCmdDrawMeshTasksEXT.
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
+    }
+
+    /// Task/mesh pipeline emulated without VK_EXT_mesh_shader (vk_mesh_emulation.h): its task
+    /// and mesh programs run as compute shaders, a vertex shader draws their output.
+    [[nodiscard]] bool IsMeshEmulated() const noexcept {
+        return mesh_emulation != nullptr;
+    }
+
+    /// Task (or mesh, without a task) workgroups of the current draw.
+    [[nodiscard]] u32 MeshGroups(bool is_indexed) const noexcept {
+        const auto& draw_state{maxwell3d->draw_manager.draw_state};
+        return is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count;
+    }
+
+    /// The storage buffer of emulated draws, set before Configure.
+    void SetMeshEmulationBuffer(MeshEmulationBuffer* buffer) noexcept {
+        mesh_emulation_buffer = buffer;
     }
 
     [[nodiscard]] const std::array<u64, 6>& ShaderHashes() const noexcept {
@@ -192,6 +212,15 @@ private:
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
 
+    /// Sizes the emulated draw's storage buffer and requests it (before its descriptors).
+    bool PrepareEmulatedMeshDraw(bool is_indexed);
+
+    /// Records the emulated draw's task and mesh dispatches, then binds the pipeline.
+    bool ConfigureEmulatedMeshDraw(const RescalingPushConstant& rescaling,
+                                   const RenderAreaPushConstant& render_area);
+
+    void MakeEmulatedMeshPipelines();
+
     void MakePipeline(VkRenderPass render_pass);
 
     void Validate();
@@ -243,6 +272,18 @@ private:
     std::atomic_bool is_built{false};
     bool uses_push_descriptor{false};
     bool uses_descriptor_buffer{false};
+
+    // Task/mesh emulation
+    std::unique_ptr<MeshEmulationStages> mesh_emulation;
+    MeshEmulationBuffer* mesh_emulation_buffer{};
+    struct EmulatedMeshDraw {
+        Shader::Backend::SPIRV::MeshEmulationHeader header{};
+        VkBuffer buffer{};
+        VkDeviceSize size{};
+        u32 groups{}; ///< task workgroups, or mesh workgroups without a task program
+    };
+    EmulatedMeshDraw emulated_draw{};
+    VkDescriptorSet emulated_descriptor_set{}; ///< recorded on the scheduler's worker
 };
 
 } // namespace Vulkan
