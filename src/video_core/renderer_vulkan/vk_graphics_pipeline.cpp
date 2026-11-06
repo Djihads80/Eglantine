@@ -730,7 +730,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         if (stage_infos[stage].mesh_emulation_buffers != 0) {
             // After every other descriptor of the stage, as in its SPIR-V.
-            guest_descriptor_queue.AddBuffer(emulated_draw.buffer, 0, emulated_draw.size);
+            guest_descriptor_queue.AddBuffer(emulated_draw.region.buffer, emulated_draw.region.offset,
+                                             emulated_draw.size);
         }
         const auto& info{stage_infos[stage]};
         if (info.uses_render_area) {
@@ -1444,8 +1445,8 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     const u64 words{u64{header.map_offset} + u64{capacity} * stages.map_words};
     emulated_draw.groups = has_task ? groups : capacity;
     emulated_draw.size = words * sizeof(u32);
-    emulated_draw.buffer = mesh_emulation_buffer->Request(emulated_draw.size);
-    mesh_emulation_buffer->draw_buffer = emulated_draw.buffer;
+    emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size);
+    mesh_emulation_buffer->draw = emulated_draw.region;
     static std::atomic<u32> logged{};
     if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
         LOG_INFO(Render_Vulkan,
@@ -1461,15 +1462,6 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
 bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& rescaling,
                                                  const RenderAreaPushConstant& render_area) {
     const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
-    // The task and mesh programs run before the render pass resumes.
-    scheduler.RequestOutsideRenderPassOperationContext();
-    if (!is_built.load(std::memory_order::relaxed)) {
-        // Wait for the pipeline to be built
-        scheduler.Record([this](vk::CommandBuffer) {
-            std::unique_lock lock{build_mutex};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
-        });
-    }
     struct PushConstants {
         std::array<u32, Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS> rescaling;
         f32 down_factor;
@@ -1507,18 +1499,26 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
                                  sizeof(values.draw_base), &values.draw_base);
         }
     };
-    scheduler.Record([this, descriptor_data, draw = emulated_draw, push,
-                      push_constants](vk::CommandBuffer cmdbuf) {
-        emulated_descriptor_set = VkDescriptorSet{};
+    // The task and mesh programs run before the draw's render pass: ahead of its begin when it
+    // is not recorded yet, otherwise the pass ends and resumes after them. Draws of one pass
+    // can run their programs before any of them draws, so each has its own descriptor set.
+    const auto descriptor_set_slot{std::make_shared<VkDescriptorSet>()};
+    const Framebuffer* const framebuffer{texture_cache.GetFramebuffer()};
+    scheduler.RecordBeforeRenderPass(framebuffer, [this, descriptor_data, draw = emulated_draw, push,
+                                                   push_constants, descriptor_set_slot](
+                                                      vk::CommandBuffer cmdbuf) {
+        if (!is_built.load(std::memory_order::relaxed)) {
+            std::unique_lock lock{build_mutex};
+            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+        }
         if (!pipeline || !mesh_emulation->mesh_pipeline) {
             return;
         }
         const VkDescriptorSet descriptor_set{descriptor_allocator.Commit()};
         device.GetLogical().UpdateDescriptorSet(descriptor_set, *descriptor_update_template,
                                                 descriptor_data);
-        emulated_descriptor_set = descriptor_set;
-        // The previous emulated draw's reads of the buffer, and what the guest wrote for the
-        // programs (they read it from compute shaders now).
+        *descriptor_set_slot = descriptor_set;
+        // What the guest wrote for the programs: they read it from compute shaders now.
         static constexpr VkMemoryBarrier WRITE_BARRIER{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -1528,7 +1528,8 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
                                VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                0, WRITE_BARRIER);
-        cmdbuf.UpdateBuffer(draw.buffer, 0, sizeof(draw.header), &draw.header);
+        cmdbuf.UpdateBuffer(draw.region.buffer, draw.region.offset, sizeof(draw.header),
+                            &draw.header);
         static constexpr VkMemoryBarrier HEADER_BARRIER{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -1555,7 +1556,7 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
                                        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                                    0, TASK_BARRIER);
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->mesh_pipeline);
-            cmdbuf.DispatchIndirect(draw.buffer, 0);
+            cmdbuf.DispatchIndirect(draw.region.buffer, draw.region.offset);
         } else {
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->mesh_pipeline);
             cmdbuf.Dispatch(draw.groups, 1, 1);
@@ -1571,22 +1572,23 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
                                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
                                0, MESH_BARRIER);
     });
-    scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
     const bool bind_pipeline{scheduler.UpdateGraphicsPipeline(this)};
-    scheduler.Record([this, bind_pipeline, push, push_constants](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([this, bind_pipeline, push, push_constants,
+                      descriptor_set_slot](vk::CommandBuffer cmdbuf) {
+        const VkDescriptorSet descriptor_set{*descriptor_set_slot};
         if (bind_pipeline) {
-            scheduler.SetGraphicsPipelineMissing(!emulated_descriptor_set);
-            if (!emulated_descriptor_set) {
+            scheduler.SetGraphicsPipelineMissing(!descriptor_set);
+            if (!descriptor_set) {
                 return;
             }
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
-        } else if (!emulated_descriptor_set) {
+        } else if (!descriptor_set) {
             scheduler.SetGraphicsPipelineMissing(true);
             return;
         }
         push_constants(cmdbuf, push);
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline_layout, 0,
-                                  emulated_descriptor_set, nullptr);
+                                  descriptor_set, nullptr);
     });
     // Its push constant range is not the other pipelines': they push theirs again.
     scheduler.InvalidateRescaling();

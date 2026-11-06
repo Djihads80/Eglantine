@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -34,9 +33,15 @@ struct MeshEmulationStages {
     u32 max_primitives{};
 };
 
-/// The storage buffer emulated task/mesh draws write and draw from. Their compute work is
-/// recorded outside the render pass right before each draw, so the draws share one buffer: each
-/// waits for the one before (a barrier) before writing it.
+/// A region of the storage buffers emulated task/mesh draws write and draw from.
+struct MeshEmulationRegion {
+    VkBuffer buffer{};
+    VkDeviceSize offset{};
+};
+
+/// The storage buffers emulated task/mesh draws write and draw from: each draw takes its own
+/// region, from chunks reused once the GPU is done with the ticks that used them (a draw's compute
+/// work never waits for an earlier draw's vertex shader).
 class MeshEmulationBuffer {
 public:
     explicit MeshEmulationBuffer(const Device& device, MemoryAllocator& memory_allocator,
@@ -46,26 +51,33 @@ public:
     MeshEmulationBuffer(const MeshEmulationBuffer&) = delete;
     MeshEmulationBuffer& operator=(const MeshEmulationBuffer&) = delete;
 
-    /// A buffer of at least `size` bytes for the next emulated draw.
-    [[nodiscard]] VkBuffer Request(VkDeviceSize size);
+    /// A region of `size` bytes for the next emulated draw.
+    [[nodiscard]] MeshEmulationRegion Allocate(VkDeviceSize size);
 
-    /// Most bytes a draw's buffer may span (the device's storage buffer range).
+    /// Most bytes a draw's region may span (the device's storage buffer range).
     [[nodiscard]] VkDeviceSize MaxSize() const noexcept {
         return max_size;
     }
 
-    /// The buffer of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
-    /// null when the draw is not emulated.
-    VkBuffer draw_buffer{};
+    /// The region of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
+    /// a null buffer when the draw is not emulated.
+    MeshEmulationRegion draw{};
 
 private:
+    struct Chunk {
+        vk::Buffer buffer;
+        VkDeviceSize size{};
+        VkDeviceSize used{};
+        u64 tick{}; ///< of its last region
+    };
+
     const Device& device;
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
-    vk::Buffer buffer;
-    VkDeviceSize size{};
+    std::vector<Chunk> chunks;
+    size_t current{};
     VkDeviceSize max_size{};
-    std::vector<std::pair<u64, vk::Buffer>> retired; ///< outgrown buffers and their last tick
+    VkDeviceSize alignment{};
 };
 
 } // namespace Vulkan

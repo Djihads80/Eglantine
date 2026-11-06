@@ -152,6 +152,7 @@ void Scheduler::DispatchWork() {
     if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
         VideoCommon::GpuSplit::CheckOwner("Scheduler::DispatchWork");
     }
+    CommitRenderPassBegin();
     if (chunk && !chunk->Empty()) {
         // Waking the worker is a system call (~2% of the GPU thread at one dispatch per 8
         // draws): skip it while the worker is still busy, it pops the queue before waiting.
@@ -185,12 +186,34 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
         GPU::Logging::GPULogger::GetInstance().LogRenderPassBegin(render_pass_info);
     }
 
-    std::array<VkClearValue, 9> values{};
-    for (u32 i = 0; i < clear_value_count && i < values.size(); ++i) {
-        values[i] = clear_values[i];
+    pending_begin = {
+        .renderpass = renderpass,
+        .framebuffer = framebuffer_handle,
+        .render_area = render_area,
+        .clear_value_count = (std::min)(clear_value_count, 9U),
+    };
+    for (u32 i = 0; i < pending_begin.clear_value_count; ++i) {
+        pending_begin.clear_values[i] = clear_values[i];
     }
-    Record([renderpass, framebuffer_handle, render_area, values, clear_value_count](
-               vk::CommandBuffer cmdbuf) {
+    if (hoisting) {
+        // The pass's commands gather in a chunk of their own until it is handed over.
+        ASSERT(!begin_pending);
+        begin_pending = true;
+        outer_chunk = std::move(chunk);
+        chunk = TakeChunk();
+    } else {
+        RecordRenderPassBegin();
+    }
+    num_renderpass_images = framebuffer->NumImages();
+    renderpass_images = framebuffer->Images();
+    renderpass_image_ranges = framebuffer->ImageRanges();
+    framebuffer->MarkResolveShadowsUpToDate();
+}
+
+void Scheduler::RecordRenderPassBegin() {
+    Record([renderpass = pending_begin.renderpass, framebuffer_handle = pending_begin.framebuffer,
+            render_area = pending_begin.render_area, values = pending_begin.clear_values,
+            clear_value_count = pending_begin.clear_value_count](vk::CommandBuffer cmdbuf) {
         const VkRenderPassBeginInfo renderpass_bi{
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .pNext = nullptr,
@@ -206,10 +229,52 @@ void Scheduler::BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass
         };
         cmdbuf.BeginRenderPass(renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
     });
-    num_renderpass_images = framebuffer->NumImages();
-    renderpass_images = framebuffer->Images();
-    renderpass_image_ranges = framebuffer->ImageRanges();
-    framebuffer->MarkResolveShadowsUpToDate();
+}
+
+void Scheduler::CommitRenderPassBegin() {
+    if (!begin_pending) {
+        return;
+    }
+    begin_pending = false;
+    std::unique_ptr<CommandChunk> pass = std::move(chunk);
+    chunk = std::move(outer_chunk);
+    if (pre_chunk) {
+        PushChunk(std::move(chunk));
+        chunk = std::move(pre_chunk);
+    }
+    RecordRenderPassBegin();
+    PushChunk(std::move(chunk));
+    PushChunk(std::move(pass));
+    chunk = TakeChunk();
+}
+
+std::unique_ptr<Scheduler::CommandChunk> Scheduler::TakeChunk() {
+    std::scoped_lock rl{reserve_mutex};
+    if (chunk_reserve.empty()) {
+        return std::make_unique<CommandChunk>();
+    }
+    std::unique_ptr<CommandChunk> taken = std::move(chunk_reserve.back());
+    chunk_reserve.pop_back();
+    return taken;
+}
+
+void Scheduler::PushChunk(std::unique_ptr<CommandChunk> work) {
+    if (work->Empty()) {
+        std::scoped_lock rl{reserve_mutex};
+        chunk_reserve.emplace_back(std::move(work));
+        return;
+    }
+    bool wake;
+    {
+        std::scoped_lock ql{queue_mutex};
+        work_queue.push(std::move(work));
+        wake = worker_waiting;
+    }
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::Dispatches, 1);
+    if (wake) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::WorkerWakes, 1);
+        event_cv.notify_all();
+    }
 }
 
 void Scheduler::RealizeDeferredClear() {
@@ -543,6 +608,8 @@ void Scheduler::EndRenderPass()
 
         query_cache->CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, false);
         query_cache->NotifySegment(false);
+        // A lazily begun pass: its begin and commands go before its end.
+        CommitRenderPassBegin();
 
         Record([num_images = num_renderpass_images,
                        images = renderpass_images,

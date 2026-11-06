@@ -278,12 +278,11 @@ private:
     MeshEmulationBuffer* mesh_emulation_buffer{};
     struct EmulatedMeshDraw {
         Shader::Backend::SPIRV::MeshEmulationHeader header{};
-        VkBuffer buffer{};
+        MeshEmulationRegion region{};
         VkDeviceSize size{};
         u32 groups{}; ///< task workgroups, or mesh workgroups without a task program
     };
     EmulatedMeshDraw emulated_draw{};
-    VkDescriptorSet emulated_descriptor_set{}; ///< recorded on the scheduler's worker
 };
 
 } // namespace Vulkan

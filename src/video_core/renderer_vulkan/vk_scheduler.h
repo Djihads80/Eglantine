@@ -94,6 +94,36 @@ public:
     /// of a renderpass.
     void RequestOutsideRenderPassOperationContext();
 
+    /// Render passes begin lazily: until their first command is handed to the worker, work can go
+    /// before them (RecordBeforeRenderPass) without ending them. For emulated task/mesh draws.
+    void EnableRenderPassHoisting(bool enable) noexcept {
+        hoisting = enable;
+    }
+
+    /// Records `command`, an operation allowed only outside a render pass, before the render pass
+    /// of `framebuffer` the next commands draw in: ahead of its begin while that is not recorded
+    /// yet (hoisting), otherwise the pass ends and begins again after it.
+    template <typename T>
+        requires std::is_invocable_v<T, vk::CommandBuffer>
+    void RecordBeforeRenderPass(const Framebuffer* framebuffer, T&& c) {
+        RequestRenderpass(framebuffer);
+        auto command = [command = std::move(c)](vk::CommandBuffer cmdbuf, vk::CommandBuffer) {
+            command(cmdbuf);
+        };
+        if (begin_pending) {
+            if (!pre_chunk) {
+                pre_chunk = TakeChunk();
+            }
+            if (pre_chunk->Record(command)) {
+                return;
+            }
+            CommitRenderPassBegin();
+        }
+        EndRenderPass();
+        RecordWithUploadBuffer(std::move(command));
+        RequestRenderpass(framebuffer);
+    }
+
     /// Returns true when a render pass is currently active in the scheduler state.
     bool IsRenderPassActive() const {
         return state.renderpass != VK_NULL_HANDLE;
@@ -343,6 +373,19 @@ private:
     void BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
                              const VkClearValue* clear_values, u32 clear_value_count);
 
+    /// Records the begin of the current render pass (lazy with hoisting).
+    void RecordRenderPassBegin();
+
+    /// Hands the main stream, the work recorded before the pending render pass, its begin and
+    /// its commands to the worker, in that order.
+    void CommitRenderPassBegin();
+
+    /// A chunk from the reserve.
+    std::unique_ptr<CommandChunk> TakeChunk();
+
+    /// Queues a chunk for the worker (an empty one goes back to the reserve).
+    void PushChunk(std::unique_ptr<CommandChunk> work);
+
     /// If a deferred clear is pending.
     void RealizeDeferredClear();
 
@@ -373,6 +416,21 @@ private:
     vk::CommandBuffer current_upload_cmdbuf;
 
     DeferredClear deferred_clear;
+
+    // Render pass hoisting (EnableRenderPassHoisting): the pending begin of the current render
+    // pass, the main stream up to it, and the work recorded before it.
+    struct PendingBegin {
+        VkRenderPass renderpass{};
+        VkFramebuffer framebuffer{};
+        VkExtent2D render_area{};
+        std::array<VkClearValue, 9> clear_values{};
+        u32 clear_value_count{};
+    };
+    bool hoisting{};
+    bool begin_pending{};
+    PendingBegin pending_begin;
+    std::unique_ptr<CommandChunk> outer_chunk;
+    std::unique_ptr<CommandChunk> pre_chunk;
 
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;

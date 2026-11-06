@@ -277,6 +277,12 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       frame_dump(device, memory_allocator, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
+    // Emulated task/mesh draws record their compute work ahead of their render pass's begin when
+    // they can. EDEN_NX2_MESH_EMULATE_HOIST=0: the pass ends and resumes around it instead.
+    scheduler.EnableRenderPassHoisting(MeshEmulationEnabled(device) && [] {
+        const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_HOIST");
+        return value == nullptr || value[0] != '0';
+    }());
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
@@ -419,7 +425,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     }
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
-    mesh_emulation_buffer.draw_buffer = VK_NULL_HANDLE;
+    mesh_emulation_buffer.draw = {};
     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
     // EDEN_NX2_NO_MESH_FILE=<path>: skip them while that file exists (checked every 1024 draws),
     // to compare the same scene with and without them in one run.
@@ -781,20 +787,21 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
-        if (mesh_draw && mesh_emulation_buffer.draw_buffer) {
+        if (mesh_draw && mesh_emulation_buffer.draw.buffer) {
             // Emulated: the mesh program's dispatch wrote the draw (vk_mesh_emulation.h).
-            const VkBuffer buffer{mesh_emulation_buffer.draw_buffer};
+            const VkBuffer buffer{mesh_emulation_buffer.draw.buffer};
+            const VkDeviceSize offset{mesh_emulation_buffer.draw.offset +
+                                      Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD *
+                                          sizeof(u32)};
             const bool set_topology{mesh_dynamic_topology};
-            scheduler.Record([this, buffer, set_topology](vk::CommandBuffer cmdbuf) {
+            scheduler.Record([this, buffer, offset, set_topology](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
                     return;
                 }
                 if (set_topology) {
                     cmdbuf.SetPrimitiveTopologyEXT(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
                 }
-                cmdbuf.DrawIndirect(buffer,
-                                    Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD * sizeof(u32),
-                                    1, sizeof(VkDrawIndirectCommand));
+                cmdbuf.DrawIndirect(buffer, offset, 1, sizeof(VkDrawIndirectCommand));
             });
             if (set_topology) {
                 // The next draw sets the guest's again.

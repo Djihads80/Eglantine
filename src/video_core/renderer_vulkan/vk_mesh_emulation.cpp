@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstdlib>
 
+#include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -32,35 +33,52 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
     : device{device_}, memory_allocator{memory_allocator_}, scheduler{scheduler_} {
     const VkDeviceSize range = device.GetMaxStorageBufferRange();
     max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), 256ULL << 20);
+    alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
 }
 
 MeshEmulationBuffer::~MeshEmulationBuffer() = default;
 
-VkBuffer MeshEmulationBuffer::Request(VkDeviceSize request) {
-    std::erase_if(retired, [this](const auto& entry) { return scheduler.IsFree(entry.first); });
-    if (request <= size) {
-        return *buffer;
+MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
+    const VkDeviceSize size = Common::AlignUp(request, alignment);
+    const u64 tick = scheduler.CurrentTick();
+    const auto take = [&](size_t index) {
+        Chunk& chunk = chunks[index];
+        const VkDeviceSize offset = chunk.used;
+        chunk.used += size;
+        chunk.tick = tick;
+        current = index;
+        return MeshEmulationRegion{*chunk.buffer, offset};
+    };
+    if (current < chunks.size() && chunks[current].used + size <= chunks[current].size) {
+        return take(current);
     }
-    if (buffer) {
-        // Draws recorded before may still read it.
-        retired.emplace_back(scheduler.CurrentTick(), std::move(buffer));
+    // A chunk the GPU is done with.
+    for (size_t index = 0; index < chunks.size(); ++index) {
+        if (chunks[index].size >= size && scheduler.IsFree(chunks[index].tick)) {
+            chunks[index].used = 0;
+            return take(index);
+        }
     }
-    size = std::bit_ceil(std::max<VkDeviceSize>(request, 1ULL << 20));
-    buffer = memory_allocator.CreateBuffer(
-        VkBufferCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .size = size,
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
-        },
-        MemoryUsage::DeviceLocal);
-    LOG_INFO(Render_Vulkan, "Task/mesh emulation buffer: {} KiB", size / 1024);
-    return *buffer;
+    const VkDeviceSize chunk_size = std::bit_ceil(std::max<VkDeviceSize>(size, 4ULL << 20));
+    chunks.push_back(Chunk{
+        .buffer = memory_allocator.CreateBuffer(
+            VkBufferCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = chunk_size,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            },
+            MemoryUsage::DeviceLocal),
+        .size = chunk_size,
+    });
+    LOG_INFO(Render_Vulkan, "Task/mesh emulation buffers: {} of {} KiB", chunks.size(),
+             chunk_size / 1024);
+    return take(chunks.size() - 1);
 }
 
 } // namespace Vulkan
