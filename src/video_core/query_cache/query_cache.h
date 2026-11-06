@@ -295,7 +295,18 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
              ? !Settings::IsGPULevelHigh()
              : !Settings::IsGPUFenceBehaviorBalanced() && !Settings::IsGPUFenceBehaviorAccurate()) &&
         is_fence;
-    auto operation_fn = [this, query_base = query, pointer, query_location, is_synced] {
+    // Fits beside query_location and is_synced: the capture stays within the SBO limit below.
+    const u16 settle_slot = static_cast<u16>(Tegra::Nx2AsyncReportSlot(cpu_addr));
+    auto operation_fn = [this, query_base = query, pointer, query_location, is_synced,
+                         settle_slot] {
+        // Whatever path this takes, the slot's result write is done when it returns.
+        struct Settle {
+            u16 slot;
+            ~Settle() {
+                Tegra::g_nx2_async_reports_completed[slot].fetch_add(1,
+                                                                     std::memory_order_release);
+            }
+        } const settle{settle_slot};
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (!is_synced) [[likely]] {
                 impl->pending_unregister.push_back(query_location);
@@ -333,6 +344,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     static_assert(sizeof(operation_fn) <= 32,
                   "CounterReport operation lambda should fit in std::function SBO");
     std::function<void()> operation(std::move(operation_fn));
+    Tegra::g_nx2_async_reports_issued[settle_slot].fetch_add(1, std::memory_order_release);
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {

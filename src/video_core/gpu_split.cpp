@@ -146,6 +146,7 @@ void GpuSplit::Stop() {
     last_sync_position = 0;
     last_function_position = 0;
     writes.Reset();
+    async_writes.clear();
     note_memory = nullptr;
     note_page = ~GPUVAddr{0};
     published_local = 0;

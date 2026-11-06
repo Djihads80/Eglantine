@@ -11,6 +11,7 @@
 #include <memory>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 
 #include "common/common_types.h"
 #include "video_core/split_write_tracker.h"
@@ -206,6 +207,31 @@ public:
     u64 SettleWrites();
     /// Drops the pending writes the back has run. Returns the back's position.
     u64 RetireWrites();
+    /// Front: a write that lands when a host query completes or a fence signals (counter
+    /// reports, delayed releases), not when the back runs it (Tegra::Nx2AsyncReportsSettled).
+    /// Call it after the entry that issues the write was sent.
+    void NoteAsyncWrite(u64 begin, u64 size) {
+        for (u64 slot = begin >> 4; slot <= (begin + size - 1) >> 4; ++slot) {
+            async_writes[slot] = write_position;
+        }
+    }
+    /// Front: the ring position of the newest async write noted to these bytes, or 0.
+    [[nodiscard]] u64 HasAsyncWrite(u64 begin, u64 size) const {
+        u64 newest = 0;
+        if (async_writes.empty()) {
+            return newest;
+        }
+        for (u64 slot = begin >> 4; slot <= (begin + size - 1) >> 4; ++slot) {
+            if (const auto it = async_writes.find(slot); it != async_writes.end()) {
+                newest = (std::max)(newest, it->second);
+            }
+        }
+        return newest;
+    }
+    /// The back's position right now.
+    [[nodiscard]] u64 ConsumedNow() const {
+        return consumed.load(std::memory_order_acquire);
+    }
     /// Ring position the back must pass to execute possible writers of [begin, end).
     /// Deferred fence writes can still be pending afterwards.
     [[nodiscard]] u64 ReadTarget(u64 begin, u64 end) const {
@@ -339,6 +365,7 @@ private:
     // always touched together by both threads, so they share a block.
     alignas(128) std::atomic<u64> published{};
     alignas(128) std::atomic<u64> consumed{};
+    std::unordered_map<u64, u64> async_writes; ///< Front: 16-byte slot -> ring position
     /// A position the front waits for (WaitFor): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};

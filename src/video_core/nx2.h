@@ -141,22 +141,27 @@ inline void Nx2ClearGpuWrittenPages() {
     g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
 }
 
-// Reports and fence releases land when the host query or fence completes, after the back ran
-// them. Mark only their own pages: they are small and scattered, and marking their 1 MiB regions
-// sent unrelated macro reads through the drain.
-inline void Nx2MarkLateWritten(u64 device_address, u64 size) {
-    if (size == 0) {
-        return;
-    }
-    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
-                                   g_nx2_gpu_written_pages.size() * 64 - 1);
-    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
-        auto& word = g_nx2_gpu_written_pages[page / 64];
-        const u64 bit = u64{1} << (page % 64);
-        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
-            word.fetch_or(bit, std::memory_order_relaxed);
+// Query results written when their host work completes (counter reports, delayed fence
+// releases): per 16-byte slot hash, how many result writes the back queued and how many ran.
+// Equal counts mean the words in memory are final, so the split's front can read them without
+// draining the back (lichii #179, 166c21d96c). A hash collision only makes a read wait longer.
+inline constexpr u64 Nx2AsyncReportSlots = u64{1} << 16;
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_issued{};
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_completed{};
+
+[[nodiscard]] inline u64 Nx2AsyncReportSlot(u64 device_address) {
+    return (device_address >> 4) % Nx2AsyncReportSlots;
+}
+
+[[nodiscard]] inline bool Nx2AsyncReportsSettled(u64 device_address, u64 size) {
+    for (u64 slot = device_address >> 4; slot <= (device_address + size - 1) >> 4; ++slot) {
+        const u64 index = slot % Nx2AsyncReportSlots;
+        if (g_nx2_async_reports_completed[index].load(std::memory_order_acquire) !=
+            g_nx2_async_reports_issued[index].load(std::memory_order_acquire)) {
+            return false;
         }
     }
+    return true;
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWrittenRegion(u64 device_address) {

@@ -1203,9 +1203,10 @@ GPUVAddr ReportAddress(std::span<const u32> regs) {
 constexpr u64 ReportBytes = 16;
 
 // Counters and timed releases are written when the host query completes, not when the back runs
-// them: mark their pages GPU-written so early MME DMA reads of them take the drained path, which
-// waits for the query results (lichii #179). Short payload releases land when the back runs them.
-void MarkLateReport(const MemoryManager& memory, std::span<const u32> regs) {
+// them: early MME DMA reads of their bytes wait until the back ran the report and the result
+// landed (lichii #179, 166c21d96c). Short payload releases land when the back runs them.
+void NoteLateReport(VideoCommon::GpuSplit& split, const MemoryManager& memory,
+                    std::span<const u32> regs) {
     using Report = Maxwell3D::Regs::ReportSemaphore;
     decltype(Report::query) query{};
     query.raw = regs[MAXWELL3D_REG_INDEX(report_semaphore.query)];
@@ -1214,7 +1215,7 @@ void MarkLateReport(const MemoryManager& memory, std::span<const u32> regs) {
         return;
     }
     if (const auto device = memory.GpuToCpuAddress(ReportAddress(regs))) {
-        Tegra::Nx2MarkLateWritten(*device, ReportBytes);
+        split.NoteAsyncWrite(*device, ReportBytes);
     }
 }
 
@@ -1399,7 +1400,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         split.NoteWrite(memory_manager, *cb_write, sizeof(u32));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query)) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
-        MarkLateReport(memory_manager, fs.regs);
+        NoteLateReport(split, memory_manager, fs.regs);
     }
 }
 
@@ -1523,7 +1524,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         split.NoteWrite(memory_manager, *cb_write, u64{amount} * sizeof(u32));
     } else if (method == MAXWELL3D_REG_INDEX(report_semaphore.query) && amount != 0) {
         split.NoteWrite(memory_manager, ReportAddress(fs.regs), ReportBytes);
-        MarkLateReport(memory_manager, fs.regs);
+        NoteLateReport(split, memory_manager, fs.regs);
     }
 }
 
@@ -1698,6 +1699,7 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     }
     const u64 consumed = split.SettleWrites();
     std::array<u64, 5> pages;
+    std::array<std::pair<u64, u64>, 5> read_ranges; // device bytes read in each page
     size_t page_count = 0;
     u64 target = 0;
     u64 write_target = 0;
@@ -1708,6 +1710,9 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             return false;
         }
         const u64 device_page = *device & ~u64{0xfff};
+        const GPUVAddr read_begin = (std::max)(page, source);
+        const GPUVAddr read_end = (std::min)(page + 0x1000, source + bytes);
+        read_ranges[page_count] = {device_page + (read_begin - page), read_end - read_begin};
         pages[page_count++] = device_page;
         target = (std::max)(target, split.ReadTarget(device_page, device_page + 0x1000));
         write_target = (std::max)(write_target,
@@ -1718,8 +1723,17 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
                              : target == write_target ? Profile::Counter::DmaReadsWaitWrite
                                                       : Profile::Counter::DmaReadsWaitGpu;
     split.WaitUntil(target, VideoCommon::DrainSite::MacroDmaWrites);
+    const u64 consumed_now = split.ConsumedNow();
     for (size_t i = 0; i < page_count; ++i) {
         if (Tegra::Nx2IsGpuWrittenRegion(pages[i]) || Tegra::Nx2IsGpuWritten(pages[i])) {
+            return false;
+        }
+        // A counter report or delayed release to these bytes: read early only once the back ran
+        // it and its result landed. The words in memory are then what a drained read sees.
+        const auto [range_begin, range_size] = read_ranges[i];
+        if (const u64 async_position = split.HasAsyncWrite(range_begin, range_size);
+            async_position != 0 && (async_position > consumed_now ||
+                                    !Tegra::Nx2AsyncReportsSettled(range_begin, range_size))) {
             return false;
         }
     }
@@ -1746,13 +1760,16 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     memory_manager.ReadWordsUnsafe(source, read.data(), words);
     // The old path: drain, flush, read again. Its words are the ones used.
     split.Drain(VideoCommon::DrainSite::MacroDmaRead);
-    if (memory_manager.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
-        split.Run(
-            [memory = &memory_manager, source, bytes] {
+    const bool verify_flush_buffers =
+        memory_manager.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache);
+    split.Run(
+        [memory = &memory_manager, source, bytes, verify_flush_buffers] {
+            if (verify_flush_buffers) {
                 memory->FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
-            },
-            VideoCommon::DrainSite::MacroDmaFlush);
-    }
+            }
+            memory->FlushQueryResults(source, bytes);
+        },
+        VideoCommon::DrainSite::MacroDmaFlush);
     static u32 logged{};
     for (u32 i = 0; i < words; ++i) {
         const u32 drained = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));

@@ -70,10 +70,10 @@ void OnBackRelease(DmaPusher& dma_pusher, GPUVAddr address, const Func& func) {
     }
     split.Defer(func, VideoCommon::GpuSplit::Effect::None);
     split.NoteWrite(dma_pusher.memory_manager, address, 16);
-    // Fence releases go through the query cache and land later than the back runs them: reads of
-    // the page take the drained path (lichii #179).
+    // Fence releases go through the query cache and can land later than the back runs them:
+    // early reads of these bytes wait for the result (lichii #179, 166c21d96c).
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address)) {
-        Nx2MarkLateWritten(*device, 16);
+        split.NoteAsyncWrite(*device, 16);
     }
 }
 
@@ -283,9 +283,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
             VideoCommon::GpuSplit::Get().NoteWrite(dma_pusher.memory_manager, mirror, 16);
-            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
-                Nx2MarkLateWritten(*device, 16);
-            }
         }
         OnBackRelease(dma_pusher, sequence_address,
                       [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
@@ -294,6 +291,12 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                               rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
                           }
                       });
+        // After the release's entry was sent, so its position covers it.
+        if (auto& split = VideoCommon::GpuSplit::Get(); mirror != 0 && split.Active()) {
+            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
+                split.NoteAsyncWrite(*device, 16);
+            }
+        }
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
