@@ -803,8 +803,24 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                                           sizeof(u32)};
             const bool set_topology{mesh_dynamic_topology};
             const bool clear_vertex_input{mesh_dynamic_vertex_input};
-            scheduler.Record([this, buffer, offset, set_topology,
-                              clear_vertex_input](vk::CommandBuffer cmdbuf) {
+            // Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the compute work but draws nothing;
+            // EDEN_NX2_MESH_EMULATE_DIRECT=1 draws every slot directly instead of indirectly
+            // (unused slots are zeroed, so their primitives are culled).
+            static const bool no_draw = [] {
+                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_NODRAW");
+                return value != nullptr && value[0] == '1';
+            }();
+            static const bool direct = [] {
+                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_DIRECT");
+                return value != nullptr && value[0] == '1';
+            }();
+            mesh_emulation_buffer.NoteDrawInPass();
+            if (no_draw) {
+                return;
+            }
+            const u32 direct_vertices{direct ? mesh_emulation_buffer.draw_vertices : 0U};
+            scheduler.Record([this, buffer, offset, set_topology, clear_vertex_input,
+                              direct_vertices](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
                     return;
                 }
@@ -815,6 +831,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                     // The vertex shader reads no attributes: none are fetched from whatever the
                     // guest's vertex streams hold during a mesh draw.
                     cmdbuf.SetVertexInputEXT({}, {});
+                }
+                if (direct_vertices != 0) {
+                    cmdbuf.Draw(direct_vertices, 1, 0, 0);
+                    return;
                 }
                 cmdbuf.DrawIndirect(buffer, offset, 1, sizeof(VkDrawIndirectCommand));
             });

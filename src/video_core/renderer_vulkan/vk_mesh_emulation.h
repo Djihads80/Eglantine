@@ -68,6 +68,7 @@ public:
     /// The region of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
     /// a null buffer when the draw is not emulated.
     MeshEmulationRegion draw{};
+    u32 draw_vertices{}; ///< vertices drawing every slot of the draw being prepared
 
     /// Times the draws' compute work while it captures.
     FrameDump* frame_dump{};
@@ -79,6 +80,10 @@ public:
         VkBuffer buffer;
     };
     [[nodiscard]] Breadcrumb NoteDraw(u64 pipeline, u32 groups, bool has_task, u32 capacity);
+
+    /// Notes that the draw being prepared draws in the current render pass: the end of the pass
+    /// leaves its breadcrumb (the GPU finished the pass it drew in).
+    void NoteDrawInPass();
 
     /// The headers of emulated task draws are read back after their dispatches: the mesh
     /// workgroups their task programs launched size the slots of the pipeline's next draws
@@ -134,6 +139,7 @@ private:
     std::mutex noted_mutex;
     std::array<NotedDraw, 32> noted{};
     u32 next_number{1};
+    u32 pass_draw{}; ///< last emulated draw in the current render pass
     vk::Buffer check_buffer;
     bool checking{};
     std::vector<Check> checks;

@@ -696,6 +696,9 @@ void Scheduler::EndRenderPass()
 
         state.renderpass = VkRenderPass{};
         num_renderpass_images = 0;
+        if (on_render_pass_end) {
+            on_render_pass_end();
+        }
     }
 
 

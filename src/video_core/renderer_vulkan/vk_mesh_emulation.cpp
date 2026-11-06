@@ -46,7 +46,7 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .size = 2 * sizeof(u32),
+            .size = 3 * sizeof(u32),
             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
@@ -54,6 +54,15 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
         },
         MemoryUsage::Download);
     device.SetLossReporter([this] { ReportLoss(); });
+    scheduler.SetRenderPassEndHook([this] {
+        if (pass_draw == 0) {
+            return;
+        }
+        scheduler.Record([buffer = *breadcrumb_buffer, number = pass_draw](vk::CommandBuffer cmdbuf) {
+            cmdbuf.FillBuffer(buffer, 2 * sizeof(u32), sizeof(u32), number);
+        });
+        pass_draw = 0;
+    });
     const char* const check = std::getenv("EDEN_NX2_MESH_EMULATE_CHECK");
     checking = check != nullptr && check[0] == '1';
     {
@@ -97,14 +106,19 @@ MeshEmulationBuffer::Breadcrumb MeshEmulationBuffer::NoteDraw(u64 pipeline, u32 
     return {number, *breadcrumb_buffer};
 }
 
+void MeshEmulationBuffer::NoteDrawInPass() {
+    pass_draw = next_number - 1;
+}
+
 void MeshEmulationBuffer::ReportLoss() {
-    std::array<u32, 2> reached{};
+    std::array<u32, 3> reached{};
     breadcrumb_buffer.Invalidate();
     std::memcpy(reached.data(), breadcrumb_buffer.Mapped().data(), sizeof(reached));
     LOG_CRITICAL(Render_Vulkan,
                  "Emulated task/mesh draws at the device loss: the GPU reached the work of draw "
-                 "{} and finished that of draw {}; {} were recorded",
-                 reached[0], reached[1], next_number - 1);
+                 "{} and finished that of draw {}, and finished the render pass of draw {}; {} "
+                 "were recorded",
+                 reached[0], reached[1], reached[2], next_number - 1);
     std::scoped_lock lock{noted_mutex};
     for (u32 back = 0; back < noted.size(); ++back) {
         const u32 number = next_number - 1 - back;
@@ -171,6 +185,7 @@ void MeshEmulationBuffer::ReportChecks() {
 
 MeshEmulationBuffer::~MeshEmulationBuffer() {
     device.SetLossReporter({});
+    scheduler.SetRenderPassEndHook({});
 }
 
 MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {

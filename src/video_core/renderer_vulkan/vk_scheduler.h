@@ -187,6 +187,11 @@ public:
         query_cache = &query_cache_;
     }
 
+    /// Called after a render pass's end is recorded, outside it (diagnostic breadcrumbs).
+    void SetRenderPassEndHook(std::function<void()>&& func) {
+        on_render_pass_end = std::move(func);
+    }
+
     // Registers a callback to perform on queue submission.
     void RegisterOnSubmit(std::function<void()>&& func) {
         on_submit = std::move(func);
@@ -464,6 +469,7 @@ private:
 
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;
+    std::function<void()> on_render_pass_end;
 
     State state;
     u64 recording_epoch = 0;
