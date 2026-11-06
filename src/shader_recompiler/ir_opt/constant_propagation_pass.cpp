@@ -339,11 +339,13 @@ bool FoldXmadMultiply(IR::Block& block, IR::Inst& inst) {
     return true;
 }
 
-/// EDEN_NX2_FOLD_MUL=0 turns off the folds of products by 0 and 1 and of recombined halves
+/// EDEN_NX2_FOLD_MUL=1 turns on the folds of products by 0 and 1 and of recombined halves. Off by
+/// default: on a phone (Turnip) Ocarina of Time's forest went whiter and its foliage flickered
+/// with them on, and the image matched the unfolded build with them off.
 bool FoldMultiplyIdentities() {
     static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_FOLD_MUL");
-        return value == nullptr || value[0] != '0';
+        return value != nullptr && value[0] == '1';
     }();
     return enabled;
 }
