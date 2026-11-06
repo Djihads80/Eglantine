@@ -14,7 +14,8 @@
 
 // EXPERIMENT (not for nx2): GPU back-thread optimizations for Ocarina of Time.
 // split_overlap is quarantined; the other optimizations are on by default.
-// EDEN_NX2_PERF_OPT=0 turns every one off for the A/B; EDEN_NX2_PERF_OFF=<name>,... turns off
+// EDEN_NX2_PERF_OPT=0 turns every one off for the A/B; EDEN_NX2_PERF_ON=<name>,... turns an
+// experimental one on; EDEN_NX2_PERF_OFF=<name>,... turns off
 // only those named (Opt below). EDEN_NX2_PERF_VERIFY=1 computes each optimized answer the old
 // way too, logs any difference and uses the old answer.
 namespace VideoCommon::Nx2Perf {
@@ -41,6 +42,11 @@ enum class Opt : unsigned {
     ImmediateCallbacks,
     QueryUploadScratch,
     MacroReadEarly, ///< MME DMA reads outside GPU-written 1 MiB regions skip the full drain
+    // Experimental, off until a PERF_VERIFY run shows zero mismatches: EDEN_NX2_PERF_ON=<name> turns one on.
+    AcquireEarly,       ///< Semaphore acquires check the word without a full drain of the back
+    MacroReadCbOverlay, ///< Early MME reads overlay queued constant buffer words instead of waiting
+    MacroReadWriterSet, ///< Early MME reads wait only for entries that can write memory
+    PreflushAging,      ///< Preflush marks the CPU stopped reading age out
     Count,
 };
 
@@ -51,7 +57,18 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "write_intersections", "sorted_page_batches",
     "qmd_scratch", "query_diagnostics", "immediate_callbacks", "query_upload_scratch",
     "macro_read_early",
+    "acquire_early", "macro_read_cb_overlay", "macro_read_writer_set", "preflush_aging",
 };
+
+/// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
+inline constexpr unsigned DefaultOffMask() {
+    unsigned mask = 0;
+    for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
+                          Opt::MacroReadWriterSet, Opt::PreflushAging}) {
+        mask |= 1U << static_cast<unsigned>(opt);
+    }
+    return mask;
+}
 
 inline bool Enabled() {
     static const bool enabled = [] {
@@ -63,8 +80,18 @@ inline bool Enabled() {
 
 inline bool On(Opt opt) {
     static const unsigned off = [] {
-        constexpr unsigned unsafe_split_overlap = 1U << static_cast<unsigned>(Opt::SplitOverlap);
-        unsigned mask = unsafe_split_overlap;
+        unsigned mask = DefaultOffMask();
+        std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";
+        while (!on_list.empty()) {
+            const size_t comma = on_list.find(',');
+            const std::string_view name = on_list.substr(0, comma);
+            for (size_t i = 0; i < opt_names.size(); ++i) {
+                if (name == opt_names[i]) {
+                    mask &= ~(1U << i);
+                }
+            }
+            on_list = comma == std::string_view::npos ? std::string_view{} : on_list.substr(comma + 1);
+        }
         if (const char* value = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD"); value && value[0] == '0') {
             mask |= 1U << static_cast<unsigned>(Opt::FramesAhead);
         }
