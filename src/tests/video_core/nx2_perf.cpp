@@ -43,8 +43,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::HookLazyFlush) ||
                                   i == Index(Opt::InflightWriteWait) ||
                                   i == Index(Opt::InflightReadExact) ||
-                                  i == Index(Opt::FrontSyncTrio) ||
-                                  i == Index(Opt::FenceTimeline);
+                                  i == Index(Opt::FenceTimeline) ||
+                                  i == Index(Opt::DmaForwardMemo);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -60,8 +60,7 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
 }
 
 TEST_CASE("Nx2Perf front_sync_trio turns on its three switches", "[nx2_perf]") {
-    REQUIRE(opt_names[Index(Opt::FrontSyncTrio)] == "front_sync_trio");
-    const u64 trio = Bit(Opt::FrontSyncTrio) | front_sync_trio_set;
+    const u64 trio = front_sync_trio_set;
     REQUIRE(ParseOffMask(false, "front_sync_trio", "", false) == (always_off & ~trio));
     REQUIRE(ParseOffMask(true, "front_sync_trio", "", false) ==
             ((DefaultOffMask() | always_off) & ~trio));

@@ -135,12 +135,12 @@ enum class Opt : unsigned {
     /// With frames_ahead: while the epoch is open, a guest read served from a preflush block whose
     /// last GPU writer is still in flight waits for that writer's host syncpoint
     InflightReadExact,
-    /// Alias: turns on acquire_trigger_early, exact_noted_writes and writer_set_exec together
-    /// (EDEN_NX2_PERF_OFF still turns each of them off)
-    FrontSyncTrio,
     /// Measurement only: per-syncpoint stamps of the front's parse of a fence increment, the
     /// back's increment and the back's idle time, reported by vi2's present (FenceTimeline)
     FenceTimeline,
+    /// With DmaForward: a forwarded macro call's dry-run plan is cached by code generation, start,
+    /// parameters and the reads it made; the ring entry names a shared code slot, not a code copy
+    DmaForwardMemo,
     Count,
 };
 
@@ -177,8 +177,8 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "draw_begin_coalesce",
     "hook_lazy_flush",
     "inflight_write_wait", "inflight_read_exact",
-    "front_sync_trio",
     "fence_timeline",
+    "dma_forward_memo",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -217,12 +217,12 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
-                          Opt::HookLazyFlush,
+                          Opt::HookLazyFlush, Opt::DmaForwardMemo,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
                           Opt::InflightReadExact,
-                          Opt::FrontSyncTrio, Opt::FenceTimeline}) {
+                          Opt::FenceTimeline}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -241,8 +241,7 @@ inline constexpr u64 DefaultOffMask() {
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
-/// (timing change: flash check and a user play test first); front_sync_trio (alias, not measured
-/// yet); fence_timeline (measurement). dma_forward and draw_begin_coalesce are on
+/// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -257,8 +256,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
                                   Bit(Opt::GuestLandedSyncpoints) |
                                   Bit(Opt::WarGuardProbe) | Bit(Opt::InflightWriteWait) |
-                                  Bit(Opt::InflightReadExact) | Bit(Opt::FrontSyncTrio) |
-                                  Bit(Opt::FenceTimeline);
+                                  Bit(Opt::InflightReadExact) |
+                                  Bit(Opt::FenceTimeline) | Bit(Opt::DmaForwardMemo);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -282,16 +281,17 @@ static_assert(IsOff(always_off, static_cast<size_t>(Opt::FenceTimeline)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::FenceTimeline)));
 static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
+static_assert(IsOff(always_off, static_cast<size_t>(Opt::DmaForwardMemo)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForwardMemo)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::HookLazyFlush)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::InflightWriteWait)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::InflightWriteWait)) &&
               IsOff(always_off, static_cast<size_t>(Opt::InflightReadExact)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::InflightReadExact)));
-static_assert(static_cast<unsigned>(Opt::FrontSyncTrio) == 62 && IsOff(always_off, 62) &&
-              IsOff(DefaultOffMask(), 62));
 
-/// Switches front_sync_trio turns on with it.
+/// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
+/// EDEN_NX2_PERF_OFF still turns each of them off.
 inline constexpr u64 front_sync_trio_set =
     Bit(Opt::AcquireTriggerEarly) | Bit(Opt::ExactNotedWrites) | Bit(Opt::WriterSetExec);
 
@@ -310,11 +310,10 @@ inline u64 ParseOffMask(bool safe, std::string_view on, std::string_view off,
                 mask &= ~(u64{1} << i);
             }
         }
+        if (name == "front_sync_trio") {
+            mask &= ~front_sync_trio_set;
+        }
         on = comma == std::string_view::npos ? std::string_view{} : on.substr(comma + 1);
-    }
-    // Before the off list, so EDEN_NX2_PERF_OFF can still take one of the three back out.
-    if (!IsOff(mask, static_cast<size_t>(Opt::FrontSyncTrio))) {
-        mask &= ~front_sync_trio_set;
     }
     if (frames_ahead_off) {
         mask |= Bit(Opt::FramesAhead);
