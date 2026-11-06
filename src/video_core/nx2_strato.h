@@ -36,6 +36,10 @@ inline std::array<WaitTotals, static_cast<size_t>(Wait::Count)> g_waits{};
 /// Of the ListCopy waits: the words read were those the page's previous read got.
 inline std::atomic<u64> g_same_words_count{};
 inline std::atomic<u64> g_same_words_ns{};
+/// Direct downloads EDEN_NX2_GPU_DIRTY_GEN let wait for their pages' last write instead of their
+/// buffer's, and of them those that found it done while the buffer's was not (no wait at all).
+inline std::atomic<u64> g_gen_downloads{};
+inline std::atomic<u64> g_gen_downloads_free{};
 inline std::atomic<u64> g_configure_ns{};
 inline std::atomic<u64> g_configure_calls{};
 
@@ -58,6 +62,14 @@ inline void NoteWait(Wait kind, u64 ns, bool done) {
 /// EDEN_NX2_GPU_DIRTY_GEN read GPU-written pages without the wait the sticky bits make.
 inline void NoteGenSkip(Wait kind) {
     g_waits[static_cast<size_t>(kind)].gen_skips.fetch_add(1, std::memory_order_relaxed);
+}
+
+/// A direct download waits for its pages' last write, older than its buffer's (`free`: done).
+inline void NoteGenDownload(bool free) {
+    g_gen_downloads.fetch_add(1, std::memory_order_relaxed);
+    if (free) {
+        g_gen_downloads_free.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 /// A ListCopy wait of `ns` read the same words as the page's read before.

@@ -372,6 +372,9 @@ public:
     /// written by no GPU work since), else Copied with `out` filled from the copy of its last
     /// write once the GPU is done with it. Unknown otherwise: the caller drains and flushes.
     Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out);
+    /// EDEN_NX2_GPU_DIRTY_GEN, without the split: reads `out` from the memory of the buffer holding
+    /// it, when the GPU can be read directly and is done with the last write to its page.
+    bool Nx2ReadListHost(DAddr device_addr, std::span<u8> out);
     /// Front thread, the split drained: the command list page was flushed to guest memory.
     void Nx2NoteListSynced(DAddr page);
     /// CPU and inline writes: they reach guest memory, so a synced page stays synced, but its copy

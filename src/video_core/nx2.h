@@ -79,7 +79,9 @@ inline bool Nx2NeedsBufferDownloads() {
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read
 // without a flush they are stale and the draws behind them (trees) go missing. The bits never
 // clear: the dispatch that rewrites a page may still be queued on the split's back when its front
-// reads the command list. One bit per 4 KiB of the 36-bit device address space (2 MiB).
+// reads the command list (a bit cleared once the page's last write completed would let the front
+// read it without waiting for that dispatch). EDEN_NX2_GPU_DIRTY_GEN keeps them and shortens the
+// waits behind them instead. One bit per 4 KiB of the 36-bit device address space (2 MiB).
 inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
 
@@ -141,9 +143,25 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return enabled;
 }
 
+/// EDEN_NX2_GPU_DIRTY_GEN=1: a read of GPU-written pages waits only for the GPU tick of the last
+/// write recorded to those pages (Nx2LastGpuWriteTick) instead of the last one to their whole
+/// buffer or to their command list copy, and reads at once when the GPU is past it (strato's
+/// usage tracker, by generation instead of intervals cleared at waited submits). Off by default.
+/// Correct with the split on: which pages count as GPU-written (the sticky bits above) does not
+/// change, so its front still waits for queued writers before such a read, and the ticks are
+/// looked at only after that wait or a drain, when the back has recorded every write queued
+/// before the read. Clearing the bits instead is what the split cannot have (see above).
+[[nodiscard]] inline bool Nx2GpuDirtyGen() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_GPU_DIRTY_GEN");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 /// Whether the per-page write ticks below are kept.
 [[nodiscard]] inline bool Nx2GpuWriteTicks() {
-    return Nx2StratoStats();
+    return Nx2GpuDirtyGen() || Nx2StratoStats();
 }
 
 // The scheduler tick of the last GPU write recorded to each 4 KiB device page (every

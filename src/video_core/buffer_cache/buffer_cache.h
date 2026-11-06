@@ -2225,6 +2225,30 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             tick = entry.copy_tick;
             writes = entry.copy_writes;
         }
+        // EDEN_NX2_GPU_DIRTY_GEN: no wait when the GPU is past the copy (asked, not remembered),
+        // or, without the split (whose back owns the buffers), past the last write to the page:
+        // the buffer's memory holds the words then.
+        if (Tegra::Nx2GpuDirtyGen()) {
+            const bool copy_done = runtime.TickComplete(tick);
+            if (copy_done ||
+                (!VideoCommon::GpuSplit::Get().Active() && Nx2ReadListHost(device_addr, out))) {
+                std::scoped_lock lock{nx2_list_mutex};
+                const auto it = nx2_list_pages.find(page);
+                if (it == nx2_list_pages.end() || !current(it->second) ||
+                    it->second.copy_tick != tick || it->second.copy_writes != writes) {
+                    return Nx2ListRead::Unknown;
+                }
+                if (copy_done) {
+                    std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset,
+                                out.size());
+                }
+                if (stats) {
+                    same_words(it->second);
+                    VideoCommon::Nx2Strato::NoteGenSkip(VideoCommon::Nx2Strato::Wait::ListCopy);
+                }
+                return Nx2ListRead::Copied;
+            }
+        }
         // Whether the last GPU write to the page was done already (only its copy was not).
         const u64 write_tick = stats ? Tegra::Nx2LastGpuWriteTick(device_addr, out.size()) : 0;
         const bool write_done = write_tick != 0 && runtime.TickComplete(write_tick);
@@ -2251,6 +2275,36 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
                                              write_done);
         }
         return Nx2ListRead::Copied;
+    }
+}
+
+template <class P>
+bool BufferCache<P>::Nx2ReadListHost(DAddr device_addr, std::span<u8> out) {
+    if constexpr (requires { runtime.CanReadBuffersDirectly(); std::declval<Buffer&>().HostView(); }) {
+        if (!runtime.CanReadBuffersDirectly()) {
+            return false;
+        }
+        std::scoped_lock lock{mutex};
+        const BufferId buffer_id = page_table[device_addr >> CACHING_PAGEBITS];
+        if (!buffer_id) {
+            return false;
+        }
+        Buffer& buffer = slot_buffers[buffer_id];
+        // Every write to the buffer notes its pages (NoteGpuWrite): the page's tick covers them.
+        const u64 tick = Tegra::Nx2LastGpuWriteTick(device_addr, out.size());
+        if (!buffer.IsInBounds(device_addr, out.size()) || buffer.GpuWriteTick() == 0 ||
+            tick == 0 || !runtime.TickComplete(tick)) {
+            return false;
+        }
+        const std::span<const u8> host = buffer.HostView();
+        if (host.empty()) {
+            return false;
+        }
+        buffer.InvalidateHostView();
+        std::memcpy(out.data(), host.data() + buffer.Offset(device_addr), out.size());
+        return true;
+    } else {
+        return false;
     }
 }
 
@@ -2872,7 +2926,25 @@ void BufferCache<P>::DownloadBufferRanges(Buffer& buffer,
         if (tick != 0 && runtime.CanReadBuffersDirectly()) {
             const std::span<const u8> host = buffer.HostView();
             if (!host.empty()) {
-                runtime.WaitTick(tick);
+                // EDEN_NX2_GPU_DIRTY_GEN: only for the last write to the pages read (every write
+                // to the buffer notes its pages), not for later ones elsewhere in the buffer.
+                u64 wait_tick = tick;
+                if (Tegra::Nx2GpuDirtyGen()) {
+                    u64 pages_tick = 0;
+                    for (const BufferCopy& copy : copies) {
+                        pages_tick = (std::max)(pages_tick,
+                                                Tegra::Nx2LastGpuWriteTick(
+                                                    buffer.CpuAddr() + copy.src_offset, copy.size));
+                    }
+                    if (pages_tick != 0 && pages_tick < tick) {
+                        wait_tick = pages_tick;
+                        if (Tegra::Nx2StratoStats()) {
+                            VideoCommon::Nx2Strato::NoteGenDownload(
+                                runtime.TickComplete(pages_tick) && !runtime.IsFree(tick));
+                        }
+                    }
+                }
+                runtime.WaitTick(wait_tick);
                 buffer.InvalidateHostView();
                 for (const BufferCopy& copy : copies) {
                     WriteDownloadedMemory(cpu_written, buffer.CpuAddr() + copy.src_offset,

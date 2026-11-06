@@ -107,6 +107,12 @@ void MaybeReport() {
                                 per_second(same), ms_per_second(same_ns));
         }
     }
+    const u64 gen_downloads = g_gen_downloads.exchange(0, std::memory_order_relaxed);
+    const u64 gen_downloads_free = g_gen_downloads_free.exchange(0, std::memory_order_relaxed);
+    if (gen_downloads != 0) {
+        line += fmt::format(" | gen downloads {:.0f} waited for an older tick ({:.0f} not at all)",
+                            per_second(gen_downloads), per_second(gen_downloads_free));
+    }
     const u64 configure_ns = g_configure_ns.exchange(0, std::memory_order_relaxed);
     const u64 configure_calls = g_configure_calls.exchange(0, std::memory_order_relaxed);
     const u64 cpu_ns = g_draw_cpu_ns.load(std::memory_order_relaxed);
