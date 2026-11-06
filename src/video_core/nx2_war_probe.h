@@ -13,7 +13,93 @@
 #include <mutex>
 
 #include "common/common_types.h"
+#include "common/logging.h"
 #include "video_core/nx2_perf.h"
+
+// Nx2Perf inflight_write_wait / inflight_read_exact: with frames_ahead, vi2 replies to present N
+// after frame N-1's fence and opens an epoch for fence N. Core memory write-protects the pages the
+// back may still read for frame N (the war_guard_probe arm); the guest's first write of one, or of
+// a tracker-protected page, waits on a guest core until the back passes fence N and closes the
+// epoch. inflight_read_exact: while the epoch is open, a guest read the buffer cache serves from a
+// preflush block whose last GPU writer is in flight waits for fence N's host value. Shared by core
+// memory (traps, waits), the buffer cache (writer stamps, preflush reads) and vi2 (opening, log).
+namespace VideoCommon::Nx2Inflight {
+
+inline bool WriteWait() {
+    static const bool on = Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
+                           Nx2Perf::On(Nx2Perf::Opt::InflightWriteWait);
+    return on;
+}
+
+inline bool ReadExact() {
+    static const bool on = Nx2Perf::On(Nx2Perf::Opt::FramesAhead) &&
+                           Nx2Perf::On(Nx2Perf::Opt::InflightReadExact);
+    return on;
+}
+
+/// Whether epochs can open at all; false keeps every trap and read path as it was.
+inline bool Any() {
+    static const bool on = WriteWait() || ReadExact();
+    return on;
+}
+
+struct Epoch {
+    std::atomic<u64> open_seq{0}; ///< Sequence of the open epoch, 0 while none is open
+    std::atomic<u64> seq{0};      ///< Epochs opened so far
+    std::atomic<u32> fence_id{~0U};
+    std::atomic<u32> fence_value{0};
+    std::atomic<u32> prev_id{~0U};
+    std::atomic<u32> prev_value{0};
+    std::atomic<bool> guarded{false}; ///< Pages may still be write-protected by an epoch's arm
+    std::atomic<u64> fence_reached_seq{0}; ///< Last epoch whose fence the back passed
+    /// Back: one stamp per GPU write of a preflush block (BufferCache::QueueGpuWrite).
+    std::atomic<u64> write_stamp{0};
+    std::atomic<u64> passed_stamp{0}; ///< write_stamp when the back passed passed_seq's fence
+    std::atomic<u64> passed_seq{0};
+    /// Blocks written with a stamp above this are frame N's writers; 0 when unknown (every
+    /// written block counts as in flight).
+    std::atomic<u64> prev_fence_stamp{0};
+
+    // Window counters, read and cleared by vi2's per-second log.
+    std::atomic<u64> opened{}, closed_by_write{}, closed_by_fence{}, closed_by_present{};
+    std::atomic<u64> escapes{}, host_writes{}, write_waits{}, write_wait_ns{}, max_wait_ns{};
+    std::atomic<u64> read_waits{}, read_wait_ns{}, read_escapes{}, preflush_reads{};
+    std::atomic<u64> failed_opens{};
+    // Verify: (a) bank pages the guest changed before the back passed the epoch's fence, (b)
+    // preflush-served reads that differ from the bytes after their in-flight writer landed.
+    std::atomic<u64> bank_violations{}, read_compared{}, read_differs{}, read_compare_dropped{};
+    std::atomic<u64> escape_logs{}, verify_logs{};
+};
+
+inline Epoch& Get() {
+    static Epoch epoch;
+    return epoch;
+}
+
+/// Buffer cache -> core memory, on the reading thread: what the last OnCPURead served.
+struct ReadNote {
+    bool preflush_served = false; ///< Served from a preflush mark while an epoch was open
+    bool in_flight = false;       ///< A block of it was written after the previous fence
+};
+inline thread_local ReadNote read_note{};
+
+/// Verify (b): reads compared with their bytes after fence N lands, a fixed pool.
+struct ReadCompare {
+    static constexpr size_t MaxBytes = 64;
+    std::atomic<u32> busy{0};
+    u64 address = 0;
+    u32 size = 0;
+    const u8* host = nullptr;
+    std::array<u8, MaxBytes> bytes{};
+};
+inline constexpr size_t NumReadCompares = 64;
+
+inline std::array<ReadCompare, NumReadCompares>& ReadCompares() {
+    static std::array<ReadCompare, NumReadCompares> pool;
+    return pool;
+}
+
+} // namespace VideoCommon::Nx2Inflight
 
 // Nx2Perf war_guard_probe (measurement only): how long after vi2's Ocarina reply the guest first
 // touches memory the back may still read for the frame it just presented (t_w), and how many
@@ -62,6 +148,8 @@ struct State {
     std::array<u64, SnapshotPages> snapshot_device_page{};
     std::array<u8, SnapshotPages> snapshot_pending{};
     size_t snapshot_count = 0;
+    /// inflight_write_wait: the epoch opened after this snapshot, 0 when none did.
+    u64 snapshot_epoch = 0;
 
     // The armed frame: vi2 bumps frame and clears reply_ns when it arms, sets reply_ns when it
     // replies; the first guest trap after that claims the frame.
@@ -146,6 +234,20 @@ void CompareBank(u64 device_addr, u64 size, GetPointer&& get_pointer) {
         state.bank_compared.fetch_add(1, std::memory_order_relaxed);
         if (std::memcmp(now, state.snapshot_bytes.get() + index * PageSize, PageSize) != 0) {
             state.bank_changed.fetch_add(1, std::memory_order_relaxed);
+            // inflight_write_wait: the back binds the page before passing the epoch's fence, so
+            // this is frame N's read of a page the guest rewrote with the epoch open.
+            auto& epoch = Nx2Inflight::Get();
+            if (state.snapshot_epoch != 0 &&
+                epoch.fence_reached_seq.load(std::memory_order_acquire) < state.snapshot_epoch) {
+                const u64 count =
+                    epoch.bank_violations.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (count <= 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf inflight_write_wait: bank page {:#x} changed before the "
+                              "back passed epoch {}'s fence ({} so far)",
+                              *it << PageBits, state.snapshot_epoch, count);
+                }
+            }
         }
     }
 }

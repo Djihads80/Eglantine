@@ -7,6 +7,8 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -73,10 +75,12 @@ struct Memory::Impl {
 #else
         host_buffer = std::addressof(system.DeviceMemory().buffer);
 #endif
-        war_probe = process.IsApplication() && current_page_table->fastmem_arena != nullptr &&
-                    Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce &&
-                    current_page_table->GetAddressSpaceBits() <= 43 &&
-                    VideoCommon::Nx2WarProbe::On();
+        const bool war_capable =
+            process.IsApplication() && current_page_table->fastmem_arena != nullptr &&
+            Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce &&
+            current_page_table->GetAddressSpaceBits() <= 43;
+        war_inflight = war_capable && VideoCommon::Nx2Inflight::Any();
+        war_probe = war_capable && (VideoCommon::Nx2WarProbe::On() || war_inflight);
         if (war_probe) {
             war_unprotected.Init();
         }
@@ -357,6 +361,9 @@ struct Memory::Impl {
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
+        if (war_inflight) [[unlikely]] {
+            WarOnWrite(GetInteger(addr), size);
+        }
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
             LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
@@ -373,6 +380,9 @@ struct Memory::Impl {
     }
 
     bool ZeroBlock(const Common::ProcessAddress addr, const std::size_t size) {
+        if (war_inflight) [[unlikely]] {
+            WarOnWrite(GetInteger(addr), size);
+        }
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
             LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
@@ -918,7 +928,13 @@ struct Memory::Impl {
                     WarNoteTracked(v_address, VideoCommon::Nx2WarProbe::Category::Read);
                 }
                 DisarmReadTraps(v_address, size);
+                if (war_inflight) [[unlikely]] {
+                    VideoCommon::Nx2Inflight::read_note = {};
+                }
                 (void)system.GPU().OnCPURead(address, size);
+                if (war_inflight) [[unlikely]] {
+                    InflightAfterRead(p, size, false);
+                }
             });
             return;
         }
@@ -938,11 +954,20 @@ struct Memory::Impl {
                 WarNoteTracked(v_address, VideoCommon::Nx2WarProbe::Category::Read);
             }
             DisarmReadTraps(v_address, size);
+            if (war_inflight) [[unlikely]] {
+                VideoCommon::Nx2Inflight::read_note = {};
+            }
             current_area = system.GPU().OnCPURead(address, size);
+            if (war_inflight) [[unlikely]] {
+                InflightAfterRead(p, size, true);
+            }
         });
     }
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
+        if (war_inflight) [[unlikely]] {
+            InflightBeforeWrite();
+        }
         if (war_probe) [[unlikely]] {
             WarNoteTracked(v_address, VideoCommon::Nx2WarProbe::Category::Cached);
         }
@@ -1172,6 +1197,9 @@ struct Memory::Impl {
                 Common::PageType::DebugMemory) [[likely]] {
                 continue;
             }
+            if (war_inflight) [[unlikely]] {
+                InflightBeforeWrite();
+            }
             std::scoped_lock lk{war_mutex};
             if (!war_unprotected.Contains(page) || !WarUnguard(page)) {
                 continue; // A debugger's page, or given back meanwhile
@@ -1203,18 +1231,21 @@ struct Memory::Impl {
         VideoCommon::Nx2WarProbe::NoteTrap(bank ? Category::Bank : category, WarGuestCore());
     }
 
-    Nx2WarProbeArmResult WarArm(std::span<const u64> bank_cpu_pages) {
+    /// set_banks false (an inflight epoch's arm) keeps the probe's bank page labels.
+    Nx2WarProbeArmResult WarArm(std::span<const u64> bank_cpu_pages, bool set_banks = true) {
         Nx2WarProbeArmResult result{};
         if (!war_probe) {
             return result;
         }
         std::scoped_lock lk{war_mutex};
-        war_bank_count = (std::min)(bank_cpu_pages.size(), war_bank_pages.size());
-        std::copy_n(bank_cpu_pages.begin(), war_bank_count, war_bank_pages.begin());
-        std::sort(war_bank_pages.begin(), war_bank_pages.begin() + war_bank_count);
-        war_bank_count = static_cast<size_t>(
-            std::unique(war_bank_pages.begin(), war_bank_pages.begin() + war_bank_count) -
-            war_bank_pages.begin());
+        if (set_banks) {
+            war_bank_count = (std::min)(bank_cpu_pages.size(), war_bank_pages.size());
+            std::copy_n(bank_cpu_pages.begin(), war_bank_count, war_bank_pages.begin());
+            std::sort(war_bank_pages.begin(), war_bank_pages.begin() + war_bank_count);
+            war_bank_count = static_cast<size_t>(
+                std::unique(war_bank_pages.begin(), war_bank_pages.begin() + war_bank_count) -
+                war_bank_pages.begin());
+        }
 
         u32 to_protect = 0;
         for (u32 i = war_unprotected.count; i-- > 0;) {
@@ -1267,6 +1298,306 @@ struct Memory::Impl {
         return result;
     }
 
+    // Nx2Perf inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h, Nx2Inflight).
+
+    /// Gives every page an epoch's arm guarded its tracker state back (Memory, read/write).
+    void InflightUnguardAll() {
+        std::scoped_lock lk{war_mutex};
+        auto& epoch = VideoCommon::Nx2Inflight::Get();
+        if (!epoch.guarded.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        u32 count = 0;
+        for (u32 i = 0; i < war_unprotected.count; ++i) {
+            const u64 page = war_unprotected.list[i];
+            auto& entry = current_page_table->entries.GetUnchecked(page);
+            const auto [pointer, type, block] = entry.PointerTypeBlock(true);
+            if (type != Common::PageType::DebugMemory) {
+                continue;
+            }
+            entry.Store(false, Common::PageType::Memory, block, pointer);
+            war_unprotected.scratch[count++] = static_cast<u32>(page);
+        }
+        u32* const pages = war_unprotected.scratch.get();
+        std::sort(pages, pages + count);
+        for (u32 i = 0; i < count;) {
+            u32 run = 1;
+            while (i + run < count && pages[i + run] == pages[i] + run) {
+                ++run;
+            }
+            host_buffer->Protect(u64{pages[i]} << YUZU_PAGEBITS, u64{run} << YUZU_PAGEBITS,
+                                 Common::MemoryPermission::ReadWrite);
+            i += run;
+        }
+    }
+
+    /// Waits until syncpoint `id` (its host value with `host`, else its guest value) reaches
+    /// `value`. Gives up (returns false) after 4 s, or 3 ms after a GPU channel was seen suspended
+    /// on a semaphore, which this thread may be the one to release.
+    bool InflightWait(u32 id, u32 value, bool host) {
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        const auto ready = [&] {
+            return host ? syncpoints.IsReadyHost(id, value) : syncpoints.IsReadyGuest(id, value);
+        };
+        if (id >= 192 || ready()) {
+            return true;
+        }
+        struct Wake {
+            std::mutex mutex;
+            std::condition_variable cv;
+            bool done{};
+        };
+        auto wake = std::make_shared<Wake>();
+        const auto notify = [wake] {
+            {
+                std::scoped_lock lk{wake->mutex};
+                wake->done = true;
+            }
+            wake->cv.notify_all();
+        };
+        if (host) {
+            syncpoints.RegisterHostAction(id, value, notify);
+        } else {
+            syncpoints.RegisterGuestAction(id, value, notify);
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline = start + std::chrono::seconds{4};
+        bool gpu_waited = false;
+        std::unique_lock lk{wake->mutex};
+        while (!wake->done && system.IsPoweredOn()) {
+            const auto now = std::chrono::steady_clock::now();
+            gpu_waited |= system.GPU().HasSuspendedChannels();
+            if (now >= deadline || (gpu_waited && now - start > std::chrono::milliseconds{3})) {
+                break;
+            }
+            wake->cv.wait_for(lk, std::chrono::milliseconds{1});
+        }
+        lk.unlock();
+        return ready();
+    }
+
+    template <typename... Args>
+    void InflightLogEscape(fmt::format_string<Args...> format, Args&&... args) {
+        auto& epoch = VideoCommon::Nx2Inflight::Get();
+        if (epoch.escape_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_WARNING(HW_GPU, "Nx2Perf inflight_write_wait: {}",
+                        fmt::format(format, std::forward<Args>(args)...));
+        }
+    }
+
+    /// A guest write of a page the back may read for the open epoch's frame: on a guest core,
+    /// waits for the epoch's fence and closes the epoch, so this and every later write land after
+    /// the back passed it. A closed epoch's leftover guards are dropped at the first write.
+    void InflightBeforeWrite() {
+        namespace Inflight = VideoCommon::Nx2Inflight;
+        Inflight::Epoch& epoch = Inflight::Get();
+        const u64 seq = epoch.open_seq.load(std::memory_order_acquire);
+        if (seq == 0) {
+            if (epoch.guarded.load(std::memory_order_relaxed)) [[unlikely]] {
+                InflightUnguardAll();
+            }
+            return;
+        }
+        if (!Inflight::WriteWait()) {
+            return; // inflight_read_exact alone: the epoch only serves the reads
+        }
+        if (!WarGuestCore()) {
+            // Service threads never wait: they may be what the back is waiting for.
+            epoch.host_writes.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const u32 id = epoch.fence_id.load(std::memory_order_relaxed);
+        const u32 value = epoch.fence_value.load(std::memory_order_relaxed);
+        const auto start = std::chrono::steady_clock::now();
+        const bool reached = InflightWait(id, value, false);
+        const u64 waited = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now() - start)
+                                                .count());
+        u64 expected = seq;
+        if (epoch.open_seq.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
+            if (reached) {
+                epoch.closed_by_write.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                epoch.escapes.fetch_add(1, std::memory_order_relaxed);
+                InflightLogEscape("epoch {} write gave up on fence ({}, {}) after {} us (now {}, "
+                                  "{}): the write lands before the back passed it",
+                                  seq, id, value, waited / 1000,
+                                  system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(id),
+                                  system.GPU().HasSuspendedChannels() ? "a GPU channel waits"
+                                                                      : "4 s timeout");
+            }
+        }
+        epoch.write_waits.fetch_add(1, std::memory_order_relaxed);
+        epoch.write_wait_ns.fetch_add(waited, std::memory_order_relaxed);
+        u64 max = epoch.max_wait_ns.load(std::memory_order_relaxed);
+        while (waited > max &&
+               !epoch.max_wait_ns.compare_exchange_weak(max, waited, std::memory_order_relaxed)) {
+        }
+        InflightUnguardAll();
+    }
+
+    /// After OnCPURead: a read the buffer cache served from a preflush mark while an epoch was
+    /// open. inflight_read_exact waits (guest cores only) for the in-flight writer's host fence,
+    /// or for the previous fence's when that has not landed; Verify compares the reads served
+    /// without a wait with their bytes after fence N lands.
+    void InflightAfterRead(const u8* host, size_t size, bool guest_core) {
+        namespace Inflight = VideoCommon::Nx2Inflight;
+        const Inflight::ReadNote note =
+            std::exchange(Inflight::read_note, Inflight::ReadNote{});
+        if (!note.preflush_served) {
+            return;
+        }
+        Inflight::Epoch& epoch = Inflight::Get();
+        const u64 seq = epoch.open_seq.load(std::memory_order_acquire);
+        if (seq == 0) {
+            return;
+        }
+        epoch.preflush_reads.fetch_add(1, std::memory_order_relaxed);
+        const u32 id = epoch.fence_id.load(std::memory_order_relaxed);
+        const u32 value = epoch.fence_value.load(std::memory_order_relaxed);
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        if (Inflight::ReadExact() && guest_core) {
+            u32 wait_id = ~0U;
+            u32 wait_value = 0;
+            const u32 prev_id = epoch.prev_id.load(std::memory_order_relaxed);
+            const u32 prev_value = epoch.prev_value.load(std::memory_order_relaxed);
+            if (note.in_flight) {
+                wait_id = id;
+                wait_value = value;
+            } else if (prev_id < 192 && !syncpoints.IsReadyHost(prev_id, prev_value)) {
+                wait_id = prev_id;
+                wait_value = prev_value;
+            }
+            if (wait_id < 192 && !syncpoints.IsReadyHost(wait_id, wait_value)) {
+                const auto start = std::chrono::steady_clock::now();
+                const bool landed = InflightWait(wait_id, wait_value, true);
+                epoch.read_waits.fetch_add(1, std::memory_order_relaxed);
+                epoch.read_wait_ns.fetch_add(
+                    static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - start)
+                                         .count()),
+                    std::memory_order_relaxed);
+                if (landed) {
+                    return; // Exact: everything up to the writer's fence has landed.
+                }
+                epoch.read_escapes.fetch_add(1, std::memory_order_relaxed);
+                InflightLogEscape("epoch {} read gave up on the host fence ({}, {}) (host {}): "
+                                  "it reads the preflushed bytes",
+                                  seq, wait_id, wait_value,
+                                  syncpoints.GetHostSyncpointValue(wait_id));
+            }
+        }
+        if (!VideoCommon::Nx2Perf::Verify() || host == nullptr || id >= 192 ||
+            syncpoints.IsReadyHost(id, value)) {
+            return;
+        }
+        // Verify (b): the bytes this read sees now, compared when fence N lands.
+        auto& pool = Inflight::ReadCompares();
+        Inflight::ReadCompare* slot = nullptr;
+        for (Inflight::ReadCompare& candidate : pool) {
+            u32 free = 0;
+            if (candidate.busy.compare_exchange_strong(free, 1, std::memory_order_acquire)) {
+                slot = &candidate;
+                break;
+            }
+        }
+        if (slot == nullptr) {
+            epoch.read_compare_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const size_t in_page =
+            YUZU_PAGESIZE - (reinterpret_cast<uintptr_t>(host) & YUZU_PAGEMASK);
+        slot->size =
+            static_cast<u32>((std::min)({size, Inflight::ReadCompare::MaxBytes, in_page}));
+        slot->host = host;
+        slot->address = reinterpret_cast<uintptr_t>(host);
+        std::memcpy(slot->bytes.data(), host, slot->size);
+        syncpoints.RegisterHostAction(id, value, [slot, seq, in_flight = note.in_flight] {
+            Inflight::Epoch& e = Inflight::Get();
+            e.read_compared.fetch_add(1, std::memory_order_relaxed);
+            if (std::memcmp(slot->bytes.data(), slot->host, slot->size) != 0) {
+                const u64 count = e.read_differs.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (e.verify_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf inflight_read_exact: differs, a {}-byte read at host {:#x} "
+                              "in epoch {} ({} block) changed when its fence landed ({} so far)",
+                              slot->size, slot->address, seq,
+                              in_flight ? "an in-flight" : "a settled", count);
+                }
+            }
+            slot->busy.store(0, std::memory_order_release);
+        });
+    }
+
+    /// vi2's early reply to the present of fence (id, value), after waiting for (prev_id,
+    /// prev_value): opens the epoch and arms the guards. False when none can open (switch off,
+    /// or the page set lost pages): vi2 then waits for this frame itself.
+    bool InflightOpen(u32 id, u32 value, u32 prev_id, u32 prev_value) {
+        namespace Inflight = VideoCommon::Nx2Inflight;
+        if (!war_inflight || id >= 192) {
+            return false;
+        }
+        Inflight::Epoch& epoch = Inflight::Get();
+        if (epoch.open_seq.exchange(0, std::memory_order_acq_rel) != 0) {
+            epoch.closed_by_present.fetch_add(1, std::memory_order_relaxed);
+        }
+        const u64 seq = epoch.seq.fetch_add(1, std::memory_order_relaxed) + 1;
+        // Writes stamped after the back passed the previous fence belong to this frame. That
+        // fence's epoch recorded the stamp as it passed; without one, every written block counts.
+        u64 prev_stamp = 0;
+        if (epoch.passed_seq.load(std::memory_order_acquire) == seq - 1 &&
+            epoch.fence_id.load(std::memory_order_relaxed) == prev_id &&
+            epoch.fence_value.load(std::memory_order_relaxed) == prev_value) {
+            prev_stamp = epoch.passed_stamp.load(std::memory_order_relaxed);
+        }
+        epoch.prev_fence_stamp.store(prev_stamp, std::memory_order_relaxed);
+        epoch.fence_id.store(id, std::memory_order_relaxed);
+        epoch.fence_value.store(value, std::memory_order_relaxed);
+        epoch.prev_id.store(prev_id, std::memory_order_relaxed);
+        epoch.prev_value.store(prev_value, std::memory_order_relaxed);
+        // Open before arming: a write that traps meanwhile waits, and its close unguards after
+        // the arm (both take war_mutex).
+        epoch.guarded.store(true, std::memory_order_release);
+        epoch.open_seq.store(seq, std::memory_order_release);
+        // The full list of pages the tracker leaves writable; tracker-protected pages trap
+        // already (HandleRasterizerWrite). A page the set could not hold would write unguarded.
+        const auto result = WarArm({}, false);
+        if (result.overflow != 0) {
+            u64 expected = seq;
+            epoch.open_seq.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+            InflightUnguardAll();
+            epoch.failed_opens.fetch_add(1, std::memory_order_relaxed);
+            if (static std::atomic_flag logged; !logged.test_and_set()) {
+                LOG_WARNING(HW_GPU,
+                            "Nx2Perf inflight_write_wait: the guard set overflowed ({} pages), "
+                            "presents wait for their own fence from now on",
+                            result.overflow);
+            }
+            return false;
+        }
+        if (VideoCommon::Nx2WarProbe::On()) {
+            auto& probe = VideoCommon::Nx2WarProbe::Get();
+            std::scoped_lock lk{probe.snapshot_mutex};
+            probe.snapshot_epoch = seq;
+        }
+        epoch.opened.fetch_add(1, std::memory_order_relaxed);
+        system.Host1x().GetSyncpointManager().RegisterGuestAction(id, value, [seq] {
+            Inflight::Epoch& e = Inflight::Get();
+            e.passed_stamp.store(e.write_stamp.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
+            e.passed_seq.store(seq, std::memory_order_release);
+            u64 current = e.fence_reached_seq.load(std::memory_order_relaxed);
+            while (current < seq && !e.fence_reached_seq.compare_exchange_weak(
+                                        current, seq, std::memory_order_acq_rel)) {
+            }
+            u64 expected = seq;
+            if (e.open_seq.compare_exchange_strong(expected, 0, std::memory_order_acq_rel)) {
+                e.closed_by_fence.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+        return true;
+    }
+
     void InvalidateGPUMemory(u8* p, size_t size) {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
@@ -1302,7 +1633,8 @@ struct Memory::Impl {
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
     std::mutex sys_core_guard;
-    bool war_probe = false; ///< war_guard_probe on, for the application with fastmem
+    bool war_probe = false; ///< war_guard_probe or the inflight epochs, application with fastmem
+    bool war_inflight = false; ///< inflight_write_wait / inflight_read_exact can open epochs
     std::mutex war_mutex;
     WarPageSet war_unprotected;
     std::array<u64, VideoCommon::Nx2WarProbe::MaxBankPages> war_bank_pages{};
@@ -1505,6 +1837,10 @@ void Memory::RasterizerArmReadTraps(Common::ProcessAddress vaddr, u64 size) {
 
 Memory::Nx2WarProbeArmResult Memory::Nx2WarProbeArm(std::span<const u64> bank_cpu_pages) {
     return impl->WarArm(bank_cpu_pages);
+}
+
+bool Memory::Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value) {
+    return impl->InflightOpen(fence_id, fence_value, prev_id, prev_value);
 }
 
 void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug) {

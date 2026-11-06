@@ -1783,6 +1783,7 @@ private:
         // landed_prev_always / one_ahead_landed: before the reply, wait for the previous frame's
         // host syncpoint value (its downloads and reports in guest memory), not only its guest one.
         LandedLane landed_lane = LandedLane::None;
+        bool inflight_epoch = false;
         const u32 previous_fence_id = m_previous_fence_id;
         const u32 previous_fence_value = m_previous_fence_value;
         if (frames_ahead == 1 || (frames_ahead == -1 && !WaitForFrame(~w[22], w[24], true))) {
@@ -1833,6 +1834,10 @@ private:
             }
             if (wait_for_this) {
                 WaitForFrame(~w[22], w[24]);
+            } else if (frames_ahead == 1 && VideoCommon::Nx2Inflight::Any()) [[unlikely]] {
+                // inflight_write_wait / inflight_read_exact: the epoch opens right before the
+                // reply, after this thread's own writes below.
+                inflight_epoch = true;
             }
         } else if (frames_ahead == 0) {
             WaitForFrame(~w[22], w[24]);
@@ -1926,6 +1931,13 @@ private:
         if (war_probe) [[unlikely]] {
             VideoCommon::Nx2WarProbe::Get().reply_ns.store(VideoCommon::Nx2WarProbe::NowNs(),
                                                            std::memory_order_release);
+        }
+        if (inflight_epoch) [[unlikely]] {
+            if (!system.ApplicationMemory().Nx2InflightOpen(~w[22], w[24], previous_fence_id,
+                                                            previous_fence_value)) {
+                WaitForFrame(~w[22], w[24]);
+            }
+            InflightLog();
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
@@ -2046,6 +2058,44 @@ private:
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 
+    /// inflight_write_wait / inflight_read_exact: the epochs' counters, about once a second.
+    std::chrono::steady_clock::time_point m_inflight_log_time{};
+    void InflightLog() {
+        const auto now = std::chrono::steady_clock::now();
+        if (m_inflight_log_time == std::chrono::steady_clock::time_point{}) {
+            m_inflight_log_time = now;
+            return;
+        }
+        if (now - m_inflight_log_time < std::chrono::seconds{1}) {
+            return;
+        }
+        m_inflight_log_time = now;
+        auto& epoch = VideoCommon::Nx2Inflight::Get();
+        const auto take = [](std::atomic<u64>& counter) {
+            return counter.exchange(0, std::memory_order_relaxed);
+        };
+        const u64 waits = take(epoch.write_waits);
+        const u64 wait_ns = take(epoch.write_wait_ns);
+        const u64 read_waits = take(epoch.read_waits);
+        const u64 read_wait_ns = take(epoch.read_wait_ns);
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf inflight: epochs opened {}, closed by a write {}, by the fence {}, by "
+                 "the next present {}, escapes {}, failed opens {}; first-write waits {} (avg "
+                 "{:.3f} ms, max {:.3f} ms), host-thread writes {}; preflush reads {}, read "
+                 "waits {} (avg {:.3f} ms), read escapes {}; verify: bank pages changed before "
+                 "the fence {}, reads compared {}, differ {}, dropped {}",
+                 take(epoch.opened), take(epoch.closed_by_write), take(epoch.closed_by_fence),
+                 take(epoch.closed_by_present), take(epoch.escapes), take(epoch.failed_opens),
+                 waits, waits == 0 ? 0.0 : static_cast<double>(wait_ns) / waits / 1e6,
+                 static_cast<double>(take(epoch.max_wait_ns)) / 1e6, take(epoch.host_writes),
+                 take(epoch.preflush_reads), read_waits,
+                 read_waits == 0 ? 0.0 : static_cast<double>(read_wait_ns) / read_waits / 1e6,
+                 take(epoch.read_escapes), epoch.bank_violations.load(std::memory_order_relaxed),
+                 epoch.read_compared.load(std::memory_order_relaxed),
+                 epoch.read_differs.load(std::memory_order_relaxed),
+                 epoch.read_compare_dropped.load(std::memory_order_relaxed));
+    }
+
     /// war_guard_probe: per 600 presents, how long after the reply the guest first touched a
     /// guarded page (t_w), and what arming cost. Allocated at the first arm.
     struct WarProbeWindow {
@@ -2118,6 +2168,7 @@ private:
                 ++count;
             }
             probe.snapshot_count = count;
+            probe.snapshot_epoch = 0;
         }
         const s64 protect_begin = Probe::NowNs();
         size_t cpu_count = 0;

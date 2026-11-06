@@ -334,6 +334,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         if (Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
             Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, false);
         }
+        if (Nx2Inflight::Any()) [[unlikely]] {
+            Nx2InflightNoteRead(device_addr_start_aligned, device_addr_end_aligned);
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -1134,6 +1137,37 @@ void BufferCache<P>::Nx2StampPreflushBlocks(DAddr begin, DAddr end, bool marked)
             }
         }
     }
+}
+
+template <class P>
+void BufferCache<P>::Nx2InflightNoteWriter(DAddr begin, DAddr end) {
+    auto& epoch = Nx2Inflight::Get();
+    for (u64 block = begin >> NX2_PREFLUSH_BLOCK_BITS;
+         block <= (end - 1) >> NX2_PREFLUSH_BLOCK_BITS; ++block) {
+        if (const auto it = nx2_preflush_blocks.find(block); it != nx2_preflush_blocks.end()) {
+            it->second.inflight_write_stamp =
+                epoch.write_stamp.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2InflightNoteRead(DAddr begin, DAddr end) {
+    auto& epoch = Nx2Inflight::Get();
+    if (epoch.open_seq.load(std::memory_order_acquire) == 0) {
+        return;
+    }
+    // Blocks written after the back passed the previous fence: frame N's writers, which may
+    // not have landed. A writer the back has not reached yet is not seen here.
+    const u64 prev_stamp = epoch.prev_fence_stamp.load(std::memory_order_relaxed);
+    bool in_flight = false;
+    for (u64 block = begin >> NX2_PREFLUSH_BLOCK_BITS;
+         block <= (end - 1) >> NX2_PREFLUSH_BLOCK_BITS && !in_flight; ++block) {
+        if (const auto it = nx2_preflush_blocks.find(block); it != nx2_preflush_blocks.end()) {
+            in_flight = it->second.inflight_write_stamp > prev_stamp;
+        }
+    }
+    Nx2Inflight::read_note = {.preflush_served = true, .in_flight = in_flight};
 }
 
 template <class P>

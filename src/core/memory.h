@@ -508,6 +508,13 @@ public:
     Nx2WarProbeArmResult Nx2WarProbeArm(std::span<const u64> bank_cpu_pages);
 
     /**
+     * inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h): vi2 replies to the
+     * present of fence (fence_id, fence_value) having waited only for (prev_id, prev_value).
+     * Arms the guards and opens the epoch; false when none can open (the caller then waits).
+     */
+    bool Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value);
+
+    /**
      * Marks each page within the specified address range as debug or non-debug.
      * Debug addresses are not accessible from fastmem pointers.
      *

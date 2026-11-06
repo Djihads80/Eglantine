@@ -128,6 +128,12 @@ enum class Opt : unsigned {
     /// the front waits for GPU results, or the deferred submit is older than
     /// EDEN_NX2_HOOK_FLUSH_US (default 1000), not at every catch-up
     HookLazyFlush,
+    /// With frames_ahead: vi2's early reply opens an epoch for this frame's fence; the guest's
+    /// first write of a page the back may still read for it waits for that fence (nx2_war_probe.h)
+    InflightWriteWait,
+    /// With frames_ahead: while the epoch is open, a guest read served from a preflush block whose
+    /// last GPU writer is still in flight waits for that writer's host syncpoint
+    InflightReadExact,
     Count,
 };
 
@@ -163,6 +169,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "war_guard_probe",
     "draw_begin_coalesce",
     "hook_lazy_flush",
+    "inflight_write_wait", "inflight_read_exact",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -204,7 +211,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::HookLazyFlush,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
-                          Opt::WarGuardProbe, Opt::DrawBeginCoalesce}) {
+                          Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
+                          Opt::InflightReadExact}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -222,7 +230,8 @@ inline constexpr u64 DefaultOffMask() {
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
-/// war_guard_probe (measurement, adds page traps). dma_forward and draw_begin_coalesce are on
+/// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
+/// (timing change: flash check and a user play test first). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -236,7 +245,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
                                   Bit(Opt::GuestLandedSyncpoints) |
-                                  Bit(Opt::WarGuardProbe);
+                                  Bit(Opt::WarGuardProbe) | Bit(Opt::InflightWriteWait) |
+                                  Bit(Opt::InflightReadExact);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -260,6 +270,10 @@ static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::HookLazyFlush)));
+static_assert(IsOff(always_off, static_cast<size_t>(Opt::InflightWriteWait)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::InflightWriteWait)) &&
+              IsOff(always_off, static_cast<size_t>(Opt::InflightReadExact)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::InflightReadExact)));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).

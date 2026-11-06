@@ -44,6 +44,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/types.h"
 
@@ -857,6 +858,9 @@ private:
             if (Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
                 ArmReadTraps(lower, upper - lower);
             }
+            if (Nx2Inflight::Any()) [[unlikely]] {
+                Nx2InflightNoteWriter(lower, upper);
+            }
             uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
             cursor = upper;
         });
@@ -891,6 +895,11 @@ private:
     void Nx2StampPreflushBlocks(DAddr begin, DAddr end, bool marked);
     /// PreflushAging, every 60 frames: drops the marks of blocks the CPU stopped reading.
     void Nx2AgePreflushBlocks();
+    /// inflight_read_exact: the back queued a GPU write of the marked range [begin, end).
+    void Nx2InflightNoteWriter(DAddr begin, DAddr end);
+    /// inflight_read_exact: the guest read [begin, end) from preflushed data; tells core memory
+    /// (Nx2Inflight::read_note) whether a block of it has a writer in the open epoch's frame.
+    void Nx2InflightNoteRead(DAddr begin, DAddr end);
 
     static constexpr u64 NX2_PREFLUSH_BLOCK_BITS = 16; ///< 64 KiB blocks
     static constexpr u32 NX2_PREFLUSH_MIN_LIMIT = 120;  ///< Frames unread before a drop
@@ -902,6 +911,8 @@ private:
         u64 limit_frame{};  ///< Dropped: start of the decay period (the drop or the last halving)
         u32 limit_frames{NX2_PREFLUSH_MIN_LIMIT};
         bool dropped{};     ///< Marks dropped (PreflushAging) and not marked again since
+        /// inflight_read_exact: Nx2Inflight write stamp of the block's last GPU writer, 0 none
+        u64 inflight_write_stamp{};
     };
     std::unordered_map<u64, Nx2PreflushBlock> nx2_preflush_blocks;
     u64 nx2_preflush_drops{};   ///< Blocks dropped since start
