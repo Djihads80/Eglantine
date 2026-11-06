@@ -880,8 +880,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
         const u64 hash = key.Hash();
         disk_pipelines.insert(hash);
-        // Switch 2 titles stutter on pipelines built mid-game, so all of them are built at boot.
-        if (!PreloadAllPipelines() && !Settings::CurrentProgramIsSwitch2() &&
+        if (!PreloadAllPipelines() &&
             (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
                                     : !used_pipelines.contains(hash))) {
             ++skipped_pipelines;
@@ -1127,8 +1126,7 @@ void PipelineCache::EvictUnusedPipelines() {
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
     constexpr u64 EvictAfterFrames = 9000;
-    // Switch 2 titles keep theirs: a rebuilt pipeline translates its shader on the GPU thread.
-    if (frame_count <= EvictAfterFrames || Settings::CurrentProgramIsSwitch2()) {
+    if (frame_count <= EvictAfterFrames) {
         return;
     }
     const u64 cutoff = frame_count - EvictAfterFrames;

@@ -968,7 +968,8 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
-// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
+// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair. Star Fox's
+// known 1600x900 RGBA16F -> 1920x1080 RGB10A2 pair also needs format conversion.
 // The cbuf0 byte offsets of the texture handles a native program reads (TEX, TLD, TLD4, TXD) and
 // the surface handles it stores to (SUST.P), from its code up to the first unconditional EXIT.
 std::pair<std::vector<u32>, std::vector<u32>> KeplerCompute::NativeImageHandles(GPUVAddr program) {
@@ -1030,13 +1031,20 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
                (cross_a > cross_b ? cross_a - cross_b : cross_b - cross_a) * 32 <= cross_a;
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
+    const bool starfox_conversion = Settings::GetCurrentProgramID() == 0x0400E88025B1A000ULL &&
+        input && output && input->format == Texture::TextureFormat::R16G16B16A16 &&
+        output->format == Texture::TextureFormat::A2B10G10R10 &&
+        input->Width() == 1600 && input->Height() == 900 &&
+        output->Width() == 1920 && output->Height() == 1080;
+    bool have_pair = upscale_pair(input, output, !starfox_conversion);
     bool fortunes_weave = false;
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
         input = image(0x328);
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
+        have_pair = fortunes_weave;
     }
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
         // The images the program itself uses: textures it reads and the surface it stores to
         // through cbuf0 handles (Ocarina of Time's gameplay network reads +0xc0, writes +0xd0).
         // The input is the largest read image that the output upscales, the output's format first.
@@ -1059,7 +1067,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             if (input) break;
         }
     }
-    if (!upscale_pair(input, output, false)) {
+    if (!have_pair && !upscale_pair(input, output, false)) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
