@@ -482,6 +482,12 @@ FN_MAX_LIMIT_LIST
         return features.shader_float16_int8.shaderFloat16;
     }
 
+    /// Whether the GPU itself supports float16 shaders, before guest workarounds turn it off.
+    /// Host-only shaders (frame generation) can still use it.
+    bool IsHostFloat16Supported() const {
+        return host_float16_supported;
+    }
+
     /// Returns true if the device can run shaders built against the Vulkan memory model.
     bool IsVulkanMemoryModelSupported() const {
         return features.vulkan_memory_model.vulkanMemoryModel;
@@ -1311,6 +1317,7 @@ private:
     bool is_non_gpu{};                         ///< Is SoftwareRasterizer, FPGA, non-GPU device.
     bool has_broken_compute{};                 ///< Compute shaders can cause crashes
     bool has_broken_cube_compatibility{};      ///< Has broken cube compatibility bit
+    bool host_float16_supported{};             ///< shaderFloat16 as the driver reported it
     bool has_broken_descriptor_aliasing{};     ///< Miscompiles descriptors aliased on one binding
     bool has_broken_parallel_compiling{};      ///< Has broken parallel shader compiling.
     bool has_renderdoc{};                      ///< Has RenderDoc attached

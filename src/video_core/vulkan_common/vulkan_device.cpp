@@ -596,6 +596,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 #endif
     }
 
+    host_float16_supported = features.shader_float16_int8.shaderFloat16;
     if (is_nvidia) {
         const auto arch = GetNvidiaArch();
         if (arch >= NvidiaArchitecture::Arch_AmpereOrNewer) {
@@ -759,7 +760,12 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
 
+    // Enable float16 on the device when the GPU has it, so host-only shaders (frame generation)
+    // may use it; guest shaders keep following the workaround above (IsFloat16Supported).
+    const bool guest_float16 = features.shader_float16_int8.shaderFloat16;
+    features.shader_float16_int8.shaderFloat16 = host_float16_supported;
     logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
+    features.shader_float16_int8.shaderFloat16 = guest_float16;
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
