@@ -36,6 +36,30 @@ struct ImageInfo {
     explicit ImageInfo(const Tegra::Engines::Fermi2D::Surface& config) noexcept;
     explicit ImageInfo(const Tegra::DMA::ImageOperand& config) noexcept;
 
+    /// Returns whether native memory tiling applies after the descriptor's legacy-layout override.
+    [[nodiscard]] bool UsesNativeSectorLayout(bool native) const noexcept {
+        return native && !legacy_sector_layout;
+    }
+
+    /// Accepts unknown layouts; otherwise requires the same effective native-tiling state.
+    [[nodiscard]] bool IsSectorLayoutCompatible(const ImageInfo& other) const noexcept {
+        return !sector_layout_known || !other.sector_layout_known ||
+               native_tiling == other.native_tiling;
+    }
+
+    /// Takes the known sector layout of `other` when this one's is unknown; returns whether
+    /// the guest memory order changed. Only for images without GPU-written data.
+    bool AdoptSectorLayout(const ImageInfo& other) noexcept {
+        if (sector_layout_known || !other.sector_layout_known) {
+            return false;
+        }
+        const bool changed = native_tiling != other.native_tiling;
+        native_tiling = other.native_tiling;
+        legacy_sector_layout = other.legacy_sector_layout;
+        sector_layout_known = true;
+        return changed;
+    }
+
     PixelFormat format = PixelFormat::Invalid;
     ImageType type = ImageType::e1D;
     SubresourceExtent resources;
@@ -49,6 +73,10 @@ struct ImageInfo {
     u32 num_samples = 1;
     u32 tile_width_spacing = 0;
     bool native_tiling = false;
+    // Native TIC header bit 88 selects the legacy Tegra sector order.
+    bool legacy_sector_layout = false;
+    // Render target registers do not specify the texture descriptor's sector order.
+    bool sector_layout_known = false;
     bool rescaleable = false;
     bool downscaleable = false;
     bool forced_flushed = false;

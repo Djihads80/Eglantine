@@ -646,11 +646,14 @@ bool KeplerCompute::EmulatesNativeTensorPrograms() const {
                GameDlssBlocker() == VideoCore::GameDlssReason::None;
     }
     // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
-    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
-    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
-    // shader cache keeps the result of a program's first dispatch.
+    // purple from its mode select on. So are TotK's cutscene video network's: the stand-in leaves
+    // the movies black. Other titles keep the upscale stand-in (emulating title 4's network takes
+    // the host driver minutes to compile). Chosen per title, not per dispatch: the shader cache
+    // keeps the result of a program's first dispatch.
     constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
+    constexpr u64 TearsOfTheKingdomProgramId = 0x0400F2C0115B6001ULL;
+    const u64 program_id = Settings::GetCurrentProgramID();
+    return program_id == DonkeyKongBananzaProgramId || program_id == TearsOfTheKingdomProgramId;
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames

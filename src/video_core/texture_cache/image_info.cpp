@@ -32,7 +32,10 @@ using VideoCore::Surface::SurfaceType;
 constexpr u32 RescaleHeightThreshold = 288;
 constexpr u32 DownscaleHeightThreshold = 512;
 
+/// Builds image metadata from a texture descriptor, recording explicit native sector-layout hints.
 ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+    legacy_sector_layout = config.load_store_hint != 0;
+    sector_layout_known = true;
     forced_flushed = config.IsPitchLinear() && !Settings::values.use_reactive_flushing.GetValue();
     dma_downloaded = forced_flushed;
     format = PixelFormatFromTextureInfo(config.format, config.r_type, config.g_type, config.b_type,

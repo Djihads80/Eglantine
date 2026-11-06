@@ -527,6 +527,8 @@ void SwizzlePitchLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
     }
 }
 
+/// Writes a linear buffer-image copy into guest block-linear memory using the image's sector
+/// layout.
 void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
                              const ImageInfo& info, const BufferImageCopy& copy,
                              std::span<const u8> input, Common::ScratchBuffer<u8>& tmp_buffer) {
@@ -567,7 +569,8 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
                 dst(gpu_memory, gpu_addr + guest_offset, subresource_size, &tmp_buffer);
 
             SwizzleTexture(dst, src, bytes_per_block, num_tiles.width, num_tiles.height,
-                           num_tiles.depth, block.height, block.depth, 1, gpu_memory.UsesNativeTiling());
+                           num_tiles.depth, block.height, block.depth, 1,
+                           info.UsesNativeSectorLayout(gpu_memory.UsesNativeTiling()));
         }
 
         host_offset += host_bytes_per_layer;
@@ -850,6 +853,8 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }
 
+/// Decodes guest image data into linear output and returns the corresponding buffer-image copies.
+/// Block-linear images use the descriptor's effective sector layout.
 boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::MemoryManager& gpu_memory,
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
@@ -920,7 +925,8 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
             const std::span<u8> dst = output.subspan(host_offset);
             const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
             UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                             num_tiles.depth, block.height, block.depth, stride_alignment, gpu_memory.UsesNativeTiling());
+                             num_tiles.depth, block.height, block.depth, stride_alignment,
+                             info.UsesNativeSectorLayout(gpu_memory.UsesNativeTiling()));
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
         }
@@ -1084,6 +1090,7 @@ size_t UnswizzledRectsBytes(const ImageInfo& info, std::span<const LevelRect> re
     return bytes;
 }
 
+/// Decodes the requested GOB-aligned rectangles into output and returns their buffer-image copies.
 std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memory,
                                                  GPUVAddr gpu_addr, const ImageInfo& info,
                                                  std::span<const LevelRect> rects,
@@ -1109,7 +1116,7 @@ std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memor
             gpu_memory.ReadBlockUnsafe(row_addr, swizzled.data(), row_bytes);
             UnswizzleTexture(output.subspan(output_offset, bytes), swizzled, 1U << bpp_log2, width,
                              texel_rows, 1, level.block_height, 0, 0,
-                             gpu_memory.UsesNativeTiling());
+                             info.UsesNativeSectorLayout(gpu_memory.UsesNativeTiling()));
             const u32 row_y = row * level.block_rows;
             const u32 y0 = (std::max)(rect.y, row_y);
             const u32 y1 = (std::min)(rect.y + rect.height, row_y + texel_rows);
@@ -1133,10 +1140,13 @@ std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memor
     return copies;
 }
 
+/// Plans copies for dirty ranges of a 2D block-linear image without reading guest memory.
+/// Retains the sector-layout override for execution and marks unsupported layouts invalid.
 UnswizzlePlan PlanUnswizzleImageRows(
     GPUVAddr gpu_addr, const ImageInfo& info,
     std::span<const std::pair<u64, u64>> dirty_ranges) {
     UnswizzlePlan plan;
+    plan.legacy_sector_layout = info.legacy_sector_layout;
     if (info.type != ImageType::e2D || info.size.depth != 1 || info.block.depth != 0 ||
         info.num_samples != 1 || dirty_ranges.empty()) {
         plan.layout_valid = false;
@@ -1256,6 +1266,7 @@ UnswizzlePlan PlanUnswizzleImageRows(
     return plan;
 }
 
+/// Reads and decodes a precomputed plan into output using its recorded sector-layout override.
 void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan& plan,
                          std::span<u8> output) {
     std::vector<u8> run;
@@ -1265,7 +1276,7 @@ void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan&
         Tegra::Texture::UnswizzleTexture(output.subspan(r.host_offset, r.host_bytes),
                                          run, 1U << plan.bpp_log2, r.run_tiles, r.tile_rows, 1,
                                          r.block.height, r.block.depth, r.run_alignment,
-                                         gpu_memory.UsesNativeTiling());
+                                         gpu_memory.UsesNativeTiling() && !plan.legacy_sector_layout);
     }
 }
 
@@ -1521,11 +1532,16 @@ bool IsPitchLinearSameSize(const ImageInfo& lhs, const ImageInfo& rhs, bool stri
     }
 }
 
+/// Resolves compatible overlapping image storage, returning nullopt when the layouts cannot be
+/// joined.
 std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr gpu_addr,
                                             VAddr cpu_addr, const ImageBase& overlap,
                                             bool strict_size, bool broken_views, bool native_bgr) {
     ASSERT(new_info.type != ImageType::Linear);
     ASSERT(overlap.info.type != ImageType::Linear);
+    if (!new_info.IsSectorLayoutCompatible(overlap.info)) {
+        return std::nullopt;
+    }
     if (!IsLayerStrideCompatible(new_info, overlap.info)) {
         return std::nullopt;
     }
@@ -1571,9 +1587,15 @@ bool IsLayerStrideCompatible(const ImageInfo& lhs, const ImageInfo& rhs) {
     return false;
 }
 
+/// Finds the candidate's base mip and layer within an image under the supplied matching options.
+/// Returns nullopt when sector layouts, formats, dimensions, or subresource bounds are
+/// incompatible.
 std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const ImageBase& image,
                                                GPUVAddr candidate_addr, RelaxedOptions options,
                                                bool broken_views, bool native_bgr) {
+    if (!candidate.IsSectorLayoutCompatible(image.info)) {
+        return std::nullopt;
+    }
     const std::optional<SubresourceBase> base = image.TryFindBase(candidate_addr);
     if (!base) {
         return std::nullopt;

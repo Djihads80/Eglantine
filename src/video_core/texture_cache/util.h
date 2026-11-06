@@ -87,6 +87,7 @@ struct UnswizzlePlan {
     size_t total_host_bytes{0};
     u32 bpp_log2{0};
     bool layout_valid{true};
+    bool legacy_sector_layout{};
 };
 
 /// Plans the unswizzle copies and runs for a 2D block-linear image overlapping `dirty_ranges`.

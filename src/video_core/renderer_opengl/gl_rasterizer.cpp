@@ -1455,4 +1455,10 @@ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
     return DmaBufferImageCopy<true>(copy_info, buffer_operand, image_operand);
 }
 
+/// Returns the texture cache's legacy sector-order classification for the DMA address.
+bool AccelerateDMA::UsesLegacySectorLayout(GPUVAddr address) {
+    std::scoped_lock lock{texture_cache.mutex};
+    return texture_cache.UsesLegacySectorLayout(address);
+}
+
 } // namespace OpenGL

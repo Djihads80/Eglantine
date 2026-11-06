@@ -90,6 +90,12 @@ public:
 
     virtual bool BufferToImage(const DMA::ImageCopy& copy_info, const DMA::BufferOperand& src,
                                const DMA::ImageOperand& dst) = 0;
+
+    /// Whether a cached image at `address` is read in the legacy Tegra sector order (its texture
+    /// descriptor says so), so block-linear copies done in guest memory must use that order too.
+    virtual bool UsesLegacySectorLayout([[maybe_unused]] GPUVAddr address) {
+        return false;
+    }
 };
 
 /**
@@ -258,6 +264,9 @@ private:
     void CopyBlockLinearToPitch();
 
     void CopyPitchToBlockLinear();
+
+    /// Whether block-linear data at `address` is in the native sector order.
+    bool NativeTilingAt(GPUVAddr address);
 
     void CopyBlockLinearToBlockLinear();
 

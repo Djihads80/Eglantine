@@ -1577,6 +1577,27 @@ bool TextureCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
     return is_modified;
 }
 
+/// Returns true when at least one known layout covers gpu_addr and all known layouts there are
+/// legacy.
+template <class P>
+bool TextureCache<P>::UsesLegacySectorLayout(GPUVAddr gpu_addr) {
+    const std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!cpu_addr) {
+        return false;
+    }
+    // Legacy only when every image here with a known layout says so: overlapping images that
+    // disagree leave the order ambiguous, and the native order stays.
+    bool legacy = false;
+    bool native = false;
+    ForEachImageInRegion(*cpu_addr, 1, [&](ImageId, ImageBase& image) {
+        if (image.info.sector_layout_known) {
+            (image.info.legacy_sector_layout ? legacy : native) = true;
+        }
+        return legacy && native;
+    });
+    return legacy && !native;
+}
+
 template <class P>
 std::pair<typename TextureCache<P>::Image*, BufferImageCopy> TextureCache<P>::DmaBufferImageCopy(
     const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
@@ -2082,9 +2103,13 @@ ImageId TextureCache<P>::FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_a
     return InsertImage(info, gpu_addr, options);
 }
 
+/// Finds a compatible cached image for the descriptor and guest address.
+/// Unknown sector layouts may be adopted only when the cached image has no GPU-written data.
 template <class P>
 ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                    RelaxedOptions options) {
+    ImageInfo storage_info = info;
+    storage_info.native_tiling = info.UsesNativeSectorLayout(gpu_memory->UsesNativeTiling());
     const std::optional<DAddr> cpu_addr = ImageCpuAddress(gpu_addr, CalculateGuestSizeInBytes(info));
     if (!cpu_addr) {
         return ImageId{};
@@ -2112,8 +2137,20 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
                 image_ids.push_back(existing_image_id);
                 return !flexible_formats && existing.format == info.format;
             }
-        } else if (IsSubresource(info, existing_image, gpu_addr, options, broken_views,
+        } else if (IsSubresource(storage_info, existing_image, gpu_addr, options, broken_views,
                                  native_bgr)) {
+            // An image of unknown layout (a render target) viewed through a descriptor that
+            // names one decodes guest memory in that order from now on. Images holding GPU-written
+            // data keep theirs, so their uploads and writebacks stay in one order.
+            if (False(existing_image.flags & ImageFlagBits::GpuModified) &&
+                existing_image.info.AdoptSectorLayout(storage_info)) {
+                existing_image.flags |= ImageFlagBits::CpuModified;
+                existing_image.dirty_layers.clear();
+                existing_image.dirty_ranges.clear();
+                if (True(existing_image.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(existing_image, existing_image_id);
+                }
+            }
             image_id = existing_image_id;
             image_ids.push_back(existing_image_id);
             return !flexible_formats && existing_image.info.format == info.format;
@@ -2449,6 +2486,7 @@ std::optional<DAddr> TextureCache<P>::ImageCpuAddress(GPUVAddr gpu_addr, size_t 
     return ~(1ULL << 40ULL) + gpu_addr;
 }
 
+/// Registers an image at the guest address using its effective sector layout.
 template <class P>
 ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
@@ -2460,7 +2498,7 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
     }
     ASSERT_MSG(cpu_addr, "Tried to insert an image to an invalid gpu_addr={:#x}", gpu_addr);
     ImageInfo storage_info = info;
-    storage_info.native_tiling = gpu_memory->UsesNativeTiling();
+    storage_info.native_tiling = info.UsesNativeSectorLayout(gpu_memory->UsesNativeTiling());
     if (storage_info.native_tiling && info.type == ImageType::e3D) {
         // Switch 2 3D images (lighting/fog volumes) are rare: log each one's shape.
         LOG_DEBUG(HW_GPU, "3D image at {:#x}: {}x{}x{} levels {} format {} block {}x{}x{}",
