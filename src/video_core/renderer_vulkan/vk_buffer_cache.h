@@ -271,6 +271,10 @@ public:
         return max_dynamic_storage_buffers;
     }
 
+    u32 GetMaxStorageBufferRange() const {
+        return static_cast<u32>(device.GetMaxStorageBufferRange());
+    }
+
 private:
     void BindBuffer(const Buffer& buffer, u32 offset, u32 size) {
         const VkBuffer handle = buffer.Handle();
