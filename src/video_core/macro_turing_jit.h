@@ -108,12 +108,15 @@ public:
     }
 
     /// Compiles `code` (3 words per instruction) when it differs from what was compiled.
+    /// The plain and the batching program are kept apart: callers that share one engine's JIT
+    /// (3D macros and compute's front) may want different ones on alternate calls.
     void Prepare(std::span<const Word> code, std::uint64_t generation, bool batch_emits = false) {
-        if (program && generation == compiled_generation && batch_emits == compiled_batch) {
-            return;
+        const std::size_t slot = batch_emits ? 1 : 0;
+        if (!programs[slot] || generation != compiled_generations[slot]) {
+            programs[slot] = std::make_unique<Program>(code, batch_emits);
+            compiled_generations[slot] = generation;
         }
-        program = std::make_unique<Program>(code, batch_emits);
-        compiled_generation = generation;
+        program = programs[slot].get();
         compiled_batch = batch_emits;
     }
 
@@ -746,8 +749,9 @@ private:
             fail_loop, fail_dread, fail_dwrite, fail_output, fail_emit, fail_outside, fail_steps;
     };
 
-    std::unique_ptr<Program> program;
-    std::uint64_t compiled_generation{~std::uint64_t{0}};
+    std::array<std::unique_ptr<Program>, 2> programs; ///< Plain, batching
+    std::array<std::uint64_t, 2> compiled_generations{~std::uint64_t{0}, ~std::uint64_t{0}};
+    Program* program{}; ///< The one the last Prepare chose
     bool compiled_batch{};
     std::unique_ptr<State> kept; ///< Options::keep_state
     bool kept_busy{};
