@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
@@ -253,6 +254,23 @@ private:
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
 
+    /// Cached graphics pipelines boot skipped (not in used_pipelines) are built on background
+    /// threads once the game runs, so a draw that needs one finds it built instead of translating
+    /// it on the GPU thread. EDEN_NX2_BACKGROUND_PIPELINES (off by default on Android).
+    std::unique_ptr<GraphicsPipeline> TakeBackgroundPipeline(const GraphicsPipelineCacheKey& key);
+    void StopBackgroundPipelines();
+    std::mutex background_mutex;
+    /// Built and not yet asked for by a draw.
+    std::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> background_ready;
+    /// Keys the GPU thread built itself meanwhile: their background build is skipped or dropped.
+    std::unordered_set<GraphicsPipelineCacheKey> background_claimed;
+    std::atomic_bool background_active{};
+    std::atomic_bool background_stop{};
+    std::atomic<size_t> background_left{};
+    size_t background_taken{}; ///< Under background_mutex
+    std::chrono::steady_clock::time_point background_start{};
+    /// Destroyed (its threads joined) before the state above; ~PipelineCache stops it first.
+    std::unique_ptr<Common::ThreadWorker> background_workers;
     /// Keys whose pipeline is being translated on a worker (GPU thread only).
     /// Keys whose translation runs on a worker, with what to wait on for them.
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::shared_future<void>> translating_graphics;
