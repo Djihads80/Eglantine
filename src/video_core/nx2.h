@@ -151,14 +151,44 @@ inline std::array<std::atomic<s32>, Nx2PendingQuerySlots> g_nx2_pending_queries{
     return g_nx2_pending_queries[(page ^ (page >> 12)) % Nx2PendingQuerySlots];
 }
 
+// The same counts by 16 bytes (a report writes 4 or 16): Ocarina of Time's macros read 24-byte
+// records from pages its reports keep writing, and on the split every such read drained the back
+// (~10,000 a second on the phone) though the record read had no write pending. Hashed slots too.
+inline constexpr size_t Nx2PendingQueryUnitSlots = 8192;
+inline std::array<std::atomic<s32>, Nx2PendingQueryUnitSlots> g_nx2_pending_query_units{};
+
+[[nodiscard]] inline std::atomic<s32>& Nx2PendingQueryUnit(u64 device_address) {
+    const u64 unit = device_address >> 4;
+    return g_nx2_pending_query_units[(unit * 0x9e3779b97f4a7c15ULL) >> 51];
+}
+
+/// EDEN_NX2_QUERY_PENDING_EXACT=0: MME DMA reads look for pending query writes on their whole
+/// pages, as before the 16-byte counts.
+[[nodiscard]] inline bool Nx2QueryPendingExact() {
+    static const bool exact = [] {
+        const char* const value = std::getenv("EDEN_NX2_QUERY_PENDING_EXACT");
+        return value == nullptr || value[0] != '0';
+    }();
+    return exact;
+}
+
 /// The query cache deferred a write of the word at `device_address` to a fence.
 inline void Nx2NotePendingQuery(u64 device_address) {
     Nx2PendingQuerySlot(device_address).fetch_add(1, std::memory_order_release);
+    // Up to 16 bytes from the address (a long report: value and timestamp).
+    Nx2PendingQueryUnit(device_address).fetch_add(1, std::memory_order_release);
+    if (((device_address + 15) >> 4) != (device_address >> 4)) {
+        Nx2PendingQueryUnit(device_address + 15).fetch_add(1, std::memory_order_release);
+    }
 }
 
 /// The deferred write's fence operation ran (whether or not it wrote).
 inline void Nx2DonePendingQuery(u64 device_address) {
     Nx2PendingQuerySlot(device_address).fetch_sub(1, std::memory_order_release);
+    Nx2PendingQueryUnit(device_address).fetch_sub(1, std::memory_order_release);
+    if (((device_address + 15) >> 4) != (device_address >> 4)) {
+        Nx2PendingQueryUnit(device_address + 15).fetch_sub(1, std::memory_order_release);
+    }
 }
 
 /// Whether a deferred query write may still be pending in the device range.
@@ -169,6 +199,22 @@ inline void Nx2DonePendingQuery(u64 device_address) {
     for (u64 page = device_address >> Nx2WrittenPageBits;
          page <= (device_address + size - 1) >> Nx2WrittenPageBits; ++page) {
         if (Nx2PendingQuerySlot(page << Nx2WrittenPageBits).load(std::memory_order_acquire) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// As Nx2HasPendingQuery, by 16 bytes for reads up to a page (Nx2QueryPendingExact).
+[[nodiscard]] inline bool Nx2ReadHasPendingQuery(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    if (!Nx2QueryPendingExact() || size > 0x1000) {
+        return Nx2HasPendingQuery(device_address, size);
+    }
+    for (u64 unit = device_address >> 4; unit <= (device_address + size - 1) >> 4; ++unit) {
+        if (Nx2PendingQueryUnit(unit << 4).load(std::memory_order_acquire) > 0) {
             return true;
         }
     }

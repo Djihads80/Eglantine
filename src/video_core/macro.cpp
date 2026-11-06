@@ -1440,14 +1440,19 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                     // Counter reports and fence-timed releases are held in the query cache until
                     // their fence: write out those over the read, or occlusion predicates read
                     // stale values (6ef73b2374, from jojo-chaechae/Eglantine 50db84983f by Jonas).
-                    // Only where one is pending (Nx2HasPendingQuery). The split's back owns the
-                    // query cache: FrontDmaRead does it there. EDEN_NX2_DMA_QUERY_FLUSH=0: off.
+                    // Only where one is pending over the bytes read (Nx2ReadHasPendingQuery). The
+                    // split's back owns the query cache: FrontDmaRead does it there.
+                    // EDEN_NX2_DMA_QUERY_FLUSH=0: off.
                     if (Tegra::Nx2DmaQueryFlush() && !VideoCommon::GpuSplit::Get().Active()) {
                         bool pending = false;
-                        for (GPUVAddr page = source & ~GPUVAddr{0xfff};
-                             !pending && page < source + read_bytes; page += 0x1000) {
-                            const auto device = memory.GpuToCpuAddress(page);
-                            pending = device && Tegra::Nx2HasPendingQuery(*device, 0x1000);
+                        const GPUVAddr end = source + read_bytes;
+                        for (GPUVAddr chunk = source; !pending && chunk < end;) {
+                            const GPUVAddr chunk_end =
+                                (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+                            const auto device = memory.GpuToCpuAddress(chunk);
+                            pending =
+                                device && Tegra::Nx2ReadHasPendingQuery(*device, chunk_end - chunk);
+                            chunk = chunk_end;
                         }
                         if (pending) {
                             memory.FlushRegion(source, read_bytes,

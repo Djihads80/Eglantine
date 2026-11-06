@@ -171,7 +171,9 @@ public:
     /// Returns whether any of it was still queued.
     bool WaitForWriters();
     /// Waits until the back executed what was sent before `position`. Returns whether it waited.
+    /// `zone`: the profile zone the wait counts as (SplitWriters without one).
     bool WaitForPosition(u64 position);
+    bool WaitForPosition(u64 position, Nx2Profile::Zone zone);
     /// Front thread: the ring position after the last compute or copy work sent.
     [[nodiscard]] u64 WriterPosition() const {
         return last_writer_position;

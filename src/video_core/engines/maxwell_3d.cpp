@@ -1570,6 +1570,10 @@ struct DmaReadStats {
     u64 copied{};
     u64 waited{};
     u64 drained{};
+    u64 waited_writes{};  ///< Of waited: for writes queued to the pages (reports, uploads, ...)
+    u64 waited_writers{}; ///< Of waited: for compute and copy work (GPU-written pages)
+    u64 query_drains{}; ///< Of drained: a query write pending over the read
+    u64 copy_drains{};  ///< Of drained: a GPU-written page without a current copy (or unmapped)
     u64 mismatches{};
 };
 DmaReadStats g_dma_read_stats; // the front thread's
@@ -1581,7 +1585,8 @@ DmaReadStats g_dma_read_stats; // the front thread's
 // GPU-written command lists). False when that copy is unknown: drain.
 bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_manager,
                          VideoCore::RasterizerInterface* rasterizer, GPUVAddr source,
-                         std::span<u32> out, bool wait_writers, bool& waited, bool& copied) {
+                         std::span<u32> out, bool wait_writers, bool& waited, bool& copied,
+                         bool& waited_writes, bool& waited_writers) {
     struct Piece {
         GPUVAddr gpu;
         DAddr device;
@@ -1609,14 +1614,20 @@ bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_man
     // jojo-chaechae/Eglantine 90eab341bd does (covers compute's own direct writes). Queued
     // constant buffer words are noted once sent: send them first (WaitForPosition would).
     split.FlushPending();
-    u64 target = 0;
+    u64 writes = 0;
+    u64 writers = 0;
     for (size_t i = 0; i < count; ++i) {
-        target = (std::max)(target, split.PendingWrite(pieces[i].device, pieces[i].size));
+        writes = (std::max)(writes, split.PendingWrite(pieces[i].device, pieces[i].size));
         if (pieces[i].gpu_written || wait_writers) {
-            target = (std::max)(target, split.WriterPosition());
+            writers = (std::max)(writers, split.WriterPosition());
         }
     }
-    waited = split.WaitForPosition(target);
+    // What a wait is for (logged with the reads): the targets the back had not reached.
+    const u64 consumed_before = split.Consumed();
+    waited = split.WaitForPosition((std::max)(writes, writers),
+                                   VideoCommon::Nx2Profile::Zone::SplitDmaWait);
+    waited_writes = waited && writes > consumed_before;
+    waited_writers = waited && writers > consumed_before;
     u8* const bytes = reinterpret_cast<u8*>(out.data());
     for (size_t i = 0; i < count; ++i) {
         const Piece& piece = pieces[i];
@@ -1676,24 +1687,37 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
         if (!Tegra::Nx2DmaQueryFlush()) {
             return false;
         }
-        for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
-             page += 0x1000) {
-            if (const auto device = memory_manager.GpuToCpuAddress(page);
-                device && Tegra::Nx2HasPendingQuery(*device, 0x1000)) {
+        // The bytes read only (Nx2ReadHasPendingQuery): reports elsewhere on the page don't
+        // drain.
+        const GPUVAddr end = source + read_bytes;
+        for (GPUVAddr chunk = source; chunk < end;) {
+            const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+            if (const auto device = memory_manager.GpuToCpuAddress(chunk);
+                device && Tegra::Nx2ReadHasPendingQuery(*device, chunk_end - chunk)) {
                 return true;
             }
+            chunk = chunk_end;
         }
         return false;
     };
     bool query_pending = false;
     if (fast && words != 0) {
         bool waited = false;
+        bool waited_writes = false;
+        bool waited_writers = false;
         undrained = DmaReadWithoutDrain(split, memory_manager, rasterizer, source, values,
-                                        fast_mode == '2', waited, copied);
+                                        fast_mode == '2', waited, copied, waited_writes,
+                                        waited_writers);
         stats.waited += waited ? 1 : 0;
+        stats.waited_writes += waited_writes ? 1 : 0;
+        stats.waited_writers += waited_writers ? 1 : 0;
+        if (!undrained) {
+            ++stats.copy_drains;
+        }
         query_pending = pending_query();
-        if (query_pending) {
+        if (query_pending && undrained) {
             undrained = false;
+            ++stats.query_drains;
         }
         if (undrained) {
             ++(copied ? stats.copied : stats.direct);
@@ -1753,9 +1777,13 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     } else if (now - stats.window_start >= 10'000'000'000ULL) {
         LOG_INFO(HW_GPU,
                  "MME DMA reads in {:.1f} s: {}, {} from guest memory and {} from GPU-written "
-                 "page copies without a drain ({} waited for queued writers), {} drained{}",
+                 "page copies without a drain ({} waited for queued writers: {} for writes to "
+                 "their pages, {} for compute and copy work), {} drained ({} for "
+                 "a pending query write, {} for a GPU-written page without a current copy){}",
                  static_cast<double>(now - stats.window_start) / 1e9, stats.reads, stats.direct,
-                 stats.copied, stats.waited, stats.drained,
+                 stats.copied, stats.waited, stats.waited_writes, stats.waited_writers,
+                 stats.drained, stats.query_drains,
+                 stats.copy_drains,
                  verify ? fmt::format(", {} differed", stats.mismatches) : std::string{});
         stats = {};
         stats.window_start = now;
