@@ -1267,6 +1267,11 @@ void RasterizerVulkan::DispatchCompute() {
             }
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
+        // The timestamp after the dispatch goes before a command list copy's submission,
+        // which would put it in the next command buffer, after the wait for the CPU.
+        if (frame_dump.Capturing()) [[unlikely]] {
+            frame_dump.TimeEnd(true);
+        }
         SubmitNx2ListCopies();
         publish_collision_map();
         return;
@@ -1291,6 +1296,9 @@ void RasterizerVulkan::DispatchCompute() {
         }
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
+    if (frame_dump.Capturing()) [[unlikely]] {
+        frame_dump.TimeEnd(true);
+    }
     SubmitNx2ListCopies();
     publish_collision_map();
 
