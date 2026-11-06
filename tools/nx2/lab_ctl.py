@@ -36,6 +36,90 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
 
+# --- stopping the emulator --------------------------------------------------------------------
+# taskkill is a console program: started from a process whose console has gone away it may never
+# run, and its result was not checked. Kills now go through TerminateProcess (no console needed),
+# taskkill /T only takes the children along, in a hidden console of its own, and the result is checked.
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.OpenProcess.restype = wintypes.HANDLE
+    _k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+    _k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    _k32.WaitForSingleObject.restype = wintypes.DWORD
+    _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _ACCESS = 0x0001 | 0x00100000 | 0x1000  # TERMINATE | SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+    _NO_WINDOW = 0x08000000                  # CREATE_NO_WINDOW
+    _NEW_GROUP = 0x00000200                  # CREATE_NEW_PROCESS_GROUP
+
+    def _creation(handle):
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not _k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+
+    def process_ctime(pid):
+        """Creation time (FILETIME) of a running process, None if it is gone or unknown."""
+        handle = _k32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            return _creation(handle)
+        finally:
+            _k32.CloseHandle(handle)
+
+    def ctime_unix(ctime):
+        return ctime / 1e7 - 11644473600
+
+    def terminate(pid, ctime=None):
+        """Ends `pid` and its children and returns True once it is gone. A pid whose creation time is
+        no longer `ctime` was reused by another process: left alone, and True (ours is gone)."""
+        handle = _k32.OpenProcess(_ACCESS, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 5  # access denied: it exists and is not ours to end
+        try:
+            if ctime is not None and _creation(handle) not in (None, ctime):
+                return True
+            if _k32.WaitForSingleObject(handle, 0) == 0:
+                return True
+            # The handle keeps the pid from being reused while taskkill looks it up.
+            try:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=_NO_WINDOW, timeout=20)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if _k32.WaitForSingleObject(handle, 2000) != 0:
+                _k32.TerminateProcess(handle, 1)
+            return _k32.WaitForSingleObject(handle, 10000) == 0
+        finally:
+            _k32.CloseHandle(handle)
+else:
+    def process_ctime(pid):
+        return None
+
+    def terminate(pid, ctime=None):
+        """SIGTERM to the process group, SIGKILL after 10 s; True once the process is gone."""
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            for _ in range(50):
+                os.kill(pid, 0)
+                time.sleep(0.2)
+            os.killpg(pid, signal.SIGKILL)
+            time.sleep(0.5)
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+
+
 def read(path, default=None):
     try:
         with open(path, encoding="utf-8") as file:
@@ -231,12 +315,13 @@ def command_launch(args):
         # A watchdog, so a forgotten run does not keep the GPU busy: kills the process group after
         # that long unless the emulator is already gone.
         if os.name == "nt":
+            # Its own hidden console: it must outlive the caller's console, and so must its taskkill.
             subprocess.Popen(
-                [sys.executable, "-I", "-c",
-                 f"import subprocess, time; time.sleep({int(args.max_seconds)}); "
-                 f"subprocess.run(['taskkill', '/PID', '{process.pid}', '/T', '/F'], "
-                 f"stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"],
-                start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                [sys.executable, "-I", os.path.abspath(__file__), "-d", args.diag_dir, "watchdog",
+                 "--pid", str(process.pid), "--ctime", str(process_ctime(process.pid) or 0),
+                 "--seconds", str(int(args.max_seconds))],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW | _NEW_GROUP)
         else:
             subprocess.Popen(["/bin/sh", "-c", f"sleep {args.max_seconds}; kill -TERM -{process.pid} 2>/dev/null; "
                               f"sleep 10; kill -KILL -{process.pid} 2>/dev/null"], start_new_session=True,
@@ -245,26 +330,30 @@ def command_launch(args):
 
 
 def command_stop(args):
-    pid = read(os.path.join(args.diag_dir, "emulator.pid"))
+    path = os.path.join(args.diag_dir, "emulator.pid")
+    pid = read(path)
     if not pid:
         sys.exit("no emulator.pid")
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        try:
-            os.killpg(int(pid), signal.SIGTERM)
-            for _ in range(50):
-                os.kill(int(pid), 0)
-                time.sleep(0.2)
-            os.killpg(int(pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    pid = int(pid)
+    ctime = process_ctime(pid)
+    # A live pid that started long before emulator.pid was written is someone else's (pid reuse).
+    reused = ctime is not None and abs(ctime_unix(ctime) - os.path.getmtime(path)) > 30
+    if not reused and not terminate(pid, ctime):
+        sys.exit(f"emulator pid {pid} is still running")
     try:
-        os.unlink(os.path.join(args.diag_dir, "emulator.pid"))
+        os.unlink(path)
     except OSError:
         pass
     print("stopped")
+
+
+def command_watchdog(args):
+    """The launch's --max-seconds watchdog (a process of its own): ends the emulator, retrying."""
+    time.sleep(args.seconds)
+    for _ in range(3):
+        if terminate(args.pid, args.ctime or None):
+            return
+        time.sleep(5)
 
 
 def active_programs(diag, kind, recent):
@@ -420,6 +509,12 @@ def main():
     launch.set_defaults(func=command_launch)
 
     commands.add_parser("stop").set_defaults(func=command_stop)
+
+    watchdog = commands.add_parser("watchdog", help="internal: the --max-seconds watchdog of a launch")
+    watchdog.add_argument("--pid", type=int, required=True)
+    watchdog.add_argument("--ctime", type=int, default=0)
+    watchdog.add_argument("--seconds", type=float, required=True)
+    watchdog.set_defaults(func=command_watchdog)
 
     show = commands.add_parser("state", help="programs seen recently, busiest first")
     show.add_argument("--kind", choices=("v", "p", "c"))

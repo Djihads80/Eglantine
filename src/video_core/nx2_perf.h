@@ -260,22 +260,41 @@ inline bool Enabled() {
     return enabled;
 }
 
+/// Live switches (EDEN_NX2_PERF_CONTROL, nx2_perf.cpp). New switches are not live-safe until a
+/// call-site audit shows none caches On() or keeps state the other branch does not handle.
+/// Switches without an On() call site (bank_check, write_intersections, immediate_callbacks)
+/// are left out so a live flip of them is reported as ignored instead of measuring nothing.
+inline constexpr u64 live_safe =
+    Bit(Opt::CbBatch) | Bit(Opt::CleanWords) | Bit(Opt::UsageTracker) | Bit(Opt::FrontSleep) |
+    Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
+    Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
+    Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded);
+
+/// One control file: the whole arm, computed from the startup off-mask.
+struct ControlResult {
+    u64 mask;
+    std::string label;
+    u64 on_vs_startup;
+    u64 off_vs_startup;
+    std::string ignored; ///< Names not live-safe or unknown and unknown directives, comma list
+};
+ControlResult ParseControl(u64 startup_mask, std::string_view text, u64 live_safe_mask);
+/// "set=<label> on=<names|-> off=<names|-> ignored=<names|-> mask=0x<16 hex>"
+std::string FormatControl(const ControlResult& result, u64 effective_mask);
+
+namespace detail {
+/// Off-mask in effect (bit set = off; every switch when EDEN_NX2_PERF_OPT=0); ~0 before the
+/// first On(). The live poller stores into it.
+inline std::atomic<u64> live_off_mask{~u64{0}};
+u64 InitOffMask();
+} // namespace detail
+
 inline bool On(Opt opt) {
-    static const u64 off = [] {
-        const char* on_list = std::getenv("EDEN_NX2_PERF_ON");
-        const char* off_list = std::getenv("EDEN_NX2_PERF_OFF");
-        const char* frames_ahead = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD");
-        const u64 mask = ParseOffMask(std::getenv("EDEN_NX2_PERF_SAFE") != nullptr,
-                                      on_list ? on_list : "", off_list ? off_list : "",
-                                      frames_ahead && frames_ahead[0] == '0');
-        std::string state;
-        for (size_t i = 0; i < opt_names.size(); ++i) {
-            state += fmt::format(" {}={}", opt_names[i], Enabled() && !IsOff(mask, i) ? "on" : "off");
-        }
-        LOG_INFO(HW_GPU, "Nx2Perf:{}", state);
-        return mask;
-    }();
-    return Enabled() && !IsOff(off, static_cast<size_t>(opt));
+    u64 off = detail::live_off_mask.load(std::memory_order_relaxed);
+    if (off == ~u64{0}) [[unlikely]] {
+        off = detail::InitOffMask();
+    }
+    return !IsOff(off, static_cast<size_t>(opt));
 }
 
 inline bool Verify() {
