@@ -11,6 +11,7 @@
 - [FreeBSD](#freebsd)
 - [NetBSD](#netbsd)
 - [MSYS2](#msys2)
+- [Windows (MSVC)](#windows-msvc)
 - [RedoxOS](#redoxos)
 <!-- /TOC -->
 
@@ -235,6 +236,49 @@ windeployqt6 --no-compiler-runtime --no-opengl-sw --no-system-dxc-compiler \
 
 # grab deps for Qt plugins
 find ./*/ -name "*.dll" | while read -r dll; do deps "$dll"; done
+```
+
+## Windows (MSVC)
+
+### `glslangValidator` may be shipped as `glslang`
+
+`src/video_core/host_shaders/CMakeLists.txt` looks the tool up by name:
+
+```cmake
+find_program(GLSLANGVALIDATOR "glslangValidator")
+```
+
+Some `glslang` release archives ship the binary as `glslang.exe` instead, and
+configure then stops with:
+
+```txt
+Required program `glslangValidator` not found.
+```
+
+Copy or symlink it under the expected name, or point CMake at it directly:
+
+```sh
+cmake -DGLSLANGVALIDATOR=/path/to/glslang ...
+```
+
+### AV1 video needs the `ffmpeg-ci-av1` package
+
+`externals/ffmpeg/CMakeLists.txt` selects `ffmpeg-ci-av1` only when `MSVC OR LINUX`
+is set. MinGW builds link `ffmpeg-ci`, which has no AV1 decoder, so `video/av1`
+streams do not decode there.
+
+`Takoroka/ffmpeg-av1` publishes only `linux-amd64` and `windows-amd64` artifacts
+at `9.0.2-av1-1`; there is no `mingw-amd64` artifact, so that package is not a
+drop-in replacement for MinGW builds.
+
+### Building only the frontends
+
+`YUZU_TESTS` defaults to `BUILD_TESTING`, which is `OFF`, so the `tests` target is
+not built by default. If you only need the binaries, build those targets
+directly:
+
+```sh
+ninja bin/lichii.exe bin/eden-cli.exe
 ```
 
 ## RedoxOS
