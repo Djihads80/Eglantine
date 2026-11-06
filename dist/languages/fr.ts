@@ -10043,7 +10043,7 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="96"/>
-        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eden or re-install firmware.</source>
+        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eglantine or re-install firmware.</source>
         <translation>Installation du Firmware annulée, le firmware peut être corrompu ou dans un état incorrect. Redémarrez Eden ou réinstallez le Firmware.</translation>
     </message>
     <message>
@@ -10058,12 +10058,12 @@ Most mods are RomFS mods, but patches (.pchtxt) are typically ExeFS mods.</sourc
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="110"/>
-        <source>Eden has detected user data for the following emulators:</source>
+        <source>Eglantine has detected user data for the following emulators:</source>
         <translation>Eden a détecté des données utilisateur pour les émulateurs suivants :</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="112"/>
-        <source>Would you like to migrate your data for use in Eden?
+        <source>Would you like to migrate your data for use in Eglantine?
 Select the corresponding button to migrate data from that emulator.
 This may take a while.</source>
         <translation>Voulez‑vous migrer vos données pour les utiliser dans Eden ?
@@ -10092,7 +10092,7 @@ Ceci est recommandé sur les appareils disposant de peu d’espace.</translation
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="124"/>
-        <source>Creates a filesystem link between the old directory and Eden directory.
+        <source>Creates a filesystem link between the old directory and Eglantine directory.
 This is recommended if you want to share data between emulators.</source>
         <translation>Crée un lien de système de fichiers entre l’ancien répertoire et le répertoire Eden.
 Ceci est recommandé si vous souhaitez partager les données entre les émulateurs.</translation>
