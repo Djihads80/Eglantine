@@ -346,6 +346,17 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
     Tegra::Texture::TICEntry entry;
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
+    if (static_cast<u32>(entry.format.Value()) == 0) {
+        // Format 0 is not a Maxwell format: dump the descriptor to tell a native format from a
+        // handle that points at the wrong entry.
+        std::array<u32, 8> words{};
+        gpu_memory->ReadBlock(descriptor_addr, words.data(), sizeof(words));
+        LOG_WARNING(Shader,
+                    "TIC {:#x} (index {}, limit {}) has format 0: {:08x} {:08x} {:08x} {:08x} "
+                    "{:08x} {:08x} {:08x} {:08x}",
+                    descriptor_addr, index, tic_limit, words[0], words[1], words[2], words[3],
+                    words[4], words[5], words[6], words[7]);
+    }
     return entry;
 }
 
