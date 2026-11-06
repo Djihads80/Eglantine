@@ -395,6 +395,49 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     const Id op_b{ctx.OpFunctionParameter(value_type)};
     const Id base{is_shared ? ctx.shared_memory_u32 : ctx.OpFunctionParameter(array_pointer)};
     ctx.AddLabel();
+    const bool packed_half{value_type.value == ctx.F32[2].value};
+    if (packed_half || memory_type.value == ctx.U32[1].value) {
+        // Each attempt expects the word the previous compare-exchange returned. A plain reload can
+        // keep returning a stale copy (AMD), and the invocations that lost would never match again.
+        const Id expected_var{ctx.AddLocalVariable(
+            ctx.TypePointer(spv::StorageClass::Function, ctx.U32[1]), spv::StorageClass::Function)};
+        const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
+                                        : ctx.OpAccessChain(element_pointer, base, index)};
+        ctx.OpStore(expected_var, ctx.OpLoad(ctx.U32[1], word_pointer));
+        ctx.OpBranch(loop_header);
+        ctx.AddLabel(loop_header);
+
+        ctx.OpLoopMerge(merge_block, continue_block, spv::LoopControlMask::MaskNone);
+        ctx.OpBranch(continue_block);
+
+        ctx.AddLabel(continue_block);
+        const Id expected{ctx.OpLoad(ctx.U32[1], expected_var)};
+        const bool is_u32{value_type.value == ctx.U32[1].value};
+        Id new_word{};
+        if (packed_half) {
+            const Id value{ctx.OpUnpackHalf2x16(ctx.F32[2], expected)};
+            const Id new_value{ctx.OpFunctionCall(value_type, cas_func, value, op_b)};
+            new_word = ctx.OpPackHalf2x16(ctx.U32[1], new_value);
+        } else {
+            const Id value{is_u32 ? expected : ctx.OpBitcast(value_type, expected)};
+            const Id new_value{ctx.OpFunctionCall(value_type, cas_func, value, op_b)};
+            new_word = is_u32 ? new_value : ctx.OpBitcast(ctx.U32[1], new_value);
+        }
+        const Id atomic_res{ctx.OpAtomicCompareExchange(ctx.U32[1], word_pointer, scope_id, zero,
+                                                        zero, new_word, expected)};
+        ctx.OpStore(expected_var, atomic_res);
+        const Id success{ctx.OpIEqual(ctx.U1, atomic_res, expected)};
+        ctx.OpBranchConditional(success, merge_block, loop_header);
+
+        ctx.AddLabel(merge_block);
+        if (packed_half) {
+            ctx.OpReturnValue(ctx.OpUnpackHalf2x16(ctx.F32[2], atomic_res));
+        } else {
+            ctx.OpReturnValue(is_u32 ? atomic_res : ctx.OpBitcast(value_type, atomic_res));
+        }
+        ctx.OpFunctionEnd();
+        return func;
+    }
     ctx.OpBranch(loop_header);
     ctx.AddLabel(loop_header);
 
@@ -404,32 +447,18 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     ctx.AddLabel(continue_block);
     const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
                                     : ctx.OpAccessChain(element_pointer, base, index)};
-    if (value_type.value == ctx.F32[2].value) {
-        const Id u32_value{ctx.OpLoad(ctx.U32[1], word_pointer)};
-        const Id value{ctx.OpUnpackHalf2x16(ctx.F32[2], u32_value)};
-        const Id new_value{ctx.OpFunctionCall(value_type, cas_func, value, op_b)};
-        const Id u32_new_value{ctx.OpPackHalf2x16(ctx.U32[1], new_value)};
-        const Id atomic_res{ctx.OpAtomicCompareExchange(ctx.U32[1], word_pointer, scope_id, zero,
-                                                        zero, u32_new_value, u32_value)};
-        const Id success{ctx.OpIEqual(ctx.U1, atomic_res, u32_value)};
-        ctx.OpBranchConditional(success, merge_block, loop_header);
+    const Id value{ctx.OpLoad(memory_type, word_pointer)};
+    const bool matching_type{value_type.value == memory_type.value};
+    const Id bitcast_value{matching_type ? value : ctx.OpBitcast(value_type, value)};
+    const Id cal_res{ctx.OpFunctionCall(value_type, cas_func, bitcast_value, op_b)};
+    const Id new_value{matching_type ? cal_res : ctx.OpBitcast(memory_type, cal_res)};
+    const Id atomic_res{ctx.OpAtomicCompareExchange(ctx.U32[1], word_pointer, scope_id, zero,
+                                                    zero, new_value, value)};
+    const Id success{ctx.OpIEqual(ctx.U1, atomic_res, value)};
+    ctx.OpBranchConditional(success, merge_block, loop_header);
 
-        ctx.AddLabel(merge_block);
-        ctx.OpReturnValue(ctx.OpUnpackHalf2x16(ctx.F32[2], atomic_res));
-    } else {
-        const Id value{ctx.OpLoad(memory_type, word_pointer)};
-        const bool matching_type{value_type.value == memory_type.value};
-        const Id bitcast_value{matching_type ? value : ctx.OpBitcast(value_type, value)};
-        const Id cal_res{ctx.OpFunctionCall(value_type, cas_func, bitcast_value, op_b)};
-        const Id new_value{matching_type ? cal_res : ctx.OpBitcast(memory_type, cal_res)};
-        const Id atomic_res{ctx.OpAtomicCompareExchange(ctx.U32[1], word_pointer, scope_id, zero,
-                                                        zero, new_value, value)};
-        const Id success{ctx.OpIEqual(ctx.U1, atomic_res, value)};
-        ctx.OpBranchConditional(success, merge_block, loop_header);
-
-        ctx.AddLabel(merge_block);
-        ctx.OpReturnValue(ctx.OpBitcast(value_type, atomic_res));
-    }
+    ctx.AddLabel(merge_block);
+    ctx.OpReturnValue(ctx.OpBitcast(value_type, atomic_res));
     ctx.OpFunctionEnd();
     return func;
 }
@@ -919,6 +948,10 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     const Id bit_count{OpFunctionParameter(U32[1])};
 
     AddLabel();
+    // Each attempt expects the word the previous compare-exchange returned (see CasLoop).
+    const Id expected_var{
+        AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)};
+    OpStore(expected_var, OpLoad(U32[1], pointer));
     const Id scope_device{Const(1u)};
     const Id ordering_relaxed{u32_zero_value};
     const Id body_label{OpLabel()};
@@ -932,10 +965,11 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     OpBranch(body_label);
 
     AddLabel(body_label);
-    const Id expected_value{OpLoad(U32[1], pointer)};
+    const Id expected_value{OpLoad(U32[1], expected_var)};
     const Id desired_value{OpBitFieldInsert(U32[1], expected_value, value, bit_offset, bit_count)};
     const Id actual_value{OpAtomicCompareExchange(U32[1], pointer, scope_device, ordering_relaxed,
                                                   ordering_relaxed, desired_value, expected_value)};
+    OpStore(expected_var, actual_value);
     const Id store_successful{OpIEqual(U1, expected_value, actual_value)};
     OpBranchConditional(store_successful, endloop_label, continue_label);
 
