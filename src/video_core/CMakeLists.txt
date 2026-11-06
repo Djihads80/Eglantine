@@ -264,6 +264,7 @@ add_library(video_core STATIC
     texture_cache/image_info.cpp
     texture_cache/image_info.h
     texture_cache/image_view_base.cpp
+    texture_cache/memory_budget.h
     texture_cache/image_view_base.h
     texture_cache/image_view_info.cpp
     texture_cache/image_view_info.h

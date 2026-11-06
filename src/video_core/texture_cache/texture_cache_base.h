@@ -136,6 +136,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 largest_upload{};    ///< Largest of them
     u64 layer_uploads{};     ///< Of them, uploads of only the written layers
     bool native_thresholds_applied{};
+    bool native_driver_budget_available{};
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};

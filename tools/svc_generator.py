@@ -530,6 +530,7 @@ PROLOGUE_CPP = """
 
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
+#include "core/wonder_dynamic_fps.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc.h"
 
@@ -576,7 +577,8 @@ void Call(Core::System& system, u32 imm) {
         GetArg32(args, 0), GetArg32(args, 1), GetArg32(args, 2),
         GetArg32(args, 3), GetArg32(args, 4), GetArg32(args, 5), GetArg32(args, 6));
     //kernel.EnterSVCProfile();
-    if (process.Is64Bit())
+    if ((imm == 0xf001 || imm == 0xf002) && Core::TryHandleWonderTimingSvc(system, imm, args)) {}
+    else if (process.Is64Bit())
         Call64(system, imm, args);
     else
         Call32(system, imm, args);

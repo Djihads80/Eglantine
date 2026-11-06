@@ -131,6 +131,7 @@ ENUM(TimeZone, Auto, Default, Cet, Cst6Cdt, Cuba, Eet, Egypt, Eire, Est, Est5Edt
 ENUM(AnisotropyMode, Automatic, Default, X2, X4, X8, X16);
 ENUM(AstcDecodeMode, Cpu, Gpu, CpuAsynchronous);
 ENUM(AstcRecompression, Uncompressed, Bc1, Bc3);
+ENUM(WonderFps, Fps30, Fps60, Fps90, Fps120, Fps180, Fps240);
 ENUM(FramePacingMode, Target_Auto, Target_30, Target_60, Target_90, Target_120);
 ENUM(VSyncMode, Immediate, Mailbox, Fifo, FifoRelaxed);
 ENUM(VramUsageMode, Conservative, Aggressive);

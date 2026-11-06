@@ -14,6 +14,7 @@
 #endif
 
 #include "common/logging.h"
+#include "common/game_fps.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -48,6 +49,12 @@ static VkPresentModeKHR ChooseSwapPresentMode(bool has_imm, bool has_mailbox,
     Settings::VSyncMode setting = [has_imm, has_mailbox]() {
         // Choose Mailbox or Immediate if unlocked and those modes are supported
         const auto mode = Settings::values.vsync_mode.GetValue();
+        // The explicit Wonder target owns frame pacing. FIFO would cap high targets at the
+        // monitor's refresh rate even though the patched game uses a smaller simulation step.
+        if (Settings::GetCurrentProgramID() == Settings::WonderSwitch2ProgramId &&
+            Settings::wonder_fps_active.load(std::memory_order_relaxed) > 60) {
+            return has_mailbox ? Settings::VSyncMode::Mailbox : Settings::VSyncMode::Immediate;
+        }
         if (Settings::values.frame_gen.GetValue()) {
             return mode == Settings::VSyncMode::FifoRelaxed ? mode : Settings::VSyncMode::Fifo;
         }
@@ -180,6 +187,11 @@ bool Swapchain::AcquireNextImage(bool may_flush) {
     }
 
     const auto wait_with_frame_pacing = [this, may_flush] {
+    if (Settings::GetCurrentProgramID() == Settings::WonderSwitch2ProgramId &&
+        Settings::wonder_fps_active.load(std::memory_order_relaxed) != 0) {
+        scheduler.Wait(resource_ticks[image_index], 0.0, may_flush);
+        return;
+    }
     switch (Settings::values.frame_pacing_mode.GetValue()) {
     case Settings::FramePacingMode::Target_Auto:
         scheduler.Wait(resource_ticks[image_index], 0.0, may_flush);
