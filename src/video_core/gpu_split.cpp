@@ -248,6 +248,8 @@ void GpuSplit::Stop() {
     last_writer_position = 0;
     pending_writes.fill(0);
     pending_anywhere = 0;
+    queued_write_count = 0;
+    queued_write_anywhere = false;
     published_local = 0;
     consumed_cache = 0;
     publish_every = PublishEvery;
@@ -332,6 +334,15 @@ void GpuSplit::FlushPending() {
     Nx2Profile::Add(Nx2Profile::Counter::CbBatchWords, count);
     Nx2Profile::Add(Nx2Profile::Counter::CbBatchEntries, 1);
     MultiMethod(pending_engine, pending_method, pending_words.data(), count, count, nullptr);
+    for (u32 i = 0; i < queued_write_count; ++i) {
+        u64& slot = pending_writes[PendingSlot(queued_write_pages[i])];
+        slot = (std::max)(slot, write_position);
+    }
+    if (queued_write_anywhere) {
+        pending_anywhere = write_position;
+    }
+    queued_write_count = 0;
+    queued_write_anywhere = false;
 }
 
 void GpuSplit::Publish() {

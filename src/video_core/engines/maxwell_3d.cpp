@@ -878,6 +878,8 @@ struct Maxwell3D::FrontState {
     /// Per bind group: the raw config and constant buffer size/address of the last bind sent;
     /// a bind equal to it changes nothing on the back (ProcessCBBind) and is not sent.
     std::array<std::array<u32, 4>, 5> last_bind{};
+    /// The GPU page of the last constant buffer word queued (QueueWord) and noted as written.
+    GPUVAddr queued_constant_page{~GPUVAddr{0}};
 #if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
     /// Methods whose emits the macro JIT must always call back for (TuringMacroJit::Elision):
     /// executable ones, the MME DMA reads (FrontDmaRead) and the macro range.
@@ -1057,6 +1059,30 @@ void NoteFrontUploadStart(MemoryManager& memory_manager, const u32* regs) {
     }
 }
 
+GPUVAddr FrontConstantBuffer(const u32* regs) {
+    return (GPUVAddr{regs[MAXWELL3D_REG_INDEX(const_buffer.address_high)]} << 32) |
+           regs[MAXWELL3D_REG_INDEX(const_buffer.address_low)];
+}
+
+// Constant buffer data the front just sent from `offset`: the back writes it to guest memory
+// (ProcessCBMultiData), so MME DMA reads of those pages wait for it. From
+// jojo-chaechae/Eglantine 90eab341bd.
+void NoteFrontConstantWrite(MemoryManager& memory_manager, const u32* regs, u32 offset, u64 size) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (size > 0x10000) {
+        split.NotePendingWriteAnywhere();
+        return;
+    }
+    const GPUVAddr end = FrontConstantBuffer(regs) + offset + size;
+    for (GPUVAddr chunk = FrontConstantBuffer(regs) + offset; chunk < end;) {
+        const GPUVAddr chunk_end = (std::min)(end, (chunk & ~GPUVAddr{0xfff}) + 0x1000);
+        if (const auto device = memory_manager.GpuToCpuAddress(chunk)) {
+            split.NotePendingWrite(*device, chunk_end - chunk);
+        }
+        chunk = chunk_end;
+    }
+}
+
 void NoteFrontUploadWord() {
     auto& split = VideoCommon::GpuSplit::Get();
     const FrontUpload& state = g_front_upload;
@@ -1126,8 +1152,17 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             Profile::Add(Profile::Counter::MethodWrites, 1);
             Profile::Add(Profile::Counter::MacroWrites, 1);
         }
-        fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
+        u32& offset = fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)];
+        const GPUVAddr address = FrontConstantBuffer(fs.regs.data()) + offset;
+        offset += sizeof(u32);
         split.QueueWord(this, cb_data_first, argument);
+        // Its page, once per page and run: MME DMA reads of it wait for the run.
+        if (!split.QueuedWriteNoted() || (address >> 12) != fs.queued_constant_page) {
+            fs.queued_constant_page = address >> 12;
+            if (const auto device = memory_manager.GpuToCpuAddress(address)) {
+                split.NoteQueuedWrite(*device);
+            }
+        }
         return;
     }
     // As ProcessShadowRam does on the back.
@@ -1150,6 +1185,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
             argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
     }
+    std::optional<u32> constant_offset; // A constant buffer data word's, noted once sent
     if (!execution_mask[method]) {
         // Nothing would change on the back: CallMethod and ConsumeSinkImpl skip same-value state
         // writes, and the shadow RAM (tracked by default) holds the value already.
@@ -1210,6 +1246,7 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         }
         default:
             if (method >= cb_data && method < cb_data + 16) {
+                constant_offset = fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)];
                 fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += sizeof(u32);
             } else if (!FrontHandledOutsideDrawManager(method)) {
                 fs.draw_pending = true;
@@ -1231,6 +1268,8 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         NoteFrontUploadStart(memory_manager, fs.regs.data());
     } else if (method == MAXWELL3D_REG_INDEX(inline_data)) [[unlikely]] {
         NoteFrontUploadWord();
+    } else if (constant_offset) {
+        NoteFrontConstantWrite(memory_manager, fs.regs.data(), *constant_offset, sizeof(u32));
     }
 }
 
@@ -1270,6 +1309,7 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         return fs.control == Regs::ShadowRamControl::Track ||
                fs.control == Regs::ShadowRamControl::TrackWithFilter;
     };
+    const u32 constant_offset = fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)];
     if (method >= cb_data && method < cb_data + 16) {
         fs.regs[MAXWELL3D_REG_INDEX(const_buffer.offset)] += amount * sizeof(u32);
     } else if (method == MAXWELL3D_REG_INDEX(inline_data)) {
@@ -1352,6 +1392,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
         NoteFrontUploadStart(memory_manager, fs.regs.data());
     } else if (method == MAXWELL3D_REG_INDEX(inline_data) && amount != 0) [[unlikely]] {
         NoteFrontUploadWord();
+    } else if (method >= cb_data && method < cb_data + 16) {
+        NoteFrontConstantWrite(memory_manager, fs.regs.data(), constant_offset,
+                               u64{amount} * sizeof(u32));
     }
 }
 
@@ -1459,13 +1502,13 @@ struct DmaReadStats {
 DmaReadStats g_dma_read_stats; // the front thread's
 
 // Reads `out` from `source` without draining the split's back: waits only for the reports,
-// semaphores, uploads and copies queued for these pages (and for pages the GPU has written, the
-// compute and copy work queued), then reads guest memory, or for pages the GPU has written the
-// buffer cache's copy of them (made after each write, as for GPU-written command lists). False
-// when that copy is unknown: drain.
+// semaphores, uploads, constant buffer data, copies and blits queued for these pages (and for
+// pages the GPU has written, the compute and copy work queued), then reads guest memory, or for
+// pages the GPU has written the buffer cache's copy of them (made after each write, as for
+// GPU-written command lists). False when that copy is unknown: drain.
 bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_manager,
                          VideoCore::RasterizerInterface* rasterizer, GPUVAddr source,
-                         std::span<u32> out, bool& waited, bool& copied) {
+                         std::span<u32> out, bool wait_writers, bool& waited, bool& copied) {
     struct Piece {
         GPUVAddr gpu;
         DAddr device;
@@ -1488,12 +1531,15 @@ bool DmaReadWithoutDrain(VideoCommon::GpuSplit& split, MemoryManager& memory_man
     }
     // Queued compute work matters only for pages the GPU writes: its shaders write through the
     // buffer cache (which then copies those pages). Waiting for it on every read, the front spent
-    // 60% of its time in WaitForPosition. Direct writes (reports, semaphores, uploads, DMA
-    // copies) are in PendingWrite.
+    // 60% of its time in WaitForPosition. Direct writes (reports, semaphores, uploads, constant
+    // buffer data, DMA copies, 2D blits) are in PendingWrite. `wait_writers`: on every read, as
+    // jojo-chaechae/Eglantine 90eab341bd does (covers compute's own direct writes). Queued
+    // constant buffer words are noted once sent: send them first (WaitForPosition would).
+    split.FlushPending();
     u64 target = 0;
     for (size_t i = 0; i < count; ++i) {
         target = (std::max)(target, split.PendingWrite(pieces[i].device, pieces[i].size));
-        if (pieces[i].gpu_written) {
+        if (pieces[i].gpu_written || wait_writers) {
             target = (std::max)(target, split.WriterPosition());
         }
     }
@@ -1524,12 +1570,14 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     namespace Profile = VideoCommon::Nx2Profile;
     Profile::Scope profile_scope{Profile::Zone::SplitDmaRead};
-    // EDEN_NX2_DMA_READ_FAST=0: drain the back before every read. EDEN_NX2_DMA_READ_VERIFY=1:
-    // read without draining, then drain and compare (logs the reads that differ).
-    static const bool fast = [] {
+    // EDEN_NX2_DMA_READ_FAST=0: drain the back before every read; 2: also wait for all queued
+    // compute and copy work, not only for GPU-written pages. EDEN_NX2_DMA_READ_VERIFY=1: read
+    // without draining, then drain and compare (logs the reads that differ).
+    static const char fast_mode = [] {
         const char* const value = std::getenv("EDEN_NX2_DMA_READ_FAST");
-        return value == nullptr || value[0] != '0';
+        return value == nullptr ? '1' : value[0];
     }();
+    const bool fast = fast_mode != '0';
     static const bool verify = [] {
         const char* const value = std::getenv("EDEN_NX2_DMA_READ_VERIFY");
         return value != nullptr && value[0] != '0';
@@ -1549,8 +1597,8 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     bool copied = false;
     if (fast && words != 0) {
         bool waited = false;
-        undrained = DmaReadWithoutDrain(split, memory_manager, rasterizer, source, values, waited,
-                                        copied);
+        undrained = DmaReadWithoutDrain(split, memory_manager, rasterizer, source, values,
+                                        fast_mode == '2', waited, copied);
         stats.waited += waited ? 1 : 0;
         if (undrained) {
             ++(copied ? stats.copied : stats.direct);
@@ -1708,6 +1756,11 @@ bool Maxwell3D::FrontLoadConstantRun(Core::System& system, VideoCommon::GpuSplit
         Profile::Add(Profile::Counter::MethodWrites, count);
     }
     split.ConstantRun(this, first_method, words, count);
+    if (const u32 data_count = count - (first_method == cb_offset ? 1 : 0); data_count != 0) {
+        const u32 data_bytes = data_count * static_cast<u32>(sizeof(u32));
+        NoteFrontConstantWrite(memory_manager, fs.regs.data(), fs.regs[cb_offset] - data_bytes,
+                               data_bytes);
+    }
     return true;
 }
 

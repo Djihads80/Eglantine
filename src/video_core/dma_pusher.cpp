@@ -654,10 +654,12 @@ void DmaPusher::CallMethod(u32 argument) {
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
                             engine_type == Engines::EngineTypes::MaxwellDMA ||
                             engine_type == Engines::EngineTypes::KeplerMemory;
-        // DMA copies and inline uploads may write guest memory as they run, anywhere as far as
-        // the front knows: MME DMA reads wait for them (shader writes go to the buffer cache).
+        // DMA copies, inline uploads and 2D blits may write guest memory as they run, anywhere as
+        // far as the front knows: MME DMA reads wait for them (shader writes go to the buffer
+        // cache). 2D from jojo-chaechae/Eglantine 90eab341bd.
         const bool direct_writer = engine_type == Engines::EngineTypes::MaxwellDMA ||
-                                   engine_type == Engines::EngineTypes::KeplerMemory;
+                                   engine_type == Engines::EngineTypes::KeplerMemory ||
+                                   engine_type == Engines::EngineTypes::Fermi2D;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
@@ -722,10 +724,12 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
                             engine_type == Engines::EngineTypes::MaxwellDMA ||
                             engine_type == Engines::EngineTypes::KeplerMemory;
-        // DMA copies and inline uploads may write guest memory as they run, anywhere as far as
-        // the front knows: MME DMA reads wait for them (shader writes go to the buffer cache).
+        // DMA copies, inline uploads and 2D blits may write guest memory as they run, anywhere as
+        // far as the front knows: MME DMA reads wait for them (shader writes go to the buffer
+        // cache). 2D from jojo-chaechae/Eglantine 90eab341bd.
         const bool direct_writer = engine_type == Engines::EngineTypes::MaxwellDMA ||
-                                   engine_type == Engines::EngineTypes::KeplerMemory;
+                                   engine_type == Engines::EngineTypes::KeplerMemory ||
+                                   engine_type == Engines::EngineTypes::Fermi2D;
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();

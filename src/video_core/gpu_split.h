@@ -193,6 +193,23 @@ public:
     void NotePendingWriteAnywhere() {
         pending_anywhere = write_position;
     }
+    /// Front thread: as NotePendingWrite, for a word queued with QueueWord: noted once its run is
+    /// sent (FlushPending), with the position after it.
+    void NoteQueuedWrite(u64 device_address) {
+        const u64 page = device_address >> PendingPageBits;
+        if (queued_write_count != 0 && queued_write_pages[queued_write_count - 1] == page) {
+            return;
+        }
+        if (queued_write_count == queued_write_pages.size()) {
+            queued_write_anywhere = true;
+            return;
+        }
+        queued_write_pages[queued_write_count++] = page;
+    }
+    /// Front thread: whether the run being queued has noted a write yet (NoteQueuedWrite).
+    [[nodiscard]] bool QueuedWriteNoted() const {
+        return queued_write_count != 0 || queued_write_anywhere;
+    }
     /// Front thread: the ring position after the last such write to the range sent (pages may
     /// share a slot: never less than the true one), 0 for none.
     [[nodiscard]] u64 PendingWrite(u64 device_address, u64 size) const {
@@ -281,6 +298,10 @@ private:
     }
     std::array<u64, PendingSlots> pending_writes{};
     u64 pending_anywhere{};
+    /// The pages the queued words write (NoteQueuedWrite), noted when the run is sent.
+    std::array<u64, 4> queued_write_pages{};
+    u32 queued_write_count{};
+    bool queued_write_anywhere{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.
