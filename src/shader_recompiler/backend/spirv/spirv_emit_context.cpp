@@ -8,6 +8,7 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <cstdlib>
 
 #include <boost/container/static_vector.hpp>
 
@@ -1028,44 +1029,32 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     const auto in_mask{[&mask](size_t index) {
         return mask == 0 || (index < 32 && ((mask >> index) & 1) != 0);
     }};
+    // A function for a pointer plus an offset (SplitGlobalAddress) picks the buffer by the pointer
+    // and adds the offset after; split_offset is that parameter while one is defined.
+    bool split{};
+    Id split_offset{};
+    // Without stores to memory, the native bases are read once in the prologue (InitGlobalBases)
+    // into private variables, which the searches of every access then share.
+    if (info.native_global_bounds && GlobalBasesHoisted(info)) {
+        global_base_info = &info;
+        global_base_vars.assign(info.storage_buffers_descriptors.size(), Id{});
+        const Id pointer_type{TypePointer(spv::StorageClass::Private, U64)};
+        for (size_t index = 0; index < global_base_vars.size(); ++index) {
+            global_base_vars[index] = AddGlobalVariable(pointer_type, spv::StorageClass::Private);
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(global_base_vars[index]);
+            }
+        }
+    }
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
-        const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
         const auto base_address{[&](size_t index) {
-            const auto& ssbo{info.storage_buffers_descriptors[index]};
-            const Id ssbo_addr_pointer{OpAccessChain(uniform_types.U32x2,
-                                                     cbufs[ssbo.cbuf_index].U32x2, zero,
-                                                     Const(ssbo.cbuf_offset / 8))};
-            const Id words{OpLoad(U32[2], ssbo_addr_pointer)};
-            if (ssbo.indirect_offset == ~0U) {
-                return OpBitwiseAnd(U64, OpBitcast(U64, words), Constant(U64, ssbo_align_mask));
+            if (index < global_base_vars.size() && Sirit::ValidId(global_base_vars[index])) {
+                return OpLoad(U64, global_base_vars[index]);
             }
-            // The pointer is read through the buffer bound for the constant buffer pointer.
-            const auto holder{std::ranges::find_if(
-                info.storage_buffers_descriptors, [&ssbo](const auto& desc) {
-                    return desc.cbuf_index == ssbo.cbuf_index &&
-                           desc.cbuf_offset == ssbo.cbuf_offset && desc.indirect_offset == ~0U;
-                })};
-            if (holder == info.storage_buffers_descriptors.end()) {
-                return Constant(U64, ~u64{0});
-            }
-            const size_t holder_index{static_cast<size_t>(
-                std::distance(info.storage_buffers_descriptors.begin(), holder))};
-            const Id holder_low{OpCompositeExtract(U32[1], words, 0U)};
-            const Id byte{OpIAdd(U32[1],
-                                 OpBitwiseAnd(U32[1], holder_low,
-                                              Const(static_cast<u32>(profile.min_ssbo_alignment - 1))),
-                                 Const(ssbo.indirect_offset))};
-            const Id word_index{OpShiftRightLogical(U32[1], byte, Const(2U))};
-            const Id storage{ssbos[holder_index].U32};
-            const auto load_word{[&](Id word) {
-                return OpLoad(U32[1], OpAccessChain(storage_types.U32.element, storage, zero, word));
-            }};
-            const Id pointer_words{OpCompositeConstruct(
-                U32[2], load_word(word_index), load_word(OpIAdd(U32[1], word_index, Const(1U))))};
-            return OpBitwiseAnd(U64, OpBitcast(U64, pointer_words), Constant(U64, ssbo_align_mask));
+            return GlobalBufferBase(info, index);
         }};
         const auto access{[&](size_t index, Id ssbo_addr, Id cond) {
             const Id then_label{OpLabel()};
@@ -1074,7 +1063,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
             OpBranchConditional(cond, then_label, else_label);
             AddLabel(then_label);
             const Id ssbo_id{ssbos[index].*ssbo_member};
-            const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, ssbo_addr))};
+            Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, ssbo_addr))};
+            if (Sirit::ValidId(split_offset)) {
+                ssbo_offset = OpIAdd(U32[1], ssbo_offset, split_offset);
+            }
             const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
             const Id ssbo_pointer{OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index)};
             callback(ssbo_pointer);
@@ -1124,19 +1116,23 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         }
     }};
     const auto define_load{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
-        const Id function_type{TypeFunction(type, U64)};
+        const Id function_type{split ? TypeFunction(type, U64, U32[1]) : TypeFunction(type, U64)};
         const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone, function_type)};
         const Id addr{OpFunctionParameter(U64)};
+        split_offset = split ? OpFunctionParameter(U32[1]) : Id{};
         define_body(ssbo_member, addr, element_pointer, shift,
                     [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
         OpReturnValue(ConstantNull(type));
         OpFunctionEnd();
+        split_offset = Id{};
         return func_id;
     }};
     const auto define_write{[&](DefPtr ssbo_member, Id element_pointer, Id type, u32 shift) {
-        const Id function_type{TypeFunction(void_id, U64, type)};
+        const Id function_type{split ? TypeFunction(void_id, U64, U32[1], type)
+                                     : TypeFunction(void_id, U64, type)};
         const Id func_id{OpFunction(void_id, spv::FunctionControlMask::MaskNone, function_type)};
         const Id addr{OpFunctionParameter(U64)};
+        split_offset = split ? OpFunctionParameter(U32[1]) : Id{};
         const Id data{OpFunctionParameter(type)};
         define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
             OpStore(ssbo_pointer, data);
@@ -1144,6 +1140,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         });
         OpReturn();
         OpFunctionEnd();
+        split_offset = Id{};
         return func_id;
     }};
     const auto define{
@@ -1184,6 +1181,35 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         }
         mask = 0;
     }
+    // Accesses at a pointer plus a constant offset (SplitGlobalAddress) pick their buffer by the
+    // pointer: the searches of all the accesses through one pointer are then the same code, which
+    // the driver keeps once.
+    if (info.native_global_bounds && GlobalSplitEnabled()) {
+        split = true;
+        for (const IR::Block* const block : program.blocks) {
+            for (const IR::Inst& inst : block->Instructions()) {
+                const u32 kind{GlobalAccessKind(inst.GetOpcode())};
+                if (kind == ~0U || !SplitGlobalAddress(inst)) {
+                    continue;
+                }
+                const u32 inst_mask{info.native_global_candidate_masks ? inst.Flags<u32>() : 0U};
+                if (split_global_funcs.contains(MaskedGlobalKey(kind, inst_mask))) {
+                    continue;
+                }
+                mask = inst_mask;
+                split_global_funcs.emplace(
+                    MaskedGlobalKey(kind, inst_mask),
+                    kind == 0   ? define(&StorageDefinitions::U32, storage_types.U32, U32[1],
+                                         sizeof(u32))
+                    : kind == 1 ? define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2],
+                                         sizeof(u32[2]))
+                                : define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4],
+                                         sizeof(u32[4])));
+            }
+        }
+        split = false;
+        mask = 0;
+    }
 
     if (!std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& descriptor) {
             return info.native_global_bounds || UsesNvnStorageDescriptor(info, descriptor);
@@ -1216,6 +1242,91 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                     });
         OpReturnValue(u32_zero_value);
         OpFunctionEnd();
+    }
+}
+
+Id EmitContext::GlobalBufferBase(const Info& info, size_t index) {
+    const Id zero{u32_zero_value};
+    const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
+    const auto& ssbo{info.storage_buffers_descriptors[index]};
+    const Id ssbo_addr_pointer{OpAccessChain(uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2,
+                                             zero, Const(ssbo.cbuf_offset / 8))};
+    const Id words{OpLoad(U32[2], ssbo_addr_pointer)};
+    if (ssbo.indirect_offset == ~0U) {
+        return OpBitwiseAnd(U64, OpBitcast(U64, words), Constant(U64, ssbo_align_mask));
+    }
+    // The pointer is read through the buffer bound for the constant buffer pointer.
+    const auto holder{std::ranges::find_if(info.storage_buffers_descriptors, [&ssbo](const auto& desc) {
+        return desc.cbuf_index == ssbo.cbuf_index && desc.cbuf_offset == ssbo.cbuf_offset &&
+               desc.indirect_offset == ~0U;
+    })};
+    if (holder == info.storage_buffers_descriptors.end()) {
+        return Constant(U64, ~u64{0});
+    }
+    const size_t holder_index{
+        static_cast<size_t>(std::distance(info.storage_buffers_descriptors.begin(), holder))};
+    const Id holder_low{OpCompositeExtract(U32[1], words, 0U)};
+    const Id byte{OpIAdd(U32[1],
+                         OpBitwiseAnd(U32[1], holder_low,
+                                      Const(static_cast<u32>(profile.min_ssbo_alignment - 1))),
+                         Const(ssbo.indirect_offset))};
+    const Id word_index{OpShiftRightLogical(U32[1], byte, Const(2U))};
+    const Id storage{ssbos[holder_index].U32};
+    const auto load_word{[&](Id word) {
+        return OpLoad(U32[1], OpAccessChain(storage_types.U32.element, storage, zero, word));
+    }};
+    const Id pointer_words{OpCompositeConstruct(
+        U32[2], load_word(word_index), load_word(OpIAdd(U32[1], word_index, Const(1U))))};
+    return OpBitwiseAnd(U64, OpBitcast(U64, pointer_words), Constant(U64, ssbo_align_mask));
+}
+
+bool EmitContext::GlobalBasesHoisted(const Info& info) {
+    // EDEN_NX2_GLOBAL_BASES=0: every run-time global access reads the bases again.
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_GLOBAL_BASES");
+        return value == nullptr || value[0] != '0';
+    }();
+    // A store could change a pointer read through a holder buffer after the prologue read it.
+    return enabled && !info.stores_global_memory &&
+           std::ranges::none_of(info.storage_buffers_descriptors,
+                                [](const auto& descriptor) { return descriptor.is_written; });
+}
+
+bool EmitContext::GlobalSplitEnabled() {
+    // EDEN_NX2_GLOBAL_BY_POINTER=0: run-time global accesses pick their buffer by their whole
+    // address, as before, not by the pointer it adds an offset to.
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_GLOBAL_BY_POINTER");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+std::optional<std::pair<IR::Value, u32>> EmitContext::SplitGlobalAddress(const IR::Inst& inst) {
+    const IR::Value address{inst.Arg(0)};
+    if (address.IsImmediate()) {
+        return std::nullopt;
+    }
+    const IR::Inst* const add{address.InstRecursive()};
+    if (add->GetOpcode() != IR::Opcode::IAdd64 || !add->Arg(1).IsImmediate() ||
+        add->Arg(0).IsImmediate()) {
+        return std::nullopt;
+    }
+    const u64 offset{add->Arg(1).U64()};
+    if (offset >= 0x80000000ULL) {
+        return std::nullopt;
+    }
+    return std::make_pair(add->Arg(0), static_cast<u32>(offset));
+}
+
+void EmitContext::InitGlobalBases() {
+    if (global_base_info == nullptr) {
+        return;
+    }
+    for (size_t index = 0; index < global_base_vars.size(); ++index) {
+        if (Sirit::ValidId(global_base_vars[index])) {
+            OpStore(global_base_vars[index], GlobalBufferBase(*global_base_info, index));
+        }
     }
 }
 

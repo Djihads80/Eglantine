@@ -94,6 +94,7 @@ void AlphaTest(EmitContext& ctx) {
 } // Anonymous namespace
 
 void EmitPrologue(EmitContext& ctx) {
+    ctx.InitGlobalBases();
     if (ctx.stage == Stage::Fragment && ctx.runtime_info.dual_source_blend) {
         // Initialize dual-source blending outputs - prevents MoltenVK crash.
         const Id zero{ctx.Const(0.0f)};

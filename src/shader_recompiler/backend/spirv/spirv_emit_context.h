@@ -8,6 +8,9 @@
 
 #include <array>
 #include <bit>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_map.h"
@@ -395,6 +398,30 @@ public:
     }
     [[nodiscard]] static u64 MaskedGlobalKey(u32 kind, u32 mask) noexcept {
         return (u64{kind} << 32) | mask;
+    }
+    /// Functions for a pointer plus an offset (SplitGlobalAddress), by MaskedGlobalKey.
+    ::Common::unordered_map<u64, std::pair<Id, Id>> split_global_funcs;
+    /// Private copies of the native storage buffer bases, read in the prologue (InitGlobalBases).
+    std::vector<Id> global_base_vars;
+    const Info* global_base_info{};
+
+    /// A global access's address as a pointer and a constant offset below 2 GiB.
+    [[nodiscard]] static std::optional<std::pair<IR::Value, u32>> SplitGlobalAddress(
+        const IR::Inst& inst);
+    [[nodiscard]] static bool GlobalSplitEnabled();
+    [[nodiscard]] static bool GlobalBasesHoisted(const Info& info);
+    /// The base address of storage buffer descriptor `index` (from its constant buffer pointer,
+    /// or read through its holder buffer).
+    [[nodiscard]] Id GlobalBufferBase(const Info& info, size_t index);
+    /// Called by the prologue: stores the bases into global_base_vars.
+    void InitGlobalBases();
+    /// The pointer-plus-offset function for a global access, or an invalid Id for none.
+    [[nodiscard]] Id SplitGlobalFunction(u32 kind, bool write, u32 mask) const {
+        if (const auto it = split_global_funcs.find(MaskedGlobalKey(kind, mask));
+            it != split_global_funcs.end()) {
+            return write ? it->second.second : it->second.first;
+        }
+        return Id{};
     }
     /// The function a global load (or write) of this size with these flags calls.
     [[nodiscard]] Id GlobalFunction(u32 kind, bool write, u32 mask) const {
