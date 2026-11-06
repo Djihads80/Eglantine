@@ -280,6 +280,7 @@ private:
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
     bool mesh_dynamic_topology{}; ///< its pipeline takes the topology dynamically
+    bool mesh_dynamic_vertex_input{}; ///< its pipeline takes the vertex input dynamically
     /// The scene's colour target this frame so far and the last frame's (LastSceneColor).
     VideoCore::SceneColorTarget scene_color{};
     VideoCore::SceneColorTarget last_scene_color{};

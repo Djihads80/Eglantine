@@ -467,6 +467,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         }
         pipeline->SetMeshEmulationBuffer(&mesh_emulation_buffer);
         mesh_dynamic_topology = pipeline->UsesExtendedDynamicState();
+        mesh_dynamic_vertex_input = pipeline->HasDynamicVertexInput();
     }
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(
         maxwell3d->regs, pipeline->HasDynamicVertexInput());
@@ -801,18 +802,28 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                                       Shader::Backend::SPIRV::MESH_EMULATION_DRAW_WORD *
                                           sizeof(u32)};
             const bool set_topology{mesh_dynamic_topology};
-            scheduler.Record([this, buffer, offset, set_topology](vk::CommandBuffer cmdbuf) {
+            const bool clear_vertex_input{mesh_dynamic_vertex_input};
+            scheduler.Record([this, buffer, offset, set_topology,
+                              clear_vertex_input](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
                     return;
                 }
                 if (set_topology) {
                     cmdbuf.SetPrimitiveTopologyEXT(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
                 }
+                if (clear_vertex_input) {
+                    // The vertex shader reads no attributes: none are fetched from whatever the
+                    // guest's vertex streams hold during a mesh draw.
+                    cmdbuf.SetVertexInputEXT({}, {});
+                }
                 cmdbuf.DrawIndirect(buffer, offset, 1, sizeof(VkDrawIndirectCommand));
             });
             if (set_topology) {
                 // The next draw sets the guest's again.
                 state_tracker.InvalidatePrimitiveTopology();
+            }
+            if (clear_vertex_input) {
+                maxwell3d->dirty.flags[Dirty::VertexInput] = true;
             }
             return;
         }
