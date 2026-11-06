@@ -927,8 +927,9 @@ struct Memory::Impl {
         PAddr last_address;
     };
 
-    /// InvalidateGPUMemory where that needs no GPU thread; false where it would.
-    bool TryInvalidateGPUMemory(u8* p, size_t size) {
+    /// Memory::InvalidateNCEAhead: the GPU-cached pages from vaddr, a device-contiguous run at a
+    /// time (one cache lock and one protection change per run, not per page).
+    size_t InvalidateNCEAhead(u64 vaddr, size_t pages) {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(), sys_core);
         if (!gpu_device_memory) [[unlikely]] {
@@ -943,10 +944,47 @@ struct Memory::Impl {
             }
         };
         auto& gpu = system.GPU();
-        bool done = true;
-        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
-            done = done && gpu.TryInvalidateRegion(address, size);
-        });
+        size_t done = 0;
+        DAddr run_begin = 0;
+        u64 run_size = 0;
+        size_t run_pages = 0;
+        // A run with GPU-written data is left alone, with the pages after it.
+        const auto flush = [&] {
+            const bool invalidated = run_size == 0 || gpu.TryInvalidateRegion(run_begin, run_size);
+            if (invalidated) {
+                done += run_pages;
+            }
+            run_size = 0;
+            run_pages = 0;
+            return invalidated;
+        };
+        for (size_t i = 0; i < pages; ++i) {
+            bool rasterizer = false;
+            u8* const ptr =
+                GetPointerImpl(vaddr + i * YUZU_PAGESIZE, [] {}, [&] { rasterizer = true; });
+            if (!rasterizer || ptr == nullptr) {
+                break;
+            }
+            // One device address (no aliases), as a write fault on the page would find.
+            u32 count = 0;
+            DAddr address = 0;
+            gpu_device_memory->ApplyOpOnPointer(ptr, scratch_buffers[core], [&](DAddr value) {
+                ++count;
+                address = value;
+            });
+            if (count != 1) {
+                break;
+            }
+            if (run_size != 0 && address != run_begin + run_size && !flush()) {
+                return done;
+            }
+            if (run_size == 0) {
+                run_begin = address;
+            }
+            run_size += YUZU_PAGESIZE;
+            ++run_pages;
+        }
+        flush();
         return done;
     }
 
@@ -1221,16 +1259,7 @@ bool Memory::IsRasterizerCachedPage(Common::ProcessAddress vaddr) const {
 }
 
 size_t Memory::InvalidateNCEAhead(Common::ProcessAddress vaddr, size_t pages) {
-    size_t done = 0;
-    for (; done < pages; ++done) {
-        const u64 page = GetInteger(vaddr) + done * YUZU_PAGESIZE;
-        bool rasterizer = false;
-        u8* const ptr = impl->GetPointerImpl(page, [] {}, [&] { rasterizer = true; });
-        if (!rasterizer || ptr == nullptr || !impl->TryInvalidateGPUMemory(ptr, YUZU_PAGESIZE)) {
-            break;
-        }
-    }
-    return done;
+    return impl->InvalidateNCEAhead(GetInteger(vaddr), pages);
 }
 
 bool Memory::InvalidateSeparateHeap(void* fault_address) {
