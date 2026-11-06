@@ -6,10 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <span>
+#include <thread>
 #include <vector>
+
+#include "common/logging.h"
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -475,10 +479,81 @@ void BufferCacheRuntime::Wait(u64 tick) {
     scheduler.Wait(tick);
 }
 
+namespace {
+// EDEN_NX2_LIST_WAIT_SPIN_US=<us>: how long a wait for a GPU-written command list's copy polls
+// the GPU's progress before it sleeps in the driver's wait (0: at once, as before). The thread
+// parsing command lists can do nothing else meanwhile, and each copy ends within a millisecond
+// or so, but a driver wait on the phone wakes long after: Ocarina of Time reads ~450 such lists a
+// second, ~700 us of waiting each. On by default on Android only (a core polls instead of
+// sleeping for those waits).
+std::chrono::microseconds ListWaitSpin() {
+    static const std::chrono::microseconds spin{[] {
+#ifdef __ANDROID__
+        constexpr long fallback = 1500;
+#else
+        constexpr long fallback = 0;
+#endif
+        const char* const value = std::getenv("EDEN_NX2_LIST_WAIT_SPIN_US");
+        return value != nullptr ? std::strtol(value, nullptr, 10) : fallback;
+    }()};
+    return spin;
+}
+
+// How reads of GPU-written command list copies went, logged every 10 s, profile or not (the
+// thread parsing command lists: the GPU thread, or the split's front).
+struct ListCopyStats {
+    std::chrono::steady_clock::time_point window_start{};
+    u64 reads{};
+    u64 waits{};
+    u64 unsubmitted{}; ///< Of waits: the copy was not handed to the worker yet
+    u64 polled{};      ///< Of waits: done while polling (ListWaitSpin)
+    std::chrono::nanoseconds waited{};
+    std::chrono::nanoseconds longest{};
+};
+ListCopyStats g_list_copy_stats;
+} // Anonymous namespace
+
+void BufferCacheRuntime::NoteListCopyRead() {
+    ListCopyStats& stats = g_list_copy_stats;
+    ++stats.reads;
+    const auto now = std::chrono::steady_clock::now();
+    if (stats.window_start == std::chrono::steady_clock::time_point{}) {
+        stats.window_start = now;
+        return;
+    }
+    if (now - stats.window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    const double seconds = std::chrono::duration<double>(now - stats.window_start).count();
+    const double waited_ms = std::chrono::duration<double, std::milli>(stats.waited).count();
+    LOG_INFO(Render_Vulkan,
+             "GPU-written command list copies read in {:.1f} s: {}, {} waited for the GPU ({} "
+             "not yet submitted, {} done while polling): {:.1f} ms waiting, {:.0f} us on "
+             "average, {:.0f} us at most",
+             seconds, stats.reads, stats.waits, stats.unsubmitted, stats.polled, waited_ms,
+             stats.waits != 0 ? waited_ms * 1000.0 / static_cast<double>(stats.waits) : 0.0,
+             std::chrono::duration<double, std::micro>(stats.longest).count());
+    stats = {};
+    stats.window_start = now;
+}
+
 void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
     auto& master = scheduler.GetMasterSemaphore();
     if (master.IsFree(tick)) {
         return;
+    }
+    ListCopyStats& stats = g_list_copy_stats;
+    const auto start = std::chrono::steady_clock::now();
+    const auto note = [start] {
+        ListCopyStats& totals = g_list_copy_stats;
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        totals.waited += elapsed;
+        totals.longest = (std::max)(totals.longest,
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed));
+    };
+    ++stats.waits;
+    if (!scheduler.IsSubmitted(tick)) {
+        ++stats.unsubmitted;
     }
     // The copy's submission may be deferred (Scheduler::DeferFlush): the split's front asks the
     // back for it rather than waiting for the back's next submission. If the back has stopped,
@@ -486,9 +561,23 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
     if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
         !VideoCommon::GpuSplit::OnBackThread() && !scheduler.WaitSubmitted(tick)) {
         scheduler.Wait(tick);
+        note();
         return;
     }
+    if (const auto spin = ListWaitSpin(); spin.count() > 0) {
+        const auto end = std::chrono::steady_clock::now() + spin;
+        do {
+            master.Refresh();
+            if (master.IsFree(tick)) {
+                ++stats.polled;
+                note();
+                return;
+            }
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < end);
+    }
     master.Wait(tick);
+    note();
 }
 
 void BufferCacheRuntime::Finish() {

@@ -133,7 +133,13 @@ public:
     void Wait(u64 tick);
 
     /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.
+    /// For GPU-written command list copies (BufferCache::Nx2ReadListCopy): polls the GPU's
+    /// progress a while before sleeping (EDEN_NX2_LIST_WAIT_SPIN_US).
     void WaitSubmittedTick(u64 tick);
+
+    /// A GPU-written command list's copy is read (BufferCache::Nx2ReadListCopy): counted, and
+    /// how the waits for them went is logged every 10 s.
+    void NoteListCopyRead();
 
     void Finish();
 

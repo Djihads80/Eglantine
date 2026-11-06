@@ -2066,6 +2066,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             if (!current(entry)) {
                 return Nx2ListRead::Unknown;
             }
+            runtime.NoteListCopyRead();
             // The lists after the first of a batch find the copy done: read it at once.
             if (runtime.IsFree(entry.copy_tick)) {
                 std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
