@@ -92,6 +92,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x823: operand(16); operand(24); operand(64); break;
     case 0x245: operand(16); operand(32); break;
     case 0x810: operand(16); operand(24); operand(64); break;
+    case 0x219: // SHF, register form: Rd, low word, shift amount, high word
     case 0x210: case 0x223: operand(16); operand(24); operand(32); operand(64); break;
     case 0x233: operand(16); operand(24); operand(32); break;
     case 0xa20: case 0x621: case 0x808: case 0x923: operand(16); operand(24); break;
@@ -113,6 +114,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         break;
     }
     case 0x202: case 0x243: operand(16); operand(32); break;
+    case 0xa12: case 0xc12: // LOP3.LUT, constant buffer and uniform B: no register in B's field
     case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
         operand(16); operand(24); operand(64); break;
     case 0x230: case 0x231: case 0x211: case 0x212: case 0x224:
