@@ -112,6 +112,7 @@ public:
     void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(DAddr addr, u64 size) override;
+    void OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) override;
     void OnCachedWrite(DAddr addr, u64 size) override;
     void OnGpuDirectWrite(DAddr addr, u64 size) override;
     bool TryCacheInvalidation(DAddr addr, u64 size) override;

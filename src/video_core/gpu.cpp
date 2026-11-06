@@ -23,6 +23,7 @@
 #include "core/core_timing.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
+#include "core/gpu_dirty_memory_manager.h"
 #include "core/hle/service/nvdrv/nvdata.h"
 #include "core/perf_stats.h"
 #include "video_core/cdma_pusher.h"
@@ -118,14 +119,28 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
-        std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
-            if (Tegra::Nx2HeldWrites()) {
+        if (Tegra::Nx2HeldWrites()) {
+            std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
                 renderer->ReadRasterizer()->OnCachedWrite(address, size);
-            } else {
-                renderer->ReadRasterizer()->OnCacheInvalidation(address, size);
-            }
-        });
+            });
+            system.GatherGPUDirtyMemory(callback_writes);
+            return;
+        }
+        // Applied as one batch: the rasterizer takes all of them out of the GPU-written ranges
+        // before applying any, so applying one doesn't download the GPU's copy over another.
+        std::vector<std::pair<DAddr, u64>> writes;
+        std::function<void(PAddr, size_t)> callback_writes(
+            [&writes](PAddr address, size_t size) { writes.emplace_back(address, size); });
         system.GatherGPUDirtyMemory(callback_writes);
+        if (!writes.empty()) {
+            renderer->ReadRasterizer()->OnCacheInvalidations(writes);
+        }
+    }
+
+    void ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback) {
+        for (auto& manager : system.GetGPUDirtyMemoryManager()) {
+            manager.ForEachPending(callback);
+        }
     }
 
     /// Signal the ending of command list.
@@ -479,6 +494,10 @@ void GPU::FlushCommands() {
 
 void GPU::InvalidateGPUCache() {
     impl->InvalidateGPUCache();
+}
+
+void GPU::ForEachPendingCpuWrite(const std::function<void(DAddr, size_t)>& callback) {
+    impl->ForEachPendingCpuWrite(callback);
 }
 
 void GPU::OnCommandListEnd() {
