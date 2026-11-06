@@ -894,7 +894,8 @@ bool KeplerCompute::RememberDlssMotionVectors() {
 // the input colour through cbuf0+0x328 and writes the DLSS output through cbuf0+0x348 (B10G11R11;
 // 720p to 1440p docked). Blit one to the other with bilinear filtering when both are plain 2D
 // images of the same format and the output is larger: title 4's slots first, then Fortune's
-// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair.
+// Weave's, else the first two handles in cbuf0+0x80..0x11c that form such a pair. Star Fox's
+// known 1600x900 RGBA16F -> 1920x1080 RGB10A2 pair also needs format conversion.
 bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
@@ -904,19 +905,27 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         return GetTICEntry(tic_index);
     };
     const auto upscale_pair = [](const std::optional<Texture::TICEntry>& from,
-                                 const std::optional<Texture::TICEntry>& to) {
-        return from && to && from->format == to->format && from->Address() != 0 &&
+                                 const std::optional<Texture::TICEntry>& to,
+                                 bool allow_conversion = false) {
+        return from && to && (from->format == to->format || allow_conversion) && from->Address() != 0 &&
                to->Address() != 0 && to->Width() > from->Width() && from->IsBlockLinear() &&
                to->IsBlockLinear();
     };
     std::optional<Texture::TICEntry> input = image(0x90), output = image(0xa0);
+    const bool starfox_conversion = Settings::GetCurrentProgramID() == 0x0400E88025B1A000ULL &&
+        input && output && input->format == Texture::TextureFormat::R16G16B16A16 &&
+        output->format == Texture::TextureFormat::A2B10G10R10 &&
+        input->Width() == 1600 && input->Height() == 900 &&
+        output->Width() == 1920 && output->Height() == 1080;
+    bool have_pair = upscale_pair(input, output, starfox_conversion);
     bool fortunes_weave = false;
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
         input = image(0x328);
         output = image(0x348);
         fortunes_weave = upscale_pair(input, output);
+        have_pair = fortunes_weave;
     }
-    if (!upscale_pair(input, output)) {
+    if (!have_pair) {
         input.reset();
         output.reset();
         for (u32 first = 0x80; first < 0x120 && !input; first += 4) {
@@ -936,15 +945,21 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     if (!input || !output)
         return false;
     using RTFormat = Tegra::RenderTargetFormat;
-    RTFormat format{};
-    switch (input->format) {
-    case Texture::TextureFormat::A2B10G10R10: format = RTFormat::A2B10G10R10_UNORM; break;
-    case Texture::TextureFormat::A8B8G8R8: format = RTFormat::A8B8G8R8_UNORM; break;
-    case Texture::TextureFormat::B10G11R11: format = RTFormat::B10G11R11_FLOAT; break;
-    case Texture::TextureFormat::R16G16B16A16: format = RTFormat::R16G16B16A16_FLOAT; break;
-    default: return false;
+    const auto render_format = [](Texture::TextureFormat format) -> std::optional<RTFormat> {
+        switch (format) {
+        case Texture::TextureFormat::A2B10G10R10: return RTFormat::A2B10G10R10_UNORM;
+        case Texture::TextureFormat::A8B8G8R8: return RTFormat::A8B8G8R8_UNORM;
+        case Texture::TextureFormat::B10G11R11: return RTFormat::B10G11R11_FLOAT;
+        case Texture::TextureFormat::R16G16B16A16: return RTFormat::R16G16B16A16_FLOAT;
+        default: return std::nullopt;
+        }
+    };
+    const auto input_format = render_format(input->format);
+    const auto output_format = render_format(output->format);
+    if (!input_format || !output_format) {
+        return false;
     }
-    const auto surface = [&](const Texture::TICEntry& tic) {
+    const auto surface = [&](const Texture::TICEntry& tic, RTFormat format) {
         Fermi2D::Surface result{};
         result.format = format;
         result.linear = Fermi2D::MemoryLayout::BlockLinear;
@@ -1041,7 +1056,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
             (void)fake;
         }
     }
-    auto source = surface(*input);
+    auto source = surface(*input, *input_format);
     // EDEN_NX2_UPSCALE_SOURCE=<gpu address>: blit from another same-sized image (debug aid).
     if (static const u64 override_source = [] {
             const char* value = std::getenv("EDEN_NX2_UPSCALE_SOURCE");
@@ -1065,14 +1080,13 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         if (!fortunes_weave || !enabled || !dlss_motion_vectors ||
             dlss_motion_color != input->Address())
             return false;
-        Fermi2D::Surface motion = surface(*dlss_motion_vectors);
-        motion.format = RTFormat::R16G16_FLOAT;
-        return rasterizer->AccelerateTemporalUpscale(source, surface(*output), motion,
+        Fermi2D::Surface motion = surface(*dlss_motion_vectors, RTFormat::R16G16_FLOAT);
+        return rasterizer->AccelerateTemporalUpscale(source, surface(*output, *output_format), motion,
                                                      dlss_depth ? &*dlss_depth : nullptr,
                                                      dlss_jitter, {1.0f, 1.0f});
     };
     const bool done = upscale_temporally() ||
-                      rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
+                      rasterizer->AccelerateSurfaceCopy(source, surface(*output, *output_format), config);
     if (static u32 checked{}; checked++ == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
