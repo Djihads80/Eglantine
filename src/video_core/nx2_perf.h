@@ -119,11 +119,11 @@ inline constexpr u64 DefaultOffMask() {
 
 /// Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
-/// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode); new switches not
-/// yet measured.
+/// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
+/// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
-                                  Bit(Opt::SubmitWhileWaited) | Bit(Opt::GpuCorePin);
+                                  Bit(Opt::GpuCorePin);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));

@@ -21,7 +21,9 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
     REQUIRE(mask == always_off);
     for (size_t i = 0; i < opt_names.size(); ++i) {
         const bool expected_off = i == Index(Opt::DispatchBatch) || i == Index(Opt::AcquireEarly) ||
-                                  i == Index(Opt::SplitOverlap) || i >= Index(Opt::MacroReadOverlayWriters);
+                                  i == Index(Opt::SplitOverlap) ||
+                                  i == Index(Opt::MacroReadOverlayWriters) ||
+                                  i == Index(Opt::GpuCorePin);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
