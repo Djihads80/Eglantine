@@ -219,6 +219,11 @@ enum class Counter : u32 {
     DmaReadsWaitWriteCbLost,
     DmaReadsWaitWriteCbOlder,
     DmaReadsOverlayFallback, ///< Overlay reads drained instead: a queued proven draw's proof changed
+    /// Of AcquireChecks, drained with Opt::AcquireTriggerEarly on: the early word did not meet
+    /// the value, there was no early word, or a queued proven draw's proof changed
+    AcquireTriggerEarlyFallbackNotMet,
+    AcquireTriggerEarlyFallbackNoAnswer,
+    AcquireTriggerEarlyFallbackProof,
     Count,
 };
 
@@ -384,6 +389,14 @@ inline void Report(const char* thread_name = "GPU thread") {
                         per_second(Counter::AcquirePolls), per_second(Counter::AcquirePollsMet),
                         per_second(Counter::AcquirePollsEarly),
                         per_second(Counter::AcquireTriggerEarly));
+    if (const double not_met = per_second(Counter::AcquireTriggerEarlyFallbackNotMet),
+        no_answer = per_second(Counter::AcquireTriggerEarlyFallbackNoAnswer),
+        proof = per_second(Counter::AcquireTriggerEarlyFallbackProof);
+        not_met != 0 || no_answer != 0 || proof != 0) {
+        line += fmt::format(" (drained instead: not met {:.0f}, no early word {:.0f}, proof "
+                            "changed {:.0f})",
+                            not_met, no_answer, proof);
+    }
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
                         static_cast<double>(data.counters[8]) * 1e9 / window,
