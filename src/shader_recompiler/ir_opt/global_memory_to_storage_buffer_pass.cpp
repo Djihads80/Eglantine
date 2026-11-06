@@ -558,6 +558,19 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
                 enqueue(inst->Arg(0));
             }
             break;
+        // The low word of a 64-bit sum (IMADWIDE_nx2: a pointer plus a product): the pointer's
+        // low word. A product (UMulWide32) is no pointer.
+        case IR::Opcode::UnpackUint2x32:
+        case IR::Opcode::PackUint2x32:
+            enqueue(inst->Arg(0));
+            break;
+        case IR::Opcode::IAdd64:
+            enqueue(inst->Arg(0));
+            enqueue(inst->Arg(1));
+            break;
+        case IR::Opcode::CompositeConstructU32x2:
+            enqueue(inst->Arg(0));
+            break;
         case IR::Opcode::LoadGlobal64: {
             // A pointer loaded from the memory a constant buffer pointer points to. The binding
             // reads it again for every dispatch or draw.

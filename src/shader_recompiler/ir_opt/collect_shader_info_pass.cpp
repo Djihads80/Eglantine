@@ -329,6 +329,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::PackUint2x32:
     case IR::Opcode::UnpackUint2x32:
     case IR::Opcode::IAdd64:
+    case IR::Opcode::UMulWide32:
     case IR::Opcode::ISub64:
     case IR::Opcode::INeg64:
     case IR::Opcode::ShiftLeftLogical64:

@@ -92,6 +92,10 @@ void EmitIMul32(EmitContext& ctx, IR::Inst& inst, ScalarS32 a, ScalarS32 b) {
     ctx.Add("MUL.S {}.x,{},{};", inst, a, b);
 }
 
+void EmitUMulWide32(EmitContext&, IR::Inst&, ScalarU32, ScalarU32) {
+    throw NotImplementedException("GLASM instruction");
+}
+
 void EmitSDiv32(EmitContext& ctx, IR::Inst& inst, ScalarS32 a, ScalarS32 b) {
     ctx.Add("DIV.S {}.x,{},{};", inst, a, b);
 }

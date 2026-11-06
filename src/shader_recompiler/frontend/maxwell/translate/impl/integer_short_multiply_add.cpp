@@ -131,4 +131,27 @@ void TranslatorVisitor::XMAD_imm(u64 insn) {
          Half::H0, xmad.psl != 0, xmad.mrg != 0, xmad.x != 0);
 }
 
+// nx2 pseudo instruction for an Ampere IMAD.WIDE.U32 without a carry-out (see
+// frontend/ampere/lower_to_maxwell.h): Rd:Rd+1 = a * b + c_low:c_high as one 64-bit multiply and
+// add, which the host does natively (or in a few instructions), instead of an XMAD chain.
+void TranslatorVisitor::IMADWIDE_nx2(u64 insn) {
+    union {
+        u64 raw;
+        BitField<0, 8, IR::Reg> dest;
+        BitField<8, 8, IR::Reg> a;
+        BitField<20, 8, IR::Reg> b;
+        BitField<28, 8, IR::Reg> c_low;
+        BitField<36, 8, IR::Reg> c_high;
+    } const mad{insn};
+    IR::U64 result{ir.UMulWide32(X(mad.a), X(mad.b))};
+    if (mad.c_low != IR::Reg::RZ || mad.c_high != IR::Reg::RZ) {
+        const IR::U64 addend{
+            ir.PackUint2x32(ir.CompositeConstruct(X(mad.c_low), X(mad.c_high)))};
+        result = IR::U64{ir.IAdd(result, addend)};
+    }
+    const IR::Value words{ir.UnpackUint2x32(result)};
+    X(mad.dest, IR::U32{ir.CompositeExtract(words, 0)});
+    X(mad.dest + 1, IR::U32{ir.CompositeExtract(words, 1)});
+}
+
 } // namespace Shader::Maxwell

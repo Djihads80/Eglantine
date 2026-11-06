@@ -225,6 +225,8 @@ public:
     [[nodiscard]] U32U64 IAdd(const U32U64& a, const U32U64& b);
     [[nodiscard]] U32U64 ISub(const U32U64& a, const U32U64& b);
     [[nodiscard]] U32 IMul(const U32& a, const U32& b);
+    /// The 64-bit product of two unsigned 32-bit values.
+    [[nodiscard]] U64 UMulWide32(const U32& a, const U32& b);
     [[nodiscard]] U32 IDiv(const U32& a, const U32& b, bool is_signed = false);
     [[nodiscard]] U32U64 INeg(const U32U64& value);
     [[nodiscard]] U32U64 IAbs(const U32U64& value);

@@ -74,6 +74,10 @@ Id EmitIMul32(EmitContext& ctx, Id a, Id b) {
     return ctx.OpIMul(ctx.U32[1], a, b);
 }
 
+Id EmitUMulWide32(EmitContext& ctx, Id a, Id b) {
+    return ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, a), ctx.OpUConvert(ctx.U64, b));
+}
+
 Id EmitSDiv32(EmitContext& ctx, Id a, Id b) {
     return ctx.OpSDiv(ctx.U32[1], a, b);
 }

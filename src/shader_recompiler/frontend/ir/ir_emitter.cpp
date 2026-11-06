@@ -1195,6 +1195,10 @@ U32 IREmitter::IMul(const U32& a, const U32& b) {
     return Inst<U32>(Opcode::IMul32, a, b);
 }
 
+U64 IREmitter::UMulWide32(const U32& a, const U32& b) {
+    return Inst<U64>(Opcode::UMulWide32, a, b);
+}
+
 U32 IREmitter::IDiv(const U32& a, const U32& b, bool is_signed) {
     return Inst<U32>(is_signed ? Opcode::SDiv32 : Opcode::UDiv32, a, b);
 }

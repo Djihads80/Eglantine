@@ -299,6 +299,7 @@ OPCODE(IAdd64,                                              U64,            U64,
 OPCODE(ISub32,                                              U32,            U32,            U32,                                                            )
 OPCODE(ISub64,                                              U64,            U64,            U64,                                                            )
 OPCODE(IMul32,                                              U32,            U32,            U32,                                                            )
+OPCODE(UMulWide32,                                          U64,            U32,            U32,                                                            )
 OPCODE(SDiv32,                                              U32,            U32,            U32,                                                            )
 OPCODE(UDiv32,                                              U32,            U32,            U32,                                                            )
 OPCODE(INeg32,                                              U32,            U32,                                                                            )

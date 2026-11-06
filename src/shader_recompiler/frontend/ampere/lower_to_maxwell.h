@@ -805,6 +805,31 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return fail(index, "native high multiply mode");
             const u32 a = insn.Bits(24, 8);
             const u32 b = immediate ? insn.words[1] : opcode == 0xa27 ? 254U : insn.Bits(opcode == 0x625 ? 64 : 32, 8);
+            // IMAD.WIDE.U32 without a carry-out: the IMADWIDE_nx2 pseudo instruction, one 64-bit
+            // multiply-add in the IR instead of the XMAD chain below (~15 instructions; Ocarina
+            // of Time's vertex shaders build their vertex addresses with ~70 of them).
+            // EDEN_NX2_NATIVE_WIDE_MUL=0: the XMAD chain.
+            static const bool native_wide = [] {
+                const char* const value = std::getenv("EDEN_NX2_NATIVE_WIDE_MUL");
+                return value == nullptr || value[0] != '0';
+            }();
+            if (native_wide && wide && !signed_product && carry_output == 7) {
+                u32 b_register = b;
+                if (immediate) {
+                    mov_imm(254, b);
+                    b_register = 254;
+                }
+                u32 addend_low = c, addend_high = c == 255 ? 255U : c + 1;
+                if (opcode == 0x625) {
+                    emit(0x4c98000000000000ULL | predicate | 252 | (u64{15} << 39) | cbuf());
+                    emit(0x4c98000000000000ULL | predicate | 253 | (u64{15} << 39) | (cbuf() + (u64{1} << 20)));
+                    addend_low = 252;
+                    addend_high = 253;
+                }
+                emit(0xefc8000000000000ULL | predicate | static_cast<u32>(dest) | (u64{a} << 8) |
+                     (u64{b_register} << 20) | (u64{addend_low} << 28) | (u64{addend_high} << 36));
+                break;
+            }
             if (opcode == 0xa27) emit(0x4c98000000000000ULL | predicate | 254 | (u64{15} << 39) | cbuf());
             if (signed_product) {
                 // The signed high word is the unsigned one minus (a < 0 ? b : 0) + (b < 0 ? a : 0),
