@@ -150,6 +150,7 @@ public:
     [[nodiscard]] U1 GetSparseFromOp(const Value& op);
     [[nodiscard]] U1 GetInBoundsFromOp(const Value& op);
 
+    [[nodiscard]] Value TensorMulAdd(const Value& a, const Value& b, const Value& c, u32 depth);
     [[nodiscard]] Value CompositeConstruct(const Value& e1, const Value& e2);
     [[nodiscard]] Value CompositeConstruct(const Value& e1, const Value& e2, const Value& e3);
     [[nodiscard]] Value CompositeConstruct(const Value& e1, const Value& e2, const Value& e3,

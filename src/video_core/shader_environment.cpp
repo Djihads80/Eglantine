@@ -516,6 +516,7 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     auto lowered = Shader::Ampere::LowerToMaxwell(
         native, {.geometry = geometry,
                  .tensor = native_tensor,
+                 .compact_tensor = native_compact_tensor,
                  .native_code_address = program_base + native_header_size});
     // Once per opcode: bits 32-39 name a register at or above the lowering's scratch and mirror
     // boundary in a form the shadow check skips (ALU immediates and branch offsets aren't noted).
@@ -930,6 +931,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
         native_tensor = kepler_compute->EmulatesNativeTensorPrograms();
+        native_compact_tensor = kepler_compute->UsesCompactTensorPrograms();
         InitializeNativeCode(std::move(lowered_native_), 0);
         start_address = sizeof(sph);
     }

@@ -688,11 +688,32 @@ bool KeplerCompute::EmulatesNativeTensorPrograms() const {
                GameDlssBlocker() == VideoCore::GameDlssReason::None;
     }
     // Donkey Kong Bananza's programs are emulated: rejected, they write nothing and the screen is
-    // purple from its mode select on. Other titles keep the upscale stand-in (emulating title 4's
-    // network takes the host driver minutes to compile). Chosen per title, not per dispatch: the
-    // shader cache keeps the result of a program's first dispatch.
+    // purple from its mode select on. Ocarina of Time's end-of-frame network is emulated in the
+    // compact form when asked (UsesCompactTensorPrograms). Other titles keep the upscale stand-in
+    // (emulating title 4's network takes the host driver minutes to compile). Chosen per title,
+    // not per dispatch: the shader cache keeps the result of a program's first dispatch.
     constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId;
+    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId ||
+           UsesCompactTensorPrograms();
+}
+
+bool KeplerCompute::UsesCompactTensorPrograms() const {
+    // Ocarina of Time draws its final image through an 11-program network after the tonemap. The
+    // stand-in blits the network's input instead, which leaves the frame flat and far too bright
+    // (Kokiri Forest median luma ~0.29 against ~0.10 with the network). The compact form calls a
+    // helper that shuffles across 32 lanes, so it wants compute shaders created 32 threads wide.
+    // Opt-in (EDEN_NX2_OOT_NETWORK): the network multiplies its matrices in software, a heavy
+    // load for a phone GPU next to the stand-in's blit. 1: where compute shaders are created 32
+    // threads wide. 2: on any subgroup width (the helper shuffles within lane & ~31 of wider
+    // subgroups; untested there).
+    static const char mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_OOT_NETWORK");
+        return value != nullptr ? value[0] : '0';
+    }();
+    constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    return (mode == '1' || mode == '2') && !dlss_chain.active &&
+           Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId &&
+           (mode == '2' || rasterizer->SupportsGameDlssNetwork());
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
