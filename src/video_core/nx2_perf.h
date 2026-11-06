@@ -262,11 +262,12 @@ inline bool Enabled() {
 
 /// Live switches (EDEN_NX2_PERF_CONTROL, nx2_perf.cpp). New switches are not live-safe until a
 /// call-site audit shows none caches On() or keeps state the other branch does not handle.
+/// Switches without an On() call site (bank_check, write_intersections, immediate_callbacks)
+/// are left out so a live flip of them is reported as ignored instead of measuring nothing.
 inline constexpr u64 live_safe =
-    Bit(Opt::CbBatch) | Bit(Opt::CleanWords) | Bit(Opt::UsageTracker) | Bit(Opt::BankCheck) |
-    Bit(Opt::FrontSleep) | Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) |
-    Bit(Opt::WriteIntersections) | Bit(Opt::SortedPageBatches) | Bit(Opt::QueryDiagnostics) |
-    Bit(Opt::ImmediateCallbacks) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
+    Bit(Opt::CbBatch) | Bit(Opt::CleanWords) | Bit(Opt::UsageTracker) | Bit(Opt::FrontSleep) |
+    Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
+    Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
     Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded);
 
 /// One control file: the whole arm, computed from the startup off-mask.

@@ -195,4 +195,10 @@ TEST_CASE("Nx2Perf live control: a label-only change still gets its own marker",
 TEST_CASE("Nx2Perf live-safe switches are all named", "[nx2_perf]") {
     REQUIRE((live_safe >> opt_names.size()) == 0);
     REQUIRE(!IsOff(live_safe, Index(Opt::PreflushAging)));
+    // No On() call site: a live flip would change nothing, so it must land in ignored=.
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult dead = ParseControl(
+        startup, "off bank_check,write_intersections,immediate_callbacks\n", live_safe);
+    REQUIRE(dead.mask == startup);
+    REQUIRE(dead.ignored == "bank_check,write_intersections,immediate_callbacks");
 }
