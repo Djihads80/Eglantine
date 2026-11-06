@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "video_core/vulkan_common/streamline_api.h"
 
@@ -49,6 +51,9 @@ struct State {
     std::vector<std::string> device_extensions;
     bool started{};
     bool attached{};
+    sl::FrameToken* current_frame_token{};
+    bool render_submit_started{};
+    std::mutex token_mutex;
 };
 
 State& GetState() {
@@ -226,6 +231,56 @@ std::vector<std::string> Names(uint32_t count, const char** names) {
 
 } // Anonymous namespace
 
+bool IsOptiScalerPresent() {
+    static int cached = -1;
+    if (cached != -1) {
+        return cached == 1;
+    }
+
+    // Check common OptiScaler DLL names
+    const wchar_t* dll_names[] = {L"winmm.dll", L"version.dll", L"dxgi.dll", L"d3d11.dll"};
+
+    for (const auto* dll_name : dll_names) {
+        if (HMODULE module = GetModuleHandleW(dll_name)) {
+            wchar_t path[MAX_PATH];
+            if (GetModuleFileNameW(module, path, MAX_PATH)) {
+                DWORD handle = 0;
+                DWORD size = GetFileVersionInfoSizeW(path, &handle);
+                if (size > 0) {
+                    std::vector<BYTE> buffer(size);
+                    if (GetFileVersionInfoW(path, handle, size, buffer.data())) {
+                        struct LANGANDCODEPAGE {
+                            WORD language;
+                            WORD codePage;
+                        } *translate;
+                        UINT len;
+                        if (VerQueryValueW(buffer.data(), L"\\VarFileInfo\\Translation",
+                                          reinterpret_cast<LPVOID*>(&translate), &len)) {
+                            wchar_t subBlock[50];
+                            swprintf_s(subBlock, L"\\StringFileInfo\\%04x%04x\\ProductName",
+                                      translate[0].language, translate[0].codePage);
+                            wchar_t* productName = nullptr;
+                            if (VerQueryValueW(buffer.data(), subBlock,
+                                              reinterpret_cast<LPVOID*>(&productName), &len)) {
+                                if (productName && wcsstr(productName, L"OptiScaler")) {
+                                    LOG_INFO(Render_Vulkan, "OptiScaler detected via {} (ProductName: {})",
+                                            Common::FS::PathToUTF8String(path),
+                                            Common::UTF16ToUTF8(productName));
+                                    cached = 1;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    cached = 0;
+    return false;
+}
+
 std::filesystem::path UserFolder() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::StreamlineDir);
 }
@@ -291,7 +346,8 @@ bool Start() {
     if (state.started) {
         return true;
     }
-    if (!Settings::values.nvidia_dlss.GetValue()) {
+    // Enable if: user setting is ON, OR OptiScaler is detected (auto-enable)
+    if (!Settings::values.nvidia_dlss.GetValue() && !IsOptiScalerPresent()) {
         return false;
     }
     if (!state.module) {
@@ -322,21 +378,28 @@ bool Start() {
     // Streamline's plugins come from the loader's folder or the NVIDIA app's downloads (OTA); the
     // DLSS model from the loader's folder, else the NVIDIA app's copy.
     const wchar_t* plugin_paths[] = {state.plugin_dir.c_str(), state.model_dir.c_str()};
-    const sl::Feature features[] = {sl::kFeatureDLSS};
+    const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL};
     sl::Preferences preferences{};
     preferences.logLevel = LogLevel() >= 2 ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
     preferences.logMessageCallback = LogFromStreamline;
     preferences.pathsToPlugins = plugin_paths;
     preferences.numPathsToPlugins = state.model_dir.empty() ? 1 : 2;
     preferences.flags = sl::PreferenceFlags::eDisableCLStateTracking |
-                        sl::PreferenceFlags::eUseManualHooking | sl::PreferenceFlags::eAllowOTA |
+                        sl::PreferenceFlags::eUseManualHooking |
+                        sl::PreferenceFlags::eAllowOTA |
                         sl::PreferenceFlags::eLoadDownloadedPlugins;
     preferences.featuresToLoad = features;
-    preferences.numFeaturesToLoad = 1;
+    preferences.numFeaturesToLoad = 3;
     preferences.engine = sl::EngineType::eCustom;
     preferences.engineVersion = "1.0";
     preferences.projectId = PROJECT_ID;
     preferences.renderAPI = sl::RenderAPI::eVulkan;
+
+    LOG_INFO(Render_Vulkan,
+             "Requesting Streamline features: DLSS (id={}), Reflex (id={}) and PCL (id={})",
+             static_cast<int>(sl::kFeatureDLSS), static_cast<int>(sl::kFeatureReflex),
+             static_cast<int>(sl::kFeaturePCL));
+
     const Api& api = state.api;
     if (const sl::Result result = api.init(preferences, sl::kSDKVersion);
         result != sl::Result::eOk) {
@@ -370,6 +433,67 @@ bool Start() {
         device_extensions.end()) {
         std::erase(state.device_extensions, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
+    // Check if Reflex was loaded successfully
+    sl::FeatureRequirements reflex_requirements{};
+    if (const sl::Result result = api.get_feature_requirements(sl::kFeatureReflex, reflex_requirements);
+        result != sl::Result::eOk) {
+        LOG_WARNING(Render_Vulkan,
+                    "Streamline Reflex plugin not available (result {}). Low latency features "
+                    "may not work with OptiScaler. Ensure sl.reflex.dll is in the Streamline folder.",
+                    static_cast<int>(result));
+    } else {
+        LOG_INFO(Render_Vulkan, "Streamline Reflex plugin loaded successfully");
+        if (reflex_requirements.vkNumComputeQueuesRequired != 0 ||
+            reflex_requirements.vkNumGraphicsQueuesRequired != 0) {
+            LOG_WARNING(Render_Vulkan, "Reflex wants extra Vulkan queues (compute: {}, graphics: {})",
+                       reflex_requirements.vkNumComputeQueuesRequired,
+                       reflex_requirements.vkNumGraphicsQueuesRequired);
+        }
+        // Merge Reflex extension requirements into our lists
+        const auto reflex_inst_exts = Names(reflex_requirements.vkNumInstanceExtensions,
+                                            reflex_requirements.vkInstanceExtensions);
+        const auto reflex_dev_exts = Names(reflex_requirements.vkNumDeviceExtensions,
+                                          reflex_requirements.vkDeviceExtensions);
+        for (const auto& ext : reflex_inst_exts) {
+            if (std::ranges::find(state.instance_extensions, ext) == state.instance_extensions.end()) {
+                state.instance_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding Reflex instance extension: {}", ext);
+            }
+        }
+        for (const auto& ext : reflex_dev_exts) {
+            if (std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
+                state.device_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding Reflex device extension: {}", ext);
+            }
+        }
+    }
+
+    // Check if PCL was loaded successfully
+    sl::FeatureRequirements pcl_requirements{};
+    if (const sl::Result result = api.get_feature_requirements(sl::kFeaturePCL, pcl_requirements);
+        result != sl::Result::eOk) {
+        LOG_WARNING(Render_Vulkan, "Streamline PCL plugin not available (result {})",
+                    static_cast<int>(result));
+    } else {
+        LOG_INFO(Render_Vulkan, "Streamline PCL plugin loaded successfully");
+        const auto pcl_inst_exts = Names(pcl_requirements.vkNumInstanceExtensions,
+                                         pcl_requirements.vkInstanceExtensions);
+        const auto pcl_dev_exts = Names(pcl_requirements.vkNumDeviceExtensions,
+                                        pcl_requirements.vkDeviceExtensions);
+        for (const auto& ext : pcl_inst_exts) {
+            if (std::ranges::find(state.instance_extensions, ext) == state.instance_extensions.end()) {
+                state.instance_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding PCL instance extension: {}", ext);
+            }
+        }
+        for (const auto& ext : pcl_dev_exts) {
+            if (std::ranges::find(state.device_extensions, ext) == state.device_extensions.end()) {
+                state.device_extensions.push_back(ext);
+                LOG_INFO(Render_Vulkan, "Adding PCL device extension: {}", ext);
+            }
+        }
+    }
+
     sl::FeatureVersion version{};
     api.get_feature_version(sl::kFeatureDLSS, version);
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline {} started from {} (DLSS {})",
@@ -424,7 +548,77 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
         Stop();
         return false;
     }
-    // Manual hooking: Streamline does its per-frame work in these.
+
+    // Check Reflex support (non-fatal - we can continue without it)
+    if (const sl::Result reflex_result =
+            state.api.is_feature_supported(sl::kFeatureReflex, adapter);
+        reflex_result != sl::Result::eOk) {
+        LOG_WARNING(Render_Vulkan,
+                    "NVIDIA Reflex is not supported on this GPU/driver (Streamline result {}). "
+                    "OptiScaler low latency detection will use fallback mode.",
+                    static_cast<int>(reflex_result));
+    } else {
+        LOG_INFO(Render_Vulkan, "NVIDIA Reflex is supported and available through Streamline");
+
+        void* func_ptr = nullptr;
+        if (state.api.get_feature_function(sl::kFeatureReflex, "slReflexSleep", func_ptr) ==
+            sl::Result::eOk) {
+            state.api.reflex_sleep = reinterpret_cast<PFun_slReflexSleep*>(func_ptr);
+        } else {
+            LOG_WARNING(Render_Vulkan, "Failed to get slReflexSleep function");
+        }
+
+        func_ptr = nullptr;
+        if (state.api.get_feature_function(sl::kFeatureReflex, "slReflexSetMarker", func_ptr) ==
+            sl::Result::eOk) {
+            state.api.reflex_set_marker = reinterpret_cast<PFun_slReflexSetMarker*>(func_ptr);
+            LOG_INFO(Render_Vulkan, "Streamline Reflex marker function loaded successfully");
+        } else {
+            LOG_WARNING(Render_Vulkan, "Failed to get slReflexSetMarker function");
+        }
+
+        func_ptr = nullptr;
+        if (state.api.get_feature_function(sl::kFeatureReflex, "slReflexGetState", func_ptr) ==
+            sl::Result::eOk) {
+            state.api.reflex_get_state = reinterpret_cast<PFun_slReflexGetState*>(func_ptr);
+        }
+
+        func_ptr = nullptr;
+        if (state.api.get_feature_function(sl::kFeatureReflex, "slReflexSetOptions", func_ptr) ==
+            sl::Result::eOk) {
+            state.api.reflex_set_options = reinterpret_cast<PFun_slReflexSetOptions*>(func_ptr);
+
+            sl::ReflexOptions reflex_options{};
+            reflex_options.mode = sl::ReflexMode::eLowLatency;
+            if (const sl::Result reflex_set_result = state.api.reflex_set_options(reflex_options);
+                reflex_set_result != sl::Result::eOk) {
+                LOG_WARNING(Render_Vulkan, "Failed to enable Reflex low latency mode (result {})",
+                            static_cast<int>(reflex_set_result));
+            } else {
+                LOG_INFO(Render_Vulkan, "NVIDIA Reflex low latency mode enabled");
+            }
+        } else {
+            LOG_WARNING(Render_Vulkan, "Failed to get slReflexSetOptions function");
+        }
+    }
+
+    // Check PCL support and get marker function (used by OptiScaler / Streamline PCL)
+    if (const sl::Result pcl_result = state.api.is_feature_supported(sl::kFeaturePCL, adapter);
+        pcl_result == sl::Result::eOk) {
+        void* pcl_func_ptr = nullptr;
+        if (state.api.get_feature_function(sl::kFeaturePCL, "slPCLSetMarker", pcl_func_ptr) ==
+            sl::Result::eOk) {
+            state.api.pcl_set_marker = reinterpret_cast<PFun_slPCLSetMarker*>(pcl_func_ptr);
+            LOG_INFO(Render_Vulkan, "Streamline PCL marker function loaded successfully");
+        } else {
+            LOG_WARNING(Render_Vulkan, "Failed to get slPCLSetMarker function");
+        }
+    }
+
+    // Manual hooking: Streamline interposer handles per-frame bookkeeping (presentCommon())
+    // and resource garbage collection in these swapchain functions before forwarding to Vulkan/OptiScaler.
+    // NOTE: DO NOT disable manual hooking even if OptiScaler is present. OptiScaler intercepts
+    // the downstream Vulkan calls, but Streamline MUST process the calls first to update its internal state.
     const auto hook = [&](auto& function, const char* name) {
         if (const FARPROC proxy = GetProcAddress(state.module, name)) {
             function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(proxy);
@@ -453,10 +647,92 @@ void Stop() {
     if (!state.started) {
         return;
     }
+    {
+        std::lock_guard lock(state.token_mutex);
+        state.current_frame_token = nullptr;
+        state.render_submit_started = false;
+    }
     const sl::Result result = state.api.shutdown();
+    state.api = {};
     state.started = false;
     state.attached = false;
     LOG_INFO(Render_Vulkan, "NVIDIA Streamline stopped (result {})", static_cast<int>(result));
+}
+
+sl::FrameToken* GetOrNewFrameToken() {
+    State& state = GetState();
+    if (!state.started || !state.attached || !state.api.get_new_frame_token) {
+        return nullptr;
+    }
+    std::lock_guard lock(state.token_mutex);
+    if (!state.current_frame_token) {
+        if (state.api.get_new_frame_token(state.current_frame_token, nullptr) == sl::Result::eOk) {
+            // Automatically mark the start of simulation when a new frame begins
+            if (state.api.pcl_set_marker) {
+                state.api.pcl_set_marker(sl::PCLMarker::eSimulationStart, *state.current_frame_token);
+            }
+            if (state.api.reflex_set_marker) {
+                state.api.reflex_set_marker(sl::PCLMarker::eSimulationStart, *state.current_frame_token);
+            }
+        } else {
+            state.current_frame_token = nullptr;
+        }
+    }
+    return state.current_frame_token;
+}
+
+void AdvanceFrameToken() {
+    State& state = GetState();
+    std::lock_guard lock(state.token_mutex);
+    state.current_frame_token = nullptr;
+    state.render_submit_started = false;
+}
+
+bool IsRenderSubmitStarted() {
+    State& state = GetState();
+    std::lock_guard lock(state.token_mutex);
+    return state.render_submit_started;
+}
+
+void NotifyRenderSubmitStart(const sl::FrameToken* frame) {
+    if (!frame) {
+        return;
+    }
+    State& state = GetState();
+    {
+        std::lock_guard lock(state.token_mutex);
+        if (state.render_submit_started) {
+            return;
+        }
+        state.render_submit_started = true;
+    }
+    // Sleep to pace the frame just before GPU submission
+    ReflexSleep(frame);
+    SetReflexMarker(sl::PCLMarker::eSimulationEnd, frame);
+    SetReflexMarker(sl::PCLMarker::eRenderSubmitStart, frame);
+}
+
+void SetReflexMarker(sl::PCLMarker marker, const sl::FrameToken* frame) {
+    if (!frame) {
+        return;
+    }
+    const State& state = GetState();
+    if (state.api.pcl_set_marker) {
+        state.api.pcl_set_marker(marker, *frame);
+    }
+    if (state.api.reflex_set_marker) {
+        state.api.reflex_set_marker(marker, *frame);
+    }
+}
+
+void ReflexSleep(const sl::FrameToken* frame) {
+    if (!frame) {
+        return;
+    }
+    const State& state = GetState();
+    if (state.api.reflex_sleep) {
+        state.api.reflex_sleep(*frame);
+    }
 }
 
 const Api& GetApi() {

@@ -16,6 +16,10 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_surface.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_api.h"
+#endif
 
 namespace Vulkan {
 
@@ -182,6 +186,7 @@ Frame* PresentManager::GetRenderFrame() {
     // Wait for the presentation to be finished so all frame resources are free
     frame->present_done.Wait();
     frame->present_done.Reset();
+    frame->streamline_token = nullptr;
 
     return frame;
 }
@@ -378,6 +383,7 @@ void PresentManager::SetImageCount() {
 }
 
 void PresentManager::DiscardFrame(Frame* frame) {
+    frame->streamline_token = nullptr;
     static constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     const VkSemaphore render_ready = *frame->render_ready;
     const VkSubmitInfo submit_info{
@@ -582,7 +588,14 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
     }
 
     // Present
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::SetReflexMarker(sl::PCLMarker::ePresentStart, frame->streamline_token);
+#endif
     swapchain.Present(render_semaphore);
+#ifdef EGLANTINE_STREAMLINE
+    Streamline::SetReflexMarker(sl::PCLMarker::ePresentEnd, frame->streamline_token);
+    frame->streamline_token = nullptr;
+#endif
 }
 
 } // namespace Vulkan

@@ -20,6 +20,10 @@ namespace Core::Frontend {
 class EmuWindow;
 } // namespace Core::Frontend
 
+namespace sl {
+struct FrameToken;
+}
+
 namespace Vulkan {
 
 class Device;
@@ -38,6 +42,7 @@ struct Frame {
     vk::Semaphore render_ready;
     vk::Fence present_done;
     bool storage_capable{};
+    sl::FrameToken* streamline_token{};
 };
 
 class PresentManager {

@@ -255,7 +255,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
     }
 
     scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([this, in, reset, options, options_changed, index = frame_index++,
+    scheduler.Record([this, in, reset, options, options_changed,
                       output_image_handle = *output_image,
                       output_view_handle = *output_view](vk::CommandBuffer cmdbuf) {
         const Streamline::Api& api = Streamline::GetApi();
@@ -306,16 +306,15 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                 return;
             }
         }
-        sl::FrameToken* frame{};
-        if (const sl::Result result = api.get_new_frame_token(frame, &index);
-            result != sl::Result::eOk || !frame) {
+        sl::FrameToken* frame = Streamline::GetOrNewFrameToken();
+        if (!frame) {
             if (!failed.exchange(true)) {
-                LOG_ERROR(Render_Vulkan, "Streamline gave no frame token (result {}); using FSR 3.1",
-                          static_cast<int>(result));
+                LOG_ERROR(Render_Vulkan, "Streamline gave no frame token; using FSR 3.1");
             }
             clear_output();
             return;
         }
+        Streamline::NotifyRenderSubmitStart(frame);
 
         constexpr VkAccessFlags WRITES =
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
