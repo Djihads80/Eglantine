@@ -221,8 +221,9 @@ inline constexpr u64 DefaultOffMask() {
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
-/// bind_memo_local, guest_landed_syncpoints, draw_begin_coalesce (not measured yet),
-/// hook_lazy_flush; war_guard_probe (measurement, adds page traps).
+/// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
+/// war_guard_probe (measurement, adds page traps). dma_forward and draw_begin_coalesce are on
+/// by default (round 5); SAFE turns them off.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -231,7 +232,6 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
-                                  Bit(Opt::DmaForward) | Bit(Opt::DrawBeginCoalesce) |
                                   Bit(Opt::HookLazyFlush) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
@@ -254,8 +254,10 @@ static_assert(static_cast<unsigned>(Opt::GuestLandedSyncpoints) == 56 && IsOff(a
               IsOff(DefaultOffMask(), 56));
 static_assert(static_cast<unsigned>(Opt::WarGuardProbe) == 57 && IsOff(always_off, 57) &&
               IsOff(DefaultOffMask(), 57));
-static_assert(static_cast<unsigned>(Opt::DrawBeginCoalesce) == 58 && IsOff(always_off, 58) &&
+static_assert(static_cast<unsigned>(Opt::DrawBeginCoalesce) == 58 && !IsOff(always_off, 58) &&
               IsOff(DefaultOffMask(), 58));
+static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::HookLazyFlush)));
 
