@@ -1344,6 +1344,9 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
     macro_file.write(reinterpret_cast<const char*>(code.data()), code.size_bytes());
 }
 
+/// Compiles the macro if it's not in the cache, and executes the compiled macro with the
+/// call's parameters: the native Turing RAM path (with MME logging/capture hooks) or the
+/// per-method Switch 1 macros.
 void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
                           std::span<const u32> parameters) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
@@ -1648,6 +1651,8 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
     }
 }
 
+/// Compiles macro code into a cached program: the x86 JIT when available and not forced to
+/// interpret, the interpreter otherwise.
 AnyCachedMacro MacroEngine::Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code) {
 #ifdef ARCHITECTURE_x86_64
     if (!is_interpreted)

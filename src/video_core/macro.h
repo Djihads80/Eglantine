@@ -226,6 +226,8 @@ using AnyCachedMacro = std::variant<
 >;
 
 struct MacroEngine {
+    /// Constructs the engine; interpreted macros run through MacroInterpreterImpl, native
+    /// Turing macros through their JIT/interpreter front end.
     MacroEngine(bool is_interpreted_) noexcept : is_interpreted{is_interpreted_} {}
     /// Stores the uploaded macro code to compile it when the macro is called.
     inline void AddCode(u32 method, u32 data) noexcept {
@@ -246,6 +248,8 @@ struct MacroEngine {
     }
     /// Compiles the macro if it's not in the cache, and executes the compiled macro.
     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
+    /// Compiles uploaded macro code into a cached program: the Turing RAM as one program,
+    /// a Switch 1 method's code into an interpreted or JIT macro.
     AnyCachedMacro Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code);
     struct CacheInfo {
         AnyCachedMacro program;
