@@ -73,6 +73,16 @@ public:
     template <typename T>
     [[nodiscard]] T Read(GPUVAddr addr) const;
 
+    /// One 4 KiB page's host pointer for repeated small reads (ReadU32). Valid only while the
+    /// mappings cannot change, e.g. within one draw's setup on the GPU thread.
+    struct ReadPageCache {
+        GPUVAddr page{~GPUVAddr{0}};
+        const u8* pointer{};
+    };
+
+    /// Read<u32>, translating the address's page only when it differs from the cached one.
+    [[nodiscard]] u32 ReadU32(GPUVAddr addr, ReadPageCache& cache) const;
+
     template <typename T>
     void Write(GPUVAddr addr, T data);
 

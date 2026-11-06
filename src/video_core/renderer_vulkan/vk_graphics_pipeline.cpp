@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/shader_handle_program.h"
 #include "video_core/shader_notify.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -446,6 +447,25 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
         }
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+        // A stage's handles mostly sit in one constant buffer page: translate it once.
+        Tegra::MemoryManager::ReadPageCache handle_page{};
+        const bool cache_handles{
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::HandlePageCache)};
+        const auto read_word{[&](GPUVAddr word_addr) -> u32 {
+            if (!cache_handles) {
+                return gpu_memory->Read<u32>(word_addr);
+            }
+            const u32 value{gpu_memory->ReadU32(word_addr, handle_page)};
+            if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+                const u32 expected{gpu_memory->Read<u32>(word_addr)};
+                if (value != expected) {
+                    LOG_ERROR(Render_Vulkan, "Nx2Perf handle_page_cache: {:#x} read {:#x}, not {:#x}",
+                              word_addr, value, expected);
+                    return expected;
+                }
+            }
+            return value;
+        }};
         const auto read_handle{[&](const auto& desc, u32 index) {
             if (desc.handle_program != ~0U) {
                 // Read by the shader from a storage buffer: computed for this draw.
@@ -470,14 +490,14 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                     const u32 second_offset{desc.secondary_cbuf_offset + index_offset};
                     const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].address +
                                                  second_offset};
-                    const u32 lhs_raw{gpu_memory->Read<u32>(addr) << desc.shift_left};
-                    const u32 rhs_raw{gpu_memory->Read<u32>(separate_addr)
+                    const u32 lhs_raw{read_word(addr) << desc.shift_left};
+                    const u32 rhs_raw{read_word(separate_addr)
                                       << desc.secondary_shift_left};
                     const u32 raw{lhs_raw | rhs_raw};
                     return TexturePair(raw, via_header_index);
                 }
             }
-            return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
+            return TexturePair(read_word(addr), via_header_index);
         }};
         const auto add_image{[&](const auto& desc, bool blacklist) LAMBDA_FORCEINLINE {
             for (u32 index = 0; index < desc.count; ++index) {

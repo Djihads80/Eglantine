@@ -317,6 +317,28 @@ T MemoryManager::Read(GPUVAddr addr) const {
     return {};
 }
 
+u32 MemoryManager::ReadU32(GPUVAddr addr, ReadPageCache& cache) const {
+    const auto shim = native_syncpoint_shim.load(std::memory_order_acquire);
+    if (shim && addr >= shim && addr - shim < NumShimSyncpoints * sizeof(u32)) {
+        return Read<u32>(addr);
+    }
+    const GPUVAddr offset = addr & (page_size - 1);
+    if (offset > page_size - sizeof(u32)) {
+        return Read<u32>(addr); // Crosses into the next page
+    }
+    const GPUVAddr page = addr - offset;
+    if (page != cache.page) {
+        cache.page = page;
+        cache.pointer = GetPointer(page);
+    }
+    if (cache.pointer == nullptr) {
+        return Read<u32>(addr); // Unmapped or sparse: Read logs and handles it
+    }
+    u32 value;
+    std::memcpy(&value, cache.pointer + offset, sizeof(value));
+    return value;
+}
+
 template <typename T>
 void MemoryManager::Write(GPUVAddr addr, T data) {
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
