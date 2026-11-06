@@ -1868,6 +1868,34 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
     const auto& options = FrontMacroOptions();
     const bool profile = Profile::Enabled();
+    // EDEN_NX2_MACRO_TRACE=<macro index>: log the first 32 calls of one macro (its parameters,
+    // every write in order, the words its DMA reads return) and its code once.
+    static const u32 trace_macro = [] {
+        const char* value = std::getenv("EDEN_NX2_MACRO_TRACE");
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 0)) : ~0U;
+    }();
+    static u32 traced_calls{};
+    const bool trace = trace_macro != ~0U && ((method - MacroRegistersStart) >> 1) == trace_macro &&
+                       traced_calls < 32;
+    std::string trace_line;
+    if (trace) [[unlikely]] {
+        if (traced_calls == 0) {
+            std::string code;
+            for (u32 pc = start; pc < start + 96 && pc * 3 + 2 < engine.native_code.size(); ++pc) {
+                code += fmt::format(" {:08x}{:08x}{:08x}", engine.native_code[pc * 3 + 2],
+                                    engine.native_code[pc * 3 + 1], engine.native_code[pc * 3]);
+            }
+            LOG_INFO(HW_GPU, "Nx2 macro trace {:#x}: start {:#x}, code (96-bit words):{}",
+                     trace_macro, start, code);
+        }
+        const std::span<const u32> parameters =
+            borrowed.empty() ? std::span<const u32>{fs.parameters} : borrowed;
+        trace_line = "params";
+        for (size_t i = 0; i < parameters.size() && i < 24; ++i) {
+            trace_line += fmt::format(" {:#x}", parameters[i]);
+        }
+        trace_line += " | writes";
+    }
     u64 writes_before{};
     u64 same_before{};
     u64 ring_before{};
@@ -1904,6 +1932,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             start, fs.parameters, borrowed, std::span<u32>{native_data_ram},
             [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
             [&](u32 address, u32 value) {
+                if (trace) [[unlikely]] {
+                    trace_line += fmt::format(" {:#x}={:#x}", address, value);
+                }
                 if (address >= MacroRegistersStart) {
                     return false;
                 }
@@ -1939,7 +1970,23 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                         fs.parameters.assign(borrowed.begin(), borrowed.end());
                     }
                     ++dma_reads;
+                    const size_t parameters_before = fs.parameters.size();
                     FrontDmaRead(split, fs, method, address, value);
+                    if (trace) [[unlikely]] {
+                        trace_line += " [dma";
+                        if (address == 0x158) {
+                            for (size_t i = parameters_before; i < fs.parameters.size(); ++i) {
+                                trace_line += fmt::format(" {:#x}", fs.parameters[i]);
+                            }
+                        } else {
+                            const u32 ram = fs.regs[0x156];
+                            for (u32 i = 0; i < value && ram + i < native_data_ram.size(); ++i) {
+                                trace_line += fmt::format(" ram[{:#x}]={:#x}", ram + i,
+                                                          native_data_ram[ram + i]);
+                            }
+                        }
+                        trace_line += "]";
+                    }
                 }
                 return true;
             },
@@ -1949,6 +1996,11 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
                       start, result.consumed, parameter_count, result.error);
         }
+    }
+    if (trace) [[unlikely]] {
+        LOG_INFO(HW_GPU, "Nx2 macro trace {:#x} call {}: {}", trace_macro, traced_calls,
+                 trace_line);
+        ++traced_calls;
     }
     fs.parameters.clear();
     if (fs.draw_pending) {
