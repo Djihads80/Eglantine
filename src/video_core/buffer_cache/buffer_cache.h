@@ -291,8 +291,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
                                            device_addr_end_aligned - device_addr_start_aligned);
-    // A preflushable mark persists and downloads later GPU writes at every fence. Native titles
-    // instead keep read traps and flush on demand; EDEN_NX2_PREFLUSH=1 restores preflushing.
+    // A preflushable mark persists and downloads later GPU writes at every fence. Trapping every
+    // read instead stalled Ocarina's Kokiri Forest ~55 times a second (37 vs 52 FPS);
+    // EDEN_NX2_PREFLUSH=0 keeps read traps.
     static const std::optional<bool> forced_preflush = []() -> std::optional<bool> {
         const char* value = std::getenv("EDEN_NX2_PREFLUSH");
         if (value != nullptr) {
@@ -301,7 +302,7 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         return std::nullopt;
     }();
     const bool preflush =
-        forced_preflush.value_or(!Tegra::g_nx2_ampere.load(std::memory_order_relaxed));
+        forced_preflush.value_or(true);
     if (!area->preemtive) {
         if (preflush) {
             memory_tracker.MarkRegionAsPreflushable(
