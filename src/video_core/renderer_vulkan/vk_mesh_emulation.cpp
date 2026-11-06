@@ -18,7 +18,8 @@
 namespace Vulkan {
 namespace {
 constexpr u32 CHECK_SLOTS = 256;
-constexpr u64 MAX_FANOUT = 1024;
+// Mario Kart World's task workgroups launch up to ~6,000 mesh workgroups each.
+constexpr u64 MAX_FANOUT = 16384;
 }
 
 bool MeshEmulationEnabled(const Device& device) {
@@ -165,12 +166,11 @@ void MeshEmulationBuffer::ReportChecks() {
         std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
                     sizeof(header));
         const bool overflow = entry.has_task && header.task_allocated > entry.capacity;
-        // A header the draw's own work cannot have left (its dispatch and launches bounded by
-        // its slots): log it whole, learn nothing from it.
+        // A header the draw's own work cannot have left (its dispatch bounded by its slots, its
+        // capacity the host's): log it whole, learn nothing from it.
         const bool inconsistent =
-            entry.has_task && (header.dispatch[0] > entry.capacity ||
-                               header.task_allocated > u64{entry.groups} * MAX_FANOUT ||
-                               header.capacity != entry.capacity);
+            entry.has_task &&
+            (header.dispatch[0] > entry.capacity || header.capacity != entry.capacity);
         if (inconsistent) {
             if (inconsistent_logged++ < 16) {
                 const auto* const words = reinterpret_cast<const u32*>(&header);
@@ -245,6 +245,10 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
             return take(index);
         }
     }
+    // Chunks long unused go before another is made (a few draws need tens of MiB).
+    std::erase_if(chunks, [&](const Chunk& chunk) {
+        return scheduler.IsFree(chunk.tick) && tick - chunk.tick > 4096;
+    });
     const VkDeviceSize chunk_size = std::bit_ceil(std::max<VkDeviceSize>(size, 4ULL << 20));
     chunks.push_back(Chunk{
         .buffer = memory_allocator.CreateBuffer(
@@ -262,8 +266,10 @@ MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
             MemoryUsage::DeviceLocal),
         .size = chunk_size,
     });
-    LOG_INFO(Render_Vulkan, "Task/mesh emulation buffers: {} of {} KiB", chunks.size(),
-             chunk_size / 1024);
+    if (chunks_logged++ < 64) {
+        LOG_INFO(Render_Vulkan, "Task/mesh emulation buffers: {}, the last of {} KiB",
+                 chunks.size(), chunk_size / 1024);
+    }
     return take(chunks.size() - 1);
 }
 

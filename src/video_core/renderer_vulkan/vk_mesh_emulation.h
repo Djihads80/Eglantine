@@ -154,6 +154,7 @@ private:
     u32 checks_logged{};
     u32 overflows_logged{};
     u32 learned_logged{};
+    u32 chunks_logged{};
     size_t current{};
     VkDeviceSize max_size{};
     VkDeviceSize alignment{};
