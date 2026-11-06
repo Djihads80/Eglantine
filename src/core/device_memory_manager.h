@@ -134,6 +134,15 @@ public:
     /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
     void ArmReadTraps(DAddr addr, size_t size);
 
+    /// Makes guest threads drop their cached read areas, after a GPU write to one of them.
+    void InvalidateReadAreas() {
+        read_area_generation.fetch_add(1, std::memory_order_release);
+    }
+
+    u64 ReadAreaGeneration() const {
+        return read_area_generation.load(std::memory_order_acquire);
+    }
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};
@@ -218,6 +227,7 @@ private:
 
     std::deque<size_t> id_pool;
     std::deque<Memory::Memory*> registered_processes;
+    std::atomic<u64> read_area_generation{};
 
     // Memory protection management
 

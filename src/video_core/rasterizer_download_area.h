@@ -11,6 +11,7 @@ struct RasterizerDownloadArea {
     VAddr start_address;
     VAddr end_address;
     bool preemtive;
+    bool release_read_trap{}; ///< The read was of GPU data: the page's read trap has done its job
 };
 
 } // namespace VideoCore
