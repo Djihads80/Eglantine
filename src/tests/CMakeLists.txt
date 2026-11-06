@@ -6,6 +6,7 @@
 
 add_executable(tests
     core/nx2_oot_time.cpp
+    video_core/unbacked_image_policy.cpp
     core/builtin_patches.cpp
     core/system_test_context.h
     video_core/gpu_timestamp.cpp
