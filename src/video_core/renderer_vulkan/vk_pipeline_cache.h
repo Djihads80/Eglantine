@@ -174,8 +174,9 @@ private:
     /// Moves the pipelines finished by the workers into graphics_cache (GPU thread).
     void AdoptTranslatedGraphicsPipelines();
 
+    /// is_mesh: a task/mesh pipeline, stored in vulkan_mesh.bin with its mesh state.
     void SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
-                                   GraphicsEnvironmentArray envs);
+                                   GraphicsEnvironmentArray envs, bool is_mesh);
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
@@ -232,6 +233,8 @@ private:
     Shader::HostTranslateInfo host_info;
 
     std::filesystem::path pipeline_cache_filename;
+    /// Task and mesh pipelines, with the mesh state they are translated with.
+    std::filesystem::path mesh_pipeline_cache_filename;
 
     /// Key hashes of the graphics pipelines in the disk cache. Only those a recent session used
     /// (used_pipelines) are built at boot; the rest are built when first needed, and not stored

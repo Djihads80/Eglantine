@@ -763,6 +763,16 @@ size_t BackgroundPipelineThreads() {
     return std::clamp<size_t>(std::thread::hardware_concurrency() / 4, 1, 6);
 }
 
+// EDEN_NX2_MESH_DISK_CACHE=0: task/mesh pipelines are neither stored nor loaded, as before
+// vulkan_mesh.bin.
+bool MeshDiskCache() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_MESH_DISK_CACHE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
 // EDEN_NX2_PRELOAD_ALL_PIPELINES=1 builds every cached pipeline at boot, as before.
 bool PreloadAllPipelines() {
     static const bool all = [] {
@@ -891,6 +901,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     pipeline_cache_filename = base_dir / "vulkan.bin";
+    mesh_pipeline_cache_filename = base_dir / "vulkan_mesh.bin";
     used_pipelines_filename = base_dir / "vulkan_used.bin";
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
@@ -940,13 +951,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         });
         ++state.total;
     }};
+    bool loading_mesh_file = false;
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
 
-        // Task/mesh pipelines are not stored (their mesh registers are not in the format); skip
-        // any that were.
-        if (std::ranges::any_of(envs, [](const FileEnvironment& env) {
+        // Task/mesh pipelines live in their own file, with their mesh registers; vulkan.bin
+        // doesn't carry those, so skip any it holds.
+        if (!loading_mesh_file && std::ranges::any_of(envs, [](const FileEnvironment& env) {
                 return env.ShaderStage() == Shader::Stage::Task ||
                        env.ShaderStage() == Shader::Stage::Mesh;
             })) {
@@ -1023,6 +1035,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }};
     VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
                                load_graphics);
+    // Task/mesh pipelines build with VK_EXT_mesh_shader or through the compute emulation
+    // (vk_mesh_emulation.h); without either they are skipped, so their file isn't read.
+    if (MeshDiskCache() && (device.IsExtMeshShaderSupported() || MeshEmulationEnabled(device))) {
+        loading_mesh_file = true;
+        VideoCommon::LoadPipelines(stop_loading, mesh_pipeline_cache_filename, CACHE_VERSION,
+                                   load_compute, load_graphics, true);
+    }
 
     LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
     if (skipped_pipelines != 0) {
@@ -1716,20 +1735,24 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }
-    // Not stored: pipelines in the disk cache already (only not built at boot), and task and mesh
-    // ones, which are translated with the mesh registers the cache format does not carry (the few
-    // of them rebuild quickly from the driver cache).
-    if (!disk_pipelines.contains(graphics_key.Hash()) && !pipeline->IsMeshPipeline()) {
+    // Not stored: pipelines in the disk cache already (only not built at boot). Task and mesh ones
+    // are translated with the mesh registers, which vulkan.bin doesn't carry: they go to their own
+    // file (builds without it never read those records).
+    if (!disk_pipelines.contains(graphics_key.Hash())) {
         disk_pipelines.insert(graphics_key.Hash());
-        SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
+        SerializeGraphicsPipeline(graphics_key, std::move(environments.envs),
+                                  pipeline->IsMeshPipeline());
     }
     QueueVulkanPipelineCacheFlush();
     return pipeline;
 }
 
 void PipelineCache::SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
-                                              GraphicsEnvironmentArray envs) {
-    serialization_thread.QueueWork([this, key, envs = std::move(envs)] {
+                                              GraphicsEnvironmentArray envs, bool is_mesh) {
+    if (is_mesh && !MeshDiskCache()) {
+        return;
+    }
+    serialization_thread.QueueWork([this, key, envs = std::move(envs), is_mesh] {
         boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram>
             env_ptrs;
         for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
@@ -1737,7 +1760,9 @@ void PipelineCache::SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& ke
                 env_ptrs.push_back(&envs[index]);
             }
         }
-        SerializePipeline(key, env_ptrs, pipeline_cache_filename, CACHE_VERSION);
+        SerializePipeline(key, env_ptrs,
+                          is_mesh ? mesh_pipeline_cache_filename : pipeline_cache_filename,
+                          CACHE_VERSION, is_mesh);
     });
 }
 
@@ -1885,10 +1910,10 @@ void PipelineCache::AdoptTranslatedGraphicsPipelines() {
         GetTranslationReport().Adopted(result.build_time);
         // What CreateGraphicsPipeline() does after building on the GPU thread.
         if (result.pipeline && !pipeline_cache_filename.empty()) {
-            if (!disk_pipelines.contains(result.key.Hash()) &&
-                !result.pipeline->IsMeshPipeline()) {
+            if (!disk_pipelines.contains(result.key.Hash())) {
                 disk_pipelines.insert(result.key.Hash());
-                SerializeGraphicsPipeline(result.key, std::move(result.envs));
+                SerializeGraphicsPipeline(result.key, std::move(result.envs),
+                                          result.pipeline->IsMeshPipeline());
             }
             QueueVulkanPipelineCacheFlush();
         }
