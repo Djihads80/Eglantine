@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <optional>
 
 #include "common/common_types.h"
 #include "core/hle/service/nvdrv/nvdata.h"
@@ -51,6 +52,9 @@ public:
      * @return The ID of the reserved syncpoint
      */
     u32 AllocateSyncpoint(bool client_managed);
+
+    /// Reserves a free syncpoint, or returns no value on exhaustion without reserving ID 0.
+    std::optional<u32> TryAllocateSyncpoint(bool client_managed);
 
     /**
      * @url
