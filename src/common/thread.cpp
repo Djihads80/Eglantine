@@ -656,6 +656,8 @@ const char* GpuPinModeName(GpuPinMode mode) {
         return "separate";
     case GpuPinMode::PairWorker:
         return "pair+worker";
+    case GpuPinMode::SeparateWorker:
+        return "separate+worker";
     default:
         return "pair";
     }
@@ -841,9 +843,10 @@ void ReserveWin32GpuCores(Win32GpuReservation& reservation, GpuPinMode mode) {
     const auto low_cpu = [](DWORD_PTR mask) { return std::countr_zero(mask); };
     const DWORD_PTR front_core = candidates.empty() ? 0 : candidates[0];
     // Pair mode on a core without an SMT sibling places the back on the next core instead.
-    const bool back_on_sibling = mode != GpuPinMode::Separate && std::popcount(front_core) >= 2;
-    const size_t needed =
-        1 + (back_on_sibling ? 0 : 1) + (mode == GpuPinMode::PairWorker ? 1 : 0);
+    const bool pair = mode == GpuPinMode::Pair || mode == GpuPinMode::PairWorker;
+    const bool worker = mode == GpuPinMode::PairWorker || mode == GpuPinMode::SeparateWorker;
+    const bool back_on_sibling = pair && std::popcount(front_core) >= 2;
+    const size_t needed = 1 + (back_on_sibling ? 0 : 1) + (worker ? 1 : 0);
     if (candidates.size() < needed) {
         LOG_WARNING(Common,
                     "gpu_core_pin: {} V-Cache cores besides core 0, {} needed; nothing reserved",
@@ -860,7 +863,7 @@ void ReserveWin32GpuCores(Win32GpuReservation& reservation, GpuPinMode mode) {
         reserved |= candidates[next];
         reservation.slot_cpu[1] = low_cpu(candidates[next++]);
     }
-    if (mode == GpuPinMode::PairWorker) {
+    if (worker) {
         reserved |= candidates[next];
         reservation.slot_cpu[2] = low_cpu(candidates[next++]);
     }
@@ -1260,10 +1263,17 @@ GpuPinMode GpuPinModeFromEnv() {
         if (value == "pair+worker") {
             return GpuPinMode::PairWorker;
         }
-        if (!value.empty() && value != "pair") {
-            LOG_WARNING(Common, "gpu_core_pin: unknown EDEN_NX2_GPU_PIN={}, using pair", value);
+        if (value == "separate+worker") {
+            return GpuPinMode::SeparateWorker;
         }
-        return GpuPinMode::Pair;
+        if (value == "pair") {
+            return GpuPinMode::Pair;
+        }
+        if (!value.empty()) {
+            LOG_WARNING(Common, "gpu_core_pin: unknown EDEN_NX2_GPU_PIN={}, using separate",
+                        value);
+        }
+        return GpuPinMode::Separate;
     }();
     return mode;
 }
@@ -1336,6 +1346,31 @@ u32 CurrentCpuNumber() {
 #elif defined(__linux__)
     const int cpu = sched_getcpu();
     return cpu < 0 ? 0 : static_cast<u32>(cpu);
+#else
+    return 0;
+#endif
+}
+
+u64 CurrentThreadAffinityMask() {
+#ifdef _WIN32
+    GROUP_AFFINITY affinity{};
+    if (!GetThreadGroupAffinity(GetCurrentThread(), &affinity) || affinity.Group != 0) {
+        return 0;
+    }
+    return static_cast<u64>(affinity.Mask);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) {
+        return 0;
+    }
+    u64 mask = 0;
+    for (int cpu = 0; cpu < 64; ++cpu) {
+        if (CPU_ISSET(cpu, &set)) {
+            mask |= u64{1} << cpu;
+        }
+    }
+    return mask;
 #else
     return 0;
 #endif

@@ -117,12 +117,13 @@ void PollThreadPolicies();
 
 /// How ReserveGpuCores places the GPU front (slot 0), back (slot 1) and Vulkan worker (slot 2).
 enum class GpuPinMode : u32 {
-    Pair,       ///< Front and back on the two SMT siblings of one reserved core
-    Separate,   ///< Front and back each on their own reserved core
-    PairWorker, ///< Pair, plus a third reserved core for the Vulkan worker
+    Pair,           ///< Front and back on the two SMT siblings of one reserved core
+    Separate,       ///< Front and back each on their own reserved core
+    PairWorker,     ///< Pair, plus a third reserved core for the Vulkan worker
+    SeparateWorker, ///< Separate, plus a third reserved core for the Vulkan worker
 };
 
-/// EDEN_NX2_GPU_PIN=pair|separate|pair+worker (default pair).
+/// EDEN_NX2_GPU_PIN=pair|separate|pair+worker|separate+worker (default separate).
 GpuPinMode GpuPinModeFromEnv();
 
 /// Reserves the highest-numbered 3D V-Cache physical core(s) (never core 0) for the GPU threads:
@@ -136,5 +137,9 @@ void PinCurrentThreadToGpuSlot(u32 slot);
 
 /// The logical CPU the current thread runs on (group * 64 + number on Windows), for diagnostics.
 u32 CurrentCpuNumber();
+
+/// The current thread's affinity mask (group 0 on Windows, CPUs 0-63 on Linux), for diagnostics;
+/// 0 where unknown.
+u64 CurrentThreadAffinityMask();
 
 } // namespace Common
