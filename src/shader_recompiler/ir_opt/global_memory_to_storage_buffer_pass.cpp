@@ -1318,7 +1318,12 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         !env.IsCbufStorageBufferPointer(storage_buffer->index, storage_buffer->offset)) {
         storage_buffer.reset();
     }
-    if (native && !storage_buffer && !low_addr.IsImmediate()) {
+    // A paired constant buffer pointer can be only one input of a select or phi whose other input
+    // is a pointer loaded from that buffer (Ocarina of Time's foliage unit placement records are
+    // read from c0[12] or from *c0[12]). Rebasing on the constant buffer pointer then reads the
+    // loaded path's records out of bounds, as zeros, so look for loaded pointers here as well.
+    const bool paired_found = storage_buffer.has_value();
+    if (native && !low_addr.IsImmediate()) {
         const IR::Inst* const start{low_addr.InstRecursive()};
         auto it{info.native_candidates.find(start)};
         if (it == info.native_candidates.end()) {
@@ -1331,10 +1336,22 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
             }
         }
         const auto& candidates{it->second};
-        if (candidates.size() > 1 || (!candidates.empty() && info.native_dynamic.contains(start))) {
+        const bool has_loaded_pointer{std::ranges::any_of(
+            candidates, [](const StorageBufferAddr& c) { return c.indirect != ~0U; })};
+        if (paired_found && !has_loaded_pointer) {
+            // No pointer loaded from memory competes with the paired one: keep the pair.
+        } else if (candidates.size() > 1 || paired_found ||
+                   (!candidates.empty() && info.native_dynamic.contains(start))) {
             // Bind every candidate and keep the access global; the backend picks the buffer at
             // run time. Rebasing on one of them drops the other path's accesses.
             bool accepted{};
+            if (paired_found) {
+                // The paired pointer is the other input of the select or phi; bind it too.
+                info.set.insert(*storage_buffer);
+                if (IsGlobalMemoryWrite(inst)) {
+                    info.writes.insert(*storage_buffer);
+                }
+            }
             for (const StorageBufferAddr& candidate : candidates) {
                 if (std::ranges::find(info.table_candidates, candidate) !=
                     info.table_candidates.end()) {
@@ -1366,7 +1383,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
                 return;
             }
             // Only table entries, and no free binding for them: as if none had been found.
-        } else if (candidates.size() == 1) {
+        } else if (candidates.size() == 1 && !paired_found) {
             // The one pointer the address is built from. The NVN search below only takes 16-byte
             // aligned slots, so for a pointer at an 8-byte slot it can return a dimension or stride
             // the address arithmetic reads instead, and the access then lands in the wrong buffer.
