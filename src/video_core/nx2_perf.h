@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <string>
@@ -137,6 +138,9 @@ enum class Opt : unsigned {
     /// Alias: turns on acquire_trigger_early, exact_noted_writes and writer_set_exec together
     /// (EDEN_NX2_PERF_OFF still turns each of them off)
     FrontSyncTrio,
+    /// Measurement only: per-syncpoint stamps of the front's parse of a fence increment, the
+    /// back's increment and the back's idle time, reported by vi2's present (FenceTimeline)
+    FenceTimeline,
     Count,
 };
 
@@ -174,6 +178,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "hook_lazy_flush",
     "inflight_write_wait", "inflight_read_exact",
     "front_sync_trio",
+    "fence_timeline",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -217,7 +222,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
                           Opt::InflightReadExact,
-                          Opt::FrontSyncTrio}) {
+                          Opt::FrontSyncTrio, Opt::FenceTimeline}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -237,7 +242,7 @@ inline constexpr u64 DefaultOffMask() {
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
 /// (timing change: flash check and a user play test first); front_sync_trio (alias, not measured
-/// yet). dma_forward and draw_begin_coalesce are on
+/// yet); fence_timeline (measurement). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -252,7 +257,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
                                   Bit(Opt::GuestLandedSyncpoints) |
                                   Bit(Opt::WarGuardProbe) | Bit(Opt::InflightWriteWait) |
-                                  Bit(Opt::InflightReadExact) | Bit(Opt::FrontSyncTrio);
+                                  Bit(Opt::InflightReadExact) | Bit(Opt::FrontSyncTrio) |
+                                  Bit(Opt::FenceTimeline);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -272,6 +278,8 @@ static_assert(static_cast<unsigned>(Opt::WarGuardProbe) == 57 && IsOff(always_of
               IsOff(DefaultOffMask(), 57));
 static_assert(static_cast<unsigned>(Opt::DrawBeginCoalesce) == 58 && !IsOff(always_off, 58) &&
               IsOff(DefaultOffMask(), 58));
+static_assert(IsOff(always_off, static_cast<size_t>(Opt::FenceTimeline)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::FenceTimeline)));
 static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
@@ -423,5 +431,106 @@ inline void MarkFenceSyncpoint(u32 id) {
 /// landed, then per-second counts. Skips syncpoints the fence manager never signalled (only the
 /// CPU raises those; their host value never moves).
 void NoteGuestObservation(GuestSite site, u32 id, u32 value, u32 host);
+
+/// fence_timeline (measurement only): when the front parsed each syncpoint increment, when the
+/// back raised the guest value, when the front last popped a command list, and how long the
+/// back sat idle. Relaxed stores only; vi2's present matches them to its fence wait.
+namespace FenceTimeline {
+inline constexpr u32 NumIds = 192;
+inline constexpr u32 Depth = 8; ///< Increments of one id remembered (several per frame)
+
+/// The last Depth stamps of one syncpoint id. One writer thread per ring.
+struct Ring {
+    std::array<std::atomic<s64>, Depth> ns{};
+    std::array<std::atomic<u32>, Depth> seq{};   ///< Ordinal of the increment (0 = empty)
+    std::array<std::atomic<u32>, Depth> value{}; ///< Back: guest value after the increment
+    std::atomic<u32> count{};
+};
+
+inline std::array<Ring, NumIds> front_parse{};
+inline std::array<Ring, NumIds> back_incr{};
+inline std::atomic<s64> last_submit_pop_ns{};
+inline std::atomic<s64> back_idle_ns_total{}; ///< Read as a difference
+inline std::atomic<s64> back_idle_since_ns{}; ///< 0 while the back works
+
+inline bool On() {
+    static const bool on = Nx2Perf::On(Opt::FenceTimeline);
+    return on;
+}
+
+inline s64 NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+inline void Stamp(Ring& ring, s64 ns, u32 value) {
+    const u32 n = ring.count.load(std::memory_order_relaxed) + 1;
+    ring.count.store(n, std::memory_order_relaxed);
+    const u32 slot = n % Depth;
+    ring.seq[slot].store(0, std::memory_order_relaxed);
+    ring.ns[slot].store(ns, std::memory_order_relaxed);
+    ring.value[slot].store(value, std::memory_order_relaxed);
+    ring.seq[slot].store(n, std::memory_order_relaxed);
+}
+
+/// The front parsed an increment of syncpoint `id`.
+inline void StampFront(u32 id) {
+    if (id < NumIds) {
+        Stamp(front_parse[id], NowNs(), 0);
+    }
+}
+
+/// The back raised syncpoint `id`'s guest value to `value`.
+inline void StampBack(u32 id, u32 value) {
+    if (id < NumIds) {
+        Stamp(back_incr[id], NowNs(), value);
+    }
+}
+
+inline void BeginBackIdle() {
+    back_idle_since_ns.store(NowNs(), std::memory_order_relaxed);
+}
+
+inline void EndBackIdle() {
+    const s64 since = back_idle_since_ns.load(std::memory_order_relaxed);
+    if (since != 0) {
+        back_idle_ns_total.store(back_idle_ns_total.load(std::memory_order_relaxed) + NowNs() -
+                                     since,
+                                 std::memory_order_relaxed);
+        back_idle_since_ns.store(0, std::memory_order_relaxed);
+    }
+}
+
+/// The back's idle total at `now`, counting an idle stretch still running.
+inline s64 BackIdleAt(s64 now) {
+    const s64 since = back_idle_since_ns.load(std::memory_order_relaxed);
+    const s64 total = back_idle_ns_total.load(std::memory_order_relaxed);
+    return total + (since != 0 && now > since ? now - since : 0);
+}
+
+/// Stamps of the increment that raised `id` to `value`: false if no remembered one did.
+inline bool Find(u32 id, u32 value, s64& front_ns, s64& back_ns) {
+    if (id >= NumIds) {
+        return false;
+    }
+    const Ring& back = back_incr[id];
+    for (u32 slot = 0; slot < Depth; ++slot) {
+        const u32 n = back.seq[slot].load(std::memory_order_relaxed);
+        if (n == 0 || back.value[slot].load(std::memory_order_relaxed) != value) {
+            continue;
+        }
+        back_ns = back.ns[slot].load(std::memory_order_relaxed);
+        const Ring& front = front_parse[id];
+        const u32 front_slot = n % Depth;
+        if (front.seq[front_slot].load(std::memory_order_relaxed) != n) {
+            return false;
+        }
+        front_ns = front.ns[front_slot].load(std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+} // namespace FenceTimeline
 
 } // namespace VideoCommon::Nx2Perf

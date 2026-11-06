@@ -1780,6 +1780,11 @@ private:
             frames_ahead = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FramesAhead) ? 1 : 0;
         }
         const auto entered = std::chrono::steady_clock::now();
+        // fence_timeline (measurement only): the back's idle total and the last submit at entry.
+        namespace Timeline = VideoCommon::Nx2Perf::FenceTimeline;
+        const s64 timeline_idle = Timeline::On() ? Timeline::BackIdleAt(TimelineNs(entered)) : 0;
+        const s64 timeline_pop =
+            Timeline::On() ? Timeline::last_submit_pop_ns.load(std::memory_order_relaxed) : 0;
         // landed_prev_always / one_ahead_landed: before the reply, wait for the previous frame's
         // host syncpoint value (its downloads and reports in guest memory), not only its guest one.
         LandedLane landed_lane = LandedLane::None;
@@ -1902,19 +1907,24 @@ private:
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
             }
             m_stats.last_present = entered;
+            if (Timeline::On()) [[unlikely]] {
+                NoteFenceTimeline(~w[22], w[24], TimelineNs(entered), TimelineNs(waited),
+                                  timeline_idle, timeline_pop);
+            }
             if (++m_stats.presents == 600) {
+                const std::string timeline = Timeline::On() ? FenceTimelineSummary() : std::string{};
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
                          "pacing {} us, {} ran a frame ahead, {} behind without this frame's wait, "
                          "{} early before the previous frame landed ({} us waited for landing, "
                          "{} gave up, {} verify differences so far), {} held by the release "
-                         "backstop",
+                         "backstop{}",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead, m_stats.one_ahead_skips,
                          m_stats.landed_lag, m_stats.landed_us, m_stats.landed_gave_up,
-                         m_landed_mismatches, m_stats.release_backstops);
+                         m_landed_mismatches, m_stats.release_backstops, timeline);
                 m_stats = {.last_present = entered};
             }
         }
@@ -2051,6 +2061,83 @@ private:
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     VideoCommon::Nx2FrameStats::Window<> m_frame_stats;
+
+    /// fence_timeline (measurement only): per 600 presents, where this frame's fence wait went.
+    struct FenceTimelineWindow {
+        static constexpr u32 Presents = 600;
+        enum : u32 { EnteredToFront, FrontToBack, BackToWaited, PopToEntered, BackIdle, Count };
+        std::array<std::array<float, Presents>, Count> ms{};
+        std::array<float, Presents> sorted{};
+        u32 samples{}, unmatched{};
+    };
+    std::unique_ptr<FenceTimelineWindow> m_fence_timeline;
+    u64 m_fence_timeline_mismatches{};
+
+    static s64 TimelineNs(std::chrono::steady_clock::time_point time) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch())
+            .count();
+    }
+
+    void NoteFenceTimeline(u32 fence_id, u32 fence_value, s64 entered_ns, s64 waited_ns,
+                           s64 entered_idle_ns, s64 submit_pop_ns) {
+        namespace Timeline = VideoCommon::Nx2Perf::FenceTimeline;
+        if (!m_fence_timeline) {
+            m_fence_timeline = std::make_unique<FenceTimelineWindow>();
+        }
+        auto& window = *m_fence_timeline;
+        s64 front_ns{};
+        s64 back_ns{};
+        if (!Timeline::Find(fence_id, fence_value, front_ns, back_ns)) {
+            ++window.unmatched;
+            return;
+        }
+        if (VideoCommon::Nx2Perf::Verify() && front_ns > back_ns) {
+            // The front parses an increment before the back runs it: a later parse means the
+            // stamps were matched to the wrong increment.
+            const u64 count = ++m_fence_timeline_mismatches;
+            if (count <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf fence_timeline: present #{} fence ({}, {:#x}) parsed {} us "
+                          "after the back's increment ({} differences)",
+                          m_presents, fence_id, fence_value, (front_ns - back_ns) / 1000, count);
+            }
+        }
+        if (window.samples >= FenceTimelineWindow::Presents) {
+            return;
+        }
+        const auto ms = [](s64 ns) { return static_cast<float>(ns) / 1e6f; };
+        const u32 i = window.samples++;
+        window.ms[FenceTimelineWindow::EnteredToFront][i] = ms(front_ns - entered_ns);
+        window.ms[FenceTimelineWindow::FrontToBack][i] = ms(back_ns - front_ns);
+        window.ms[FenceTimelineWindow::BackToWaited][i] = ms(waited_ns - back_ns);
+        window.ms[FenceTimelineWindow::PopToEntered][i] =
+            submit_pop_ns != 0 ? ms(entered_ns - submit_pop_ns) : 0.0f;
+        window.ms[FenceTimelineWindow::BackIdle][i] =
+            ms(Timeline::BackIdleAt(waited_ns) - entered_idle_ns);
+    }
+
+    /// ", fence timeline ..." with p50/p99 of each interval; starts the next window.
+    std::string FenceTimelineSummary() {
+        if (!m_fence_timeline) {
+            return ", fence timeline: no samples";
+        }
+        auto& window = *m_fence_timeline;
+        static constexpr std::array<const char*, FenceTimelineWindow::Count> names{
+            "entered->front_parse", "front_parse->back_incr", "back_incr->waited",
+            "last_submit_pop->entered", "back_idle_in_wait"};
+        std::string out = fmt::format(", fence timeline ({} matched, {} unmatched) ms p50/p99:",
+                                      window.samples, window.unmatched);
+        const u32 n = window.samples;
+        for (u32 k = 0; k < FenceTimelineWindow::Count && n != 0; ++k) {
+            std::copy_n(window.ms[k].begin(), n, window.sorted.begin());
+            std::sort(window.sorted.begin(), window.sorted.begin() + n);
+            out += fmt::format(" {} {:.3f}/{:.3f}", names[k], window.sorted[n / 2],
+                               window.sorted[(std::min)(n - 1, n * 99 / 100)]);
+        }
+        window.samples = 0;
+        window.unmatched = 0;
+        return out;
+    }
     u32 m_one_ahead_mismatches{};
     enum class LandedLane { None, PrevAlways, OneAhead };
     u64 m_landed_mismatches{};

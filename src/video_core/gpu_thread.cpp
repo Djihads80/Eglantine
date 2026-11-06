@@ -112,6 +112,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 // in order, and so does the signal that the command ran.
                 auto* const rasterizer_ptr = renderer.ReadRasterizer();
                 if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                    if (VideoCommon::Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                        VideoCommon::Nx2Perf::FenceTimeline::last_submit_pop_ns.store(
+                            VideoCommon::Nx2Perf::FenceTimeline::NowNs(), std::memory_order_relaxed);
+                    }
                     Profile::Scope scope{Profile::Zone::Push};
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
@@ -151,6 +155,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 continue;
             }
             if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+                if (VideoCommon::Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                    VideoCommon::Nx2Perf::FenceTimeline::last_submit_pop_ns.store(
+                        VideoCommon::Nx2Perf::FenceTimeline::NowNs(), std::memory_order_relaxed);
+                }
                 Profile::Scope scope{Profile::Zone::Push};
                 scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
             } else if (std::holds_alternative<GPUTickCommand>(next.data)) {

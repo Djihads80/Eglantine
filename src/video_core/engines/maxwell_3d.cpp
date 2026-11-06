@@ -1665,6 +1665,10 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         Profile::AddSameExecutable(method);
     }
     fs.regs[method] = value;
+    if (VideoCommon::Nx2Perf::FenceTimeline::On() &&
+        method == MAXWELL3D_REG_INDEX(sync_info)) [[unlikely]] {
+        VideoCommon::Nx2Perf::FenceTimeline::StampFront(value & 0xffff); // sync_info.sync_point
+    }
     const u8 cls = fs.class_table ? FrontClass(method, fs.verify) : u8{0};
     if (IsDrawProgramRegister(method)) {
         fs.draw_key_valid = false;

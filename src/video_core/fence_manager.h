@@ -138,6 +138,10 @@ public:
             SyncOperation([this, value] {
                 syncpoint_manager.IncrementHost(value);
                 syncpoint_manager.IncrementGuest(value);
+                if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+                    Nx2Perf::FenceTimeline::StampBack(
+                        value, syncpoint_manager.GetGuestSyncpointValue(value));
+                }
             });
             SignalFence([] {});
             SubmitDeferred();
@@ -145,6 +149,10 @@ public:
             return;
         }
         syncpoint_manager.IncrementGuest(value);
+        if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+            Nx2Perf::FenceTimeline::StampBack(value,
+                                              syncpoint_manager.GetGuestSyncpointValue(value));
+        }
         if (Nx2Perf::LandedSyncpoints()) {
             if (Nx2Perf::Verify()) {
                 Nx2Perf::MarkFenceSyncpoint(value);

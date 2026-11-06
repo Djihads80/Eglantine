@@ -452,6 +452,10 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
         VideoCommon::GpuSplit::Get().NoteSync();
         break;
     case Puller::FenceOperation::Increment:
+        if (VideoCommon::Nx2Perf::FenceTimeline::On()) [[unlikely]] {
+            VideoCommon::Nx2Perf::FenceTimeline::StampFront(
+                static_cast<u32>(regs.fence_action.syncpoint_id.Value()));
+        }
         OnBack(
             [rasterizer = dma_pusher.rasterizer,
              id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {
