@@ -370,6 +370,9 @@ struct Info {
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
+    /// With native_global_bounds: a run-time global access's flags hold the descriptors (bit i:
+    /// storage_buffers_descriptors[i]) it can reach, searched instead of all of them; 0 is all.
+    bool native_global_candidate_masks{};
     bool uses_atomic_image_u32{};
     bool uses_shadow_lod{};
     bool uses_rescaling_uniform{};

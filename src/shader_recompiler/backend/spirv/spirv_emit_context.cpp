@@ -1023,6 +1023,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     }
     using DefPtr = Id StorageDefinitions::*;
     const Id zero{u32_zero_value};
+    // The descriptors the function being defined searches (bit i: descriptor i), 0 for all.
+    u32 mask{};
+    const auto in_mask{[&mask](size_t index) {
+        return mask == 0 || (index < 32 && ((mask >> index) & 1) != 0);
+    }};
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback) {
         AddLabel();
@@ -1082,6 +1087,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
             Id best_index{Const(~0U)};
             Id best_distance{Constant(U64, ~u64{0})};
             for (size_t index = 0; index < num_buffers; ++index) {
+                if (!in_mask(index)) {
+                    continue;
+                }
                 bases[index] = base_address(index);
                 const Id distance{OpISub(U64, addr, bases[index])};
                 const Id better{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, bases[index]),
@@ -1090,13 +1098,17 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
             }
             for (size_t index = 0; index < num_buffers; ++index) {
+                if (!in_mask(index)) {
+                    continue;
+                }
                 access(index, bases[index],
                        OpIEqual(U1, best_index, Const(static_cast<u32>(index))));
             }
             return;
         }
         for (size_t index = 0; index < num_buffers; ++index) {
-            if (!UsesNvnStorageDescriptor(info, info.storage_buffers_descriptors[index])) {
+            if (!in_mask(index) ||
+                !UsesNvnStorageDescriptor(info, info.storage_buffers_descriptors[index])) {
                 continue;
             }
             const auto& ssbo{info.storage_buffers_descriptors[index]};
@@ -1148,6 +1160,30 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2], sizeof(u32[2]));
     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
+    // Run-time accesses that name their candidate descriptors (Info::native_global_candidate_masks)
+    // get functions searching only those, one per access size and set of candidates.
+    if (info.native_global_candidate_masks) {
+        for (const IR::Block* const block : program.blocks) {
+            for (const IR::Inst& inst : block->Instructions()) {
+                const u32 kind{GlobalAccessKind(inst.GetOpcode())};
+                const u32 inst_mask{inst.Flags<u32>()};
+                if (kind == ~0U || inst_mask == 0 ||
+                    masked_global_funcs.contains(MaskedGlobalKey(kind, inst_mask))) {
+                    continue;
+                }
+                mask = inst_mask;
+                masked_global_funcs.emplace(
+                    MaskedGlobalKey(kind, inst_mask),
+                    kind == 0   ? define(&StorageDefinitions::U32, storage_types.U32, U32[1],
+                                         sizeof(u32))
+                    : kind == 1 ? define(&StorageDefinitions::U32x2, storage_types.U32x2, U32[2],
+                                         sizeof(u32[2]))
+                                : define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4],
+                                         sizeof(u32[4])));
+            }
+        }
+        mask = 0;
+    }
 
     if (!std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& descriptor) {
             return info.native_global_bounds || UsesNvnStorageDescriptor(info, descriptor);

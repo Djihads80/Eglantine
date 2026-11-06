@@ -71,7 +71,22 @@ struct StorageInfo {
     std::unordered_set<const IR::Inst*> native_dynamic;
     /// A native access with several candidate pointers was left global.
     bool native_runtime_bounds{};
+    /// Those accesses with their candidates (NativeCandidateMasks).
+    std::vector<std::pair<IR::Inst*, small_vector<StorageBufferAddr, 4>>> runtime_accesses;
 };
+
+/// EDEN_NX2_GLOBAL_CANDIDATES=0: a native global access resolved at run time searches every
+/// storage buffer of the shader, as before, not only the pointers its address can come from.
+/// Ocarina of Time's vertex shaders that read their vertices through loaded pointers compiled to
+/// ~28,000 Adreno instructions (the average is ~90): each of their ~80 loads compared its address
+/// with every buffer's base in 64-bit arithmetic.
+bool NativeCandidateMasks() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_GLOBAL_CANDIDATES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
 
 /// Returns true when the instruction is a global memory instruction
 bool IsGlobalMemory(const IR::Inst& inst) {
@@ -625,6 +640,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
                 }
             }
             info.native_runtime_bounds = true;
+            info.runtime_accesses.emplace_back(&inst, candidates);
             return;
         }
         if (candidates.size() == 1) {
@@ -813,6 +829,23 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
             .indirect_offset = storage_buffer.indirect,
         });
     }
+    // The descriptors each run-time access can reach (their indices are their order in the set,
+    // as for the replaced accesses below). An access with a candidate past the 32nd keeps 0: all.
+    if (NativeCandidateMasks() && !info.runtime_accesses.empty()) {
+        for (const auto& [access, candidates] : info.runtime_accesses) {
+            u32 mask{};
+            for (const StorageBufferAddr& candidate : candidates) {
+                const size_t index{info.set.index_of(info.set.find(candidate))};
+                if (index >= 32) {
+                    mask = 0;
+                    break;
+                }
+                mask |= 1U << index;
+            }
+            access->SetFlags(mask);
+        }
+        program.info.native_global_candidate_masks = true;
+    }
     for (const StorageInst& storage_inst : info.to_replace) {
         const StorageBufferAddr storage_buffer{storage_inst.storage_buffer};
         const auto it{info.set.find(storage_inst.storage_buffer)};
@@ -827,6 +860,8 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
 
 void JoinStorageInfo(Info& base, Info& source) {
     base.native_global_bounds |= source.native_global_bounds;
+    // The source's masks name its own descriptor indices, which the merge below moves.
+    base.native_global_candidate_masks = false;
     auto& descriptors = base.storage_buffers_descriptors;
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {

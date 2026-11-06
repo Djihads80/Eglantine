@@ -373,6 +373,46 @@ public:
     Id write_global_func_u32x4{};
     Id atomic_add_global_func_u32{};
     Id atomic_umax_global_func_u32{};
+    /// Load and write functions searching only some storage buffers, for run-time global accesses
+    /// whose flags name their candidates (Info::native_global_candidate_masks), by MaskedGlobalKey.
+    ::Common::unordered_map<u64, std::pair<Id, Id>> masked_global_funcs;
+
+    /// 0, 1 or 2 for a 32, 64 or 128-bit global load or write; ~0 for anything else.
+    [[nodiscard]] static u32 GlobalAccessKind(IR::Opcode opcode) noexcept {
+        switch (opcode) {
+        case IR::Opcode::LoadGlobal32:
+        case IR::Opcode::WriteGlobal32:
+            return 0;
+        case IR::Opcode::LoadGlobal64:
+        case IR::Opcode::WriteGlobal64:
+            return 1;
+        case IR::Opcode::LoadGlobal128:
+        case IR::Opcode::WriteGlobal128:
+            return 2;
+        default:
+            return ~0U;
+        }
+    }
+    [[nodiscard]] static u64 MaskedGlobalKey(u32 kind, u32 mask) noexcept {
+        return (u64{kind} << 32) | mask;
+    }
+    /// The function a global load (or write) of this size with these flags calls.
+    [[nodiscard]] Id GlobalFunction(u32 kind, bool write, u32 mask) const {
+        if (mask != 0) {
+            if (const auto it = masked_global_funcs.find(MaskedGlobalKey(kind, mask));
+                it != masked_global_funcs.end()) {
+                return write ? it->second.second : it->second.first;
+            }
+        }
+        switch (kind) {
+        case 0:
+            return write ? write_global_func_u32 : load_global_func_u32;
+        case 1:
+            return write ? write_global_func_u32x2 : load_global_func_u32x2;
+        default:
+            return write ? write_global_func_u32x4 : load_global_func_u32x4;
+        }
+    }
 
     bool need_input_position_indirect{};
     Id input_position{};
