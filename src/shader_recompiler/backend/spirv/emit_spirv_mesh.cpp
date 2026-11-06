@@ -257,7 +257,18 @@ void MeshEmulationPrologue(EmitContext& ctx) {
     ctx.mesh_emulation_map =
         ctx.OpIAdd(ctx.U32[1], LoadEmulationWord(ctx, MESH_EMULATION_MAP_WORD),
                    ctx.OpIMul(ctx.U32[1], slot, ctx.Const(MeshEmulationMapWords(ctx.mesh_info))));
-    ctx.OpStore(PrimitiveCountWord(ctx), ctx.u32_zero_value);
+    // The slot's map region starts zeroed: map bytes the program leaves unwritten name vertex 0,
+    // not another draw's vertices. Every invocation clears a share of it (past the end, the
+    // last word again: no branch in the entry block).
+    const u32 map_words{MeshEmulationMapWords(ctx.mesh_info)};
+    const u32 threads{ctx.mesh_threads};
+    const Id invocation{LocalInvocation(ctx)};
+    for (u32 first = 0; first < map_words; first += threads) {
+        const Id word{ctx.OpUMin(ctx.U32[1], ctx.OpIAdd(ctx.U32[1], invocation, ctx.Const(first)),
+                                 ctx.Const(map_words - 1))};
+        ctx.OpStore(EmulationWord(ctx, ctx.OpIAdd(ctx.U32[1], ctx.mesh_emulation_map, word)),
+                    ctx.u32_zero_value);
+    }
     EmulationBarrier(ctx);
 }
 

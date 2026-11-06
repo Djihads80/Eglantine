@@ -116,7 +116,12 @@ std::vector<u32> EmitMeshEmulationVertex(const Profile& profile, const MeshInfo&
                      mul(slot, MeshEmulationMapWords(mesh)))};
     const Id count{module.OpUMin(u32_type, load_word(add(map, u32_constant(MeshMapBytes(mesh)))),
                                  u32_constant(max_primitives))};
-    const Id culled{module.OpUGreaterThanEqual(bool_type, primitive, count)};
+    // Past the slot's count, or a slot the mesh dispatch did not reach (a direct draw of more
+    // slots than were dispatched: their regions hold another draw's data).
+    const Id dispatched{load_word(u32_constant(MESH_EMULATION_DISPATCH_WORD))};
+    const Id culled{module.OpLogicalOr(bool_type,
+                                       module.OpUGreaterThanEqual(bool_type, primitive, count),
+                                       module.OpUGreaterThanEqual(bool_type, slot, dispatched))};
     const Id vertex_byte{add(add(mul(primitive, 3), corner), u32_constant(4))};
     const Id vertex{module.OpUMin(
         u32_type, module.OpBitwiseAnd(u32_type, load_word(add(map, vertex_byte)), u32_constant(0xff)),

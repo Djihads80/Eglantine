@@ -21,8 +21,9 @@ class Scheduler;
 
 /// Switch 2 task/mesh draws are emulated on a device without VK_EXT_mesh_shader: the task and mesh
 /// programs run as compute shaders writing a storage buffer, and a generated vertex shader draws
-/// what they wrote with the pipeline's fragment program and state. EDEN_NX2_MESH_EMULATE=1
-/// emulates them on every device (A/B against native mesh shaders), =0 never.
+/// what they wrote with the pipeline's fragment program and state. Not for Mario Kart World
+/// (too costly). EDEN_NX2_MESH_EMULATE=1 emulates them on every device and title (A/B against
+/// native mesh shaders), =0 never.
 [[nodiscard]] bool MeshEmulationEnabled(const Device& device);
 
 /// The compute stages of an emulated task/mesh pipeline and its storage buffer layout.
