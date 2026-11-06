@@ -128,6 +128,9 @@ enum class Opt : unsigned {
     /// the front waits for GPU results, or the deferred submit is older than
     /// EDEN_NX2_HOOK_FLUSH_US (default 1000), not at every catch-up
     HookLazyFlush,
+    /// With DmaForward: a forwarded macro call's dry-run plan is cached by code generation, start,
+    /// parameters and the reads it made; the ring entry names a shared code slot, not a code copy
+    DmaForwardMemo,
     Count,
 };
 
@@ -163,6 +166,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "war_guard_probe",
     "draw_begin_coalesce",
     "hook_lazy_flush",
+    "dma_forward_memo",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -201,7 +205,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
-                          Opt::HookLazyFlush,
+                          Opt::HookLazyFlush, Opt::DmaForwardMemo,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce}) {
@@ -222,8 +226,8 @@ inline constexpr u64 DefaultOffMask() {
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
-/// war_guard_probe (measurement, adds page traps). dma_forward and draw_begin_coalesce are on
-/// by default (round 5); SAFE turns them off.
+/// war_guard_probe (measurement, adds page traps); dma_forward_memo (unmeasured). dma_forward and
+/// draw_begin_coalesce are on by default (round 5); SAFE turns them off.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -236,7 +240,7 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
                                   Bit(Opt::GuestLandedSyncpoints) |
-                                  Bit(Opt::WarGuardProbe);
+                                  Bit(Opt::WarGuardProbe) | Bit(Opt::DmaForwardMemo);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -258,6 +262,8 @@ static_assert(static_cast<unsigned>(Opt::DrawBeginCoalesce) == 58 && !IsOff(alwa
               IsOff(DefaultOffMask(), 58));
 static_assert(!IsOff(always_off, static_cast<size_t>(Opt::DmaForward)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForward)));
+static_assert(IsOff(always_off, static_cast<size_t>(Opt::DmaForwardMemo)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForwardMemo)));
 static_assert(IsOff(always_off, static_cast<size_t>(Opt::HookLazyFlush)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::HookLazyFlush)));
 

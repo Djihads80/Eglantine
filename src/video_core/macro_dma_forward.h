@@ -8,9 +8,12 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -40,10 +43,8 @@ struct Recorded {
     u32 second;
 };
 
-/// What the back needs to run the call again with the real words: trivially copyable, so it
-/// travels in a ring entry. The code is a copy: the front may upload new code before the back
-/// gets here.
-struct Snapshot {
+/// A Snapshot without its code (dma_forward_memo: the code lives in a shared slot).
+struct SlimSnapshot {
     u32 base_pc;
     u32 start;
     u32 num_code_words;
@@ -53,11 +54,20 @@ struct Snapshot {
     u32 dma_words;
     u32 num_writes;
     u32 first_forwarded; ///< Writes from here on are the tainted ones
+    u32 unused;          ///< No padding: verify compares snapshots bytewise
     GPUVAddr dma_source;
-    std::array<u32, MaxCode * 3> code;
     std::array<u32, MaxParameters> parameters;
     std::array<Recorded, MaxReads> state_reads; ///< (register, value)
     std::array<Recorded, MaxReads> ram_reads;   ///< (address, value)
+};
+static_assert(std::is_trivially_copyable_v<SlimSnapshot>);
+static_assert(sizeof(SlimSnapshot) == 0xd0 && std::has_unique_object_representations_v<SlimSnapshot>);
+
+/// What the back needs to run the call again with the real words: trivially copyable, so it
+/// travels in a ring entry. The code is a copy: the front may upload new code before the back
+/// gets here.
+struct Snapshot : SlimSnapshot {
+    std::array<u32, MaxCode * 3> code;
 };
 static_assert(std::is_trivially_copyable_v<Snapshot>);
 
@@ -454,8 +464,8 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
 /// `apply(method, value)` for each forwarded write. False when the run fails or makes a different
 /// number of writes than the dry run (which would mean the analysis is wrong).
 template <typename Apply>
-bool Recompute(const Snapshot& snapshot, std::span<const u32> words, u32 macro_registers_start,
-               Apply&& apply) {
+bool Recompute(const SlimSnapshot& snapshot, std::span<const u32> code,
+               std::span<const u32> words, u32 macro_registers_start, Apply&& apply) {
     using Interpreter = Tegra::TuringMacroInterpreter;
     thread_local std::unique_ptr<Interpreter> interpreter;
     thread_local std::vector<u32> fifo;
@@ -473,7 +483,7 @@ bool Recompute(const Snapshot& snapshot, std::span<const u32> words, u32 macro_r
                 snapshot.parameters.begin() + snapshot.num_parameters);
     u32 index{};
     const auto result = interpreter->Execute(
-        std::span<const u32>{snapshot.code.data(), snapshot.num_code_words}, snapshot.start, fifo,
+        code.first(snapshot.num_code_words), snapshot.start, fifo,
         [&snapshot](u32 address) {
             for (u32 i = 0; i < snapshot.num_state_reads; ++i) {
                 if (snapshot.state_reads[i].first == address) {
@@ -494,5 +504,141 @@ bool Recompute(const Snapshot& snapshot, std::span<const u32> words, u32 macro_r
         });
     return result.success && index == snapshot.num_writes;
 }
+
+template <typename Apply>
+bool Recompute(const Snapshot& snapshot, std::span<const u32> words, u32 macro_registers_start,
+               Apply&& apply) {
+    return Recompute(static_cast<const SlimSnapshot&>(snapshot),
+                     std::span<const u32>{snapshot.code}, words, macro_registers_start,
+                     std::forward<Apply>(apply));
+}
+
+/// Same writes, data RAM writes and snapshot (dma_forward_memo's verify).
+inline bool SamePlan(const Plan& a, const Plan& b) {
+    if (a.eligible != b.eligible || a.num_writes != b.num_writes ||
+        a.dma_write_index != b.dma_write_index || a.num_ram_writes != b.num_ram_writes ||
+        std::memcmp(static_cast<const SlimSnapshot*>(&a.snapshot),
+                    static_cast<const SlimSnapshot*>(&b.snapshot), sizeof(SlimSnapshot)) != 0 ||
+        std::memcmp(a.snapshot.code.data(), b.snapshot.code.data(),
+                    size_t{a.snapshot.num_code_words} * sizeof(u32)) != 0) {
+        return false;
+    }
+    for (size_t i = 0; i < a.num_writes; ++i) {
+        if (a.writes[i].method != b.writes[i].method || a.writes[i].value != b.writes[i].value ||
+            a.writes[i].forwarded != b.writes[i].forwarded) {
+            return false;
+        }
+    }
+    for (size_t i = 0; i < a.num_ram_writes; ++i) {
+        if (a.ram_writes[i] != b.ram_writes[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Nx2Perf dma_forward_memo: front-owned. Analyze is a pure function of the code generation,
+/// the start, the parameters, the registers it read through `read` (value and unknown flag) and
+/// the data RAM words it read (the plan's ram_reads), so a plan whose inputs all match again is
+/// reused. Code slots hold immutable copies of the executed code range for the ring entries; a
+/// slot is reused only once the back has passed the last entry that named it.
+struct RegisterRead {
+    u32 address;
+    u32 value;
+    bool unknown;
+};
+
+struct MemoEntry {
+    bool valid{};
+    u64 generation{};
+    u32 start{};
+    u32 num_parameters{};
+    std::array<u32, MaxParameters> parameters{};
+    u32 num_reads{};
+    std::array<RegisterRead, MaxReads> reads{};
+    Plan plan{};
+};
+
+struct CodeSlot {
+    bool valid{};
+    u64 generation{};
+    u32 base_pc{};
+    u32 num_code_words{};
+    u64 last_use{}; ///< Ring position after the last entry naming this slot
+    std::array<u32, MaxCode * 3> code{};
+};
+
+inline constexpr size_t MemoEntries = 8;
+inline constexpr size_t MemoCodeSlots = 8;
+
+struct Memo {
+    std::array<MemoEntry, MemoEntries> entries{};
+    u32 next_victim{};
+    std::array<CodeSlot, MemoCodeSlots> slots{};
+    u64 hits{};
+    u64 misses{};
+    u64 slot_full{};
+    u64 slim_entries{};
+    u64 last_log_ns{};
+    u32 calls_since_check{};
+
+    /// The cached plan for these inputs, or null. `read` as Analyze's.
+    template <typename Read>
+    const MemoEntry* Find(u64 generation, u32 start, std::span<const u32> parameters,
+                          std::span<const u32> data_ram, Read&& read) const {
+        for (const MemoEntry& entry : entries) {
+            if (!entry.valid || entry.generation != generation || entry.start != start ||
+                entry.num_parameters != parameters.size() ||
+                !std::equal(parameters.begin(), parameters.end(), entry.parameters.begin())) {
+                continue;
+            }
+            bool same = true;
+            for (u32 i = 0; same && i < entry.num_reads; ++i) {
+                bool unknown = false;
+                const u32 value = read(entry.reads[i].address, unknown);
+                same = value == entry.reads[i].value && unknown == entry.reads[i].unknown;
+            }
+            const Snapshot& snapshot = entry.plan.snapshot;
+            for (u32 i = 0; same && i < snapshot.num_ram_reads; ++i) {
+                const auto [address, value] = snapshot.ram_reads[i];
+                same = address < data_ram.size() && data_ram[address] == value;
+            }
+            if (same) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
+    /// The entry to refill (round robin).
+    MemoEntry& Victim() {
+        MemoEntry& entry = entries[next_victim];
+        next_victim = (next_victim + 1) % MemoEntries;
+        return entry;
+    }
+
+    /// A slot holding the snapshot's code, or null when every slot is still in use by the back
+    /// (`consumed`: the back's ring position).
+    CodeSlot* AcquireSlot(u64 generation, const Snapshot& snapshot, u64 consumed) {
+        CodeSlot* free = nullptr;
+        for (CodeSlot& slot : slots) {
+            if (slot.valid && slot.generation == generation && slot.base_pc == snapshot.base_pc &&
+                slot.num_code_words == snapshot.num_code_words) {
+                return &slot;
+            }
+            if (free == nullptr && (!slot.valid || slot.last_use <= consumed)) {
+                free = &slot;
+            }
+        }
+        if (free != nullptr) {
+            free->valid = true;
+            free->generation = generation;
+            free->base_pc = snapshot.base_pc;
+            free->num_code_words = snapshot.num_code_words;
+            std::copy_n(snapshot.code.begin(), snapshot.num_code_words, free->code.begin());
+        }
+        return free;
+    }
+};
 
 } // namespace VideoCommon::DmaForward
