@@ -5,6 +5,7 @@
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
@@ -32,6 +33,7 @@ struct Fixture {
 };
 } // namespace
 
+/// Checks both completion orders so neither the deadline nor GPU completion releases alone.
 TEST_CASE("Native present release needs both the deadline and GPU fence", "[nx2_present]") {
     Fixture f;
     Service::Nx2PresentReleaseQueue queue{f.timing, f.syncpoints, ReleaseId};
@@ -55,6 +57,7 @@ TEST_CASE("Native present release needs both the deadline and GPU fence", "[nx2_
     REQUIRE_FALSE(f.timing.Advance().has_value());
 }
 
+/// Checks FIFO release gating and timer rearming after the queue becomes empty.
 TEST_CASE("Native present releases remain ordered when a later frame is ready", "[nx2_present]") {
     Fixture f;
     Service::Nx2PresentReleaseQueue queue{f.timing, f.syncpoints, ReleaseId};
@@ -73,6 +76,7 @@ TEST_CASE("Native present releases remain ordered when a later frame is ready", 
     REQUIRE_FALSE(f.timing.Advance().has_value());
 }
 
+/// Verifies saturation rejects submissions until completed frames restore queue capacity.
 TEST_CASE("Native present queue bounds pending releases and recovers capacity", "[nx2_present]") {
     Fixture f;
     Service::Nx2PresentReleaseQueue queue{f.timing, f.syncpoints, ReleaseId};
@@ -90,6 +94,7 @@ TEST_CASE("Native present queue bounds pending releases and recovers capacity", 
     REQUIRE(f.syncpoints.GetGuestSyncpointValue(ReleaseId) == 16);
 }
 
+/// Verifies shutdown cancels callbacks without advancing counters already at or past the target.
 TEST_CASE("Native present shutdown cancels retries and resolves only pending releases",
           "[nx2_present]") {
     Fixture f;
@@ -118,9 +123,13 @@ TEST_CASE("Native present shutdown cancels retries and resolves only pending rel
     REQUIRE(f.syncpoints.GetGuestSyncpointValue(ReleaseId) == value);
 }
 
+/// Exhausts the allocator to check ID zero stays unreserved and freed IDs remain reusable.
 TEST_CASE("Syncpoint exhaustion never reserves ID zero and freed IDs can be reused",
           "[nx2_present]") {
     Core::System system;
+    SCOPE_EXIT {
+        system.CoreTiming().Reset();
+    };
     system.Initialize();
     auto host = std::make_unique<Tegra::Host1x::Host1x>(system);
     Service::Nvidia::NvCore::SyncpointManager allocator{*host};
