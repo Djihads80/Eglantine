@@ -202,7 +202,8 @@ bool DmaPusher::Step() {
         bool gpu_written =
             IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
         if (auto& split = VideoCommon::GpuSplit::Get(); !gpu_written && split.Active()) {
-            if (VideoCommon::Nx2Perf::Enabled() && g_nx2_ampere.load(std::memory_order_relaxed)) {
+            if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) &&
+                g_nx2_ampere.load(std::memory_order_relaxed)) {
                 gpu_written =
                     WaitForListWriters(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             } else if (split.WaitForWriters()) {

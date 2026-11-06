@@ -36,15 +36,14 @@ std::atomic<size_t> MemoryManager::unique_identifier_generator{};
 
 MemoryManager::MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_, u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_)
     : system{system_}, memory{memory_}, address_space_bits{address_space_bits_}
-    , split_address{split_address_}, page_bits{page_bits_}, big_page_bits{big_page_bits_}
+    , split_address{split_address_}, big_page_bits{big_page_bits_}
     , entries{}, big_entries{}
     , page_table{address_space_bits, address_space_bits + page_bits - 38, page_bits != big_page_bits ? page_bits : 0}
     , kind_map{PTEKind::INVALID}, unique_identifier{unique_identifier_generator.fetch_add(1, std::memory_order_acq_rel)}
     , accumulator{}
 {
+    ASSERT(page_bits_ == page_bits);
     address_space_size = 1ULL << address_space_bits;
-    page_size = 1ULL << page_bits;
-    page_mask = page_size - 1ULL;
     big_page_size = 1ULL << big_page_bits;
     big_page_mask = big_page_size - 1ULL;
     const u64 page_table_bits = address_space_bits - page_bits;

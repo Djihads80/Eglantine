@@ -239,10 +239,10 @@ private:
 
     const u64 address_space_bits;
     GPUVAddr split_address;
-    const u64 page_bits;
+    static constexpr size_t page_bits{12};
+    static constexpr size_t page_size{1ULL << page_bits};
+    static constexpr size_t page_mask{page_size - 1ULL};
     u64 address_space_size;
-    u64 page_size;
-    u64 page_mask;
     u64 page_table_mask;
     static constexpr u64 cpu_page_bits{12};
 

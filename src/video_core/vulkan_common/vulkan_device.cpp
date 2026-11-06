@@ -1448,8 +1448,10 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.depth_clip_control, features.depth_clip_control,
                                        VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
 
-    // VK_EXT_descriptor_buffer
-    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;
+    // VK_EXT_descriptor_buffer (EDEN_NX2_NO_DESCRIPTOR_BUFFER=1 falls back to descriptor sets, for A/B
+    // tests of GPU faults)
+    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer &&
+                                   std::getenv("EDEN_NX2_NO_DESCRIPTOR_BUFFER") == nullptr;
     RemoveExtensionFeatureIfUnsuitable(extensions.descriptor_buffer, features.descriptor_buffer,
                                        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
 

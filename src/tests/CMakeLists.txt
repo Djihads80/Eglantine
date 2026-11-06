@@ -11,6 +11,7 @@ add_executable(tests
     video_core/oot_visual_workaround.cpp
     video_core/maxwell_fast_method.cpp
     video_core/split_write_tracker.cpp
+    video_core/nx2_written_pages.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
