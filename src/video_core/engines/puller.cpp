@@ -118,11 +118,29 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
             pending_acquire->Matches(ReadSemaphoreWord(dma_pusher, pending_acquire->address))) {
             return true;
         }
+        // The value still hasn't landed: flush the scheduler before forcing the release
+        // again. A forced release waits on the fence chain, which can sit on recorded but
+        // unsubmitted commands (DeferFlush's batching, or a back whose idle hook already
+        // ran and sleeps); waiting without a flush can wedge the back itself, and with
+        // every channel parked on GPU semaphores whose payloads ride those fences nothing
+        // ever recovers (Fast + Balanced/Accurate fences deadlocked about a minute in,
+        // Ocarina of Time vistas: channels wanting 0xf259/0xf26b while the GPU counter
+        // semaphores sat 13-19 values behind with an empty buffer cache).
+        VideoCommon::GpuSplit::Get().Run([rasterizer = dma_pusher.rasterizer] {
+            rasterizer->FlushCommands();
+            rasterizer->ReleaseFences();
+        });
     }
     if (!pending_acquire->reported &&
         std::chrono::steady_clock::now() - pending_acquire->since > std::chrono::seconds{2}) {
         pending_acquire->reported = true;
         const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
+        // Deadlock hunt: arm the semaphore write watch on this block so every later write
+        // (and its source) lands in the log.
+        Nx2SemaphoreWaiters::Get().MaybeArmWatchFromEnv();
+        if (device) {
+            Nx2SemaphoreWaiters::Get().ArmWatch(*device);
+        }
         LOG_WARNING(HW_GPU, "Channel {} waits on semaphore {:#x} (op {}, {:#x}, now {:#x}) for 2 s; "
                     "device {:#x}, buffer cache holds GPU data: {}, words {:08x} {:08x} {:08x} {:08x}",
                     dma_pusher.channel_state.bind_id, pending_acquire->address,
@@ -132,6 +150,52 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 4),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 8),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
+    }
+    // A passed equality never returns. These semaphores are monotonically bumped counters,
+    // and with the emulator's looser channel ordering the writers can already be past an
+    // AcquireEqual target by the time the waiting channel reaches it (2026-11-06 hang:
+    // channels wanting 0x48 while the word read 0xac) — hardware orders the channel against
+    // the writers, we cannot. A short grace period (10 ms) covers a write racing the read;
+    // after that the greater-or-equal reading the game's protocol implies is taken. This
+    // fires constantly during boot (the ring passes targets by whole rounds there), so the
+    // grace must stay far below the 2 s warning — gating it on the warning turned boot into
+    // one round per two seconds.
+    if (std::chrono::steady_clock::now() - pending_acquire->since >=
+            std::chrono::milliseconds{10} &&
+        static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
+            GpuSemaphoreOperation::AcquireEqual &&
+        current > pending_acquire->value) {
+        LOG_INFO(HW_GPU,
+                 "Channel {} acquire satisfied by passage: semaphore {:#x} wanted {:#x}, now {:#x}",
+                 dma_pusher.channel_state.bind_id, pending_acquire->address,
+                 pending_acquire->value, current);
+        return true;
+    }
+    // A ring round that never lands. The flip-counter semaphores advance in lockstep as a
+    // depth-19 ring of fence-carried releases, and every stuck wait's target is exactly
+    // current + 19: the value the next round writes, already committed by the game's
+    // protocol (2026-11-06 hangs: 0x1a25b at 0x1a248, 0x10d05 at 0x10cf2, 0x2657d at
+    // 0x2656a — all 19). When every carrier channel is itself parked behind such an
+    // acquire, the fence chain holds no future release and nothing ever recovers. Complete
+    // the round ourselves: write the target the game already queued, notify the waiters.
+    // 100 ms: above normal frame pacing (a legitimate round completes within a frame or
+    // two), far below the seconds a real stall would cost.
+    if (std::chrono::steady_clock::now() - pending_acquire->since >=
+            std::chrono::milliseconds{100} &&
+        static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
+            GpuSemaphoreOperation::AcquireEqual &&
+        pending_acquire->value > current && pending_acquire->value - current <= 0x40) {
+        const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address);
+        if (device) {
+            dma_pusher.memory_manager.Write<u32>(pending_acquire->address, pending_acquire->value);
+            Nx2SemaphoreWaiters::Get().OnWrite(*device, pending_acquire->value, "ring-rescue");
+            LOG_INFO(HW_GPU,
+                     "Channel {} acquire satisfied by ring rescue: semaphore {:#x} advanced "
+                     "{:#x} -> {:#x}",
+                     dma_pusher.channel_state.bind_id, pending_acquire->address, current,
+                     pending_acquire->value);
+            return true;
+        }
     }
     return false;
 }
@@ -227,6 +291,9 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
 void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
     const auto semaphoreOperationMask = 0xF;
     const auto op = GpuSemaphoreOperation(regs.semaphore_trigger & semaphoreOperationMask);
+    // Deadlock hunt: arm the EDEN_NX2_SEM_TRACE write watch on the first semaphore op, so
+    // the flip-counter cadence is logged from boot, not just after a stuck acquire.
+    Nx2SemaphoreWaiters::Get().MaybeArmWatchFromEnv();
     // EDEN_NX2_SEM_WATCH=<gpu address>: log every release/acquire on the 16 bytes there.
     static const GPUVAddr watch = [] {
         const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
