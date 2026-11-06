@@ -13,12 +13,19 @@ namespace {
 
 std::atomic<bool> g_streaming{false};
 
-std::mutex g_mutex;
+// One mutex per sink, so video, audio and rumble never wait on each other.
+// Setting a sink takes its mutex, so it also waits for a callback in progress:
+// once a setter returns, the old sink is no longer running.
+std::mutex g_video_mutex;
 VideoSink g_video;
-AudioSink g_audio;
+
+std::mutex g_rumble_mutex;
 RumbleSink g_rumble;
 
-// Audio: the stream currently forwarded, and when it last delivered samples.
+// Audio, guarded by g_audio_mutex: the sink, the stream currently forwarded,
+// and when it last delivered samples.
+std::mutex g_audio_mutex;
+AudioSink g_audio;
 const void* g_audio_source = nullptr;
 std::chrono::steady_clock::time_point g_audio_last{};
 std::vector<s16> g_audio_scratch;
@@ -26,17 +33,17 @@ std::vector<s16> g_audio_scratch;
 } // namespace
 
 void SetVideoSink(VideoSink sink) {
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_video_mutex};
     g_video = std::move(sink);
 }
 
 void SetAudioSink(AudioSink sink) {
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_audio_mutex};
     g_audio = std::move(sink);
 }
 
 void SetRumbleSink(RumbleSink sink) {
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_rumble_mutex};
     g_rumble = std::move(sink);
 }
 
@@ -53,7 +60,7 @@ bool WantsAudio() {
 }
 
 void SubmitVideo(const u8* bgra, u32 width, u32 height, u32 stride) {
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_video_mutex};
     if (g_video) {
         g_video(bgra, width, height, stride);
     }
@@ -63,7 +70,7 @@ void SubmitAudio(const void* source, const s16* samples, std::size_t frames, std
     if (channels == 0 || frames == 0) {
         return;
     }
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_audio_mutex};
     if (!g_audio) {
         return;
     }
@@ -91,14 +98,14 @@ void SubmitAudio(const void* source, const s16* samples, std::size_t frames, std
     g_audio(g_audio_scratch.data(), frames);
 }
 
-void SubmitRumble(std::size_t player_index, f32 amp_low, f32 freq_low, f32 amp_high,
-                  f32 freq_high) {
+void SubmitRumble(std::size_t player_index, std::size_t device, f32 amp_low, f32 freq_low,
+                  f32 amp_high, f32 freq_high) {
     if (!g_streaming.load(std::memory_order_relaxed)) {
         return;
     }
-    std::scoped_lock lk{g_mutex};
+    std::scoped_lock lk{g_rumble_mutex};
     if (g_rumble) {
-        g_rumble(player_index, amp_low, freq_low, amp_high, freq_high);
+        g_rumble(player_index, device, amp_low, freq_low, amp_high, freq_high);
     }
 }
 

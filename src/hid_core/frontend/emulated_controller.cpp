@@ -1238,7 +1238,7 @@ bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationV
     }
     const std::size_t index = static_cast<std::size_t>(device_index);
     // Forwarded before the output device checks: the console may be the only "real" controller.
-    Common::EBridge::SubmitRumble(Service::HID::NpadIdTypeToIndex(npad_id_type),
+    Common::EBridge::SubmitRumble(Service::HID::NpadIdTypeToIndex(npad_id_type), index,
                                   vibration.low_amplitude, vibration.low_frequency,
                                   vibration.high_amplitude, vibration.high_frequency);
     if (!output_devices[index]) {

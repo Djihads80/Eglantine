@@ -587,9 +587,7 @@ void MainWindow::StartEBridge() {
             Qt::QueuedConnection);
     });
     // The console asks for the list from a network thread: keep a fresh copy ready.
-    auto* games_timer = new QTimer(this);
-    connect(games_timer, &QTimer::timeout, this, &MainWindow::UpdateEBridgeGames);
-    games_timer->start(2000);
+    // It is rebuilt when the game list finishes loading and when a game starts or stops.
     QTimer::singleShot(0, this, &MainWindow::UpdateEBridgeGames);
 
     ebridge::HostConfig host_config;
@@ -1646,8 +1644,10 @@ void MainWindow::ConnectWidgetEvents() {
     connect(game_list_placeholder, &GameListPlaceholder::AddDirectory, this,
             &MainWindow::OnGameListAddDirectory);
     connect(game_list, &GameList::ShowList, this, &MainWindow::OnGameListShowList);
-    connect(game_list, &GameList::PopulatingCompleted,
-            [this] { multiplayer_state->UpdateGameList(game_list->GetModel()); });
+    connect(game_list, &GameList::PopulatingCompleted, [this] {
+        multiplayer_state->UpdateGameList(game_list->GetModel());
+        UpdateEBridgeGames();
+    });
     connect(game_list, &GameList::SaveConfig, this, &MainWindow::OnSaveConfig);
 
     connect(game_list, &GameList::OpenPerGameGeneralRequested, this,
@@ -2464,6 +2464,7 @@ void MainWindow::OnEmulationStopped() {
     }
 
     emulation_running = false;
+    UpdateEBridgeGames();   // no game running anymore, and its play time changed
 
     discord_rpc->Update();
     Common::FeralGamemode::Stop();
@@ -3414,6 +3415,7 @@ bool MainWindow::ConfirmShutdownGame() {
 void MainWindow::OnLoadComplete() {
     loading_screen->OnLoadComplete();
     SetEBridgeStatus(EB_STATUS_RUNNING, 0, 0, "");
+    UpdateEBridgeGames();   // marks the running game in the console's list
 
     perf_overlay = new PerformanceOverlay(this);
     perf_overlay->setVisible(ui->action_Show_Performance_Overlay->isChecked());

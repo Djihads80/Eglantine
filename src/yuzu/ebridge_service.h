@@ -52,8 +52,8 @@ public:
 
 private:
     void OnInput(const ebridge::InputState& s);
-    void OnRumble(std::size_t player_index, f32 amp_low, f32 freq_low, f32 amp_high,
-                  f32 freq_high);
+    void OnRumble(std::size_t player_index, std::size_t device, f32 amp_low, f32 freq_low,
+                  f32 amp_high, f32 freq_high);
     void ReleaseAll();
 
     std::shared_ptr<InputCommon::InputSubsystem> input;
@@ -64,6 +64,10 @@ private:
     std::vector<ebridge::GameInfo> games;
     u32 prev_buttons = 0;
     int prev_touch_count = 0;
+    // Rumble, guarded by rumble_mutex: the latest value of each side (left, right)
+    // and the combined value last sent to the console.
+    std::mutex rumble_mutex;
+    std::array<std::array<f32, 4>, 2> rumble_sides{};
     std::array<f32, 4> last_rumble{};
 
     std::atomic<s64> last_video_ms{0};

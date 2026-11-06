@@ -83,7 +83,11 @@ bool BridgeService::Start(const ebridge::HostConfig& config, std::string* error)
         });
     host->SetEventCallback([this](ebridge::Event e, const std::string& detail) {
         if (e == ebridge::Event::Connected) {
-            last_rumble = {};
+            {
+                std::scoped_lock lk{rumble_mutex};
+                rumble_sides = {};
+                last_rumble = {};
+            }
             Common::EBridge::SetStreaming(true);
         } else if (e == ebridge::Event::Disconnected) {
             Common::EBridge::SetStreaming(false);
@@ -105,9 +109,10 @@ bool BridgeService::Start(const ebridge::HostConfig& config, std::string* error)
     });
     Common::EBridge::SetAudioSink(
         [h](const s16* stereo, std::size_t frames) { h->SubmitAudio(stereo, frames); });
-    Common::EBridge::SetRumbleSink([this](std::size_t player, f32 al, f32 fl, f32 ah, f32 fh) {
-        OnRumble(player, al, fl, ah, fh);
-    });
+    Common::EBridge::SetRumbleSink(
+        [this](std::size_t player, std::size_t device, f32 al, f32 fl, f32 ah, f32 fh) {
+            OnRumble(player, device, al, fl, ah, fh);
+        });
 
     // With no game running the renderer sends nothing: show a grey picture instead,
     // so the console can tell "connected, no game" from a network problem.
@@ -173,18 +178,29 @@ void BridgeService::OnInput(const ebridge::InputState& s) {
     prev_touch_count = s.touch_count;
 }
 
-void BridgeService::OnRumble(std::size_t player_index, f32 amp_low, f32 freq_low, f32 amp_high,
-                             f32 freq_high) {
-    if (player_index != 0 && player_index != HandheldIndex) {
+void BridgeService::OnRumble(std::size_t player_index, std::size_t device, f32 amp_low,
+                             f32 freq_low, f32 amp_high, f32 freq_high) {
+    if ((player_index != 0 && player_index != HandheldIndex) || device >= rumble_sides.size()) {
         return;
     }
-    // Games repeat the same value every frame; only changes go over the network.
-    const std::array<f32, 4> value{amp_low, freq_low, amp_high, freq_high};
-    if (value == last_rumble) {
-        return;
+    std::array<f32, 4> value;
+    {
+        std::scoped_lock lk{rumble_mutex};
+        // The console has one rumble channel: merge both sides so neither overwrites the
+        // other. Each band takes the stronger side, with that side's frequency.
+        rumble_sides[device] = {amp_low, freq_low, amp_high, freq_high};
+        const auto& l = rumble_sides[0];
+        const auto& r = rumble_sides[1];
+        const auto& low = r[0] > l[0] ? r : l;
+        const auto& high = r[2] > l[2] ? r : l;
+        value = {low[0], low[1], high[2], high[3]};
+        // Games repeat the same value every frame; only changes go over the network.
+        if (value == last_rumble) {
+            return;
+        }
+        last_rumble = value;
     }
-    last_rumble = value;
-    host->SendRumble(0, amp_low, freq_low, amp_high, freq_high);
+    host->SendRumble(0, value[0], value[1], value[2], value[3]);
 }
 
 void BridgeService::ReleaseAll() {

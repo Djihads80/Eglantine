@@ -29,6 +29,12 @@
 using socket_t = SOCKET;
 static constexpr socket_t kBadSocket = INVALID_SOCKET;
 static void CloseSocket(socket_t s) { closesocket(s); }
+static void ShutdownSocket(socket_t s) { shutdown(s, SD_BOTH); }
+static void SetIoTimeouts(socket_t s, int ms) {
+    const DWORD t = static_cast<DWORD>(ms);
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&t), sizeof t);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&t), sizeof t);
+}
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -39,6 +45,12 @@ static void CloseSocket(socket_t s) { closesocket(s); }
 using socket_t = int;
 static constexpr socket_t kBadSocket = -1;
 static void CloseSocket(socket_t s) { close(s); }
+static void ShutdownSocket(socket_t s) { shutdown(s, SHUT_RDWR); }
+static void SetIoTimeouts(socket_t s, int ms) {
+    timeval t{ms / 1000, (ms % 1000) * 1000};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof t);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &t, sizeof t);
+}
 #endif
 
 namespace ebridge {
@@ -49,6 +61,16 @@ using Id = std::array<uint8_t, EB_ID_LEN>;
 
 constexpr auto kSessionTimeout = std::chrono::seconds(5);
 constexpr int kPinAttempts = 3;
+// A silent or half-sent message on the control socket gives up after this.
+constexpr int kIoTimeoutMs = 10000;
+// Time to read the PIN on the PC and type it on the console.
+constexpr auto kPinReplyTimeout = std::chrono::seconds(120);
+// A PIN stays the same across reconnects until it is used, expires or is locked out.
+constexpr auto kPinLifetime = std::chrono::minutes(5);
+// After kPinAttempts wrong PINs (counted across connections) pairing pauses,
+// twice as long each time, up to kMaxPinLockout.
+constexpr auto kPinLockout = std::chrono::seconds(30);
+constexpr auto kMaxPinLockout = std::chrono::minutes(60);
 
 std::string ToHex(const uint8_t* p, size_t n) {
     static const char* d = "0123456789abcdef";
@@ -143,6 +165,18 @@ struct Host::Impl {
     socket_t tcp = kBadSocket, udp = kBadSocket, disc = kBadSocket;
     std::atomic<bool> running{false};
     std::thread tcp_thread, udp_thread, disc_thread;
+
+    // The accepted control socket, so Stop() can unblock it. Guarded by client_mutex.
+    std::mutex client_mutex;
+    socket_t client = kBadSocket;
+
+    // Pairing state. Used only by the TCP thread, one connection at a time.
+    uint32_t pair_pin = 0;
+    bool pair_pin_valid = false;
+    Clock::time_point pair_pin_expiry{};
+    int pair_failures = 0;   // wrong PINs since the last success or lockout
+    int pair_lockouts = 0;   // lockouts in a row, for the growing pause
+    Clock::time_point pair_locked_until{};
 
     // Session state, guarded by session_mutex.
     std::mutex session_mutex;
@@ -291,6 +325,11 @@ struct Host::Impl {
             if (c == kBadSocket) continue;
             int one = 1;
             setsockopt(c, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
+            SetIoTimeouts(c, kIoTimeoutMs);
+            {
+                std::lock_guard lk(client_mutex);
+                client = c;
+            }
 
             bool busy;
             {
@@ -310,6 +349,10 @@ struct Host::Impl {
                     have_udp_addr = false;
                 }
                 if (was_active) Emit(Event::Disconnected, reason);
+            }
+            {
+                std::lock_guard lk(client_mutex);
+                client = kBadSocket;
             }
             CloseSocket(c);
         }
@@ -349,6 +392,11 @@ struct Host::Impl {
         w.fps = std::min<uint8_t>(config.fps, hello.max_fps ? hello.max_fps : config.fps);
         w.codec = EB_CODEC_H264;
         w.bitrate_kbps = config.bitrate_kbps;
+        if (w.width == 0 || w.height == 0 || w.fps == 0) {
+            eb_ctl_reject_t rej{EB_REJECT_PROTOCOL, 0};
+            CtlSend(c, EB_CTL_REJECT, &rej, sizeof rej);
+            return "bad stream size";
+        }
         {
             std::lock_guard lk(session_mutex);
             RandomBytes(reinterpret_cast<uint8_t*>(&session_token), sizeof session_token);
@@ -467,24 +515,66 @@ struct Host::Impl {
         return CtlSend(c, EB_CTL_GAMES_END, &end, sizeof end);
     }
 
+    // Waits for data in short steps, so Stop() is never held up for long.
+    bool WaitReadableWhileRunning(socket_t c, Clock::duration timeout) {
+        const auto deadline = Clock::now() + timeout;
+        while (running && Clock::now() < deadline) {
+            if (WaitReadable(c, 200)) return true;
+        }
+        return false;
+    }
+
     bool Pair(socket_t c, const std::string& cid, const std::string& client_name) {
-        std::random_device rd;
-        const uint32_t pin = rd() % 10000;
+        const auto reject = [&] {
+            eb_ctl_reject_t rej{EB_REJECT_BAD_PIN, 0};
+            CtlSend(c, EB_CTL_REJECT, &rej, sizeof rej);
+            return false;
+        };
+        // Wrong PINs are counted for the whole host, so reconnecting does not reset them.
+        if (Clock::now() < pair_locked_until) {
+            Emit(Event::Log, "pairing refused: too many wrong PINs, try again later");
+            return reject();
+        }
+        if (!pair_pin_valid || Clock::now() > pair_pin_expiry) {
+            std::random_device rd;
+            pair_pin = rd() % 10000;
+            pair_pin_valid = true;
+            pair_pin_expiry = Clock::now() + kPinLifetime;
+            pair_failures = 0;
+        }
         char pin_text[8];
-        std::snprintf(pin_text, sizeof pin_text, "%04u", pin);
+        std::snprintf(pin_text, sizeof pin_text, "%04u", pair_pin);
         Emit(Event::PairingPin, pin_text);
 
-        for (int attempt = 0; attempt < kPinAttempts; attempt++) {
+        for (int message = 0; message < kPinAttempts; message++) {
             if (!CtlSend(c, EB_CTL_PAIR_REQUIRED)) return false;
             uint16_t type;
             std::vector<uint8_t> payload;
-            // Give the user time to read the PIN and type it on the console.
-            if (!WaitReadable(c, 120000) || !CtlRecv(c, type, payload)) return false;
+            if (!WaitReadableWhileRunning(c, kPinReplyTimeout) || !CtlRecv(c, type, payload))
+                return false;
             if (type != EB_CTL_PAIR_PIN || payload.size() != sizeof(eb_ctl_pair_pin_t)) continue;
             eb_ctl_pair_pin_t p;
             std::memcpy(&p, payload.data(), sizeof p);
-            if (p.pin != pin) continue;
+            if (!pair_pin_valid || p.pin != pair_pin) {
+                if (++pair_failures >= kPinAttempts) {
+                    // Burn this PIN and pause pairing, longer after each lockout.
+                    pair_pin_valid = false;
+                    pair_failures = 0;
+                    auto pause = kPinLockout * (1 << std::min(pair_lockouts, 7));
+                    if (pause > kMaxPinLockout) pause = kMaxPinLockout;
+                    pair_lockouts++;
+                    pair_locked_until = Clock::now() + pause;
+                    Emit(Event::Log, "too many wrong PINs, pairing paused for " +
+                                         std::to_string(std::chrono::duration_cast<std::chrono::seconds>(pause).count()) +
+                                         " s");
+                    return reject();
+                }
+                continue;
+            }
 
+            pair_pin_valid = false;
+            pair_failures = 0;
+            pair_lockouts = 0;
             eb_ctl_pair_ok_t ok{};
             RandomBytes(ok.pair_secret, EB_ID_LEN);
             std::memcpy(ok.host_id, host_id.data(), EB_ID_LEN);
@@ -494,9 +584,7 @@ struct Host::Impl {
             Emit(Event::Log, "paired with " + client_name);
             return CtlSend(c, EB_CTL_PAIR_OK, &ok, sizeof ok);
         }
-        eb_ctl_reject_t rej{EB_REJECT_BAD_PIN, 0};
-        CtlSend(c, EB_CTL_REJECT, &rej, sizeof rej);
-        return false;
+        return reject();
     }
 
     void UdpLoop() {
@@ -811,6 +899,11 @@ bool Host::Start(std::string* error) {
 void Host::Stop() {
     if (!impl->running.exchange(false)) return;
     impl->video_cv.notify_all();
+    {
+        // Unblocks a recv/send on the console's control socket; TcpLoop then closes it.
+        std::lock_guard lk(impl->client_mutex);
+        if (impl->client != kBadSocket) ShutdownSocket(impl->client);
+    }
     for (std::thread* t : {&impl->tcp_thread, &impl->udp_thread, &impl->disc_thread, &impl->video_thread})
         if (t->joinable()) t->join();
     impl->CloseSockets();
