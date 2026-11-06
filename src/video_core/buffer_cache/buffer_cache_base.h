@@ -513,6 +513,7 @@ public:
     struct NativeUniformBankShadow {
         u64 last_draw_ticket{};
         u64 last_frame_tick{~u64{0}};
+        u64 last_skipped_draw_ticket{~u64{0}}; ///< Profiler only: bank_once_per_frame skips
         u32 initialized_mask{};
         std::array<u8, 0x10000> bytes{};
     };

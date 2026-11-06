@@ -89,6 +89,9 @@ enum class Opt : unsigned {
     /// Guest CPU cores and HostTiming run on the non-V-Cache CCD; the GPU threads keep the
     /// V-Cache CCD (asymmetric L3 with V-Cache pinning only)
     GuestCcd,
+    /// Native 64 KiB uniform banks: guest bytes compared with the shadow on the frame's first
+    /// bind only, not on every draw (a later CPU rewrite in the frame shows one frame late)
+    BankOncePerFrame,
     Count,
 };
 
@@ -113,6 +116,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "writer_set_exec",
     "exact_noted_writes",
     "guest_ccd",
+    "bank_once_per_frame",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -120,7 +124,8 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemo) == 36 &&
               static_cast<unsigned>(Opt::WriterSetExec) == 45 &&
               static_cast<unsigned>(Opt::ExactNotedWrites) == 46 &&
-              static_cast<unsigned>(Opt::GuestCcd) == 47);
+              static_cast<unsigned>(Opt::GuestCcd) == 47 &&
+              static_cast<unsigned>(Opt::BankOncePerFrame) == 48);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -144,7 +149,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
-                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd}) {
+                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd,
+                          Opt::BankOncePerFrame}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -174,6 +180,8 @@ static_assert(IsOff(always_off, 45) && IsOff(DefaultOffMask(), 45));
 static_assert(IsOff(DefaultOffMask(), 36));
 static_assert(!IsOff(DefaultOffMask(), 0));
 static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
+// bank_once_per_frame is on by default; SAFE turns it off (suspected of the flashes).
+static_assert(!IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).

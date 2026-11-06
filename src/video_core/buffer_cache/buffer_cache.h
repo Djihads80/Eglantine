@@ -1549,10 +1549,23 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             native_indirect_uniform_last_bank = device_addr;
             native_indirect_uniform_last_ptr = shadow;
         }
-        const bool skip_this_frame =
-            bank_mode != '2' && bank_mode != '3' && Nx2Perf::Enabled() && !Nx2Perf::Verify();
-        if ((!skip_this_frame || shadow->last_frame_tick != frame_tick) &&
-            !memory_tracker.IsRegionGpuModified(device_addr, size)) {
+        // Nx2Perf bank_once_per_frame: compare the guest bytes on the frame's first bind only.
+        // Verify (which always takes the per-draw path) reports changes that path would have
+        // uploaded one frame late.
+        const bool once_per_frame = bank_mode != '2' && bank_mode != '3' &&
+                                    Nx2Perf::On(Nx2Perf::Opt::BankOncePerFrame);
+        const bool skip_this_frame = once_per_frame && !Nx2Perf::Verify();
+        const bool seen_this_frame = shadow->last_frame_tick == frame_tick;
+        if (skip_this_frame && seen_this_frame) {
+            if (Nx2Profile::Enabled() &&
+                shadow->last_draw_ticket != native_indirect_uniform_draw_ticket &&
+                shadow->last_skipped_draw_ticket != native_indirect_uniform_draw_ticket &&
+                !memory_tracker.IsRegionGpuModified(device_addr, size)) {
+                shadow->last_skipped_draw_ticket = native_indirect_uniform_draw_ticket;
+                Nx2Profile::Add(Nx2Profile::Counter::BankRechecksSkippedByFrame, 1);
+            }
+        } else if (!memory_tracker.IsRegionGpuModified(device_addr, size)) {
+            const bool check_late = once_per_frame && seen_this_frame;
             shadow->last_frame_tick = frame_tick;
             if (shadow->last_draw_ticket != native_indirect_uniform_draw_ticket) {
                 shadow->last_draw_ticket = native_indirect_uniform_draw_ticket;
@@ -1583,6 +1596,24 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                     u8* const shadow_dst = shadow->bytes.data() + offset_in_bank;
                     if (!page_initialized || already_cpu_modified ||
                         std::memcmp(shadow_dst, ptr, chunk_size) != 0) {
+                        if (check_late && page_initialized && !already_cpu_modified)
+                            [[unlikely]] {
+                            static std::atomic<u64> late_changes{};
+                            const u64 late =
+                                late_changes.fetch_add(1, std::memory_order_relaxed) + 1;
+                            Nx2Profile::Add(Nx2Profile::Counter::BankLateChanges, 1);
+                            if (late <= 64) {
+                                LOG_ERROR(HW_GPU,
+                                          "Nx2Perf bank_once_per_frame: bank {:#x} page {} "
+                                          "changed after the frame's first bind (frame {})",
+                                          device_addr, page_idx, frame_tick);
+                            } else if (late % 1024 == 0) {
+                                LOG_ERROR(HW_GPU,
+                                          "Nx2Perf bank_once_per_frame: {} bank pages changed "
+                                          "after the frame's first bind so far",
+                                          late);
+                            }
+                        }
                         std::memcpy(shadow_dst, ptr, chunk_size);
                         shadow->initialized_mask |= page_bit;
                         if (!already_cpu_modified) {

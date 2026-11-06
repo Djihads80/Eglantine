@@ -228,6 +228,11 @@ enum class Counter : u32 {
     /// (the waits Nx2Perf ExactNotedWrites drops)
     DmaReadsWaitWriteOtherExact,
     DmaReadsWaitWriteOtherPageOnly,
+    /// Native 64 KiB banks: draws whose guest byte compare Nx2Perf bank_once_per_frame skipped
+    /// (the per-draw path would have compared); in Verify, pages that compare found changed
+    /// after the frame's first bind (bytes the default path uploads one frame late)
+    BankRechecksSkippedByFrame,
+    BankLateChanges,
     Count,
 };
 
@@ -447,6 +452,12 @@ inline void Report(const char* thread_name = "GPU thread") {
                             static_cast<double>(lock_ns) * 1000.0 / window,
                             static_cast<double>(pops) * 1e9 / window,
                             static_cast<double>(written) * 1e9 / 1024.0 / window);
+    }
+    if (data.counters[static_cast<size_t>(Counter::BankRechecksSkippedByFrame)] != 0 ||
+        data.counters[static_cast<size_t>(Counter::BankLateChanges)] != 0) {
+        line += fmt::format(" | bank rechecks skipped by frame {:.0f}, bank late changes {:.0f}",
+                            per_second(Counter::BankRechecksSkippedByFrame),
+                            per_second(Counter::BankLateChanges));
     }
     if (data.counters[static_cast<size_t>(Counter::BindMemoHits)] != 0 || data.counters[static_cast<size_t>(Counter::BindMemoMisses)] != 0) {
         line += fmt::format(" | bind memo {:.0f} hits, {:.0f} misses",

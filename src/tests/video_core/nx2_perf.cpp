@@ -46,6 +46,15 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
             (always_off & ~Bit(Opt::ExactNotedWrites)));
 }
 
+TEST_CASE("Nx2Perf bank_once_per_frame is on by default and off under SAFE", "[nx2_perf]") {
+    static_assert(Index(Opt::BankOncePerFrame) == 48);
+    REQUIRE(opt_names[Index(Opt::BankOncePerFrame)] == "bank_once_per_frame");
+    REQUIRE(!IsOff(ParseOffMask(false, "", "", false), Index(Opt::BankOncePerFrame)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::BankOncePerFrame)));
+    REQUIRE(ParseOffMask(false, "", "bank_once_per_frame", false) ==
+            (always_off | Bit(Opt::BankOncePerFrame)));
+}
+
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {
     const u64 mask = ParseOffMask(false, "", "bind_memo", false);
     REQUIRE(mask == (always_off | (u64{1} << 36)));
