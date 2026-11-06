@@ -1850,10 +1850,10 @@ private:
             const auto& window = m_frame_stats.Last();
             LOG_INFO(HW_GPU,
                      "Nx2Frame: n={} iv_p50={:.2f} iv_p90={:.2f} iv_p99={:.2f} iv_max={:.2f} "
-                     "fw_p50={:.2f} fw_p99={:.2f} fw_max={:.2f}",
+                     "fw_p50={:.2f} fw_p99={:.2f} fw_max={:.2f} iv_n_over_20ms={}",
                      window.presents, Ms(window.interval_us.p50), Ms(window.interval_us.p90),
                      Ms(window.interval_us.p99), Ms(window.interval_us.max), Ms(window.fence_us.p50),
-                     Ms(window.fence_us.p99), Ms(window.fence_us.max));
+                     Ms(window.fence_us.p99), Ms(window.fence_us.max), window.intervals_over_20ms);
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),

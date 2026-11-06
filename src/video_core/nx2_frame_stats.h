@@ -15,6 +15,8 @@
 // Nx2Frame: per-second percentiles of the guest present-to-present interval and of the time vi2
 // is blocked on the GPU fence, logged from the vi2 present path. EDEN_NX2_FRAME_STATS=0 turns
 // the line off. Fixed-size storage only: nothing is allocated per present.
+// Nearest-rank p99 equals max for windows under 100 samples (every window at 60 FPS or less), so
+// tooling that pools runs should use iv_n_over_20ms, a count of intervals over 20 ms, not p99.
 namespace VideoCommon::Nx2FrameStats {
 
 inline bool Enabled() {
@@ -95,6 +97,7 @@ public:
         u32 presents{};
         Percentiles interval_us;
         Percentiles fence_us;
+        u32 intervals_over_20ms{};
     };
 
     /// Records a present that entered vi2 at `entered` and was blocked `fence_wait` on the GPU
@@ -104,7 +107,9 @@ public:
         if (last_present == Clock::time_point{}) {
             window_start = entered;
         } else {
-            intervals.Push(ToUs(entered - last_present));
+            const u32 interval = ToUs(entered - last_present);
+            intervals.Push(interval);
+            intervals_over_20ms += interval > 20'000 ? 1 : 0;
         }
         last_present = entered;
         fences.Push(ToUs(fence_wait));
@@ -114,6 +119,8 @@ public:
         summary.presents = fences.Count();
         summary.interval_us = intervals.Take(scratch);
         summary.fence_us = fences.Take(scratch);
+        summary.intervals_over_20ms = intervals_over_20ms;
+        intervals_over_20ms = 0;
         window_start = entered;
         return true;
     }
@@ -133,6 +140,7 @@ private:
     Ring<N> fences;
     std::array<u32, N> scratch{};
     Summary summary;
+    u32 intervals_over_20ms{};
     Clock::time_point window_start{};
     Clock::time_point last_present{};
 };

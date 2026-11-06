@@ -67,6 +67,8 @@ TEST_CASE("Nx2FrameStats window closes once per period", "[nx2_frame]") {
             REQUIRE(last.presents == 63);
             REQUIRE(last.interval_us.p50 == 16'000);
             REQUIRE(last.interval_us.max == 50'000);
+            REQUIRE(last.interval_us.p99 == last.interval_us.max); // nearest rank, n < 100
+            REQUIRE(last.intervals_over_20ms == 1);
             REQUIRE(last.fence_us.max == 62);
             REQUIRE(last.fence_us.p50 == 31);
         }
@@ -80,6 +82,7 @@ TEST_CASE("Nx2FrameStats window closes once per period", "[nx2_frame]") {
     REQUIRE(window.Add(now + milliseconds{1000}, microseconds{7}));
     REQUIRE(window.Last().presents == 2);
     REQUIRE(window.Last().interval_us.max == 1'000'000);
+    REQUIRE(window.Last().intervals_over_20ms == 1);
     REQUIRE(window.Last().fence_us.max == 7);
 }
 
