@@ -403,13 +403,20 @@ void EmitExclusiveUnlock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64
     EmitSpinLockUnlock(code, pointer, tmp);
 }
 
+/// Atomic cross-core reservation clear. Each slot has one writer (its owner core) and is a
+/// naturally atomic aligned u64 on x86, so the clear is a LOCK CMPXCHG that cannot tear
+/// against the owner's write, and the caller needs no global monitor lock. A reservation
+/// lost to the read-then-cmpxchg window only ever surfaces as a failed guest-memory compare
+/// in the owner's next exclusive store: a spurious LL/SC failure, which the architecture
+/// permits and every retry loop handles.
 template<typename UserConfig>
-void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr, Xbyak::Reg64 pointer, Xbyak::Reg64 tmp) {
+void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr,
+                               Xbyak::Reg64 pointer, Xbyak::Reg64 dead, Xbyak::Reg64 expected) {
     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
         return;
     }
 
-    code.mov(tmp, 0xDEAD'DEAD'DEAD'DEAD);
+    code.mov(dead, u64(0xDEAD'DEAD'DEAD'DEAD));
     const size_t processor_count = GetExclusiveMonitorProcessorCount(conf.global_monitor);
     for (size_t processor_index = 0; processor_index < processor_count; processor_index++) {
         if (processor_index == conf.processor_id) {
@@ -419,7 +426,9 @@ void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak:
         code.mov(pointer, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
         code.cmp(qword[pointer], vaddr);
         code.jne(ok, code.T_NEAR);
-        code.mov(qword[pointer], tmp);
+        code.mov(expected, vaddr);
+        code.lock();
+        code.cmpxchg(qword[pointer], dead);
         code.L(ok);
     }
 }
