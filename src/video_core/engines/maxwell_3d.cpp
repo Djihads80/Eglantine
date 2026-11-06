@@ -1668,11 +1668,33 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     ++stats.reads;
     bool undrained = false;
     bool copied = false;
+    // A counter report or fence-timed release still to land over the read (written when its
+    // fence is released on the back: Lichii 9d17457f6c): drain, then flush the query cache over
+    // the read as the engines do without the split (macro.cpp). Checked after the read waited
+    // for queued writers, so reports the back ran meanwhile count. EDEN_NX2_DMA_QUERY_FLUSH=0.
+    const auto pending_query = [&] {
+        if (!Tegra::Nx2DmaQueryFlush()) {
+            return false;
+        }
+        for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + read_bytes;
+             page += 0x1000) {
+            if (const auto device = memory_manager.GpuToCpuAddress(page);
+                device && Tegra::Nx2HasPendingQuery(*device, 0x1000)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    bool query_pending = false;
     if (fast && words != 0) {
         bool waited = false;
         undrained = DmaReadWithoutDrain(split, memory_manager, rasterizer, source, values,
                                         fast_mode == '2', waited, copied);
         stats.waited += waited ? 1 : 0;
+        query_pending = pending_query();
+        if (query_pending) {
+            undrained = false;
+        }
         if (undrained) {
             ++(copied ? stats.copied : stats.direct);
         }
@@ -1696,6 +1718,10 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
             const u64 start = Profile::Now();
             memory_manager.FlushRegion(flush_begin, flush_size, VideoCommon::CacheType::BufferCache);
             Profile::NoteDmaReadFlush(Profile::Now() - start, read_bytes);
+        }
+        // The back is drained: its query cache may be flushed from here, as its buffer cache is.
+        if (query_pending || pending_query()) {
+            memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
         }
         if (fast && rasterizer != nullptr) {
             for (GPUVAddr page = first_page; page < end_page; page += 0x1000) {

@@ -33,6 +33,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
@@ -1436,17 +1437,22 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                             }
                         }
                     }
-                    // Accurate GPU mode holds report and semaphore writes in the query cache until a
-                    // fence: write them out, or occlusion predicates read stale values. The split only
-                    // runs with immediate payload writes, and the query cache belongs to its back.
-                    // EDEN_NX2_DMA_QUERY_FLUSH=1 only: suspected of the garbage commands Ocarina of
-                    // Time crashed on with a phone build that had it (also releases fences here).
-                    static const bool query_flush = [] {
-                        const char* const value = std::getenv("EDEN_NX2_DMA_QUERY_FLUSH");
-                        return value != nullptr && value[0] == '1';
-                    }();
-                    if (query_flush && !VideoCommon::GpuSplit::Get().Active()) {
-                        memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::QueryCache);
+                    // Counter reports and fence-timed releases are held in the query cache until
+                    // their fence: write out those over the read, or occlusion predicates read
+                    // stale values (6ef73b2374, from jojo-chaechae/Eglantine 50db84983f by Jonas).
+                    // Only where one is pending (Nx2HasPendingQuery). The split's back owns the
+                    // query cache: FrontDmaRead does it there. EDEN_NX2_DMA_QUERY_FLUSH=0: off.
+                    if (Tegra::Nx2DmaQueryFlush() && !VideoCommon::GpuSplit::Get().Active()) {
+                        bool pending = false;
+                        for (GPUVAddr page = source & ~GPUVAddr{0xfff};
+                             !pending && page < source + read_bytes; page += 0x1000) {
+                            const auto device = memory.GpuToCpuAddress(page);
+                            pending = device && Tegra::Nx2HasPendingQuery(*device, 0x1000);
+                        }
+                        if (pending) {
+                            memory.FlushRegion(source, read_bytes,
+                                               VideoCommon::CacheType::QueryCache);
+                        }
                     }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
                         const u64 start = VideoCommon::Nx2Profile::Now();

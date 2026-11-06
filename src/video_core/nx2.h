@@ -138,6 +138,54 @@ inline void Nx2ClearGpuWrittenPages() {
     return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+// Device pages with a query cache write still to land: counter reports and fence-timed releases
+// are written when their fence is released, not when the report runs, so an MME DMA read of one
+// (occlusion predicates) flushes the query cache over the read first or reads an older value
+// (Lichii 9d17457f6c; counting per page after the water agent's query_pending_flush.patch).
+// Hashed slots: a collision costs a flush, never a stale read.
+inline constexpr size_t Nx2PendingQuerySlots = 4096;
+inline std::array<std::atomic<s32>, Nx2PendingQuerySlots> g_nx2_pending_queries{};
+
+[[nodiscard]] inline std::atomic<s32>& Nx2PendingQuerySlot(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    return g_nx2_pending_queries[(page ^ (page >> 12)) % Nx2PendingQuerySlots];
+}
+
+/// The query cache deferred a write of the word at `device_address` to a fence.
+inline void Nx2NotePendingQuery(u64 device_address) {
+    Nx2PendingQuerySlot(device_address).fetch_add(1, std::memory_order_release);
+}
+
+/// The deferred write's fence operation ran (whether or not it wrote).
+inline void Nx2DonePendingQuery(u64 device_address) {
+    Nx2PendingQuerySlot(device_address).fetch_sub(1, std::memory_order_release);
+}
+
+/// Whether a deferred query write may still be pending in the device range.
+[[nodiscard]] inline bool Nx2HasPendingQuery(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    for (u64 page = device_address >> Nx2WrittenPageBits;
+         page <= (device_address + size - 1) >> Nx2WrittenPageBits; ++page) {
+        if (Nx2PendingQuerySlot(page << Nx2WrittenPageBits).load(std::memory_order_acquire) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// EDEN_NX2_DMA_QUERY_FLUSH=0: MME DMA reads don't flush the query cache over deferred writes.
+/// On by default again: Mario Kart World's vertices explode without it, and the Ocarina of Time
+/// garbage it was suspected of came from semaphores moved backwards and lost held CPU writes.
+[[nodiscard]] inline bool Nx2DmaQueryFlush() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_DMA_QUERY_FLUSH");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
 // NVN2 queues release their progress values into the second page of a two-page GPU-accessible
 // region and GPU acquires read the same offsets in the first page (the CPU polls the second).
 // Something on the console copies one into the other; until that is known, the puller mirrors
