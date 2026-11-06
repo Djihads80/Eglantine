@@ -33,6 +33,54 @@ namespace Tegra {
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
+namespace {
+// Command list (GPFIFO) entries by their sync flag, logged every 10 s (the thread parsing
+// command lists): whether the entries on GPU-written pages carry it, and whether the split's
+// writer waits (EDEN_NX2_WRITER_WAIT) ever found a page newly written.
+struct EntrySyncStats {
+    std::chrono::steady_clock::time_point window_start{};
+    u64 entries{};
+    u64 synced{};          ///< Of entries: with the sync flag
+    u64 written{};         ///< On pages known GPU-written before any wait
+    u64 written_synced{};  ///< Of written: with the sync flag
+    u64 waits{};           ///< The front waited for queued compute and copy work
+    u64 waits_synced{};    ///< Of waits: with the sync flag
+    u64 newly_written{};   ///< Of waits: the pages were GPU-written after it (the wait mattered)
+};
+EntrySyncStats g_entry_sync_stats;
+
+void NoteEntrySync(bool sync, bool written, bool waited, bool newly_written) {
+    EntrySyncStats& stats = g_entry_sync_stats;
+    ++stats.entries;
+    stats.synced += sync ? 1 : 0;
+    stats.written += written ? 1 : 0;
+    stats.written_synced += written && sync ? 1 : 0;
+    stats.waits += waited ? 1 : 0;
+    stats.waits_synced += waited && sync ? 1 : 0;
+    stats.newly_written += newly_written ? 1 : 0;
+    if ((stats.entries & 1023) != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (stats.window_start == std::chrono::steady_clock::time_point{}) {
+        stats.window_start = now;
+        return;
+    }
+    if (now - stats.window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    LOG_INFO(HW_GPU,
+             "Command list entries in {:.1f} s: {} ({} with the sync flag), {} on GPU-written "
+             "pages ({} with the sync flag); {} waited for queued compute and copy work ({} with "
+             "the sync flag), {} found their pages newly GPU-written",
+             std::chrono::duration<double>(now - stats.window_start).count(), stats.entries,
+             stats.synced, stats.written, stats.written_synced, stats.waits, stats.waits_synced,
+             stats.newly_written);
+    stats = {};
+    stats.window_start = now;
+}
+} // Anonymous namespace
+
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
     , memory_manager{memory_manager_}
@@ -291,15 +339,28 @@ bool DmaPusher::Step() {
         // or copy queued for the back) ran for every entry, ~130,000 times a second, for nothing.
         // EDEN_NX2_WRITER_WAIT=0 skips it, as sylvieistaken/selevet-eglantine f28449539b does:
         // only pages already GPU-written wait, and a page's first write can be read a frame late.
-        static const bool writer_wait = [] {
+        // EDEN_NX2_WRITER_WAIT=sync: only entries with the GPFIFO sync flag (GP_ENTRY1_SYNC: the
+        // host waits for the work before the entry before fetching it) wait; the bits marking a
+        // page GPU-written never clear, so the wait only matters for a page's first write. The
+        // entries' flags are logged every 10 s (NoteEntrySync) to check the GPU-written ones
+        // carry it.
+        static const char writer_wait = [] {
             const char* value = std::getenv("EDEN_NX2_WRITER_WAIT");
-            return value == nullptr || value[0] != '0';
+            return value == nullptr || value[0] == '\0' ? '1' : value[0];
         }();
-        if (!gpu_written && writer_wait && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+        const bool wait_writers = writer_wait == 's' ? header.sync != 0 : writer_wait != '0';
+        const bool written_before = gpu_written;
+        bool writers_waited = false;
+        if (!gpu_written && wait_writers && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
             Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
+            writers_waited = true;
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+        }
+        if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && Tegra::Nx2CommandLists()) {
+            NoteEntrySync(header.sync != 0, written_before, writers_waited,
+                          gpu_written && !written_before);
         }
         // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
         // safe read below would flush (with the split, the front can't tell: it reads memory
