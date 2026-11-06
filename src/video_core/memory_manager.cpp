@@ -671,9 +671,9 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // answer for any address follows from where the contiguous run through its 4 KiB page ends:
     // keep that per page and thread until the page table changes. The serial is read before the
     // walk, so an answer from a walk that raced a change is dropped at the next call.
-    // EDEN_NX2_RUN_CACHE=0 keeps answers per address instead, =2 checks every answer against a
-    // walk (differences logged), =3 drops every run at each page table change, =-1 caches
-    // nothing (every call walks the pages).
+    // EDEN_NX2_RUN_CACHE=0 keeps 4096 answers per address and thread instead (upstream PR #670),
+    // =2 checks every answer against a walk (differences logged), =3 drops every run at each page
+    // table change, =-1 caches nothing (every call walks the pages).
     static const char mode = [] {
         const char* const value = std::getenv("EDEN_NX2_RUN_CACHE");
         return value == nullptr ? '1' : value[0];
@@ -691,8 +691,13 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
             u64 serial;
             size_t result;
         };
-        thread_local std::array<Entry, 64> cache{};
-        Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
+        // Ocarina of Time asks for more buffers than 64 entries hold (Duck912, upstream PR #670:
+        // 4096 entries, ~160 KiB on the threads that bind buffers, allocated on first use).
+        thread_local std::vector<Entry> cache;
+        if (cache.empty()) [[unlikely]] {
+            cache.resize(4096);
+        }
+        Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 52];
         if (entry.owner == owner && entry.gpu_addr == gpu_addr && entry.size == size &&
             entry.serial == serial) {
             return entry.result;
