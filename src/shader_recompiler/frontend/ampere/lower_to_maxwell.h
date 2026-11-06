@@ -1303,6 +1303,55 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (signed_order && !maximum && !minimum) || native_predicate != 7)
                 return fail(index, "native warp sum mode");
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
+            // With all 32 lanes active (the usual case), a butterfly of five SHFL.BFLY gives every
+            // lane the result instead of 32 SHFL.IDX with masking: Ocarina of Time's
+            // anti-aliasing edge pass, ~10 ms a frame on the phone, spent ~40% of its ~1,800
+            // Adreno instructions in this sequence. P6 (saved) picks the path; R252 holds ~0.
+            // EDEN_NX2_REDUX_FAST=0: the lane-by-lane sequence only.
+            static const bool fast_redux = [] {
+                const char* const value = std::getenv("EDEN_NX2_REDUX_FAST");
+                return value == nullptr || value[0] != '0';
+            }();
+            u32 to_slow = ~0U, to_end = ~0U;
+            if (fast_redux) {
+                save_predicate();
+                mov_imm(252, ~0U);
+                // ISETP.EQ.AND P6, PT, R250, R252, PT
+                emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{250} << 8) |
+                     (u64{252} << 20) | (u64{7} << 39) | (u64{2} << 49));
+                to_slow = static_cast<u32>(result.instructions.size());
+                emit(0xe24000000000000fULL | (u64{6 | 8} << 16)); // @!P6 BRA slow
+                restore_predicate();
+                // MOV target, source
+                emit(0x5c98000000070000ULL | target | (u64{source} << 20) | (u64{15} << 39));
+                if (signed_order)
+                    emit(0x0400000000070000ULL | target | (u64{target} << 8) |
+                         (u64{0x80000000U} << 20) | (u64{2} << 53));
+                for (const u32 distance : {16U, 8U, 4U, 2U, 1U}) {
+                    // SHFL.BFLY PT, R251, target, distance, 0x1f
+                    emit(0xef10000000070000ULL | 251 | (u64{target} << 8) | (u64{distance} << 20) |
+                         (u64{1} << 28) | (u64{1} << 29) | (u64{3} << 30) | (u64{31} << 34) |
+                         (u64{7} << 48));
+                    if (minimum) {
+                        emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{7} << 39));
+                    } else if (maximum) {
+                        emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{15} << 39));
+                    } else if (logical) {
+                        emit(0x5c40000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) |
+                            (u64{logical} << 41) | (u64{7} << 48));
+                    } else {
+                        emit(0x5c10000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20));
+                    }
+                }
+                if (signed_order)
+                    emit(0x0400000000070000ULL | target | (u64{target} << 8) |
+                         (u64{0x80000000U} << 20) | (u64{2} << 53));
+                to_end = static_cast<u32>(result.instructions.size());
+                emit(0xe24000000000000fULL | (u64{7} << 16)); // BRA end
+                relocations.push_back({to_slow, static_cast<s64>(index), false,
+                                       static_cast<u32>(result.instructions.size())});
+                restore_predicate();
+            }
             mov_imm(target, minimum ? ~0U : 0U);
             for (u32 lane = 0; lane < 32; ++lane) {
                 emit(0xef10000000070000ULL | 251 | (u64{source} << 8) | (u64{lane} << 20) |
@@ -1330,6 +1379,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (signed_order)
                 emit(0x0400000000070000ULL | target | (u64{target} << 8) |
                      (u64{0x80000000U} << 20) | (u64{2} << 53));
+            if (to_end != ~0U)
+                relocations.push_back({to_end, static_cast<s64>(index), false,
+                                       static_cast<u32>(result.instructions.size())});
             break;
         }
         case 0xf8c: { // ATOMS.POPC.INC.32 with no returned value: one increment per active lane.
