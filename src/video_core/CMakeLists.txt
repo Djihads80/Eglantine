@@ -454,6 +454,8 @@ if (ANDROID)
         INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:libgav1_static,INTERFACE_INCLUDE_DIRECTORIES>"
         COMPILE_DEFINITIONS EDEN_NX2_LIBGAV1)
     target_link_libraries(video_core PRIVATE "$<LINK_ONLY:libgav1_static>")
+    # MediaCodec decodes them in hardware where the phone can (nx2_video_decoder.cpp).
+    target_link_libraries(video_core PRIVATE mediandk)
 endif()
 
 add_dependencies(video_core host_shaders)

@@ -2702,6 +2702,8 @@ private:
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
     static constexpr u64 SummaryFrames = 150;    // AV1: a state line every 150 frames (5 s)
     static constexpr std::chrono::seconds StallReport{2};
+    /// How often frames an asynchronous (MediaCodec) decoder finished are collected while idle.
+    static constexpr std::chrono::milliseconds AsyncPollInterval{4};
     static constexpr u32 EmptyOutputResult = 0x1c286f; // 213: nothing finished
     static constexpr u32 InputBusyResult = 0x1c266f;   // 109: input queue full (fefw)
 
@@ -3166,7 +3168,24 @@ private:
                 return m_quit || m_flush || (!m_decoded.empty() && !m_free.empty()) ||
                        (!m_inputs.empty() && m_decoded.size() < MaxDecodedAhead);
             };
-            if (!m_cv.wait_for(lk, StallReport, ready)) {
+            if (decoder && decoder->HasPendingOutput() && m_decoded.size() < MaxDecodedAhead) {
+                // A hardware decoder finishes frames on its own: collect them while idle, or a
+                // client that waits for the next frame before it submits more input never gets
+                // it (pavelgajdo, Lichii-Android 8bce98ae84).
+                if (!m_cv.wait_for(lk, AsyncPollInterval, ready)) {
+                    lk.unlock();
+                    pictures.clear();
+                    decoder->Poll(pictures);
+                    lk.lock();
+                    if (!m_flush) {
+                        for (auto& picture : pictures) {
+                            const u64 pts = picture.pts;
+                            m_decoded.push_back({std::move(picture), pts, false});
+                        }
+                    }
+                    continue;
+                }
+            } else if (!m_cv.wait_for(lk, StallReport, ready)) {
                 // A movie that stops: say once what it waits on (input, a release or a frame).
                 if ((m_av1 || Tracing()) && m_frames_out != 0 && !m_stream_ended &&
                     stall_reported != m_frames_out) {
@@ -3253,9 +3272,11 @@ private:
                 LOG_INFO(Service, "{} empty codec, detected H.264 stream: using \"{}\"",
                          GetServiceName(), codec);
             }
+            const u32 width = m_width;
+            const u32 height = m_height;
             lk.unlock();
             if (!decoder || decoder->Name() != codec) {
-                decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec);
+                decoder = std::make_unique<Tegra::Host1x::Nx2VideoDecoder>(codec, width, height);
             }
             pictures.clear();
             const auto decode_start = std::chrono::steady_clock::now();
@@ -3271,7 +3292,8 @@ private:
             if (!input.end) {
                 m_decode_time += decode_time;
                 ++m_timed_decodes;
-                if (pictures.empty()) {
+                // (A hardware decoder's frame comes out later, through Poll.)
+                if (pictures.empty() && !decoder->HasPendingOutput()) {
                     ++m_no_picture;
                 }
             }
