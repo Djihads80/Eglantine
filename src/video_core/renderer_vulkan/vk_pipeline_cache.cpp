@@ -1137,6 +1137,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if ((env.ShaderStage() == Shader::Stage::Task ||
              env.ShaderStage() == Shader::Stage::Mesh) &&
             !device.IsExtMeshShaderSupported()) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1) < 4) {
+                LOG_WARNING(Render_Vulkan, "Skipping a task/mesh pipeline: no VK_EXT_mesh_shader");
+            }
             return nullptr;
         }
 

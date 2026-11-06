@@ -36,7 +36,8 @@ public:
         u32 width,
         u32 height);
 
-    /// Acquires the next image in the swapchain, waits as needed.
+    /// Acquires the next image in the swapchain, waits as needed. Returns true when no image was
+    /// acquired (out of date) and the swapchain has to be recreated first.
     /// `may_flush`: false on the async present thread (see Scheduler::Wait).
     bool AcquireNextImage(bool may_flush = true);
 
