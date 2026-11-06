@@ -2355,7 +2355,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
             const bool offsets = insn.Bits(76, 1) != 0;
-            if ((insn.Bits(61, 3) != 1 && insn.Bits(61, 3) != 5) || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 ||
+            if ((insn.Bits(61, 3) != 1 && insn.Bits(61, 3) != 5) ||
+                (insn.Bits(77, 3) != 0 && insn.Bits(77, 3) != 2) || insn.Bits(81, 3) != 7 ||
                 insn.Bits(59, 1) || (insn.Bits(61, 3) == 5 && offsets) ||
                 (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
                 insn.Bits(89, 1) || mask == 0 ||
