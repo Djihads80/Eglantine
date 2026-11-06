@@ -711,7 +711,7 @@ void DmaPusher::CallMethod(u32 argument) {
         if (!subchannel->execution_mask[dma_state.method]) {
             subchannel->method_sink.emplace_back(dma_state.method, argument);
         } else {
-            VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+            VideoCommon::Nx2Profile::SampledScope<4> method_scope{VideoCommon::Nx2Profile::Zone::Method};
             subchannel->ConsumeSink(system);
             subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
             subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
@@ -778,7 +778,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                               dma_state.method_count, WantsSegment() ? &segment : nullptr);
             return;
         }
-        VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+        VideoCommon::Nx2Profile::SampledScope<4> method_scope{VideoCommon::Nx2Profile::Zone::Method};
         subchannel->ConsumeSink(system);
         subchannel->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
         subchannel->CallMultiMethod(system, dma_state.method, base_start, num_methods, dma_state.method_count);

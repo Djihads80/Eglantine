@@ -188,6 +188,13 @@ private:
     u64 parent_child_ns{};
 };
 
+/// A call of `zone` counted without timing it (its time goes to the enclosing zone).
+inline void Count(Zone zone) {
+    if (Enabled()) {
+        ++t_data.count[static_cast<size_t>(zone)];
+    }
+}
+
 /// An engine method the back ran (profiling only): the report lists the most called.
 inline void CountMethod(u32 method, u32 amount = 1) {
     if (!Enabled()) {
