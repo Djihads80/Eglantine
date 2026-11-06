@@ -1831,7 +1831,9 @@ private:
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         const auto release = PresentQueue() ? QueueRelease(w[12]) : std::array<u32, 4>{};
-        if (!PresentQueue()) {
+        if (PresentQueue()) {
+            ReleaseBackstop();
+        } else {
             PaceToVblank(w[12]);
         }
         const auto paced = std::chrono::steady_clock::now();
@@ -1883,12 +1885,13 @@ private:
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
                          "pacing {} us, {} ran a frame ahead, {} behind without this frame's wait, "
                          "{} early before the previous frame landed ({} us waited for landing, "
-                         "{} gave up, {} verify differences so far)",
+                         "{} gave up, {} verify differences so far), {} held by the release "
+                         "backstop",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600, m_stats.ran_ahead, m_stats.one_ahead_skips,
                          m_stats.landed_lag, m_stats.landed_us, m_stats.landed_gave_up,
-                         m_landed_mismatches);
+                         m_landed_mismatches, m_stats.release_backstops);
                 m_stats = {.last_present = entered};
             }
         }
@@ -1916,8 +1919,40 @@ private:
             const char* value = std::getenv("EDEN_NX2_PRESENT_QUEUE");
             return value == nullptr || value[0] != '0';
         }();
-        return enabled;
+        // Single core: CoreTiming counts guest ticks, not wall time, so the release timer would
+        // not pace in real time, and DoSpeedLimiting (skipped with the queue) is the only limiter.
+        return enabled && Settings::values.use_multi_core.GetValue();
     }
+
+    /// A game that ignores the release fences would run unpaced with the queue. One that waits
+    /// on them can't present more than its swapchain's slots ahead of them; past
+    /// ReleaseBackstopDepth, wait here (bounded) for the fence that many presents back.
+    static constexpr u32 ReleaseBackstopDepth = 4;
+    void ReleaseBackstop() {
+        if (++m_release_queued <= ReleaseBackstopDepth) {
+            return;
+        }
+        auto& syncpoints = system.Host1x().GetSyncpointManager();
+        const u32 target = m_release_value - ReleaseBackstopDepth;
+        if (syncpoints.IsReadyGuest(m_release_syncpoint, target)) {
+            return;
+        }
+        ++m_stats.release_backstops;
+        if (!m_release_backstop_logged) {
+            m_release_backstop_logged = true;
+            LOG_WARNING(Service,
+                        "nx2:vi2 present #{} is more than {} presents ahead of its display release "
+                        "fences: the game may ignore them; pacing the present instead",
+                        m_presents, ReleaseBackstopDepth);
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{250};
+        while (!syncpoints.IsReadyGuest(m_release_syncpoint, target) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::microseconds{200});
+        }
+    }
+    u32 m_release_queued{};
+    bool m_release_backstop_logged{};
 
     /// Returns the allocator for display release syncpoints.
     Nvidia::NvCore::SyncpointManager& NvdrvSyncpoints() {
@@ -1978,6 +2013,7 @@ private:
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{}, landed_us{};
         u32 presents{}, ran_ahead{}, one_ahead_skips{}, landed_lag{}, landed_gave_up{};
+        u32 release_backstops{}; ///< Presents ReleaseBackstop held for an old release fence
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     VideoCommon::Nx2FrameStats::Window<> m_frame_stats;
