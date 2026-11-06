@@ -701,7 +701,7 @@ void BufferCache<P>::BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index,
     }
     channel_state->compute_storage_buffers[ssbo_index] =
         StorageBufferBinding(ssbo_addr, cbuf_index, is_written, kepler_compute->IsNativeMode(),
-                             indirect_offset != ~0U);
+                             indirect_offset != ~0U, true);
 }
 
 template <class P>
@@ -2654,7 +2654,8 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 
 template <class P>
 Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index, bool is_written,
-                                             bool native_pointer, bool table_pointer) const {
+                                             bool native_pointer, bool table_pointer,
+                                             bool compute) const {
     const GPUVAddr gpu_addr = gpu_memory->Read<u64>(ssbo_addr);
 
     if (gpu_addr == 0) {
@@ -2666,10 +2667,12 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
         // A pointer read from a table in memory is the base of an object pool, read anywhere in
         // it (Ocarina of Time's grass instances lie 12-18 MiB past theirs): bound to the end of
-        // its mapping, up to 64 MiB. The 8 MiB cap made those reads return 0 and culled every
-        // blade. Written pools keep the cap: a write marks the whole binding GPU-modified.
+        // its mapping, up to 64 MiB (256 MiB for compute: its fog light probes, SH records
+        // ~104-122 MiB past their pointer, all read 0 at 64 MiB and the volumetric fog lost its
+        // sky ambient). The 8 MiB cap made the grass reads return 0 and culled every blade.
+        // Written pools keep the cap: a write marks the whole binding GPU-modified.
         if (table_pointer && !is_written) {
-            return (std::min)(memory_layout_size, static_cast<u32>(64_MiB));
+            return (std::min)(memory_layout_size, static_cast<u32>(compute ? 256_MiB : 64_MiB));
         }
         // A native (Switch 2) compute program's pointer is bare: the word after it is another
         // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
