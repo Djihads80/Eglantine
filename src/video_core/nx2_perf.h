@@ -176,7 +176,7 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::OneAheadLanded) == 50 &&
               static_cast<unsigned>(Opt::SplitRings) == 51 &&
               static_cast<unsigned>(Opt::BindMemoLocal) == 52 &&
-              static_cast<unsigned>(Opt::WarGuardProbe) == 56);
+              static_cast<unsigned>(Opt::WarGuardProbe) == 57);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
