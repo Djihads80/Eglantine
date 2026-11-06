@@ -1,0 +1,88 @@
+name: Ocarina of Time test report
+description: How Ocarina of Time ran for you on this fork, good or bad
+title: "[OoT] <place in game> on <GPU>"
+labels: ["Ocarina of Time", "test report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Reports that it **works** are as useful as bug reports: they tell us which areas and GPUs are fine.
+        This is a result-first fork (see OOT_STABLE.md), so expect rough edges.
+
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: Release name, or the commit hash from the window title or the first line of the log
+      placeholder: "e.g. oot-stable-2026-11-05 or 1fa3108afb"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: "e.g. RTX 4070, 566.36 / RX 7800 XT, 25.10.1 / Arc A770"
+    validations:
+      required: true
+
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU and RAM
+      placeholder: "e.g. Ryzen 7 7800X3D, 32 GB"
+
+  - type: input
+    id: place
+    attributes:
+      label: Where in the game
+      description: Area, and what you were doing (walking, a cutscene, a fight, a menu)
+      placeholder: "e.g. Hyrule Field at night, riding Epona"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: How did it go?
+      options:
+        - Played fine
+        - Visual problem (flashes, missing or wrong objects, corruption)
+        - Slow motion or wrong game speed
+        - Froze or hung
+        - Crashed
+    validations:
+      required: true
+
+  - type: input
+    id: fps
+    attributes:
+      label: Frame rate
+      description: Roughly, from the status bar
+      placeholder: "e.g. 45-60"
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: What you saw, and what you did right before. Screenshots or a short clip help a lot.
+
+  - type: dropdown
+    id: accuracy
+    attributes:
+      label: GPU accuracy setting
+      options:
+        - Low
+        - Medium
+        - High
+        - Don't know
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Drag and drop `%APPDATA%\eden\log\eden_log.txt` from that session here (close the emulator first; the next start overwrites it).
+        For a freeze: while it is frozen, Task Manager > Details > right-click `eglantine.exe` > Create dump file, and say where it was saved.
+    validations:
+      required: true

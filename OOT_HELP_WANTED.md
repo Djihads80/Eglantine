@@ -6,6 +6,8 @@ without crashing, at 40-60 FPS. These are the open problems, easiest first. Read
 in game and checked against the safe path, and a fix that only compiles isn't done.
 
 To claim a task, open an issue on this fork with its title, or comment on an existing one.
+Test reports have their own form (New issue, **Ocarina of Time test report**). To build and
+measure a change, see [OOT_CONTRIBUTING.md](OOT_CONTRIBUTING.md).
 
 This is a RESULT FIRST fork: code lands once it works in game, before review, and much of it is
 AI-assisted. **Reviewing what's already here is a contribution too.** Point out anything wrong

@@ -15,6 +15,7 @@
 > - [What works, the numbers and the key changes](OOT_STABLE.md)
 > - [How we got here: the method in one page](OOT_WORKFLOW.md)
 > - [Help wanted: open tasks, easiest first](OOT_HELP_WANTED.md)
+> - [Contribute: build, measure, send a change](OOT_CONTRIBUTING.md)
 > - [Credits](CREDITS_OOT.md)
 
 > [!WARNING]

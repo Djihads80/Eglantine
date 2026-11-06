@@ -1,5 +1,8 @@
 # Contributing
 
+> [!NOTE]
+> On this fork's Ocarina of Time branch, start with [OOT_CONTRIBUTING.md](OOT_CONTRIBUTING.md): how to build, measure in game and send a change.
+
 Eglantine has lots of different ways that you can contribute to its efforts, even without knowing how to write code:
 
 - Join our [Discord](https://discord.gg/jCCZ58VExk) community
