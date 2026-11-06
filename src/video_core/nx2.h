@@ -50,18 +50,26 @@ inline bool Nx2CommandLists() {
     return g_nx2_command_lists.load(std::memory_order_relaxed);
 }
 
+// Set (Core::Memory, as the application's page table is set up) while the guest CPU's reads of
+// GPU-written pages are trapped: read traps, under Dynarmic or NCE (EDEN_NX2_READ_TRAPS,
+// EDEN_NX2_NCE_READ_TRAPS). A trapped read downloads what it reads and has later GPU writes there
+// copied back at fences.
+inline std::atomic<bool> g_nx2_cpu_read_traps{false};
+
 // Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
 // see, so their buffers must be copied back to guest memory at every fence
 // (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
 // Pokopia: with the copy-back off its sky is black or flickers. 0400486024DEC000 is Ocarina of
-// Time: its CPU reads GPU-written exposure/sky values, and on Android (NCE has no read traps, and
-// reactive flushing is off) it read stale ones, so the scene came out ~3.4x overexposed (white
-// mist from the sky LUT on). Open work: read traps under NCE, then the list goes.
+// Time: its CPU reads GPU-written exposure/sky values, and without read traps (Android before NCE
+// had them: reactive flushing is off there) it read stale ones, so the scene came out ~3.4x
+// overexposed (white mist from the sky LUT on). Its reads are guest CPU reads, which read traps
+// catch, so it is listed only while they are off.
 inline bool Nx2NeedsBufferDownloads() {
     switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
     case 0x0400A3A01EE4C000ULL:
-    case 0x0400486024DEC000ULL:
         return true;
+    case 0x0400486024DEC000ULL:
+        return !g_nx2_cpu_read_traps.load(std::memory_order_relaxed);
     default:
         return false;
     }

@@ -40,6 +40,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2.h"
 #include "video_core/rasterizer_download_area.h"
 
 namespace Core::Memory {
@@ -76,8 +77,9 @@ struct Memory::Impl {
         host_buffer = std::addressof(system.DeviceMemory().buffer);
 #endif
         if (process.IsApplication()) {
-            LOG_INFO(HW_Memory, "Read traps on GPU-written pages: {}{}",
-                     ReadTrapsEnabled() ? "on" : "off",
+            const bool read_traps = ReadTrapsEnabled();
+            Tegra::g_nx2_cpu_read_traps.store(read_traps, std::memory_order_relaxed);
+            LOG_INFO(HW_Memory, "Read traps on GPU-written pages: {}{}", read_traps ? "on" : "off",
                      Settings::IsNceEnabled() ? " (NCE, EDEN_NX2_NCE_READ_TRAPS)" : "");
         }
     }
