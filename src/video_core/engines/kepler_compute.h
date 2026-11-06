@@ -244,6 +244,15 @@ public:
     }
 
     bool IsNativeMode() const { return native_mode; }
+
+    /// Whether a write to `method` may write memory: anything but a native method that only
+    /// stores its value (native_plain_methods) or, outside native mode, a non-executable one.
+    [[nodiscard]] bool MayWriteMemory(u32 method) const {
+        if (method >= native_plain_methods.size()) {
+            return true;
+        }
+        return native_mode ? !native_plain_methods[method] : execution_mask[method];
+    }
     /// Whether the dispatch being run is a pass of a game DLSS evaluation (Fortune's Weave).
     bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
     /// Whether the matrix multiplies (tensor-core instructions) of the program being dispatched

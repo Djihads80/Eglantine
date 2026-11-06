@@ -33,6 +33,28 @@ namespace Tegra {
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
+bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
+                               u32 method) {
+    // Compute dispatches, DMA copies and inline uploads write what the front reads (the command
+    // lists ReadGpuWrittenCommands reads, MME DMA reads); the register writes that set them up
+    // do not, and moved the writer mark past queued draws the front then waited for.
+    // EDEN_NX2_WRITER_CLASSIFY=0: every method of these engines counts, as before.
+    static const bool classify = [] {
+        const char* value = std::getenv("EDEN_NX2_WRITER_CLASSIFY");
+        return value == nullptr || value[0] != '0';
+    }();
+    switch (type) {
+    case Engines::EngineTypes::KeplerCompute:
+        return !classify ||
+               static_cast<const Engines::KeplerCompute&>(engine).MayWriteMemory(method);
+    case Engines::EngineTypes::MaxwellDMA:
+    case Engines::EngineTypes::KeplerMemory:
+        return !classify || method >= MacroRegistersStart || engine.execution_mask[method];
+    default:
+        return false;
+    }
+}
+
 namespace {
 // Command list (GPFIFO) entries by their sync flag, logged every 10 s (the thread parsing
 // command lists): whether the entries on GPU-written pages carry it, and whether the split's
@@ -726,11 +748,9 @@ void DmaPusher::CallMethod(u32 argument) {
             return;
         }
         // Compute dispatches, DMA copies and inline uploads write what the front reads (the
-        // command lists ReadGpuWrittenCommands reads, MME DMA reads).
+        // command lists ReadGpuWrittenCommands reads, MME DMA reads): IsMemoryWriter.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA ||
-                            engine_type == Engines::EngineTypes::KeplerMemory;
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
         // DMA copies, inline uploads and 2D blits may write guest memory as they run, anywhere as
         // far as the front knows: MME DMA reads wait for them (shader writes go to the buffer
         // cache). 2D from jojo-chaechae/Eglantine 90eab341bd.
@@ -796,11 +816,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             return;
         }
         // Compute dispatches, DMA copies and inline uploads write what the front reads (the
-        // command lists ReadGpuWrittenCommands reads, MME DMA reads).
+        // command lists ReadGpuWrittenCommands reads, MME DMA reads): IsMemoryWriter.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
-                            engine_type == Engines::EngineTypes::MaxwellDMA ||
-                            engine_type == Engines::EngineTypes::KeplerMemory;
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
         // DMA copies, inline uploads and 2D blits may write guest memory as they run, anywhere as
         // far as the front knows: MME DMA reads wait for them (shader writes go to the buffer
         // cache). 2D from jojo-chaechae/Eglantine 90eab341bd.

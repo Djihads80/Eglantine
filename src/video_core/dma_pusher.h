@@ -195,6 +195,11 @@ public:
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
 private:
+    /// Whether a method sent to an engine of `type` may write memory the front reads later:
+    /// the split's writer mark (GpuSplit::NoteWriter) moves only for those.
+    static bool IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
+                               u32 method);
+
     static constexpr u32 non_puller_methods = 0x40;
     static constexpr u32 max_subchannels = 8;
     bool Step();
