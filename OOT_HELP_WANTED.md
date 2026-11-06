@@ -18,7 +18,7 @@ in an issue or PR.
 
 **1. Test other areas and GPUs.** Play Hyrule Field, a dungeon, Kakariko, a cutscene. Report
 the place, your GPU and driver, the FPS range, and anything wrong (crash, freeze, flashes, missing
-objects, slow motion). Attach `%APPDATA%\eden\log\eden_log.txt` from that session. AMD and Intel
+objects, slow motion). Attach `%APPDATA%\eglantine\log\eden_log.txt` from that session. AMD and Intel
 results are especially wanted: almost all testing so far was on an RTX 5090. If you see flashes,
 say whether they stop with the environment variable `EDEN_NX2_PERF_SAFE=1`.
 

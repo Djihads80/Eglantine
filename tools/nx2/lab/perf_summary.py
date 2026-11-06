@@ -7,7 +7,7 @@
 With a run dir (tools/nx2/lab/runs/<name>) it reads emulator.log, also checks eden_log.txt for
 DEVICE_LOST (emulator.log has missed one), and reads phases.txt from run_oot.ps1 to tell the save's
 spawn spot from the walk (without it, all of gameplay is one phase). With no argument it reads
-%APPDATA%/eden/log/eden_log.txt.
+%APPDATA%/eglantine/log/eden_log.txt.
 
 Gameplay starts at the first log line holding --marker (default 64x36x96: Kokiri Forest's fog
 volumes, created about 11 s after the save loads). The title screen and menus run at 60 FPS, so a
@@ -28,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_LOG = Path(os.environ.get("APPDATA", "")) / "eden" / "log" / "eden_log.txt"
+DEFAULT_LOG = Path(os.environ.get("APPDATA", "")) / "eglantine" / "log" / "eden_log.txt"
 DEFAULT_MARKER = "64x36x96"
 LIVE_SETTLE = 3.0  # seconds dropped after a live switch flip
 

@@ -59,7 +59,7 @@ function Log($m) { Write-Output ("[{0,6:F1}s] {1}" -f (Seconds), $m) }
 # phases.txt: when gameplay and the walk started, for perf_summary.py (seconds since launch, which
 # is about the log's own clock).
 function Phase($name) { "{0} {1:F1}" -f $name, ((Get-Date) - $script:launched).TotalSeconds | Add-Content "$D\phases.txt" }
-$AppLog = if ($env:EGLANTINE_LOG) { $env:EGLANTINE_LOG } else { "$env:APPDATA\eden\log\eden_log.txt" }
+$AppLog = if ($env:EGLANTINE_LOG) { $env:EGLANTINE_LOG } else { "$env:APPDATA\eglantine\log\eden_log.txt" }
 
 # --- child processes -------------------------------------------------------------------------------
 # PowerShell 5.1 sets the console title before it runs a native command. Once the console it started

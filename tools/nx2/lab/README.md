@@ -38,7 +38,7 @@ while it runs. It ends with the summary and a `result:` line, and its exit code 
 | Result | Exit | Meaning |
 |---|---|---|
 | `no device loss` | 0 | Gameplay reached and measured. |
-| `DEVICE_LOST` / `EMULATOR EXITED` | 1 | A crash. Checked in both `emulator.log` and `%APPDATA%\eden\log\eden_log.txt`: one has missed it before. |
+| `DEVICE_LOST` / `EMULATOR EXITED` | 1 | A crash. Checked in both `emulator.log` and `%APPDATA%\eglantine\log\eden_log.txt`: one has missed it before. |
 | `INVALID: never reached gameplay` | 3 | The run stayed on the title screen or a menu. Its windows read ~60 FPS and mean nothing; run it again. |
 | `lab step failed` | 6 | Python, the launch, a key press or stopping the emulator failed. No result. |
 

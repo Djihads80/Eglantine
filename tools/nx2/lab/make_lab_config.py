@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "eden" / "config"
+CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "eglantine" / "config"
 INPUT_KEY = re.compile(r"^(player_0_(?:button_[a-z0-9_]+|lstick|rstick|motion[a-z0-9_]*))(\\default)?=")
 
 

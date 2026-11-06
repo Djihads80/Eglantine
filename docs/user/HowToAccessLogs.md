@@ -16,7 +16,7 @@ Use this when you need to review the logs to determine an issue or provide them 
 
 ###  Windows
 
-*By default the Eden folder is stored in your AppData `C:\Users\<USER>\AppData\Roaming\Eden\log`, or the local **user** folder if you have a portable installation.*
+*By default the Eden folder is stored in your AppData `C:\Users\<USER>\AppData\Roaming\eglantine\log`, or the local **user** folder if you have a portable installation.*
 
 <aside>
 
