@@ -202,6 +202,7 @@ private:
     /// suspended the channel.
     size_t ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset = 0);
     size_t command_resume_offset{}; ///< Words of the current entry done before a suspension
+    bool entry_from_copy{}; ///< The current entry was first parsed from its list's copy
 
     void SetState(const CommandHeader& command_header);
 

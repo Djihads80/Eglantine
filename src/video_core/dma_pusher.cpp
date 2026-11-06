@@ -75,22 +75,38 @@ bool ResumeSameWords() {
     return enabled;
 }
 
-// EDEN_NX2_RESNAPSHOT_AGE_MS=<ms>: a list submitted longer ago than that keeps its submit-time
-// words when its channel resumes from an acquire (or it is queued after one), instead of reading
-// memory again. Games write lists they submitted before releasing the acquire, soon after the
-// submit; after a long wait the game may have reused that memory for later frames.
+// EDEN_NX2_RESNAPSHOT_AGE_MS=<ms> (0: no limit): a list submitted longer ago than that keeps its
+// submit-time words when its channel resumes from an acquire (or it is queued after one),
+// instead of reading memory again, and an entry of it resumed after an acquire continues from
+// them. Games write lists they submitted before releasing the acquire soon after the submit;
+// after a long wait the game may have reused that memory for later frames. Ocarina of Time
+// defaults to 500 ms: on the phone its lists run about a second after their submit, and with the
+// GPU split a list copied again 2.2 s after its submit held a later frame's acquire (38 releases
+// ahead), on which every channel deadlocked.
 u64 ResnapshotMaxAgeNs() {
-    static const u64 limit = [] {
+    static const s64 forced = [] {
         const char* value = std::getenv("EDEN_NX2_RESNAPSHOT_AGE_MS");
-        return value != nullptr ? u64{std::strtoull(value, nullptr, 10)} * 1'000'000 : u64{0};
+        return value != nullptr ? static_cast<s64>(std::strtoull(value, nullptr, 10)) : s64{-1};
     }();
-    return limit;
+    if (forced >= 0) {
+        return static_cast<u64>(forced) * 1'000'000;
+    }
+    constexpr u64 OcarinaOfTime = 0x0400486024DEC000ULL;
+    return Tegra::g_nx2_program_id.load(std::memory_order_relaxed) == OcarinaOfTime
+               ? u64{500'000'000}
+               : u64{0};
 }
 
 u64 SteadyNs() {
     return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 std::chrono::steady_clock::now().time_since_epoch())
                                 .count());
+}
+
+// Whether the list is old enough to keep its copy (ResnapshotMaxAgeNs).
+bool KeepsCopy(const Tegra::CommandList& list) {
+    const u64 max_age = ResnapshotMaxAgeNs();
+    return max_age != 0 && list.submit_ns != 0 && SteadyNs() - list.submit_ns > max_age;
 }
 } // Anonymous namespace
 
@@ -134,11 +150,13 @@ bool DmaPusher::Step() {
         size_t lists = 0;
         size_t entries = 0;
         size_t changed = 0;
+        size_t kept = 0;
         u64 oldest_ns = 0;
         const u64 now_ns = SteadyNs();
         for (CommandList& list : dma_pushbuffer) {
             if (!list.submitted_offsets.empty()) {
                 ++lists;
+                kept += KeepsCopy(list) ? 1 : 0;
                 entries += list.command_lists.size();
                 oldest_ns = (std::max)(oldest_ns, now_ns - list.submit_ns);
                 changed += RefreshSnapshot(list, now, 2);
@@ -147,16 +165,17 @@ bool DmaPusher::Step() {
         // EDEN_NX2_PB_CHECK: a long wait whose queued lists changed since they were copied (the
         // game may have reused their memory meanwhile).
         const auto waited = std::chrono::steady_clock::now() - suspended_since;
-        if (record_parsed_entries && changed != 0 && waited > std::chrono::milliseconds{100}) {
+        if (record_parsed_entries && (changed != 0 || kept != 0) &&
+            waited > std::chrono::milliseconds{100}) {
             static std::atomic<u32> reported{};
             if (reported.fetch_add(1) < 32) {
                 LOG_WARNING(HW_GPU,
                             "Channel {} resumed after {} ms: {} queued lists ({} entries, oldest "
-                            "submitted {} ms ago) read again, {} entries changed since copied{}",
+                            "submitted {} ms ago), {} kept their copy, the others read again: {} "
+                            "entries changed since copied",
                             channel_state.bind_id,
                             std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(),
-                            lists, entries, oldest_ns / 1'000'000, changed,
-                            ResnapshotMaxAgeNs() != 0 ? " (older lists kept)" : "");
+                            lists, entries, oldest_ns / 1'000'000, kept, changed);
             }
         }
     }
@@ -292,9 +311,28 @@ bool DmaPusher::Step() {
                                  entry_record.address == header.addr &&
                                  entry_record.size == header.size &&
                                  entry_record.words.size() == header.size;
+        // An entry first parsed from its list's copy continues from it after an acquire when the
+        // list keeps its copy (KeepsCopy): memory may hold a later frame's commands by now.
+        const bool resume_copy =
+            command_resume_offset != 0 && entry_from_copy &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+            command_list.submitted_offsets[dma_pushbuffer_subindex] + header.size <=
+                command_list.submitted_words.size() &&
+            KeepsCopy(command_list);
+        if (command_resume_offset == 0) {
+            entry_from_copy = submitted;
+        }
         if (resume_same) {
             const std::span<const CommandHeader> commands{entry_record.words};
             entry_record.resumed_at = command_resume_offset;
+            command_resume_offset +=
+                ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (resume_copy) {
+            const std::span<const CommandHeader> commands{
+                command_list.submitted_words.data() +
+                    command_list.submitted_offsets[dma_pushbuffer_subindex],
+                header.size};
+            NoteEntryWords(header, "snapshot (resumed)", commands, command_resume_offset);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (submitted) {
