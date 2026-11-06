@@ -141,6 +141,7 @@ bool GameList::IsEmpty() const {
 }
 
 void GameList::OnPopulate() {
+    m_populating = true;
     m_currentView->setEnabled(false);
 
     switch (game_list_mode) {
@@ -218,7 +219,9 @@ void GameList::ResetViewMode() {
     carousel_view->setEnabled(false);
 
     m_currentView->setVisible(true);
-    m_currentView->setEnabled(true);
+    // MainWindow switches the view right after starting the first populate; keep it disabled
+    // until that finishes, as OnPopulate does for every other populate.
+    m_currentView->setEnabled(!m_populating);
     layout->insertWidget(0, m_currentView);
 
     auto view = m_currentView->viewport();
@@ -325,6 +328,7 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
 
     slice(to_add, [watcher](const QStringList& chunk) { watcher->addPaths(chunk); });
 
+    m_populating = false;
     m_currentView->setEnabled(true);
 
     int children_total = 0;
@@ -340,6 +344,12 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
     // TODO: carousel/grid impl.
     item_model->sort(tree_view->header()->sortIndicatorSection(),
                      tree_view->header()->sortIndicatorOrder());
+
+    // A repopulate (a directory removed, deep scan toggled) replaces the rows: apply the search
+    // text the user still has typed to them.
+    if (!search_field->filterText().isEmpty()) {
+        OnTextChanged(search_field->filterText());
+    }
 
     emit PopulatingCompleted();
 }
@@ -626,10 +636,11 @@ void GameList::AddCustomDirPopup(QMenu& context_menu, QModelIndex selected) {
         game_dir.deep_scan = !game_dir.deep_scan;
         PopulateAsync(UISettings::values.game_dirs);
     });
-    connect(delete_dir, &QAction::triggered, this, [this, &game_dir, selected] {
+    connect(delete_dir, &QAction::triggered, this, [this, &game_dir] {
         UISettings::values.game_dirs.removeOne(game_dir);
-        item_model->invisibleRootItem()->removeRow(selected.row());
-        OnTextChanged(search_field->filterText());
+        // Repopulate instead of removing the row: a running worker adds games under the
+        // directory rows it created, and the other rows' GameDirRole indices would shift.
+        PopulateAsync(UISettings::values.game_dirs);
     });
 }
 
