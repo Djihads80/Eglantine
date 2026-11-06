@@ -102,8 +102,16 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break;
     case 0x927: operand(24); operand(32); break;
     case 0x9a8: operand(16); operand(32); break; // ATOMG: result in Rd, data operand at bit 32.
-    case 0xb6c: case 0xf6c: // TXD: both destination pairs, coordinate pair, four gradients.
-        operand(16, 2); operand(24, 2); operand(32, 4); operand(64, 2); break;
+    case 0xb6c: case 0xf6c: { // TXD: results in Rd/Rd+1 and the second destination, coordinates in Ra, gradients in Rb..Rb+3.
+        const u32 channels = static_cast<u32>(std::popcount(input.Bits(72, 4)));
+        operand(16, (std::min)((std::max)(channels, 1U), 2U));
+        operand(24, input.Bits(61, 3) == 5 ? 3 : 2); // ARRAY_2D also reads the layer
+        operand(32, 4);
+        if (channels > 2) {
+            operand(64, channels - 2);
+        }
+        break;
+    }
     case 0x202: case 0x243: operand(16); operand(32); break;
     case 0x812: case 0x824: case 0x831: case 0x424: case 0x624:
         operand(16); operand(24); operand(64); break;
