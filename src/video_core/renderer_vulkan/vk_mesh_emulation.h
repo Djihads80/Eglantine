@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -63,6 +64,17 @@ public:
     /// a null buffer when the draw is not emulated.
     MeshEmulationRegion draw{};
 
+    /// EDEN_NX2_MESH_EMULATE_CHECK=1: the headers of emulated draws are read back after their
+    /// dispatches and logged (mesh workgroups launched, dispatched and drawn).
+    [[nodiscard]] bool Checking() const noexcept {
+        return static_cast<bool>(check_buffer);
+    }
+
+    /// Where the draw's header goes after its dispatches (a slot of the readback buffer), noted
+    /// with what the host asked for.
+    [[nodiscard]] std::pair<VkBuffer, VkDeviceSize> CheckSlot(u64 pipeline, u32 groups,
+                                                              bool has_task, u32 capacity);
+
 private:
     struct Chunk {
         vk::Buffer buffer;
@@ -71,10 +83,27 @@ private:
         u64 tick{}; ///< of its last region
     };
 
+    struct Check {
+        u64 tick;
+        u64 pipeline;
+        u32 slot;
+        u32 groups;
+        u32 capacity;
+        bool has_task;
+    };
+
+    /// Logs the checks whose tick is done.
+    void ReportChecks();
+
     const Device& device;
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
     std::vector<Chunk> chunks;
+    vk::Buffer check_buffer;
+    std::vector<Check> checks;
+    u32 next_check_slot{};
+    u32 checks_logged{};
+    u32 overflows_logged{};
     size_t current{};
     VkDeviceSize max_size{};
     VkDeviceSize alignment{};

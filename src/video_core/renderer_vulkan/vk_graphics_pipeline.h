@@ -279,6 +279,7 @@ private:
     struct EmulatedMeshDraw {
         Shader::Backend::SPIRV::MeshEmulationHeader header{};
         MeshEmulationRegion region{};
+        std::pair<VkBuffer, VkDeviceSize> check{}; ///< readback slot (EDEN_NX2_MESH_EMULATE_CHECK)
         VkDeviceSize size{};
         u32 groups{}; ///< task workgroups, or mesh workgroups without a task program
     };

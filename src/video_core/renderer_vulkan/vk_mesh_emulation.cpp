@@ -4,15 +4,20 @@
 #include <algorithm>
 #include <bit>
 #include <cstdlib>
+#include <cstring>
 
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/renderer_vulkan/vk_mesh_emulation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 
 namespace Vulkan {
+namespace {
+constexpr u32 CHECK_SLOTS = 256;
+}
 
 bool MeshEmulationEnabled(const Device& device) {
     static const int forced = [] {
@@ -34,6 +39,66 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
     const VkDeviceSize range = device.GetMaxStorageBufferRange();
     max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), 256ULL << 20);
     alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
+    const char* const check = std::getenv("EDEN_NX2_MESH_EMULATE_CHECK");
+    if (check != nullptr && check[0] == '1') {
+        check_buffer = memory_allocator.CreateBuffer(
+            VkBufferCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = CHECK_SLOTS * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader),
+                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            },
+            MemoryUsage::Download);
+    }
+}
+
+std::pair<VkBuffer, VkDeviceSize> MeshEmulationBuffer::CheckSlot(u64 pipeline, u32 groups,
+                                                                 bool has_task, u32 capacity) {
+    ReportChecks();
+    if (checks.size() >= CHECK_SLOTS) {
+        return {};
+    }
+    // A slot no pending check uses.
+    u32 slot = next_check_slot;
+    while (std::ranges::any_of(checks, [slot](const Check& entry) { return entry.slot == slot; })) {
+        slot = (slot + 1) % CHECK_SLOTS;
+    }
+    next_check_slot = (slot + 1) % CHECK_SLOTS;
+    checks.push_back({scheduler.CurrentTick(), pipeline, slot, groups, capacity, has_task});
+    return {*check_buffer, slot * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader)};
+}
+
+void MeshEmulationBuffer::ReportChecks() {
+    if (!check_buffer || checks.empty()) {
+        return;
+    }
+    bool invalidated{};
+    std::erase_if(checks, [&](const Check& entry) {
+        if (!scheduler.IsFree(entry.tick)) {
+            return false;
+        }
+        if (!std::exchange(invalidated, true)) {
+            check_buffer.Invalidate();
+        }
+        Shader::Backend::SPIRV::MeshEmulationHeader header;
+        std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
+                    sizeof(header));
+        const bool overflow = header.task_allocated > entry.capacity;
+        if ((overflow && overflows_logged++ < 32) || checks_logged++ < 64) {
+            LOG_INFO(Render_Vulkan,
+                     "Emulated mesh draw {:016x} check: {} {} workgroups, {} mesh workgroups "
+                     "launched, {} dispatched of {} slots, {} vertices drawn{}",
+                     entry.pipeline, entry.groups, entry.has_task ? "task" : "mesh",
+                     entry.has_task ? header.task_allocated : entry.groups,
+                     entry.has_task ? header.dispatch[0] : entry.groups, entry.capacity,
+                     header.draw[0], overflow ? " (past the slots: dropped)" : "");
+        }
+        return true;
+    });
 }
 
 MeshEmulationBuffer::~MeshEmulationBuffer() = default;

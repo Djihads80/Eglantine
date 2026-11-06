@@ -1447,6 +1447,10 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     emulated_draw.size = words * sizeof(u32);
     emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size);
     mesh_emulation_buffer->draw = emulated_draw.region;
+    emulated_draw.check = mesh_emulation_buffer->Checking()
+                              ? mesh_emulation_buffer->CheckSlot(key.Hash(), groups, has_task,
+                                                                 capacity)
+                              : std::pair<VkBuffer, VkDeviceSize>{};
     static std::atomic<u32> logged{};
     if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
         LOG_INFO(Render_Vulkan,
@@ -1565,12 +1569,22 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+                             VK_ACCESS_TRANSFER_READ_BIT,
         };
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                                0, MESH_BARRIER);
+        if (draw.check.first) {
+            cmdbuf.CopyBuffer(draw.region.buffer, draw.check.first,
+                              VkBufferCopy{
+                                  .srcOffset = draw.region.offset,
+                                  .dstOffset = draw.check.second,
+                                  .size = sizeof(MeshEmulationHeader),
+                              });
+        }
     });
     const bool bind_pipeline{scheduler.UpdateGraphicsPipeline(this)};
     scheduler.Record([this, bind_pipeline, push, push_constants,
