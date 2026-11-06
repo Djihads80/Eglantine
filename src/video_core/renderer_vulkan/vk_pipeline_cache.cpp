@@ -647,6 +647,7 @@ std::unordered_map<u64, u8> LoadUsedPipelines(const std::filesystem::path& path,
 // memory built before the game started; the list is only saved at exit or after two minutes, so a
 // boot that ran out of memory never saved one and the next boot did the same.
 constexpr size_t MaxPipelinesWithoutUsedList = 3000;
+constexpr size_t MaxPipelinesAlwaysBuilt = 5000;
 
 // EDEN_NX2_PRELOAD_ALL_PIPELINES=1 builds every cached pipeline at boot, as before.
 bool PreloadAllPipelines() {
@@ -773,6 +774,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
     size_t queued_graphics = 0;
+    std::vector<std::pair<GraphicsPipelineCacheKey, std::vector<FileEnvironment>>> deferred_graphics;
+    keep_cached_pipelines = false;
 
     if (use_vulkan_pipeline_cache) {
         vulkan_pipeline_cache_filename = base_dir / "vulkan_pipelines.bin";
@@ -809,6 +812,29 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         });
         ++state.total;
     }};
+    const auto queue_graphics{[&](const GraphicsPipelineCacheKey& key,
+                                  std::vector<FileEnvironment> envs) {
+        ++queued_graphics;
+        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
+            ShaderPools pools;
+            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            for (auto& env : envs_) {
+                env_ptrs.push_back(&env);
+            }
+            auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
+                                                 state.statistics.get(), false)};
+
+            std::scoped_lock lock{state.mutex};
+            if (pipeline) {
+                graphics_cache.emplace(key, std::move(pipeline));
+            }
+            ++state.built;
+            if (state.has_loaded) {
+                callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
+            }
+        });
+        ++state.total;
+    }};
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
@@ -820,6 +846,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                        env.ShaderStage() == Shader::Stage::Mesh;
             })) {
             return;
+        }
+
+        const u64 stored_hash = key.Hash();
+        if (key.state.dynamic_vertex_input == 0 && dynamic_features.has_dynamic_vertex_input) {
+            key.state.UseDynamicVertexInput();
         }
 
         if ((key.state.extended_dynamic_state != 0) !=
@@ -851,37 +882,34 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         }
 
         const u64 hash = key.Hash();
-        disk_pipelines.insert(hash);
-        if (!PreloadAllPipelines() &&
-            (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
-                                    : !used_pipelines.contains(hash))) {
-            ++skipped_pipelines;
+        if (!disk_pipelines.insert(hash).second) {
             return;
         }
-        ++queued_graphics;
-
-        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
-            ShaderPools pools;
-            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
-            for (auto& env : envs_) {
-                env_ptrs.push_back(&env);
+        if (disk_pipelines.size() > MaxPipelinesAlwaysBuilt && !deferred_graphics.empty()) {
+            deferred_graphics.clear();
+        }
+        if (!PreloadAllPipelines() &&
+            (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
+                                    : !used_pipelines.contains(hash) &&
+                                          !used_pipelines.contains(stored_hash))) {
+            ++skipped_pipelines;
+            if (disk_pipelines.size() <= MaxPipelinesAlwaysBuilt) {
+                deferred_graphics.emplace_back(key, std::move(envs));
             }
-            auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
-                                                 state.statistics.get(), false)};
-
-            std::scoped_lock lock{state.mutex};
-            if (pipeline) {
-                graphics_cache.emplace(key, std::move(pipeline));
-            }
-            ++state.built;
-            if (state.has_loaded) {
-                callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
-            }
-        });
-        ++state.total;
+            return;
+        }
+        queue_graphics(key, std::move(envs));
     }};
     VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
                                load_graphics);
+    if (!stop_loading.stop_requested() && disk_pipelines.size() <= MaxPipelinesAlwaysBuilt) {
+        keep_cached_pipelines = true;
+        skipped_pipelines -= deferred_graphics.size();
+        for (auto& [key, envs] : deferred_graphics) {
+            queue_graphics(key, std::move(envs));
+        }
+    }
+    deferred_graphics.clear();
 
     LOG_INFO(Render_Vulkan, "Total Pipeline Count: {}", state.total);
     if (skipped_pipelines != 0) {
@@ -1038,7 +1066,8 @@ void PipelineCache::EvictUnusedPipelines() {
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
     constexpr u64 EvictAfterFrames = 9000;
-    if (frame_count <= EvictAfterFrames) {
+    if (frame_count <= EvictAfterFrames ||
+        (keep_cached_pipelines && disk_pipelines.size() <= MaxPipelinesAlwaysBuilt)) {
         return;
     }
     const u64 cutoff = frame_count - EvictAfterFrames;

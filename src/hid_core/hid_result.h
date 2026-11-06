@@ -14,6 +14,7 @@ constexpr Result ResultTouchOverflow{ErrorModule::HID, 42};
 
 constexpr Result NpadInvalidHandle{ErrorModule::HID, 100};
 constexpr Result NpadDeviceIndexOutOfRange{ErrorModule::HID, 107};
+constexpr Result ResultSixAxisCalibrationNotFound{ErrorModule::HID, 108};
 
 constexpr Result ResultVibrationNotInitialized{ErrorModule::HID, 121};
 constexpr Result ResultVibrationInvalidStyleIndex{ErrorModule::HID, 122};

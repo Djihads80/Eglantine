@@ -111,9 +111,27 @@ Common::Input::DriverResult JoyconDriver::InitializeDevice() {
     supported_features = GetSupportedFeatures();
 
     // Get Calibration data
-    calibration_protocol->GetLeftJoyStickCalibration(left_stick_calibration);
-    calibration_protocol->GetRightJoyStickCalibration(right_stick_calibration);
-    calibration_protocol->GetImuCalibration(motion_calibration);
+    const int calibration_attempts = input_only_device ? 1 : 5;
+    for (int attempt = 0; attempt < calibration_attempts; ++attempt) {
+        if (calibration_protocol->GetLeftJoyStickCalibration(left_stick_calibration) ==
+            Common::Input::DriverResult::Success) {
+            break;
+        }
+    }
+    for (int attempt = 0; attempt < calibration_attempts; ++attempt) {
+        if (calibration_protocol->GetRightJoyStickCalibration(right_stick_calibration) ==
+            Common::Input::DriverResult::Success) {
+            break;
+        }
+    }
+    bool imu_calibration_read = false;
+    for (int attempt = 0; attempt < calibration_attempts && !imu_calibration_read; ++attempt) {
+        imu_calibration_read = calibration_protocol->GetImuCalibration(motion_calibration) ==
+                               Common::Input::DriverResult::Success;
+    }
+    if (!imu_calibration_read) {
+        LOG_WARNING(Input, "Could not read the motion calibration, using default values");
+    }
 
     // Set led status
     generic_protocol->SetLedBlinkPattern(static_cast<u8>(1 + port));
@@ -158,23 +176,23 @@ void JoyconDriver::InputThread(std::stop_token stop_token) {
         if (!disable_input_thread) {
             status = SDL_hid_read_timeout(hidapi_handle->handle, buffer.data(), buffer.size(),
                                           ThreadDelay);
+            while (IsPayloadCorrect(status, buffer)) {
+                OnNewData(buffer);
+                if (disable_input_thread) {
+                    break;
+                }
+                status =
+                    SDL_hid_read_timeout(hidapi_handle->handle, buffer.data(), buffer.size(), 0);
+            }
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(ThreadDelay));
         }
 
-        if (IsPayloadCorrect(status, buffer)) {
-            OnNewData(buffer);
-        }
-
         if (!vibration_queue.Empty()) {
             VibrationValue vibration_value;
-            vibration_queue.Pop(vibration_value);
+            while (vibration_queue.Pop(vibration_value)) {
+            }
             last_vibration_result = rumble_protocol->SendVibration(vibration_value);
-        }
-
-        // We can't keep up with vibrations. Start skipping.
-        while (vibration_queue.Size() > 6) {
-            vibration_queue.Pop();
         }
 
         std::this_thread::yield();

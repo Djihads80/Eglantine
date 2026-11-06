@@ -14,6 +14,7 @@
 #include <vector>
 #include <optional>
 #include <bit>
+#include <tuple>
 #include "common/container/unordered_map.h"
 #include <boost/container/small_vector.hpp>
 
@@ -254,14 +255,17 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::ApplyThresholdOverrides(bool log) {
-    // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
-    // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
-    // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
-    expected_memory =
-        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
-    minimum_memory =
-        (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
+    // On GPUs whose budget is under CapCriticalMemoryBelow: past what a frame needs, more device
+    // memory only keeps the textures of earlier scenes (title 1 filled 6.7 GB of an 8 GB card and
+    // draws its races in ~5 GB), so collect from MaxCriticalMemory on rather than near the card's
+    // budget. Larger cards follow their budget (TickFrame).
+    if (cap_critical_memory) {
+        critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+        expected_memory = (std::min)(expected_memory,
+                                     critical_memory - (std::min)(critical_memory, u64{768_MiB}));
+        minimum_memory =
+            (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
+    }
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB override the collector's thresholds.
     for (const auto& [name, target] : {std::pair{"EDEN_NX2_TC_EXPECTED_MIB", &expected_memory},
                                        std::pair{"EDEN_NX2_TC_CRITICAL_MIB", &critical_memory}}) {
@@ -291,6 +295,9 @@ void TextureCache<P>::TickFrame() {
         // measured from the driver, so collect only near the device budget instead.
         if (!native_thresholds_applied && gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
             native_thresholds_applied = true;
+            if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+                cap_critical_memory = runtime.GetDeviceMemoryBudget() < CapCriticalMemoryBelow;
+            }
             const u64 device_local = runtime.GetDeviceLocalMemory();
             critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
             expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
@@ -346,14 +353,18 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
                                            ? critical_memory - old_critical
                                            : old_critical - critical_memory;
                     const bool log = budget_check_frames == 1 || change >= 256_MiB;
-                    ApplyThresholdOverrides(log);
                     if (log) {
+                        LOG_INFO(HW_GPU,
+                                 "Texture cache thresholds: expected {} MiB, critical {} MiB, minimum {} MiB",
+                                 expected_memory >> 20, critical_memory >> 20,
+                                 minimum_memory >> 20);
                         LOG_INFO(HW_GPU,
                                  "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
                                  margin >> 20, pressure_margin >> 20, slack_margin >> 20);
@@ -1090,7 +1101,13 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const std::optional src_base = src_image.TryFindBase(src.Address());
     const SubresourceRange src_range{.base = src_base.value(), .extent = {1, 1}};
     const ImageViewInfo src_view_info(ImageViewType::e2D, images.src_format, src_range);
-    const auto [src_framebuffer_id, src_view_id] = RenderTargetFromImage(src_id, src_view_info);
+    FramebufferId src_framebuffer_id{};
+    ImageViewId src_view_id{};
+    if (FRAMEBUFFER_BLITS || images.src_format != PixelFormat::E5B9G9R9_FLOAT) {
+        std::tie(src_framebuffer_id, src_view_id) = RenderTargetFromImage(src_id, src_view_info);
+    } else {
+        src_view_id = FindOrEmplaceImageView(src_id, src_view_info);
+    }
     const auto [src_samples_x, src_samples_y] = SamplesLog2(src_image.info.num_samples);
     Region2D src_region{
         Offset2D{.x = copy.src_x0 >> src_samples_x, .y = copy.src_y0 >> src_samples_y},
@@ -1656,6 +1673,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.unmapped_tile_generation = ~u64{0};
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
@@ -1727,6 +1745,38 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         } else {
             uploaded_ranges.emplace_back(image.cpu_addr, image.guest_size_bytes);
         }
+    }
+}
+
+template <class P>
+void TextureCache<P>::ZeroUnmappedTiles(Image& image) {
+    if (True(image.flags & (ImageFlagBits::Rescaled | ImageFlagBits::Converted |
+                            ImageFlagBits::IsDecoding | ImageFlagBits::Unbacked))) {
+        return;
+    }
+    std::vector<std::pair<u64, u64>> holes;
+    u64 generation{};
+    if (!Tegra::Nx2TileHoles(image.gpu_addr, image.guest_size_bytes, holes, generation)) {
+        return;
+    }
+    const bool remapped = image.unmapped_tile_generation != generation;
+    if (!remapped && image.unmapped_zero_tick == image.modification_tick) {
+        return;
+    }
+    image.unmapped_tile_generation = generation;
+    image.unmapped_zero_tick = image.modification_tick;
+    const u32 dirty_levels = remapped ? ~0U : std::exchange(image.unmapped_dirty_levels, 0U);
+    if (remapped) {
+        image.unmapped_dirty_levels = 0;
+    }
+    if (dirty_levels == 0 || holes.empty()) {
+        return;
+    }
+    const std::vector<BufferImageCopy> regions = UnmappedBlockRegions(
+        image.info, std::span<const std::pair<u64, u64>>(holes.data(), holes.size()),
+        UNMAPPED_ZERO_REGION_BYTES, dirty_levels);
+    if (!regions.empty()) {
+        image.ZeroRegions(regions);
     }
 }
 
@@ -3456,6 +3506,7 @@ template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
+    image.unmapped_dirty_levels = ~0U;
 }
 
 template <class P>
@@ -3489,6 +3540,11 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
     }
+    for (const AliasedImage* const aliased : aliased_images) {
+        for (const ImageCopy& copy : aliased->copies) {
+            image.unmapped_dirty_levels |= 1U << copy.dst_subresource.base_level;
+        }
+    }
     std::ranges::sort(aliased_images, [this](const AliasedImage* lhs, const AliasedImage* rhs) {
         const ImageBase& lhs_image = slot_images[lhs->id];
         const ImageBase& rhs_image = slot_images[rhs->id];
@@ -3512,7 +3568,8 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 }
 
 template <class P>
-void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
+void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate,
+                                   u32 modified_levels) {
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
@@ -3524,8 +3581,12 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
         }
+        if (!is_modification && image.info.native_tiling) {
+            ZeroUnmappedTiles(image);
+        }
     }
     if (is_modification) {
+        const u32 dirty_levels = image.unmapped_dirty_levels;
         if constexpr (requires { &Image::BackTilesWhole; }) {
             if (True(image.flags & ImageFlagBits::SparseTiles) && image.SparseTilesShareZeroBlock()) {
                 // The render would write the zeroed block all empty blocks share: each gets memory
@@ -3560,6 +3621,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
         }
         MarkModification(image);
+        image.unmapped_dirty_levels = dirty_levels | modified_levels;
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }
@@ -3574,7 +3636,10 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
     if (image_view.IsBuffer()) {
         return;
     }
-    PrepareImage(image_view.image_id, is_modification, invalidate);
+    const u32 view_levels = static_cast<u32>(image_view.range.extent.levels);
+    const u32 level_mask = view_levels >= 32 ? ~0U : (1U << view_levels) - 1U;
+    PrepareImage(image_view.image_id, is_modification, invalidate,
+                 level_mask << static_cast<u32>(image_view.range.base.level));
 }
 
 template <class P>

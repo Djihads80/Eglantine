@@ -333,6 +333,10 @@ U32 IREmitter::IsbeRead(const U32& address) {
     return Inst<U32>(Opcode::IsbeRead, address);
 }
 
+U32 IREmitter::IsbeReadOutput(const U32& address) {
+    return Inst<U32>(Opcode::IsbeReadOutput, address);
+}
+
 void IREmitter::IsbeWriteAttribute(const U32& address, const U32& value) {
     Inst(Opcode::IsbeWriteAttribute, address, value);
 }

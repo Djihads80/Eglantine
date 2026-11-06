@@ -29,12 +29,15 @@ public:
     }
 
     struct RegisteredAction {
-        explicit RegisteredAction(u32 expected_value_, std::function<void()>&& action_)
-            : expected_value{expected_value_}, action{std::move(action_)} {}
+        explicit RegisteredAction(u32 expected_value_, u64 id_, std::function<void()>&& action_)
+            : expected_value{expected_value_}, id{id_}, action{std::move(action_)} {}
         u32 expected_value;
+        u64 id;
         std::function<void()> action;
     };
-    using ActionHandle = std::list<RegisteredAction>::iterator;
+    /// A registered action's ID, 0 if it ran at once. Not a list iterator: a deregistration that
+    /// races the action's own completion would match a later action allocated in the erased node.
+    using ActionHandle = u64;
 
     template <typename Func>
     ActionHandle RegisterGuestAction(u32 syncpoint_id, u32 expected_value, Func&& action) {
@@ -87,6 +90,7 @@ private:
     std::array<std::list<RegisteredAction>, NUM_MAX_SYNCPOINTS> host_action_storage;
 
     std::mutex guard;
+    u64 last_action_id{}; ///< Under guard.
     std::condition_variable wait_guest_cv;
     std::condition_variable wait_host_cv;
 };

@@ -42,6 +42,7 @@ class Mouse;
 class NPad;
 class Palma;
 class SevenSixAxis;
+class NpadImu;
 class SixAxis;
 class SleepButton;
 class TouchScreen;
@@ -75,6 +76,7 @@ public:
     std::shared_ptr<NPad> GetNpad() const;
     std::shared_ptr<Palma> GetPalma() const;
     std::shared_ptr<SevenSixAxis> GetSevenSixAxis() const;
+    std::shared_ptr<NpadImu> GetNpadImu() const;
     std::shared_ptr<SixAxis> GetSixAxis() const;
     std::shared_ptr<SleepButton> GetSleepButton() const;
     std::shared_ptr<TouchScreen> GetTouchScreen() const;
@@ -144,6 +146,7 @@ private:
     std::shared_ptr<NPad> npad{nullptr};
     std::shared_ptr<Palma> palma{nullptr};
     std::shared_ptr<SevenSixAxis> seven_six_axis{nullptr};
+    std::shared_ptr<NpadImu> npad_imu{nullptr};
     std::shared_ptr<SixAxis> six_axis{nullptr};
     std::shared_ptr<SleepButton> sleep_button{nullptr};
     std::shared_ptr<UniquePad> unique_pad{nullptr};

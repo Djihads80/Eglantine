@@ -248,7 +248,11 @@ public:
         const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
         const VkPushConstantRange range{
             .stageFlags = static_cast<VkShaderStageFlags>(
-                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_ALL_GRAPHICS),
+                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
+                           : (uses_mesh ? VK_SHADER_STAGE_ALL_GRAPHICS |
+                                              VK_SHADER_STAGE_TASK_BIT_EXT |
+                                              VK_SHADER_STAGE_MESH_BIT_EXT
+                                        : VK_SHADER_STAGE_ALL_GRAPHICS)),
             .offset = 0,
             .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
                     static_cast<u32>(sizeof(RenderAreaLayout)),
@@ -266,6 +270,7 @@ public:
 
     void Add(const Shader::Info& info, VkShaderStageFlags stage) {
         is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        uses_mesh |= (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
 
         Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, info.constant_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, info.storage_buffers_descriptors);
@@ -303,6 +308,7 @@ private:
 
     const Device* device{};
     bool is_compute{};
+    bool uses_mesh{};
     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
     u32 binding{};

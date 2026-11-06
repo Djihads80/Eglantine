@@ -169,6 +169,10 @@ public:
 
     [[nodiscard]] VkBuffer GetTemporaryBuffer(size_t needed_size);
 
+    [[nodiscard]] VkBuffer GetZeroBuffer();
+
+    static constexpr VkDeviceSize ZERO_BUFFER_SIZE = 4ULL << 20;
+
     struct ResolveShadow {
         vk::Image image;
         vk::ImageView view;
@@ -270,6 +274,7 @@ public:
     std::vector<PendingTranscode> free_transcodes;
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
+    vk::Buffer zero_buffer;
     const Settings::ResolutionScalingInfo& resolution;
     std::array<std::vector<VkFormat>, VideoCore::Surface::MaxPixelFormat> view_formats;
 
@@ -435,6 +440,8 @@ public:
 
     void UploadMemory(const StagingBufferRef& map,
                       std::span<const VideoCommon::BufferImageCopy> copies);
+
+    void ZeroRegions(std::span<const VideoCommon::BufferImageCopy> regions);
 
     void DownloadMemory(VkBuffer buffer, size_t offset,
                         std::span<const VideoCommon::BufferImageCopy> copies);

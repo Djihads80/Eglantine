@@ -101,6 +101,10 @@ void EmitIsbeRead(EmitContext& ctx) {
     NotImplemented();
 }
 
+void EmitIsbeReadOutput(EmitContext& ctx) {
+    NotImplemented();
+}
+
 void EmitIsbeWriteAttribute(EmitContext& ctx) {
     NotImplemented();
 }

@@ -24,6 +24,26 @@ Id GetThreadId(EmitContext& ctx) {
     return ctx.OpLoad(ctx.U32[1], ctx.subgroup_local_invocation_id);
 }
 
+Id TaskLaneShift(EmitContext& ctx) {
+    const Id group{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    return ctx.OpShiftLeftLogical(ctx.U32[1], ctx.OpBitwiseAnd(ctx.U32[1], group, ctx.Const(1U)),
+                                  ctx.Const(4U));
+}
+
+Id TaskLaneMask(EmitContext& ctx, Id mask, bool includes_lower_lanes = false) {
+    if (!ctx.mesh_task_split) {
+        return mask;
+    }
+    const Id shift{TaskLaneShift(ctx)};
+    const Id shifted{ctx.OpShiftLeftLogical(ctx.U32[1], mask, shift)};
+    if (!includes_lower_lanes) {
+        return shifted;
+    }
+    const Id lower{ctx.OpISub(ctx.U32[1], ctx.OpShiftLeftLogical(ctx.U32[1], ctx.Const(1U), shift),
+                              ctx.Const(1U))};
+    return ctx.OpBitwiseOr(ctx.U32[1], shifted, lower);
+}
+
 Id WarpExtract(EmitContext& ctx, Id value) {
     const Id thread_id{GetThreadId(ctx)};
     const Id local_index{ctx.OpShiftRightArithmetic(ctx.U32[1], thread_id, ctx.Const(5U))};
@@ -132,6 +152,9 @@ Id BroadcastLane(EmitContext& ctx, Id value, u32 lane) {
 
 Id EmitLaneId(EmitContext& ctx) {
     const Id id{GetThreadId(ctx)};
+    if (ctx.mesh_task_split) {
+        return ctx.OpIAdd(ctx.U32[1], id, TaskLaneShift(ctx));
+    }
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
         return id;
     }
@@ -193,44 +216,44 @@ Id EmitSubgroupBallot(EmitContext& ctx, Id pred) {
     }
     const Id ballot{ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred)};
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return ctx.OpCompositeExtract(ctx.U32[1], ballot, 0U);
+        return TaskLaneMask(ctx, ctx.OpCompositeExtract(ctx.U32[1], ballot, 0U));
     }
-    return WarpExtract(ctx, ballot);
+    return TaskLaneMask(ctx, WarpExtract(ctx, ballot));
 }
 
 Id EmitSubgroupEqMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
     }
-    return LoadMask(ctx, ctx.subgroup_mask_eq);
+    return TaskLaneMask(ctx, LoadMask(ctx, ctx.subgroup_mask_eq));
 }
 
 Id EmitSubgroupLtMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.u32_zero_value;
     }
-    return LoadMask(ctx, ctx.subgroup_mask_lt);
+    return TaskLaneMask(ctx, LoadMask(ctx, ctx.subgroup_mask_lt), true);
 }
 
 Id EmitSubgroupLeMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
     }
-    return LoadMask(ctx, ctx.subgroup_mask_le);
+    return TaskLaneMask(ctx, LoadMask(ctx, ctx.subgroup_mask_le), true);
 }
 
 Id EmitSubgroupGtMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.u32_zero_value;
     }
-    return LoadMask(ctx, ctx.subgroup_mask_gt);
+    return TaskLaneMask(ctx, LoadMask(ctx, ctx.subgroup_mask_gt));
 }
 
 Id EmitSubgroupGeMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
     }
-    return LoadMask(ctx, ctx.subgroup_mask_ge);
+    return TaskLaneMask(ctx, LoadMask(ctx, ctx.subgroup_mask_ge));
 }
 
 Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,

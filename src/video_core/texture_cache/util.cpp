@@ -995,6 +995,76 @@ u32 BlockRowTexelRows(const BlockLinearLevel& level, u32 row) {
 }
 } // Anonymous namespace
 
+std::vector<BufferImageCopy> UnmappedBlockRegions(const ImageInfo& info,
+                                                  std::span<const std::pair<u64, u64>> ranges,
+                                                  size_t max_region_bytes, u32 level_mask) {
+    std::vector<BufferImageCopy> regions;
+    const u32 bytes_per_block = BytesPerBlock(info.format);
+    if (info.type != ImageType::e2D || info.resources.layers != 1 || info.num_samples != 1 ||
+        DefaultBlockWidth(info.format) != 1 || DefaultBlockHeight(info.format) != 1) {
+        return regions;
+    }
+    const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
+    const u64 image_end = CalculateLevelBytes(
+        CalculateLevelSizes(MakeLevelInfo(info), info.resources.levels), info.resources.levels);
+    for (s32 index = 0; index < static_cast<s32>(levels.size()); ++index) {
+        if (((level_mask >> index) & 1U) == 0) {
+            continue;
+        }
+        const BlockLinearLevel& level = levels[index];
+        const u64 level_end =
+            index + 1 < static_cast<s32>(levels.size()) ? levels[index + 1].offset : image_end;
+        for (const auto& [offset, size] : ranges) {
+            const u64 begin = (std::max<u64>)(offset, level.offset) - level.offset;
+            const u64 end = (std::min<u64>)(offset + size, level_end) - level.offset;
+            if (offset >= level_end || offset + size <= level.offset || begin >= end) {
+                continue;
+            }
+            const u64 first = Common::DivCeil(begin, u64{level.block_bytes});
+            const u64 stop = end / level.block_bytes;
+            if (first >= stop) {
+                continue;
+            }
+            const u64 last = stop - 1;
+            for (u64 row = first / level.blocks_per_row; row <= last / level.blocks_per_row; ++row) {
+                const u64 row_start = row * level.blocks_per_row;
+                const u64 low = (std::max)(first, row_start) - row_start;
+                const u64 high = (std::min)(last, row_start + level.blocks_per_row - 1) - row_start;
+                const u64 x0 = low * level.block_texels;
+                const u64 y0 = row * level.block_rows;
+                if (x0 >= level.width || y0 >= level.height) {
+                    continue;
+                }
+                const u32 width = static_cast<u32>(
+                    (std::min<u64>)((high + 1) * level.block_texels, level.width) - x0);
+                const u32 height =
+                    static_cast<u32>((std::min<u64>)(y0 + level.block_rows, level.height) - y0);
+                const size_t row_bytes = size_t{width} * bytes_per_block;
+                const u32 rows_per_region =
+                    static_cast<u32>((std::max)(size_t{1}, max_region_bytes / row_bytes));
+                for (u32 line = 0; line < height; line += rows_per_region) {
+                    const u32 rows = (std::min)(rows_per_region, height - line);
+                    regions.push_back(BufferImageCopy{
+                        .buffer_offset = 0,
+                        .buffer_size = row_bytes * rows,
+                        .buffer_row_length = width,
+                        .buffer_image_height = rows,
+                        .image_subresource =
+                            {
+                                .base_level = index,
+                                .base_layer = 0,
+                                .num_layers = 1,
+                            },
+                        .image_offset = {static_cast<s32>(x0), static_cast<s32>(y0 + line), 0},
+                        .image_extent = {width, rows, 1},
+                    });
+                }
+            }
+        }
+    }
+    return regions;
+}
+
 std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
                                        std::span<const std::pair<u64, u64>> ranges, u32 tile_width,
                                        u32 tile_height, s32 tail_level) {

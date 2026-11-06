@@ -554,11 +554,25 @@ void EmitSetOFlag(EmitContext&) {
 }
 
 Id EmitWorkgroupId(EmitContext& ctx) {
-    return ctx.OpLoad(ctx.U32[3], ctx.workgroup_id);
+    const Id id{ctx.OpLoad(ctx.U32[3], ctx.workgroup_id)};
+    if (!ctx.mesh_task_split) {
+        return id;
+    }
+    const Id group{ctx.OpShiftRightLogical(ctx.U32[1], ctx.OpCompositeExtract(ctx.U32[1], id, 0U),
+                                           ctx.Const(1U))};
+    return ctx.OpCompositeInsert(ctx.U32[3], group, id, 0U);
 }
 
 Id EmitLocalInvocationId(EmitContext& ctx) {
-    return ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id);
+    const Id id{ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id)};
+    if (!ctx.mesh_task_split) {
+        return id;
+    }
+    const Id group{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    const Id shift{ctx.OpShiftLeftLogical(
+        ctx.U32[1], ctx.OpBitwiseAnd(ctx.U32[1], group, ctx.Const(1U)), ctx.Const(4U))};
+    const Id lane{ctx.OpIAdd(ctx.U32[1], ctx.OpCompositeExtract(ctx.U32[1], id, 0U), shift)};
+    return ctx.OpCompositeInsert(ctx.U32[3], lane, id, 0U);
 }
 
 Id EmitInvocationId(EmitContext& ctx) {

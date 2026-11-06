@@ -407,6 +407,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
     {
         Profile::Scope scope{Profile::Zone::DynamicState};
+        mesh_group_scale = pipeline->MeshGroupScale();
         UpdateDynamicStates();
     }
 
@@ -416,6 +417,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         draw_func();
+        if (mesh_draw) {
+            state_tracker.InvalidateCommandBufferState();
+        }
     }
     submitted = true;
     static u32 native_capture_count{};
@@ -678,9 +682,8 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
 
         if (mesh_draw) {
-            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
-                cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
-            });
+            scheduler.Record([groups = draw_params.num_vertices * mesh_group_scale](
+                                 vk::CommandBuffer cmdbuf) { cmdbuf.DrawMeshTasksEXT(groups, 1, 1); });
             return;
         }
         scheduler.Record([draw_params](vk::CommandBuffer cmdbuf) {

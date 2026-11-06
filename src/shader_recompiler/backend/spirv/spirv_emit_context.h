@@ -214,6 +214,7 @@ public:
     const Profile& profile;
     const RuntimeInfo& runtime_info;
     Stage stage{};
+    bool mesh_task_split{};
 
     Id void_id{};
     Id U1{};

@@ -63,6 +63,7 @@ enum class RenderTargetFormat : u32 {
     R16G16_FLOAT = 0xDE,
     A2R10G10B10_UNORM = 0xDF,
     B10G11R11_FLOAT = 0xE0,
+    E5B9G9R9_FLOAT = 0x100,
     R32_SINT = 0xE3,
     R32_UINT = 0xE4,
     R32_FLOAT = 0xE5,

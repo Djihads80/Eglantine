@@ -166,6 +166,8 @@ std::optional<PixelFormat> TryPixelFormatFromRenderTargetFormat(Tegra::RenderTar
         return PixelFormat::R16G16_FLOAT;
     case Tegra::RenderTargetFormat::B10G11R11_FLOAT:
         return PixelFormat::B10G11R11_FLOAT;
+    case Tegra::RenderTargetFormat::E5B9G9R9_FLOAT:
+        return PixelFormat::E5B9G9R9_FLOAT;
     case Tegra::RenderTargetFormat::R32_SINT:
         return PixelFormat::R32_SINT;
     case Tegra::RenderTargetFormat::R32_UINT:

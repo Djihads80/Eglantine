@@ -91,6 +91,10 @@ public:
         return fragment_has_color0_output;
     }
 
+    u32 MeshGroupScale() const noexcept {
+        return mesh_group_scale;
+    }
+
     bool SupportsAlphaToOne() const noexcept {
         return fragment_has_color0_output;
     }
@@ -190,6 +194,7 @@ private:
     size_t num_image_elements{};
     u32 num_textures{};
     bool fragment_has_color0_output{};
+    u32 mesh_group_scale{1};
 
     vk::DescriptorSetLayout descriptor_set_layout;
     DescriptorAllocator descriptor_allocator;

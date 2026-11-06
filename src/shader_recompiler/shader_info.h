@@ -259,7 +259,13 @@ using ImageDescriptors = boost::container::small_vector<ImageDescriptor, 4>;
 /// in the emulated stage buffer: per-vertex lines from the program's output map, per-primitive
 /// lines from the pass-through geometry header bound with it, in attribute order.
 struct MeshInfo {
+    static constexpr u32 MaxPayloadWords = 0x1000;
+    static constexpr u32 PackedLowWords = 0xd04;
+    static constexpr u32 PackedHighWord = 0x1a04;
+    static constexpr u32 PackedWords = 0xd94;
+
     u32 payload_words{}; ///< Task output region / mesh input region, in 32-bit words
+    bool packed_payload{};
     u32 max_vertices{};
     u32 max_primitives{};
     u32 topology{}; ///< SET_MESH_SHADER_A output topology (4 = triangles)
@@ -274,6 +280,7 @@ struct Info {
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
+    bool mesh_task_split{};
     bool uses_workgroup_id{};
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};

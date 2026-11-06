@@ -73,6 +73,7 @@ void EmitSetAttributeIndexed(EmitContext& ctx, std::string_view offset, std::str
 void EmitGetPatch(EmitContext& ctx, IR::Inst& inst, IR::Patch patch);
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, std::string_view value);
 void EmitIsbeRead(EmitContext& ctx);
+void EmitIsbeReadOutput(EmitContext& ctx);
 void EmitIsbeWriteAttribute(EmitContext& ctx);
 void EmitIsbeWriteMapU8(EmitContext& ctx);
 void EmitIsbeWriteMapU32(EmitContext& ctx);

@@ -149,6 +149,14 @@ void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTri
         ControllerUpdate(kernel, Core::HID::ControllerTriggerType::Battery, controller_idx);
         return;
     }
+    if (type != Core::HID::ControllerTriggerType::Connected &&
+        type != Core::HID::ControllerTriggerType::Disconnected &&
+        type != Core::HID::ControllerTriggerType::Battery) {
+        return;
+    }
+    if (applet_resource_holder.applet_resource == nullptr) {
+        return;
+    }
 
     for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
         if (controller_idx >= controller_data[aruid_index].size()) {

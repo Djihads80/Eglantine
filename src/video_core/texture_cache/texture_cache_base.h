@@ -132,6 +132,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 largest_upload{};    ///< Largest of them
     u64 layer_uploads{};     ///< Of them, uploads of only the written layers
     bool native_thresholds_applied{};
+    bool cap_critical_memory{true};
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};
@@ -149,9 +150,11 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
     /// The most device memory the collector lets the cache fill before it collects in earnest,
-    /// on every GPU (ApplyThresholdOverrides).
+    /// on GPUs whose budget is under CapCriticalMemoryBelow (ApplyThresholdOverrides).
     static constexpr u64 MaxCriticalMemory = 5_GiB;
+    static constexpr u64 CapCriticalMemoryBelow = 10_GiB;
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
+    static constexpr size_t UNMAPPED_ZERO_REGION_BYTES = 4_MiB;
 
     using Runtime = typename P::Runtime;
     using Image = typename P::Image;
@@ -339,7 +342,8 @@ public:
     void CreateChannel(Tegra::Control::ChannelState& channel) final override;
 
     /// Prepare an image to be used
-    void PrepareImage(ImageId image_id, bool is_modification, bool invalidate);
+    void PrepareImage(ImageId image_id, bool is_modification, bool invalidate,
+                      u32 modified_levels = ~0U);
 
     Common::SpinRecursiveMutex mutex;
 
@@ -390,6 +394,8 @@ private:
     [[nodiscard]] bool IsDownloadable(const ImageBase& image) const noexcept;
 
     void RefreshContents(Image& image, ImageId image_id);
+
+    void ZeroUnmappedTiles(Image& image);
 
     /// Upload data from guest to an image
     template <typename StagingBuffer>

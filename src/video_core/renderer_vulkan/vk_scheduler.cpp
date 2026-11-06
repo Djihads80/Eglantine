@@ -323,12 +323,14 @@ bool Scheduler::UpdateGraphicsPipeline(GraphicsPipeline* pipeline) {
     return true;
 }
 
-bool Scheduler::UpdateRescaling(bool is_rescaling) {
-    if (state.rescaling_defined && is_rescaling == state.is_rescaling) {
+bool Scheduler::UpdateRescaling(bool is_rescaling, bool mesh_layout) {
+    if (state.rescaling_defined && is_rescaling == state.is_rescaling &&
+        mesh_layout == state.mesh_layout) {
         return false;
     }
     state.rescaling_defined = true;
     state.is_rescaling = is_rescaling;
+    state.mesh_layout = mesh_layout;
     return true;
 }
 

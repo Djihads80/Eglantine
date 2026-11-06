@@ -127,6 +127,9 @@ struct ImageBase {
     VAddr cpu_addr_end = 0;
 
     u64 modification_tick = 0;
+    u64 unmapped_zero_tick = 0;
+    u64 unmapped_tile_generation = 0;
+    u32 unmapped_dirty_levels = ~0U;
     size_t lru_index = SIZE_MAX;
 
     std::array<u32, MAX_MIP_LEVELS> mip_level_offsets{};

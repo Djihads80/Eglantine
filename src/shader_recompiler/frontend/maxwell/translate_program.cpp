@@ -410,6 +410,21 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
         program.mesh.max_primitives = (shader_a >> 13) & 0x3ff;
         const u32 threads{program.stage == Stage::Task ? init & 0x3f : (shader_b >> 20) & 0x3f};
         program.workgroup_size = {(std::max)(threads, 1U), 1, 1};
+        if (program.mesh.payload_words > MeshInfo::MaxPayloadWords) {
+            if ((program.stage == Stage::Task && threads != 32) ||
+                program.mesh.payload_words <
+                    MeshInfo::PackedHighWord + (MeshInfo::PackedWords - MeshInfo::PackedLowWords)) {
+                throw NotImplementedException(
+                    "Task payload of {} bytes exceeds the 16 KiB Vulkan limit",
+                    program.mesh.payload_words * 4);
+            }
+            program.mesh.payload_words = MeshInfo::PackedWords;
+            program.mesh.packed_payload = true;
+            if (program.stage == Stage::Task) {
+                program.info.mesh_task_split = true;
+                program.workgroup_size[0] /= 2;
+            }
+        }
         if (program.stage == Stage::Mesh) {
             if (program.mesh.topology != 4) {
                 throw NotImplementedException("Mesh output topology {} (SET_MESH_SHADER_A {:#010x})",

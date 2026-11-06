@@ -58,6 +58,17 @@ constexpr std::array TOPOLOGY_CLASS_REPRESENTATIVE_LUT = {
     Maxwell::PrimitiveTopology::Patches,             // Patches
 };
 
+constexpr std::array ATTRIBUTE_TYPE_LUT{
+    0u, // Invalid
+    1u, // SignedNorm
+    1u, // UnsignedNorm
+    2u, // SignedInt
+    3u, // UnsignedInt
+    1u, // UnsignedScaled
+    1u, // SignedScaled
+    1u, // Float
+};
+
 bool IsDualSourceBlendFactor(Maxwell::Blend::Factor factor) {
     using F = Maxwell::Blend::Factor;
     switch (factor) {
@@ -193,21 +204,11 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     if (maxwell3d.dirty.flags[Dirty::VertexInput]) {
         if (features.has_dynamic_vertex_input) {
             // Dirty flag will be reset by the command buffer update
-            static constexpr std::array LUT{
-                0u, // Invalid
-                1u, // SignedNorm
-                1u, // UnsignedNorm
-                2u, // SignedInt
-                3u, // UnsignedInt
-                1u, // UnsignedScaled
-                1u, // SignedScaled
-                1u, // Float
-            };
             const auto& attrs = regs.vertex_attrib_format;
             attribute_types = 0;
             for (size_t i = 0; i < Maxwell::NumVertexAttributes; ++i) {
                 const u32 mask = attrs[i].constant != 0 ? 0 : 3;
-                const u32 type = LUT[static_cast<size_t>(attrs[i].type.Value())];
+                const u32 type = ATTRIBUTE_TYPE_LUT[static_cast<size_t>(attrs[i].type.Value())];
                 attribute_types |= static_cast<u64>(type & mask) << (i * 2);
             }
         } else {
@@ -281,6 +282,20 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
                 repack_mask, binding, regs.vertex_streams[binding].stride));
         }
     }
+}
+
+void FixedPipelineState::UseDynamicVertexInput() noexcept {
+    attribute_types = 0;
+    for (size_t index = 0; index < attributes.size(); ++index) {
+        const auto& attribute = attributes[index];
+        if (attribute.enabled != 0) {
+            attribute_types |= static_cast<u64>(ATTRIBUTE_TYPE_LUT[attribute.type.Value()])
+                               << (index * 2);
+        }
+    }
+    attributes = {};
+    binding_divisors = {};
+    dynamic_vertex_input.Assign(1);
 }
 
 void FixedPipelineState::BlendingAttachment::Refresh(const Maxwell& regs, size_t index) {

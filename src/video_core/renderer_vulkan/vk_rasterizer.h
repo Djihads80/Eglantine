@@ -252,6 +252,7 @@ private:
 
     u32 draw_counter = 0;
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    u32 mesh_group_scale{1};
 };
 
 } // namespace Vulkan

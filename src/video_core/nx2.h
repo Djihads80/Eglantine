@@ -305,6 +305,85 @@ inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
     }
 }
 
+struct Nx2TileRegion {
+    u64 size{};
+    u64 generation{};
+    std::vector<bool> mapped;
+};
+
+inline std::mutex g_nx2_tile_mutex;
+inline std::map<u64, Nx2TileRegion> g_nx2_tile_regions;
+inline std::atomic<size_t> g_nx2_tile_region_count{0};
+
+inline void Nx2SetTilesMapped(u64 region_address, u64 region_size, u64 offset, u64 size, bool mapped) {
+    std::scoped_lock lk{g_nx2_tile_mutex};
+    auto it = g_nx2_tile_regions.find(region_address);
+    if (it == g_nx2_tile_regions.end()) {
+        if (!mapped) {
+            return;
+        }
+        it = g_nx2_tile_regions
+                 .emplace(region_address,
+                          Nx2TileRegion{region_size, 0,
+                                        std::vector<bool>((region_size + Nx2SparseTileSize - 1) /
+                                                          Nx2SparseTileSize)})
+                 .first;
+        g_nx2_tile_region_count = g_nx2_tile_regions.size();
+    }
+    auto& region = it->second;
+    const u64 last = (std::min)((offset + size - 1) / Nx2SparseTileSize, u64{region.mapped.size() - 1});
+    for (u64 tile = offset / Nx2SparseTileSize; tile <= last; ++tile) {
+        region.mapped[tile] = mapped;
+    }
+    ++region.generation;
+}
+
+inline void Nx2RemoveTileRegion(u64 region_address) {
+    std::scoped_lock lk{g_nx2_tile_mutex};
+    g_nx2_tile_regions.erase(region_address);
+    g_nx2_tile_region_count = g_nx2_tile_regions.size();
+}
+
+inline void Nx2ClearTileRegions() {
+    std::scoped_lock lk{g_nx2_tile_mutex};
+    g_nx2_tile_regions.clear();
+    g_nx2_tile_region_count = 0;
+}
+
+inline bool Nx2TileHoles(u64 gpu_address, u64 size, std::vector<std::pair<u64, u64>>& holes,
+                         u64& generation) {
+    if (g_nx2_tile_region_count.load(std::memory_order_relaxed) == 0) {
+        return false;
+    }
+    std::scoped_lock lk{g_nx2_tile_mutex};
+    auto it = g_nx2_tile_regions.upper_bound(gpu_address);
+    if (it == g_nx2_tile_regions.begin()) {
+        return false;
+    }
+    --it;
+    const auto& [start, region] = *it;
+    if (gpu_address + size > start + region.size) {
+        return false;
+    }
+    generation = region.generation;
+    const u64 first = (gpu_address - start) / Nx2SparseTileSize;
+    const u64 last = (gpu_address + size - 1 - start) / Nx2SparseTileSize;
+    for (u64 tile = first; tile <= last; ++tile) {
+        if (region.mapped[tile]) {
+            continue;
+        }
+        const u64 begin = start + tile * Nx2SparseTileSize;
+        const u64 from = (std::max)(begin, gpu_address) - gpu_address;
+        const u64 to = (std::min)(begin + Nx2SparseTileSize, gpu_address + size) - gpu_address;
+        if (!holes.empty() && holes.back().first + holes.back().second == from) {
+            holes.back().second += to - from;
+        } else {
+            holes.emplace_back(from, to - from);
+        }
+    }
+    return true;
+}
+
 /// True when [gpu_address, +size) lies in one sparse region and none of it has been written.
 inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
