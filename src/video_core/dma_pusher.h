@@ -246,6 +246,8 @@ public:
     /// since. False when not all are current (or the list isn't GPU-written): the caller drains,
     /// flushes and reads guest memory.
     bool ReadGpuWrittenCommands(GPUVAddr address, u32 count);
+    /// EDEN_NX2_STRATO_STATS: a split wait for queued writers before reading GPU-written words.
+    void NoteWritersWait(u64 start, GPUVAddr address, u64 size);
     /// Brings command list words the GPU wrote (still only in host buffers) to guest memory.
     void FlushGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Downloads the pages, with the dirty ones flushed here before, in one GPU wait.

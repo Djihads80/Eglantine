@@ -59,6 +59,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_strato.h"
 
 namespace Vulkan {
 
@@ -493,7 +494,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
-    if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
+    // EDEN_NX2_STRATO_STATS: draw setup's share of this thread (what quick binds would cut).
+    const u64 configure_start = Tegra::Nx2StratoStats() ? VideoCommon::Nx2Strato::Now() : 0;
+    const bool configured = [&] {
+        Profile::Scope scope{Profile::Zone::Configure};
+        return pipeline->Configure(is_indexed);
+    }();
+    if (configure_start != 0) {
+        VideoCommon::Nx2Strato::NoteConfigure(VideoCommon::Nx2Strato::Now() - configure_start);
+    }
+    if (!configured) {
         report_failure("configure failed");
         return;
     }
@@ -1468,6 +1478,10 @@ VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenC
 
 void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
     buffer_cache.Nx2NoteListSynced(page);
+}
+
+bool RasterizerVulkan::Nx2TickComplete(u64 tick) {
+    return buffer_cache_runtime.TickComplete(tick);
 }
 
 bool RasterizerVulkan::BeginFlushBatch() {

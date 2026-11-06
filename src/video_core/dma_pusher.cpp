@@ -26,6 +26,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_strato.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra {
@@ -373,12 +374,17 @@ bool DmaPusher::Step() {
         const bool wait_writers = writer_wait == 's' ? header.sync != 0 : writer_wait != '0';
         const bool written_before = gpu_written;
         bool writers_waited = false;
+        const u64 writers_start =
+            Tegra::Nx2StratoStats() && VideoCommon::GpuSplit::Get().Active()
+                ? VideoCommon::Nx2Strato::Now()
+                : 0;
         if (!gpu_written && wait_writers && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
             Tegra::Nx2CommandLists() && VideoCommon::GpuSplit::Get().Active() &&
             VideoCommon::GpuSplit::Get().WaitForWriters()) {
             writers_waited = true;
             gpu_written =
                 IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
+            NoteWritersWait(writers_start, dma_state.dma_get, size_t{header.size} * sizeof(u32));
         }
         if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && Tegra::Nx2CommandLists()) {
             NoteEntrySync(header.sync != 0, written_before, writers_waited,
@@ -1059,7 +1065,10 @@ bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count) {
         return false;
     }
     if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
-        split.WaitForWriters();
+        const u64 writers_start = Tegra::Nx2StratoStats() ? VideoCommon::Nx2Strato::Now() : 0;
+        if (split.WaitForWriters()) {
+            NoteWritersWait(writers_start, address, u64{count} * sizeof(u32));
+        }
     }
     using GpuWrittenList = VideoCore::RasterizerInterface::GpuWrittenList;
     command_headers.resize_destructive(count);
@@ -1132,14 +1141,37 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     // The caches belong to the split's back: it first runs what the front queued (the dispatch
     // that writes these words among it). The whole pages are flushed: their next lists read
     // guest memory until GPU work writes them again.
-    VideoCommon::GpuSplit::Get().Drain(VideoCommon::Nx2Profile::Zone::DrainCommandList);
+    namespace Strato = VideoCommon::Nx2Strato;
+    const bool stats = Tegra::Nx2StratoStats() && rasterizer != nullptr;
+    if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+        const u64 drain_start = stats ? Strato::Now() : 0;
+        split.Drain(VideoCommon::Nx2Profile::Zone::DrainCommandList);
+        NoteWritersWait(drain_start, address, size);
+    }
     const GPUVAddr first_page = address & ~GPUVAddr{0xfff};
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
                                      VideoCommon::CacheType::BufferCache)) {
+        const bool done = stats && Strato::WriteDone(memory_manager, *rasterizer, address, size);
+        const u64 flush_start = stats ? Strato::Now() : 0;
         FlushCommandPages(first_page, end_page);
+        if (stats) {
+            Strato::NoteWait(Strato::Wait::ListFlush, Strato::Now() - flush_start, done);
+        }
     }
     NoteCommandPagesSynced(first_page, end_page);
+}
+
+void DmaPusher::NoteWritersWait(u64 start, GPUVAddr address, u64 size) {
+    // EDEN_NX2_STRATO_STATS: the split's front waited for its back (from `start`) before reading
+    // GPU-written words. Done: the last GPU write to their pages, recorded by now, is complete.
+    if (start == 0 || rasterizer == nullptr) {
+        return;
+    }
+    namespace Strato = VideoCommon::Nx2Strato;
+    const u64 waited = Strato::Now() - start;
+    Strato::NoteWait(Strato::Wait::SplitWriters, waited,
+                     Strato::WriteDone(memory_manager, *rasterizer, address, size));
 }
 
 void DmaPusher::FlushCommandPages(GPUVAddr first_page, GPUVAddr end_page) {

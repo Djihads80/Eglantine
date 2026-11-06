@@ -130,6 +130,9 @@ public:
 
     bool IsFree(u64 tick);
 
+    /// As IsFree, asking the GPU first when the tick it last reported is older.
+    bool TickComplete(u64 tick);
+
     void Wait(u64 tick);
 
     /// Waits for a submitted tick without flushing: safe on threads other than the GPU thread.

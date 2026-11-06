@@ -14,6 +14,7 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/cityhash.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
@@ -22,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_strato.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -444,7 +446,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
-    NoteGpuWrite(dest_buffer);
+    NoteGpuWrite(dest_buffer, *cpu_dest_address, amount);
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
@@ -478,7 +480,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
-    NoteGpuWrite(dest_buffer);
+    NoteGpuWrite(dest_buffer, *cpu_dst_address, size);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
     dest_buffer.MarkUsage(offset, size);
     return true;
@@ -515,7 +517,7 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         MarkWrittenBuffer(buffer_id, device_addr, size);
         break;
     case ObtainBufferOperation::NoteGpuWrite:
-        NoteGpuWrite(slot_buffers[buffer_id]);
+        NoteGpuWrite(slot_buffers[buffer_id], device_addr, size);
         break;
     case ObtainBufferOperation::DiscardWrite: {
         ClearDownload(device_addr, size);
@@ -1093,7 +1095,8 @@ void BufferCache<P>::BindHostIndexBuffer() {
             auto upload_staging = runtime.UploadStagingBuffer(size);
             std::array<BufferCopy, 1> copies{{BufferCopy{.src_offset = upload_staging.offset, .dst_offset = 0, .size = size}}};
             std::memcpy(upload_staging.mapped_span.data(), draw_state.inline_index_draw_indexes.data(), size);
-            NoteGpuWrite(buffer);
+            // The inline index buffer is no guest memory: no pages.
+            NoteGpuWrite(buffer, 0, 0);
             runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true);
         } else {
             buffer.ImmediateUpload(0, draw_state.inline_index_draw_indexes);
@@ -2036,9 +2039,13 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 }
 
 template <class P>
-void BufferCache<P>::NoteGpuWrite(Buffer& buffer) {
+void BufferCache<P>::NoteGpuWrite(Buffer& buffer, DAddr device_addr, u64 size) {
     if constexpr (!IS_OPENGL) {
-        buffer.SetGpuWriteTick(runtime.CurrentTick());
+        const u64 tick = runtime.CurrentTick();
+        buffer.SetGpuWriteTick(tick);
+        if (Tegra::Nx2GpuWriteTicks()) {
+            Tegra::Nx2NoteGpuWriteTick(device_addr, size, tick);
+        }
     }
 }
 
@@ -2046,7 +2053,7 @@ template <class P>
 void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync) {
     if constexpr (!IS_OPENGL) {
         Buffer& buffer = slot_buffers[buffer_id];
-        NoteGpuWrite(buffer);
+        NoteGpuWrite(buffer, device_addr, size);
         if (needs_sync) {
             buffer.setWriteTick(runtime.CurrentTick());
         }
@@ -2178,6 +2185,18 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             return entry.copy && !entry.draw_written && entry.copy_writes == entry.writes &&
                    offset >= entry.copy_begin && offset + out.size() <= entry.copy_end;
         };
+        // EDEN_NX2_STRATO_STATS: whether the words a read waited for are those the read of the
+        // same words before got (a write that changed nothing there: the bind covers the page).
+        const bool stats = Tegra::Nx2StratoStats();
+        const auto same_words = [&](Nx2ListPage& entry) {
+            const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(out.data()), out.size());
+            const bool same = entry.read_offset == offset && entry.read_size == out.size() &&
+                              entry.read_hash == hash;
+            entry.read_offset = static_cast<u32>(offset);
+            entry.read_size = static_cast<u32>(out.size());
+            entry.read_hash = hash;
+            return same;
+        };
         u64 tick{};
         u64 writes{};
         {
@@ -2198,20 +2217,39 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             // The lists after the first of a batch find the copy done: read it at once.
             if (runtime.IsFree(entry.copy_tick)) {
                 std::memcpy(out.data(), entry.copy->mapped_span.data() + offset, out.size());
+                if (stats) {
+                    same_words(it->second);
+                }
                 return Nx2ListRead::Copied;
             }
             tick = entry.copy_tick;
             writes = entry.copy_writes;
         }
+        // Whether the last GPU write to the page was done already (only its copy was not).
+        const u64 write_tick = stats ? Tegra::Nx2LastGpuWriteTick(device_addr, out.size()) : 0;
+        const bool write_done = write_tick != 0 && runtime.TickComplete(write_tick);
+        const u64 wait_start = stats ? VideoCommon::Nx2Strato::Now() : 0;
         // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
         runtime.WaitSubmittedTick(tick);
+        const u64 waited = stats ? VideoCommon::Nx2Strato::Now() - wait_start : 0;
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
             it->second.copy_writes != writes) {
+            if (stats) {
+                VideoCommon::Nx2Strato::NoteWait(VideoCommon::Nx2Strato::Wait::ListCopy, waited,
+                                                 write_done);
+            }
             return Nx2ListRead::Unknown;
         }
         std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
+        if (stats) {
+            if (same_words(it->second)) {
+                VideoCommon::Nx2Strato::NoteSameWords(waited);
+            }
+            VideoCommon::Nx2Strato::NoteWait(VideoCommon::Nx2Strato::Wait::ListCopy, waited,
+                                             write_done);
+        }
         return Nx2ListRead::Copied;
     }
 }
@@ -2399,7 +2437,7 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
         .size = overlap.SizeBytes(),
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
-    NoteGpuWrite(new_buffer);
+    NoteGpuWrite(new_buffer, overlap.CpuAddr(), overlap.SizeBytes());
     runtime.CopyBuffer(new_buffer, overlap, copies, true);
 #ifdef YUZU_LEGACY
     if (immediately_free)
@@ -2420,7 +2458,7 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
     const size_t size_bytes = new_buffer.SizeBytes();
-    NoteGpuWrite(new_buffer);
+    NoteGpuWrite(new_buffer, new_buffer.CpuAddr(), size_bytes);
     runtime.ClearBuffer(new_buffer, 0, size_bytes, 0);
     new_buffer.MarkUsage(0, size_bytes);
     for (const BufferId overlap_id : overlap.ids) {
@@ -2638,7 +2676,9 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
-        NoteGpuWrite(buffer);
+        for (const BufferCopy& copy : copies) {
+            NoteGpuWrite(buffer, buffer.CpuAddr() + copy.dst_offset, copy.size);
+        }
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     }
 }
@@ -2682,7 +2722,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         u8* const src_pointer = upload_staging.mapped_span.data();
         std::memcpy(src_pointer, inlined_buffer.data(), copy_size);
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
-        NoteGpuWrite(buffer);
+        NoteGpuWrite(buffer, dest_address, copy_size);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
     } else {
         buffer.ImmediateUpload(buffer.Offset(dest_address), inlined_buffer.first(copy_size));

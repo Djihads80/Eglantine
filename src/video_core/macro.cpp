@@ -34,6 +34,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/gpu_split.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_strato.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
@@ -1461,10 +1462,17 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                         }
                     }
                     if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+                        namespace Strato = VideoCommon::Nx2Strato;
+                        const bool done =
+                            Tegra::Nx2StratoStats() &&
+                            Strato::WriteDone(memory, maxwell3d.Rasterizer(), source, read_bytes);
                         const u64 start = VideoCommon::Nx2Profile::Now();
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
-                        VideoCommon::Nx2Profile::NoteDmaReadFlush(
-                            VideoCommon::Nx2Profile::Now() - start, read_bytes);
+                        const u64 elapsed = VideoCommon::Nx2Profile::Now() - start;
+                        VideoCommon::Nx2Profile::NoteDmaReadFlush(elapsed, read_bytes);
+                        if (Tegra::Nx2StratoStats()) {
+                            Strato::NoteWait(Strato::Wait::DmaFlush, elapsed, done);
+                        }
                     }
                     static u32 dma_logs{};
                     if (dma_logs < 400) {

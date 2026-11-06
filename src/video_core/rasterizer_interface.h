@@ -113,6 +113,12 @@ public:
     /// Switch 2: the front flushed this command list page with the split drained.
     virtual void NoteGpuWrittenCommandListSynced([[maybe_unused]] DAddr page) {}
 
+    /// Whether the host GPU has completed the scheduler tick (asked of the GPU, not remembered),
+    /// for the per-page write ticks (Tegra::Nx2LastGpuWriteTick). True without ticks.
+    virtual bool Nx2TickComplete([[maybe_unused]] u64 tick) {
+        return true;
+    }
+
     /// Buffer cache flushes this thread makes until EndFlushBatch share one GPU wait, there.
     /// False where flushes are not batched (each waits on its own).
     virtual bool BeginFlushBatch() {

@@ -540,7 +540,9 @@ private:
     void DownloadBufferMemory(Buffer& buffer_id, DAddr device_addr, u64 size);
 
     /// Records that commands now recorded write `buffer` (for direct host reads).
-    void NoteGpuWrite(Buffer& buffer);
+    /// The commands being recorded write [device_addr, +size) of the buffer: a direct host read
+    /// waits for their tick (the buffer's, and the pages' with Tegra::Nx2GpuWriteTicks).
+    void NoteGpuWrite(Buffer& buffer, DAddr device_addr, u64 size);
 
     /// Downloads the GPU-written data of `buffer` in `ranges`, waiting for the GPU once.
     void DownloadBufferRanges(Buffer& buffer, std::span<const std::pair<DAddr, u64>> ranges);
@@ -786,6 +788,10 @@ private:
         /// the page's lists always drain the split instead of reading a copy.
         bool draw_written{};
         std::optional<Nx2Staging> copy;
+        /// EDEN_NX2_STRATO_STATS: the words the page's last copy read got (Nx2ReadListCopy).
+        u64 read_hash{};
+        u32 read_offset{};
+        u32 read_size{};
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;

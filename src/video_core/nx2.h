@@ -130,6 +130,95 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+/// EDEN_NX2_STRATO_STATS=1: a line every ~5 s on the waits GPU-written pages cause (whether the
+/// last GPU write to the pages was already done as each began) and on the time draws spend in
+/// GraphicsPipeline::ConfigureImpl (nx2_strato.h).
+[[nodiscard]] inline bool Nx2StratoStats() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_STRATO_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
+/// Whether the per-page write ticks below are kept.
+[[nodiscard]] inline bool Nx2GpuWriteTicks() {
+    return Nx2StratoStats();
+}
+
+// The scheduler tick of the last GPU write recorded to each 4 KiB device page (every
+// BufferCache::NoteGpuWrite: shader stores, copies, clears, uploads), 0 for none. Two levels:
+// 2^24 pages, and a second-level block (32 KiB, 16 MiB of addresses) made on its first write.
+inline constexpr u64 Nx2TickBlockBits = 12;
+inline std::array<std::atomic<std::atomic<u64>*>,
+                  (u64{1} << (36 - Nx2WrittenPageBits - Nx2TickBlockBits))>
+    g_nx2_write_tick_blocks{};
+/// Bumped when the ticks are cleared (a new session's scheduler counts from 1 again).
+inline std::atomic<u32> g_nx2_write_tick_epoch{};
+
+inline void Nx2NoteGpuWriteTick(u64 device_address, u64 size, u64 tick) {
+    if (size == 0 || tick == 0) {
+        return;
+    }
+    // The same range at the same tick again (a storage buffer bound for draw after draw): its
+    // pages hold that tick already, or a newer one.
+    struct Recent {
+        u64 address;
+        u64 size;
+        u64 tick;
+        u32 epoch;
+    };
+    thread_local std::array<Recent, 64> recent{};
+    const u32 epoch = g_nx2_write_tick_epoch.load(std::memory_order_relaxed);
+    Recent& slot = recent[((device_address >> 8) ^ (device_address >> 20) ^ size) % recent.size()];
+    if (slot.address == device_address && slot.size == size && slot.tick == tick &&
+        slot.epoch == epoch) {
+        return;
+    }
+    slot = {device_address, size, tick, epoch};
+    constexpr u64 block_pages = u64{1} << Nx2TickBlockBits;
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_write_tick_blocks.size() * block_pages - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        auto& slot_block = g_nx2_write_tick_blocks[page >> Nx2TickBlockBits];
+        std::atomic<u64>* block = slot_block.load(std::memory_order_acquire);
+        if (block == nullptr) {
+            auto* const fresh = new std::atomic<u64>[block_pages]{};
+            if (slot_block.compare_exchange_strong(block, fresh, std::memory_order_acq_rel)) {
+                block = fresh;
+            } else {
+                delete[] fresh;
+            }
+        }
+        auto& entry = block[page & (block_pages - 1)];
+        u64 current = entry.load(std::memory_order_relaxed);
+        while (current < tick &&
+               !entry.compare_exchange_weak(current, tick, std::memory_order_relaxed)) {
+        }
+    }
+}
+
+/// The newest tick Nx2NoteGpuWriteTick recorded to the pages of [device_address, +size), 0 if none.
+[[nodiscard]] inline u64 Nx2LastGpuWriteTick(u64 device_address, u64 size) {
+    if (size == 0) {
+        return 0;
+    }
+    constexpr u64 block_pages = u64{1} << Nx2TickBlockBits;
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_write_tick_blocks.size() * block_pages - 1);
+    u64 newest = 0;
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        const std::atomic<u64>* const block =
+            g_nx2_write_tick_blocks[page >> Nx2TickBlockBits].load(std::memory_order_acquire);
+        if (block == nullptr) {
+            page |= block_pages - 1;
+            continue;
+        }
+        newest = std::max<u64>(newest, block[page & (block_pages - 1)].load(std::memory_order_relaxed));
+    }
+    return newest;
+}
+
 /// A new emulation session starts: no page has been written by its GPU yet.
 inline void Nx2ClearGpuWrittenPages() {
     for (auto& word : g_nx2_gpu_written_pages) {
@@ -139,6 +228,14 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
+    for (auto& slot_block : g_nx2_write_tick_blocks) {
+        if (std::atomic<u64>* const block = slot_block.load(std::memory_order_acquire)) {
+            for (u64 i = 0; i < (u64{1} << Nx2TickBlockBits); ++i) {
+                block[i].store(0, std::memory_order_relaxed);
+            }
+        }
+    }
+    g_nx2_write_tick_epoch.fetch_add(1, std::memory_order_relaxed);
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {
