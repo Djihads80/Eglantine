@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <iterator>
@@ -393,9 +394,19 @@ GraphicsPipeline::GraphicsPipeline(
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
+            const auto begin{std::chrono::steady_clock::now()};
             MakePipeline(render_pass);
             if (IsMeshEmulated()) {
                 MakeEmulatedMeshPipelines();
+                // The draws wait for it: driver compiles of the compute stages show here.
+                const auto ms{std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - begin)
+                                  .count()};
+                static std::atomic<u32> logged{};
+                if (ms > 50.0 && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+                    LOG_INFO(Render_Vulkan, "Emulated task/mesh pipeline {:016x} built in {:.1f} ms",
+                             key.Hash(), ms);
+                }
             }
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
