@@ -13,6 +13,7 @@
 #include <utility>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 
@@ -51,6 +52,13 @@ Scheduler::Scheduler(const Device& device_, StateTracker& state_tracker_)
     : device{device_}, state_tracker{state_tracker_},
       master_semaphore{std::make_unique<MasterSemaphore>(device)},
       command_pool{std::make_unique<CommandPool>(*master_semaphore, device)} {
+    hang_watch = master_semaphore->HangWatch();
+    if (hang_watch) {
+        master_semaphore->on_stall = [this](u64 tick, u64 gpu_tick, u64 next_tick,
+                                            u64 waited_s) {
+            ReportStall(tick, gpu_tick, next_tick, waited_s);
+        };
+    }
 
     AcquireNewChunk();
     AllocateWorkerCommandBuffer();
@@ -559,6 +567,18 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
         upload_cmdbuf.End();
         cmdbuf.End();
 
+        if (hang_watch) {
+            if (wait_semaphore != VK_NULL_HANDLE) {
+                hang_work.insert(hang_work.begin(), "waits-on-semaphore");
+            }
+            std::scoped_lock hang_lock{hang_mutex};
+            hang_submissions.push_back({signal_value, std::move(hang_work)});
+            hang_work.clear();
+            if (hang_submissions.size() > 64) {
+                hang_submissions.pop_front();
+            }
+        }
+
         if (on_submit) {
             on_submit();
         }
@@ -585,6 +605,56 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     chunk->MarkSubmit();
     DispatchWork();
     return signal_value;
+}
+
+// EDEN_NX2_HANG_WATCH (pavelgajdo, Lichii-Android 492774519b): the pipelines each submission was
+// recorded with, noted on the worker thread as the commands run, and a report of the submissions
+// the GPU has not finished when a wait for one of them stalls. Tells a GPU-side hang (submitted,
+// never finished) from an emulator deadlock (never submitted).
+void Scheduler::HangWatchRecordGraphics(const std::array<u64, 6>& hashes) {
+    Record([this, hashes](vk::CommandBuffer) {
+        std::string name;
+        for (size_t stage = 0; stage < hashes.size(); ++stage) {
+            if (hashes[stage] != 0) {
+                name += fmt::format("{}s{}:{:016x}", name.empty() ? "" : "+", stage,
+                                    hashes[stage]);
+            }
+        }
+        HangRecord(std::move(name));
+    });
+}
+
+void Scheduler::HangWatchRecordCompute(u64 hash, u64 native_key) {
+    Record([this, hash, native_key](vk::CommandBuffer) {
+        HangRecord(native_key != 0 ? fmt::format("s6:{:016x}/native:{:016x}", hash, native_key)
+                                   : fmt::format("s6:{:016x}", hash));
+    });
+}
+
+void Scheduler::HangRecord(std::string pipeline) {
+    if (hang_work.size() < 64 && std::ranges::find(hang_work, pipeline) == hang_work.end()) {
+        hang_work.push_back(std::move(pipeline));
+    }
+}
+
+void Scheduler::ReportStall(u64 tick, u64 gpu_tick, u64 next_tick, u64 waited_s) {
+    std::scoped_lock lock{hang_mutex};
+    const u64 last_submitted = hang_submissions.empty() ? 0 : hang_submissions.back().tick;
+    LOG_WARNING(Render_Vulkan,
+                "Hang watch: waited {} s for GPU tick {}; the GPU is at tick {}, the last "
+                "submitted tick is {}, the next to record is {}",
+                waited_s, tick, gpu_tick, last_submitted, next_tick);
+    if (waited_s > 3) {
+        return;
+    }
+    for (const HangSubmission& submission : hang_submissions) {
+        if (submission.tick <= gpu_tick) {
+            continue;
+        }
+        LOG_WARNING(Render_Vulkan, "Hang watch: unfinished tick {} ({} pipelines): {}",
+                    submission.tick, submission.pipelines.size(),
+                    fmt::join(submission.pipelines, " "));
+    }
 }
 
 void Scheduler::AllocateNewContext() {

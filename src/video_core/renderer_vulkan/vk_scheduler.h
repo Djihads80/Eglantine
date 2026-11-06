@@ -10,11 +10,15 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <queue>
+#include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -216,6 +220,19 @@ public:
     // Registers a callback to perform on queue submission.
     void RegisterOnSubmit(std::function<void()>&& func) {
         on_submit = std::move(func);
+    }
+
+    /// EDEN_NX2_HANG_WATCH: notes the pipeline of the draw or dispatch being recorded, for the
+    /// report of a GPU wait that stalls (MasterSemaphore::on_stall). A flag check when off.
+    void HangWatchGraphics(const std::array<u64, 6>& hashes) {
+        if (hang_watch) [[unlikely]] {
+            HangWatchRecordGraphics(hashes);
+        }
+    }
+    void HangWatchCompute(u64 hash, u64 native_key) {
+        if (hang_watch) [[unlikely]] {
+            HangWatchRecordCompute(hash, native_key);
+        }
     }
 
     /// Send work to a separate thread.
@@ -493,6 +510,20 @@ private:
     std::unique_ptr<CommandChunk> chunk;
     std::function<void()> on_submit;
     std::function<void()> on_render_pass_end;
+
+    /// EDEN_NX2_HANG_WATCH: the pipelines recorded into each of the last 64 submissions.
+    struct HangSubmission {
+        u64 tick{};
+        std::vector<std::string> pipelines;
+    };
+    void HangWatchRecordGraphics(const std::array<u64, 6>& hashes);
+    void HangWatchRecordCompute(u64 hash, u64 native_key);
+    void HangRecord(std::string pipeline);
+    void ReportStall(u64 tick, u64 gpu_tick, u64 next_tick, u64 waited_s);
+    bool hang_watch{};
+    std::vector<std::string> hang_work; ///< Worker thread: the submission being recorded
+    std::mutex hang_mutex;
+    std::deque<HangSubmission> hang_submissions;
 
     State state;
     u64 recording_epoch = 0;
