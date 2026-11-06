@@ -583,6 +583,16 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
     return result;
 }
 
+/// Reads EDEN_NX2_MEMSTATS once: whether the MaxContinuousRange cache logs its hit/miss and
+/// page-table-change counters (see MaxContinuousRange below).
+static bool MemstatsEnabled() {
+    static const bool on = std::getenv("EDEN_NX2_MEMSTATS") != nullptr;
+    return on;
+}
+
+/// Length of the largest continuously mapped range starting at gpu_addr and not exceeding
+/// size, answered from a per-thread direct-mapped cache invalidated by page-table changes;
+/// with EDEN_NX2_MEMSTATS=1, hit/miss and remap counters are logged every 500k queries.
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // Native storage buffers ask this for up to 8 MiB on each bind, ~70,000 times a second in
     // title 1's forest (17% of the GPU thread walking pages): keep answers per thread until the
@@ -603,10 +613,7 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // EDEN_NX2_MEMSTATS=1: per-thread hit/miss and page-table-change counts, logged every
     // 500k queries (finds whether the miss cost of this cache is thrash or remaps).
     thread_local u64 stat_queries{}, stat_hits{}, stat_misses{}, stat_serials{}, stat_last_serial{};
-    const bool stats = [] {
-        static const bool on = std::getenv("EDEN_NX2_MEMSTATS") != nullptr;
-        return on;
-    }();
+    const bool stats = MemstatsEnabled();
     if (stats) [[unlikely]] {
         ++stat_queries;
         stat_serials += serial != stat_last_serial;

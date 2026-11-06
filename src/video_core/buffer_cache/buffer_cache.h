@@ -100,6 +100,9 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
     }
 }
 
+/// End-of-frame bookkeeping: retires async buffer downloads, drops stale uniform ranges and
+/// the occasional threshold report, and — with PreflushPerFrame() — drains this frame's
+/// queued Preflushable ranges into the set the next fence downloads.
 template <class P>
 void BufferCache<P>::TickFrame() {
     // Homebrew console apps don't create or bind any channels, so this will be nullptr.
@@ -261,6 +264,9 @@ bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     return false;
 }
 
+/// Resolves the guest read of [device_addr, device_addr + size) to a download area: page
+/// aligned, and marked preemtive (no synchronous flush needed) only when the data is already
+/// back in guest memory — downloaded at a fence and not still pending a frame drain.
 template <class P>
 std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DAddr device_addr,
                                                                               u64 size) {

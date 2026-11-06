@@ -211,6 +211,10 @@ bool Maxwell3D::IsMethodExecutable(u32 method) {
     }
 }
 
+/// Handles a write to a macro method or its ARGS register: accumulates the call's parameter
+/// words and dispatches the macro when the call is complete, choosing between the stack
+/// snapshot path (parameters copied at arrival) and the per-call vector that accurate mode
+/// refreshes in place.
 void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call) {
     if (executing_macro == 0) {
         // A macro call must begin by writing the macro method's register, not its argument.

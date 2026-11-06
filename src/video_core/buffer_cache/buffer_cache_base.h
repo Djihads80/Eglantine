@@ -605,6 +605,26 @@ private:
         return gpu_memory == nullptr || !gpu_memory->UsesNativeTiling();
     }
 
+    /// Reads EDEN_NX2_LAZY_PREFLUSH=1 once (see LazyPreflushDownloads).
+    static bool EnvLazyPreflush() {
+        const char* const value = std::getenv("EDEN_NX2_LAZY_PREFLUSH");
+        return value != nullptr && value[0] == '1';
+    }
+
+    /// Reads EDEN_NX2_PREFLUSH_PER_FRAME=1 once (see PreflushPerFrame).
+    static bool EnvPreflushPerFrame() {
+        const char* const value = std::getenv("EDEN_NX2_PREFLUSH_PER_FRAME");
+        return value != nullptr && value[0] == '1';
+    }
+
+    /// Reads EDEN_NX2_PREFLUSH_MIN_BYTES once: the byte threshold under which a Preflushable
+    /// range still downloads at every fence; one page when unset or unparsable.
+    static u64 EnvPreflushPerFrameMinBytes() {
+        const char* const value = std::getenv("EDEN_NX2_PREFLUSH_MIN_BYTES");
+        const long parsed = value == nullptr ? 4096 : std::atol(value);
+        return parsed <= 0 ? u64{4096} : static_cast<u64>(parsed);
+    }
+
     /// EDEN_NX2_LAZY_PREFLUSH=1: ranges the guest CPU has read once (Preflushable) are not
     /// re-downloaded at every fence either. Every fence that follows a GPU write to such a range
     /// copies it back whether anything reads it again or not; Ocarina of Time read GPU-written
@@ -614,10 +634,7 @@ private:
     /// bump alone invalidates the cores' rasterizer read areas), and a read flushes once,
     /// synchronously, through OnCPURead — the path a first read already takes.
     bool LazyPreflushDownloads() const {
-        static const bool lazy = [] {
-            const char* value = std::getenv("EDEN_NX2_LAZY_PREFLUSH");
-            return value != nullptr && value[0] == '1';
-        }();
+        static const bool lazy = EnvLazyPreflush();
         return lazy;
     }
 
@@ -704,10 +721,7 @@ private:
     /// EDEN_NX2_PREFLUSH_PER_FRAME=1: drain Preflushable download ranges once per frame
     /// (TickFrame) instead of committing them at every fence. See QueueGpuWrite.
     bool PreflushPerFrame() const {
-        static const bool per_frame = [] {
-            const char* value = std::getenv("EDEN_NX2_PREFLUSH_PER_FRAME");
-            return value != nullptr && value[0] == '1';
-        }();
+        static const bool per_frame = EnvPreflushPerFrame();
         return per_frame;
     }
 
@@ -715,11 +729,7 @@ private:
     /// still download at every fence (freshness-critical parameters); larger ones once per
     /// frame. Default one page.
     static u64 PreflushPerFrameMinBytes() {
-        static const u64 min_bytes = [] {
-            const char* value = std::getenv("EDEN_NX2_PREFLUSH_MIN_BYTES");
-            const long parsed = value == nullptr ? 4096 : std::atol(value);
-            return parsed <= 0 ? u64{4096} : static_cast<u64>(parsed);
-        }();
+        static const u64 min_bytes = EnvPreflushPerFrameMinBytes();
         return min_bytes;
     }
 
