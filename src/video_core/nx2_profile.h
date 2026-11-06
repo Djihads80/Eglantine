@@ -321,6 +321,7 @@ inline void Report(const char* thread_name = "GPU thread") {
             }
         }
         line.pop_back();
+    }
     const auto per_second_kib = [&](size_t counter) {
         return static_cast<double>(data.counters[counter]) * 1e9 / 1024.0 / window;
     };
