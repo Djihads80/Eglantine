@@ -591,12 +591,12 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         } else if (std::string_view{error.what()}.find("matrix multiply") !=
                    std::string_view::npos) {
             DescribeNativeResources(qmd);
-            FollowPhotoUpscale();
             // The console runs this on tensor cores; stand in with a plain upscale of its input.
-            if (UpscaleFromConstBuffers()) {
+            if (UpscaleInsteadOfNativeProgram()) {
                 return true;
             }
-            return UpscaleInsteadOfNativeProgram();
+            FollowPhotoUpscale();
+            return UpscaleFromConstBuffers();
         }
     }
     if (dispatched && !dlss_chain.active && photo_upscale.window_left != 0) {
@@ -1181,6 +1181,7 @@ bool KeplerCompute::UpscaleFromConstBuffers() {
     if ((known && program != watch.output_program) || (!known && watch.evaluations > 6)) {
         return false;
     }
+    --watch.window_left;
     struct Image {
         Texture::TICEntry tic;
         u32 slot;
