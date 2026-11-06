@@ -2943,6 +2943,32 @@ private:
     std::thread m_worker;
 };
 
+// Session returned by gsv 1121. The SDK sends TIPC 0 (a tick-like u64 it requires echoed) right
+// after getting the handle, then 11 with two u64 values. The server behind 11 is unknown, so it
+// logs its arguments and replies 0. Left to the zeroed stub, 1121 had no handle and Welcome Tour
+// aborted with 2001-0114 during boot.
+class INx2Session1121 final : public ServiceFramework<INx2Session1121> {
+public:
+    explicit INx2Session1121(Core::System& system_) : ServiceFramework{system_, "nx2:gsv:1121"} {
+        RegisterHandlersTipc({
+            {0, &INx2Session1121::Handshake, "Handshake"},
+            {11, &INx2Session1121::Command11, "Unknown11"},
+        });
+    }
+
+private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:gsv:1121");
+    }
+
+    void Command11(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_DEBUG(Service, "(STUBBED) nx2:gsv:1121 TIPC 11 args={:#x}, {:#x}",
+                  u64{w[2]} | (u64{w[3]} << 32), u64{w[4]} | (u64{w[5]} << 32));
+        TipcReplyWords(ctx, {0, 0});
+    }
+};
+
 // Placeholder for the Switch 2 graphics-system server that nn::gsv::BootWithRemoteMemory talks
 // to over TIPC. Nothing behind it is emulated: commands succeed and are logged, so boot can show
 // what comes next. Commands 202 and 1402 hand out the syncpt and nvsrv sessions the SDK uses.
@@ -3063,7 +3089,7 @@ public:
             {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetFeatureVersion"},
             {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1112"},
             {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1113"},
-            {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
+            {1121, &INx2GraphicsSystemSession::OpenSession1121, "OpenSession1121"},
             {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1203"},
             {1212, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool1212"},
             {1501, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1501"},
@@ -3135,6 +3161,15 @@ private:
     void SetFeatureVersion(HLERequestContext& ctx) {
         LOG_INFO(Service, "nx2:gsv TIPC 1111 value {:#x}", ctx.CommandBuffer()[2]);
         TipcReplyWords(ctx, {});
+    }
+
+    // 1121() returns a session the SDK handshakes with right away (move handle at word 3).
+    void OpenSession1121(HLERequestContext& ctx) {
+        LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1121, returning a nx2:gsv:1121 session");
+        auto* client = CreateRawSession(system, ctx, std::make_shared<INx2Session1121>(system));
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushMoveObjects(ctx, *client);
     }
 
     std::set<u32> m_address_spaces;        ///< Ids attached with 434
