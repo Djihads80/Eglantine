@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -30,6 +31,7 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
+#include "video_core/macro_dma_forward.h"
 #include "video_core/macro_turing_jit.h"
 #endif
 
@@ -1100,6 +1102,30 @@ struct Maxwell3D::FrontState {
     u32 executing_macro{};
     std::vector<u32> parameters;
     std::vector<u32> dma_words; ///< FrontDmaReadEarly's words
+    /// Nx2Perf dma_forward: registers the back writes from DMA words the front never read
+    /// (regs holds a stale value), and macros (by index) seen doing an MME DMA read.
+    std::bitset<Regs::NUM_REGS> unknown_regs;
+    u32 unknown_count{};
+    std::bitset<256> dma_macros;
+    void MarkUnknown(u32 method) {
+        if (!unknown_regs[method]) {
+            unknown_regs[method] = true;
+            ++unknown_count;
+        }
+    }
+    void ForgetUnknown(u32 method) {
+        if (unknown_regs[method]) {
+            unknown_regs[method] = false;
+            --unknown_count;
+        }
+    }
+    /// Takes a forwarded register's value (and shadow copy) from the back, after draining it.
+    void Learn(Maxwell3D& engine, VideoCommon::GpuSplit& split, u32 method) {
+        split.Drain(VideoCommon::DrainSite::MacroDmaRead);
+        regs[method] = engine.regs.reg_array[method];
+        shadow[method] = engine.shadow_state.reg_array[method];
+        ForgetUnknown(method);
+    }
     u64 calls{};
     /// A method the draw manager handles was sent since the back last ran DrawDeferred: only
     /// then can it have a deferred instanced draw to issue at the end of a macro.
@@ -1539,6 +1565,16 @@ void Maxwell3D::ReleaseFront() {
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    if (fs.unknown_count != 0 && fs.unknown_regs[method]) [[unlikely]] {
+        // dma_forward: a tracked write sets both the register and its shadow copy again; any
+        // other mode keeps or reads one of them, so take the back's values first.
+        if (fs.control == Regs::ShadowRamControl::Track ||
+            fs.control == Regs::ShadowRamControl::TrackWithFilter) {
+            fs.ForgetUnknown(method);
+        } else {
+            fs.Learn(*this, split, method);
+        }
+    }
     // Nx2Perf FrontSameFirst: the same-value state write skip below, decided first. Outside
     // Replay the value is the argument, and a tracked shadow RAM keeps it only if it holds it.
     bool same_first = false;
@@ -1905,7 +1941,107 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         same_before = Profile::CounterValue(Profile::Counter::SameValueWrites);
         ring_before = split.WritePosition();
     }
-    {
+    // Nx2Perf dma_forward: a macro that did an MME DMA read before is dry-run first. When its
+    // DMA words only feed its last writes (render enable: macro 0x16 in Ocarina of Time), the
+    // front sends the other writes and doesn't wait; the back reads the words in ring order,
+    // after the same flushes FrontDmaRead waits for, and writes those values.
+    const u32 macro_index = (method - MacroRegistersStart) >> 1;
+    namespace DmaForward = VideoCommon::DmaForward;
+    DmaForward::Plan dma_plan;
+    bool forwarded_call = false;
+    bool verify_forward = false;
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForward) && !trace &&
+        macro_index < fs.dma_macros.size() && fs.dma_macros[macro_index]) [[unlikely]] {
+        Profile::Scope profile_scope{Profile::Zone::Macro};
+        static u64 forwarded_calls{};
+        static u64 fallen_back{};
+        static std::array<std::string_view, 8> reasons_logged{};
+        const std::span<const u32> parameters =
+            borrowed.empty() ? std::span<const u32>{fs.parameters} : borrowed;
+        if (fs.control == Regs::ShadowRamControl::Replay) {
+            // The back would write the shadow copy, not the words.
+            dma_plan.reason = "shadow RAM replay";
+        } else {
+            dma_plan = DmaForward::Analyze(
+                std::span<const u32>{engine.native_code}, start, parameters,
+                std::span<const u32>{native_data_ram}, MacroRegistersStart,
+                [&fs](u32 address, bool& unknown) -> u32 {
+                    if (address >= Regs::NUM_REGS) {
+                        unknown = false;
+                        return 0;
+                    }
+                    unknown = fs.unknown_count != 0 && fs.unknown_regs[address];
+                    return fs.regs[address];
+                },
+                [](u32 address) { return address == MAXWELL3D_REG_INDEX(render_enable.mode); });
+        }
+        if (!dma_plan.eligible) {
+            ++fallen_back;
+            const auto logged = std::ranges::find(reasons_logged, dma_plan.reason);
+            const auto free = std::ranges::find(reasons_logged, std::string_view{});
+            if (logged == reasons_logged.end() && free != reasons_logged.end()) {
+                *free = dma_plan.reason;
+                LOG_INFO(HW_GPU, "Nx2Perf dma_forward: macro {:#x} not forwarded: {}", macro_index,
+                         dma_plan.reason);
+            }
+        } else if (VideoCommon::Nx2Perf::Verify()) {
+            verify_forward = true; // The old path runs; its writes are compared below.
+        } else {
+            // The back's half: the read's flushes, the words, the forwarded writes.
+            struct ForwardCall {
+                Maxwell3D* engine;
+                Core::System* system;
+                DmaForward::Snapshot snapshot;
+                void operator()() const {
+                    auto& memory = engine->memory_manager;
+                    const GPUVAddr source = snapshot.dma_source;
+                    const size_t bytes = size_t{snapshot.dma_words} * sizeof(u32);
+                    if (memory.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
+                        memory.FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
+                    }
+                    memory.FlushQueryResults(source, bytes);
+                    std::array<u32, DmaForward::MaxDmaWords> words{};
+                    memory.ReadWordsUnsafe(source, words.data(), snapshot.dma_words);
+                    const bool ok = DmaForward::Recompute(
+                        snapshot, std::span<const u32>{words.data(), snapshot.dma_words},
+                        MacroRegistersStart, [this](u32 forwarded_method, u32 value) {
+                            engine->ConsumeSink(*system);
+                            engine->CallMethod(*system, forwarded_method, value, true);
+                        });
+                    static u32 failures{};
+                    if (!ok && failures++ < 16) {
+                        LOG_ERROR(HW_GPU, "Nx2Perf dma_forward: the back's run of a forwarded "
+                                          "macro call failed or made other writes");
+                    }
+                }
+            };
+            for (size_t i = 0; i < dma_plan.num_writes; ++i) {
+                const DmaForward::Write& write = dma_plan.writes[i];
+                if (write.forwarded) {
+                    if (i == dma_plan.snapshot.first_forwarded) {
+                        split.Defer(ForwardCall{this, &system, dma_plan.snapshot});
+                    }
+                    fs.MarkUnknown(write.method);
+                    continue;
+                }
+                // The DMA read's own write goes to the back as before; the read doesn't happen.
+                FrontWrite(split, fs, write.method, write.value, true, true);
+            }
+            for (size_t i = 0; i < dma_plan.num_ram_writes; ++i) {
+                native_data_ram[dma_plan.ram_writes[i].first] = dma_plan.ram_writes[i].second;
+            }
+            forwarded_call = true;
+            if ((++forwarded_calls & 0xffff) == 0) {
+                LOG_INFO(HW_GPU, "Nx2Perf dma_forward: {} macro calls forwarded, {} not",
+                         forwarded_calls, fallen_back);
+            }
+        }
+    }
+    std::array<std::pair<u32, u32>, DmaForward::MaxWrites> verify_writes{};
+    size_t verify_count{};
+    std::array<u32, DmaForward::MaxDmaWords> verify_words{};
+    u32 verify_word_count{};
+    if (!forwarded_call) {
         Profile::Scope profile_scope{Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
         if (!engine.native_jit) {
@@ -1930,10 +2066,21 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         };
         const auto result = engine.native_jit->Execute(
             start, fs.parameters, borrowed, std::span<u32>{native_data_ram},
-            [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
+            [&](u32 address) {
+                if (address >= Regs::NUM_REGS) {
+                    return 0U;
+                }
+                if (fs.unknown_count != 0 && fs.unknown_regs[address]) [[unlikely]] {
+                    fs.Learn(*this, split, address);
+                }
+                return fs.regs[address];
+            },
             [&](u32 address, u32 value) {
                 if (trace) [[unlikely]] {
                     trace_line += fmt::format(" {:#x}={:#x}", address, value);
+                }
+                if (verify_forward && verify_count < verify_writes.size()) [[unlikely]] {
+                    verify_writes[verify_count++] = {address, value};
                 }
                 if (address >= MacroRegistersStart) {
                     return false;
@@ -1970,8 +2117,18 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                         fs.parameters.assign(borrowed.begin(), borrowed.end());
                     }
                     ++dma_reads;
+                    if (macro_index < fs.dma_macros.size()) {
+                        fs.dma_macros[macro_index] = true;
+                    }
                     const size_t parameters_before = fs.parameters.size();
                     FrontDmaRead(split, fs, method, address, value);
+                    if (verify_forward && address == 0x158) [[unlikely]] {
+                        for (size_t i = parameters_before;
+                             i < fs.parameters.size() && verify_word_count < verify_words.size();
+                             ++i) {
+                            verify_words[verify_word_count++] = fs.parameters[i];
+                        }
+                    }
                     if (trace) [[unlikely]] {
                         trace_line += " [dma";
                         if (address == 0x158) {
@@ -1995,6 +2152,35 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
                       start, result.consumed, parameter_count, result.error);
+        }
+        if (verify_forward) [[unlikely]] {
+            // The forwarded path's answer against this drained run's.
+            static u64 checked{};
+            static u64 differed{};
+            bool same = verify_count == dma_plan.num_writes;
+            for (size_t i = 0; same && i < dma_plan.snapshot.first_forwarded; ++i) {
+                same = verify_writes[i] ==
+                       std::pair<u32, u32>{dma_plan.writes[i].method, dma_plan.writes[i].value};
+            }
+            size_t index = dma_plan.snapshot.first_forwarded;
+            const bool ran = DmaForward::Recompute(
+                dma_plan.snapshot, std::span<const u32>{verify_words.data(), verify_word_count},
+                MacroRegistersStart, [&](u32 forwarded_method, u32 value) {
+                    same = same && index < verify_count &&
+                           verify_writes[index] == std::pair<u32, u32>{forwarded_method, value};
+                    ++index;
+                });
+            same = same && ran;
+            ++checked;
+            if (!same && differed++ < 64) {
+                LOG_ERROR(HW_GPU, "Nx2Perf dma_forward: macro {:#x} call differs from the drained "
+                                  "run ({} writes, plan {}; {} differences in {} calls)",
+                          macro_index, verify_count, dma_plan.num_writes, differed, checked);
+            }
+            if ((checked & 0xffff) == 0) {
+                LOG_INFO(HW_GPU, "Nx2Perf dma_forward: {} calls checked, {} differed", checked,
+                         differed);
+            }
         }
     }
     if (trace) [[unlikely]] {
@@ -2451,6 +2637,13 @@ void Maxwell3D::FrontVerify(VideoCommon::GpuSplit& split, FrontState& fs) {
         }
     }
     for (u32 i = 0; i < Regs::NUM_REGS; ++i) {
+        if (fs.unknown_count != 0 && fs.unknown_regs[i]) {
+            // Forwarded (dma_forward): the back's values are the right ones.
+            fs.regs[i] = expected[i];
+            fs.shadow[i] = shadow_state.reg_array[i];
+            fs.ForgetUnknown(i);
+            continue;
+        }
         if (fs.regs[i] != expected[i]) {
             if (differences++ < 64) {
                 LOG_WARNING(HW_GPU, "Split front register {:#x}: front {:#x}, back {:#x}", i,

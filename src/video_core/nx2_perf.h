@@ -111,6 +111,9 @@ enum class Opt : unsigned {
     /// Texture handles of one draw stage read through one translated constant buffer page,
     /// not a GPU page walk per handle
     HandlePageCache,
+    /// Split front: a native macro call whose MME DMA read only feeds its last writes (render
+    /// enable) runs without waiting for the back; the back writes those from the real words
+    DmaForward,
     Count,
 };
 
@@ -141,6 +144,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "bind_memo_local",
     "dirty_gather_fast",
     "handle_page_cache",
+    "dma_forward",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -177,7 +181,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
-                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd,
+                          Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
                           Opt::SplitRings, Opt::BindMemoLocal}) {
         mask |= Bit(opt);
@@ -205,6 +209,7 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::AcquireTriggerEarly) |
                                   Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
+                                  Bit(Opt::DmaForward) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
                                   Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal);
 
