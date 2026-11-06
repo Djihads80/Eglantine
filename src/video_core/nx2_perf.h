@@ -68,6 +68,7 @@ enum class Opt : unsigned {
     /// host GPU has run dry, so a command list copy waits only for the tail behind it
     SubmitWhileWaited,
     GpuCorePin,         ///< The GPU front and back get a reserved V-Cache core (EDEN_NX2_GPU_PIN)
+    PresentGuestWait,   ///< vi2's present fence wait sleeps in the guest kernel, not on a host cv
     Count,
 };
 
@@ -87,6 +88,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_read_overlay_writers",
     "submit_while_waited",
     "gpu_core_pin",
+    "present_guest_wait",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -111,7 +113,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
                           Opt::BindMemo, Opt::MacroReadOverlayWriters,
-                          Opt::SubmitWhileWaited, Opt::GpuCorePin}) {
+                          Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentGuestWait}) {
         mask |= Bit(opt);
     }
     return mask;
