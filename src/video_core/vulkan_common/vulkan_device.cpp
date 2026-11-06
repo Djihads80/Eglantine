@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
@@ -404,6 +405,29 @@ std::vector<const char*> ExtensionListForVulkan(
     return output;
 }
 
+// EDEN_NX2_QUEUE_PRIORITY=high|realtime: the global priority asked for the graphics queue
+// (VK_KHR/EXT_global_priority), as strato asks HIGH of drivers other than Turnip. Off by default
+// (the driver's medium) until the phone shows what it does to the waits for GPU-written pages.
+// Read when the device is made, after env.txt.
+std::optional<VkQueueGlobalPriorityKHR> RequestedQueuePriority() {
+    const char* const value = std::getenv("EDEN_NX2_QUEUE_PRIORITY");
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    const std::string_view name{value};
+    if (name == "high") {
+        return VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
+    }
+    if (name == "realtime") {
+        return VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR;
+    }
+    return std::nullopt;
+}
+
+const char* QueuePriorityName(VkQueueGlobalPriorityKHR priority) {
+    return priority == VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR ? "realtime" : "high";
+}
+
 constexpr std::array<char, 8> STATIC_CACHE_MAGIC_NUMBER{'e', 'd', 'e', 'n', 's', 't', 'p', 'c'};
 constexpr u32 STATIC_CACHE_VERSION = 1;
 
@@ -493,7 +517,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
 
     SetupFamilies(surface);
-    const auto queue_cis = GetDeviceQueueCreateInfos();
+    auto queue_cis = GetDeviceQueueCreateInfos();
 
     // GetSuitability has already configured the linked list of features for us.
     // Reuse it here.
@@ -760,7 +784,68 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
 
-    logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
+    // EDEN_NX2_QUEUE_PRIORITY: the graphics queue at a higher global priority. Where the process
+    // may not have it (VK_ERROR_NOT_PERMITTED) or the driver fails otherwise, realtime falls back
+    // to high, and high to the driver's default.
+    VkDeviceQueueGlobalPriorityCreateInfoKHR queue_priority{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR,
+        .pNext = nullptr,
+        .globalPriority = VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR,
+    };
+    const char* priority_extension = nullptr;
+    if (const auto priority = RequestedQueuePriority()) {
+        if (supported_extensions.contains(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME)) {
+            priority_extension = VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME;
+        } else if (supported_extensions.contains(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME)) {
+            priority_extension = VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME;
+        } else {
+            LOG_WARNING(Render_Vulkan, "Queue global priority {}: the driver has no "
+                                       "VK_KHR/EXT_global_priority",
+                        QueuePriorityName(*priority));
+        }
+        queue_priority.globalPriority = *priority;
+    }
+    const auto set_queue_priority = [&](bool enable) {
+        for (VkDeviceQueueCreateInfo& ci : queue_cis) {
+            if (ci.queueFamilyIndex == graphics_family) {
+                ci.pNext = enable ? &queue_priority : nullptr;
+            }
+        }
+        if (enable) {
+            loaded_extensions.insert(priority_extension);
+        } else {
+            loaded_extensions.erase(std::string{priority_extension});
+        }
+    };
+    if (priority_extension != nullptr) {
+        set_queue_priority(true);
+    }
+    while (true) {
+        try {
+            logical = vk::Device::Create(physical, queue_cis,
+                                         ExtensionListForVulkan(loaded_extensions), first_next, dld);
+        } catch (const vk::Exception& exception) {
+            if (priority_extension == nullptr) {
+                throw;
+            }
+            LOG_WARNING(Render_Vulkan, "Queue global priority {} refused ({}){}",
+                        QueuePriorityName(queue_priority.globalPriority), exception.what(),
+                        exception.GetResult() == VK_ERROR_NOT_PERMITTED_KHR ? ": not permitted"
+                                                                            : "");
+            if (queue_priority.globalPriority == VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR) {
+                queue_priority.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
+            } else {
+                set_queue_priority(false);
+                priority_extension = nullptr;
+            }
+            continue;
+        }
+        break;
+    }
+    if (priority_extension != nullptr) {
+        LOG_INFO(Render_Vulkan, "Graphics queue at global priority {} ({})",
+                 QueuePriorityName(queue_priority.globalPriority), priority_extension);
+    }
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
