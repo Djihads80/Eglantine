@@ -99,6 +99,12 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x819: case 0xa11:
         operand(16); operand(24); operand(64); break;
     case 0x59f: operand(24, 2); operand(32); break;
+    case 0x9a8: operand(16); operand(32); break; // ATOMG: result, data (uniform address)
+    case 0xb6c: { // TXD: destinations, coordinates (x, y[, layer]), the four gradients
+        const u32 channels = static_cast<u32>(std::popcount(input.Bits(72, 4)));
+        operand(16, channels > 1 ? 2 : 1); operand(24, input.Bits(61, 3) == 5 ? 3 : 2);
+        operand(32, 4); operand(64, channels > 3 ? 2 : 1); break;
+    }
     case 0x321: operand(16, input.Bits(74, 2) + 1); operand(24); operand(32); break; // ALD
     case 0x322: operand(24); operand(32, input.Bits(74, 2) + 1); break; // AST
     case 0x98e:
@@ -268,8 +274,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (opcode == 0x81c) break; // PLOP3: bits 16-31 hold predicates and its LUT, not registers
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x986 && opcode != 0x987 && opcode != 0x988 && opcode != 0x59f &&
-                opcode != 0x98e && opcode != 0x927) continue; // RED, ISBEWR: data in 32-39
+                opcode != 0xb6c && opcode != 0x986 && opcode != 0x987 && opcode != 0x988 &&
+                opcode != 0x59f && opcode != 0x98e && opcode != 0x9a8 && opcode != 0x927)
+                continue; // TXD's gradients; the data of RED, ATOMG and ISBEWR
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
