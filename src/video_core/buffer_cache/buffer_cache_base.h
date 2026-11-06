@@ -825,6 +825,27 @@ private:
         device_memory.ArmReadTraps(begin, end - begin);
     }
 
+    /// Fence-time downloads: the range of a buffer (src_offset) and its place in staging.
+    using Nx2Downloads = boost::container::small_vector<std::pair<BufferCopy, BufferId>, 16>;
+    /// Opt::DownloadBatch: `downloads` per buffer with nearby ranges merged into `batched`
+    /// (staging offsets from 0); returns the staging size.
+    u64 Nx2BatchDownloads(const Nx2Downloads& downloads, Nx2Downloads& batched);
+    /// PERF_VERIFY: whether `batched` copies every byte of `downloads` and writes back the same.
+    bool Nx2VerifyDownloadBatch(const Nx2Downloads& downloads, const Nx2Downloads& batched);
+    /// Profiling: counts a download's bytes by the age of their blocks' preflush stamps.
+    void Nx2CountDownloadAges(DAddr device_addr, u64 size);
+    /// The guest CPU read Preflushable data in [begin, end) (a mark made or, with PreflushAging,
+    /// a trapped read of a marked range).
+    void Nx2StampPreflushBlocks(DAddr begin, DAddr end);
+
+    static constexpr u64 NX2_PREFLUSH_BLOCK_BITS = 16; ///< 64 KiB blocks
+    /// A 64 KiB block with Preflushable marks. Without PreflushAging reads of marked ranges are
+    /// not trapped, so `last_read_frame` is when the block was first marked. Guarded by `mutex`.
+    struct Nx2PreflushBlock {
+        u64 last_read_frame{};
+    };
+    std::unordered_map<u64, Nx2PreflushBlock> nx2_preflush_blocks;
+
     ReadTrapTracker read_trapped_ranges;
     /// Ranges the guest CPU read after GPU writes. A read that must flush downloads the GPU
     /// writes in all of them, so the reads that usually follow it find nothing left to flush.
