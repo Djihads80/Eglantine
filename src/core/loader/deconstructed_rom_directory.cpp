@@ -474,6 +474,12 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     // Define an nce patch context for each potential module.
     PatchCollection patch_ctx{is_application};
 
+    // The layout pass must see the code as patched: NCE rewrites the SVCs and MRS reads it finds
+    // here, so a patch adding one (Dark's Dynamic FPS for Ocarina of Time reads CNTPCT_EL0)
+    // would otherwise run it raw and die of SIGILL.
+    const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
+                                   system.GetContentProvider()};
+
     // Use the NSO module loader to figure out the code layout
     for (size_t i = 0; i < static_modules.size(); i++) {
         const auto& module = static_modules[i];
@@ -484,7 +490,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
         const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
-            process, system, *module_file, code_size, should_pass_arguments, false, {},
+            process, system, *module_file, code_size, should_pass_arguments, false, pm,
             patch_ctx.GetPatchers(), patch_ctx.GetLastIndex());
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};
@@ -520,8 +526,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     modules.clear();
     const VAddr base_address{GetInteger(process.GetEntryPoint())};
     VAddr next_load_addr{base_address};
-    const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
-                                   system.GetContentProvider()};
     for (size_t i = 0; i < static_modules.size(); i++) {
         const auto& module = static_modules[i];
         const FileSys::VirtualFile module_file{dir->GetFile(module)};
