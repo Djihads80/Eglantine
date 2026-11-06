@@ -7,6 +7,17 @@
 -->
 <!-- lang: en-GB -->
 
+> [!IMPORTANT]
+> **This fork: The Legend of Zelda: Ocarina of Time (Switch 2) is playable here.**
+> No crashes in Kokiri Forest, 40-60 FPS on an RTX 5090, normal game speed when the frame rate dips.
+> The goal is a locked 60 FPS, and help is welcome.
+>
+> - [What works, the numbers and the key changes](OOT_STABLE.md)
+> - [How we got here: the method in one page](OOT_WORKFLOW.md)
+> - [Help wanted: open tasks, easiest first](OOT_HELP_WANTED.md)
+> - [Credits](CREDITS_OOT.md)
+
+
 <h1 align="center">
   <br>
   <a href="https://git.eden-emu.dev/eden-emu/eden"><img src="https://github.com/user-attachments/assets/35031845-4bfa-4916-8bf5-bc3bce67d5e2" alt="Eglantine" width="200"></a>
