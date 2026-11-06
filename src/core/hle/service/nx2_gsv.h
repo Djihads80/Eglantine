@@ -1460,6 +1460,7 @@ struct Nx2NativeObjects {
         bool decoder{}; // a video decoder output image (gsv 911)
         // A decoder image the client reads on the GPU (gsv 428/426): written block-linear.
         bool gpu_read{};
+        bool pitch_frame{}; // holds a frame written before gpu_read was set
         u32 gpu_maps{};     // outstanding 426 maps
         bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
     };
@@ -1615,6 +1616,31 @@ inline Nx2DecoderImageLayout Nx2CalculateDecoderImageLayout(const u32* preferenc
     layout.size = layout.chroma_offset +
                   (nv12 ? layout.pitch * Common::AlignUp((u64{layout.height} + 1) / 2, BlockRows) : 0);
     return layout;
+}
+
+// Rewrites a decoder image holding a pitch-linear frame in the layout GPU reads use (RGBA,
+// native block-linear, 16-GOB blocks). For frames decoded before the client's first 428/426.
+inline void Nx2RelayoutDecoderImage(Core::System& system, u64 address,
+                                    const Nx2DecoderImageLayout& layout) {
+    if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12 ||
+        system.ApplicationProcess() == nullptr) {
+        return;
+    }
+    auto& memory = system.ApplicationMemory();
+    std::vector<u8> linear(layout.size);
+    memory.ReadBlock(address, linear.data(), linear.size());
+    if (layout.format == Tegra::Host1x::Nx2PictureFormat::Bgra8) {
+        for (size_t i = 0; i + 3 < linear.size(); i += 4) {
+            std::swap(linear[i], linear[i + 2]);
+        }
+    }
+    std::vector<u8> tiled(layout.size);
+    Tegra::Texture::SwizzleTexture(tiled, linear, 4, static_cast<u32>(layout.pitch / 4),
+                                   layout.height, 1, 4, 0, 1, true);
+    memory.WriteBlock(address, tiled.data(), tiled.size());
+    if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+        system.GPU().InvalidateRegion(*device, tiled.size());
+    }
 }
 
 // Placeholder for the Switch 2 display session (nn::vi2::sdk), handed out by gsv 305. Reply
@@ -2882,6 +2908,19 @@ private:
         if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
             system.GPU().InvalidateRegion(*device, layout.size);
         }
+        // A 428/426 that came in while this frame was written didn't see it: relayout it here.
+        bool relayout = false;
+        if (layout.format != Tegra::Host1x::Nx2PictureFormat::Nv12) {
+            std::scoped_lock lk{m_objects->mutex};
+            if (const auto image = m_objects->images.find(image_id);
+                image != m_objects->images.end()) {
+                relayout = image->second.gpu_read;
+                image->second.pitch_frame = !relayout;
+            }
+        }
+        if (relayout) {
+            Nx2RelayoutDecoderImage(system, address, layout);
+        }
         return {width, height};
     }
 
@@ -3552,6 +3591,8 @@ private:
         u64 offset{};
         u32 dimensions{};
         bool register_mapping = false;
+        u64 relayout_address{};
+        Nx2DecoderImageLayout relayout_layout{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(handle);
@@ -3563,6 +3604,10 @@ private:
                 return false;
             }
             image->second.gpu_read = true;
+            if (std::exchange(image->second.pitch_frame, false)) {
+                relayout_address = memory->second.address + image->second.offset;
+                relayout_layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
+            }
             offset = image->second.offset;
             size = image->second.size;
             dimensions = image->second.preference[2];
@@ -3575,6 +3620,10 @@ private:
         }
         if (register_mapping) {
             Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(address, size);
+        }
+        // Frames decoded before the first 428/426 were written pitch-linear.
+        if (relayout_address != 0) {
+            Nx2RelayoutDecoderImage(system, relayout_address, relayout_layout);
         }
         LOG_INFO(Service, "nx2:gsv {} decoder image {} at {:#x}+{:#x}{}", ctx.GetCommand(), handle,
                  address, size, register_mapping ? ", mapped for the GPU" : "");
