@@ -31,6 +31,7 @@ void ConditionalBarrierPass(IR::Program& program) {
                     inst.GetOpcode() == IR::Opcode::Barrier) {
                     LOG_WARNING(Shader, "Barrier within conditional control flow");
                     inst.ReplaceOpcode(IR::Opcode::Identity);
+                    program.info.removed_conditional_barrier = true;
                 }
             }
             break;
