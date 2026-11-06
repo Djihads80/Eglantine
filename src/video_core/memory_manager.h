@@ -192,8 +192,11 @@ public:
     /// Leaves the caches' invalidation of a range already written for the next FlushCaching
     /// (before every draw, dispatch, clear and copy), merged with neighbouring ranges.
     void AccumulateInvalidation(GPUVAddr gpu_addr, std::size_t size) {
+        NoteDeferredCodeWrite(gpu_addr, size);
         accumulator.Add(gpu_addr, size);
     }
+    /// Nx2Perf MacroReadWriterSet: an invalidation left for FlushCaching reaches proven code.
+    void NoteDeferredCodeWrite(GPUVAddr gpu_addr, std::size_t size) const;
 
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);

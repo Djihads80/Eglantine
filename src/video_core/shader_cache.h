@@ -104,6 +104,11 @@ protected:
 
     std::array<const ShaderInfo*, NUM_PROGRAMS> shader_infos{};
     bool last_shaders_valid = false;
+    /// Nx2Perf MacroReadWriterSet: Tegra::g_nx2_code_epoch read before shader_infos were last
+    /// resolved (0: they are not valid), and the device code range of each program (size 0: none).
+    u64 nx2_resolved_epoch{};
+    u64 nx2_resolved_map{}; ///< GPU map serial they were resolved with
+    std::array<std::pair<u64, u64>, NUM_PROGRAMS> nx2_code_ranges{};
 
 private:
     friend struct ShaderCacheTestAccess;

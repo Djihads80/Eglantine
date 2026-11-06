@@ -19,6 +19,9 @@ public:
         Unknown, ///< May write guest memory anywhere at once
         None,    ///< Writes no guest memory, or only the ranges noted with Write
         Gpu,     ///< Draws, dispatches and copies with destinations not known to the front
+        /// Only draws whose exact programs the back proved write no guest memory
+        /// (Nx2Perf MacroReadWriterSet, Tegra::Nx2IsNonWriterDraw)
+        Draw,
     };
 
     /// The effect of an entry that does both.
@@ -26,7 +29,10 @@ public:
         if (a == Effect::Unknown || b == Effect::Unknown) {
             return Effect::Unknown;
         }
-        return a == Effect::Gpu || b == Effect::Gpu ? Effect::Gpu : Effect::None;
+        if (a == Effect::Gpu || b == Effect::Gpu) {
+            return Effect::Gpu;
+        }
+        return a == Effect::Draw || b == Effect::Draw ? Effect::Draw : Effect::None;
     }
 
     /// More pending ranges than this collapse into one unknown write.
@@ -37,7 +43,22 @@ public:
             unknown = end;
         } else if (effect == Effect::Gpu) {
             gpu = end;
+            writer = end;
+        } else if (effect == Effect::Draw) {
+            gpu = end;
+            if (draw_epochs.empty() || draw_epochs.back().epoch != entry_epoch) {
+                draw_epochs.push_back({end, entry_epoch});
+            } else {
+                draw_epochs.back().position = end;
+            }
         }
+        entry_epoch = 0;
+    }
+
+    /// The next entry's draws were classified with the program epoch `epoch`
+    /// (Tegra::g_nx2_code_epoch). Without it a Draw entry never validates (DrawsValid).
+    void DrawEpoch(u64 epoch) {
+        entry_epoch = entry_epoch == 0 ? epoch : (std::min)(entry_epoch, epoch);
     }
 
     /// The entry that ends at `end` writes the guest memory in [begin, end_address). Ends never
@@ -69,6 +90,9 @@ public:
         while (!writes.empty() && writes.front().position <= consumed) {
             writes.pop_front();
         }
+        while (!draw_epochs.empty() && draw_epochs.front().position <= consumed) {
+            draw_epochs.pop_front();
+        }
     }
 
     /// The position the back must pass for the noted writes to [begin, end) to be done, or 0.
@@ -88,17 +112,55 @@ public:
         return (std::max)({unknown, gpu, LastWriteTo(begin, end)});
     }
 
+    /// ReadTarget without the draws the back proved write no memory (Effect::Draw): every
+    /// unknown write, every writer (Effect::Gpu) and the noted writes to [begin, end). Valid only
+    /// while DrawsValid holds for the draws it skips.
+    [[nodiscard]] u64 WriterReadTarget(u64 begin, u64 end) const {
+        return (std::max)({unknown, writer, LastWriteTo(begin, end)});
+    }
+
+    /// Whether every Effect::Draw entry past `consumed` was classified with `epoch`, so the
+    /// program proofs they relied on still hold.
+    [[nodiscard]] bool DrawsValid(u64 consumed, u64 epoch) const {
+        for (const EpochRecord& record : draw_epochs) {
+            if (record.position > consumed && record.epoch != epoch) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Whether a noted write past `consumed` and up to `limit` has a range `touches(begin, end)`.
+    template <typename Pred>
+    [[nodiscard]] bool AnyPendingWrite(u64 consumed, u64 limit, Pred&& touches) const {
+        for (const PendingWrite& write : writes) {
+            if (write.position > limit) {
+                break;
+            }
+            if (write.position > consumed && touches(write.begin, write.end)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] u64 LastUnknown() const {
         return unknown;
     }
     [[nodiscard]] u64 LastGpu() const {
         return gpu;
     }
+    [[nodiscard]] u64 LastWriter() const {
+        return writer;
+    }
 
     void Reset() {
         writes.clear();
+        draw_epochs.clear();
         unknown = 0;
         gpu = 0;
+        writer = 0;
+        entry_epoch = 0;
     }
 
 private:
@@ -107,9 +169,16 @@ private:
         u64 end;
         u64 position;
     };
+    struct EpochRecord {
+        u64 position; ///< Just past the newest Draw entry classified with `epoch`
+        u64 epoch;
+    };
     std::deque<PendingWrite> writes;
+    std::deque<EpochRecord> draw_epochs;
     u64 unknown{};
-    u64 gpu{};
+    u64 gpu{};    ///< Past the newest entry that draws, dispatches or copies (Gpu or Draw)
+    u64 writer{}; ///< Past the newest Gpu entry: the ones that can write guest memory
+    u64 entry_epoch{};
 };
 
 } // namespace VideoCommon

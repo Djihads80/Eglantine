@@ -126,6 +126,131 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+// Nx2Perf MacroReadWriterSet: graphics draws the back proved write no guest memory, so the
+// split front's early MME DMA reads need not wait for them. A proof holds for the exact program
+// addresses a draw binds (Nx2DrawPrograms, built from the registers on both threads) and for one
+// program epoch: the epoch moves whenever the shader cache drops a program, and whenever a write
+// that the shader cache only applies later (CPU writes into GPU-modified buffers, accumulated
+// invalidations) reaches a page holding proven code. A proof from an older epoch proves nothing,
+// so an address that later holds other code is never trusted. Epoch 0 is never valid.
+inline std::atomic<u64> g_nx2_code_epoch{1};
+
+inline void Nx2BumpCodeEpoch() {
+    g_nx2_code_epoch.fetch_add(1, std::memory_order_acq_rel);
+}
+
+// Device pages (4 KiB) holding code of a proven program (same layout as g_nx2_gpu_written_pages).
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_proven_code_pages{};
+inline std::atomic<bool> g_nx2_has_proven_code{false};
+
+inline void Nx2MarkProvenCode(u64 device_address, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_proven_code_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        auto& word = g_nx2_proven_code_pages[page / 64];
+        const u64 bit = u64{1} << (page % 64);
+        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+            word.fetch_or(bit, std::memory_order_release);
+        }
+    }
+    g_nx2_has_proven_code.store(true, std::memory_order_release);
+}
+
+[[nodiscard]] inline bool Nx2IsProvenCode(u64 device_address, u64 size) {
+    if (size == 0 || !g_nx2_has_proven_code.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_proven_code_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        if ((g_nx2_proven_code_pages[page / 64].load(std::memory_order_acquire) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A write whose invalidation the shader cache applies later reached [device_address, +size).
+inline void Nx2NoteDeferredCodeWrite(u64 device_address, u64 size) {
+    if (Nx2IsProvenCode(device_address, size)) {
+        Nx2BumpCodeEpoch();
+    }
+}
+
+/// The programs a graphics draw binds, as Maxwell3D::Nx2DrawPrograms computes them from the
+/// registers: per program slot, its GPU address (0 when disabled).
+struct Nx2DrawPrograms {
+    std::array<u64, 6> addresses{};
+    u64 memory_id{};
+    u64 map_serial{};
+    bool native{};
+
+    bool operator==(const Nx2DrawPrograms&) const = default;
+};
+
+struct Nx2NonWriterSet {
+    struct Hash {
+        size_t operator()(const Nx2DrawPrograms& key) const noexcept {
+            u64 hash = key.memory_id * 0x9e3779b97f4a7c15ULL ^ key.map_serial ^ (key.native ? 1 : 0);
+            for (const u64 address : key.addresses) {
+                hash = (hash ^ address) * 0xff51afd7ed558ccdULL;
+                hash ^= hash >> 32;
+            }
+            return static_cast<size_t>(hash);
+        }
+    };
+    std::mutex mutex;
+    std::map<u64, std::vector<std::pair<Nx2DrawPrograms, u64>>> buckets; ///< hash -> (key, epoch)
+    std::atomic<u64> version{1}; ///< Moves on every insert (the front caches its lookups)
+};
+
+inline Nx2NonWriterSet& Nx2NonWriters() {
+    static Nx2NonWriterSet set;
+    return set;
+}
+
+/// Whether the back proved, in program epoch `epoch`, that a draw binding `programs` writes no
+/// guest memory.
+[[nodiscard]] inline bool Nx2IsNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
+    auto& set = Nx2NonWriters();
+    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
+    std::scoped_lock lock{set.mutex};
+    const auto it = set.buckets.find(hash);
+    if (it == set.buckets.end()) {
+        return false;
+    }
+    for (const auto& [key, proven_epoch] : it->second) {
+        if (key == programs) {
+            return proven_epoch == epoch;
+        }
+    }
+    return false;
+}
+
+inline void Nx2InsertNonWriterDraw(const Nx2DrawPrograms& programs, u64 epoch) {
+    auto& set = Nx2NonWriters();
+    const u64 hash = Nx2NonWriterSet::Hash{}(programs);
+    {
+        std::scoped_lock lock{set.mutex};
+        auto& bucket = set.buckets[hash];
+        bool found = false;
+        for (auto& [key, proven_epoch] : bucket) {
+            if (key == programs) {
+                proven_epoch = epoch;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            bucket.emplace_back(programs, epoch);
+        }
+    }
+    set.version.fetch_add(1, std::memory_order_release);
+}
+
 /// A new emulation session starts: no page has been written by its GPU yet.
 inline void Nx2ClearGpuWrittenPages() {
     for (auto& word : g_nx2_gpu_written_pages) {
@@ -139,6 +264,12 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_graphics_writer_shaders.store(false, std::memory_order_relaxed);
+    Nx2BumpCodeEpoch(); // No proof of the last session holds
+    {
+        auto& set = Nx2NonWriters();
+        std::scoped_lock lock{set.mutex};
+        set.buckets.clear();
+    }
 }
 
 // Query results written when their host work completes (counter reports, delayed fence

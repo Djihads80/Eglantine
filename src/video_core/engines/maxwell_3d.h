@@ -26,6 +26,7 @@
 #include "video_core/engines/engine_upload.h"
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
+#include "video_core/split_write_tracker.h"
 #include "video_core/textures/texture.h"
 #include "video_core/engines/maxwell_3d.h"
 
@@ -35,6 +36,7 @@ class System;
 
 namespace Tegra {
 class MemoryManager;
+struct Nx2DrawPrograms;
 }
 
 namespace VideoCommon {
@@ -3226,6 +3228,13 @@ public:
         return FrontIsWriterDraw(reinterpret_cast<const Regs&>(regs));
     }
 
+    /// Nx2Perf MacroReadWriterSet: the programs a draw with these registers binds, as the
+    /// pipeline cache resolves them (ShaderCache::RefreshStages). False when the draw may write
+    /// guest memory whatever its programs are: rasterizer off, transform feedback, task and mesh
+    /// programs.
+    [[nodiscard]] static bool Nx2DrawProgramsOf(const Regs& regs, bool native, u64 memory_id,
+                                                u64 map_serial, Tegra::Nx2DrawPrograms& out);
+
     bool ShouldExecute() const {
         return execute_on;
     }
@@ -3418,6 +3427,10 @@ private:
                       u32 count);
     bool FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
                            GPUVAddr source, u32 ram, u32 words);
+    /// What the draw the front's registers describe may write (MacroReadWriterSet): Draw when
+    /// the back proved its exact programs write no memory, Gpu otherwise.
+    VideoCommon::SplitWriteTracker::Effect FrontDrawEffect(VideoCommon::GpuSplit& split,
+                                                           FrontState& state);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
     std::unique_ptr<FrontState> front;

@@ -21,6 +21,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/gpu_split.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/renderer_base.h"
@@ -129,6 +130,11 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                             rasterizer_ptr->OnCacheInvalidation(addr, size);
                         },
                         VideoCommon::GpuSplit::Effect::None);
+                    // It may drop programs that draws queued after it run: early MME reads
+                    // past those draws check it like a noted write (MacroReadWriterSet).
+                    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet)) {
+                        split.NoteDeviceRange(invalidate->addr, invalidate->size);
+                    }
                 } else {
                     ASSERT(false);
                 }

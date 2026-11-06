@@ -117,6 +117,17 @@ public:
 
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
     [[nodiscard]] bool IsIndirectResetShader() const;
+    /// Nx2Perf MacroReadWriterSet: the program epoch the current programs were resolved in
+    /// (0: none) and their device code ranges.
+    [[nodiscard]] u64 Nx2ResolvedEpoch() const noexcept {
+        return nx2_resolved_epoch;
+    }
+    [[nodiscard]] u64 Nx2ResolvedMap() const noexcept {
+        return nx2_resolved_map;
+    }
+    [[nodiscard]] const auto& Nx2CodeRanges() const noexcept {
+        return nx2_code_ranges;
+    }
 
     /// Why the last CurrentGraphicsPipeline() returned null (diagnostics).
     [[nodiscard]] const char* GraphicsMissReason() const noexcept {
