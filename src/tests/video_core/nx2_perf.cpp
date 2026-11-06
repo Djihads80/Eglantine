@@ -28,10 +28,20 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::ReleaseBeforeHook) ||
                                   i == Index(Opt::AcquireTriggerEarly) ||
                                   i == Index(Opt::PipelineKeepPreloaded) ||
-                                  i == Index(Opt::WriterSetExec);
+                                  i == Index(Opt::WriterSetExec) ||
+                                  i == Index(Opt::ExactNotedWrites);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
+}
+
+TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::ExactNotedWrites) == 46);
+    REQUIRE(opt_names[Index(Opt::ExactNotedWrites)] == "exact_noted_writes");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ExactNotedWrites)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ExactNotedWrites)));
+    REQUIRE(ParseOffMask(false, "exact_noted_writes", "", false) ==
+            (always_off & ~Bit(Opt::ExactNotedWrites)));
 }
 
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {

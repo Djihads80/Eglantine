@@ -122,38 +122,70 @@ std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr addres
     if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
         return std::nullopt;
     }
-    if (const u64 target = writer_set ? split.Writes().WriterReadTarget(page, page + 0x1000)
-                                      : split.ReadTarget(page, page + 0x1000);
-        split.ConsumedNow() < target) {
-        if (!wait) {
-            split.Publish();
-            return std::nullopt;
-        }
-        split.WaitUntil(target, DrainSite::AcquireEarly);
-    }
-    const u64 consumed = split.ConsumedNow();
-    if (writer_set && split.Writes().LastGpu() > consumed) {
-        const u64 epoch = g_nx2_code_epoch.load(std::memory_order_acquire);
-        if (!split.Writes().DrawsValid(consumed, epoch) ||
-            split.Writes().AnyPendingWrite(consumed, split.Writes().LastGpu(),
-                                           [](u64 begin, u64 end) {
-                                               return Nx2IsProvenCode(begin, end - begin);
-                                           })) {
-            if (proof_changed) {
-                *proof_changed = true;
+    // Opt::ExactNotedWrites: the noted writes to the word's 16 bytes, not to its whole page (the
+    // per-page checks stay as they are: the cache state is kept per page).
+    const bool exact = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ExactNotedWrites);
+    const auto target_over = [&](u64 begin, u64 end) {
+        return writer_set ? split.Writes().WriterReadTarget(begin, end)
+                          : split.ReadTarget(begin, end);
+    };
+    const u64 page_target = target_over(page, page + 0x1000);
+    const u64 exact_target =
+        exact ? target_over(slot, (std::max)(slot + 16, *device + sizeof(u32))) : page_target;
+    const auto read_after = [&](u64 target, bool* proof) -> std::optional<u32> {
+        if (split.ConsumedNow() < target) {
+            if (!wait) {
+                split.Publish();
+                return std::nullopt;
             }
+            split.WaitUntil(target, DrainSite::AcquireEarly);
+        }
+        const u64 consumed = split.ConsumedNow();
+        if (writer_set && split.Writes().LastGpu() > consumed) {
+            const u64 epoch = g_nx2_code_epoch.load(std::memory_order_acquire);
+            // ExactNotedWrites: a noted write still counts for every page it touches.
+            if (!split.Writes().DrawsValid(consumed, epoch) ||
+                split.Writes().AnyPendingWrite(consumed, split.Writes().LastGpu(),
+                                               [exact](u64 begin, u64 end) {
+                                                   if (exact) {
+                                                       begin &= ~u64{0xfff};
+                                                       end = (end + 0xfff) & ~u64{0xfff};
+                                                   }
+                                                   return Nx2IsProvenCode(begin, end - begin);
+                                               })) {
+                if (proof) {
+                    *proof = true;
+                }
+                return std::nullopt;
+            }
+        }
+        // The entries just run may have written the page through the buffer cache.
+        if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
             return std::nullopt;
         }
+        if (split.HasAsyncWrite(slot, 16) > consumed || !Nx2AsyncReportsSettled(slot, 16)) {
+            split.RequestIdleHook();
+            return std::nullopt;
+        }
+        return dma_pusher.memory_manager.Read<u32>(address);
+    };
+    if (!exact || !VideoCommon::Nx2Perf::Verify() || exact_target >= page_target) {
+        return read_after(exact_target, proof_changed);
     }
-    // The entries just run may have written the page through the buffer cache.
-    if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
-        return std::nullopt;
+    // EDEN_NX2_PERF_VERIFY: the word after the page target too (the old answer, which is used).
+    bool exact_proof_changed = false;
+    const std::optional<u32> early = read_after(exact_target, &exact_proof_changed);
+    const std::optional<u32> old = read_after(page_target, proof_changed);
+    if (early && old) {
+        const bool differed = *early != *old;
+        if (VideoCommon::GpuSplit::VerifyExactRead(differed) <= 64 && differed) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf exact_noted_writes: semaphore {:#x} word {:#x} after target {}, "
+                      "{:#x} after the page target {}",
+                      address, *early, exact_target, *old, page_target);
+        }
     }
-    if (split.HasAsyncWrite(slot, 16) > consumed || !Nx2AsyncReportsSettled(slot, 16)) {
-        split.RequestIdleHook();
-        return std::nullopt;
-    }
-    return dma_pusher.memory_manager.Read<u32>(address);
+    return old;
 }
 
 // EDEN_NX2_PERF_VERIFY: the word an early check read against the one read after the drain.
@@ -458,9 +490,15 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
         const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
+        // Opt::ExactNotedWrites: the mirror is noted after the release's entry, at its position
+        // (exact ranges no longer join it with the release's page).
+        const bool mirror_after =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ExactNotedWrites);
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
-            VideoCommon::GpuSplit::Get().NoteWrite(dma_pusher.memory_manager, mirror, 16);
+            if (!mirror_after) {
+                VideoCommon::GpuSplit::Get().NoteWrite(dma_pusher.memory_manager, mirror, 16);
+            }
         }
         OnBackRelease(dma_pusher, sequence_address,
                       [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
@@ -471,6 +509,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                       });
         // After the release's entry was sent, so its position covers it.
         if (auto& split = VideoCommon::GpuSplit::Get(); mirror != 0 && split.Active()) {
+            if (mirror_after) {
+                split.NoteWrite(dma_pusher.memory_manager, mirror, 16);
+            }
             if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
                 split.NoteAsyncWrite(*device, 16);
             }

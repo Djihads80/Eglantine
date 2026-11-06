@@ -83,6 +83,9 @@ enum class Opt : unsigned {
     /// Split front: an executable draw-manager method that only draws is a writer only when
     /// its bound programs are not proven non-writing (MacroReadWriterSet), not always
     WriterSetExec,
+    /// Noted writes keep their exact bytes; early MME DMA reads and semaphore reads wait only
+    /// for noted writes to the bytes they read, not to their whole page
+    ExactNotedWrites,
     Count,
 };
 
@@ -105,12 +108,14 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "present_one_ahead", "present_guest_wait", "release_before_hook", "acquire_trigger_early",
     "pipeline_keep_preloaded",
     "writer_set_exec",
+    "exact_noted_writes",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
 static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemo) == 36 &&
-              static_cast<unsigned>(Opt::WriterSetExec) == 45);
+              static_cast<unsigned>(Opt::WriterSetExec) == 45 &&
+              static_cast<unsigned>(Opt::ExactNotedWrites) == 46);
 
 constexpr u64 Bit(Opt opt) {
     return u64{1} << static_cast<unsigned>(opt);
@@ -134,7 +139,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
-                          Opt::WriterSetExec}) {
+                          Opt::WriterSetExec, Opt::ExactNotedWrites}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -145,13 +150,15 @@ inline constexpr u64 DefaultOffMask() {
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
 /// present_guest_wait (guest panic at load in a speed run); release_before_hook (+0.0 FPS);
-/// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec (not measured yet).
+/// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
+/// exact_noted_writes (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly) |
-                                  Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec);
+                                  Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
+                                  Bit(Opt::ExactNotedWrites);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));

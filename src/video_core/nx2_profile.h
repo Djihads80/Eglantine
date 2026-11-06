@@ -224,6 +224,10 @@ enum class Counter : u32 {
     AcquireTriggerEarlyFallbackNotMet,
     AcquireTriggerEarlyFallbackNoAnswer,
     AcquireTriggerEarlyFallbackProof,
+    /// Of DmaReadsWaitWriteOther: the Other write overlaps the bytes read, or only their pages
+    /// (the waits Nx2Perf ExactNotedWrites drops)
+    DmaReadsWaitWriteOtherExact,
+    DmaReadsWaitWriteOtherPageOnly,
     Count,
 };
 
@@ -453,12 +457,15 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSet)]) * 1e9 / window,
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSetFallback)]) * 1e9 / window);
     line += fmt::format(" | MME DMA overlay reads {:.0f} without a wait, {:.0f} after one ({:.0f} "
-                        "drained: proof changed) | writes to the words waits: other write {:.0f}, "
+                        "drained: proof changed) | writes to the words waits: other write {:.0f} "
+                        "({:.0f} to the bytes read, {:.0f} to their pages only), "
                         "constant buffer words lost {:.0f}, constant buffer write older {:.0f}",
                         per_second(Counter::DmaReadsOverlayNoWait),
                         per_second(Counter::DmaReadsOverlayWaited),
                         per_second(Counter::DmaReadsOverlayFallback),
                         per_second(Counter::DmaReadsWaitWriteOther),
+                        per_second(Counter::DmaReadsWaitWriteOtherExact),
+                        per_second(Counter::DmaReadsWaitWriteOtherPageOnly),
                         per_second(Counter::DmaReadsWaitWriteCbLost),
                         per_second(Counter::DmaReadsWaitWriteCbOlder));
     std::string flushes;

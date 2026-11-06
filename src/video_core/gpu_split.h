@@ -212,10 +212,16 @@ public:
     /// of it was still queued.
     bool WaitForSync();
     /// The entry just sent also writes [address, address + size) of `memory`, noted by device
-    /// page (other mappings may alias it, and the caches keep state per page). Returns whether
-    /// it was noted by range (not as an unknown write).
+    /// page (other mappings may alias it, and the caches keep state per page; with
+    /// Nx2Perf ExactNotedWrites, by device byte in each page). `size` must cover every byte the
+    /// back writes for the entry. Returns whether it was noted by range (not as an unknown
+    /// write).
     bool NoteWrite(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size,
                    WriteKind kind = WriteKind::Other);
+    /// EDEN_NX2_PERF_VERIFY with Nx2Perf ExactNotedWrites: an early read whose exact target was
+    /// below its page target was compared with the old answer. Logs the totals; returns how many
+    /// differed so far (callers cap their detail lines at 64).
+    static u64 VerifyExactRead(bool differed);
     /// The entry just sent writes the constant buffer data `words` (`count` of them, the first
     /// `stored` land: the rest fall past the bank) at `address`. With MacroReadCbOverlay the
     /// stored words are kept by device address until the back ran the entry

@@ -2102,9 +2102,6 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     std::array<std::pair<u64, u64>, 5> read_ranges; // device bytes read in each page
     std::array<u64, 5> read_offsets;                 // their byte offsets in the read
     size_t page_count = 0;
-    u64 target = 0;
-    u64 write_target = 0;
-    u64 other_write_target = 0; // noted writes other than constant buffer data
     using WriteKind = VideoCommon::SplitWriteTracker::WriteKind;
     for (GPUVAddr page = source & ~GPUVAddr{0xfff}; page < source + bytes; page += 0x1000) {
         const std::optional<DAddr> device = memory_manager.GpuToCpuAddress(page);
@@ -2118,14 +2115,41 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
         read_ranges[page_count] = {device_page + (read_begin - page), read_end - read_begin};
         read_offsets[page_count] = read_begin - source;
         pages[page_count++] = device_page;
-        target = (std::max)(target, writer_set ? split.Writes().WriterReadTarget(
-                                                     device_page, device_page + 0x1000)
-                                               : split.ReadTarget(device_page, device_page + 0x1000));
-        write_target = (std::max)(write_target,
-                                  split.Writes().LastWriteTo(device_page, device_page + 0x1000));
-        other_write_target = (std::max)(
-            other_write_target,
-            split.Writes().LastWriteTo(device_page, device_page + 0x1000, WriteKind::Other));
+    }
+    // ExactNotedWrites: the noted writes to the bytes read, not to their whole pages (the
+    // per-page checks stay as they are: the cache state is kept per page).
+    const bool exact = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ExactNotedWrites);
+    struct Targets {
+        u64 target;
+        u64 write;
+        u64 other; // noted writes other than constant buffer data
+    };
+    const auto targets_over = [&](bool exact_ranges) {
+        Targets result{};
+        for (size_t i = 0; i < page_count; ++i) {
+            const u64 begin = exact_ranges ? read_ranges[i].first : pages[i];
+            const u64 end =
+                exact_ranges ? read_ranges[i].first + read_ranges[i].second : pages[i] + 0x1000;
+            result.target = (std::max)(result.target, writer_set
+                                                          ? split.Writes().WriterReadTarget(begin, end)
+                                                          : split.ReadTarget(begin, end));
+            result.write = (std::max)(result.write, split.Writes().LastWriteTo(begin, end));
+            result.other =
+                (std::max)(result.other, split.Writes().LastWriteTo(begin, end, WriteKind::Other));
+        }
+        return result;
+    };
+    const Targets targets = targets_over(exact);
+    u64 target = targets.target;
+    const u64 write_target = targets.write;
+    const u64 other_write_target = targets.other;
+    // Verify: the page targets are the old answer. Profiler: other writes the read waited for,
+    // split into ones that overlap the bytes read and ones that only share their pages.
+    const bool verify_exact = exact && VideoCommon::Nx2Perf::Verify();
+    Targets page_targets = targets;
+    Targets exact_targets = targets;
+    if (verify_exact || Profile::Enabled()) {
+        (exact ? page_targets : exact_targets) = targets_over(!exact);
     }
     // MacroReadCbOverlay: when the only queued writes noted to these pages are constant buffer
     // data, wait only for the unknown and GPU writers, then lay the queued words over what memory
@@ -2149,6 +2173,14 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     if (overlay) {
         target = unlocalized_target;
     }
+    u64 page_target = target;
+    if (verify_exact) {
+        page_target = cb_overlay && page_targets.write > unlocalized_target &&
+                              page_targets.other == 0 && split.ConstBufferWordsKept(consumed)
+                          ? unlocalized_target
+                          : page_targets.target;
+    }
+    const bool exact_below = verify_exact && target < page_target;
     const auto wait_reason = target == split.Writes().LastUnknown()
                                  ? Profile::Counter::DmaReadsWaitUnknown
                              : target == write_target ? Profile::Counter::DmaReadsWaitWrite
@@ -2161,9 +2193,14 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     const bool skipped_draws = writer_set && split.Writes().LastGpu() > consumed_now;
     if (skipped_draws) {
         const u64 epoch = Tegra::g_nx2_code_epoch.load(std::memory_order_acquire);
+        // ExactNotedWrites: a noted write still counts for every page it touches.
         if (!split.Writes().DrawsValid(consumed_now, epoch) ||
             split.Writes().AnyPendingWrite(consumed_now, split.Writes().LastGpu(),
-                                           [](u64 begin, u64 end) {
+                                           [exact](u64 begin, u64 end) {
+                                               if (exact) {
+                                                   begin &= ~u64{0xfff};
+                                                   end = (end + 0xfff) & ~u64{0xfff};
+                                               }
                                                return Tegra::Nx2IsProvenCode(begin, end - begin);
                                            })) {
             if (Profile::Enabled()) {
@@ -2198,6 +2235,12 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
                                  ? Profile::Counter::DmaReadsWaitWriteCbLost
                                  : Profile::Counter::DmaReadsWaitWriteCbOlder,
                              1);
+                if (other_write_target != 0) {
+                    Profile::Add(exact_targets.other != 0
+                                     ? Profile::Counter::DmaReadsWaitWriteOtherExact
+                                     : Profile::Counter::DmaReadsWaitWriteOtherPageOnly,
+                                 1);
+                }
             }
         }
         if (skipped_draws) {
@@ -2292,6 +2335,13 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             }
         }
         read[i] = drained;
+    }
+    if (exact_below && VideoCommon::GpuSplit::VerifyExactRead(mismatch) <= 64 && mismatch) {
+        LOG_ERROR(HW_GPU,
+                  "Nx2Perf exact_noted_writes: macro {:#x} DMA read of {} words at {:#x} waited "
+                  "for {} (page target {}{}) and differed from the drained read",
+                  macro, words, source, target, page_target,
+                  overlay ? ", constant buffer overlay" : "");
     }
     if (overlay_writers_read) {
         overlay_writers_mismatches += mismatch ? 1 : 0;
