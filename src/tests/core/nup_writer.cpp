@@ -22,6 +22,7 @@
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/control_metadata.h"
+#include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/loader/nup.h"
@@ -877,4 +878,78 @@ TEST_CASE("NUP edits localized titles and keeps the rest", "[nup]") {
     FileSys::NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
     REQUIRE(nup.GetPackages()[0].localized_titles.empty());
     REQUIRE(nup.GetPackages()[0].title_name == "Renamed");
+}
+
+TEST_CASE("NUP exposes only the newest DLC RomFS for the running application", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    Put(root / "dlc/0400ABCD00011001/65536/romfs/addon.bin", "new addon");
+    Put(root / "dlc/0400ABCD00011002/0/romfs/second.bin", "second addon");
+    Put(root / "dlc/0400ABCD00021001/0/romfs/foreign.bin", "other game");
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive, {}, {}, nullptr, nullptr) ==
+            FileSys::Nup::PackResult::Success);
+    FileSys::RealVfsFilesystem real;
+    std::vector<std::pair<u64, FileSys::VirtualFile>> addons;
+    {
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        addons = nup.GetAddonRomFS(TitleId);
+        REQUIRE(nup.GetAddonRomFS(0x0400ABCD00030000ULL).empty());
+    }
+    // Published RomFS files must retain their backing container after loader teardown.
+    REQUIRE(addons.size() == 2);
+    REQUIRE(addons[0].first == TitleId + 0x1001);
+    auto first = FileSys::ExtractRomFS(addons[0].second);
+    REQUIRE(first);
+    REQUIRE(Read(first->GetFile("addon.bin")) == "new addon");
+    REQUIRE(addons[1].first == TitleId + 0x1002);
+    auto second = FileSys::ExtractRomFS(addons[1].second);
+    REQUIRE(second);
+    REQUIRE(Read(second->GetFile("second.bin")) == "second addon");
+}
+
+TEST_CASE("NUP preserves edition control metadata and legacy DLC ownership", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    fs::rename(root / "dlc/0400ABCD00011001", root / "dlc/0100ABCD00011001");
+    FileSys::NACP control;
+    control.raw.save_data_owner_id = 0x0100ABCD00010000ULL;
+    control.raw.dlc_base_title_id = 0x0100ABCD00011000ULL;
+    control.raw.initial_program_index = 1;
+    control.raw.accessible_program_index_flags = 3;
+    const auto bytes = control.GetRawBytes();
+    Put(root / "Base/control.nacp",
+        std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options;
+    options.metadata.title_name = "Native Edition Override";
+    options.metadata.display_version = "9.8.7";
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+    FileSys::RealVfsFilesystem real;
+    Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    FileSys::NACP restored;
+    REQUIRE(loader.ReadControlData(restored) == Loader::ResultStatus::Success);
+    REQUIRE(restored.GetRawBytes() == bytes);
+    std::string title, version;
+    REQUIRE(loader.ReadTitle(title) == Loader::ResultStatus::Success);
+    REQUIRE(title == "Native Edition Override");
+    REQUIRE(loader.ReadDisplayVersion(version) == Loader::ResultStatus::Success);
+    REQUIRE(version == "9.8.7");
+    REQUIRE(restored.GetDLCBaseTitleId() == 0x0100ABCD00011000ULL);
+    REQUIRE(restored.GetTitleId() == 0x0100ABCD00010000ULL);
+    NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    const auto addons = nup.GetAddonRomFS(0x0100ABCD00010000ULL);
+    REQUIRE(addons.size() == 1);
+    REQUIRE(addons[0].first == 0x0100ABCD00011001ULL);
+    const auto data = FileSys::ExtractRomFS(addons[0].second);
+    REQUIRE(data);
+    REQUIRE(Read(data->GetFile("addon.bin")) == "addon data");
+    REQUIRE(StatusAfterPatch(ReadAll(archive), [](std::string& bytes_, u64 toc) {
+                const u64 meta = Le(bytes_, toc + 0x30 + 0x20, 8);
+                REQUIRE(Le(bytes_, meta, 2) == 1); // The first TLV is the NPDM.
+                SetLe(bytes_, meta, 2, 2); // A short NPDM cannot be accepted as a raw NACP.
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
 }
