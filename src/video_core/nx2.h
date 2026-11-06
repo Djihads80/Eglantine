@@ -280,6 +280,16 @@ inline constexpr u64 Nx2AsyncReportSlots = u64{1} << 16;
 inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_issued{};
 inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_completed{};
 
+/// A new emulation session starts: counter reports the previous one abandoned are not pending.
+inline void Nx2ClearAsyncReports() {
+    for (auto& count : g_nx2_async_reports_issued) {
+        count.store(0, std::memory_order_relaxed);
+    }
+    for (auto& count : g_nx2_async_reports_completed) {
+        count.store(0, std::memory_order_relaxed);
+    }
+}
+
 [[nodiscard]] inline u64 Nx2AsyncReportSlot(u64 device_address) {
     return (device_address >> 4) % Nx2AsyncReportSlots;
 }
