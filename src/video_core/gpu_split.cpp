@@ -119,6 +119,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
+    release_before_hook = Nx2Perf::On(Nx2Perf::Opt::ReleaseBeforeHook);
     writes.SetSeparateKinds(Nx2Perf::On(Nx2Perf::Opt::MacroReadOverlayWriters) &&
                             Nx2Perf::On(Nx2Perf::Opt::MacroReadCbOverlay) &&
                             Nx2Perf::On(Nx2Perf::Opt::MacroReadWriterSet));
@@ -262,6 +263,14 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     if (consumed_cache >= target) {
         return false;
     }
+    // ReleaseBeforeHook: these callers only read guest memory, page flags and the front's write
+    // tracker afterwards, never the scheduler, so they need not wait for the back's idle hook.
+    const bool release_first =
+        release_before_hook && (site == DrainSite::MacroDmaWrites ||
+                                site == DrainSite::AcquireEarly || site == DrainSite::Map);
+    if (release_first) {
+        wait_release_first.store(target, std::memory_order_relaxed);
+    }
     wait_target.store(target, std::memory_order_seq_cst);
     Publish();
     const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
@@ -269,6 +278,9 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
             wait_target.store(~u64{0}, std::memory_order_relaxed);
+            if (release_first) {
+                wait_release_first.store(~u64{0}, std::memory_order_relaxed);
+            }
             Nx2Profile::AddDrain(site, start);
             return true;
         }
@@ -293,6 +305,30 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
         front_wake.wait(seen, std::memory_order_seq_cst);
     }
     front_waiting.store(false, std::memory_order_relaxed);
+}
+
+bool GpuSplit::ReleaseFirst(u64 target) {
+    // `target` was read from wait_target (acquire) first: a wait that does not set the flag stored
+    // its clear (from the wait before) ahead of its target, so a stale flag never matches it.
+    const u64 tag = wait_release_first.load(std::memory_order_acquire);
+    if (tag == ~u64{0}) [[likely]] {
+        return false;
+    }
+    const bool release_first = tag == target;
+    if (Nx2Perf::Verify()) {
+        static std::atomic<u32> reports{};
+        if (!release_first) {
+            const u32 count = reports.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (count <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf release_before_hook: flag for target {:#x} seen with wait "
+                          "target {:#x} ({} so far)",
+                          tag, target, count);
+            }
+        }
+        return false;
+    }
+    return release_first;
 }
 
 void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {
@@ -626,20 +662,33 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if ((read_position - last_store >= 4096 ||
                  read_position >= wait_target.load(std::memory_order_relaxed)) &&
                 read_position != available) {
-                if (idle_hook != nullptr &&
-                    read_position >= wait_target.load(std::memory_order_relaxed)) {
+                const u64 target = wait_target.load(std::memory_order_acquire);
+                const bool release_first =
+                    idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
+                if (idle_hook != nullptr && read_position >= target && !release_first) {
                     idle_hook(idle_argument);
                 }
                 consumed.store(read_position, std::memory_order_seq_cst);
                 last_store = read_position;
                 NotifyFront();
+                if (release_first) {
+                    idle_hook(idle_argument);
+                }
             }
         }
-        if (idle_hook != nullptr) {
+        // A list wait (and a batch end nobody waits for) keeps the hook first: a front that sees
+        // the position reads the list copies the hook records and submits.
+        const u64 target = wait_target.load(std::memory_order_acquire);
+        const bool release_first =
+            idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
+        if (idle_hook != nullptr && !release_first) {
             idle_hook(idle_argument);
         }
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
+        if (release_first) {
+            idle_hook(idle_argument);
+        }
     }
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);

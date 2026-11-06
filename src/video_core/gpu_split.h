@@ -363,6 +363,9 @@ private:
 
     /// One step of a front wait for the back to consume `target`.
     void Backoff(u32 spins, u64 target);
+    /// Back: whether the front's wait for `target` lets the back store `consumed` before its
+    /// idle hook (ReleaseBeforeHook).
+    bool ReleaseFirst(u64 target);
     /// After the back stored `consumed`: wakes a front sleeping in Backoff.
     void NotifyFront() {
         if (front_waiting.load(std::memory_order_seq_cst)) {
@@ -378,6 +381,7 @@ private:
     Core::System* system{};
     bool active{};
     bool eager_publish{}; ///< Nx2Perf::Opt::EagerPublish, read once at Start
+    bool release_before_hook{}; ///< Nx2Perf::Opt::ReleaseBeforeHook, read once at Start
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -434,6 +438,9 @@ private:
     std::unordered_map<u64, u64> async_writes; ///< Front: 16-byte slot -> ring position
     /// A position the front waits for (WaitFor): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
+    /// ReleaseBeforeHook: the wait_target of a wait whose caller never uses the scheduler (macro
+    /// DMA writes, early acquire, map), stored before wait_target; ~0 otherwise.
+    std::atomic<u64> wait_release_first{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<bool> back_idle{}; ///< The back is spinning or sleeping for work (EagerPublish)
     std::atomic<u32> wake{};
