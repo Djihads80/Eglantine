@@ -1509,6 +1509,12 @@ struct EmulatedMeshWork {
 
     static constexpr VkShaderStageFlags PUSH_STAGES{VK_SHADER_STAGE_ALL_GRAPHICS |
                                                     VK_SHADER_STAGE_COMPUTE_BIT};
+    static constexpr VkMemoryBarrier FULL_BARRIER{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+    };
 
     void PushTo(vk::CommandBuffer cmdbuf) const {
         cmdbuf.PushConstants(layout, PUSH_STAGES, RESCALING_LAYOUT_WORDS_OFFSET,
@@ -1581,18 +1587,10 @@ struct EmulatedMeshWork {
     static void ComputeBarrier(vk::CommandBuffer cmdbuf) {
         // The headers and zeroed regions, and the task dispatches' writes (indirect mesh
         // dispatches).
-        static constexpr VkMemoryBarrier BARRIER{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                             VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
-        };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                               0, BARRIER);
+        // All commands and memory: on Turnip, narrower barriers here were followed by readbacks
+        // and indirect draws of headers the work cannot have left.
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, FULL_BARRIER);
     }
 
     void Task(vk::CommandBuffer cmdbuf, bool first) const {
@@ -1630,18 +1628,8 @@ struct EmulatedMeshWork {
     void Readback(vk::CommandBuffer cmdbuf, bool first) const {
         if (first) {
             // The mesh dispatches' output, for the vertex shaders, the draws and the readbacks.
-            static constexpr VkMemoryBarrier MESH_BARRIER{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                .pNext = nullptr,
-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
-                                 VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT,
-            };
-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                   0, MESH_BARRIER);
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, FULL_BARRIER);
         }
         // Breadcrumb: the GPU finished this draw's dispatches.
         cmdbuf.FillBuffer(breadcrumb.buffer, sizeof(u32), sizeof(u32), breadcrumb.number);
