@@ -967,6 +967,8 @@ struct UpscaleProgram {
     u32 input{};             ///< cbuf0 offsets of the generic search's last pair, 0 for none
     u32 output{};
     u32 reports{};
+    std::array<u32, 32> last_constants{}; ///< cbuf0 0x00-0x7f when last logged
+    u32 constant_reports{};
 };
 
 struct UpscaleCandidate {
@@ -1185,6 +1187,20 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     }
     if (!input || !output)
         return false;
+    // The program's constants before its image handles (cbuf0 0x00-0x7f), logged when they
+    // change (16 times at most per program): where a game passes the size it rendered at. The
+    // stand-in copies its input whole; a game rendering below its targets' size (Ocarina of
+    // Time's GPU-time-driven resolution, kept at its maximum by fast_gpu_time) would need it.
+    if (info.constant_reports < 16) {
+        std::array<u32, 32> constants{};
+        memory_manager.ReadBlock(cbuf_address, constants.data(), sizeof(constants));
+        if (constants != info.last_constants || info.constant_reports == 0) {
+            info.last_constants = constants;
+            ++info.constant_reports;
+            LOG_INFO(HW_GPU, "Upscale stand-in for program {:#x}: constants {:08x}", program,
+                     fmt::join(constants, " "));
+        }
+    }
     using RTFormat = Tegra::RenderTargetFormat;
     const auto input_format = UpscaleFormat(*input), output_format = UpscaleFormat(*output);
     if (!input_format || !output_format || output_format->target == RTFormat::NONE)
