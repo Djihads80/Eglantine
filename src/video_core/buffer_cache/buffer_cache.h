@@ -1705,7 +1705,9 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
         channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
     }
-    if (!memo_hit || !memo->usage_marked) {
+    const bool usage_current =
+        memo_hit && (BindMemoLocalEnabled() ? BindMemoUsageCurrent(*memo) : memo->usage_marked);
+    if (!usage_current) {
         buffer.MarkUsage(offset, size);
         if (memo != nullptr) {
             BindMemoNoteUsage(*memo);
@@ -1810,11 +1812,13 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
         BindMemo* const memo = BindMemoEnabled() && binding.buffer_id != NULL_BUFFER_ID
                                    ? &storage_bind_memo[stage][index]
                                    : nullptr;
+        // bind_memo_local: a hit on a new scheduler tick still marks usage (below).
+        const bool memo_local = BindMemoLocalEnabled();
         const bool memo_hit =
             memo != nullptr && !is_written &&
             BindMemoHit(*memo, buffer, binding.buffer_id, binding.device_addr, binding.size,
                         buffer.Offset(binding.device_addr), "storage", stage, index) &&
-            memo->usage_marked;
+            (memo_local || memo->usage_marked);
         const u64 cpu_epoch = memory_tracker.CpuEpoch();
         if (!memo_hit) {
             TouchBuffer(buffer, binding.buffer_id);
@@ -1833,6 +1837,9 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
                 BindMemoNote(*memo, binding.buffer_id, binding.device_addr, size, cpu_epoch);
                 BindMemoNoteUsage(*memo);
             }
+        } else if (memo_local && !BindMemoUsageCurrent(*memo)) {
+            buffer.MarkUsage(offset, size);
+            BindMemoNoteUsage(*memo);
         }
 
         if (is_written) {
@@ -2805,6 +2812,7 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
     memory_tracker.BumpGpuEpoch();
+    ++buffer_epoch;
     const BufferId new_buffer_id =
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];
@@ -2869,15 +2877,45 @@ bool BufferCache<P>::BindMemoHit(const BindMemo& memo, Buffer& buffer, BufferId 
     if constexpr (IS_OPENGL) {
         return false;
     } else {
-        if (!memo.valid || memo.channel != channel_state || memo.buffer_id != buffer_id ||
-            memo.device_addr != device_addr || memo.size != size ||
-            memo.cpu_epoch != memory_tracker.CpuEpoch() ||
-            memo.gpu_epoch != memory_tracker.GpuEpoch() || memo.frame != frame_tick ||
-            memo.tick != runtime.CurrentTick()) {
-            Nx2Profile::Add(Nx2Profile::Counter::BindMemoMisses, 1);
-            return false;
+        const bool local = BindMemoLocalEnabled();
+        if (local) {
+            // The range's own CPU-modified bits decide: with none set, SynchronizeBuffer uploads
+            // nothing and clears nothing whatever the GPU-modified ranges hold (CachedCpuWrite
+            // has no caller, so Untracked bits equal CPU bits). A new tick redoes only the usage
+            // mark, in the caller.
+            const auto miss = [](Nx2Profile::Counter reason) {
+                Nx2Profile::Add(Nx2Profile::Counter::BindMemoMisses, 1);
+                Nx2Profile::Add(reason, 1);
+                return false;
+            };
+            if (!memo.valid || memo.channel != channel_state || memo.buffer_id != buffer_id ||
+                memo.device_addr != device_addr || memo.size != size) {
+                return miss(Nx2Profile::Counter::BindMemoMissKey);
+            }
+            if (memo.buffer_epoch != buffer_epoch) {
+                return miss(Nx2Profile::Counter::BindMemoMissEpoch);
+            }
+            if (memo.frame != frame_tick) {
+                return miss(Nx2Profile::Counter::BindMemoMissFrame);
+            }
+            if (memory_tracker.IsRegionCpuModified(device_addr, size)) {
+                return miss(Nx2Profile::Counter::BindMemoMissDirty);
+            }
+            Nx2Profile::Add(Nx2Profile::Counter::BindMemoHits, 1);
+            if (Nx2Profile::Enabled() && memo.tick != runtime.CurrentTick()) {
+                Nx2Profile::Add(Nx2Profile::Counter::BindMemoHitsNewTick, 1);
+            }
+        } else {
+            if (!memo.valid || memo.channel != channel_state || memo.buffer_id != buffer_id ||
+                memo.device_addr != device_addr || memo.size != size ||
+                memo.cpu_epoch != memory_tracker.CpuEpoch() ||
+                memo.gpu_epoch != memory_tracker.GpuEpoch() || memo.frame != frame_tick ||
+                memo.tick != runtime.CurrentTick()) {
+                Nx2Profile::Add(Nx2Profile::Counter::BindMemoMisses, 1);
+                return false;
+            }
+            Nx2Profile::Add(Nx2Profile::Counter::BindMemoHits, 1);
         }
-        Nx2Profile::Add(Nx2Profile::Counter::BindMemoHits, 1);
         if (!Nx2Perf::Verify()) {
             return true;
         }
@@ -2886,18 +2924,45 @@ bool BufferCache<P>::BindMemoHit(const BindMemo& memo, Buffer& buffer, BufferId 
         const auto mismatch = [&](std::string_view what) {
             if (bind_memo_mismatches++ < 64) {
                 LOG_ERROR(HW_GPU,
-                          "Nx2Perf bind_memo: {} {} stage {} index {} at {:#x}+{:#x} "
+                          "Nx2Perf {}: {} {} stage {} index {} at {:#x}+{:#x} "
                           "(mismatches {})",
-                          kind, what, stage, index, device_addr, size, bind_memo_mismatches);
+                          local ? "bind_memo_local" : "bind_memo", kind, what, stage, index,
+                          device_addr, size, bind_memo_mismatches);
             }
         };
         if (memory_tracker.IsRegionCpuModified(device_addr, size)) {
             mismatch("sync would upload");
         }
-        if (memo.usage_marked && size != 0 && !buffer.IsRegionUsed(offset, size)) {
+        const bool usage_checked = local ? BindMemoUsageCurrent(memo) : memo.usage_marked;
+        if (usage_checked && size != 0 && !buffer.IsRegionUsed(offset, size)) {
             mismatch("usage not marked");
         }
+        if (local) {
+            // FindBuffer's page lookup, without its CreateBuffer fallback.
+            const u64 page = device_addr >> CACHING_PAGEBITS;
+            const BufferId found = device_addr != 0 && page < page_table.size()
+                                       ? page_table[page]
+                                       : NULL_BUFFER_ID;
+            if (found != buffer_id || !slot_buffers[found].IsInBounds(device_addr, size)) {
+                mismatch("buffer_epoch stale");
+            }
+        }
         return false;
+    }
+}
+
+template <class P>
+bool BufferCache<P>::BindMemoLocalEnabled() {
+    static const bool enabled = BindMemoEnabled() && Nx2Perf::On(Nx2Perf::Opt::BindMemoLocal);
+    return enabled;
+}
+
+template <class P>
+bool BufferCache<P>::BindMemoUsageCurrent(const BindMemo& memo) {
+    if constexpr (IS_OPENGL) {
+        return false;
+    } else {
+        return memo.usage_marked && memo.tick == runtime.CurrentTick();
     }
 }
 
@@ -2905,6 +2970,25 @@ template <class P>
 void BufferCache<P>::BindMemoNote(BindMemo& memo, BufferId buffer_id, DAddr device_addr, u32 size,
                                   u64 cpu_epoch_before) {
     if constexpr (!IS_OPENGL) {
+        if (BindMemoLocalEnabled()) {
+            // The range itself must be clean now; the global epochs are not consulted.
+            if (memory_tracker.IsRegionCpuModified(device_addr, size)) {
+                memo.valid = false;
+                return;
+            }
+            memo = BindMemo{
+                .channel = channel_state,
+                .buffer_id = buffer_id,
+                .device_addr = device_addr,
+                .size = size,
+                .valid = true,
+                .usage_marked = false,
+                .tick = runtime.CurrentTick(),
+                .frame = frame_tick,
+                .buffer_epoch = buffer_epoch,
+            };
+            return;
+        }
         // A walk of the range leaves it clean unless something marked it meanwhile; a deduped
         // sync did not walk it, so check.
         if (memory_tracker.CpuEpoch() != cpu_epoch_before ||
@@ -2930,6 +3014,14 @@ void BufferCache<P>::BindMemoNote(BindMemo& memo, BufferId buffer_id, DAddr devi
 template <class P>
 void BufferCache<P>::BindMemoNoteUsage(BindMemo& memo) {
     if constexpr (!IS_OPENGL) {
+        if (BindMemoLocalEnabled()) {
+            // The caller marked usage on the current tick: the memo's mark is for that tick.
+            if (memo.valid && memo.frame == frame_tick) {
+                memo.tick = runtime.CurrentTick();
+                memo.usage_marked = true;
+            }
+            return;
+        }
         if (memo.valid && memo.tick == runtime.CurrentTick() && memo.frame == frame_tick) {
             memo.usage_marked = true;
         }
@@ -3289,6 +3381,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     memory_tracker.BumpGpuEpoch();
+    ++buffer_epoch;
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }

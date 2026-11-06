@@ -34,7 +34,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::GuestCcd) ||
                                   i == Index(Opt::LandedPrevAlways) ||
                                   i == Index(Opt::OneAheadLanded) ||
-                                  i == Index(Opt::SplitRings);
+                                  i == Index(Opt::SplitRings) ||
+                                  i == Index(Opt::BindMemoLocal);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -65,6 +66,16 @@ TEST_CASE("Nx2Perf ON overrides always_off for the landed switches", "[nx2_perf]
             (always_off & ~Bit(Opt::PresentOneAhead) & ~Bit(Opt::OneAheadLanded)));
     REQUIRE(ParseOffMask(false, "landed_prev_always", "", false) ==
             (always_off & ~Bit(Opt::LandedPrevAlways)));
+}
+
+TEST_CASE("Nx2Perf bind_memo_local is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::BindMemoLocal) == 52);
+    REQUIRE(opt_names[Index(Opt::BindMemoLocal)] == "bind_memo_local");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::BindMemoLocal)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::BindMemoLocal)));
+    REQUIRE(ParseOffMask(false, "bind_memo_local", "", false) ==
+            (always_off & ~Bit(Opt::BindMemoLocal)));
+    REQUIRE(!IsOff(ParseOffMask(false, "bind_memo_local", "", false), Index(Opt::BindMemo)));
 }
 
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {

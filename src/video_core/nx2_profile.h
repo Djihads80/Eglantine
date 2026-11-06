@@ -208,6 +208,14 @@ enum class Counter : u32 {
     DownloadAgeNone,
     BindMemoHits,        ///< Nx2Perf bind_memo: binds that skipped touch, sync and usage
     BindMemoMisses,      ///< Nx2Perf bind_memo: binds that took the full path
+    /// Nx2Perf bind_memo_local: of BindMemoMisses, why (another range or no memo, a buffer was
+    /// created or deleted, a new frame, CPU-modified bits in the range); of BindMemoHits, those
+    /// on a new scheduler tick (usage marked again)
+    BindMemoMissKey,
+    BindMemoMissEpoch,
+    BindMemoMissFrame,
+    BindMemoMissDirty,
+    BindMemoHitsNewTick,
     DmaReadsWriterSet,   ///< Of DmaReadsEarly: read with proven draws still queued (MacroReadWriterSet)
     DmaReadsWriterSetFallback, ///< Drained instead: a queued proven draw's proof no longer held
     DmaReadsOverlayNoWait, ///< Of DmaReadsEarly: constant buffer overlay reads with no wait
@@ -464,6 +472,20 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" | bind memo {:.0f} hits, {:.0f} misses",
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoHits)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoMisses)]) * 1e9 / window);
+        const auto memo_rate = [&](Counter counter) {
+            return static_cast<double>(data.counters[static_cast<size_t>(counter)]) * 1e9 / window;
+        };
+        if (memo_rate(Counter::BindMemoHitsNewTick) != 0 || memo_rate(Counter::BindMemoMissKey) != 0 ||
+            memo_rate(Counter::BindMemoMissEpoch) != 0 || memo_rate(Counter::BindMemoMissFrame) != 0 ||
+            memo_rate(Counter::BindMemoMissDirty) != 0) {
+            line += fmt::format(" (local: {:.0f} hits on a new tick; misses {:.0f} key, {:.0f} "
+                                "buffer epoch, {:.0f} frame, {:.0f} dirty range)",
+                                memo_rate(Counter::BindMemoHitsNewTick),
+                                memo_rate(Counter::BindMemoMissKey),
+                                memo_rate(Counter::BindMemoMissEpoch),
+                                memo_rate(Counter::BindMemoMissFrame),
+                                memo_rate(Counter::BindMemoMissDirty));
+        }
     }
     line += fmt::format(" | MME DMA reads past proven draws {:.0f} ({:.0f} drained: proof changed)",
                         static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSet)]) * 1e9 / window,
