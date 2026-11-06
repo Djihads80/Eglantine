@@ -172,6 +172,9 @@ void BufferCache<P>::TickFrame() {
         RunGarbageCollector(total_used_memory >= critical_memory);
     }
     ++frame_tick;
+    if (frame_tick % 60 == 0 && Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
+        Nx2AgePreflushBlocks();
+    }
     delayed_destruction_ring.Tick();
 
     if (!async_buffers_death_ring.empty()) {
@@ -287,6 +290,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
         read_trapped_ranges.Subtract(device_addr_start_aligned,
                                      device_addr_end_aligned - device_addr_start_aligned);
+        if (Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
+            Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, false);
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -307,7 +313,7 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         if (preflush) {
             memory_tracker.MarkRegionAsPreflushable(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
-            Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned);
+            Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, true);
         } else {
             if constexpr (USE_MEMORY_MAPS) {
                 cpu_read_ranges.Add(area->start_address, area->end_address - area->start_address);
@@ -1044,10 +1050,91 @@ void BufferCache<P>::Nx2CountDownloadAges(DAddr device_addr, u64 size) {
 }
 
 template <class P>
-void BufferCache<P>::Nx2StampPreflushBlocks(DAddr begin, DAddr end) {
+void BufferCache<P>::Nx2StampPreflushBlocks(DAddr begin, DAddr end, bool marked) {
+    const bool aging = Nx2Perf::On(Nx2Perf::Opt::PreflushAging);
     for (u64 block = begin >> NX2_PREFLUSH_BLOCK_BITS;
          block <= (end - 1) >> NX2_PREFLUSH_BLOCK_BITS; ++block) {
-        nx2_preflush_blocks.try_emplace(block, Nx2PreflushBlock{.last_read_frame = frame_tick});
+        if (!marked) {
+            // A read of a marked range may span blocks without marks: stamp only marked ones.
+            if (const auto it = nx2_preflush_blocks.find(block);
+                it != nx2_preflush_blocks.end() && !it->second.dropped) {
+                it->second.last_read_frame = frame_tick;
+            }
+            continue;
+        }
+        const auto [it, inserted] =
+            nx2_preflush_blocks.try_emplace(block, Nx2PreflushBlock{.last_read_frame = frame_tick});
+        if (inserted || !aging) {
+            continue;
+        }
+        Nx2PreflushBlock& entry = it->second;
+        entry.last_read_frame = frame_tick;
+        if (!entry.dropped) {
+            continue;
+        }
+        // Dropped too early: the read flushed (stalled). Keep the mark twice as long next time.
+        entry.dropped = false;
+        entry.limit_frames = (std::min)(entry.limit_frames * 2, NX2_PREFLUSH_MAX_LIMIT);
+        entry.limit_frame = frame_tick;
+        ++nx2_preflush_remarks;
+        if (Nx2Perf::Verify()) {
+            static u64 reports{};
+            if (++reports <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf preflush_aging: read of dropped block {:#x} stalled (read "
+                          "{:#x}-{:#x}, new limit {} frames; {} stalls in {} drops)",
+                          block << NX2_PREFLUSH_BLOCK_BITS, begin, end, entry.limit_frames,
+                          nx2_preflush_remarks, nx2_preflush_drops);
+            }
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2AgePreflushBlocks() {
+    // Invariant: GPU data not yet in guest memory (gpu_modified_ranges) is either in the download
+    // pipeline with its mark (marked when QueueGpuWrite saw the write) or read-trapped (unmarked
+    // at the write: QueueGpuWrite armed it; dropped here before PopAsyncBuffers wrote it back:
+    // armed below). A read of a dropped block then takes GetFlushArea's flush path, which waits
+    // for the GPU's data, and marks the block again.
+    constexpr u64 block_size = u64{1} << NX2_PREFLUSH_BLOCK_BITS;
+    size_t marked = 0;
+    for (auto it = nx2_preflush_blocks.begin(); it != nx2_preflush_blocks.end();) {
+        Nx2PreflushBlock& entry = it->second;
+        if (entry.dropped) {
+            // The limit halves per 3600 frames unread; back at the minimum the block is forgotten.
+            if (frame_tick - entry.limit_frame >= NX2_PREFLUSH_MAX_LIMIT) {
+                if (entry.limit_frames <= NX2_PREFLUSH_MIN_LIMIT) {
+                    it = nx2_preflush_blocks.erase(it);
+                    continue;
+                }
+                entry.limit_frames = (std::max)(entry.limit_frames / 2, NX2_PREFLUSH_MIN_LIMIT);
+                entry.limit_frame = frame_tick;
+            }
+            ++it;
+            continue;
+        }
+        if (frame_tick - entry.last_read_frame <= entry.limit_frames) {
+            ++marked;
+            ++it;
+            continue;
+        }
+        const DAddr begin = static_cast<DAddr>(it->first << NX2_PREFLUSH_BLOCK_BITS);
+        memory_tracker.UnmarkRegionAsPreflushable(begin, block_size);
+        gpu_modified_ranges.ForEachInRange(begin, block_size, [&](DAddr start, DAddr end) {
+            ArmReadTraps(start, end - start);
+        });
+        entry.dropped = true;
+        entry.limit_frame = frame_tick;
+        ++nx2_preflush_drops;
+        ++it;
+    }
+    if (frame_tick % 3600 == 0) {
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf preflush_aging: {} blocks marked, {} dropped; {} drops and {} stalled "
+                 "reads of dropped blocks since start",
+                 marked, nx2_preflush_blocks.size() - marked, nx2_preflush_drops,
+                 nx2_preflush_remarks);
     }
 }
 

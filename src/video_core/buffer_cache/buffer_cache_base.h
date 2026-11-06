@@ -43,6 +43,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/types.h"
 
@@ -806,6 +807,11 @@ private:
             if (lower > cursor) {
                 ArmReadTraps(cursor, lower - cursor);
             }
+            // PreflushAging observes reads of marked ranges: GetFlushArea finds them marked and
+            // lets the read go on without a flush, but stamps the blocks read.
+            if (Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
+                ArmReadTraps(lower, upper - lower);
+            }
             uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
             cursor = upper;
         });
@@ -834,17 +840,26 @@ private:
     bool Nx2VerifyDownloadBatch(const Nx2Downloads& downloads, const Nx2Downloads& batched);
     /// Profiling: counts a download's bytes by the age of their blocks' preflush stamps.
     void Nx2CountDownloadAges(DAddr device_addr, u64 size);
-    /// The guest CPU read Preflushable data in [begin, end) (a mark made or, with PreflushAging,
-    /// a trapped read of a marked range).
-    void Nx2StampPreflushBlocks(DAddr begin, DAddr end);
+    /// The guest CPU read [begin, end): `marked` when GetFlushArea marked it Preflushable after a
+    /// flush, else (PreflushAging) a trapped read of a marked range.
+    void Nx2StampPreflushBlocks(DAddr begin, DAddr end, bool marked);
+    /// PreflushAging, every 60 frames: drops the marks of blocks the CPU stopped reading.
+    void Nx2AgePreflushBlocks();
 
     static constexpr u64 NX2_PREFLUSH_BLOCK_BITS = 16; ///< 64 KiB blocks
+    static constexpr u32 NX2_PREFLUSH_MIN_LIMIT = 120;  ///< Frames unread before a drop
+    static constexpr u32 NX2_PREFLUSH_MAX_LIMIT = 3600;
     /// A 64 KiB block with Preflushable marks. Without PreflushAging reads of marked ranges are
     /// not trapped, so `last_read_frame` is when the block was first marked. Guarded by `mutex`.
     struct Nx2PreflushBlock {
         u64 last_read_frame{};
+        u64 limit_frame{};  ///< Dropped: start of the decay period (the drop or the last halving)
+        u32 limit_frames{NX2_PREFLUSH_MIN_LIMIT};
+        bool dropped{};     ///< Marks dropped (PreflushAging) and not marked again since
     };
     std::unordered_map<u64, Nx2PreflushBlock> nx2_preflush_blocks;
+    u64 nx2_preflush_drops{};   ///< Blocks dropped since start
+    u64 nx2_preflush_remarks{}; ///< Reads of dropped blocks that flushed (stalled) and marked them
 
     ReadTrapTracker read_trapped_ranges;
     /// Ranges the guest CPU read after GPU writes. A read that must flush downloads the GPU
