@@ -28,6 +28,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/service/nx2_oot_time.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
 
@@ -419,6 +420,51 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
+    // Ocarina of Time: the frame loop loads its delta from a word the present path updates with
+    // the measured frame time, instead of the game's fixed 60 / target fps step (slow motion
+    // below 60 fps): see nx2_oot_time.h. Every word must hold its expected original and lie in
+    // the page-aligned (executable) text segment, or nothing is patched.
+    bool oot_real_time_applied = false;
+    if (name == "main" && process.GetProgramId() == Service::Nx2OotTime::ProgramId &&
+        Service::Nx2OotTime::Enabled()) {
+        namespace OotTime = Service::Nx2OotTime;
+        const auto& text = nso_header.segments[0];
+        const u64 text_begin = text.location;
+        const u64 text_end = text_begin + PageAlignSize(text.size);
+        u8* const image = codeset.memory.data() + module_start;
+        const u64 image_bytes = codeset.memory.size() - module_start;
+        const bool build_matches =
+            Common::HexToString(nso_header.build_id).starts_with(OotTime::BuildId);
+        const bool applies =
+            build_matches &&
+            std::ranges::all_of(OotTime::PatchWords, [&](const OotTime::PatchWord& word) {
+                if (word.module_offset < text_begin ||
+                    word.module_offset + sizeof(u32) > text_end ||
+                    word.module_offset + sizeof(u32) > image_bytes) {
+                    return false;
+                }
+                u32 value;
+                std::memcpy(&value, image + word.module_offset, sizeof(value));
+                return value == word.original;
+            });
+        if (applies) {
+            for (const auto& word : OotTime::PatchWords) {
+                std::memcpy(image + word.module_offset, &word.replacement,
+                            sizeof(word.replacement));
+            }
+            oot_real_time_applied = true;
+            LOG_INFO(Loader,
+                     "Ocarina of Time: frame delta follows the measured frame time (main+{:#x}; "
+                     "EDEN_NX2_OOT_REAL_TIME=1)",
+                     OotTime::HookOffset);
+        } else {
+            LOG_WARNING(Loader, "Ocarina of Time real-time patch skipped: build {} {}",
+                        Common::HexToString(nso_header.build_id),
+                        build_matches ? "holds unexpected code at the patch sites"
+                                      : "is not the supported one");
+        }
+    }
+
 #ifdef HAS_NCE
     // If we are computing the process code layout and using nce backend, patch.
     const auto& code = codeset.CodeSegment();
@@ -494,6 +540,11 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);
+    }
+    if (name == "main" && process.GetProgramId() == Service::Nx2OotTime::ProgramId) {
+        process.SetOotDeltaAddress(oot_real_time_applied
+                                       ? load_base + module_start + Service::Nx2OotTime::DeltaOffset
+                                       : 0);
     }
     return load_base + image_size;
 }

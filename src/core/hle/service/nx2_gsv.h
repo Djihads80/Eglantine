@@ -67,6 +67,7 @@
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/nx2_oot_time.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -1988,6 +1989,15 @@ private:
                 m_stats = {.last_present = entered};
             }
         }
+        // Ocarina of Time's next frame advances by the measured frame time (nx2_oot_time.h).
+        if (const auto* const process = system.ApplicationProcess(); process != nullptr) {
+            if (const u64 address = process->GetOotDeltaAddress(); address != 0) {
+                const float delta = m_oot_frame_delta.Update(entered);
+                u32 delta_bits;
+                std::memcpy(&delta_bits, &delta, sizeof(delta_bits));
+                system.ApplicationMemory().Write32(address, delta_bits);
+            }
+        }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
                              static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
@@ -2006,6 +2016,7 @@ private:
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
+    Nx2OotTime::FrameDelta m_oot_frame_delta;
     u32 m_previous_fence_value{};
 
     // The console flips one frame per 60 Hz vblank and keeps the rest queued, so a game can't
