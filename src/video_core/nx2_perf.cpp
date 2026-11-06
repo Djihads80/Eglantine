@@ -198,4 +198,85 @@ u64 InitOffMask() {
 
 } // namespace detail
 
+namespace {
+
+/// Once a second has passed since the last report, the nanoseconds since it for the one caller
+/// that claims the report; otherwise 0. The first call only starts the clock.
+s64 ClaimReport(std::atomic<s64>& last) {
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    s64 previous = last.load(std::memory_order_relaxed);
+    if (previous == 0) {
+        last.compare_exchange_strong(previous, now, std::memory_order_relaxed);
+        return 0;
+    }
+    if (now - previous < 1'000'000'000) {
+        return 0;
+    }
+    return last.compare_exchange_strong(previous, now, std::memory_order_relaxed) ? now - previous
+                                                                                  : 0;
+}
+
+constexpr std::array<std::string_view, static_cast<size_t>(GuestSite::Count)> guest_site_names{
+    "QueryCounter", "RO page", "slot event", "vi2 wait"};
+
+} // Anonymous namespace
+
+void NoteLandedForcedSubmit() {
+    static std::atomic<u64> submits{};
+    static std::atomic<u64> total{};
+    static std::atomic<s64> last{};
+    submits.fetch_add(1, std::memory_order_relaxed);
+    if (const s64 elapsed = ClaimReport(last); elapsed != 0) {
+        const u64 count = submits.exchange(0, std::memory_order_relaxed);
+        const u64 all = total.fetch_add(count, std::memory_order_relaxed) + count;
+        LOG_INFO(HW_GPU, "Nx2Perf guest_landed_syncpoints: {:.0f} landed forced submits/s ({} in all)",
+                 static_cast<double>(count) * 1e9 / static_cast<double>(elapsed), all);
+    }
+}
+
+void NoteGuestObservation(GuestSite site, u32 id, u32 value, u32 host) {
+    if (id >= 192 ||
+        ((detail::fence_syncpoints[id / 64].load(std::memory_order_relaxed) >> (id % 64)) & 1) ==
+            0) {
+        return;
+    }
+    constexpr size_t num_sites = static_cast<size_t>(GuestSite::Count);
+    static std::array<std::atomic<u64>, num_sites> checked{};
+    static std::array<std::atomic<u64>, num_sites> early{};
+    static std::atomic<u64> early_total{};
+    static std::atomic<s64> last{};
+    const size_t index = static_cast<size_t>(site);
+    checked[index].fetch_add(1, std::memory_order_relaxed);
+    if (static_cast<s32>(value - host) > 0) {
+        early[index].fetch_add(1, std::memory_order_relaxed);
+        if (early_total.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf guest_landed_syncpoints: guest saw syncpoint {}={} before it "
+                      "landed (host {}, {})",
+                      id, value, host, guest_site_names[index]);
+        }
+    }
+    if (const s64 elapsed = ClaimReport(last); elapsed != 0) {
+        std::string line;
+        u64 early_sum = 0;
+        for (size_t i = 0; i < num_sites; ++i) {
+            const u64 early_count = early[i].exchange(0, std::memory_order_relaxed);
+            early_sum += early_count;
+            line += fmt::format(" {} {}/{}", guest_site_names[i], early_count,
+                                checked[i].exchange(0, std::memory_order_relaxed));
+        }
+        const std::string text =
+            fmt::format("Nx2Perf guest_landed_syncpoints: guest observations before landing / "
+                        "checked in the last {} ms:{} ({} early in all)",
+                        elapsed / 1'000'000, line, early_total.load(std::memory_order_relaxed));
+        if (early_sum != 0) {
+            LOG_ERROR(HW_GPU, "{}", text);
+        } else {
+            LOG_INFO(HW_GPU, "{}", text);
+        }
+    }
+}
+
 } // namespace VideoCommon::Nx2Perf

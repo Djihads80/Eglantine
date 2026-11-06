@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <string>
@@ -114,6 +115,9 @@ enum class Opt : unsigned {
     /// Split front: a native macro call whose MME DMA read only feeds its last writes (render
     /// enable) runs without waiting for the back; the back writes those from the real words
     DmaForward,
+    /// Guest-visible syncpoint values rise on the fencing thread with the host value, once
+    /// everything recorded before the increment has landed in guest memory
+    GuestLandedSyncpoints,
     Count,
 };
 
@@ -145,6 +149,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dirty_gather_fast",
     "handle_page_cache",
     "dma_forward",
+    "guest_landed_syncpoints",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -183,7 +188,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
-                          Opt::SplitRings, Opt::BindMemoLocal}) {
+                          Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -200,7 +205,7 @@ inline constexpr u64 DefaultOffMask() {
 /// release_before_hook (+0.0 FPS);
 /// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
-/// bind_memo_local (not measured yet).
+/// bind_memo_local, guest_landed_syncpoints (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -211,7 +216,8 @@ inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
                                   Bit(Opt::DmaForward) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
-                                  Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal);
+                                  Bit(Opt::SplitRings) | Bit(Opt::BindMemoLocal) |
+                                  Bit(Opt::GuestLandedSyncpoints);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -225,6 +231,8 @@ static_assert(IsOff(always_off, 47) && IsOff(DefaultOffMask(), 47));
 static_assert(!IsOff(always_off, 48) && IsOff(DefaultOffMask(), 48));
 static_assert(IsOff(always_off, 51) && IsOff(DefaultOffMask(), 51));
 static_assert(IsOff(always_off, 52) && IsOff(DefaultOffMask(), 52));
+static_assert(static_cast<unsigned>(Opt::GuestLandedSyncpoints) == 56 && IsOff(always_off, 56) &&
+              IsOff(DefaultOffMask(), 56));
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).
@@ -317,13 +325,46 @@ inline bool Verify() {
     return verify;
 }
 
-/// landed_prev_always / one_ahead_landed: the host syncpoint value rises on the fencing thread,
-/// after everything recorded before it has landed. Also under EDEN_NX2_PERF_VERIFY, so vi2 can
-/// report presents that return before the previous frame landed.
+/// landed_prev_always / one_ahead_landed / guest_landed_syncpoints: the host syncpoint value
+/// rises on the fencing thread, after everything recorded before it has landed. Also under
+/// EDEN_NX2_PERF_VERIFY, so vi2 can report presents that return before the previous frame landed.
 inline bool LandedSyncpoints() {
-    static const bool landed =
-        On(Opt::LandedPrevAlways) || On(Opt::OneAheadLanded) || Verify();
+    static const bool landed = On(Opt::LandedPrevAlways) || On(Opt::OneAheadLanded) ||
+                               On(Opt::GuestLandedSyncpoints) || Verify();
     return landed;
 }
+
+/// guest_landed_syncpoints, outside Verify: the guest value rises with the landed host value.
+inline bool GuestLandedSyncpoints() {
+    static const bool on = On(Opt::GuestLandedSyncpoints) && !Verify();
+    return on;
+}
+
+/// guest_landed_syncpoints: counts the fence manager's forced submits (deferred work sent so a
+/// guest value can land) and logs their rate about once a second.
+void NoteLandedForcedSubmit();
+
+/// Where the guest observes a syncpoint value.
+enum class GuestSite : u32 { QueryCounter, RoPage, SlotEvent, Vi2Wait, Count };
+
+namespace detail {
+/// EDEN_NX2_PERF_VERIFY: syncpoints the fence manager has signalled, a bit per id (192 ids).
+inline std::array<std::atomic<u64>, 3> fence_syncpoints{};
+} // namespace detail
+
+/// EDEN_NX2_PERF_VERIFY: the fence manager signals syncpoint `id` (< 192).
+inline void MarkFenceSyncpoint(u32 id) {
+    std::atomic<u64>& word = detail::fence_syncpoints[id / 64];
+    const u64 bit = u64{1} << (id % 64);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) {
+        word.fetch_or(bit, std::memory_order_relaxed);
+    }
+}
+
+/// EDEN_NX2_PERF_VERIFY for guest_landed_syncpoints: the guest observed syncpoint `id` at
+/// `value` while its landed (host) value was `host`. Logs the first 64 values seen before they
+/// landed, then per-second counts. Skips syncpoints the fence manager never signalled (only the
+/// CPU raises those; their host value never moves).
+void NoteGuestObservation(GuestSite site, u32 id, u32 value, u32 host);
 
 } // namespace VideoCommon::Nx2Perf

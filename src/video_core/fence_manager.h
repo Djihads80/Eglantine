@@ -132,8 +132,23 @@ public:
             LOG_ERROR(HW_GPU, "Signal of syncpoint {} past the table, ignored", value);
             return;
         }
+        if (Nx2Perf::GuestLandedSyncpoints()) {
+            // The guest value rises with the landed host value, so a guest fence wait that
+            // passes finds this fence's downloads and query results in guest memory.
+            SyncOperation([this, value] {
+                syncpoint_manager.IncrementHost(value);
+                syncpoint_manager.IncrementGuest(value);
+            });
+            SignalFence([] {});
+            SubmitDeferred();
+            Nx2Perf::NoteLandedForcedSubmit();
+            return;
+        }
         syncpoint_manager.IncrementGuest(value);
         if (Nx2Perf::LandedSyncpoints()) {
+            if (Nx2Perf::Verify()) {
+                Nx2Perf::MarkFenceSyncpoint(value);
+            }
             // The host value rises on the fencing thread, after the downloads, query results and
             // operations of every fence before it: "all recorded so far is in guest memory".
             // The queued operation keeps SkipEmptyFence from dropping the fence. A deferred

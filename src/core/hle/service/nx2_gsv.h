@@ -197,6 +197,11 @@ private:
         const u64 value = syncpoint < HostSyncpoints
                               ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(syncpoint)
                               : 0;
+        if (VideoCommon::Nx2Perf::Verify() && syncpoint < HostSyncpoints) {
+            VideoCommon::Nx2Perf::NoteGuestObservation(
+                VideoCommon::Nx2Perf::GuestSite::QueryCounter, syncpoint, static_cast<u32>(value),
+                system.Host1x().GetSyncpointManager().GetHostSyncpointValue(syncpoint));
+        }
         LOG_DEBUG(Service, "nx2:syncpt 103 syncpoint={} value={:#x}", syncpoint, value);
         TipcReplyWords(ctx, {static_cast<u32>(value), static_cast<u32>(value >> 32), 0});
     }
@@ -259,7 +264,13 @@ private:
         // already reached.
         request.handle = manager.RegisterGuestAction(
             syncpoint, static_cast<u32>(value),
-            [shared = m_shared, &kernel = system.Kernel(), &request, event] {
+            [shared = m_shared, &kernel = system.Kernel(), &request, event, &manager, syncpoint,
+             target = static_cast<u32>(value)] {
+                if (VideoCommon::Nx2Perf::Verify()) {
+                    VideoCommon::Nx2Perf::NoteGuestObservation(
+                        VideoCommon::Nx2Perf::GuestSite::SlotEvent, syncpoint, target,
+                        manager.GetHostSyncpointValue(syncpoint));
+                }
                 std::scoped_lock lk{shared->mutex};
                 if (!shared->alive) {
                     return;
@@ -2196,7 +2207,13 @@ private:
                          std::chrono::steady_clock::now() - start)
                          .count());
         }
-        return syncpoints.IsReadyGuest(fence_id, fence_value);
+        const bool reached = syncpoints.IsReadyGuest(fence_id, fence_value);
+        if (reached && VideoCommon::Nx2Perf::Verify()) {
+            VideoCommon::Nx2Perf::NoteGuestObservation(VideoCommon::Nx2Perf::GuestSite::Vi2Wait,
+                                                       fence_id, fence_value,
+                                                       syncpoints.GetHostSyncpointValue(fence_id));
+        }
+        return reached;
     }
 
     /// landed_prev_always / one_ahead_landed: waits until the fence's host value is reached,
@@ -3775,6 +3792,11 @@ private:
             const u64 value = manager.GetGuestSyncpointValue(id);
             const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
             if (m_syncpt_memory->Read64(address) != value) {
+                if (VideoCommon::Nx2Perf::Verify()) {
+                    VideoCommon::Nx2Perf::NoteGuestObservation(
+                        VideoCommon::Nx2Perf::GuestSite::RoPage, id, static_cast<u32>(value),
+                        manager.GetHostSyncpointValue(id));
+                }
                 m_syncpt_memory->Write64(address, value);
                 changed = true;
             }
