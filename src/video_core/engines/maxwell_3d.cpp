@@ -481,6 +481,9 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
 }
 
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        FrontHandBack();
+    }
     // It is an error to write to a register other than the current macro's ARG register before
     // it has finished execution.
     if (executing_macro != 0 && method != executing_macro + 1) {
@@ -550,6 +553,9 @@ void Maxwell3D::DumpRecentWrites(u32 method) {
 }
 
 void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        FrontHandBack();
+    }
     RecordWrite(method, amount ? base_start[0] : 0, amount, methods_pending);
     // Methods after 0xE00 are special, they're actually triggers for some microcode that was
     // uploaded to the GPU during initialization.
@@ -1093,6 +1099,17 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front_macros = true;
     }
     return *front;
+}
+
+// The split stopped (the settings changed mid-game): the macros run here again, from where the
+// front left them. Front() copies the state again if it starts once more.
+void Maxwell3D::FrontHandBack() {
+    executing_macro = front->executing_macro;
+    macro_params = std::move(front->parameters);
+    regs.load_mme.instruction_ptr = front->regs[MAXWELL3D_REG_INDEX(load_mme.instruction_ptr)];
+    regs.load_mme.start_address_ptr = front->regs[MAXWELL3D_REG_INDEX(load_mme.start_address_ptr)];
+    front.reset();
+    front_macros = false;
 }
 
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,

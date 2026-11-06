@@ -457,6 +457,9 @@ bool KeplerCompute::ProcessNativeMethod(Core::System& system, u32 method, u32 ar
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) [[unlikely]] {
+        FrontHandBack();
+    }
     if (native_mode) {
         // Most of the compute class's register writes (QMD fields replayed by its macros for
         // each of thousands of dispatches a second) only store the value: ~4% of title 1's GPU
@@ -1398,6 +1401,17 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
         front_macros = true;
     }
     return *front;
+}
+
+// The split stopped mid-game: the macros run here again, from where the front left them.
+void KeplerCompute::FrontHandBack() {
+    native_executing_macro = front->executing_macro;
+    native_parameters = std::move(front->parameters);
+    native_compute_uploaded = front->compute_uploaded;
+    native_bind_pointer = front->bind_pointer;
+    native_macro = front->macro;
+    front.reset();
+    front_macros = false;
 }
 
 void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {

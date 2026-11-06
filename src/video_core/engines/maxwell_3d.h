@@ -3395,6 +3395,7 @@ private:
     // the front owns the macro code and bindings (the back thread then leaves them alone).
     struct FrontState;
     FrontState& Front(Core::System& system, VideoCommon::GpuSplit& split);
+    void FrontHandBack();
     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
