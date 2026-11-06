@@ -155,9 +155,13 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     // and with the emulator's looser channel ordering the writers can already be past an
     // AcquireEqual target by the time the waiting channel reaches it (2026-11-06 hang:
     // channels wanting 0x48 while the word read 0xac) — hardware orders the channel against
-    // the writers, we cannot. Once the wait has outlived the warning threshold, take the
-    // greater-or-equal reading the game's protocol implies instead of parking forever.
-    if (pending_acquire->reported &&
+    // the writers, we cannot. A short grace period (10 ms) covers a write racing the read;
+    // after that the greater-or-equal reading the game's protocol implies is taken. This
+    // fires constantly during boot (the ring passes targets by whole rounds there), so the
+    // grace must stay far below the 2 s warning — gating it on the warning turned boot into
+    // one round per two seconds.
+    if (std::chrono::steady_clock::now() - pending_acquire->since >=
+            std::chrono::milliseconds{10} &&
         static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
             GpuSemaphoreOperation::AcquireEqual &&
         current > pending_acquire->value) {
@@ -174,7 +178,10 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     // 0x2656a — all 19). When every carrier channel is itself parked behind such an
     // acquire, the fence chain holds no future release and nothing ever recovers. Complete
     // the round ourselves: write the target the game already queued, notify the waiters.
-    if (pending_acquire->reported &&
+    // 100 ms: above normal frame pacing (a legitimate round completes within a frame or
+    // two), far below the seconds a real stall would cost.
+    if (std::chrono::steady_clock::now() - pending_acquire->since >=
+            std::chrono::milliseconds{100} &&
         static_cast<GpuSemaphoreOperation>(pending_acquire->operation) ==
             GpuSemaphoreOperation::AcquireEqual &&
         pending_acquire->value > current && pending_acquire->value - current <= 0x40) {
