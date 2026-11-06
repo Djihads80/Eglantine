@@ -573,6 +573,8 @@ void BufferCache<P>::UpdateComputeBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
+    ++native_indirect_uniform_draw_ticket;
+    last_synced_count = 0;
     if (is_indexed) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
@@ -594,6 +596,7 @@ template <class P>
 void BufferCache<P>::BindHostStageBuffers(size_t stage) {
     if (stage == 0) {
         ++native_indirect_uniform_draw_ticket;
+        last_synced_count = 0;
     }
     if (channel_state->enabled_uniform_buffer_masks[stage] != 0) {
         BindHostGraphicsUniformBuffers(stage);
@@ -608,6 +611,8 @@ void BufferCache<P>::BindHostStageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostComputeBuffers() {
+    ++native_indirect_uniform_draw_ticket;
+    last_synced_count = 0;
     BindHostComputeUniformBuffers();
     if (channel_state->enabled_compute_storage_buffers != 0) {
         BindHostComputeStorageBuffers();
@@ -1336,6 +1341,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                         shadow->initialized_mask |= page_bit;
                         if (!already_cpu_modified) {
                             memory_tracker.MarkRegionAsCpuModified(cur_addr, chunk_size);
+                            last_synced_count = 0;
                         }
                     }
                     offset_in_bank += chunk_size;
@@ -2725,6 +2731,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
     ClearDownload(dest_address, copy_size);
     gpu_modified_ranges.Subtract(dest_address, copy_size);
     MarkVertexBuffersStale(dest_address, copy_size);
+    last_synced_count = 0;
 
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];
@@ -2911,6 +2918,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     if (!do_not_mark) {
         Buffer& buffer = slot_buffers[buffer_id];
         memory_tracker.MarkRegionAsCpuModified(buffer.CpuAddr(), buffer.SizeBytes());
+        last_synced_count = 0;
     }
 
     Unregister(buffer_id);

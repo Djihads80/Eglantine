@@ -790,7 +790,7 @@ bool KeplerCompute::UsesCompactTensorPrograms() const {
     // helper that shuffles across 32 lanes, so it needs compute shaders created 32 threads wide.
     constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
     return !dlss_chain.active && Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId &&
-           rasterizer->SupportsGameDlssNetwork();
+           rasterizer != nullptr && rasterizer->SupportsGameDlssNetwork();
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames

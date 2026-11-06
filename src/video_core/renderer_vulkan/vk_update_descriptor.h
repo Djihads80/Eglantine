@@ -27,7 +27,9 @@ struct DescriptorAddress {
 union DescriptorUpdateEntry {
     DescriptorUpdateEntry() : raw{} {}
     DescriptorUpdateEntry(VkDescriptorImageInfo image_) : raw{} {
-        image = image_;
+        image.sampler = image_.sampler;
+        image.imageView = image_.imageView;
+        image.imageLayout = image_.imageLayout;
     }
     DescriptorUpdateEntry(VkDescriptorBufferInfo buffer_) : buffer{buffer_} {}
     DescriptorUpdateEntry(VkBufferView texel_buffer_) : raw{} {

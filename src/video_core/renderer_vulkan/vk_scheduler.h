@@ -155,6 +155,13 @@ public:
         return true;
     }
 
+    /// Marks the descriptor buffer as unbound (e.g. after vkCmdBindDescriptorSets on any bind
+    /// point, which Vulkan specifies unbinds all descriptor buffers across all bind points).
+    void InvalidateDescriptorBuffer() {
+        state.descriptor_buffer_bound = false;
+        state.rescaling_defined = false;
+    }
+
     /// Invalidates current command buffer state except for render passes
     void InvalidateState();
 

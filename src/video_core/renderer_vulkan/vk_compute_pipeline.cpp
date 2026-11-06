@@ -361,8 +361,14 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
 
     const bool bind_descriptor_buffer{
         uses_descriptor_buffer && scheduler.UpdateDescriptorBufferChunk(descriptor_buffer_chunk)};
+    if (descriptor_set_layout && !uses_descriptor_buffer) {
+        scheduler.InvalidateDescriptorBuffer();
+    }
 
     const bool is_rescaling = has_rescaling_push_constants;
+    if (is_rescaling) {
+        scheduler.InvalidateDescriptorBuffer();
+    }
     scheduler.Record([this, descriptor_data, is_rescaling, descriptor_buffer_offset,
                       descriptor_buffer_chunk, bind_descriptor_buffer,
                       rescaling_data = rescaling.Data()](vk::CommandBuffer cmdbuf) {
