@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -17,6 +18,7 @@
 #include "video_core/gpu_split.h"
 #include "common/logging.h"
 #include "common/cpu_features.h"
+#include "common/thread.h"
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
@@ -111,7 +113,13 @@ struct ThreadData {
     std::array<MacroCounts, 128> macros{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
+    std::array<u64, 64> cpu_samples{}; ///< Logical CPU the thread ran on, sampled every 100 us
+    u64 last_cpu_sample{};
 };
+
+/// The CPU the front and the back ran on most in their last window, (cpu << 32) | percent.
+inline std::atomic<u64> g_front_cpu{~0ULL};
+inline std::atomic<u64> g_back_cpu{~0ULL};
 
 inline thread_local ThreadData t_data;
 
@@ -261,6 +269,10 @@ inline void Report(const char* thread_name = "GPU thread") {
         data.child_ns = 0;
         return;
     }
+    if (now - data.last_cpu_sample >= 100'000) {
+        data.last_cpu_sample = now;
+        ++data.cpu_samples[Common::CurrentCpuNumber() % data.cpu_samples.size()];
+    }
     const u64 window = now - data.window_start;
     if (window < 10'000'000'000ULL) {
         return;
@@ -367,6 +379,24 @@ inline void Report(const char* thread_name = "GPU thread") {
     if (!drains.empty()) {
         drains.pop_back();
         line += " | waits for the back by site:" + drains;
+    }
+    {
+        const u64 samples =
+            std::accumulate(data.cpu_samples.begin(), data.cpu_samples.end(), u64{0});
+        const auto top = std::max_element(data.cpu_samples.begin(), data.cpu_samples.end());
+        const bool back = std::string_view{thread_name} == "GPU back thread";
+        if (samples != 0) {
+            const u64 cpu = static_cast<u64>(top - data.cpu_samples.begin());
+            (back ? g_back_cpu : g_front_cpu)
+                .store(cpu << 32 | (*top * 100 / samples), std::memory_order_relaxed);
+        }
+        const auto describe = [](u64 packed) {
+            return packed == ~0ULL ? std::string{"?"}
+                                   : fmt::format("{} {}%", packed >> 32, packed & 0xffffffff);
+        };
+        line += fmt::format(" | front cpu {}, back cpu {}",
+                            describe(g_front_cpu.load(std::memory_order_relaxed)),
+                            describe(g_back_cpu.load(std::memory_order_relaxed)));
     }
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     std::array<u32, std::tuple_size_v<decltype(data.macros)>> order;

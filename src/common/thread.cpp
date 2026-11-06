@@ -5,11 +5,16 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -559,6 +564,7 @@ struct Win32ThreadPolicy {
     DWORD tid;
     HANDLE handle;
     Win32CoreGroup group;
+    DWORD_PTR pinned_mask = 0; ///< PinCurrentThreadToGpuSlot: replaces the group's mask
 };
 
 struct Win32PolicyState {
@@ -571,13 +577,88 @@ Win32PolicyState& GetWin32PolicyState() {
     return *state;
 }
 
+/// ReserveGpuCores: the CPUs kept for the GPU threads (slots, see GpuPinMode).
+struct Win32GpuReservation {
+    std::once_flag once;
+    std::atomic<DWORD_PTR> reserved_mask{0}; ///< Group 0; published after the fields below
+    GpuPinMode mode = GpuPinMode::Pair;
+    std::array<int, 3> slot_cpu{-1, -1, -1}; ///< Logical CPU in group 0 per slot
+    std::array<ULONG, 3> slot_cpu_set{};     ///< Its CPU set id (0 = none)
+    std::atomic<u32> placement_logs{0};
+};
+
+Win32GpuReservation& GetWin32GpuReservation() {
+    static Win32GpuReservation* const reservation = new Win32GpuReservation();
+    return *reservation;
+}
+
+DWORD_PTR ReservedGpuMask() {
+    return GetWin32GpuReservation().reserved_mask.load(std::memory_order_acquire);
+}
+
 DWORD_PTR MaskForWin32Group(const Win32CacheTopology& topology, Win32CoreGroup group,
                             bool vcache_enabled) {
-    if (!vcache_enabled || group == Win32CoreGroup::Unrestricted) {
-        return topology.process_mask;
+    const DWORD_PTR mask = [&] {
+        if (!vcache_enabled || group == Win32CoreGroup::Unrestricted) {
+            return topology.process_mask;
+        }
+        return group == Win32CoreGroup::Performance ? topology.performance_mask
+                                                    : topology.efficiency_mask;
+    }();
+    const DWORD_PTR reserved = ReservedGpuMask();
+    if (reserved == 0) {
+        return mask;
     }
-    return group == Win32CoreGroup::Performance ? topology.performance_mask
-                                                : topology.efficiency_mask;
+    if ((mask & ~reserved) != 0) {
+        return mask & ~reserved;
+    }
+    // Never an empty mask: the group lies inside the reservation, so take every other CPU.
+    return (topology.process_mask & ~reserved) != 0 ? topology.process_mask & ~reserved : mask;
+}
+
+DWORD_PTR MaskForWin32Policy(const Win32CacheTopology& topology, const Win32ThreadPolicy& policy,
+                             bool vcache_enabled) {
+    return policy.pinned_mask != 0 ? policy.pinned_mask
+                                   : MaskForWin32Group(topology, policy.group, vcache_enabled);
+}
+
+std::string Win32ThreadName(HANDLE thread) {
+    using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+    static const auto get_description = reinterpret_cast<GetThreadDescriptionFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandle(TEXT("KernelBase.dll")),
+                                               "GetThreadDescription")));
+    if (get_description == nullptr) {
+        return {};
+    }
+    PWSTR description = nullptr;
+    if (FAILED(get_description(thread, &description)) || description == nullptr) {
+        return {};
+    }
+    std::string name = UTF16ToUTF8(std::wstring_view{description});
+    LocalFree(description);
+    return name;
+}
+
+const char* Win32GroupName(Win32CoreGroup group) {
+    switch (group) {
+    case Win32CoreGroup::Performance:
+        return "performance";
+    case Win32CoreGroup::Efficiency:
+        return "efficiency";
+    default:
+        return "unrestricted";
+    }
+}
+
+const char* GpuPinModeName(GpuPinMode mode) {
+    switch (mode) {
+    case GpuPinMode::Separate:
+        return "separate";
+    case GpuPinMode::PairWorker:
+        return "pair+worker";
+    default:
+        return "pair";
+    }
 }
 
 struct Win32PolicyRegistration {
@@ -606,14 +687,26 @@ void SetCurrentThreadWin32Group(Win32CoreGroup group) {
     }
     (void)&t_win32_policy_registration;
     const DWORD tid = GetCurrentThreadId();
-    SetThreadAffinityMask(GetCurrentThread(),
-                          MaskForWin32Group(topology, group, IsVCachePinningEnabled()));
+    const DWORD_PTR mask = MaskForWin32Group(topology, group, IsVCachePinningEnabled());
+    SetThreadAffinityMask(GetCurrentThread(), mask);
+    if (const DWORD_PTR reserved = ReservedGpuMask(); reserved != 0) {
+        auto& reservation = GetWin32GpuReservation();
+        if (reservation.placement_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_INFO(Common, "gpu_core_pin: thread {} ({}) {} mask={:#x}",
+                     Win32ThreadName(GetCurrentThread()), tid, Win32GroupName(group), mask);
+        }
+        if ((mask & reserved) != 0) {
+            LOG_ERROR(Common, "Nx2Perf gpu_core_pin: thread {} mask {:#x} includes reserved {:#x}",
+                      tid, mask, reserved);
+        }
+    }
 
     Win32PolicyState& state = GetWin32PolicyState();
     std::scoped_lock lock{state.mutex};
     for (auto& policy : state.policies) {
         if (policy.tid == tid) {
             policy.group = group;
+            policy.pinned_mask = 0;
             return;
         }
     }
@@ -622,6 +715,163 @@ void SetCurrentThreadWin32Group(Win32CoreGroup group) {
                         THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE, 0)) {
         state.policies.push_back(Win32ThreadPolicy{tid, dup_handle, group});
     }
+}
+
+/// Group 0 physical cores (SMT sibling masks) inside the process affinity.
+std::vector<DWORD_PTR> ReadWin32PhysicalCores(DWORD_PTR process_mask) {
+    std::vector<DWORD_PTR> cores;
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length);
+    if (length == 0) {
+        return cores;
+    }
+    std::vector<u8> buffer(length);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &length)) {
+        return cores;
+    }
+    for (DWORD offset = 0; offset < length;) {
+        const auto* entry =
+            reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+        if (entry->Size == 0) {
+            break;
+        }
+        if (entry->Relationship == RelationProcessorCore) {
+            DWORD_PTR mask = 0;
+            for (WORD g = 0; g < entry->Processor.GroupCount; ++g) {
+                if (entry->Processor.GroupMask[g].Group == 0) {
+                    mask |= entry->Processor.GroupMask[g].Mask & process_mask;
+                }
+            }
+            if (mask != 0) {
+                cores.push_back(mask);
+            }
+        }
+        offset += entry->Size;
+    }
+    return cores;
+}
+
+/// Moves the process default CPU sets off the reserved CPUs (threads nobody pins: driver, shader
+/// workers, audio) and notes each slot CPU's set id.
+void ApplyGpuReservationCpuSets(Win32GpuReservation& reservation, DWORD_PTR reserved) {
+    ULONG length = 0;
+    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+    if (length == 0) {
+        LOG_WARNING(Common, "gpu_core_pin: GetSystemCpuSetInformation failed ({})", GetLastError());
+        return;
+    }
+    std::vector<u8> buffer(length);
+    if (!GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()),
+                                    length, &length, GetCurrentProcess(), 0)) {
+        LOG_WARNING(Common, "gpu_core_pin: GetSystemCpuSetInformation failed ({})", GetLastError());
+        return;
+    }
+    std::vector<ULONG> allowed;
+    for (ULONG offset = 0; offset < length;) {
+        const auto* entry =
+            reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+        if (entry->Size == 0) {
+            break;
+        }
+        if (entry->Type == CpuSetInformation) {
+            const BYTE cpu = entry->CpuSet.LogicalProcessorIndex;
+            const bool is_reserved = entry->CpuSet.Group == 0 && cpu < sizeof(DWORD_PTR) * 8 &&
+                                     ((reserved >> cpu) & 1) != 0;
+            if (is_reserved) {
+                for (size_t slot = 0; slot < reservation.slot_cpu.size(); ++slot) {
+                    if (reservation.slot_cpu[slot] == static_cast<int>(cpu)) {
+                        reservation.slot_cpu_set[slot] = entry->CpuSet.Id;
+                    }
+                }
+            } else {
+                allowed.push_back(entry->CpuSet.Id);
+            }
+        }
+        offset += entry->Size;
+    }
+    if (allowed.empty()) {
+        LOG_WARNING(Common, "gpu_core_pin: no CPU set outside the reservation");
+        return;
+    }
+    if (!SetProcessDefaultCpuSets(GetCurrentProcess(), allowed.data(),
+                                  static_cast<ULONG>(allowed.size()))) {
+        LOG_WARNING(Common, "gpu_core_pin: SetProcessDefaultCpuSets failed ({})", GetLastError());
+        return;
+    }
+    LOG_INFO(Common, "gpu_core_pin: process default CPU sets: {} CPUs outside the reservation",
+             allowed.size());
+}
+
+void LogWin32Placement(DWORD_PTR reserved) {
+    const auto& topology = GetWin32CacheTopology();
+    const bool vcache_enabled = IsVCachePinningEnabled();
+    Win32PolicyState& state = GetWin32PolicyState();
+    std::scoped_lock lock{state.mutex};
+    std::string line;
+    for (const auto& policy : state.policies) {
+        const DWORD_PTR mask = MaskForWin32Policy(topology, policy, vcache_enabled);
+        line += fmt::format(" | {} ({}) {} mask={:#x}", Win32ThreadName(policy.handle), policy.tid,
+                            Win32GroupName(policy.group), mask);
+        if (policy.pinned_mask == 0 && (mask & reserved) != 0) {
+            LOG_ERROR(Common, "Nx2Perf gpu_core_pin: thread {} mask {:#x} includes reserved {:#x}",
+                      policy.tid, mask, reserved);
+        }
+    }
+    LOG_INFO(Common, "gpu_core_pin: registered threads after the refresh:{}", line);
+}
+
+void ReserveWin32GpuCores(Win32GpuReservation& reservation, GpuPinMode mode) {
+    const auto& topology = GetWin32CacheTopology();
+    if (!topology.asymmetric) {
+        LOG_INFO(Common, "gpu_core_pin: no asymmetric L3 cache, nothing reserved");
+        return;
+    }
+    // V-Cache physical cores other than core 0, highest-numbered first.
+    std::vector<DWORD_PTR> candidates;
+    for (const DWORD_PTR core : ReadWin32PhysicalCores(topology.process_mask)) {
+        const DWORD_PTR mask = core & topology.performance_mask;
+        if (mask != 0 && (core & 1) == 0) {
+            candidates.push_back(mask);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(), [](DWORD_PTR a, DWORD_PTR b) {
+        return std::countl_zero(a) < std::countl_zero(b);
+    });
+    const auto low_cpu = [](DWORD_PTR mask) { return std::countr_zero(mask); };
+    const DWORD_PTR front_core = candidates.empty() ? 0 : candidates[0];
+    // Pair mode on a core without an SMT sibling places the back on the next core instead.
+    const bool back_on_sibling = mode != GpuPinMode::Separate && std::popcount(front_core) >= 2;
+    const size_t needed =
+        1 + (back_on_sibling ? 0 : 1) + (mode == GpuPinMode::PairWorker ? 1 : 0);
+    if (candidates.size() < needed) {
+        LOG_WARNING(Common,
+                    "gpu_core_pin: {} V-Cache cores besides core 0, {} needed; nothing reserved",
+                    candidates.size(), needed);
+        return;
+    }
+    size_t next = 1;
+    DWORD_PTR reserved = front_core;
+    reservation.mode = mode;
+    reservation.slot_cpu[0] = low_cpu(front_core);
+    if (back_on_sibling) {
+        reservation.slot_cpu[1] = low_cpu(front_core & (front_core - 1));
+    } else {
+        reserved |= candidates[next];
+        reservation.slot_cpu[1] = low_cpu(candidates[next++]);
+    }
+    if (mode == GpuPinMode::PairWorker) {
+        reserved |= candidates[next];
+        reservation.slot_cpu[2] = low_cpu(candidates[next++]);
+    }
+    ApplyGpuReservationCpuSets(reservation, reserved);
+    reservation.reserved_mask.store(reserved, std::memory_order_release);
+    LOG_INFO(Common,
+             "gpu_core_pin: mode {} reserved_mask={:#x} (front CPU {}, back CPU {}, worker CPU {})",
+             GpuPinModeName(mode), reserved, reservation.slot_cpu[0], reservation.slot_cpu[1],
+             reservation.slot_cpu[2]);
+    RefreshThreadPolicies();
+    LogWin32Placement(reserved);
 }
 
 } // Anonymous namespace
@@ -949,7 +1199,7 @@ void RefreshThreadPolicies() {
     for (const auto& policy : state.policies) {
         if (policy.handle != nullptr) {
             SetThreadAffinityMask(policy.handle,
-                                  MaskForWin32Group(topology, policy.group, vcache_enabled));
+                                  MaskForWin32Policy(topology, policy, vcache_enabled));
         }
     }
 #elif defined(__linux__)
@@ -997,6 +1247,97 @@ void PollThreadPolicies() {
         return;
     }
     RefreshThreadPolicies();
+#endif
+}
+
+GpuPinMode GpuPinModeFromEnv() {
+    static const GpuPinMode mode = [] {
+        const char* env = std::getenv("EDEN_NX2_GPU_PIN");
+        const std::string_view value = env != nullptr ? env : "";
+        if (value == "separate") {
+            return GpuPinMode::Separate;
+        }
+        if (value == "pair+worker") {
+            return GpuPinMode::PairWorker;
+        }
+        if (!value.empty() && value != "pair") {
+            LOG_WARNING(Common, "gpu_core_pin: unknown EDEN_NX2_GPU_PIN={}, using pair", value);
+        }
+        return GpuPinMode::Pair;
+    }();
+    return mode;
+}
+
+void ReserveGpuCores(GpuPinMode mode) {
+#ifdef _WIN32
+    auto& reservation = GetWin32GpuReservation();
+    std::call_once(reservation.once, [&] { ReserveWin32GpuCores(reservation, mode); });
+#else
+    (void)mode;
+#endif
+}
+
+void PinCurrentThreadToGpuSlot(u32 slot) {
+#ifdef _WIN32
+    auto& reservation = GetWin32GpuReservation();
+    if (ReservedGpuMask() == 0 || slot >= reservation.slot_cpu.size() ||
+        reservation.slot_cpu[slot] < 0) {
+        return;
+    }
+    (void)&t_win32_policy_registration;
+    const int cpu = reservation.slot_cpu[slot];
+    const DWORD_PTR mask = DWORD_PTR{1} << cpu;
+    GROUP_AFFINITY affinity{};
+    affinity.Group = 0;
+    affinity.Mask = mask;
+    if (!SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr)) {
+        LOG_WARNING(Common, "gpu_core_pin: pinning slot {} to CPU {} failed ({})", slot, cpu,
+                    GetLastError());
+        return;
+    }
+    // The process default CPU sets leave the reserved CPUs out: select this one for the thread.
+    if (const ULONG cpu_set = reservation.slot_cpu_set[slot]; cpu_set != 0) {
+        SetThreadSelectedCpuSets(GetCurrentThread(), &cpu_set, 1);
+    }
+    const DWORD tid = GetCurrentThreadId();
+    {
+        Win32PolicyState& state = GetWin32PolicyState();
+        std::scoped_lock lock{state.mutex};
+        bool found = false;
+        for (auto& policy : state.policies) {
+            if (policy.tid == tid) {
+                policy.pinned_mask = mask;
+                found = true;
+                break;
+            }
+        }
+        HANDLE dup_handle = nullptr;
+        if (!found &&
+            DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                            &dup_handle, THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE,
+                            0)) {
+            state.policies.push_back(
+                Win32ThreadPolicy{tid, dup_handle, Win32CoreGroup::Performance, mask});
+        }
+    }
+    LOG_INFO(Common, "gpu_core_pin: thread {} ({}) pinned to CPU {} (slot {}, mode {})",
+             Win32ThreadName(GetCurrentThread()), tid, cpu, slot,
+             GpuPinModeName(reservation.mode));
+#else
+    (void)slot;
+#endif
+}
+
+u32 CurrentCpuNumber() {
+#ifdef _WIN32
+    PROCESSOR_NUMBER number{};
+    GetCurrentProcessorNumberEx(&number);
+    return static_cast<u32>(number.Group) * 64 + number.Number;
+#elif defined(__linux__)
+    const int cpu = sched_getcpu();
+    return cpu < 0 ? 0 : static_cast<u32>(cpu);
+#else
+    return 0;
 #endif
 }
 
