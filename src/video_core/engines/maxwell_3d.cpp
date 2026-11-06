@@ -2270,15 +2270,6 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     bool mismatch = false;
     for (u32 i = 0; i < words; ++i) {
         const u32 drained = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
-        if (drained != read[i] && logged < 64) {
-            ++logged;
-            LOG_ERROR(HW_GPU,
-                      "Nx2Perf split: macro {:#x} DMA read of {} words at {:#x}: word {} is "
-                      "{:#x} without the drain{}, {:#x} after it",
-                      macro, words, source, i, read[i],
-                      overlay ? " (constant buffer overlay)" : "", drained);
-}
-
         if (drained != read[i]) {
             mismatch = true;
             if (overlay_writers_read) {
