@@ -87,7 +87,7 @@ void MeshEmulationBuffer::ReportChecks() {
         Shader::Backend::SPIRV::MeshEmulationHeader header;
         std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
                     sizeof(header));
-        const bool overflow = header.task_allocated > entry.capacity;
+        const bool overflow = entry.has_task && header.task_allocated > entry.capacity;
         if ((overflow && overflows_logged++ < 32) || checks_logged++ < 64) {
             LOG_INFO(Render_Vulkan,
                      "Emulated mesh draw {:016x} check: {} {} workgroups, {} mesh workgroups "

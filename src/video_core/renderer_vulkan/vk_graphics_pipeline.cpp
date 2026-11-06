@@ -1395,7 +1395,7 @@ void GraphicsPipeline::MakeEmulatedMeshPipelines() {
             },
             *pipeline_cache);
     };
-    if (mesh_emulation->task_module) {
+    if (mesh_emulation->has_task) {
         mesh_emulation->task_pipeline = make(mesh_emulation->task_module, true);
     }
     mesh_emulation->mesh_pipeline = make(mesh_emulation->mesh_module, false);
@@ -1403,7 +1403,8 @@ void GraphicsPipeline::MakeEmulatedMeshPipelines() {
 
 bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     const MeshEmulationStages& stages{*mesh_emulation};
-    const bool has_task{static_cast<bool>(stages.task_module)};
+    // Not from task_module: the modules are freed once the pipelines are built.
+    const bool has_task{stages.has_task};
     const u32 groups{MeshGroups(is_indexed)};
     // Output slots: one per mesh workgroup. A task program launches a number known on the GPU
     // only: room for EDEN_NX2_MESH_EMULATE_FANOUT (default its thread count) per task workgroup;
@@ -1515,7 +1516,8 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         }
-        if (!pipeline || !mesh_emulation->mesh_pipeline) {
+        if (!pipeline || !mesh_emulation->mesh_pipeline ||
+            (mesh_emulation->has_task && !mesh_emulation->task_pipeline)) {
             return;
         }
         const VkDescriptorSet descriptor_set{descriptor_allocator.Commit()};
@@ -1550,7 +1552,7 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline_layout, 0,
                                   descriptor_set, nullptr);
         push_constants(cmdbuf, push);
-        if (mesh_emulation->task_pipeline) {
+        if (mesh_emulation->has_task) {
             cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *mesh_emulation->task_pipeline);
             cmdbuf.Dispatch(draw.groups, 1, 1);
             static constexpr VkMemoryBarrier TASK_BARRIER{

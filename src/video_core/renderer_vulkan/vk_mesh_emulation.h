@@ -23,7 +23,8 @@ class Scheduler;
 
 /// The compute stages of an emulated task/mesh pipeline and its storage buffer layout.
 struct MeshEmulationStages {
-    vk::ShaderModule task_module; ///< null without a task program
+    bool has_task{};
+    vk::ShaderModule task_module; ///< freed once the pipelines are built
     vk::ShaderModule mesh_module;
     vk::Pipeline task_pipeline;
     vk::Pipeline mesh_pipeline;

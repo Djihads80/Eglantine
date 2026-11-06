@@ -1411,6 +1411,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (emulated_stage) {
             vk::ShaderModule module{BuildShader(device, code)};
             if (program.info.is_task) {
+                emulation->has_task = true;
                 emulation->task_module = std::move(module);
                 emulation->task_threads = program.workgroup_size[0];
                 emulation->payload_words = program.mesh.payload_words;
