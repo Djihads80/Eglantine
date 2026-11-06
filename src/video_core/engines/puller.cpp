@@ -118,6 +118,18 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
             pending_acquire->Matches(ReadSemaphoreWord(dma_pusher, pending_acquire->address))) {
             return true;
         }
+        // The value still hasn't landed: flush the scheduler before forcing the release
+        // again. A forced release waits on the fence chain, which can sit on recorded but
+        // unsubmitted commands (DeferFlush's batching, or a back whose idle hook already
+        // ran and sleeps); waiting without a flush can wedge the back itself, and with
+        // every channel parked on GPU semaphores whose payloads ride those fences nothing
+        // ever recovers (Fast + Balanced/Accurate fences deadlocked about a minute in,
+        // Ocarina of Time vistas: channels wanting 0xf259/0xf26b while the GPU counter
+        // semaphores sat 13-19 values behind with an empty buffer cache).
+        VideoCommon::GpuSplit::Get().Run([rasterizer = dma_pusher.rasterizer] {
+            rasterizer->FlushCommands();
+            rasterizer->ReleaseFences();
+        });
     }
     if (!pending_acquire->reported &&
         std::chrono::steady_clock::now() - pending_acquire->since > std::chrono::seconds{2}) {
