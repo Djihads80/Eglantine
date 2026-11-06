@@ -3134,14 +3134,22 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
     static constexpr u32 MaxRenderTargetSize = 32768;
     static constexpr s32 MaxRenderTargetLayers = 2048;
     // Also blocks past 32 GOBs and unmapped targets: unswizzling such an image faulted
-    // (Ocarina of Time on a phone, with garbage commands).
+    // (Ocarina of Time on a phone, with garbage commands). Pitch-linear targets have no block
+    // size (the field holds whatever the game left there): Mario Kart World's 8x1 and 64x1
+    // exposure targets were dropped, washing out its frame.
+    const bool bad_block = info.type != ImageType::Linear &&
+                           (info.block.width > 5 || info.block.height > 5 || info.block.depth > 5);
     if (info.size.width > MaxRenderTargetSize || info.size.height > MaxRenderTargetSize ||
-        info.resources.layers > MaxRenderTargetLayers || info.block.width > 5 ||
-        info.block.height > 5 || info.block.depth > 5 || !gpu_memory->GpuToCpuAddress(gpu_addr)) {
+        info.resources.layers > MaxRenderTargetLayers || bad_block ||
+        !gpu_memory->GpuToCpuAddress(gpu_addr)) {
         static std::atomic<u32> logged{};
         if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
-            LOG_ERROR(HW_GPU, "Ignoring {}x{} render target with {} layers at {:#x}",
-                      info.size.width, info.size.height, info.resources.layers, gpu_addr);
+            LOG_ERROR(HW_GPU,
+                      "Ignoring {}x{} render target with {} layers at {:#x} (type {}, block "
+                      "{}x{}x{}, mapped {})",
+                      info.size.width, info.size.height, info.resources.layers, gpu_addr,
+                      static_cast<int>(info.type), info.block.width, info.block.height,
+                      info.block.depth, gpu_memory->GpuToCpuAddress(gpu_addr).has_value());
         }
         return ImageViewId{}; // No render target: the null view has no format to size
     }
