@@ -111,38 +111,82 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(opcode == 0x981 ? 16 : 32, count);
         operand(24, input.Bits(72, 1) ? 2 : 1); break;
     }
+    case 0x59f: {
+        const u32 dimension = input.Bits(61, 3);
+        operand(24, dimension <= 1 ? 1U : dimension <= 3 ? 2U : 3U);
+        operand(32);
+        break;
+    }
+    case 0x98e:
+        operand(24, 2);
+        operand(32);
+        break;
     default:
         result.valid = false; return result;
     }
     std::array<bool, 256> used{};
     std::array<bool, 64> groups{};
+    std::array<bool, 64> paired{};
     for (const auto [bit, count] : operands) {
         const u32 reg = input.Bits(bit, 8);
         if (reg == 255) continue;
         if (reg + count > 255) { result.valid = false; return result; }
+        const bool overlaps_reserved = reg + count > reserved;
         for (u32 component = 0; component < count; ++component) {
             used[reg + component] = true;
-            if (reg + component >= reserved) groups[(reg + component) / 4] = true;
+            if (overlaps_reserved) groups[(reg + component) / 4] = true;
+        }
+        if (overlaps_reserved && reg / 4 != (reg + count - 1) / 4) {
+            paired[reg / 4] = true;
+        }
+    }
+    for (u32 group = 0; group < groups.size(); ++group) {
+        if (!groups[group]) continue;
+        for (u32 component = 0; component < 4; ++component) {
+            used[group * 4 + component] = true;
         }
     }
     std::array<u32, 64> mapped{};
     for (u32 group = 0; group < groups.size(); ++group) {
         if (!groups[group]) continue;
-        u32 borrow = reserved;
-        while (borrow >= 4) {
-            borrow -= 4;
-            if (!used[borrow] && !used[borrow + 1] && !used[borrow + 2] && !used[borrow + 3]) break;
+        if (group > 0 && paired[group - 1]) {
+            mapped[group] = mapped[group - 1] + 4;
+        } else if (paired[group]) {
+            u32 borrow = reserved >= 4 ? reserved - 4 : 0;
+            while (borrow >= 4) {
+                borrow -= 4;
+                if (!used[borrow] && !used[borrow + 1] && !used[borrow + 2] && !used[borrow + 3] &&
+                    !used[borrow + 4] && !used[borrow + 5] && !used[borrow + 6] && !used[borrow + 7]) break;
+            }
+            if (borrow + 8 > reserved ||
+                used[borrow] || used[borrow + 1] || used[borrow + 2] || used[borrow + 3] ||
+                used[borrow + 4] || used[borrow + 5] || used[borrow + 6] || used[borrow + 7]) {
+                result.valid = false; return result;
+            }
+            mapped[group] = borrow;
+            for (u32 component = 0; component < 8; ++component) {
+                used[borrow + component] = true;
+            }
+        } else {
+            u32 borrow = reserved;
+            while (borrow >= 4) {
+                borrow -= 4;
+                if (!used[borrow] && !used[borrow + 1] && !used[borrow + 2] && !used[borrow + 3]) break;
+            }
+            if (used[borrow] || used[borrow + 1] || used[borrow + 2] || used[borrow + 3]) {
+                result.valid = false; return result;
+            }
+            mapped[group] = borrow;
+            for (u32 component = 0; component < 4; ++component) {
+                used[borrow + component] = true;
+            }
         }
-        if (used[borrow] || used[borrow + 1] || used[borrow + 2] || used[borrow + 3]) {
-            result.valid = false; return result;
-        }
-        mapped[group] = borrow;
         for (u32 component = 0; component < 4; ++component) {
-            const u32 low = borrow + component, high = group * 4 + component;
-            used[low] = true;
+            const u32 low = mapped[group] + component, high = group * 4 + component;
+            const u32 high_bank = high >= reserved ? 1U : 0U;
             result.prefix.push_back(NativeRegisterCopy(2, low, 0, low));
-            result.prefix.push_back(NativeRegisterCopy(0, low, 1, high));
-            result.suffix.push_back(NativeRegisterCopy(1, high, 0, low));
+            result.prefix.push_back(NativeRegisterCopy(0, low, high_bank, high));
+            result.suffix.push_back(NativeRegisterCopy(high_bank, high, 0, low));
             result.suffix.push_back(NativeRegisterCopy(0, low, 2, low));
         }
     }
@@ -182,7 +226,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         const u32 op = instruction.Bits(0, 12);
         uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0x896 || op == 0xf60 || op == 0xc11 || op == 0xd08 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || op == 0x292 || op == 0x892 || op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 || op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 || op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) || (op == 0x988 && instruction.Bits(91, 1)) || op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 || op == 0xf63 || op == 0xf66 || op == 0xf69 || op == 0xc0b || op == 0x8a5 || op == 0x299 || op == 0xc09 || (op == 0x81c && instruction.Bits(67, 1)) || op == 0xc0a ||
-                             (op == 0x83b && instruction.Bits(91, 1));
+                             (op == 0x83b && instruction.Bits(91, 1)) ||
+                             (op == 0x98e && instruction.Bits(91, 1));
     }
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
     const auto fail = [&](u32 index, std::string_view reason) {
@@ -238,9 +283,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
-                opcode != 0x988) continue;
+                opcode != 0x988 && opcode != 0x59f && opcode != 0x98e) continue;
             const u32 reg = insn.Bits(bit, 8);
-            if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
+            const u32 span = (bit == 24 && opcode == 0x59f)
+                                 ? (insn.Bits(61, 3) <= 1 ? 1U : insn.Bits(61, 3) <= 3 ? 2U : 3U)
+                                 : (bit == 24 && opcode == 0x98e) ? 2U : 1U;
+            if (reg < 255 && reg + span > shadow_boundary) requires_shadow = true;
         }
         if (requires_shadow) {
             pressure = PrepareRegisterPressure(insn, shadow_boundary);
@@ -1137,22 +1185,25 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (u64{insn.Bits(81, 3)} << 48));
             break;
         }
-        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
+        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register or uniform address.
+            const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
+            if (offset < -0x80000 || offset > 0x7ffff)
+                return fail(index, "native global reduction mode");
             if ((insn.words[2] & ~0x0380003fU) == 0x0c10e100 && insn.Bits(24, 8) == 255) {
                 // [URa + offset]: a uniform 64-bit address with a signed byte offset.
                 const u32 address = uniform_register(insn.Bits(64, 6));
-                const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
-                if (address == ~0U || (address & 1) || offset < -0x80000 || offset > 0x7ffff)
+                if (address == ~0U || (address & 1))
                     return fail(index, "native global reduction uniform address");
                 emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) | (u64{address} << 8) |
                      (u64{insn.Bits(87, 3)} << 23) | (u64{static_cast<u32>(offset) & 0xfffff} << 28) |
                      (u64{1} << 48));
                 break;
             }
-            if ((insn.words[2] & ~0x03800000U) != 0x0010e100 || insn.Bits(40, 24) || (insn.Bits(24, 8) & 1))
+            if ((insn.words[2] & ~0x03800000U) != 0x0010e100 || (insn.Bits(24, 8) & 1))
                 return fail(index, "native global reduction mode");
             emit(0xebf8000000000000ULL | predicate | insn.Bits(32, 8) |
-                (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(87, 3)} << 23) | (u64{1} << 48));
+                (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(87, 3)} << 23) |
+                (u64{static_cast<u32>(offset) & 0xfffff} << 28) | (u64{1} << 48));
             break;
         }
         case 0x2bd: // UFLO.U32, the highest set-bit index (.SH, bit 74: its shift amount).
@@ -1327,19 +1378,24 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (strong) emit(0xef98000000000000ULL | predicate | (u64{1} << 8));
             break;
         }
-        case 0x59f: { // SURED.D.2D.ADD.STRONG.GPU.IGN U32, direct descriptor (title 1's race compute).
-            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
-            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
-            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 || binding >= 18 ||
-                offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
+        case 0x59f: { // SURED (bound descriptor): SUATOM's layout without a destination or fault predicate.
+            // Coordinates 24, data 32, descriptor 40..58, dimension 61..63 (Maxwell's codes), type 73..75
+            // (U32/S32) and the operation at 87..90 (ADD..XOR). Lowered to SUATOM with the result in RZ.
+            const u32 coordinate = insn.Bits(24, 8), data = insn.Bits(32, 8);
+            const u32 offset = insn.Bits(40, 14), binding = insn.Bits(54, 5), dimension = insn.Bits(61, 3);
+            const u32 type = insn.Bits(73, 3), operation = insn.Bits(87, 4);
+            const u32 coordinates = dimension <= 1 ? 1U : dimension <= 3 ? 2U : 3U;
+            if ((insn.words[2] & ~((7U << 9) | (15U << 23))) != 0x0010e000 || insn.Bits(59, 2) ||
+                dimension > 5 || type > 1 || operation > 7 || operation == 3 || operation == 4 ||
+                binding >= 18 || offset > 0x1fff ||
+                (coordinate == 255 ? coordinates > 1 : coordinate + coordinates > 255) ||
+                (data >= 253 && data != 255))
                 return fail(index, "native surface reduction mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native surface descriptor buffer conflict");
             result.required_texture_buffer = binding;
-            // Maxwell SURED (as the frontend decodes it): operand 0-7, coordinates 8-15, ADD and
-            // U32 are zero at 24 and 20, type 33 (3 = 2D), bound offset 36, bound 51.
-            emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
-                (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+            emit(0xea00000000000000ULL | predicate | 255 | (u64{coordinate} << 8) | (u64{data} << 20) |
+                 (u64{operation} << 29) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{type} << 51));
             break;
         }
         case 0x301: // BREV register.
@@ -1360,7 +1416,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 shift_operand &&
                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) == 0x00000600U) {
                 load_shift();
-                emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20));
+                emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20) |
+                     (u64{insn.Bits(75, 1)} << 39));
                 break;
             }
             if (!shift_operand || insn.Bits(73, 2) != 3 || shift == ~0U ||

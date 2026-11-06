@@ -1011,6 +1011,15 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
     for (const ImageId id : deleted_images) {
         Image& image = slot_images[id];
+        if (True(image.flags & ImageFlagBits::Unbacked) &&
+            False(image.flags & (ImageFlagBits::SparseLayers | ImageFlagBits::UnwrittenSparse))) {
+            continue;
+        }
+        if (UploadsByLayer(image) &&
+            (gpu_addr > image.gpu_addr || gpu_addr + size < image.gpu_addr + image.guest_size_bytes)) {
+            MarkLayersRemapped(image, gpu_addr, size);
+            continue;
+        }
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
             if (True(image.flags & ImageFlagBits::Tracked)) {
@@ -1806,6 +1815,29 @@ void TextureCache<P>::MarkLayersWritten(Image& image, DAddr cpu_addr, size_t siz
 }
 
 template <class P>
+void TextureCache<P>::MarkLayersRemapped(Image& image, GPUVAddr gpu_addr, size_t size) {
+    if (True(image.flags & ImageFlagBits::CpuModified) && image.dirty_layers.empty()) {
+        return; // all of it is dirty already
+    }
+    const u32 layers = static_cast<u32>(image.info.resources.layers);
+    if (False(image.flags & ImageFlagBits::CpuModified)) {
+        image.flags |= ImageFlagBits::CpuModified;
+        image.dirty_layers.assign(Common::DivCeil(layers, 64U), 0);
+    }
+    const GPUVAddr begin = (std::max<GPUVAddr>)(gpu_addr, image.gpu_addr) - image.gpu_addr;
+    const GPUVAddr end = (std::min<GPUVAddr>)(gpu_addr + size, image.gpu_addr + image.guest_size_bytes) -
+                         image.gpu_addr;
+    const u32 stride = image.info.layer_stride;
+    if (end <= begin || stride == 0) {
+        return;
+    }
+    const u32 last = (std::min)(static_cast<u32>((end - 1) / stride), layers - 1);
+    for (u32 layer = static_cast<u32>(begin / stride); layer <= last; ++layer) {
+        image.dirty_layers[layer / 64] |= u64{1} << (layer % 64);
+    }
+}
+
+template <class P>
 void TextureCache<P>::MarkRangeWritten(Image& image, DAddr cpu_addr, size_t size) {
     if (True(image.flags & ImageFlagBits::CpuModified) && image.dirty_ranges.empty()) {
         return; // all of it is dirty already
@@ -2120,7 +2152,21 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    const size_t size_bytes = CalculateGuestSizeInBytes(info);
+    ForEachImageInRegion(*cpu_addr, size_bytes, lambda);
+    if (image_ids.empty()) {
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes, lambda);
+    }
+    if (image_ids.empty() && *cpu_addr >= ~(1ULL << 40)) {
+        if (const auto it = image_allocs_table.find(gpu_addr); it != image_allocs_table.end()) {
+            for (const ImageId existing_id : slot_image_allocs[it->second].images) {
+                ImageBase& existing = slot_images[existing_id];
+                if (existing.cpu_addr >= ~(1ULL << 40) && lambda(existing_id, existing)) {
+                    return image_id;
+                }
+            }
+        }
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
@@ -2505,11 +2551,16 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (this_is_linear && overlap_is_linear) {
             if (info.pitch == overlap.info.pitch && gpu_addr == overlap.gpu_addr) {
                 // Alias linear images with the same pitch
-                join_left_aliased_ids.push_back(overlap_id);
+                if (std::ranges::find(join_left_aliased_ids, overlap_id) ==
+                    join_left_aliased_ids.end()) {
+                    join_left_aliased_ids.push_back(overlap_id);
+                }
             }
             return;
         }
-        join_overlaps_found.insert(overlap_id);
+        if (!join_overlaps_found.insert(overlap_id).second) {
+            return;
+        }
         constexpr bool strict_size = true;
         const std::optional<OverlapResult> solution = ResolveOverlap(
             new_info, gpu_addr, cpu_addr, overlap, strict_size, broken_views, native_bgr);
@@ -2537,6 +2588,19 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
     };
     ForEachImageInRegion(cpu_addr, size_bytes, region_check);
+    if (join_overlaps_found.empty()) {
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes, region_check);
+    }
+    if (join_overlaps_found.empty() && cpu_addr >= ~(1ULL << 40)) {
+        if (const auto it = image_allocs_table.find(gpu_addr); it != image_allocs_table.end()) {
+            for (const ImageId existing_id : slot_image_allocs[it->second].images) {
+                ImageBase& existing = slot_images[existing_id];
+                if (existing.cpu_addr >= ~(1ULL << 40)) {
+                    region_check(existing_id, existing);
+                }
+            }
+        }
+    }
     const auto region_check_gpu = [&](ImageId overlap_id, ImageBase& overlap) {
         if (!join_overlaps_found.contains(overlap_id)) {
             if (True(overlap.flags & ImageFlagBits::Remapped)) {
@@ -2838,7 +2902,21 @@ ImageId TextureCache<P>::FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr) 
         }
         return false;
     };
-    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info), lambda);
+    const size_t size_bytes = CalculateGuestSizeInBytes(info);
+    ForEachImageInRegion(*cpu_addr, size_bytes, lambda);
+    if (image_ids.empty()) {
+        ForEachImageInRegionGPU(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes, lambda);
+    }
+    if (image_ids.empty() && *cpu_addr >= ~(1ULL << 40)) {
+        if (const auto it = image_allocs_table.find(gpu_addr); it != image_allocs_table.end()) {
+            for (const ImageId existing_id : slot_image_allocs[it->second].images) {
+                ImageBase& existing = slot_images[existing_id];
+                if (existing.cpu_addr >= ~(1ULL << 40) && lambda(existing_id, existing)) {
+                    return image_id;
+                }
+            }
+        }
+    }
     if (image_ids.size() <= 1) [[likely]] {
         return image_id;
     }
