@@ -24,6 +24,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace Tegra::Engines {
@@ -77,8 +78,80 @@ void OnBackRelease(DmaPusher& dma_pusher, GPUVAddr address, const Func& func) {
     }
 }
 
-void DrainBack() {
-    VideoCommon::GpuSplit::Get().Drain(VideoCommon::DrainSite::Acquire);
+void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
+    VideoCommon::GpuSplit::Get().Drain(site);
+}
+
+// Opt::AcquireEarly: the semaphore word without draining the back, or nothing where a drained
+// ReadSemaphoreWord could read another value. That holds once the back ran every queued entry
+// that may write the word's page (ReadTarget: unknown writes, GPU work, noted writes such as
+// releases and their mirrors), every delayed release to its 16 bytes landed (HasAsyncWrite,
+// Nx2AsyncReportsSettled), and the buffer cache never held GPU data on the page (the drained
+// read flushes only such data). `wait`: wait for those entries (a partial wait) instead of
+// giving up while the back still has them queued.
+std::optional<u32> ReadSemaphoreWordEarly(DmaPusher& dma_pusher, GPUVAddr address, bool wait) {
+    using VideoCommon::DrainSite;
+    auto& split = VideoCommon::GpuSplit::Get();
+    // NoteWrite notes releases only with MacroReadEarly on: ReadTarget misses them otherwise.
+    if (!split.Active() || !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadEarly)) {
+        return std::nullopt;
+    }
+    if (address < g_nx2_sparse_high.load(std::memory_order_relaxed) &&
+        g_nx2_sparse_low.load(std::memory_order_relaxed) < address + sizeof(u32)) {
+        return std::nullopt;
+    }
+    // A queued GPU memory map may still change the translation.
+    if (const u64 maps = split.MapTarget(); split.ConsumedNow() < maps) {
+        if (!wait) {
+            split.Publish();
+            return std::nullopt;
+        }
+        split.WaitUntil(maps, DrainSite::AcquireEarly);
+    }
+    const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+    if (!device) {
+        return std::nullopt;
+    }
+    const u64 page = *device & ~u64{0xfff};
+    const u64 slot = *device & ~u64{0xf};
+    if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
+        return std::nullopt;
+    }
+    if (const u64 target = split.ReadTarget(page, page + 0x1000); split.ConsumedNow() < target) {
+        if (!wait) {
+            split.Publish();
+            return std::nullopt;
+        }
+        split.WaitUntil(target, DrainSite::AcquireEarly);
+    }
+    const u64 consumed = split.ConsumedNow();
+    // The entries just run may have written the page through the buffer cache.
+    if (Nx2IsGpuWrittenRegion(page) || Nx2IsGpuWritten(page)) {
+        return std::nullopt;
+    }
+    if (split.HasAsyncWrite(slot, 16) > consumed || !Nx2AsyncReportsSettled(slot, 16)) {
+        split.RequestIdleHook();
+        return std::nullopt;
+    }
+    return dma_pusher.memory_manager.Read<u32>(address);
+}
+
+// EDEN_NX2_PERF_VERIFY: the word an early check read against the one read after the drain.
+void VerifyAcquireWord(const char* where, const Puller::PendingAcquire& acquire, u32 early,
+                       u32 drained) {
+    static std::atomic<u64> mismatches{};
+    if (early == drained) {
+        return;
+    }
+    const u64 count = mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU,
+                  "Nx2Perf acquire: {} of semaphore {:#x} (op {}, value {:#x}): word {:#x} "
+                  "without the drain, {:#x} after it; decision {} ({} mismatches)",
+                  where, acquire.address, acquire.operation, acquire.value, early, drained,
+                  acquire.Matches(early) == acquire.Matches(drained) ? "same" : "DIFFERS",
+                  count);
+    }
 }
 
 // The fence manager records into the scheduler and downloads the CPU's writes over GPU data:
@@ -108,6 +181,42 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
         return true;
     }
+    namespace Profile = VideoCommon::Nx2Profile;
+    Profile::Add(Profile::Counter::AcquirePolls, 1);
+    const bool met = PollAcquire(dma_pusher);
+    if (met) {
+        Profile::Add(Profile::Counter::AcquirePollsMet, 1);
+    }
+    return met;
+}
+
+bool Puller::PollAcquire(DmaPusher& dma_pusher) {
+    namespace Nx2Perf = VideoCommon::Nx2Perf;
+    std::optional<u32> early;
+    if (Nx2Perf::On(Nx2Perf::Opt::AcquireEarly)) {
+        const bool verify = Nx2Perf::Verify();
+        // A release that met the value landed: the path below resumes on it whatever the word.
+        if (!verify && Nx2SemaphoreWaiters::Get().Latched(this)) {
+            VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePollsEarly, 1);
+            VideoCommon::GpuSplit::Get().NoteSync();
+            return true;
+        }
+        early = ReadSemaphoreWordEarly(dma_pusher, pending_acquire->address, false);
+        if (!verify) {
+            if (early && pending_acquire->Matches(*early)) {
+                VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePollsEarly,
+                                             1);
+                // In place of the drain: list fetches after it wait for the work before it.
+                VideoCommon::GpuSplit::Get().NoteSync();
+                return true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now - pending_acquire->last_drain < std::chrono::milliseconds{2}) {
+                return false;
+            }
+            pending_acquire->last_drain = now;
+        }
+    }
     // A latched release resumes the channel whatever the word holds now: only the log below
     // reads it, so drain for it only while that log is still printing.
     static std::atomic<u32> rescued{};
@@ -116,8 +225,11 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
-    DrainBack();
+    DrainBack(VideoCommon::DrainSite::AcquirePoll);
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
+    if (early && Nx2Perf::Verify()) {
+        VerifyAcquireWord("poll",*pending_acquire, *early, current);
+    }
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
         if (!pending_acquire->Matches(current) && rescued.fetch_add(1) < 64) {
             LOG_INFO(HW_GPU, "Channel {} met semaphore {:#x} value {:#x} at its release (now {:#x})",
@@ -307,6 +419,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             .operation = static_cast<u32>(op),
             .since = std::chrono::steady_clock::now(),
             .last_fences = std::chrono::steady_clock::now(),
+            .last_drain = std::chrono::steady_clock::now(),
             .reported = false,
         };
         if (op != GpuSemaphoreOperation::AcquireEqual && op != GpuSemaphoreOperation::AcquireGequal &&
@@ -315,8 +428,24 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             return;
         }
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquireChecks, 1);
-        DrainBack();
-        if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
+        namespace Nx2Perf = VideoCommon::Nx2Perf;
+        std::optional<u32> early;
+        if (Nx2Perf::On(Nx2Perf::Opt::AcquireEarly)) {
+            early = ReadSemaphoreWordEarly(dma_pusher, acquire.address, true);
+            if (early && acquire.Matches(*early) && !Nx2Perf::Verify()) {
+                VideoCommon::Nx2Profile::Add(
+                    VideoCommon::Nx2Profile::Counter::AcquireTriggerEarly, 1);
+                // In place of the drain: list fetches after it wait for the work before it.
+                VideoCommon::GpuSplit::Get().NoteSync();
+                return;
+            }
+        }
+        DrainBack(VideoCommon::DrainSite::AcquireTrigger);
+        const u32 drained = ReadSemaphoreWord(dma_pusher, acquire.address);
+        if (early && Nx2Perf::Verify()) {
+            VerifyAcquireWord("trigger", acquire, *early, drained);
+        }
+        if (acquire.Matches(drained)) {
             return;
         }
         // Registered before the fences run, so a release among them that meets the value counts
