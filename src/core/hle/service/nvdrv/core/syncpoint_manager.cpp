@@ -41,19 +41,31 @@ u32 SyncpointManager::ReserveSyncpoint(u32 id, bool client_managed) {
     return id;
 }
 
+/// Finds an unreserved nonzero ID, returning zero if the pool is exhausted.
 u32 SyncpointManager::FindFreeSyncpoint() {
     for (u32 i{1}; i < syncpoints.size(); i++) {
         if (!syncpoints[i].reserved) {
             return i;
         }
     }
-    ASSERT_MSG(false, "Failed to find a free syncpoint!");
     return 0;
 }
 
+/// Allocates a syncpoint, retaining the assertion and zero result for callers requiring one.
 u32 SyncpointManager::AllocateSyncpoint(bool client_managed) {
+    const auto id = TryAllocateSyncpoint(client_managed);
+    ASSERT_MSG(id.has_value(), "Failed to find a free syncpoint!");
+    return id.value_or(0);
+}
+
+/// Reserves a nonzero ID atomically, or reports exhaustion without changing reservations.
+std::optional<u32> SyncpointManager::TryAllocateSyncpoint(bool client_managed) {
     std::lock_guard lock(reservation_lock);
-    return ReserveSyncpoint(FindFreeSyncpoint(), client_managed);
+    const u32 id = FindFreeSyncpoint();
+    if (id == 0) {
+        return std::nullopt;
+    }
+    return ReserveSyncpoint(id, client_managed);
 }
 
 void SyncpointManager::FreeSyncpoint(u32 id) {

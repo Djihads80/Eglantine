@@ -67,6 +67,7 @@
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/nx2_present_queue.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -1697,13 +1698,10 @@ public:
         });
     }
 
+    /// Cancels display callbacks before releasing their syncpoints and kernel events.
     ~INx2Vi2Session() override {
-        if (m_release_timer) {
-            system.CoreTiming().UnscheduleEvent(m_release_timer);
-            auto& syncpoints = system.Host1x().GetSyncpointManager();
-            while (syncpoints.GetGuestSyncpointValue(m_release_syncpoint) != m_release_value) {
-                syncpoints.IncrementGuest(m_release_syncpoint);
-            }
+        if (m_release_queue) {
+            m_release_queue.reset();
             NvdrvSyncpoints().FreeSyncpoint(m_release_syncpoint);
         }
         // The vsync callback may be running on the HostTiming thread: empty its event list under
@@ -1725,9 +1723,8 @@ private:
         TipcHandshake(ctx, "nx2:vi2");
     }
 
-    // 229(u64 client token, u32 slot, u32 image, ...fences): result, u64 mask of buffer slots the
-    // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
-    // at once (changes.patch's default mask is 0x7fff).
+    /// Presents a native buffer and returns available slots plus its release fence.
+    /// The queued path keeps display pacing outside the guest's CPU frame measurement.
     void PresentClientBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
@@ -1781,9 +1778,15 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        const auto release = PresentQueue() ? QueueRelease(w[12], ~w[22], w[24])
+                                            : std::optional{std::array<u32, 4>{}};
+        if (!release) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw<u32>(Kernel::ResultOutOfResource.raw);
+            return;
+        }
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
-        const auto release = PresentQueue() ? QueueRelease(w[12]) : std::array<u32, 4>{};
         if (!PresentQueue()) {
             PaceToVblank(w[12]);
         }
@@ -1825,8 +1828,8 @@ private:
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
-                             static_cast<u32>(AvailableSlots >> 32), release[0], release[1],
-                             release[2], release[3]});
+                             static_cast<u32>(AvailableSlots >> 32), (*release)[0], (*release)[1],
+                             (*release)[2], (*release)[3]});
     }
 
     /// Returns presentation fences instead of blocking the present thread until the next flip.
@@ -1849,20 +1852,16 @@ private:
             .GetSyncpointManager();
     }
 
-    /// Returns the NativeSyncHandle {~syncpoint, 0, value, 0} of a fence signalled when this frame's
-    /// swap interval has passed after the previous one (at once when the game is slower).
-    std::array<u32, 4> QueueRelease(u32 timing) {
-        if (m_release_syncpoint == ~0U) {
-            m_release_syncpoint = NvdrvSyncpoints().AllocateSyncpoint(true);
-            m_release_value = system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(
-                m_release_syncpoint);
-            m_release_timer = Core::Timing::CreateEvent(
-                "nx2:vi2 buffer release",
-                [&syncpoints = system.Host1x().GetSyncpointManager(), id = m_release_syncpoint](
-                    s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
-                    syncpoints.IncrementGuest(id);
-                    return std::nullopt;
-                });
+    /// Returns {~syncpoint, 0, value, 0}, released after the swap deadline and frame's GPU fence.
+    /// Returns no fence if the syncpoint pool or bounded release queue is exhausted.
+    std::optional<std::array<u32, 4>> QueueRelease(u32 timing, u32 fence_id, u32 fence_value) {
+        if (!m_release_queue) {
+            const auto id = NvdrvSyncpoints().TryAllocateSyncpoint(true);
+            if (!id) {
+                return std::nullopt;
+            }
+            m_release_syncpoint = *id;
+            m_release_queue.emplace(system.CoreTiming(), system.Host1x().GetSyncpointManager(), *id);
             LOG_INFO(Service, "nx2:vi2 display release syncpoint {}", m_release_syncpoint);
         }
         const u32 swap_interval = SwapInterval(timing);
@@ -1879,15 +1878,17 @@ private:
                 100'000'000'000LL * swap_interval / refresh_rate / Settings::SpeedLimit()};
         }
         m_release_time = interval.count() == 0 ? now : (std::max)(now, m_release_time);
-        system.CoreTiming().ScheduleEvent(m_release_time, m_release_timer, true);
+        const auto value = m_release_queue->Queue(m_release_time, fence_id, fence_value);
+        if (!value) {
+            return std::nullopt;
+        }
         m_release_time += interval;
-        return {~m_release_syncpoint, 0, ++m_release_value, 0};
+        return std::array<u32, 4>{~m_release_syncpoint, 0, *value, 0};
     }
 
     u32 m_release_syncpoint{~0U};
-    u32 m_release_value{};
     std::chrono::nanoseconds m_release_time{};
-    std::shared_ptr<Core::Timing::EventType> m_release_timer;
+    std::optional<Nx2PresentReleaseQueue> m_release_queue;
 
     // The console's compositor frees a buffer only once its frame's GPU fence has passed, which
     // is what keeps a game from running ahead of the GPU. This reply always reports every buffer
@@ -1930,6 +1931,7 @@ private:
         return swap_interval;
     }
 
+    /// Blocks until the next requested swap interval when queued presentation is disabled.
     // timing: present word 12, (swap interval << 16) | refresh rate. Fire Emblem: Fortune's Weave
     // sends 0x1003c during its boot logos and 0x2003c (two vblanks per frame, 30 fps) after; paced
     // at every vblank it ran at double speed. EDEN_NX2_SWAP_INTERVAL=<n> forces the interval.
@@ -2022,7 +2024,8 @@ private:
         return syncpoints.IsReadyGuest(fence_id, fence_value);
     }
 
-    // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
+    /// Shows a native image, keeping CPU speed limiting disabled when release fences pace it.
+    // Word 5 is the image id, ~word 22 / word 24 the GPU fence
     // (syncpoint, value) to wait for (layout from changes.patch). The image is a block-linear
     // RGBA8 surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
