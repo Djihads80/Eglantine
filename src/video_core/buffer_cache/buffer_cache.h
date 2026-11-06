@@ -25,6 +25,7 @@
 #include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -110,6 +111,46 @@ void BufferCache<P>::TickFrame() {
         return;
     }
     runtime.TickFrame(slot_buffers);
+    if (Nx2WarProbe::On()) [[unlikely]] {
+        // war_guard_probe: the native uniform bank pages bound this frame or the one before, for
+        // vi2 to label traps and snapshot (the map holds at most ~256 banks).
+        static_assert(Core::DEVICE_PAGESIZE == Nx2WarProbe::PageSize);
+        auto& probe = Nx2WarProbe::Get();
+        std::scoped_lock lk{probe.export_mutex};
+        size_t count = 0;
+        for (const auto& [bank_addr, shadow] : native_indirect_uniform_shadow) {
+            if (shadow.last_frame_tick == ~u64{0} || shadow.last_frame_tick + 1 < frame_tick) {
+                continue;
+            }
+            const DAddr first_page = Common::AlignDown(bank_addr, Core::DEVICE_PAGESIZE);
+            for (u32 page_idx = 0; page_idx < 32; ++page_idx) {
+                if ((shadow.initialized_mask & (1U << page_idx)) == 0) {
+                    continue;
+                }
+                if (count == probe.exported.size()) {
+                    ++probe.export_overflow;
+                    continue;
+                }
+                const DAddr page_addr = first_page + DAddr{page_idx} * Core::DEVICE_PAGESIZE;
+                probe.exported[count++] = {
+                    .device_page = page_addr >> Core::DEVICE_PAGEBITS,
+                    .cpu_page = device_memory.GetCpuBackingAddress(page_addr) >>
+                                Core::DEVICE_PAGEBITS,
+                    .host = device_memory.template GetPointer<u8>(page_addr),
+                };
+            }
+        }
+        const auto by_page = [](const Nx2WarProbe::BankPage& a, const Nx2WarProbe::BankPage& b) {
+            return a.device_page < b.device_page;
+        };
+        std::sort(probe.exported.begin(), probe.exported.begin() + count, by_page);
+        probe.exported_count = static_cast<size_t>(
+            std::unique(probe.exported.begin(), probe.exported.begin() + count,
+                        [](const Nx2WarProbe::BankPage& a, const Nx2WarProbe::BankPage& b) {
+                            return a.device_page == b.device_page;
+                        }) -
+            probe.exported.begin());
+    }
     if (native_indirect_uniform_shadow.size() > 256) {
         native_indirect_uniform_shadow.clear();
         native_indirect_uniform_cache.fill({~DAddr{0}, nullptr});
@@ -1560,6 +1601,12 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                     Nx2Perf::On(Nx2Perf::Opt::BankOncePerFrame);
         const bool skip_this_frame = once_per_frame && !Nx2Perf::Verify();
         const bool seen_this_frame = shadow->last_frame_tick == frame_tick;
+        if (Nx2WarProbe::On() && !seen_this_frame) [[unlikely]] {
+            // war_guard_probe: bank pages the guest rewrote between vi2's reply and this bind.
+            Nx2WarProbe::CompareBank(device_addr, size, [&](DAddr page_addr) -> const u8* {
+                return device_memory.template GetPointer<u8>(page_addr);
+            });
+        }
         if (skip_this_frame && seen_this_frame) {
             if (Nx2Profile::Enabled() &&
                 shadow->last_draw_ticket != native_indirect_uniform_draw_ticket &&

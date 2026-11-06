@@ -42,6 +42,7 @@
 #include "video_core/gpu.h"
 #include "video_core/nx2_frame_stats.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
@@ -1828,6 +1829,12 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        // war_guard_probe (measurement only): from here the guest may touch this frame's data.
+        const bool war_probe =
+            app_program_id == OcarinaOfTimeProgramId && VideoCommon::Nx2WarProbe::On();
+        if (war_probe) [[unlikely]] {
+            WarProbeArm();
+        }
         Composite(w[5], ~w[22], w[24], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         const auto release = PresentQueue() ? QueueRelease(w[12]) : std::array<u32, 4>{};
@@ -1904,6 +1911,10 @@ private:
                      window.presents, Ms(window.interval_us.p50), Ms(window.interval_us.p90),
                      Ms(window.interval_us.p99), Ms(window.interval_us.max), Ms(window.fence_us.p50),
                      Ms(window.fence_us.p99), Ms(window.fence_us.max), window.intervals_over_20ms);
+        }
+        if (war_probe) [[unlikely]] {
+            VideoCommon::Nx2WarProbe::Get().reply_ns.store(VideoCommon::Nx2WarProbe::NowNs(),
+                                                           std::memory_order_release);
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
@@ -2023,6 +2034,167 @@ private:
     u32 m_landed_timeouts{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
+
+    /// war_guard_probe: per 600 presents, how long after the reply the guest first touched a
+    /// guarded page (t_w), and what arming cost. Allocated at the first arm.
+    struct WarProbeWindow {
+        static constexpr u32 Presents = 600;
+        std::array<float, Presents> t_w_ms{};
+        std::array<float, Presents> sorted_ms{};
+        std::array<u64, VideoCommon::Nx2WarProbe::NumCategories> first_by_category{};
+        std::array<VideoCommon::Nx2WarProbe::BankPage, VideoCommon::Nx2WarProbe::MaxBankPages>
+            banks{};
+        std::array<u64, VideoCommon::Nx2WarProbe::MaxBankPages> bank_cpu_pages{};
+        u32 presents{}, samples{}, untrapped{};
+        u64 armed{}, protect_us{}, snapshot_us{}, snapshot_overflow{};
+        u64 bank_pages{}, bank_guarded{}, bank_tracked{}, bank_unguardable{};
+        Core::Memory::Memory::Nx2WarProbeArmResult last{};
+    };
+    std::unique_ptr<WarProbeWindow> m_war_probe;
+
+    /// Right after the Ocarina wait: closes the previous frame's sample, snapshots the native
+    /// uniform bank pages and write-protects the pages the tracker leaves writable.
+    void WarProbeArm() {
+        namespace Probe = VideoCommon::Nx2WarProbe;
+        auto& probe = Probe::Get();
+        if (!m_war_probe) {
+            m_war_probe = std::make_unique<WarProbeWindow>();
+        }
+        auto& window = *m_war_probe;
+        const s64 arm_begin = Probe::NowNs();
+        if (const u64 frame = probe.frame.load(std::memory_order_relaxed); frame != 0) {
+            const s64 reply = probe.reply_ns.load(std::memory_order_acquire);
+            if (reply != 0 && window.samples < window.t_w_ms.size()) {
+                if (probe.first_done.load(std::memory_order_acquire) == frame) {
+                    window.t_w_ms[window.samples++] = static_cast<float>(probe.first_ns) / 1e6f;
+                    ++window.first_by_category[static_cast<size_t>(probe.first_category)];
+                } else {
+                    // No guarded access before this present: the whole frame was available.
+                    window.t_w_ms[window.samples++] = static_cast<float>(arm_begin - reply) / 1e6f;
+                    ++window.untrapped;
+                }
+            }
+        }
+        probe.reply_ns.store(0, std::memory_order_release);
+        probe.frame.fetch_add(1, std::memory_order_acq_rel);
+
+        size_t bank_count = 0;
+        {
+            std::scoped_lock lk{probe.export_mutex};
+            bank_count = probe.exported_count;
+            std::copy_n(probe.exported.begin(), bank_count, window.banks.begin());
+        }
+        {
+            std::scoped_lock lk{probe.snapshot_mutex};
+            if (!probe.snapshot_bytes) {
+                probe.snapshot_bytes =
+                    std::make_unique<u8[]>(Probe::SnapshotPages * Probe::PageSize);
+            }
+            size_t count = 0;
+            for (size_t i = 0; i < bank_count; ++i) {
+                const Probe::BankPage& page = window.banks[i];
+                if (page.host == nullptr) {
+                    continue;
+                }
+                if (count == Probe::SnapshotPages) {
+                    ++window.snapshot_overflow;
+                    continue;
+                }
+                probe.snapshot_device_page[count] = page.device_page;
+                probe.snapshot_pending[count] = 1;
+                std::memcpy(probe.snapshot_bytes.get() + count * Probe::PageSize, page.host,
+                            Probe::PageSize);
+                ++count;
+            }
+            probe.snapshot_count = count;
+        }
+        const s64 protect_begin = Probe::NowNs();
+        size_t cpu_count = 0;
+        for (size_t i = 0; i < bank_count; ++i) {
+            if (window.banks[i].cpu_page != 0) {
+                window.bank_cpu_pages[cpu_count++] = window.banks[i].cpu_page;
+            }
+        }
+        const auto result = system.ApplicationMemory().Nx2WarProbeArm(
+            std::span<const u64>(window.bank_cpu_pages.data(), cpu_count));
+        const s64 protect_end = Probe::NowNs();
+        window.snapshot_us += static_cast<u64>((protect_begin - arm_begin) / 1000);
+        window.protect_us += static_cast<u64>((protect_end - protect_begin) / 1000);
+        window.armed += result.armed;
+        window.bank_pages += bank_count;
+        window.bank_guarded += result.bank_guarded;
+        window.bank_tracked += result.bank_tracked;
+        window.bank_unguardable += result.bank_unguardable;
+        window.last = result;
+        if (++window.presents == WarProbeWindow::Presents) {
+            WarProbeLog(window);
+        }
+    }
+
+    void WarProbeLog(WarProbeWindow& window) {
+        namespace Probe = VideoCommon::Nx2WarProbe;
+        auto& probe = Probe::Get();
+        const auto percentile = [&](u32 percent) -> float {
+            if (window.samples == 0) {
+                return 0.0f;
+            }
+            const u32 index = (std::min)(window.samples - 1, window.samples * percent / 100);
+            std::nth_element(window.sorted_ms.begin(), window.sorted_ms.begin() + index,
+                             window.sorted_ms.begin() + window.samples);
+            return window.sorted_ms[index];
+        };
+        std::copy_n(window.t_w_ms.begin(), window.samples, window.sorted_ms.begin());
+        const float p10 = percentile(10);
+        const float p50 = percentile(50);
+        const float p90 = percentile(90);
+        const double frames = WarProbeWindow::Presents;
+        const auto per_frame = [&](u64 value) { return static_cast<double>(value) / frames; };
+        const auto traps = [&](Probe::Category category) {
+            return per_frame(
+                probe.traps[static_cast<size_t>(category)].exchange(0, std::memory_order_relaxed));
+        };
+        const double cached = traps(Probe::Category::Cached);
+        const double unprotected = traps(Probe::Category::Unprotected);
+        const double bank = traps(Probe::Category::Bank);
+        const double read = traps(Probe::Category::Read);
+        u64 export_overflow = 0;
+        {
+            std::scoped_lock lk{probe.export_mutex};
+            export_overflow = probe.export_overflow;
+        }
+        const u64 compared = probe.bank_compared.exchange(0, std::memory_order_relaxed);
+        const u64 changed = probe.bank_changed.exchange(0, std::memory_order_relaxed);
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf war_guard_probe: t_w p10/p50/p90 {:.2f}/{:.2f}/{:.2f} ms ({} of {} "
+                 "frames without a guarded access before the next present; first access "
+                 "cached/unprotected/bank/read {}/{}/{}/{}; {} guest traps before the reply), "
+                 "guarded traps/frame cached {:.1f} unprotected {:.1f} bank {:.1f} read {:.1f} "
+                 "(host threads {:.1f}), pages armed {:.1f}/frame ({} still guarded, {} writable, "
+                 "{} set overflow), bank pages {:.1f}/frame (writable {:.1f}, tracker-protected "
+                 "{:.1f}, unguardable {:.1f}; {} export overflow), protect {:.0f} us/frame, "
+                 "snapshot {:.0f} us/frame, bank pages changed before first bind {:.2f}/frame "
+                 "({} compared), snapshot overflow {}, {} verify differences",
+                 p10, p50, p90, window.untrapped, window.samples,
+                 window.first_by_category[static_cast<size_t>(Probe::Category::Cached)],
+                 window.first_by_category[static_cast<size_t>(Probe::Category::Unprotected)],
+                 window.first_by_category[static_cast<size_t>(Probe::Category::Bank)],
+                 window.first_by_category[static_cast<size_t>(Probe::Category::Read)],
+                 probe.pre_reply_traps.exchange(0, std::memory_order_relaxed), cached,
+                 unprotected, bank, read,
+                 per_frame(probe.host_traps.exchange(0, std::memory_order_relaxed)),
+                 per_frame(window.armed), window.last.guarded, window.last.unprotected,
+                 window.last.overflow, per_frame(window.bank_pages), per_frame(window.bank_guarded),
+                 per_frame(window.bank_tracked), per_frame(window.bank_unguardable),
+                 export_overflow, per_frame(window.protect_us), per_frame(window.snapshot_us),
+                 per_frame(changed), compared, window.snapshot_overflow,
+                 probe.verify_differences.load(std::memory_order_relaxed));
+        window.presents = 0;
+        window.samples = 0;
+        window.untrapped = 0;
+        window.first_by_category = {};
+        window.armed = window.protect_us = window.snapshot_us = 0;
+        window.bank_pages = window.bank_guarded = window.bank_tracked = window.bank_unguardable = 0;
+    }
 
     // The console flips one frame per 60 Hz vblank and keeps the rest queued, so a game can't
     // present faster than that. Every slot is reported free here: hold each present until the

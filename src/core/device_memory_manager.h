@@ -100,6 +100,12 @@ public:
         ApplyOpOnPAddr(address, buffer, operation);
     }
 
+    /// The guest virtual address mapped at a device address (diagnostics; 0 when none).
+    VAddr GetCpuBackingAddress(DAddr address) {
+        const VAddr page = ExtractCPUBacking(address >> page_bits).second;
+        return page == 0 ? 0 : page + (address & page_mask);
+    }
+
     PAddr GetPhysicalRawAddressFromDAddr(DAddr address) const {
         PAddr subbits = PAddr(address & page_mask);
         auto paddr = tracked_entries[(address >> page_bits)].compressed_physical_ptr;
