@@ -230,12 +230,18 @@ void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
 void MemoryManager::BumpMapSerial(GPUVAddr begin, size_t size) {
     // A sequence lock per slot: readers check the slot's serial before and after reading the
     // range, and drop the run when it changed in between.
+    // The whole big pages: BigPageTableOp sets the entry of each big page the range touches, also
+    // where the range starts or ends inside it. Recorded as asked, a change just before a run's
+    // page in the same big page went unseen and the run kept a range that no longer existed
+    // (Mario Kart World, which maps and unmaps all the time: exploding vertices, flicker).
+    const GPUVAddr first = begin & ~big_page_mask;
+    const GPUVAddr last = (begin + size + big_page_mask) & ~big_page_mask;
     const u64 next = map_serial.load(std::memory_order_relaxed) + 1;
     MapChange& change = map_changes[next % MapChangeCount];
     change.serial.store(0, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
-    change.begin.store(begin, std::memory_order_relaxed);
-    change.end.store(begin + size, std::memory_order_relaxed);
+    change.begin.store(first, std::memory_order_relaxed);
+    change.end.store(last, std::memory_order_relaxed);
     change.serial.store(next, std::memory_order_release);
     map_serial.store(next, std::memory_order_release);
 }
