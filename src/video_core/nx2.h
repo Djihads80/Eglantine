@@ -53,11 +53,14 @@ inline bool Nx2CommandLists() {
 // Titles whose guest side reads GPU-written buffer data through a path the buffer cache does not
 // see, so their buffers must be copied back to guest memory at every fence
 // (BufferCache::AsyncBufferDownloads, EDEN_NX2_BUFFER_DOWNLOADS). 0400A3A01EE4C000 is Pokemon
-// Pokopia: with the copy-back off its sky is black or flickers. Open work: find what reads it,
-// then the list goes.
+// Pokopia: with the copy-back off its sky is black or flickers. 0400486024DEC000 is Ocarina of
+// Time: its CPU reads GPU-written exposure/sky values, and on Android (NCE has no read traps, and
+// reactive flushing is off) it read stale ones, so the scene came out ~3.4x overexposed (white
+// mist from the sky LUT on). Open work: read traps under NCE, then the list goes.
 inline bool Nx2NeedsBufferDownloads() {
     switch (g_nx2_program_id.load(std::memory_order_relaxed)) {
     case 0x0400A3A01EE4C000ULL:
+    case 0x0400486024DEC000ULL:
         return true;
     default:
         return false;
