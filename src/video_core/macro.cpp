@@ -1510,12 +1510,57 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         }
         if (use_jit && native_jit->Usable()) {
             fifo.assign(parameters.begin(), parameters.end());
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+            // Same-value state writes are elided inside the compiled code, as on the split's
+            // front (Maxwell3D::FrontRunMacro): CallMethod would return from them having changed
+            // nothing. Without the split, Ocarina of Time's macros make ~1 million of them a
+            // second on the phone, each a callback, a profile scope and a CallMethod.
+            // EDEN_NX2_JIT_SKIP_SAME=0 (or EDEN_NX2_SKIP_SAME=0) calls back for every emit.
+            static const bool elide = [] {
+                const char* const jit_skip = std::getenv("EDEN_NX2_JIT_SKIP_SAME");
+                const char* const skip_same = std::getenv("EDEN_NX2_SKIP_SAME");
+                return (jit_skip == nullptr || jit_skip[0] != '0') &&
+                       (skip_same == nullptr || skip_same[0] != '0');
+            }();
+            // Executable methods, the MME DMA reads (handled in emit) and the macro range always
+            // call back. execution_mask is the same for every 3D engine and never changes.
+            static const auto must_call = [&maxwell3d] {
+                std::array<u8, TuringMacroJit::MustCallMethods> table{};
+                for (u32 index = 0; index < table.size(); ++index) {
+                    const bool dma_read = index == 0x157 || index == 0x158;
+                    table[index] = index >= Maxwell3D::Regs::NUM_REGS ||
+                                           maxwell3d.execution_mask[index] || dma_read
+                                       ? 1
+                                       : 0;
+                }
+                return table;
+            }();
+            TuringMacroJit::Elision elision{
+                .must_call = must_call.data(),
+                .regs = maxwell3d.regs.reg_array.data(),
+                .shadow = maxwell3d.shadow_state.reg_array.data(),
+                .control =
+                    reinterpret_cast<const u32*>(&maxwell3d.shadow_state.shadow_ram_control),
+                .skipped = 0,
+            };
+            native_jit->SetElision(elide ? &elision : nullptr);
+#endif
             const auto result = native_jit->Execute(
                 method, fifo, std::span<u32>{*native_interpreter.active_dram},
                 [&](u32 address) {
                     return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U;
                 },
                 emit);
+#if defined(ARCHITECTURE_arm64) && defined(__ANDROID__)
+            // Never left set: another engine's macros may run through this JIT.
+            native_jit->SetElision(nullptr);
+            if (elision.skipped != 0 && VideoCommon::Nx2Profile::Enabled()) [[unlikely]] {
+                namespace Profile = VideoCommon::Nx2Profile;
+                Profile::Add(Profile::Counter::MethodWrites, elision.skipped);
+                Profile::Add(Profile::Counter::SameValueWrites, elision.skipped);
+                Profile::Add(Profile::Counter::JitSkippedWrites, elision.skipped);
+            }
+#endif
             if (!result.success) {
                 native_execution_failed = true;
                 LOG_ERROR(HW_GPU,
