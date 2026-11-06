@@ -2034,7 +2034,9 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         save_recommended_mkw_settings =
             use_recommended_mkw_settings && remember_settings.isChecked();
         UISettings::values.skip_mkw_settings_prompt = skip_prompt.isChecked();
+        const bool players_were_global = Settings::values.players.UsingGlobal();
         config->SaveAllValues();
+        Settings::values.players.SetGlobal(players_were_global);
         LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
     }
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
