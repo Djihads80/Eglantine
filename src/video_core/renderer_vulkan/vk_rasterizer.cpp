@@ -254,8 +254,11 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
             gpu.ForEachPendingCpuWrite(callback);
         });
     VideoCommon::GpuSplit::Get().SetIdleHook(
-        [](void* argument) { static_cast<RasterizerVulkan*>(argument)->FlushSplitIdle(); },
+        [](void* argument, VideoCommon::IdleHookReason reason) {
+            static_cast<RasterizerVulkan*>(argument)->FlushSplitIdle(reason);
+        },
         this);
+    hook_lazy_flush = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::HookLazyFlush);
     submit_while_waited =
         VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SubmitWhileWaited);
     if (submit_while_waited) {
@@ -1435,10 +1438,26 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
     }
 }
 
-void RasterizerVulkan::FlushSplitIdle() {
+void RasterizerVulkan::FlushSplitIdle(VideoCommon::IdleHookReason reason) {
     if (buffer_cache.HasPendingNx2ListCopies()) {
         std::scoped_lock lock{buffer_cache.mutex};
         SubmitNx2ListCopies();
+    }
+    // hook_lazy_flush: a catch-up nobody needs GPU results from leaves the deferred submit to
+    // DeferFlush's window, up to EDEN_NX2_HOOK_FLUSH_US. Sleeping, asked (Drain, WaitSubmitted)
+    // and front waits for results submit at once.
+    if (hook_lazy_flush && scheduler.HasDeferredFlush() &&
+        (reason == VideoCommon::IdleHookReason::WaitMemory ||
+         reason == VideoCommon::IdleHookReason::BatchEnd)) {
+        const auto since = scheduler.DeferredSince();
+        if (std::chrono::steady_clock::now() - since <
+            std::chrono::nanoseconds{VideoCommon::GpuSplit::HookFlushDeadlineNs()}) {
+            VideoCommon::GpuSplit::Get().NoteLazySkip(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(since.time_since_epoch())
+                    .count());
+            VideoCommon::Nx2Profile::AddHookFlushSkipped();
+            return;
+        }
     }
     VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::IdleHook};
     scheduler.FlushDeferred();
@@ -1487,6 +1506,9 @@ void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {
         state->cv.notify_all();
     });
     fence_manager.SignalFence([] {});
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        VideoCommon::GpuSplit::Get().CheckLazySkip("FlushQueryResults");
+    }
     scheduler.FlushDeferred();
     // Never hang the GPU thread on it: wait in slices, submitting deferred work again, and give up
     // after 2 s (the read may then see older report values).
