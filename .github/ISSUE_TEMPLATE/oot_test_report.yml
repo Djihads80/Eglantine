@@ -77,6 +77,13 @@ body:
         - High
         - Don't know
 
+  - type: input
+    id: switches
+    attributes:
+      label: Environment variables set, if any
+      description: For example EDEN_NX2_PERF_SAFE=1 or EDEN_NX2_PERF_OFF=... Leave empty if you set none.
+      placeholder: "e.g. EDEN_NX2_PERF_SAFE=1"
+
   - type: textarea
     id: log
     attributes:

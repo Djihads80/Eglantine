@@ -1,7 +1,8 @@
 # Help wanted: Ocarina of Time to a locked 60 FPS
 
-This fork's `stable/oot-playable-no-crash-2026-11-05` branch plays Ocarina of Time (Switch 2)
-without crashing, at 40-60 FPS. These are the open problems, easiest first. Read
+This fork plays Ocarina of Time (Switch 2) without crashing, and since 2026-11-06 without the
+brightness flashes, at ~36 FPS at our lab save's Kokiri Forest spawn spot and 43-45 after a short
+walk (RTX 5090). These are the open problems, easiest first. Read
 [OOT_WORKFLOW.md](OOT_WORKFLOW.md) before changing emulation code: every change here is measured
 in game and checked against the safe path, and a fix that only compiles isn't done.
 
@@ -17,56 +18,73 @@ in an issue or PR.
 
 **1. Test other areas and GPUs.** Play Hyrule Field, a dungeon, Kakariko, a cutscene. Report
 the place, your GPU and driver, the FPS range, and anything wrong (crash, freeze, flashes, missing
-objects, slow motion). Attach `%APPDATA%\eden\log\eden_log.txt` from that session. AMD and Intel results are especially wanted: almost all testing so far was on an
-RTX 5090.
+objects, slow motion). Attach `%APPDATA%\eden\log\eden_log.txt` from that session. AMD and Intel
+results are especially wanted: almost all testing so far was on an RTX 5090. If you see flashes,
+say whether they stop with the environment variable `EDEN_NX2_PERF_SAFE=1`.
 
 **2. Catch the rare freeze.** One automated run in fourteen froze the whole emulator for 60 s and
 then carried on. If it happens to you, note the time, and while it is frozen save a dump from
 Task Manager (Details, right-click `eglantine.exe`, Create dump file). That dump shows where
 every thread waits.
 
+**3. Measure 3D V-Cache pinning (Ryzen X3D owners).** The emulation threads are pinned to the
+V-Cache CCD by default, and nobody has measured whether that helps. Run the lab
+([tools/nx2/lab](tools/nx2/lab/README.md)) with `-Env EDEN_NX2_VCACHE=1` and `=0`, alternating, two
+runs each, and post the spawn and walk medians. Unless pinning wins, it goes off by default.
+
 ## Some C++ needed
 
-**3. Find out which guest-CPU readbacks matter.** Preflushing GPU writes the CPU reads took
-Kokiri Forest from 37 to 52 FPS, but it now copies ~1.4 GB/s back from the GPU in ~150,000
-copies a second. Count how many of those ranges the CPU reads before the GPU writes them again
-(`src/video_core/buffer_cache/`). If most are never read, aging their marks out is cheap speed.
-
 **4. Clean up Vulkan validation errors.** Run with validation layers on and fix what they report:
-`vkCmdEndQuery` on queries started outside a render pass, an image view format not in the
-image's format list, and stencil export declared without the extension.
+`vkCmdEndQuery` on queries started outside a render pass, an image view format
+(A8B8G8R8_UNORM_PACK32) not in the image's format list, and `SPV_EXT_shader_stencil_export`
+declared without the extension.
 
 **5. Missing hedge leaves.** The garden hedges' mesh pipelines now build, but their draws get a
 zero count from vegetation culling compute programs. Find which program and why
 (`src/shader_recompiler/frontend/ampere/`).
 
-## Deep: the remaining ~3 ms per frame
+## Deep: the remaining ~11 ms per frame
 
-The split GPU thread's front (macros, command parsing) is the bottleneck: it is idle under 1%
-of the time, and the back idles ~24% waiting for it. Profile with `EDEN_NX2_GPU_PROFILE=1`.
-Each item below must pass a run with `EDEN_NX2_PERF_VERIFY=1` and zero `Nx2Perf split:`
-mismatches before it is turned on, because a stale read gives the guest wrong draw arguments
-and can lose the GPU device.
+The spawn spot runs at ~27.5 ms per frame; 60 FPS is 16.7. Profile with `EDEN_NX2_GPU_PROFILE=1`
+and look at `Nx2Frame:` lines. A change that skips a wait must first pass a run with
+`EDEN_NX2_PERF_VERIFY=1` and zero `Nx2Perf split:` mismatches, because a stale read gives the
+guest wrong draw arguments and can lose the GPU device. A change that touches frame timing must
+also pass the lab's flash check (`-Flash 30`, zero outliers). Put each one behind an `Nx2Perf`
+switch so it can be A/B tested and turned off. The wait counts below come from a profile taken
+before the flash fix; re-profile before you start.
 
-**6. Early macro reads wait for every queued GPU job** (~250 ms per second of gameplay). The
-1 MiB "GPU-written" marks are set only when the back runs a job, so any queued job might write
-first. Fix: an exact set of shaders the back has proven never write memory; unseen shaders,
-transform feedback and compute stay writers. See `Maxwell3D::FrontDmaReadEarly` and
+**6. Get the ~5 ms of `frames_ahead` back, without flashes.** Running the guest a frame ahead of
+the GPU thread was worth ~5 ms per frame, and `present_one_ahead` another ~3.5 ms on top. Both
+flash: the guest's syncpoint goes up when the back thread *records* a frame, and the back reads
+guest memory late (uniform buffers re-read at bind, dirty pages uploaded at draw), so a guest
+running ahead rewrites constants and exposure data before they are read. Only the pushbuffer is
+copied. Waiting for the previous frame to land on the GPU is not enough (`landed_prev_always` and
+`one_ahead_landed` still flashed: 7-8 outliers in 30 captures). What is left: copy, or
+write-protect until the back has passed the frame, the pages the back reads late. See
+`nx2_gsv.h` (present path), `fence_manager.h` and `buffer_cache.h`.
+
+**7. One macro's DMA reads block the front.** A single macro (start `0x16`, method `0xe2c`) does
+every front MME DMA read (6 words of an occlusion report), ~39,000 times a second, and each waits
+~7 us for the back: ~255 ms per second. Running that read on the back in ring order would remove the sync
+point. `acquire_trigger_early`, `exact_noted_writes` and `writer_set_exec` each removed many waits
+but gained nothing alone, because the wait moved to this macro's next read; measure them again on
+top of it.
+
+**8. Command-list writer waits.** Every DMA copy and 2D blit counts as an unknown GPU writer, so
+the front waits for them before each command list (~6,300 waits, ~145 ms per second). Noting
+their destination ranges would let most go through. See `dma_pusher.cpp` and
 `split_write_tracker.h`.
 
-**7. Constant buffer words the front already knows.** Reads that overlap queued constant buffer
-writes wait for them, although the front knows the values it queued. Serve them from a small
-overlay instead (reports and fences excluded: they land later).
+**9. Back per-draw setup.** Each fence with pending downloads ends the render pass to record its
+copies (record them once per submission instead, ~0.6 ms per frame), and every native 64 KiB
+uniform bank is compared with its shadow once per frame (~0.35 ms). See `buffer_cache.h`.
 
-**8. Semaphore acquires drain the back** (~155 ms per second). A safe early check needs a bitmap
-of pages the buffer or query cache may still hold newer data for, plus a gate on the fence
-settings. See `Puller::ProcessSemaphoreTriggerMethod`.
-
-**9. Early command-list fetches (`split_overlap`).** Worth about 2 FPS, but quarantined: it once
+**10. Early command-list fetches (`split_overlap`).** Worth about 2 FPS, but quarantined: it once
 lost the device, and it has no verify mode yet. Adding one is the first step.
 
 ## Reporting results
 
 Give the commit hash (shown in the window title and the first log line), the place in game, and
-before/after FPS from the same spot. One good 10-second window proves nothing: frame rate swings
-about 3 FPS run to run.
+before/after FPS from the same spot of the same save (`perf_summary.py` separates the spawn spot
+from the walk). One good 10-second window proves nothing: frame rate swings about 3 FPS run to
+run.

@@ -13,6 +13,8 @@ The emulator itself is Eglantine, built on Eden and yuzu: thanks to everyone who
 
 - **AManWithAPlan** (68 commits): integration on `local-combined`, the Ocarina crash and
   performance work in this state, porting and conflict resolution of the PRs below, testing.
+  44 more since, on `local-combined`: the `Nx2Perf` switch system, the flash fix, frame
+  statistics and the lab tooling.
 
 ## Code authors (commits on this branch)
 
@@ -40,6 +42,13 @@ The emulator itself is Eglantine, built on Eden and yuzu: thanks to everyone who
 | Dr. Sergio | 1 | LayeredFS mods for NUP titles |
 | resadent, rdenno, cr1ckt, SinCuri0, Paulo Tumabing, Paulius, Inc0rporate, 999sian | 1 each | |
 
+## Since the stable state (`local-combined`, 2026-11-06)
+
+| Contributor | Commits | Notable work |
+|---|---|---|
+| AManWithAPlan | 44 | `Nx2Perf` switches (`EDEN_NX2_PERF_ON`/`SAFE`, live control file), the flash fix, `Nx2Frame` statistics, lab watchdog |
+| PastaLaPate | 1 | Data migration dialog choices that do what they say (cherry-picked from upstream `nx2`) |
+
 ## Credited in commit messages
 
 - **Franseven**, **Quixomatic** (co-authors): native uniform bank re-uploads and FP16 texture
@@ -61,7 +70,8 @@ own those changes.
 
 ## Every contributor's commits
 
-Each name lists that person's commits on this branch, oldest first, linked on GitHub.
+Each name lists that person's commits on this branch, oldest first, linked on GitHub. Commits
+since the stable state are on `local-combined`; their links work once that branch is on GitHub.
 
 ### AManWithAPlan
 
@@ -139,6 +149,55 @@ Each name lists that person's commits on this branch, oldest first, linked on Gi
 - [`85763598a6`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/85763598a6b45f03150d3d01eefe77262c5315e8) docs: how the Ocarina of Time stable state was reached
 - [`b79ffba039`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/b79ffba0397e7ce4e9853bf7ebf615cbba045cd0) docs: point the README at the Ocarina of Time state and list open tasks
 - [`b8597ed1b9`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/b8597ed1b9a1a3fd44ea8750d792432e7eae5a54) docs: mark the fork as result first, code not necessarily peer-reviewed
+
+</details>
+
+<details><summary>44 commits since the stable state (`local-combined`)</summary>
+
+- [`59bd152917`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/59bd152917961c45a811ffd284740d48aeaf66f6) video_core: settled counter reports no longer drain early macro reads
+- [`670cdf4185`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/670cdf418518245e44ef47785d5255300016ce43) nx2_perf: experimental switches off by default, EDEN_NX2_PERF_ON turns one on
+- [`fd8bf03cfd`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/fd8bf03cfd48034087c013526415ef465440b321) nx2: early macro DMA reads overlay queued constant buffer words (MacroReadCbOverlay)
+- [`01092f5565`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/01092f556584094c6cf5cc65ea227f06ded77580) puller: acquire drains by site, polls without draining (Opt::AcquireEarly)
+- [`1973bcb892`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/1973bcb892c33aa89eedd738d73197876c66bb90) gpu_split: EagerPublish publishes ring entries while the back is idle
+- [`ca7f44c214`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/ca7f44c214b2355675797758faf49e4a8f447602) nx2_perf: split front direct-write switches (front_same_first, front_class_table, front_run)
+- [`7b435a3ea9`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/7b435a3ea9a4707dd3e0759804deac202b314ef9) buffer_cache: measure fence-time downloads, batch them per buffer (download_batch)
+- [`fc897fc2b0`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/fc897fc2b095deb868dbc749b99932cbe1ed65a3) nx2: batch, borrow and keep state for front 3D macros
+- [`b5f7b95ee8`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/b5f7b95ee89ccc8a6eb86d03b3b44a18d0725652) buffer_cache: preflush marks the CPU stopped reading age out (preflush_aging)
+- [`72166b3bea`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/72166b3bea288afb3d88d4049ab6f2bd8f5eabcc) nx2_perf: dispatch_batch, pipeline_fast_cache, draw_preamble switches and bind sub-zones
+- [`b9bc037b19`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/b9bc037b19f515330acf3db5673eb9b530d89d8c) nx2_profile: close the same-value histogram block lost in the downloads merge
+- [`12128efe3d`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/12128efe3d48857b4b64f03c68b31a3c32e8fb62) nx2_perf: bind_memo skips touch, sync and usage of unchanged non-written binds
+- [`40e363f462`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/40e363f46228b00bdbd25e22e65fbe863b495aef) nx2_perf: experimental switches on by default, EDEN_NX2_PERF_SAFE=1 turns them off
+- [`3ec40da2b1`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/3ec40da2b19503aaad58a990ab3cbea26e25344e) video_core: early macro reads wait only for writers (macro_read_writer_set)
+- [`e08e111399`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/e08e11139994eeda04b19be447b9467a4a27ec9c) nx2_perf: macro JIT switches always off until their per-call cost is fixed
+- [`31b156cfa0`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/31b156cfa0f8a122baf41ef563b0c0d5b658e145) nx2: keep the plain and batching macro programs apart
+- [`1d14ddcda4`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/1d14ddcda4508a27b5f7d8c8bf04e0dfcc0745c4) nx2_perf: macro JIT switches on again after the recompile fix
+- [`16bdf87d0d`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/16bdf87d0d6cc5221a8c70514f34fd38b681ea08) nx2_perf: acquire_early and dispatch_batch off by default
+- [`d1f7f92b27`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/d1f7f92b27dacfd27eb6186258e777ba0e835514) nx2_perf: 64-bit switch mask, larger profile counter array
+- [`6ff4c20b9a`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/6ff4c20b9a9fed660dec0311563cfd93ae9bf45b) video_core: early macro overlay reads wait only for writers (macro_read_overlay_writers)
+- [`8705321017`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/87053210171b6a75370b65ca8a72f9c23429320a) vk_rasterizer: submit while the front waits or the GPU is idle (submit_while_waited)
+- [`aefc2215a8`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/aefc2215a8c8dee13ef62a71a7858f1cb51200ed) common, video_core: gpu_core_pin reserves a V-Cache core for the GPU threads
+- [`ead0ff6ade`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/ead0ff6ade2cc81ff4851dec0b36d0951e460e7f) nx2_perf: submit_while_waited on by default
+- [`c32add593e`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/c32add593ec16c2541c06eceab3cd6c0fe95d935) nx2_gsv: present_one_ahead skips this frame's wait when the back is behind
+- [`1cd9f57f3a`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/1cd9f57f3aea0a2048bd4da9d385fb661f1e0191) nx2_gsv: present_guest_wait sleeps vi2's fence wait in the guest kernel
+- [`5218f52c52`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/5218f52c52fce1f4cdd46f2a63c0e380a30961a9) nx2_perf: acquire_trigger_early, early semaphore trigger answers only when met
+- [`12baa11807`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/12baa118071521a0e0d41b3894a357b1d657bbf7) gpu_split: release_before_hook, consumed stored before the idle hook for non-list waits
+- [`364eda134c`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/364eda134cdfdfd1deecabd2b6e93b0d07b6b606) nx2_perf: present_one_ahead on by default
+- [`408dd839ec`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/408dd839ec27ea3e6aad4b892e796df09302d965) nx2_perf: gpu_core_pin separate+worker mode, separate by default; guest_ccd switch
+- [`5b2228dc91`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/5b2228dc9158e2823ced4e2fcc015594b6e4d1ae) vk_pipeline_cache: pipeline_keep_preloaded keeps never-used boot pipelines
+- [`13f6f46bb7`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/13f6f46bb739f81516c6a055078fe42c60d50650) maxwell_3d: writer_set_exec keeps proven draw-manager writes as Draw
+- [`7efce8b184`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/7efce8b184366dbbd450d925c9e3220beeee778b) maxwell_3d: drop the duplicated DMA read mismatch log in verify
+- [`cc279a2561`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/cc279a25612b17aac4980474d94809d6dedfcbea) nx2_perf: exact_noted_writes, byte-exact noted writes for early reads
+- [`a849da9a0f`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/a849da9a0f63ced3adddf9149b11e6cb099810ff) nx2_perf: present_one_ahead off by default (flashes)
+- [`f945dc6095`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/f945dc60959695c1b93199597d79eb3878d9edc9) nx2_perf: bank_once_per_frame switch for the native uniform bank re-check
+- [`968e1fee2e`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/968e1fee2ebc9e5c80ad43b83b457c491413b0d2) buffer_cache: bind_memo_local decides memo hits from the range's own bits
+- [`96bc15ce40`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/96bc15ce405ad2cc576d59283220accfec9cf022) nx2: landed syncpoint host value for vi2's early returns (switches, off)
+- [`b848ad65fa`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/b848ad65faaefd5f51ed15edf4323e3f8f0cb7df) video_core: split_rings switch for allocation-free front bookkeeping
+- [`5f21b5f882`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/5f21b5f882b5231e619abed45a9cf53b381cb39c) nx2_gsv: per-second frame-time percentiles
+- [`c1abca904e`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/c1abca904ecee53158b81999661cdade190792e7) nx2_gsv: count intervals over 20 ms in Nx2Frame
+- [`e4dc818c91`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/e4dc818c91f02e9b73080d1ae041d84a86334982) nx2_perf: frames_ahead off by default (the Ocarina flashes)
+- [`f37eaf2c74`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/f37eaf2c747662ac61047f1cf716ec0088131686) nx2_perf: live switch control file
+- [`3dc5cea41a`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/3dc5cea41a349f67ef840179f29dfe73680c9ae9) nx2_perf: drop switches without call sites from live_safe
+- [`ccc7f68859`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/ccc7f688598209ba80b58990ffb41d47f3033959) tools/nx2: lab_ctl stops the emulator without a console
 
 </details>
 
@@ -347,6 +406,10 @@ Each name lists that person's commits on this branch, oldest first, linked on Gi
 ### SinCuri0
 
 - [`ad37ad1cb3`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/ad37ad1cb30c4dbcd8844bcec45b110d7c58f611) video_core: store guarded and mesh pipelines in the Vulkan disk cache
+
+### PastaLaPate
+
+- [`c7412bd112`](https://github.com/A-Man-With-A-Plan-dev/Eglantine/commit/c7412bd11271d25d1b245173654f743685fa4141) fix: broken migration button strategy selection
 
 ## Credited in commit messages
 

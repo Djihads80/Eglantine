@@ -9,7 +9,8 @@
 
 > [!IMPORTANT]
 > **This fork: The Legend of Zelda: Ocarina of Time (Switch 2) is playable here.**
-> No crashes in Kokiri Forest, 40-60 FPS on an RTX 5090, normal game speed when the frame rate dips.
+> No crashes in Kokiri Forest, no brightness flashes since 2026-11-06, normal game speed when the frame rate dips.
+> Not 60 FPS yet: ~36 FPS standing at our lab save's Kokiri Forest spot and 43-45 after a short walk, on an RTX 5090.
 > The goal is a locked 60 FPS, and help is welcome.
 >
 > - [What works, the numbers and the key changes](OOT_STABLE.md)

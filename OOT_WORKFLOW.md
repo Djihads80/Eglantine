@@ -43,12 +43,20 @@ single fix. This page is that method, so the next person or agent can repeat it.
   didn't move the gameplay frame rate, because the crash hid it.
 - Trusting "fixed" commits without a game run: one was labelled a device-lost fix and still
   crashed 30 s in.
+- Accepting a speed win on the median alone (2026-11-06). Letting the game run a frame ahead of
+  the GPU gave +9 FPS and brightness flashes in play. Changes that touch frame timing now also
+  pass a flash check: 30-40 captures standing still, zero brightness outliers.
+- Trusting a lab run's numbers without checking it reached gameplay. One run never left the title
+  screen and reported a perfect 60 FPS; the lab now marks such a run invalid.
 
 ## Tools used
 
-- Log summary: frame rate windows from `PresentClientBuffer` lines in `eden_log.txt`.
-- Headless lab: `eden-cli` with a hidden window, driven by `tools/nx2/lab_ctl.py`
-  (launch, button presses, screenshot, stop). The run script and its stall watchdog are local
-  helpers, not in git.
+- Log summary: `tools/nx2/lab/perf_summary.py`, frame rate windows from the `nx2:vi2` and
+  per-second `Nx2Frame:` lines, split into title screen, spawn spot and walk.
+- Headless lab: [tools/nx2/lab](tools/nx2/lab/README.md), `eden-cli` with a hidden window driven
+  by `tools/nx2/lab_ctl.py` (launch, button presses, screenshot, stop, and a time limit that
+  ends forgotten runs), plus thread stack dumps when the log stalls and a flash check.
 - Switches: `EDEN_NX2_GPU_PROFILE=1` (profiler), `EDEN_NX2_PERF_VERIFY=1` (shortcut check),
-  `EDEN_NX2_PERF_OFF=<name>` (turn one optimization off), `EDEN_NX2_PREFLUSH=0`.
+  `EDEN_NX2_PERF_OFF=<name>` / `EDEN_NX2_PERF_ON=<name>` (one optimization off or on),
+  `EDEN_NX2_PERF_SAFE=1` (every experimental one off), `EDEN_NX2_PERF_CONTROL=<file>` (flip
+  switches live, for A/B windows in one boot), `EDEN_NX2_PREFLUSH=0`.

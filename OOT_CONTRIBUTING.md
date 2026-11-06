@@ -31,6 +31,10 @@ cmake --build build --target yuzu yuzu-cmd tests
 That gives `build\bin\eglantine.exe` (the app), `build\bin\eden-cli.exe` (what the lab runs) and
 `build\bin\tests.exe`. The first build takes a while; later ones rebuild only what changed.
 
+The stable branch still runs `frames_ahead`, the cause of the brightness flashes. Performance work
+should start from `local-combined` (2026-11-06 and later: flash fix, `Nx2Perf` switches,
+`Nx2Frame` lines); see [OOT_STABLE.md](OOT_STABLE.md).
+
 ## Measure before and after
 
 Set up the lab once and run it before and after your change: [tools/nx2/lab/README.md](tools/nx2/lab/README.md).
@@ -41,23 +45,31 @@ python -I tools\nx2\lab\make_lab_config.py
 $env:EGLANTINE_OOT_GAME = "D:\Games\Ocarina of Time.nup"
 powershell -ExecutionPolicy Bypass -File tools\nx2\lab\run_oot.ps1 -Name before
 powershell -ExecutionPolicy Bypass -File tools\nx2\lab\run_oot.ps1 -Name after
-python -I tools\nx2\lab\perf_summary.py tools\nx2\lab\runs\after\emulator.log
+python -I tools\nx2\lab\perf_summary.py tools\nx2\lab\runs\before
+python -I tools\nx2\lab\perf_summary.py tools\nx2\lab\runs\after
 ```
 
-Unit tests, which take seconds:
+Unit tests, which take seconds (`[nx2_perf]` and `[nx2_frame]` exist from 2026-11-06 on):
 
 ```
 .\build\bin\tests.exe "[video_core]"
+.\build\bin\tests.exe "[nx2_perf],[nx2_frame]"
 ```
 
 ## What counts as done
 
 - **A crash fix:** the place that crashed before now runs through, in a lab run or in play.
-- **A speed change:** the median FPS after the save loads moved in two or three runs, and the
-  screenshot still renders correctly. One good 10-second window proves nothing.
+- **A speed change:** the median FPS of the spawn windows (and of the walk windows) moved in two
+  or three runs, and the screenshot still renders correctly. One good 10-second window proves
+  nothing, and neither does a run marked `INVALID` (it never left the title screen).
+- **A change that touches frame timing** (presents, fences, running ahead): also a `-Flash 30`
+  run with `outliers=0`. Two such changes saved ~5 and ~3.5 ms per frame and made the screen
+  flash.
 - **A shortcut that skips a wait:** a `-Quick` run with `-Env EDEN_NX2_PERF_VERIFY=1` shows zero
   `Nx2Perf split:` lines first. Stale reads lose the GPU device.
-- **Always:** `tests.exe "[video_core]"` passes, and no `DEVICE_LOST` in the log.
+- **New optimizations** go behind an `Nx2Perf` switch (`src/video_core/nx2_perf.h`), so anyone
+  can turn them off with `EDEN_NX2_PERF_OFF=<name>`.
+- **Always:** the unit tests pass, and no `DEVICE_LOST` in either log.
 
 A green build alone is not done. [OOT_WORKFLOW.md](OOT_WORKFLOW.md) explains why.
 
