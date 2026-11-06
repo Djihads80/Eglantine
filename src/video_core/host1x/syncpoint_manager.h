@@ -47,8 +47,9 @@ public:
             action();
             return {};
         }
-        return RegisterAction(syncpoints_guest[syncpoint_id], guest_action_storage[syncpoint_id],
-                              expected_value, std::move(action));
+        return RegisterAction(syncpoints_guest[syncpoint_id], pending_guest[syncpoint_id],
+                              guest_action_storage[syncpoint_id], expected_value,
+                              std::move(action));
     }
 
     template <typename Func>
@@ -57,8 +58,9 @@ public:
             action();
             return {};
         }
-        return RegisterAction(syncpoints_host[syncpoint_id], host_action_storage[syncpoint_id],
-                              expected_value, std::move(action));
+        return RegisterAction(syncpoints_host[syncpoint_id], pending_host[syncpoint_id],
+                              host_action_storage[syncpoint_id], expected_value,
+                              std::move(action));
     }
 
     void DeregisterGuestAction(u32 syncpoint_id, const ActionHandle& handle);
@@ -84,23 +86,30 @@ public:
     }
 
 private:
-    void Increment(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32& waiters,
+    void Increment(std::atomic<u32>& syncpoint, std::atomic<u32>& pending,
+                   std::condition_variable& wait_cv, u32& waiters,
                    std::list<RegisteredAction>& action_storage);
 
-    ActionHandle RegisterAction(std::atomic<u32>& syncpoint,
+    ActionHandle RegisterAction(std::atomic<u32>& syncpoint, std::atomic<u32>& pending,
                                 std::list<RegisteredAction>& action_storage, u32 expected_value,
                                 std::function<void()>&& action);
 
-    void DeregisterAction(std::list<RegisteredAction>& action_storage, const ActionHandle& handle);
+    void DeregisterAction(std::atomic<u32>& pending, std::list<RegisteredAction>& action_storage,
+                          const ActionHandle& handle);
 
-    void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32& waiters,
-              u32 expected_value);
+    void Wait(std::atomic<u32>& syncpoint, std::atomic<u32>& pending,
+              std::condition_variable& wait_cv, u32& waiters, u32 expected_value);
 
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_host{};
 
     std::array<std::list<RegisteredAction>, NUM_MAX_SYNCPOINTS> guest_action_storage;
     std::array<std::list<RegisteredAction>, NUM_MAX_SYNCPOINTS> host_action_storage;
+
+    /// Per syncpoint: its registered actions plus the threads in Wait on it, changed under
+    /// `guard`. Increment takes `guard` only when it is nonzero.
+    std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> pending_guest{};
+    std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> pending_host{};
 
     std::mutex guard;
     std::condition_variable wait_guest_cv;
