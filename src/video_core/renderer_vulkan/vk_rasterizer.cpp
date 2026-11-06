@@ -362,6 +362,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
     if (!pipeline) {
+        // Counted here, once per dropped draw: a rejected program stays bound, so later draws
+        // reuse the failed result. DrawTexture does not go through this path.
+        if (pipeline_cache.LastShadersRejected()) {
+            Profile::Add(Profile::Counter::SkippedDraws, 1);
+        }
         report_failure("no pipeline");
         return;
     }
@@ -385,7 +390,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         report_failure(no_mesh ? "EDEN_NX2_NO_MESH" : "no VK_EXT_mesh_shader");
         return;
     }
-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    {
+        Profile::Scope scope{Profile::Zone::CacheLockWait};
+        std::lock(buffer_cache.mutex, texture_cache.mutex);
+    }
+    std::scoped_lock lock{std::adopt_lock, buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
     const u32 repack_dirty = buffer_cache_runtime.SetVertexRepackLayout(

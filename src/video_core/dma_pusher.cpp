@@ -195,6 +195,12 @@ bool DmaPusher::Step() {
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        // The fetch zone covers reading the entry's words (the GPU-written read, the flush and
+        // the header construction) and ends before the words are parsed and executed.
+        std::optional<VideoCommon::Nx2Profile::Scope> fetch_scope;
+        if (!submitted) {
+            fetch_scope.emplace(VideoCommon::Nx2Profile::Zone::DmaFetch);
+        }
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
@@ -203,20 +209,25 @@ bool DmaPusher::Step() {
             RecordParsedEntry(header, commands);
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::optional<Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>> headers;
+            headers.emplace(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            const std::span<const CommandHeader> commands{headers->data(), headers->size()};
+            fetch_scope.reset();
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
             const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+            fetch_scope.reset();
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
             FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            std::optional<Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> headers;
+            headers.emplace(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            const std::span<const CommandHeader> commands{headers->data(), headers->size()};
+            fetch_scope.reset();
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
@@ -273,6 +284,7 @@ static const u32 g_semaphore_watch = [] {
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
 
 size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_t word_offset) {
+    VideoCommon::Nx2Profile::Scope dispatch_scope{VideoCommon::Nx2Profile::Zone::DmaDispatch};
     for (size_t index = 0; index < commands.size();) {
         // Data word of methods command
         if (dma_state.method_count && dma_state.non_incrementing) {

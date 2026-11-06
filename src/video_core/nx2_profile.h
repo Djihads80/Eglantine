@@ -51,6 +51,14 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    BindGeometry, ///< Host vertex/index/indirect buffer binds (split out of update buffers)
+    SplitCall,    ///< Split GPU thread: back thread running deferred function calls
+    UpdateVertex, ///< Buffer cache: resolving and tracking vertex buffers
+    UpdateUniform,///< Buffer cache: resolving and tracking uniform buffers
+    CacheLockWait,///< Waiting for buffer_cache and texture_cache mutexes before drawing
+    DmaFetch,     ///< DMA pusher: fetching and translating command headers from guest memory
+    DmaDispatch,  ///< DMA pusher: command stream decoding and dispatch
+    ChannelSwitch,///< Scheduler: channel binding and resuming suspended channels
     Count,
 };
 
@@ -61,7 +69,9 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "bind geometry buffers",
+    "split call", "update vertex buffers", "update uniform buffers", "cache lock wait",
+    "dma fetch", "dma dispatch", "channel switch",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
@@ -77,10 +87,25 @@ inline u64 Now() {
     return static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
 }
 
+/// Amounts counted on the GPU thread, logged per second with the zones.
+enum class Counter : u32 {
+    DownloadBytes,  ///< Buffer data copied back from the host GPU at fences
+    DownloadCopies, ///< Buffer ranges copied back
+    DmaReadBytes,   ///< Guest memory the native MME read with DMA
+    DownloadBytesOnDmaPages, ///< Of DownloadBytes: on pages the MME has DMA-read
+    MethodWrites,   ///< 3D register writes (Maxwell3D::CallMethod below the macro range)
+    SameValueWrites, ///< Of MethodWrites: the register already held the value
+    AcquireChecks,  ///< Semaphore acquires evaluated
+    AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
+    SkippedDraws,   ///< Draws dropped because a bound native program was rejected
+    PipelineMisses, ///< Graphics/compute pipeline cache misses (a new pipeline is created)
+    Count,
+};
+
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 8> counters{}; ///< See Counter
+    std::array<u64, static_cast<size_t>(Counter::Count)> counters{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
 };
@@ -118,18 +143,6 @@ private:
     bool enabled;
     u64 start{};
     u64 parent_child_ns{};
-};
-
-/// Amounts counted on the GPU thread, logged per second with the zones.
-enum class Counter : u32 {
-    DownloadBytes,  ///< Buffer data copied back from the host GPU at fences
-    DownloadCopies, ///< Buffer ranges copied back
-    DmaReadBytes,   ///< Guest memory the native MME read with DMA
-    DownloadBytesOnDmaPages, ///< Of DownloadBytes: on pages the MME has DMA-read
-    MethodWrites,   ///< 3D register writes (Maxwell3D::CallMethod below the macro range)
-    SameValueWrites, ///< Of MethodWrites: the register already held the value
-    AcquireChecks,  ///< Semaphore acquires evaluated
-    AcquireWaits,   ///< Of AcquireChecks: not met yet (the channel waits)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -190,6 +203,11 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    const auto rate = [&](Counter counter) {
+        return static_cast<double>(data.counters[static_cast<size_t>(counter)]) * 1e9 / window;
+    };
+    line += fmt::format(" | draws skipped (rejected program) {:.0f}", rate(Counter::SkippedDraws));
+    line += fmt::format(" | pipeline cache misses {:.0f}", rate(Counter::PipelineMisses));
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
     data = {};
     data.window_start = now;
