@@ -278,6 +278,9 @@ private:
     [[nodiscard]] VideoCore::GameDlssReason GameDlssBlocker() const;
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
     bool UpscaleInsteadOfNativeProgram();
+    bool ReadConstBufferWords(u32 slot, std::vector<u32>& words) const;
+    void FollowPhotoUpscale();
+    bool UpscaleFromConstBuffers();
 
     /// This frame's DLSS evaluation (Fortune's Weave): whether its passes all ran, and whether
     /// the game's own network output is shown instead of the replacement upscale.
@@ -304,6 +307,21 @@ private:
         /// What the Graphics tab was last told.
         VideoCore::GameDlssStatus status{};
     } dlss_chain;
+
+    /// Mario Kart World's docked photo mode upscales 2560x1440 to 3840x2160 with a tensor-core
+    /// network whose passes can't run. After its first rejected pass the next dispatches are
+    /// searched for a pass that has both images in its constant buffers.
+    struct PhotoUpscale {
+        u32 window_left{};
+        u32 evaluations{};
+        GPUVAddr last_input{};
+        GPUVAddr last_output{};
+        /// The pass that has both images and where in its constant buffer, once found.
+        GPUVAddr output_program{};
+        u32 slot{};
+        u32 input_offset{};
+        u32 output_offset{};
+    } photo_upscale;
 
     /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
     /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
