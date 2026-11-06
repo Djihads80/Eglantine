@@ -108,13 +108,18 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
         return true;
     }
+    // A latched release resumes the channel whatever the word holds now: only the log below
+    // reads it, so drain for it only while that log is still printing.
+    static std::atomic<u32> rescued{};
+    if (Nx2SemaphoreWaiters::Get().Latched(this) && rescued.load(std::memory_order_relaxed) >= 64) {
+        return true;
+    }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
     DrainBack();
     const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
     if (Nx2SemaphoreWaiters::Get().Latched(this)) {
-        if (static std::atomic<u32> rescued{};
-            !pending_acquire->Matches(current) && rescued.fetch_add(1) < 64) {
+        if (!pending_acquire->Matches(current) && rescued.fetch_add(1) < 64) {
             LOG_INFO(HW_GPU, "Channel {} met semaphore {:#x} value {:#x} at its release (now {:#x})",
                      dma_pusher.channel_state.bind_id, pending_acquire->address,
                      pending_acquire->value, current);
@@ -278,14 +283,14 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         if (mirror != 0) {
             LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
             VideoCommon::GpuSplit::Get().NoteWrite(dma_pusher.memory_manager, mirror, 16);
+            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
+                Nx2MarkLateWritten(*device, 16);
+            }
         }
         OnBackRelease(dma_pusher, sequence_address,
                       [rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
                           rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
                           if (mirror != 0) {
-            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(mirror)) {
-                Nx2MarkLateWritten(*device, 16);
-            }
                               rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
                           }
                       });
@@ -397,6 +402,13 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
         return;
     }
     // Acquires: check once after flushing pending fences; never block the GPU thread on them.
+    // The check only feeds the warning below: drain for it during the first checks only.
+    static std::atomic<u32> reported{};
+    static std::atomic<u32> checks{};
+    if (reported.load(std::memory_order_relaxed) >= 8 ||
+        checks.fetch_add(1, std::memory_order_relaxed) >= 256) {
+        return;
+    }
     DrainBack();
     ReleaseFences(dma_pusher);
     const u32 word = dma_pusher.memory_manager.Read<u32>(address);
@@ -407,7 +419,6 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
                        : operation == 5 ? (word & payload) == 0
                                         : true;
     if (!ready) {
-        static std::atomic<u32> reported{};
         if (reported.fetch_add(1) < 8) {
             LOG_WARNING(HW_GPU, "SEM_EXECUTE op {} at {:#x}: {:#x} vs {:#x} not met, continuing",
                         operation, address, word, payload);
