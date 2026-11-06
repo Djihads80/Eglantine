@@ -207,6 +207,8 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 4),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 8),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
+        LOG_WARNING(HW_GPU, "  channel {} waits in {}", dma_pusher.channel_state.bind_id,
+                    dma_pusher.DescribeCurrentEntry());
     }
     return false;
 }

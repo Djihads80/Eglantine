@@ -9,8 +9,10 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdlib>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include <deque>
@@ -130,6 +132,12 @@ struct CommandList final {
     /// that waited behind one, reads memory instead: games write the commands it runs before they
     /// release the acquire.
     u64 snapshot_suspensions = 0;
+    /// When the copy was taken (steady clock, ns): EDEN_NX2_RESNAPSHOT_AGE_MS keeps older copies.
+    u64 submit_ns = 0;
+    /// Where the copy is from: 0 submit, 1 copied again when queued, 2 after a resume.
+    u8 copied_at = 0;
+    /// EDEN_NX2_PB_CHECK: the submit-time copy, kept when a copy taken later replaces it.
+    std::vector<CommandHeader> first_words;
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
@@ -160,7 +168,7 @@ public:
         const u64 now = suspensions.load(std::memory_order_acquire);
         if (!entries.submitted_offsets.empty() && (now & 1) == 0) {
             if (ResnapshotEnabled() && entries.snapshot_suspensions != now) {
-                RefreshSnapshot(entries, now);
+                RefreshSnapshot(entries, now, 1);
             } else if (!entries.deferred_entries.empty()) {
                 // Behind a GPU map when submitted: the map has run by now (GPU::MapInOrder).
                 RefreshDeferredEntries(entries);
@@ -211,8 +219,11 @@ public:
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
     /// Whether the entry lies on device pages the GPU has written (NX2).
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
-    /// Copies the list's words from memory again, as of suspension count `now`.
-    void RefreshSnapshot(CommandList& list, u64 now);
+    /// Copies the list's words from memory again, as of suspension count `now` (`at`: see
+    /// CommandList::copied_at). Returns the entries whose words changed (counted with PB_CHECK).
+    size_t RefreshSnapshot(CommandList& list, u64 now, u8 at);
+    /// The entry being parsed, where its words came from and whether memory still holds them.
+    [[nodiscard]] std::string DescribeCurrentEntry();
     /// Copies the list's deferred entries (CommandList::deferred_entries) from memory.
     void RefreshDeferredEntries(CommandList& list);
 
@@ -282,6 +293,32 @@ public:
     };
     std::array<ParsedEntry, 64> parsed_entries{};
     size_t parsed_entry_count{};
+
+    // The words the current entry was first parsed from and where they came from, and its last
+    // headers (EDEN_NX2_PB_CHECK), for the first illegal-method blocks. Per channel: another
+    // channel parses between a suspension and its resume.
+    struct EntryRecord {
+        GPUVAddr address{};
+        u32 size{};
+        size_t index{};
+        const char* source{"?"};
+        std::vector<CommandHeader> words;
+        std::array<std::pair<u32, u32>, 8> headers{}; ///< Word position in the entry, raw header
+        u32 header_count{};
+        size_t resumed_at{}; ///< Resume offset of the parse in progress (0: from the start)
+    };
+    EntryRecord entry_record;
+    void NoteEntryWords(const CommandListHeader& header, const char* source,
+                        std::span<const CommandHeader> commands, size_t resume_offset);
+    void LogIllegalBlock();
+    /// Read when the channel is made, after env.txt (a static would read it at library load).
+    bool record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
+    /// EDEN_NX2_SEM_WATCH=<gpu address>: log every method whose argument is the low word of an
+    /// address in the 16 bytes there (finds the engine and method that release a semaphore).
+    u32 semaphore_watch = [] {
+        const char* value = std::getenv("EDEN_NX2_SEM_WATCH");
+        return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
+    }();
     std::vector<ParkedMethod> parked_methods;
     GPUVAddr split_method_end{}; ///< End of the last entry that ended inside a method
 

@@ -86,6 +86,10 @@ public:
     [[nodiscard]] bool HasPendingAcquire() const {
         return pending_acquire.has_value();
     }
+    /// When the pending acquire began (only while HasPendingAcquire).
+    [[nodiscard]] std::chrono::steady_clock::time_point PendingSince() const {
+        return pending_acquire ? pending_acquire->since : std::chrono::steady_clock::time_point{};
+    }
     [[nodiscard]] bool CanResumeAcquire(DmaPusher& dma_pusher);
     /// Clears the pending acquire once it is met; false while the channel has to keep waiting.
     bool ResumeAcquire(DmaPusher& dma_pusher);
