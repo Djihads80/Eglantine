@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <vector>
 
 #include "common/alignment.h"
@@ -67,6 +68,11 @@ std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformF
     };
     std::array<Shader::TransformFeedbackVarying, 256> xfb{};
     u32 count{0};
+    // Diagnostic switch: drop transform feedback entirely, to prove whether a stall on the GPU
+    // fence comes from the unaligned varying layout below.
+    if (std::getenv("EDEN_NX2_NO_TFB") != nullptr) {
+        return {xfb, 0};
+    }
     for (size_t buffer = 0; buffer < state.layouts.size(); ++buffer) {
         const auto& locations = state.varyings[buffer];
         const auto& layout = state.layouts[buffer];

@@ -893,6 +893,7 @@ private:
         std::vector<IR::Block*> demote_blocks;
         std::vector<IR::U1> demote_conds;
         u32 num_epilogues{};
+        u32 demotes_with_code{};
         u32 branch_depth{};
         for (const IR::AbstractSyntaxNode& node : syntax_list) {
             if (node.type == Type::If) {
@@ -908,18 +909,26 @@ private:
                 // Skip reordering nested demote branches.
                 continue;
             }
+            size_t insts_before{};
             for (const IR::Inst& inst : node.data.block->Instructions()) {
                 const IR::Opcode op{inst.GetOpcode()};
                 if (op == IR::Opcode::DemoteToHelperInvocation) {
+                    if (insts_before != 0) {
+                        // The block moves as a whole, but its CFG edges and the phis of its old
+                        // merge block still name it. The AMD proprietary driver turns that into
+                        // black output for the whole draw (Ocarina of Time on Windows).
+                        ++demotes_with_code;
+                    }
                     demote_blocks.push_back(node.data.block);
                     break;
                 }
                 if (op == IR::Opcode::Epilogue) {
                     ++num_epilogues;
                 }
+                ++insts_before;
             }
         }
-        if (demote_blocks.size() == 0) {
+        if (demote_blocks.size() == 0 || demotes_with_code != 0) {
             return;
         }
         if (num_epilogues > 1) {

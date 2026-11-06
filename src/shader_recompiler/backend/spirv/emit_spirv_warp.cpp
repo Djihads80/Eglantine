@@ -90,8 +90,22 @@ Id GuestLane(EmitContext& ctx, Id index) {
     return ctx.OpBitwiseAnd(ctx.U32[1], index, ctx.Const(31U));
 }
 
+// The AMD proprietary Vulkan driver crashes while creating a pipeline that contains
+// OpGroupNonUniformShuffle in a fragment shader (0xC0000005 at amdvlk64.dll+0xaff2e7 on
+// 32.0.21045.x). The broadcast fallback below produces the same value without the shuffle.
+bool UseShuffleFallback(EmitContext& ctx) {
+    if (ctx.profile.has_broken_spirv_subgroup_shuffle) {
+        return true;
+    }
+    static const bool fragment_fallback = [] {
+        const char* value = std::getenv("EDEN_NX2_FRAGMENT_SHUFFLE_FALLBACK");
+        return value != nullptr && value[0] != '0';
+    }();
+    return fragment_fallback && ctx.stage == Stage::Fragment;
+}
+
 Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
-    if (!ctx.profile.has_broken_spirv_subgroup_shuffle) {
+    if (!UseShuffleFallback(ctx)) {
         return ctx.OpGroupNonUniformShuffle(ctx.U32[1], SubgroupScope(ctx), value, src_thread_id);
     }
     Id result{ctx.u32_zero_value};
@@ -105,7 +119,7 @@ Id ShuffleAbsolute(EmitContext& ctx, Id value, Id src_thread_id) {
 }
 
 Id ShuffleRelative(EmitContext& ctx, Id value, Id delta, Id src_thread_id, spv::Op op) {
-    if (!ctx.profile.support_shuffle_relative) {
+    if (!ctx.profile.support_shuffle_relative || UseShuffleFallback(ctx)) {
         return ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id));
     }
     const Id result{ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, delta)};
