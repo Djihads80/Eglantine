@@ -132,6 +132,17 @@ void MeshEmulationBuffer::ReportLoss() {
     }
 }
 
+u32 MeshEmulationBuffer::DrawSlots(u64 pipeline, u32 groups, u32 capacity) {
+    const auto it = slots_per_task.find(pipeline);
+    if (it == slots_per_task.end()) {
+        return capacity;
+    }
+    // A quarter more than the most used per task workgroup so far: slots past the ones a draw
+    // used are zeroed, their primitives culled.
+    const u64 used = u64{groups} * it->second;
+    return static_cast<u32>(std::min<u64>(capacity, used + used / 4 + 4));
+}
+
 u32 MeshEmulationBuffer::Fanout(u64 pipeline, u32 minimum) {
     ReportChecks();
     const auto it = fanouts.find(pipeline);
@@ -154,7 +165,32 @@ void MeshEmulationBuffer::ReportChecks() {
         std::memcpy(&header, check_buffer.Mapped().data() + entry.slot * sizeof(header),
                     sizeof(header));
         const bool overflow = entry.has_task && header.task_allocated > entry.capacity;
+        // A header the draw's own work cannot have left (its dispatch and launches bounded by
+        // its slots): log it whole, learn nothing from it.
+        const bool inconsistent =
+            entry.has_task && (header.dispatch[0] > entry.capacity ||
+                               header.task_allocated > u64{entry.groups} * MAX_FANOUT ||
+                               header.capacity != entry.capacity);
+        if (inconsistent) {
+            if (inconsistent_logged++ < 16) {
+                const auto* const words = reinterpret_cast<const u32*>(&header);
+                LOG_WARNING(Render_Vulkan,
+                            "Emulated mesh draw {:016x}: inconsistent header after its work ({} "
+                            "task workgroups, {} slots): {:08x} {:08x} {:08x} {:08x} | {:08x} "
+                            "{:08x} {:08x} {:08x} | {:08x} {:08x} {:08x} {:08x} {:08x} | {:08x} "
+                            "{:08x} {:08x}",
+                            entry.pipeline, entry.groups, entry.capacity, words[0], words[1],
+                            words[2], words[3], words[4], words[5], words[6], words[7], words[8],
+                            words[9], words[10], words[11], words[12], words[13], words[14],
+                            words[15]);
+            }
+            return true;
+        }
         if (entry.has_task && entry.groups != 0) {
+            // Slots the pipeline's draws used per task workgroup (draws are sized by them).
+            const u64 used = (u64{header.dispatch[0]} + entry.groups - 1) / entry.groups;
+            u32& slots = slots_per_task[entry.pipeline];
+            slots = std::max(slots, static_cast<u32>(used));
             // A quarter more than the most launched per task workgroup so far, in eights.
             const u64 per_task = (u64{header.task_allocated} + entry.groups - 1) / entry.groups;
             const u32 wanted = static_cast<u32>(

@@ -1455,7 +1455,11 @@ bool GraphicsPipeline::PrepareEmulatedMeshDraw(bool is_indexed) {
     emulated_draw.size = words * sizeof(u32);
     emulated_draw.region = mesh_emulation_buffer->Allocate(emulated_draw.size);
     mesh_emulation_buffer->draw = emulated_draw.region;
-    mesh_emulation_buffer->draw_vertices = capacity * stages.max_primitives * 3;
+    // Drawn directly: a mesh-only draw's slots are known; a task draw's are learned (Turnip
+    // lost the device on some indirect draws).
+    const u32 draw_slots{has_task ? mesh_emulation_buffer->DrawSlots(key.Hash(), groups, capacity)
+                                  : capacity};
+    mesh_emulation_buffer->draw_vertices = draw_slots * stages.max_primitives * 3;
     emulated_draw.check = has_task || mesh_emulation_buffer->Checking()
                               ? mesh_emulation_buffer->CheckSlot(key.Hash(), groups, has_task,
                                                                  capacity)

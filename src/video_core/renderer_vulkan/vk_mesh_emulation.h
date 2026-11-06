@@ -68,7 +68,7 @@ public:
     /// The region of the draw being prepared (its draw command at MESH_EMULATION_DRAW_WORD);
     /// a null buffer when the draw is not emulated.
     MeshEmulationRegion draw{};
-    u32 draw_vertices{}; ///< vertices drawing every slot of the draw being prepared
+    u32 draw_vertices{}; ///< vertices of the direct draw of the draw being prepared
 
     /// Times the draws' compute work while it captures.
     FrameDump* frame_dump{};
@@ -100,6 +100,10 @@ public:
     /// Mesh workgroups per task workgroup the pipeline's draws get slots for: at least
     /// `minimum`, more once its task programs launched more.
     [[nodiscard]] u32 Fanout(u64 pipeline, u32 minimum);
+
+    /// Slots a task draw of the pipeline draws with a direct draw: all of them until its draws
+    /// were read back, then a quarter more than they used.
+    [[nodiscard]] u32 DrawSlots(u64 pipeline, u32 groups, u32 capacity);
 
 private:
     struct Chunk {
@@ -143,7 +147,9 @@ private:
     vk::Buffer check_buffer;
     bool checking{};
     std::vector<Check> checks;
-    std::unordered_map<u64, u32> fanouts; ///< learned per pipeline
+    std::unordered_map<u64, u32> fanouts;        ///< learned per pipeline
+    std::unordered_map<u64, u32> slots_per_task; ///< learned per pipeline
+    u32 inconsistent_logged{};
     u32 next_check_slot{};
     u32 checks_logged{};
     u32 overflows_logged{};

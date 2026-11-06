@@ -803,22 +803,23 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                                           sizeof(u32)};
             const bool set_topology{mesh_dynamic_topology};
             const bool clear_vertex_input{mesh_dynamic_vertex_input};
-            // Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the compute work but draws nothing;
-            // EDEN_NX2_MESH_EMULATE_DIRECT=1 draws every slot directly instead of indirectly
-            // (unused slots are zeroed, so their primitives are culled).
+            // A direct draw of the slots the draw may use (unused ones are zeroed, their
+            // primitives culled). EDEN_NX2_MESH_EMULATE_INDIRECT=1: the count its mesh dispatch
+            // wrote, drawn indirectly. Diagnostics: EDEN_NX2_MESH_EMULATE_NODRAW=1 runs the
+            // compute work but draws nothing.
             static const bool no_draw = [] {
                 const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_NODRAW");
                 return value != nullptr && value[0] == '1';
             }();
             static const bool direct = [] {
-                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_DIRECT");
-                return value != nullptr && value[0] == '1';
+                const char* const value = std::getenv("EDEN_NX2_MESH_EMULATE_INDIRECT");
+                return value == nullptr || value[0] != '1';
             }();
             mesh_emulation_buffer.NoteDrawInPass();
             if (no_draw) {
                 return;
             }
-            const u32 direct_vertices{direct ? mesh_emulation_buffer.draw_vertices : 0U};
+            const u32 direct_vertices{mesh_emulation_buffer.draw_vertices};
             scheduler.Record([this, buffer, offset, set_topology, clear_vertex_input,
                               direct_vertices](vk::CommandBuffer cmdbuf) {
                 if (scheduler.GraphicsPipelineMissing()) {
@@ -832,7 +833,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                     // guest's vertex streams hold during a mesh draw.
                     cmdbuf.SetVertexInputEXT({}, {});
                 }
-                if (direct_vertices != 0) {
+                if (direct) {
                     cmdbuf.Draw(direct_vertices, 1, 0, 0);
                     return;
                 }
