@@ -19,6 +19,14 @@
 #include "core/hle/kernel/physical_core.h"
 #include "video_core/gpu.h"
 
+#ifdef __linux__
+#include <cerrno>
+#include <cstdlib>
+#include <sched.h>
+#include <string>
+#include "common/logging.h"
+#endif
+
 #if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
 #include <cerrno>
 #include <cstdlib>
@@ -80,6 +88,68 @@ bool DisableNcePacKeys() {
 // authenticate.
 void RestoreNcePacKeys() {
     prctl(PR_PAC_SET_ENABLED_KEYS, NcePacKeys, NcePacKeys, 0, 0);
+}
+} // namespace
+#endif
+
+#ifdef __linux__
+namespace {
+// The emulated cores' host threads run at the GPU threads' priority and on the same CPUs, and a
+// Switch 2 program keeps six of them busy. To A/B what that costs the GPU thread:
+// EDEN_NCE_CORE_CPUS=<list> (e.g. 0-5) keeps them on these CPUs, leaving the others (the
+// phone's prime cores) to the rest; EDEN_NCE_CORE_PRIORITY=normal|high|veryhigh puts them below
+// the GPU threads (critical), which then win a contended CPU. Not re-applied when the app
+// refreshes its thread policies (on resume).
+void PlaceCoreThread(std::size_t core) {
+    static const std::string cpus = [] {
+        const char* value = std::getenv("EDEN_NCE_CORE_CPUS");
+        return std::string{value != nullptr ? value : ""};
+    }();
+    static const std::string priority = [] {
+        const char* value = std::getenv("EDEN_NCE_CORE_PRIORITY");
+        return std::string{value != nullptr ? value : ""};
+    }();
+    if (!priority.empty()) {
+        const auto level = priority == "normal"     ? Common::ThreadPriority::Normal
+                           : priority == "high"     ? Common::ThreadPriority::High
+                           : priority == "veryhigh" ? Common::ThreadPriority::VeryHigh
+                                                    : Common::ThreadPriority::Critical;
+        Common::SetCurrentThreadPriority(level);
+    }
+    if (cpus.empty()) {
+        if (core == 0 && !priority.empty()) {
+            LOG_INFO(Core, "CPU core threads at priority {} (EDEN_NCE_CORE_PRIORITY)", priority);
+        }
+        return;
+    }
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    // "0-5" or "0,1,2" or both.
+    for (size_t begin = 0; begin < cpus.size();) {
+        size_t end = cpus.find(',', begin);
+        if (end == std::string::npos) {
+            end = cpus.size();
+        }
+        const std::string item = cpus.substr(begin, end - begin);
+        const size_t dash = item.find('-');
+        const int first = std::atoi(item.c_str());
+        const int last = dash == std::string::npos ? first : std::atoi(item.c_str() + dash + 1);
+        for (int cpu = first; cpu <= last && cpu < CPU_SETSIZE; ++cpu) {
+            if (cpu >= 0) {
+                CPU_SET(cpu, &mask);
+            }
+        }
+        begin = end + 1;
+    }
+    const int result = sched_setaffinity(0, sizeof(mask), &mask);
+    if (core == 0 || result != 0) {
+        LOG_INFO(Core, "CPU core thread {} on CPUs {} (EDEN_NCE_CORE_CPUS){}{}", core, cpus,
+                 priority.empty() ? "" : ", priority ", priority);
+        if (result != 0) {
+            LOG_WARNING(Core, "CPU core thread {}: sched_setaffinity failed (errno {})", core,
+                        errno);
+        }
+    }
 }
 } // namespace
 #endif
@@ -241,6 +311,9 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     Common::SetCurrentThreadName(name.c_str());
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+#ifdef __linux__
+    PlaceCoreThread(core);
+#endif
     auto& data = core_data[core];
     data.host_context = Common::Fiber::ThreadToFiber();
 
