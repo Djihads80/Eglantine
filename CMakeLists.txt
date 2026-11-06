@@ -269,6 +269,8 @@ option(ENABLE_WIFI_SCAN "Enable WiFi scanning" OFF)
 
 cmake_dependent_option(USE_DISCORD_PRESENCE "Enables Discord Rich Presence" OFF "ENABLE_QT" OFF)
 
+cmake_dependent_option(ENABLE_EBRIDGE "Enable Eglantine Bridge (stream games to a Nintendo Switch 1)" ON "ENABLE_QT" OFF)
+
 option(YUZU_TESTS "Compile tests" "${BUILD_TESTING}")
 
 # Install udev rules on Linux (mainly for gyros)

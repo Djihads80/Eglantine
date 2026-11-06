@@ -14,6 +14,7 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QFutureWatcher>
+#include <QPointer>
 #include <QPushButton>
 #include <QTimer>
 #include <QTranslator>
@@ -130,6 +131,10 @@ enum class CabinetMode : u8;
 
 namespace Ui {
 class MainWindow;
+}
+
+namespace EBridge {
+class BridgeService;
 }
 
 enum class EmulatedDirectoryTarget {
@@ -498,6 +503,19 @@ private:
     std::unique_ptr<DiscordRPC::DiscordInterface> discord_rpc;
     std::unique_ptr<PlayTime::PlayTimeManager> play_time_manager;
     std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
+
+    void StartEBridge();
+    void UpdateEBridgeGames();
+    // Tells the console what the emulator is doing (loading screen). A non-empty
+    // path changes the game the status refers to.
+    void SetEBridgeStatus(int state, u32 value, u32 total, const char* text,
+                          const QString& path = {});
+    std::string ebridge_game_name;
+#ifdef YUZU_EBRIDGE
+    void OnEBridgeEvent(int event, const QString& detail);
+    std::unique_ptr<EBridge::BridgeService> ebridge;
+    QPointer<QMessageBox> ebridge_pin_box;
+#endif
 
 #ifdef ENABLE_UPDATE_CHECKER
     QFuture<std::optional<Common::Net::Release>> update_future;

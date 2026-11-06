@@ -14,6 +14,7 @@
 
 #include <fmt/ranges.h>
 
+#include "common/ebridge_hooks.h"
 #include "common/logging.h"
 #include <ranges>
 #include "common/scope_exit.h"
@@ -181,6 +182,12 @@ try
                   present_manager,
                   scheduler,
                   PresentFiltersForAppletCapture)
+    , blit_bridge(device_memory,
+                  device,
+                  memory_allocator,
+                  present_manager,
+                  scheduler,
+                  PresentFiltersForDisplay)
     , rasterizer(render_window, gpu, device_memory, device, memory_allocator, state_tracker, scheduler)
 #ifdef HAS_LSFG
     , frame_gen(memory_allocator, scheduler)
@@ -213,8 +220,13 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     };
 
     RenderAppletCaptureLayer(framebuffers);
+    RenderBridgeCapture(framebuffers);
 
     if (!render_window.IsShown()) {
+        // Nothing else submits this frame's work while the window is hidden.
+        if (Common::EBridge::WantsVideo()) {
+            scheduler.Flush();
+        }
         return;
     }
 
@@ -318,6 +330,43 @@ void RendererVulkan::RenderScreenshot(std::span<const Tegra::FramebufferConfig> 
                 dst_buffer.Mapped().size());
     renderer_settings.screenshot_complete_callback(false);
     renderer_settings.screenshot_requested = false;
+}
+
+void RendererVulkan::RenderBridgeCapture(std::span<const Tegra::FramebufferConfig> framebuffers) {
+    // Hand over the captures the GPU has finished, oldest first.
+    for (std::size_t i = 0; i < BridgeSlotCount; ++i) {
+        auto& slot = bridge_slots[(bridge_next + i) % BridgeSlotCount];
+        if (slot.pending && scheduler.IsFree(slot.tick)) {
+            slot.pending = false;
+            slot.buffer.Invalidate();
+            Common::EBridge::SubmitVideo(slot.buffer.Mapped().data(), BridgeWidth, BridgeHeight,
+                                         BridgeWidth * 4);
+        }
+    }
+
+    if (!Common::EBridge::WantsVideo() || framebuffers.empty()) {
+        return;
+    }
+    auto& slot = bridge_slots[bridge_next];
+    if (slot.pending) {
+        return; // the GPU is several frames behind: skip this one
+    }
+    if (!slot.buffer) {
+        slot.buffer = CreateWrappedBuffer(memory_allocator, BridgeWidth * BridgeHeight * 4,
+                                          MemoryUsage::Download);
+    }
+
+    const auto layout = Layout::DefaultFrameLayout(BridgeWidth, BridgeHeight);
+    blit_bridge.DrawToFrame(device, rasterizer, &bridge_frame, framebuffers, layout,
+                            BridgeSlotCount, VK_FORMAT_B8G8R8A8_UNORM);
+
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([image = *bridge_frame.image, buffer = *slot.buffer](vk::CommandBuffer cmdbuf) {
+        DownloadColorImage(cmdbuf, image, buffer, VkExtent3D{BridgeWidth, BridgeHeight, 1});
+    });
+    slot.tick = scheduler.CurrentTick();
+    slot.pending = true;
+    bridge_next = (bridge_next + 1) % BridgeSlotCount;
 }
 
 std::vector<u8> RendererVulkan::GetAppletCaptureBuffer() {
