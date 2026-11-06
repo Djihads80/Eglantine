@@ -1358,7 +1358,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                  (u64{insn.Bits(74, 1)} << 41));
             break;
         case 0x2be: // UBREV, as a bit-reversing zero shift like BREV.
-            if (dest >= 16 || insn.words[1] >= 16 || insn.words[2] != 0x08000000 || native_predicate != 7)
+            // UR0-UR21 live in R216-R237 (see uniform_register above), so a source above UR15
+            // still has a register; Ocarina's tessellation programs use UR16 and UR17.
+            if (dest >= 22 || insn.words[1] >= 22 || insn.words[2] != 0x08000000 ||
+                native_predicate != 7)
                 return fail(index, "native uniform bit reverse mode");
             emit(0x3828000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 8) |
                  (u64{1} << 39) | (u64{1} << 40));
