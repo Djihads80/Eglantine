@@ -1580,8 +1580,10 @@ void Device::RemoveUnsuitableExtensions() {
                                        features.vertex_input_dynamic_state,
                                        VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
 
-    // VK_KHR_pipeline_executable_properties
-    if (Settings::values.renderer_shader_feedback.GetValue()) {
+    // VK_KHR_pipeline_executable_properties (also EDEN_NX2_PIPELINE_STATS=1: PipelineStatistics)
+    const char* const pipeline_stats = std::getenv("EDEN_NX2_PIPELINE_STATS");
+    if (Settings::values.renderer_shader_feedback.GetValue() ||
+        (pipeline_stats != nullptr && pipeline_stats[0] == '1')) {
         extensions.pipeline_executable_properties =
             features.pipeline_executable_properties.pipelineExecutableInfo;
         RemoveExtensionFeatureIfUnsuitable(extensions.pipeline_executable_properties,

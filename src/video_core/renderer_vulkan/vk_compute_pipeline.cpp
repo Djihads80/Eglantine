@@ -97,7 +97,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                    info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
                                    info.uses_quad_shuffles || info.uses_fswzadd;
         VkPipelineCreateFlags flags{};
-        if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
+        if (device.IsKhrPipelineExecutablePropertiesEnabled() &&
+            (Settings::values.renderer_debug.GetValue() || PipelineStatistics::Wanted())) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         }
         if (uses_descriptor_buffer) {
@@ -146,7 +147,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
 
         if (pipeline_statistics) {
-            pipeline_statistics->Collect(device, *pipeline);
+            pipeline_statistics->Collect(device, *pipeline,
+                                         fmt::format("compute {:016x}", shader_hash));
         }
         // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
         // lives.

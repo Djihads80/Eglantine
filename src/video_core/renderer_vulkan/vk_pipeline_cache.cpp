@@ -1518,7 +1518,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
 
     main_pools.ReleaseContents();
     auto pipeline{
-        CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
+        CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(),
+                               PipelineStatistics::ForRuntime(device), true)};
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }
@@ -1659,7 +1660,8 @@ void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& ke
     try {
         // Not built in parallel: the driver compile runs here too, so the pipeline can be drawn
         // with as soon as the GPU thread adopts it.
-        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false);
+        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
+                                          PipelineStatistics::ForRuntime(device), false);
     } catch (const std::exception& exception) {
         // Shader errors are handled inside; nothing else may end the worker thread.
         LOG_ERROR(Render_Vulkan, "Graphics pipeline translation failed: {}", exception.what());
@@ -1714,7 +1716,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
-    auto pipeline{CreateComputePipeline(main_pools, key, env, nullptr, true)};
+    auto pipeline{
+        CreateComputePipeline(main_pools, key, env, PipelineStatistics::ForRuntime(device), true)};
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }

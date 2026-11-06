@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <span>
+#include <string>
 
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -391,7 +393,13 @@ GraphicsPipeline::GraphicsPipeline(
             return;
         }
         if (pipeline_statistics) {
-            pipeline_statistics->Collect(device, *pipeline);
+            std::string label{"graphics"};
+            for (const u64 hash : key.unique_hashes) {
+                if (hash != 0) {
+                    fmt::format_to(std::back_inserter(label), " {:016x}", hash);
+                }
+            }
+            pipeline_statistics->Collect(device, *pipeline, label);
         }
         // Nothing reads the shader modules once the pipeline exists, and the driver keeps a copy
         // of each one's SPIR-V while it lives (title 1: ~1,500 pipelines, 2-5 modules each).
@@ -1259,7 +1267,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
             });
     }
     VkPipelineCreateFlags flags{};
-    if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
+    if (device.IsKhrPipelineExecutablePropertiesEnabled() &&
+        (Settings::values.renderer_debug.GetValue() || PipelineStatistics::Wanted())) {
         flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     }
     if (uses_descriptor_buffer) {

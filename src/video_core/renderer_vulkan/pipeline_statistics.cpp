@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <iterator>
+#include <string>
 #include <string_view>
 
 #include <fmt/ranges.h>
@@ -33,13 +36,44 @@ static u64 GetUint64(const VkPipelineExecutableStatisticKHR& statistic) {
 
 PipelineStatistics::PipelineStatistics(const Device& device_) {}
 
-void PipelineStatistics::Collect(const Device& device, VkPipeline pipeline) {
+bool PipelineStatistics::Wanted() {
+    static const bool wanted = [] {
+        const char* const value = std::getenv("EDEN_NX2_PIPELINE_STATS");
+        return value != nullptr && value[0] == '1';
+    }();
+    return wanted;
+}
+
+PipelineStatistics* PipelineStatistics::ForRuntime(const Device& device) {
+    if (!Wanted() || !device.IsKhrPipelineExecutablePropertiesEnabled()) {
+        return nullptr;
+    }
+    static PipelineStatistics runtime{device};
+    return &runtime;
+}
+
+void PipelineStatistics::Collect(const Device& device, VkPipeline pipeline,
+                                 std::string_view label) {
     const std::vector properties{device.GetLogical().GetPipelineExecutablePropertiesKHR(pipeline)};
     const u32 num_executables{static_cast<u32>(properties.size())};
     for (u32 executable = 0; executable < num_executables; ++executable) {
         const auto statistics{device.GetLogical().GetPipelineExecutableStatisticsKHR(pipeline, executable)};
         if (statistics.empty()) {
             continue;
+        }
+        if (Wanted()) {
+            std::string listed;
+            for (const auto& statistic : statistics) {
+                if (statistic.format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR) {
+                    fmt::format_to(std::back_inserter(listed), " | {}={:.2f}", statistic.name,
+                                   statistic.value.f64);
+                } else if (statistic.format != VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR) {
+                    fmt::format_to(std::back_inserter(listed), " | {}={}", statistic.name,
+                                   GetUint64(statistic));
+                }
+            }
+            LOG_INFO(Render_Vulkan, "Pipeline statistics {} {}:{}", label,
+                     properties[executable].name, listed);
         }
         Stats stage_stats;
         for (const auto& statistic : statistics) {
