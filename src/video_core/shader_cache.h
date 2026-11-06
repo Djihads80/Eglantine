@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include "video_core/page_filter.h"
 #include "common/container/unordered_map.h"
 #include <utility>
 #include <vector>
@@ -61,6 +62,9 @@ class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelI
     };
 
 public:
+    /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
+    VideoCommon::PageFilter page_filter;
+
     /// @brief Removes shaders inside a given region
     /// @note Checks for ranges
     /// @param addr Start address of the invalidation
