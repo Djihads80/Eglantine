@@ -9,6 +9,7 @@
 #include <tuple>
 #include <type_traits>
 #include <bit>
+#include <cstdlib>
 #include <numeric>
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
@@ -338,6 +339,41 @@ bool FoldXmadMultiply(IR::Block& block, IR::Inst& inst) {
     return true;
 }
 
+/// EDEN_NX2_FOLD_MUL=0 turns off the folds of products by 0 and 1 and of recombined halves
+bool FoldMultiplyIdentities() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_FOLD_MUL");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+/// Replaces (BitFieldUExtract(a, 16, 16) << 16) + BitFieldUExtract(a, 0, 16) with a: what an XMAD
+/// multiplication by 1 leaves once its products by 0 and 1 are folded
+bool FoldHalvesRecombine(IR::Inst& inst) {
+    if (!FoldMultiplyIdentities()) {
+        return false;
+    }
+    for (size_t arg = 0; arg < 2; ++arg) {
+        IR::Inst* const shl{inst.Arg(arg).TryInstRecursive()};
+        IR::Inst* const low{inst.Arg(1 - arg).TryInstRecursive()};
+        if (!shl || !low || shl->GetOpcode() != IR::Opcode::ShiftLeftLogical32 ||
+            shl->Arg(1) != IR::Value{16U} || low->GetOpcode() != IR::Opcode::BitFieldUExtract ||
+            low->Arg(1) != IR::Value{0U} || low->Arg(2) != IR::Value{16U}) {
+            continue;
+        }
+        IR::Inst* const high{shl->Arg(0).TryInstRecursive()};
+        if (!high || high->GetOpcode() != IR::Opcode::BitFieldUExtract ||
+            high->Arg(1) != IR::Value{16U} || high->Arg(2) != IR::Value{16U} ||
+            high->Arg(0).Resolve() != low->Arg(0).Resolve()) {
+            continue;
+        }
+        inst.ReplaceUsesWith(low->Arg(0));
+        return true;
+    }
+    return false;
+}
+
 template <typename T>
 void FoldAdd(IR::Block& block, IR::Inst& inst) {
     if (inst.HasAssociatedPseudoOperation()) {
@@ -352,10 +388,40 @@ void FoldAdd(IR::Block& block, IR::Inst& inst) {
         return;
     }
     if constexpr (std::is_same_v<T, u32>) {
+        if (FoldHalvesRecombine(inst)) {
+            return;
+        }
         if (FoldXmadMultiply(block, inst)) {
             return;
         }
         if (FoldXmadMultiplyAdd(block, inst)) {
+            return;
+        }
+    }
+}
+
+/// Folds products by 0 and 1. An XMAD multiplication by a 16-bit immediate leaves them behind (the
+/// cross term of the high halves), and Ocarina's IMAD.WIDE pointer + offset then hid the pointer
+/// from storage buffer tracking, which bound the offset word as the buffer instead.
+void FoldIMul32(IR::Inst& inst) {
+    if (FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a * b; })) {
+        return;
+    }
+    if (!FoldMultiplyIdentities()) {
+        return;
+    }
+    for (size_t arg = 0; arg < 2; ++arg) {
+        const IR::Value factor{inst.Arg(arg)};
+        if (!factor.IsImmediate()) {
+            continue;
+        }
+        if (factor.U32() == 0) {
+            inst.ReplaceUsesWith(IR::Value{0U});
+            return;
+        }
+        if (factor.U32() == 1) {
+            const IR::Value other{inst.Arg(1 - arg)};
+            inst.ReplaceUsesWith(other);
             return;
         }
     }
@@ -998,8 +1064,7 @@ void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
     case IR::Opcode::SMax32:
         return FoldSMax32(block, inst);
     case IR::Opcode::IMul32:
-        FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a * b; });
-        return;
+        return FoldIMul32(inst);
     case IR::Opcode::ShiftRightArithmetic32:
         FoldWhenAllImmediates(inst, [](s32 a, s32 b) { return static_cast<u32>(a >> b); });
         return;
