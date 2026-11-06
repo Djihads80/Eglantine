@@ -56,6 +56,10 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         VideoCommon::GpuSplit::MarkGpuThread();
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         Common::SetCurrentThreadToPerformanceCores();
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin)) {
+            Common::ReserveGpuCores(Common::GpuPinModeFromEnv());
+            Common::PinCurrentThreadToGpuSlot(0);
+        }
         system.RegisterHostThread();
 
         auto current_context = context.Acquire();

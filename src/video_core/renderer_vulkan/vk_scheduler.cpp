@@ -329,6 +329,11 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
     Common::SetCurrentThreadName("VulkanWorker");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin) &&
+        Common::GpuPinModeFromEnv() == Common::GpuPinMode::PairWorker) {
+        Common::ReserveGpuCores(Common::GpuPinMode::PairWorker);
+        Common::PinCurrentThreadToGpuSlot(2);
+    }
 
     const auto TryPopQueue{[this](auto& work) -> bool {
         if (work_queue.empty()) {

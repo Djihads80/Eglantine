@@ -21,7 +21,7 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
     REQUIRE(mask == always_off);
     for (size_t i = 0; i < opt_names.size(); ++i) {
         const bool expected_off = i == Index(Opt::DispatchBatch) || i == Index(Opt::AcquireEarly) ||
-                                  i == Index(Opt::SplitOverlap);
+                                  i == Index(Opt::SplitOverlap) || i >= Index(Opt::MacroReadOverlayWriters);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -63,6 +63,6 @@ TEST_CASE("Nx2Perf ON=dispatch_batch clears bit 33", "[nx2_perf]") {
 TEST_CASE("Nx2Perf FRAMES_AHEAD=0 and lists of names", "[nx2_perf]") {
     REQUIRE(ParseOffMask(false, "", "", true) == (always_off | (u64{1} << Index(Opt::FramesAhead))));
     const u64 mask = ParseOffMask(false, "acquire_early,dispatch_batch", "bounds,draw_preamble", false);
-    REQUIRE(mask == ((u64{1} << Index(Opt::SplitOverlap)) | (u64{1} << Index(Opt::Bounds)) |
-                     (u64{1} << Index(Opt::DrawPreamble))));
+    REQUIRE(mask == ((always_off & ~(Bit(Opt::AcquireEarly) | Bit(Opt::DispatchBatch))) |
+                     Bit(Opt::Bounds) | Bit(Opt::DrawPreamble)));
 }
