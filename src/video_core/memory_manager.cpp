@@ -160,8 +160,9 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         // nvhost_as_gpu crashed Mario Kart World inside RangeMap.
         std::unique_lock<std::mutex> lock(guard);
         kind_map.Map(gpu_addr, gpu_addr + size, kind);
+        // Under the guard: the change ring takes one writer at a time.
+        BumpMapSerial(gpu_addr, size);
     }
-    map_serial.fetch_add(1, std::memory_order_release);
     return gpu_addr;
 }
 
@@ -216,13 +217,50 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
     {
         std::unique_lock<std::mutex> lock(guard);
         kind_map.Map(gpu_addr, gpu_addr + size, kind);
+        // Under the guard: the change ring takes one writer at a time.
+        BumpMapSerial(gpu_addr, size);
     }
-    map_serial.fetch_add(1, std::memory_order_release);
     return gpu_addr;
 }
 
 void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
+}
+
+void MemoryManager::BumpMapSerial(GPUVAddr begin, size_t size) {
+    // A sequence lock per slot: readers check the slot's serial before and after reading the
+    // range, and drop the run when it changed in between.
+    const u64 next = map_serial.load(std::memory_order_relaxed) + 1;
+    MapChange& change = map_changes[next % MapChangeCount];
+    change.serial.store(0, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    change.begin.store(begin, std::memory_order_relaxed);
+    change.end.store(begin + size, std::memory_order_relaxed);
+    change.serial.store(next, std::memory_order_release);
+    map_serial.store(next, std::memory_order_release);
+}
+
+bool MemoryManager::UnchangedSince(u64 since, u64 now, GPUVAddr begin, GPUVAddr end) const {
+    // Half the ring at most: the slots past it may be rewritten while they are read.
+    if (now < since || now - since > MapChangeCount / 2) {
+        return false;
+    }
+    for (u64 serial = since + 1; serial <= now; ++serial) {
+        const MapChange& change = map_changes[serial % MapChangeCount];
+        if (change.serial.load(std::memory_order_acquire) != serial) {
+            return false;
+        }
+        const GPUVAddr change_begin = change.begin.load(std::memory_order_relaxed);
+        const GPUVAddr change_end = change.end.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (change.serial.load(std::memory_order_relaxed) != serial) {
+            return false;
+        }
+        if (change_begin < end && begin < change_end) {
+            return false;
+        }
+    }
+    return true;
 }
 
 GPUVAddr MemoryManager::Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size, PTEKind kind, bool is_big_pages) {
@@ -628,7 +666,7 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     // keep that per page and thread until the page table changes. The serial is read before the
     // walk, so an answer from a walk that raced a change is dropped at the next call.
     // EDEN_NX2_RUN_CACHE=0 keeps answers per address instead, =2 checks every answer against a
-    // walk (differences logged).
+    // walk (differences logged), =3 drops every run at each page table change.
     static const char mode = [] {
         const char* const value = std::getenv("EDEN_NX2_RUN_CACHE");
         return value == nullptr ? '1' : value[0];
@@ -672,6 +710,13 @@ size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
     const GPUVAddr page = gpu_addr & ~page_mask;
     const GPUVAddr limit = gpu_addr + size;
     Run& run = runs[(page >> page_bits) % RunCount];
+    // Ocarina changes the page table ~100 times a second, mostly elsewhere: keep a run no change
+    // since its walk touched. A change at the page where a broken run ends may join it to the
+    // next, so one big page past the run counts too.
+    if (run.owner == owner && run.page == page && run.serial != serial && mode != '3' &&
+        UnchangedSince(run.serial, serial, page, (std::max)(run.end, limit) + big_page_size)) {
+        run.serial = serial;
+    }
     if (run.owner != owner || run.page != page || run.serial != serial ||
         (!run.broken && run.end < limit)) {
         // The run is walked only as far as asked so far: a miss costs about what a walk from the
