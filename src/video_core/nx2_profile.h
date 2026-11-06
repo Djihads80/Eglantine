@@ -102,7 +102,7 @@ struct MacroCounts {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 32> counters{}; ///< See Counter
+    std::array<u64, 64> counters{}; ///< See Counter
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -184,7 +184,10 @@ enum class Counter : u32 {
     BindMemoMisses,      ///< Nx2Perf bind_memo: binds that took the full path
     DmaReadsWriterSet,   ///< Of DmaReadsEarly: read with proven draws still queued (MacroReadWriterSet)
     DmaReadsWriterSetFallback, ///< Drained instead: a queued proven draw's proof no longer held
+    Count,
 };
+
+static_assert(static_cast<size_t>(Counter::Count) <= std::tuple_size_v<decltype(ThreadData::counters)>);
 
 /// The fencing thread's buffer downloads (BufferCache::PopAsyncBuffers): logged by the thread
 /// that makes the fences.

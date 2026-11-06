@@ -4,12 +4,14 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <string_view>
 
 #include <fmt/format.h>
 
+#include "common/common_types.h"
 #include "common/logging.h"
 
 // EXPERIMENT (not for nx2): GPU back-thread optimizations for Ocarina of Time.
@@ -77,16 +79,77 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dispatch_batch", "pipeline_fast_cache", "draw_preamble", "bind_memo",
 };
 
+static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
+static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
+              static_cast<unsigned>(Opt::BindMemo) == 36);
+
+constexpr u64 Bit(Opt opt) {
+    return u64{1} << static_cast<unsigned>(opt);
+}
+
+/// Bit i of an off-mask is opt_names[i]: set means off.
+constexpr bool IsOff(u64 mask, size_t index) {
+    return ((mask >> index) & 1) != 0;
+}
+
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
-inline constexpr unsigned DefaultOffMask() {
-    unsigned mask = 0;
+inline constexpr u64 DefaultOffMask() {
+    u64 mask = 0;
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
                           Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish,
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
                           Opt::BindMemo}) {
-        mask |= 1U << static_cast<unsigned>(opt);
+        mask |= Bit(opt);
+    }
+    return mask;
+}
+
+/// Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
+/// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
+/// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode).
+inline constexpr u64 always_off =
+    Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) | Bit(Opt::DispatchBatch);
+
+static_assert(IsOff(always_off, 33));
+static_assert(IsOff(DefaultOffMask(), 36));
+static_assert(!IsOff(DefaultOffMask(), 0));
+
+/// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
+/// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).
+inline u64 ParseOffMask(bool safe, std::string_view on, std::string_view off,
+                        bool frames_ahead_off) {
+    // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
+    // set back to off (split_overlap stays quarantined either way).
+    u64 mask = safe ? DefaultOffMask() | always_off : always_off;
+    while (!on.empty()) {
+        const size_t comma = on.find(',');
+        const std::string_view name = on.substr(0, comma);
+        for (size_t i = 0; i < opt_names.size(); ++i) {
+            if (name == opt_names[i]) {
+                mask &= ~(u64{1} << i);
+            }
+        }
+        on = comma == std::string_view::npos ? std::string_view{} : on.substr(comma + 1);
+    }
+    if (frames_ahead_off) {
+        mask |= Bit(Opt::FramesAhead);
+    }
+    while (!off.empty()) {
+        const size_t comma = off.find(',');
+        const std::string_view name = off.substr(0, comma);
+        bool known = false;
+        for (size_t i = 0; i < opt_names.size(); ++i) {
+            if (name == opt_names[i]) {
+                mask |= u64{1} << i;
+                known = true;
+            }
+        }
+        if (!known && !name.empty()) {
+            LOG_WARNING(HW_GPU, "Nx2Perf: unknown name {} in EDEN_NX2_PERF_OFF", name);
+        }
+        off = comma == std::string_view::npos ? std::string_view{} : off.substr(comma + 1);
     }
     return mask;
 }
@@ -100,55 +163,21 @@ inline bool Enabled() {
 }
 
 inline bool On(Opt opt) {
-    static const unsigned off = [] {
-        // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
-        // set back to off (split_overlap stays quarantined either way).
-        // Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
-        // reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
-        // dispatch_batch (delays GPU work; suspected of the flashes, no verify mode).
-        constexpr unsigned always_off = (1U << static_cast<unsigned>(Opt::SplitOverlap)) |
-                                        (1U << static_cast<unsigned>(Opt::AcquireEarly)) |
-                                        (1U << static_cast<unsigned>(Opt::DispatchBatch));
-        unsigned mask = std::getenv("EDEN_NX2_PERF_SAFE") != nullptr ? DefaultOffMask() | always_off
-                                                                 : always_off;
-        std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";
-        while (!on_list.empty()) {
-            const size_t comma = on_list.find(',');
-            const std::string_view name = on_list.substr(0, comma);
-            for (size_t i = 0; i < opt_names.size(); ++i) {
-                if (name == opt_names[i]) {
-                    mask &= ~(1U << i);
-                }
-            }
-            on_list = comma == std::string_view::npos ? std::string_view{} : on_list.substr(comma + 1);
-        }
-        if (const char* value = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD"); value && value[0] == '0') {
-            mask |= 1U << static_cast<unsigned>(Opt::FramesAhead);
-        }
-        std::string_view list = std::getenv("EDEN_NX2_PERF_OFF") ? std::getenv("EDEN_NX2_PERF_OFF") : "";
-        while (!list.empty()) {
-            const size_t comma = list.find(',');
-            const std::string_view name = list.substr(0, comma);
-            bool known = false;
-            for (size_t i = 0; i < opt_names.size(); ++i) {
-                if (name == opt_names[i]) {
-                    mask |= 1U << i;
-                    known = true;
-                }
-            }
-            if (!known && !name.empty()) {
-                LOG_WARNING(HW_GPU, "Nx2Perf: unknown name {} in EDEN_NX2_PERF_OFF", name);
-            }
-            list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
-        }
+    static const u64 off = [] {
+        const char* on_list = std::getenv("EDEN_NX2_PERF_ON");
+        const char* off_list = std::getenv("EDEN_NX2_PERF_OFF");
+        const char* frames_ahead = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD");
+        const u64 mask = ParseOffMask(std::getenv("EDEN_NX2_PERF_SAFE") != nullptr,
+                                      on_list ? on_list : "", off_list ? off_list : "",
+                                      frames_ahead && frames_ahead[0] == '0');
         std::string state;
         for (size_t i = 0; i < opt_names.size(); ++i) {
-            state += fmt::format(" {}={}", opt_names[i], Enabled() && (mask >> i & 1) == 0 ? "on" : "off");
+            state += fmt::format(" {}={}", opt_names[i], Enabled() && !IsOff(mask, i) ? "on" : "off");
         }
         LOG_INFO(HW_GPU, "Nx2Perf:{}", state);
         return mask;
     }();
-    return Enabled() && (off >> static_cast<unsigned>(opt) & 1) == 0;
+    return Enabled() && !IsOff(off, static_cast<size_t>(opt));
 }
 
 inline bool Verify() {
