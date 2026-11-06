@@ -34,7 +34,10 @@ namespace VideoCommon {
 enum class DrainSite : u32 {
     Other,
     FetchDrain,     ///< EDEN_NX2_FETCH_DRAIN: before every entry
-    Acquire,        ///< A semaphore acquire reads the value the back may release
+    Acquire,        ///< A semaphore acquire reads the value the back may release (other paths)
+    AcquireTrigger, ///< The same, an Ampere semaphore trigger acquire checked when parsed
+    AcquirePoll,    ///< The same, a pending acquire polled (Puller::CanResumeAcquire)
+    AcquireEarly,   ///< Opt::AcquireEarly: only the queued possible writers of the word's page
     SemaphoreFlush, ///< The acquired semaphore is in the buffer cache
     FenceRelease,   ///< The puller's acquires release the pending fences
     ListWriters,    ///< GPU-written command lists: the dispatches and copies sent before them
@@ -51,7 +54,8 @@ enum class DrainSite : u32 {
 };
 
 inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> drain_site_names{
-    "other",       "fetch drain",     "acquire",    "semaphore flush", "fence release",
+    "other",       "fetch drain",     "acquire",    "acquire trigger", "acquire poll",
+    "acquire early", "semaphore flush", "fence release",
     "list writers", "list sync",      "list flush", "macro dma read",  "macro dma writes",
     "macro dma flush",
     "gp sync fence", "map",           "front start", "front verify",
@@ -227,6 +231,11 @@ public:
             }
         }
         return newest;
+    }
+    /// Ring position the back must pass before the front translates GPU addresses (the queued
+    /// functions, GPU memory maps among them; SettleWrites waits for it).
+    [[nodiscard]] u64 MapTarget() const {
+        return (std::min)(last_function_position, write_position);
     }
     /// The back's position right now.
     [[nodiscard]] u64 ConsumedNow() const {

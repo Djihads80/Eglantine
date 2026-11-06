@@ -81,7 +81,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 15> counters{}; ///< See Counter
+    std::array<u64, 19> counters{}; ///< See Counter
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_ns{};
     std::array<u64, static_cast<size_t>(DrainSite::Count)> drain_count{};
     u64 child_ns{};    ///< Time of the zones nested in the current one
@@ -140,6 +140,10 @@ enum class Counter : u32 {
     ListChecks,          ///< Command list fetches waiting only for their writers (ListTarget)
     ListWaits,           ///< Of those, the back still had them queued
     ListWaitsUnknown,    ///< Of ListWaits: for a write the front can't place
+    AcquirePolls,        ///< Pending semaphore acquires polled (Puller::CanResumeAcquire)
+    AcquirePollsMet,     ///< Of those, met (the channel resumes)
+    AcquirePollsEarly,   ///< Of AcquirePollsMet: without draining the back (Opt::AcquireEarly)
+    AcquireTriggerEarly, ///< Of AcquireChecks: met without draining the back (Opt::AcquireEarly)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -209,6 +213,12 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    line += fmt::format(" | acquire polls {:.0f} ({:.0f} met, {:.0f} without a drain) | acquires "
+                        "met without a drain {:.0f}",
+                        static_cast<double>(data.counters[15]) * 1e9 / window,
+                        static_cast<double>(data.counters[16]) * 1e9 / window,
+                        static_cast<double>(data.counters[17]) * 1e9 / window,
+                        static_cast<double>(data.counters[18]) * 1e9 / window);
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
                         static_cast<double>(data.counters[8]) * 1e9 / window,
