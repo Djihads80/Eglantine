@@ -64,6 +64,9 @@ enum class Opt : unsigned {
     /// With MacroReadCbOverlay and MacroReadWriterSet: the overlay waits only for writers, not
     /// for queued proven draws, and the write tracker keeps write kinds apart
     MacroReadOverlayWriters,
+    /// Split back, Ampere: submits recorded draws while the front waits for the back or the
+    /// host GPU has run dry, so a command list copy waits only for the tail behind it
+    SubmitWhileWaited,
     Count,
 };
 
@@ -81,6 +84,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "download_batch",
     "dispatch_batch", "pipeline_fast_cache", "draw_preamble", "bind_memo",
     "macro_read_overlay_writers",
+    "submit_while_waited",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -104,7 +108,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
-                          Opt::BindMemo, Opt::MacroReadOverlayWriters}) {
+                          Opt::BindMemo, Opt::MacroReadOverlayWriters,
+                          Opt::SubmitWhileWaited}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -115,7 +120,8 @@ inline constexpr u64 DefaultOffMask() {
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode); new switches not
 /// yet measured.
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
-                                  Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters);
+                                  Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
+                                  Bit(Opt::SubmitWhileWaited);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));
