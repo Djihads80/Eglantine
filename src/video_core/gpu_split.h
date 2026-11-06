@@ -372,6 +372,8 @@ private:
     /// Back: whether the front's wait for `target` lets the back store `consumed` before its
     /// idle hook (ReleaseBeforeHook).
     bool ReleaseFirst(u64 target);
+    /// The idle hook (deferred submits), timed as its own profiler zone.
+    void RunIdleHook();
     /// After the back stored `consumed`: wakes a front sleeping in Backoff.
     void NotifyFront() {
         if (front_waiting.load(std::memory_order_seq_cst)) {

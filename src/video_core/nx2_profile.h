@@ -64,6 +64,8 @@ enum class Zone : u32 {
     BindUniformStream, ///< Of bind stage buffers: uniforms streamed (small or misaligned)
     BindUniformCached, ///< Of bind stage buffers: cached uniforms (touch, sync, usage, bind)
     BindStorage,       ///< Of bind stage buffers: storage buffers (touch, sync, usage, bind)
+    BackReplay,   ///< Split back: decoding ring entries (Execute) outside the zones it calls
+    BackIdleHook, ///< Split back: the idle hook (deferred submits) outside the zones it calls
     Count,
 };
 
@@ -77,6 +79,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "fence skipped", "method", "split drain", "split wait", "signal ordering",
     "list copy wait",
     "bind uniform bank", "bind uniform stream", "bind uniform cached", "bind storage",
+    "back replay", "back idle hook",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).

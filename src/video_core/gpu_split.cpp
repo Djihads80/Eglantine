@@ -605,6 +605,11 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
     return 1;
 }
 
+void GpuSplit::RunIdleHook() {
+    Nx2Profile::Scope scope{Nx2Profile::Zone::BackIdleHook};
+    idle_hook(idle_argument);
+}
+
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
@@ -638,7 +643,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // too, so the deferred submit can't overlap whatever the front does next.
                 if (!back_quiet.load(std::memory_order_relaxed)) {
                     if (idle_hook != nullptr) {
-                        idle_hook(idle_argument);
+                        RunIdleHook();
                     }
                     back_quiet.store(true, std::memory_order_release);
                 }
@@ -667,13 +672,17 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         back_quiet.store(false, std::memory_order_seq_cst);
         while (read_position != available) {
             const size_t index = read_position & RingMask;
-            const size_t size =
-                Execute(&ring[index], std::min<u64>(available - read_position, RingWords - index));
+            size_t size;
+            {
+                Nx2Profile::Scope replay_scope{Nx2Profile::Zone::BackReplay};
+                size = Execute(&ring[index],
+                               std::min<u64>(available - read_position, RingWords - index));
+            }
             read_position += size != 0 ? size : RingWords - index;
             if (hook_requested.load(std::memory_order_relaxed) &&
                 idle_hook != nullptr) [[unlikely]] {
                 hook_requested.store(false, std::memory_order_seq_cst);
-                idle_hook(idle_argument);
+                RunIdleHook();
             }
             // Hand ring space back now and then while working through a long batch, and at once
             // when the front waits for this position (WaitForWriters).
@@ -684,13 +693,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 const bool release_first =
                     idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
                 if (idle_hook != nullptr && read_position >= target && !release_first) {
-                    idle_hook(idle_argument);
+                    RunIdleHook();
                 }
                 consumed.store(read_position, std::memory_order_seq_cst);
                 last_store = read_position;
                 NotifyFront();
                 if (release_first) {
-                    idle_hook(idle_argument);
+                    RunIdleHook();
                 }
             }
         }
@@ -700,12 +709,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         const bool release_first =
             idle_hook != nullptr && read_position >= target && ReleaseFirst(target);
         if (idle_hook != nullptr && !release_first) {
-            idle_hook(idle_argument);
+            RunIdleHook();
         }
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
         if (release_first) {
-            idle_hook(idle_argument);
+            RunIdleHook();
         }
     }
     back_running.store(false, std::memory_order_seq_cst);
