@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -267,6 +268,11 @@ private:
     u32 last_descriptor_buffer_chunk{};
     u64 last_descriptor_buffer_generation{};
 
+    /// Builds the pipeline once, on whichever thread gets here first.
+    void RunBuild();
+
+    std::function<void()> build_task;
+    std::atomic_bool build_claimed{false};
     std::condition_variable build_condvar;
     std::mutex build_mutex;
     std::atomic_bool is_built{false};

@@ -453,11 +453,32 @@ GraphicsPipeline::GraphicsPipeline(
     // stage it configures has descriptors.
     configure_func = IsMeshEmulated() ? MakeConfigureSpecFunc<DefaultSpec>()
                                       : ConfigureFunc(spv_modules, stage_infos);
+    build_task = std::move(func);
     if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
+        worker_thread->QueueWork([this] { RunBuild(); });
     } else {
-        func();
+        RunBuild();
     }
+}
+
+/// EDEN_NX2_BUILD_WAITED=0: a draw or dispatch waiting on its pipeline waits for the worker queue
+/// to reach the build, as before.
+static bool BuildWaitedPipelines() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_BUILD_WAITED");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+void GraphicsPipeline::RunBuild() {
+    // A draw that needs the pipeline builds it on the scheduler thread instead of waiting for the
+    // worker queue, which can hold hundreds of builds, to reach it.
+    if (build_claimed.exchange(true)) {
+        return;
+    }
+    build_task();
+    build_task = nullptr;
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -828,6 +849,9 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
+            if (BuildWaitedPipelines()) {
+                RunBuild();
+            }
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });
@@ -1663,6 +1687,9 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
     // On the worker: the pipelines once built, and the draw's descriptor set.
     work->commit = [this, descriptor_data, raw = work.get()]() -> VkDescriptorSet {
         if (!is_built.load(std::memory_order::relaxed)) {
+            if (BuildWaitedPipelines()) {
+                RunBuild();
+            }
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         }

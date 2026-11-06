@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -108,6 +109,11 @@ private:
     vk::DescriptorUpdateTemplate descriptor_update_template;
     vk::Pipeline pipeline;
 
+    /// Builds the pipeline once, on whichever thread gets here first.
+    void RunBuild();
+
+    std::function<void()> build_task;
+    std::atomic_bool build_claimed{false};
     std::condition_variable build_condvar;
     std::mutex build_mutex;
     std::atomic_bool is_built{false};
