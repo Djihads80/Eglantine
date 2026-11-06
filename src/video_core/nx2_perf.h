@@ -101,7 +101,11 @@ inline bool Enabled() {
 
 inline bool On(Opt opt) {
     static const unsigned off = [] {
-        unsigned mask = DefaultOffMask();
+        // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
+        // set back to off (split_overlap stays quarantined either way).
+        unsigned mask = std::getenv("EDEN_NX2_PERF_SAFE") != nullptr
+                            ? DefaultOffMask()
+                            : 1U << static_cast<unsigned>(Opt::SplitOverlap);
         std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";
         while (!on_list.empty()) {
             const size_t comma = on_list.find(',');
