@@ -29,6 +29,23 @@
 
 namespace Tegra {
 
+// Compute dispatches, uploads and reports and DMA copies write the command lists
+// ReadGpuWrittenCommands reads. Plain native compute state (Frizti 99b3b49) does not.
+bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
+                               u32 method) {
+    if (method >= MacroRegistersStart) {
+        return type == Engines::EngineTypes::KeplerCompute ||
+               type == Engines::EngineTypes::MaxwellDMA;
+    }
+    if (type == Engines::EngineTypes::KeplerCompute) {
+        return static_cast<const Engines::KeplerCompute&>(engine).MayWriteMemory(method);
+    }
+    if (type == Engines::EngineTypes::MaxwellDMA) {
+        return method < engine.execution_mask.size() && engine.execution_mask[method];
+    }
+    return false;
+}
+
 constexpr u32 MacroRegistersStart = 0xE00;
 constexpr u32 ComputeInline = 0x6D;
 
@@ -486,12 +503,7 @@ void DmaPusher::CallMethod(u32 argument) {
         }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer =
-            (engine_type == Engines::EngineTypes::KeplerCompute ||
-             engine_type == Engines::EngineTypes::MaxwellDMA) &&
-            (dma_state.method >= MacroRegistersStart ||
-             (dma_state.method < subchannel->execution_mask.size() &&
-              subchannel->execution_mask[dma_state.method]));
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
         // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
         const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
                                     engine_type == Engines::EngineTypes::Fermi2D
@@ -555,12 +567,7 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
-        const bool writer =
-            (engine_type == Engines::EngineTypes::KeplerCompute ||
-             engine_type == Engines::EngineTypes::MaxwellDMA) &&
-            (dma_state.method >= MacroRegistersStart ||
-             (dma_state.method < subchannel->execution_mask.size() &&
-              subchannel->execution_mask[dma_state.method]));
+        const bool writer = IsMemoryWriter(*subchannel, engine_type, dma_state.method);
         // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
         const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
                                     engine_type == Engines::EngineTypes::Fermi2D

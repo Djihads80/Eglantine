@@ -344,6 +344,19 @@ private:
     bool native_mme_dumped{};
     std::optional<u32> native_executing_macro_logged;
     bool native_mode{};
+
+public:
+    /// Whether this method may write guest memory: dispatches, uploads and reports. Plain native
+    /// state does not.
+    [[nodiscard]] bool MayWriteMemory(u32 method) const {
+        if (method >= native_plain_methods.size()) {
+            return true;
+        }
+        return native_mode ? !native_plain_methods[method]
+                           : method < execution_mask.size() && execution_mask[method];
+    }
+
+private:
     NativeMacroContext* native_context{};
     bool native_compute_uploaded{};
     MacroEngine* native_macro{};
