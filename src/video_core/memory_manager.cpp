@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -619,26 +621,76 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
 }
 
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
-    // Native storage buffers ask this for up to 8 MiB on each bind, ~70,000 times a second in
-    // Ocarina of Time's forest (17% of the GPU thread walking pages): keep the answers per thread
-    // until the page table changes. The serial is read before the walk, so an answer from a walk
-    // that raced a change is dropped at the next call.
-    struct Entry {
-        size_t owner;
-        GPUVAddr gpu_addr;
-        size_t size;
-        u64 serial;
-        size_t result;
-    };
-    thread_local std::array<Entry, 64> cache{};
+    // Native storage buffers ask this for up to 8 MiB on each bind: ~90,000 times a second in
+    // Ocarina of Time's Kokiri village, at as many addresses as there are objects, so answers
+    // kept per address missed and walking the pages took ~11% of the split's back thread. The
+    // answer for any address follows from where the contiguous run through its 4 KiB page ends:
+    // keep that per page and thread until the page table changes. The serial is read before the
+    // walk, so an answer from a walk that raced a change is dropped at the next call.
+    // EDEN_NX2_RUN_CACHE=0 keeps answers per address instead, =2 checks every answer against a
+    // walk (differences logged).
+    static const char mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_RUN_CACHE");
+        return value == nullptr ? '1' : value[0];
+    }();
+    const size_t owner = unique_identifier + 1;
     const u64 serial = map_serial.load(std::memory_order_acquire);
-    Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
-    if (entry.owner == unique_identifier + 1 && entry.gpu_addr == gpu_addr && entry.size == size &&
-        entry.serial == serial) {
-        return entry.result;
+    if (mode == '0') {
+        struct Entry {
+            size_t owner;
+            GPUVAddr gpu_addr;
+            size_t size;
+            u64 serial;
+            size_t result;
+        };
+        thread_local std::array<Entry, 64> cache{};
+        Entry& entry = cache[((gpu_addr ^ size) * 0x9E3779B97F4A7C15ULL) >> 58];
+        if (entry.owner == owner && entry.gpu_addr == gpu_addr && entry.size == size &&
+            entry.serial == serial) {
+            return entry.result;
+        }
+        const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
+        entry = {owner, gpu_addr, size, serial, result};
+        return result;
     }
-    const size_t result = MaxContinuousRangeUncached(gpu_addr, size);
-    entry = {unique_identifier + 1, gpu_addr, size, serial, result};
+    struct Run {
+        size_t owner;
+        GPUVAddr page;
+        u64 serial;
+        GPUVAddr end;
+        bool broken; ///< The run ends at end; otherwise it was only walked that far.
+    };
+    // Allocated on first use: a thread_local array would take its 160 KiB in every thread.
+    constexpr size_t RunCount = 4096;
+    thread_local std::vector<Run> runs;
+    if (runs.empty()) [[unlikely]] {
+        runs.resize(RunCount);
+    }
+    // Small pages: Ocarina maps separate allocations into one 64 KiB page, so a run from the big
+    // page's start often ends before the address. A 4 KiB page is mapped as a whole, so its run
+    // passes the address unless the page is not mapped.
+    const GPUVAddr page = gpu_addr & ~page_mask;
+    const GPUVAddr limit = gpu_addr + size;
+    Run& run = runs[(page >> page_bits) % RunCount];
+    if (run.owner != owner || run.page != page || run.serial != serial ||
+        (!run.broken && run.end < limit)) {
+        // The run is walked only as far as asked so far: a miss costs about what a walk from the
+        // address does.
+        const size_t length = MaxContinuousRangeUncached(page, limit - page);
+        run = {owner, page, serial, page + length, page + length < limit};
+    }
+    // The run from the page start passes gpu_addr, so the run from gpu_addr ends there too.
+    const size_t result = run.end > gpu_addr ? (std::min<size_t>)(size, run.end - gpu_addr)
+                                             : MaxContinuousRangeUncached(gpu_addr, size);
+    if (mode == '2') [[unlikely]] {
+        const size_t expected = MaxContinuousRangeUncached(gpu_addr, size);
+        static std::atomic<u32> logged{};
+        if (expected != result && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU, "MaxContinuousRange({:#x}, {:#x}): run cache {:#x}, walk {:#x}",
+                      gpu_addr, size, result, expected);
+        }
+        return expected;
+    }
     return result;
 }
 
