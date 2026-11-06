@@ -40,6 +40,7 @@
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_frame_stats.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
@@ -1844,6 +1845,16 @@ private:
                 m_stats = {.last_present = entered};
             }
         }
+        if (VideoCommon::Nx2FrameStats::Enabled() && m_frame_stats.Add(entered, waited - entered)) {
+            using VideoCommon::Nx2FrameStats::Ms;
+            const auto& window = m_frame_stats.Last();
+            LOG_INFO(HW_GPU,
+                     "Nx2Frame: n={} iv_p50={:.2f} iv_p90={:.2f} iv_p99={:.2f} iv_max={:.2f} "
+                     "fw_p50={:.2f} fw_p99={:.2f} fw_max={:.2f}",
+                     window.presents, Ms(window.interval_us.p50), Ms(window.interval_us.p90),
+                     Ms(window.interval_us.p99), Ms(window.interval_us.max), Ms(window.fence_us.p50),
+                     Ms(window.fence_us.p99), Ms(window.fence_us.max));
+        }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
                              static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
@@ -1861,6 +1872,7 @@ private:
         u32 presents{}, ran_ahead{}, one_ahead_skips{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
+    VideoCommon::Nx2FrameStats::Window<> m_frame_stats;
     u32 m_one_ahead_mismatches{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
