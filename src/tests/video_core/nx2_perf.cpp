@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <catch2/catch_test_macros.hpp>
+#include <fmt/format.h>
 
 #include "common/common_types.h"
 #include "video_core/nx2_perf.h"
@@ -117,4 +118,81 @@ TEST_CASE("Nx2Perf FRAMES_AHEAD=0 and lists of names", "[nx2_perf]") {
     const u64 mask = ParseOffMask(false, "acquire_early,dispatch_batch", "bounds,draw_preamble", false);
     REQUIRE(mask == ((always_off & ~(Bit(Opt::AcquireEarly) | Bit(Opt::DispatchBatch))) |
                      Bit(Opt::Bounds) | Bit(Opt::DrawPreamble)));
+}
+
+TEST_CASE("Nx2Perf live control: label, on and off lists", "[nx2_perf]") {
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult result =
+        ParseControl(startup, "label B.3\non acquire_trigger_early,frames_ahead\noff cb_batch\n",
+                     live_safe);
+    REQUIRE(result.label == "B.3");
+    REQUIRE(result.mask == ((startup & ~(Bit(Opt::AcquireTriggerEarly) | Bit(Opt::FramesAhead))) |
+                            Bit(Opt::CbBatch)));
+    REQUIRE(result.on_vs_startup == (Bit(Opt::AcquireTriggerEarly) | Bit(Opt::FramesAhead)));
+    REQUIRE(result.off_vs_startup == Bit(Opt::CbBatch));
+    REQUIRE(result.ignored.empty());
+    REQUIRE(FormatControl(result, result.mask) ==
+            fmt::format("set=B.3 on=frames_ahead,acquire_trigger_early off=cb_batch ignored=- "
+                        "mask=0x{:016x}",
+                        result.mask));
+}
+
+TEST_CASE("Nx2Perf live control: safe, comments and CRLF", "[nx2_perf]") {
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult result =
+        ParseControl(startup, "\xEF\xBB\xBF# arm\r\n\r\n  label A # name\r\nsafe\r\n", live_safe);
+    REQUIRE(result.label == "A");
+    REQUIRE(result.mask == (startup | (live_safe & (DefaultOffMask() | always_off))));
+    REQUIRE(result.off_vs_startup == (Bit(Opt::FrontRun) | Bit(Opt::DownloadBatch)));
+    REQUIRE(result.on_vs_startup == 0);
+    REQUIRE(result.ignored.empty());
+    // In file order: a later "on" wins over "safe".
+    REQUIRE(ParseControl(startup, "safe\non front_run", live_safe).mask ==
+            (result.mask & ~Bit(Opt::FrontRun)));
+}
+
+TEST_CASE("Nx2Perf live control: switches not live-safe and unknown names are ignored",
+          "[nx2_perf]") {
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult result =
+        ParseControl(startup, "on present_one_ahead,bogus\noff bounds\nfaster\n", live_safe);
+    REQUIRE(result.mask == startup);
+    REQUIRE(result.on_vs_startup == 0);
+    REQUIRE(result.off_vs_startup == 0);
+    REQUIRE(result.ignored == "present_one_ahead,bogus,bounds,faster");
+    REQUIRE(FormatControl(result, startup).starts_with(
+        "set=- on=- off=- ignored=present_one_ahead,bogus,bounds,faster mask=0x"));
+    // Nothing is live-safe with EDEN_NX2_PERF_OPT=0.
+    REQUIRE(ParseControl(startup, "off cb_batch", 0).mask == startup);
+}
+
+TEST_CASE("Nx2Perf live control: each file is the whole arm", "[nx2_perf]") {
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult first = ParseControl(startup, "label A.1\noff clean_words\n", live_safe);
+    REQUIRE(first.mask == (startup | Bit(Opt::CleanWords)));
+    // The second file does not inherit the first one's "off".
+    const ControlResult second = ParseControl(startup, "label B.2\noff front_sleep\n", live_safe);
+    REQUIRE(second.mask == (startup | Bit(Opt::FrontSleep)));
+    REQUIRE(second.off_vs_startup == Bit(Opt::FrontSleep));
+    // An empty file is the startup mask.
+    const ControlResult empty = ParseControl(startup, "", live_safe);
+    REQUIRE(empty.mask == startup);
+    REQUIRE(empty.label.empty());
+    REQUIRE(FormatControl(empty, startup) ==
+            fmt::format("set=- on=- off=- ignored=- mask=0x{:016x}", startup));
+}
+
+TEST_CASE("Nx2Perf live control: a label-only change still gets its own marker", "[nx2_perf]") {
+    const u64 startup = ParseOffMask(false, "", "", false);
+    const ControlResult a = ParseControl(startup, "label A.1\noff guest_ccd\n", live_safe);
+    const ControlResult b = ParseControl(startup, "label A.2\noff guest_ccd\n", live_safe);
+    REQUIRE(a.mask == b.mask);
+    REQUIRE(a.ignored == "guest_ccd");
+    REQUIRE(FormatControl(b, b.mask).starts_with("set=A.2 on=- off=- ignored=guest_ccd mask="));
+    REQUIRE(FormatControl(a, a.mask) != FormatControl(b, b.mask));
+}
+
+TEST_CASE("Nx2Perf live-safe switches are all named", "[nx2_perf]") {
+    REQUIRE((live_safe >> opt_names.size()) == 0);
+    REQUIRE(!IsOff(live_safe, Index(Opt::PreflushAging)));
 }
