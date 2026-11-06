@@ -329,10 +329,13 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
     Common::SetCurrentThreadName("VulkanWorker");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
-    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin) &&
-        Common::GpuPinModeFromEnv() == Common::GpuPinMode::PairWorker) {
-        Common::ReserveGpuCores(Common::GpuPinMode::PairWorker);
-        Common::PinCurrentThreadToGpuSlot(2);
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin)) {
+        const Common::GpuPinMode pin_mode = Common::GpuPinModeFromEnv();
+        if (pin_mode == Common::GpuPinMode::PairWorker ||
+            pin_mode == Common::GpuPinMode::SeparateWorker) {
+            Common::ReserveGpuCores(pin_mode);
+            Common::PinCurrentThreadToGpuSlot(2);
+        }
     }
 
     const auto TryPopQueue{[this](auto& work) -> bool {

@@ -75,9 +75,14 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
         timer_thread = std::jthread([this](std::stop_token stop_token) {
             Common::SetCurrentThreadName("HostTiming");
             Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
-            // gpu_core_pin: the timer's busy wait leaves the V-Cache cores to the guest and GPU.
-            if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin)) {
+            // gpu_core_pin, guest_ccd: the timer's busy wait leaves the V-Cache cores to the GPU.
+            const bool guest_ccd = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GuestCcd);
+            if (guest_ccd || VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GpuCorePin)) {
                 Common::SetCurrentThreadToEfficiencyCores();
+                if (guest_ccd) {
+                    LOG_INFO(Core_Timing, "guest_ccd: HostTiming mask={:#x}",
+                             Common::CurrentThreadAffinityMask());
+                }
             } else {
                 Common::SetCurrentThreadToPerformanceCores();
             }

@@ -17,6 +17,7 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_core.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_perf.h"
 
 namespace Core {
 
@@ -174,7 +175,12 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     std::string name = is_multicore ? ("CPUCore_" + std::to_string(core)) : std::string{"CPUThread"};
     Common::SetCurrentThreadName(name.c_str());
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
-    Common::SetCurrentThreadToPerformanceCores();
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GuestCcd)) {
+        Common::SetCurrentThreadToEfficiencyCores();
+        LOG_INFO(Core, "guest_ccd: {} mask={:#x}", name, Common::CurrentThreadAffinityMask());
+    } else {
+        Common::SetCurrentThreadToPerformanceCores();
+    }
     auto& data = core_data[core];
     data.host_context = Common::Fiber::ThreadToFiber();
 
