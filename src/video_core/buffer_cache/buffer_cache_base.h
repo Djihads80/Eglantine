@@ -692,6 +692,20 @@ private:
     }
 
     Common::RangeSet<DAddr> read_trapped_ranges;
+    /// EDEN_NX2_READ_TRAP_FLUSH: ranges the guest CPU read after GPU writes. A read that must
+    /// flush downloads the GPU writes in all of them, so the reads that usually follow it in the
+    /// same burst find nothing left to flush.
+    Common::RangeSet<DAddr> cpu_read_ranges;
+    bool download_cpu_read_ranges{};
+    /// Whether a guest CPU read of GPU-written memory traps and flushes on demand each time
+    /// (EDEN_NX2_READ_TRAP_FLUSH=1, Switch 2 programs) instead of marking it Preflushable.
+    [[nodiscard]] static bool ReadTrapFlushes() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_NX2_READ_TRAP_FLUSH");
+            return value != nullptr && value[0] == '1';
+        }();
+        return enabled && Tegra::g_nx2_ampere.load(std::memory_order_relaxed);
+    }
 
     /// StorageBufferBinding's answers by address space, pointer, size word, alignment and access,
     /// kept until the address space's page tables change (MemoryManager::MapSerial). Four ways

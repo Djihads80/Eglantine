@@ -279,9 +279,20 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
                                            device_addr_end_aligned - device_addr_start_aligned);
     // Mark only data that the GPU wrote. A mark stays for the session and sends later GPU writes
     // in the range to a download at each fence.
-    if (!area->preemtive) {
+    if (!area->preemtive && !ReadTrapFlushes()) {
         memory_tracker.MarkRegionAsPreflushable(device_addr_start_aligned,
                                                 device_addr_end_aligned - device_addr_start_aligned);
+    } else if (!area->preemtive) {
+        // Trap and flush instead: no mark, so the next GPU write here arms the trap again. The
+        // flush that follows also downloads the GPU writes in every range read before.
+        if constexpr (USE_MEMORY_MAPS) {
+            cpu_read_ranges.Add(area->start_address, area->end_address - area->start_address);
+            download_cpu_read_ranges = true;
+        }
+        // The core consumed this trap before asking: forget it, or ArmReadTraps would skip
+        // rearming it at the next GPU write.
+        read_trapped_ranges.Subtract(device_addr_start_aligned,
+                                     device_addr_end_aligned - device_addr_start_aligned);
     } else {
         // The core keeps this area and has no mark. The next GPU write here must arm the range
         // again, which ends the area and sets the trap.
@@ -300,6 +311,35 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
         const char* value = std::getenv("EDEN_NX2_DOWNLOAD_WINDOW");
         return value != nullptr && value[0] != '0';
     }();
+    if constexpr (USE_MEMORY_MAPS) {
+        // EDEN_NX2_READ_TRAP_FLUSH: a guest CPU read trapped (GetFlushArea). Ocarina of Time
+        // reads the output of ~30 compute storage buffers each frame page by page: download the
+        // GPU writes in every range read so far with this one, in one GPU wait where no other
+        // thread's batch is open, and the reads after it find nothing to flush.
+        if (download_cpu_read_ranges) {
+            download_cpu_read_ranges = false;
+            boost::container::small_vector<std::pair<DAddr, u64>, 16> ranges{{device_addr, size}};
+            cpu_read_ranges.ForEach([&](DAddr lower, DAddr upper) {
+                gpu_modified_ranges.ForEachInRange(lower, upper - lower,
+                                                   [&](DAddr start, DAddr end) {
+                                                       ranges.emplace_back(start, end - start);
+                                                   });
+            });
+            const bool own_batch = !IS_OPENGL && !download_batch;
+            if (own_batch) {
+                BeginDownloadBatch();
+            }
+            for (const std::pair<DAddr, u64>& range : ranges) {
+                ForEachBufferInRange(range.first, range.second, [&](BufferId, Buffer& buffer) {
+                    DownloadBufferMemory(buffer, range.first, range.second);
+                });
+            }
+            if (own_batch) {
+                EndDownloadBatch();
+            }
+            return;
+        }
+    }
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
         if (!window) {
             DownloadBufferMemory(buffer, device_addr, size);
@@ -2850,6 +2890,7 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
     }
     read_trapped_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(),
                                  slot_buffers[buffer_id].SizeBytes());
+    cpu_read_ranges.Subtract(slot_buffers[buffer_id].CpuAddr(), slot_buffers[buffer_id].SizeBytes());
     bool dirty_index{false};
     boost::container::small_vector<u64, NUM_VERTEX_BUFFERS> dirty_vertex_buffers;
     const auto scalar_replace = [buffer_id](Binding& binding) {
