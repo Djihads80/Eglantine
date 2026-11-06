@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,6 +17,7 @@
 #include <limits>
 #include <boost/container/small_vector.hpp>
 
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
@@ -32,7 +34,26 @@ struct TextureInst {
     ConstBufferAddr cbuf;
     IR::Inst* inst;
     IR::Block* block;
+    /// The handle is neither a constant buffer word nor computable for a whole draw (it differs
+    /// per invocation): the instruction reads a null texture (ReplaceWithNullTexture).
+    bool unresolved{};
 };
+
+// Handles read per invocation from a storage buffer (Ocarina of Time's forward shaders: local
+// light shadow maps from a clustered light list) can't be bound before the draw. The search
+// through loads that gave them a descriptor anyway found the storage buffer's address in the
+// constant buffer (cbuf 0 0x520, its low word read as a handle: whatever texture the pool held
+// there that frame, a different one each frame), and Track, crossing a texture result, a float
+// constant (0x3a83126f, past the pool): the water's shadow compares flickered. Such instructions
+// now read a null texture, and depth compares read lit. EDEN_NX2_DYN_HANDLE_STABLE=0 restores the
+// old search.
+bool StableDynamicHandles() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_DYN_HANDLE_STABLE");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
 
 using TextureInstVector = boost::container::small_vector<TextureInst, 24>;
 
@@ -412,6 +433,11 @@ std::optional<ConstBufferAddr> Track(const IR::Value& value, Environment& env, c
             return result;
         }
         if (IsMemoryLoad(inst->GetOpcode())) {
+            continue;
+        }
+        // Nor is a texture result (a sample whose register a phi of the handle shares): its
+        // coordinates lead to constant buffer floats, not to a handle.
+        if (StableDynamicHandles() && IsTextureInstruction(*inst)) {
             continue;
         }
         for (size_t arg = inst->NumArgs(); arg--;) {
@@ -932,6 +958,9 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
             int budget = 4096;
             g_handle_failure = IR::Opcode::Void;
             if (!g_handle_programs || !BuildHandleProgram(inst.Arg(0), code, budget, block)) {
+                if (StableDynamicHandles()) {
+                    return TextureInst{.cbuf = {}, .inst = &inst, .block = block, .unresolved = true};
+                }
                 // Not computable for a whole draw (a handle that changes in a loop): keep the
                 // earlier search through loads, which at least gives the shader a texture.
                 const std::optional<ConstBufferAddr> legacy{IR::BreadthFirstSearch(inst.Arg(0),
@@ -981,6 +1010,46 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
         .inst = &inst,
         .block = block,
     };
+}
+
+// What a null texture reads (zeros), except depth compares, which read lit (1.0): a shadow map the
+// shader can't name shadows nothing. Stores are dropped. Runs before IndexedInstruction.
+void ReplaceWithNullTexture(IR::Block& block, IR::Inst& inst) {
+    if (IR::Inst* const sparse{inst.GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp)}) {
+        sparse->ReplaceUsesWith(IR::Value{true});
+    }
+    IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
+    const auto splat{[&](const IR::Value& element) {
+        return ir.CompositeConstruct(element, element, element, element);
+    }};
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::BindlessImageSampleDrefImplicitLod:
+    case IR::Opcode::BindlessImageSampleDrefExplicitLod:
+        inst.ReplaceUsesWith(IR::Value{1.0f});
+        break;
+    case IR::Opcode::BindlessImageGatherDref:
+        inst.ReplaceUsesWith(splat(IR::Value{1.0f}));
+        break;
+    case IR::Opcode::BindlessImageSampleImplicitLod:
+    case IR::Opcode::BindlessImageSampleExplicitLod:
+    case IR::Opcode::BindlessImageGather:
+    case IR::Opcode::BindlessImageFetch:
+    case IR::Opcode::BindlessImageQueryLod:
+    case IR::Opcode::BindlessImageGradient:
+        inst.ReplaceUsesWith(splat(IR::Value{0.0f}));
+        break;
+    case IR::Opcode::BindlessImageQueryDimensions:
+    case IR::Opcode::BindlessImageRead:
+        inst.ReplaceUsesWith(splat(IR::Value{0u}));
+        break;
+    case IR::Opcode::BindlessImageWrite:
+        inst.Invalidate();
+        break;
+    default:
+        // Atomics: the value before the operation.
+        inst.ReplaceUsesWith(IR::Value{0u});
+        break;
+    }
 }
 
 u32 GetTextureHandle(Environment& env, const ConstBufferAddr& cbuf) {
@@ -1163,6 +1232,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     env.handle_cache.clear();
     env.track_cache.clear();
     TextureInstVector to_replace;
+    TextureInstVector unresolved;
     g_handle_programs = &program.info.handle_programs;
     for (IR::Block* const block : program.post_order_blocks) {
         env.track_cache.clear();
@@ -1170,8 +1240,23 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             if (!IsTextureInstruction(inst)) {
                 continue;
             }
-            to_replace.push_back(MakeInst(env, block, inst, host_info));
+            TextureInst texture_inst{MakeInst(env, block, inst, host_info)};
+            if (texture_inst.unresolved) {
+                unresolved.push_back(texture_inst);
+                continue;
+            }
+            to_replace.push_back(texture_inst);
         }
+    }
+    if (!unresolved.empty()) {
+        for (const TextureInst& texture_inst : unresolved) {
+            ReplaceWithNullTexture(*texture_inst.block, *texture_inst.inst);
+        }
+        LOG_WARNING(Shader,
+                    "{} texture instructions take a handle neither in a constant buffer nor "
+                    "computable for a draw (read per invocation): they read a null texture, "
+                    "depth compares lit (EDEN_NX2_DYN_HANDLE_STABLE=0: the old guess)",
+                    unresolved.size());
     }
     // Sort instructions to visit textures by constant buffer index, then by offset
     std::ranges::sort(to_replace, [](const auto& a, const auto& b) {
