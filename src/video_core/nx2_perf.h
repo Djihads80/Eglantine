@@ -71,6 +71,7 @@ enum class Opt : unsigned {
     /// Ocarina (frames ahead): a present waits only for the previous frame, also when the GPU
     /// threads are behind
     PresentOneAhead,
+    PresentGuestWait,   ///< vi2's present fence wait sleeps in the guest kernel, not on a host cv
     Count,
 };
 
@@ -90,7 +91,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_read_overlay_writers",
     "submit_while_waited",
     "gpu_core_pin",
-    "present_one_ahead",
+    "present_one_ahead", "present_guest_wait",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -115,7 +116,8 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
                           Opt::BindMemo, Opt::MacroReadOverlayWriters,
-                          Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead}) {
+                          Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead,
+                          Opt::PresentGuestWait}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -125,10 +127,11 @@ inline constexpr u64 DefaultOffMask() {
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
 /// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode);
 /// macro_read_overlay_writers (+0.3 FPS, noise); gpu_core_pin (pair -2.3 FPS, separate +0.4);
-/// present_one_ahead (not measured yet).
+/// present_one_ahead, present_guest_wait (not measured yet).
 inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
-                                  Bit(Opt::GpuCorePin) | Bit(Opt::PresentOneAhead);
+                                  Bit(Opt::GpuCorePin) | Bit(Opt::PresentOneAhead) |
+                                  Bit(Opt::PresentGuestWait);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));

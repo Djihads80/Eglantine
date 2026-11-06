@@ -1929,7 +1929,53 @@ private:
         // a game that gets more than a few command buffers ahead misses the equal-value gates its
         // other channels acquire. Extend the deadline whenever the syncpoint makes progress.
         auto deadline = start + std::chrono::milliseconds{unless_gpu_waits ? 4000 : 15000};
-        if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
+        bool guest_waited = false;
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PresentGuestWait)) {
+            // Sleep this service thread in the guest kernel, as PaceToVblank does: it runs on
+            // guest core 3, and a host wait held that core and its game threads for the whole wait.
+            guest_waited = true;
+            bool terminated = false;
+            bool gpu_waited = false;
+            u32 last_syncpoint = syncpoints.GetGuestSyncpointValue(fence_id);
+            constexpr s64 slice_ns = 100'000;
+            while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+                   std::chrono::steady_clock::now() < deadline) {
+                if (unless_gpu_waits) {
+                    gpu_waited |= system.GPU().HasSuspendedChannels();
+                    if (gpu_waited &&
+                        std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
+                        return false;
+                    }
+                } else {
+                    const u32 current_syncpoint = syncpoints.GetGuestSyncpointValue(fence_id);
+                    if (current_syncpoint != last_syncpoint) {
+                        last_syncpoint = current_syncpoint;
+                        deadline = (std::max)(deadline,
+                                              std::chrono::steady_clock::now() +
+                                                  std::chrono::milliseconds{4000});
+                    }
+                }
+                if (Kernel::GetCurrentThread(kernel)
+                        .Sleep(kernel, kernel.HardwareTimer().GetTick() + slice_ns)
+                        .IsError()) {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (VideoCommon::Nx2Perf::Verify() && !terminated &&
+                !syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+                std::chrono::steady_clock::now() < deadline) {
+                static std::atomic<u64> mismatches{};
+                if (mismatches.fetch_add(1, std::memory_order_relaxed) < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf present_guest_wait: returned before the fence ({}, {}) "
+                              "(now {})",
+                              fence_id, fence_value, syncpoints.GetGuestSyncpointValue(fence_id));
+                }
+                guest_waited = false;
+            }
+        }
+        if (!guest_waited && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
             // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
             // about 1 ms per check on Windows, added to every frame. An action left registered
             // after a timeout fires later on a state nobody waits on.
