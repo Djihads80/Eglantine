@@ -178,6 +178,9 @@ private:
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&);
     bool TryNx2IndirectReset();
+    /// Nx2Perf MacroReadWriterSet: records that draws binding the current programs write no
+    /// guest memory, when the pipeline proves it. Holds buffer_cache.mutex.
+    void Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline);
 
     void FlushWork();
 

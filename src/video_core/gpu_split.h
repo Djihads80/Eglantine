@@ -227,6 +227,17 @@ public:
     void NoteUnknownWrite() {
         writes.Entry(Effect::Unknown, write_position);
     }
+    /// The next entry's Effect::Draw was classified with this program epoch (MacroReadWriterSet).
+    void DrawEpoch(u64 epoch) {
+        writes.DrawEpoch(epoch);
+    }
+    /// The entry just sent invalidates the device range [begin, begin + size) of the caches
+    /// (MacroReadWriterSet: early reads check it against proven programs, as a noted write).
+    void NoteDeviceRange(u64 begin, u64 size) {
+        if (size != 0) {
+            writes.Write(begin, begin + size, write_position);
+        }
+    }
     /// Waits for the queued functions (GPU memory maps among them) before the front translates
     /// addresses, then drops the pending writes the back has run. Returns the back's position.
     u64 SettleWrites();

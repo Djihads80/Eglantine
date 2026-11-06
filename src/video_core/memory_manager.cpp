@@ -564,8 +564,24 @@ void MemoryManager::WriteBlockUnsafe(GPUVAddr gpu_dest_addr, const void* src_buf
     WriteBlockImpl(gpu_dest_addr, src_buffer, size, VideoCommon::CacheType::None, true);
 }
 
+void MemoryManager::NoteDeferredCodeWrite(GPUVAddr gpu_addr, std::size_t size) const {
+    if (size == 0 || !Tegra::g_nx2_has_proven_code.load(std::memory_order_acquire)) {
+        return;
+    }
+    constexpr GPUVAddr code_page = GPUVAddr{1} << Tegra::Nx2WrittenPageBits;
+    const GPUVAddr end = gpu_addr + size;
+    for (GPUVAddr begin = gpu_addr; begin < end;) {
+        const GPUVAddr page_end = (std::min)((begin & ~(code_page - 1)) + code_page, end);
+        if (const auto device = GpuToCpuAddress(begin)) {
+            Tegra::Nx2NoteDeferredCodeWrite(*device, page_end - begin);
+        }
+        begin = page_end;
+    }
+}
+
 void MemoryManager::WriteBlockCached(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size) {
     WriteBlockImpl(gpu_dest_addr, src_buffer, size, VideoCommon::CacheType::None, true);
+    NoteDeferredCodeWrite(gpu_dest_addr, size);
     accumulator.Add(gpu_dest_addr, size);
 }
 
@@ -580,6 +596,7 @@ void MemoryManager::WriteWordsCached(GPUVAddr gpu_dest_addr, const u32* words, s
         return;
     }
     WriteBlockImpl(gpu_dest_addr, words, size, VideoCommon::CacheType::None, true);
+    NoteDeferredCodeWrite(gpu_dest_addr, size);
     // The accumulator merges word by word differently from one range: keep its ranges.
     for (std::size_t i = 0; i < count; ++i) {
         accumulator.Add(gpu_dest_addr + i * sizeof(u32), sizeof(u32));

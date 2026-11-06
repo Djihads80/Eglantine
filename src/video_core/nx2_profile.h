@@ -102,7 +102,7 @@ struct MacroCounts {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 30> counters{}; ///< See Counter
+    std::array<u64, 32> counters{}; ///< See Counter
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -182,6 +182,8 @@ enum class Counter : u32 {
     DownloadAgeNone,
     BindMemoHits,        ///< Nx2Perf bind_memo: binds that skipped touch, sync and usage
     BindMemoMisses,      ///< Nx2Perf bind_memo: binds that took the full path
+    DmaReadsWriterSet,   ///< Of DmaReadsEarly: read with proven draws still queued (MacroReadWriterSet)
+    DmaReadsWriterSetFallback, ///< Drained instead: a queued proven draw's proof no longer held
 };
 
 /// The fencing thread's buffer downloads (BufferCache::PopAsyncBuffers): logged by the thread
@@ -351,6 +353,9 @@ inline void Report(const char* thread_name = "GPU thread") {
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoHits)]) * 1e9 / window,
                             static_cast<double>(data.counters[static_cast<size_t>(Counter::BindMemoMisses)]) * 1e9 / window);
     }
+    line += fmt::format(" | MME DMA reads past proven draws {:.0f} ({:.0f} drained: proof changed)",
+                        static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSet)]) * 1e9 / window,
+                        static_cast<double>(data.counters[static_cast<size_t>(Counter::DmaReadsWriterSetFallback)]) * 1e9 / window);
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {
         if (data.drain_count[i] != 0) {

@@ -374,6 +374,37 @@ GraphicsPipeline::GraphicsPipeline(
     }
 }
 
+bool GraphicsPipeline::Nx2MayWriteMemory() const noexcept {
+    for (const Shader::Info& info : stage_infos) {
+        if (info.stores_global_memory || info.uses_global_increment ||
+            info.uses_global_decrement || info.uses_int64_bit_atomics ||
+            info.uses_atomic_f32_add || info.uses_atomic_f16x2_add ||
+            info.uses_atomic_f16x2_min || info.uses_atomic_f16x2_max ||
+            info.uses_atomic_f32x2_add || info.uses_atomic_f32x2_min ||
+            info.uses_atomic_f32x2_max || info.uses_atomic_s32_min || info.uses_atomic_s32_max ||
+            info.uses_atomic_image_u32 || info.uses_typeless_image_writes ||
+            info.is_task || info.is_mesh) {
+            return true;
+        }
+        for (const auto& desc : info.storage_buffers_descriptors) {
+            if (desc.is_written) {
+                return true;
+            }
+        }
+        for (const auto& desc : info.image_buffer_descriptors) {
+            if (desc.is_written) {
+                return true;
+            }
+        }
+        for (const auto& desc : info.image_descriptors) {
+            if (desc.is_written) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
     if (transition_keys.size() >= 16) {
         return;

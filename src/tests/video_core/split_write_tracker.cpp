@@ -99,6 +99,36 @@ TEST_CASE("Split write tracker keeps the kind of constant buffer writes",
     CHECK(tracker.LastWriteTo(0x8000, 0x8004, Kind::ConstantBuffer) == 6);
 }
 
+TEST_CASE("Split write tracker skips only proven draws for writer reads",
+          "[video_core][split_writes]") {
+    SplitWriteTracker tracker;
+    CHECK(SplitWriteTracker::Combine(Effect::Draw, Effect::None) == Effect::Draw);
+    CHECK(SplitWriteTracker::Combine(Effect::Draw, Effect::Gpu) == Effect::Gpu);
+    CHECK(SplitWriteTracker::Combine(Effect::Draw, Effect::Unknown) == Effect::Unknown);
+    tracker.Entry(Effect::Gpu, 5);
+    tracker.DrawEpoch(3);
+    tracker.Entry(Effect::Draw, 8);
+    tracker.DrawEpoch(3);
+    tracker.Entry(Effect::Draw, 10);
+    CHECK(tracker.ReadTarget(0x1000, 0x1004) == 10);
+    CHECK(tracker.WriterReadTarget(0x1000, 0x1004) == 5);
+    CHECK(tracker.LastGpu() == 10);
+    CHECK(tracker.DrawsValid(5, 3));
+    CHECK_FALSE(tracker.DrawsValid(5, 4));
+    // A Draw entry sent without an epoch never validates.
+    tracker.Entry(Effect::Draw, 12);
+    CHECK_FALSE(tracker.DrawsValid(10, 3));
+    tracker.Retire(12);
+    CHECK(tracker.DrawsValid(12, 4));
+    // A noted write still holds the reads of its range back.
+    tracker.Write(0x1000, 0x1100, 14);
+    CHECK(tracker.WriterReadTarget(0x1000, 0x1004) == 14);
+    CHECK(tracker.AnyPendingWrite(12, 14, [](u64 begin, u64) { return begin == 0x1000; }));
+    CHECK_FALSE(tracker.AnyPendingWrite(14, 20, [](u64, u64) { return true; }));
+    tracker.Entry(Effect::Gpu, 16);
+    CHECK(tracker.WriterReadTarget(0x8000, 0x8004) == 16);
+}
+
 TEST_CASE("Split write tracker collapses too many writes into an unknown one",
           "[video_core][split_writes]") {
     SplitWriteTracker tracker;

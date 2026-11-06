@@ -266,6 +266,44 @@ RasterizerVulkan::~RasterizerVulkan() {
     delete std::exchange(g_diag_pool, nullptr);
 }
 
+void RasterizerVulkan::Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline) {
+    // The programs as RefreshStages resolved them, in the epoch read before it did: a program
+    // dropped or rewritten since moved the epoch on, and the proof is stale from the start.
+    const u64 epoch = pipeline_cache.Nx2ResolvedEpoch();
+    const u64 map = pipeline_cache.Nx2ResolvedMap();
+    if (epoch == 0 || map != gpu_memory->GetMapSerial()) {
+        return;
+    }
+    Tegra::Nx2DrawPrograms programs;
+    if (!Tegra::Engines::Maxwell3D::Nx2DrawProgramsOf(
+            maxwell3d->regs, maxwell3d->GetNativeMacroEngine().native_turing, gpu_memory->GetID(),
+            map, programs) ||
+        Tegra::Nx2IsNonWriterDraw(programs, epoch)) {
+        return;
+    }
+    // The indirect reset program is drawn by writing guest memory on the host.
+    if (pipeline.IsMeshPipeline() || pipeline.Nx2MayWriteMemory() ||
+        pipeline_cache.IsIndirectResetShader()) {
+        return;
+    }
+    const auto& ranges = pipeline_cache.Nx2CodeRanges();
+    for (const auto& [address, size] : ranges) {
+        // A CPU write to GPU-modified buffer pages reaches the shader cache only later
+        // (OnCPUWrite): code there could change under a proof without moving the epoch in time.
+        if (size != 0 && buffer_cache.IsRegionGpuModified(address, size)) {
+            return;
+        }
+    }
+    for (const auto& [address, size] : ranges) {
+        Tegra::Nx2MarkProvenCode(address, size);
+    }
+    // An invalidation on another thread meanwhile (CPU writes) makes the proof stale anyway.
+    if (Tegra::g_nx2_code_epoch.load(std::memory_order_acquire) != epoch) {
+        return;
+    }
+    Tegra::Nx2InsertNonWriterDraw(programs, epoch);
+}
+
 // Experimental adaptation of PokeDinner commit 76df4591a747: execute the reset shader's
 // indirect record writes on the host until general GPU-address translation is available.
 bool RasterizerVulkan::TryNx2IndirectReset() {
@@ -567,6 +605,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet)) {
+        Nx2ProveNonWriterDraw(*pipeline);
+    }
     if (buffer_cache.HasPendingNx2ListCopies() &&
         !Tegra::Engines::Maxwell3D::FrontIsWriterDraw(maxwell3d->regs)) {
         SubmitNx2ListCopies();
@@ -1556,6 +1597,9 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     {
         std::scoped_lock lock{buffer_cache.mutex};
         if (buffer_cache.OnCPUWrite(addr, size)) {
+            // The shader cache sees this write later (InvalidateGPUCache): proofs of programs
+            // there must stop now, before the guest submits work that uses the new code.
+            Tegra::Nx2NoteDeferredCodeWrite(addr, size);
             return true;
         }
     }

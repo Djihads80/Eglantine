@@ -25,6 +25,8 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/util.h"
@@ -90,6 +92,11 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     const size_t memory_id = gpu_memory->GetID();
     const u64 map_serial = gpu_memory->GetMapSerial();
     const u64 inv_serial = invalidation_serial.load(std::memory_order_acquire);
+    // Read before anything is resolved: a program dropped meanwhile moved it on.
+    const u64 code_epoch = Tegra::g_nx2_code_epoch.load(std::memory_order_acquire);
+    nx2_resolved_epoch = 0;
+    nx2_code_ranges = {};
+    bool code_ranges_known = true;
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
         if (!maxwell3d->regs.IsShaderConfigEnabled(index)) {
             unique_hashes[index] = 0;
@@ -156,8 +163,21 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                      program == Tegra::Engines::Maxwell3D::Regs::ShaderType::Tessellation)) {
             unique_hashes[index] ^= MeshStateHash();
         }
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet)) {
+            const std::optional<DAddr> code{cpu_shader_addr ? cpu_shader_addr
+                                                            : gpu_memory->GpuToCpuAddress(shader_addr)};
+            // No range: nothing can be proven for these programs (nx2_resolved_epoch stays 0).
+            code_ranges_known &= code.has_value();
+            nx2_code_ranges[index] = {code ? *code : 0,
+                                      code ? (std::max<u64>)(shader_info->size_bytes, 1) : 0};
+        }
     }
     last_shaders_valid = true;
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadWriterSet) &&
+        code_ranges_known) {
+        nx2_resolved_epoch = code_epoch;
+        nx2_resolved_map = map_serial;
+    }
     return true;
 } catch (const Shader::Exception& error) {
     auto& native = maxwell3d->GetNativeMacroEngine();
@@ -400,6 +420,8 @@ void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr
     }
     if (invalidated) {
         invalidation_serial.fetch_add(1, std::memory_order_release);
+        // Every MacroReadWriterSet proof made before this may name a program that changed.
+        Tegra::Nx2BumpCodeEpoch();
     }
 }
 

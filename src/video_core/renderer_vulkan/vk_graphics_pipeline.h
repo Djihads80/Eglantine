@@ -103,6 +103,9 @@ public:
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
+    /// Whether any stage may write guest memory or images: storage buffer, global memory or
+    /// image stores and atomics (Nx2Perf MacroReadWriterSet; conservative).
+    [[nodiscard]] bool Nx2MayWriteMemory() const noexcept;
     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
 
