@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <numeric>
@@ -55,6 +56,8 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    SignalOrdering, ///< SignalOrdering: mostly waiting for the buffer cache lock
+    ListCopyWait,   ///< Nx2ReadListCopy: the host GPU finishing a command list copy
     Count,
 };
 
@@ -65,7 +68,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "signal ordering",
+    "list copy wait",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
@@ -93,7 +97,7 @@ struct MacroCounts {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 22> counters{}; ///< See Counter
+    std::array<u64, 28> counters{}; ///< See Counter
     /// Executable methods the front sent with the value the register held (approximate top 16,
     /// space-saving: a new method takes the least counted slot and inherits its count).
     std::array<std::pair<u32, u64>, 16> same_executable{};
@@ -163,7 +167,21 @@ enum class Counter : u32 {
     DirectWrites,        ///< 3D register writes the split front sent from command lists
     MacroWrites,         ///< 3D register writes the split front's macros sent
     SameExecutableWrites, ///< Executable writes the front sent with the register's value
+    /// Of DownloadBytes, by the age in frames of their 64 KiB block's preflush stamp
+    /// (BufferCache::nx2_preflush_blocks): < 60, < 120, < 600, < 3600, older, no stamp
+    DownloadAge60,
+    DownloadAge120,
+    DownloadAge600,
+    DownloadAge3600,
+    DownloadAgeOlder,
+    DownloadAgeNone,
 };
+
+/// The fencing thread's buffer downloads (BufferCache::PopAsyncBuffers): logged by the thread
+/// that makes the fences.
+inline std::atomic<u64> g_fencing_lock_ns{};       ///< Holding the buffer cache lock
+inline std::atomic<u64> g_fencing_written_bytes{}; ///< Written back to guest memory
+inline std::atomic<u64> g_fencing_pops{};          ///< Fences popped
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
 /// while profiling): which buffer downloads anything on the GPU thread reads back.
@@ -266,12 +284,14 @@ inline void Report(const char* thread_name = "GPU thread") {
     line += fmt::format(" | acquires {:.0f} ({:.0f} waited)",
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
+    const auto per_second = [&](Counter counter) {
+        return static_cast<double>(data.counters[static_cast<size_t>(counter)]) * 1e9 / window;
+    };
     line += fmt::format(" | acquire polls {:.0f} ({:.0f} met, {:.0f} without a drain) | acquires "
                         "met without a drain {:.0f}",
-                        static_cast<double>(data.counters[15]) * 1e9 / window,
-                        static_cast<double>(data.counters[16]) * 1e9 / window,
-                        static_cast<double>(data.counters[17]) * 1e9 / window,
-                        static_cast<double>(data.counters[18]) * 1e9 / window);
+                        per_second(Counter::AcquirePolls), per_second(Counter::AcquirePollsMet),
+                        per_second(Counter::AcquirePollsEarly),
+                        per_second(Counter::AcquireTriggerEarly));
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
                         static_cast<double>(data.counters[8]) * 1e9 / window,
@@ -283,17 +303,17 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[12]) * 1e9 / window,
                         static_cast<double>(data.counters[13]) * 1e9 / window,
                         static_cast<double>(data.counters[14]) * 1e9 / window);
-    if (data.counters[15] != 0 || data.counters[16] != 0) {
+    if (data.counters[static_cast<size_t>(Counter::DirectWrites)] != 0 || data.counters[static_cast<size_t>(Counter::MacroWrites)] != 0) {
         line += fmt::format(" | front 3D writes: direct {:.0f}, from macros {:.0f}",
-                            static_cast<double>(data.counters[15]) * 1e9 / window,
-                            static_cast<double>(data.counters[16]) * 1e9 / window);
+                            static_cast<double>(data.counters[static_cast<size_t>(Counter::DirectWrites)]) * 1e9 / window,
+                            static_cast<double>(data.counters[static_cast<size_t>(Counter::MacroWrites)]) * 1e9 / window);
     }
-    if (data.counters[17] != 0) {
+    if (data.counters[static_cast<size_t>(Counter::SameExecutableWrites)] != 0) {
         auto slots = data.same_executable;
         std::sort(slots.begin(), slots.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });
         line += fmt::format(" | same-value executable writes sent {:.0f}, top:",
-                            static_cast<double>(data.counters[17]) * 1e9 / window);
+                            static_cast<double>(data.counters[static_cast<size_t>(Counter::SameExecutableWrites)]) * 1e9 / window);
         for (const auto& [method, count] : slots) {
             if (count != 0) {
                 line += fmt::format(" {:#x} {:.0f},", method,
@@ -301,6 +321,22 @@ inline void Report(const char* thread_name = "GPU thread") {
             }
         }
         line.pop_back();
+    const auto per_second_kib = [&](size_t counter) {
+        return static_cast<double>(data.counters[counter]) * 1e9 / 1024.0 / window;
+    };
+    line += fmt::format(" | downloads by preflush stamp age (KiB): <60f {:.0f}, <120f {:.0f}, "
+                        "<600f {:.0f}, <3600f {:.0f}, older {:.0f}, none {:.0f}",
+                        per_second_kib(static_cast<size_t>(Counter::DownloadAge60)), per_second_kib(static_cast<size_t>(Counter::DownloadAge120)), per_second_kib(static_cast<size_t>(Counter::DownloadAge600)),
+                        per_second_kib(static_cast<size_t>(Counter::DownloadAge3600)), per_second_kib(static_cast<size_t>(Counter::DownloadAgeOlder)), per_second_kib(static_cast<size_t>(Counter::DownloadAgeNone)));
+    if (data.count[static_cast<size_t>(Zone::Fence)] != 0) {
+        const u64 lock_ns = g_fencing_lock_ns.exchange(0, std::memory_order_relaxed);
+        const u64 written = g_fencing_written_bytes.exchange(0, std::memory_order_relaxed);
+        const u64 pops = g_fencing_pops.exchange(0, std::memory_order_relaxed);
+        line += fmt::format(" | fencing thread: buffer cache held {:.1f} ms for {:.0f} pops, "
+                            "{:.0f} KiB written back",
+                            static_cast<double>(lock_ns) * 1000.0 / window,
+                            static_cast<double>(pops) * 1e9 / window,
+                            static_cast<double>(written) * 1e9 / 1024.0 / window);
     }
     std::string drains;
     for (size_t i = 0; i < data.drain_count.size(); ++i) {

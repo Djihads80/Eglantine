@@ -54,6 +54,7 @@ enum class Opt : unsigned {
     MacroBatch,  ///< Front macro writes buffered in the JIT, same-value ones dropped inline
     MacroBorrow, ///< Front macros read their parameters from the command words in place
     MacroState,  ///< The front macro JIT keeps its State across calls
+    DownloadBatch,      ///< Fence-time downloads: one copy per buffer, ranges <= 4 KiB apart merged
     Count,
 };
 
@@ -68,6 +69,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "eager_publish",
     "front_same_first", "front_class_table", "front_run",
     "macro_batch", "macro_borrow", "macro_state",
+    "download_batch",
 };
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
@@ -76,7 +78,7 @@ inline constexpr unsigned DefaultOffMask() {
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
                           Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish,
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
-                          Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState}) {
+                          Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch}) {
         mask |= 1U << static_cast<unsigned>(opt);
     }
     return mask;

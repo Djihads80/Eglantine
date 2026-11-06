@@ -172,6 +172,9 @@ void BufferCache<P>::TickFrame() {
         RunGarbageCollector(total_used_memory >= critical_memory);
     }
     ++frame_tick;
+    if (frame_tick % 60 == 0 && Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
+        Nx2AgePreflushBlocks();
+    }
     delayed_destruction_ring.Tick();
 
     if (!async_buffers_death_ring.empty()) {
@@ -287,6 +290,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         // The core keeps this area: a later GPU write to its unmarked pages must arm them again.
         read_trapped_ranges.Subtract(device_addr_start_aligned,
                                      device_addr_end_aligned - device_addr_start_aligned);
+        if (Nx2Perf::On(Nx2Perf::Opt::PreflushAging)) {
+            Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, false);
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -307,6 +313,7 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         if (preflush) {
             memory_tracker.MarkRegionAsPreflushable(
                 device_addr_start_aligned, device_addr_end_aligned - device_addr_start_aligned);
+            Nx2StampPreflushBlocks(device_addr_start_aligned, device_addr_end_aligned, true);
         } else {
             if constexpr (USE_MEMORY_MAPS) {
                 cpu_read_ranges.Add(area->start_address, area->end_address - area->start_address);
@@ -813,7 +820,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         it++;
     }
 
-    boost::container::small_vector<std::pair<BufferCopy, BufferId>, 16> downloads;
+    Nx2Downloads downloads;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
     for (const Common::RangeSet<DAddr>& range_set : committed_gpu_modified_ranges) {
@@ -860,18 +867,26 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     Nx2Profile::Add(Nx2Profile::Counter::DownloadBytes, total_size_bytes);
     Nx2Profile::Add(Nx2Profile::Counter::DownloadCopies, downloads.size());
-    auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
+    // One copy command per buffer, with nearby ranges merged: see Nx2BatchDownloads.
+    Nx2Downloads batched;
+    u64 batched_size_bytes = 0;
+    if (Nx2Perf::On(Nx2Perf::Opt::DownloadBatch)) {
+        batched_size_bytes = Nx2BatchDownloads(downloads, batched);
+        if (Nx2Perf::Verify() && !Nx2VerifyDownloadBatch(downloads, batched)) {
+            batched.clear();
+        }
+    }
+    const bool use_batched = !batched.empty();
+    auto download_staging =
+        runtime.DownloadStagingBuffer(use_batched ? batched_size_bytes : total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
     Common::RangeSet<DAddr> download_ranges;
     runtime.PreCopyBarrier();
     for (auto& [copy, buffer_id] : downloads) {
-        copy.dst_offset += download_staging.offset;
-        const std::array copies{copy};
-        BufferCopy second_copy{copy};
         Buffer& buffer = slot_buffers[buffer_id];
-        second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
-        const DAddr orig_device_addr = static_cast<DAddr>(second_copy.src_offset);
+        const DAddr orig_device_addr = static_cast<DAddr>(buffer.CpuAddr()) + copy.src_offset;
         if (Nx2Profile::Enabled()) {
+            Nx2CountDownloadAges(orig_device_addr, copy.size);
             u64 on_dma_pages = 0;
             const auto& pages = Nx2Profile::DmaReadPages();
             for (DAddr page = orig_device_addr >> 12; page <= (orig_device_addr + copy.size - 1) >> 12;
@@ -884,10 +899,36 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
             }
             Nx2Profile::Add(Nx2Profile::Counter::DownloadBytesOnDmaPages, on_dma_pages);
         }
+        // Exact ranges even when batched: gap bytes reach staging, never guest memory.
         download_ranges.Add(orig_device_addr, copy.size);
         buffer.MarkUsage(copy.src_offset, copy.size);
+        if (use_batched) {
+            continue;
+        }
+        copy.dst_offset += download_staging.offset;
+        const std::array copies{copy};
+        BufferCopy second_copy{copy};
+        second_copy.src_offset = static_cast<size_t>(orig_device_addr);
         runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
         normalized_copies.push_back(second_copy);
+    }
+    if (use_batched) {
+        boost::container::small_vector<BufferCopy, 16> copies;
+        for (size_t i = 0; i < batched.size();) {
+            const BufferId buffer_id = batched[i].second;
+            Buffer& buffer = slot_buffers[buffer_id];
+            copies.clear();
+            for (; i < batched.size() && batched[i].second == buffer_id; ++i) {
+                BufferCopy copy = batched[i].first;
+                copy.dst_offset += download_staging.offset;
+                copies.push_back(copy);
+                BufferCopy second_copy{copy};
+                second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
+                normalized_copies.push_back(second_copy);
+            }
+            runtime.CopyBuffer(download_staging.buffer, buffer,
+                               std::span<const BufferCopy>(copies.data(), copies.size()), false);
+        }
     }
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
@@ -898,6 +939,203 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
 template <class P>
 void BufferCache<P>::CommitAsyncFlushes() {
     CommitAsyncFlushesHigh();
+}
+
+template <class P>
+u64 BufferCache<P>::Nx2BatchDownloads(const Nx2Downloads& downloads, Nx2Downloads& batched) {
+    // Ocarina downloaded ~13 ranges per fence, each its own recorded copy command. Merged ranges
+    // copy their gap (at most 4 KiB) to staging too, but PopAsyncBuffers writes back only
+    // pending_download_ranges, which keeps the exact ranges.
+    constexpr u64 max_gap = 4_KiB;
+    batched.assign(downloads.begin(), downloads.end());
+    std::sort(batched.begin(), batched.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.second.index != rhs.second.index) {
+            return lhs.second.index < rhs.second.index;
+        }
+        return lhs.first.src_offset < rhs.first.src_offset;
+    });
+    size_t last = 0;
+    for (size_t i = 1; i < batched.size(); ++i) {
+        BufferCopy& merged = batched[last].first;
+        const BufferCopy& next = batched[i].first;
+        const u64 merged_end = merged.src_offset + merged.size;
+        if (batched[i].second == batched[last].second && next.src_offset <= merged_end + max_gap) {
+            merged.size = (std::max)(merged_end, next.src_offset + next.size) - merged.src_offset;
+            continue;
+        }
+        batched[++last] = batched[i];
+    }
+    batched.erase(batched.begin() + last + 1, batched.end());
+    u64 total_size_bytes = 0;
+    for (auto& [copy, buffer_id] : batched) {
+        copy.dst_offset = total_size_bytes;
+        total_size_bytes += Common::AlignUp(copy.size, 64);
+    }
+    return total_size_bytes;
+}
+
+template <class P>
+bool BufferCache<P>::Nx2VerifyDownloadBatch(const Nx2Downloads& downloads,
+                                            const Nx2Downloads& batched) {
+    static std::atomic<u64> mismatches{};
+    bool ok = true;
+    const auto report = [&](std::string_view what, BufferId buffer_id, u64 offset, u64 size) {
+        ok = false;
+        const u64 count = mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf download_batch: {} (buffer {}, offset {:#x}, size {:#x}; {} copies, "
+                      "{} batched; mismatch {})",
+                      what, buffer_id.index, offset, size, downloads.size(), batched.size(),
+                      count);
+        }
+    };
+    // Every unbatched copy lies inside a batched region of its buffer.
+    for (const auto& [copy, buffer_id] : downloads) {
+        const bool covered = std::ranges::any_of(batched, [&](const auto& region) {
+            return region.second == buffer_id && region.first.src_offset <= copy.src_offset &&
+                   copy.src_offset + copy.size <= region.first.src_offset + region.first.size;
+        });
+        if (!covered) {
+            report("copy not covered", buffer_id, copy.src_offset, copy.size);
+        }
+    }
+    // PopAsyncBuffers writes back the exact ranges inside each batched region: the same bytes as
+    // the unbatched copies, each once, and nothing from the gaps.
+    Common::RangeSet<DAddr> exact;
+    u64 exact_bytes = 0;
+    for (const auto& [copy, buffer_id] : downloads) {
+        exact.Add(slot_buffers[buffer_id].CpuAddr() + copy.src_offset, copy.size);
+        exact_bytes += copy.size;
+    }
+    u64 written_bytes = 0;
+    u64 staging_end = 0;
+    for (const auto& [region, buffer_id] : batched) {
+        const Buffer& buffer = slot_buffers[buffer_id];
+        if (region.src_offset + region.size > buffer.SizeBytes() ||
+            region.dst_offset < staging_end) {
+            report("region outside its buffer or overlapping in staging", buffer_id,
+                   region.src_offset, region.size);
+        }
+        staging_end = region.dst_offset + region.size;
+        exact.ForEachInRange(buffer.CpuAddr() + region.src_offset, region.size,
+                             [&](DAddr start, DAddr end) { written_bytes += end - start; });
+    }
+    if (written_bytes != exact_bytes) {
+        report("bytes written back differ", BufferId{}, written_bytes, exact_bytes);
+    }
+    return ok;
+}
+
+template <class P>
+void BufferCache<P>::Nx2CountDownloadAges(DAddr device_addr, u64 size) {
+    using Nx2Profile::Counter;
+    constexpr u64 block_size = u64{1} << NX2_PREFLUSH_BLOCK_BITS;
+    const DAddr end = device_addr + size;
+    for (u64 block = device_addr >> NX2_PREFLUSH_BLOCK_BITS;
+         block <= (end - 1) >> NX2_PREFLUSH_BLOCK_BITS; ++block) {
+        const DAddr begin = (std::max)(device_addr, block * block_size);
+        const DAddr block_end = (std::min)(end, (block + 1) * block_size);
+        Counter counter = Counter::DownloadAgeNone;
+        if (const auto it = nx2_preflush_blocks.find(block); it != nx2_preflush_blocks.end()) {
+            const u64 age = frame_tick - it->second.last_read_frame;
+            counter = age < 60     ? Counter::DownloadAge60
+                      : age < 120  ? Counter::DownloadAge120
+                      : age < 600  ? Counter::DownloadAge600
+                      : age < 3600 ? Counter::DownloadAge3600
+                                   : Counter::DownloadAgeOlder;
+        }
+        Nx2Profile::Add(counter, block_end - begin);
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2StampPreflushBlocks(DAddr begin, DAddr end, bool marked) {
+    const bool aging = Nx2Perf::On(Nx2Perf::Opt::PreflushAging);
+    for (u64 block = begin >> NX2_PREFLUSH_BLOCK_BITS;
+         block <= (end - 1) >> NX2_PREFLUSH_BLOCK_BITS; ++block) {
+        if (!marked) {
+            // A read of a marked range may span blocks without marks: stamp only marked ones.
+            if (const auto it = nx2_preflush_blocks.find(block);
+                it != nx2_preflush_blocks.end() && !it->second.dropped) {
+                it->second.last_read_frame = frame_tick;
+            }
+            continue;
+        }
+        const auto [it, inserted] =
+            nx2_preflush_blocks.try_emplace(block, Nx2PreflushBlock{.last_read_frame = frame_tick});
+        if (inserted || !aging) {
+            continue;
+        }
+        Nx2PreflushBlock& entry = it->second;
+        entry.last_read_frame = frame_tick;
+        if (!entry.dropped) {
+            continue;
+        }
+        // Dropped too early: the read flushed (stalled). Keep the mark twice as long next time.
+        entry.dropped = false;
+        entry.limit_frames = (std::min)(entry.limit_frames * 2, NX2_PREFLUSH_MAX_LIMIT);
+        entry.limit_frame = frame_tick;
+        ++nx2_preflush_remarks;
+        if (Nx2Perf::Verify()) {
+            static u64 reports{};
+            if (++reports <= 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf preflush_aging: read of dropped block {:#x} stalled (read "
+                          "{:#x}-{:#x}, new limit {} frames; {} stalls in {} drops)",
+                          block << NX2_PREFLUSH_BLOCK_BITS, begin, end, entry.limit_frames,
+                          nx2_preflush_remarks, nx2_preflush_drops);
+            }
+        }
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2AgePreflushBlocks() {
+    // Invariant: GPU data not yet in guest memory (gpu_modified_ranges) is either in the download
+    // pipeline with its mark (marked when QueueGpuWrite saw the write) or read-trapped (unmarked
+    // at the write: QueueGpuWrite armed it; dropped here before PopAsyncBuffers wrote it back:
+    // armed below). A read of a dropped block then takes GetFlushArea's flush path, which waits
+    // for the GPU's data, and marks the block again.
+    constexpr u64 block_size = u64{1} << NX2_PREFLUSH_BLOCK_BITS;
+    size_t marked = 0;
+    for (auto it = nx2_preflush_blocks.begin(); it != nx2_preflush_blocks.end();) {
+        Nx2PreflushBlock& entry = it->second;
+        if (entry.dropped) {
+            // The limit halves per 3600 frames unread; back at the minimum the block is forgotten.
+            if (frame_tick - entry.limit_frame >= NX2_PREFLUSH_MAX_LIMIT) {
+                if (entry.limit_frames <= NX2_PREFLUSH_MIN_LIMIT) {
+                    it = nx2_preflush_blocks.erase(it);
+                    continue;
+                }
+                entry.limit_frames = (std::max)(entry.limit_frames / 2, NX2_PREFLUSH_MIN_LIMIT);
+                entry.limit_frame = frame_tick;
+            }
+            ++it;
+            continue;
+        }
+        if (frame_tick - entry.last_read_frame <= entry.limit_frames) {
+            ++marked;
+            ++it;
+            continue;
+        }
+        const DAddr begin = static_cast<DAddr>(it->first << NX2_PREFLUSH_BLOCK_BITS);
+        memory_tracker.UnmarkRegionAsPreflushable(begin, block_size);
+        gpu_modified_ranges.ForEachInRange(begin, block_size, [&](DAddr start, DAddr end) {
+            ArmReadTraps(start, end - start);
+        });
+        entry.dropped = true;
+        entry.limit_frame = frame_tick;
+        ++nx2_preflush_drops;
+        ++it;
+    }
+    if (frame_tick % 3600 == 0) {
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf preflush_aging: {} blocks marked, {} dropped; {} drops and {} stalled "
+                 "reads of dropped blocks since start",
+                 marked, nx2_preflush_blocks.size() - marked, nx2_preflush_drops,
+                 nx2_preflush_remarks);
+    }
 }
 
 template <class P>
@@ -959,6 +1197,7 @@ void BufferCache<P>::PopAsyncBuffers() {
     // This runs on the fencing thread while the CPU keeps writing: CPU writes collected since the
     // copy was taken are newer than it, and the GPU thread hasn't dropped them from `ranges` yet.
     const Common::RangeSet<DAddr> cpu_written = PendingCpuWriteRanges();
+    u64 written_bytes = 0;
     for (const auto& copy : downloads) {
         const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
         const u64 dst_offset = copy.dst_offset - base_offset;
@@ -969,7 +1208,11 @@ void BufferCache<P>::PopAsyncBuffers() {
             WriteDownloadedMemory(cpu_written, start, &read_mapped_memory[start - device_addr],
                                   end - start);
             gpu_modified_ranges.Subtract(start, end - start);
+            written_bytes += end - start;
         });
+    }
+    if (Nx2Profile::Enabled()) {
+        Nx2Profile::g_fencing_written_bytes.fetch_add(written_bytes, std::memory_order_relaxed);
     }
     async_buffers_death_ring.emplace_back(*async_buffer);
     async_buffers.pop_front();
@@ -2245,7 +2488,10 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool 
             writes = entry.copy_writes;
         }
         // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
-        runtime.WaitSubmittedTick(tick);
+        {
+            Nx2Profile::Scope profile_scope{Nx2Profile::Zone::ListCopyWait};
+            runtime.WaitSubmittedTick(tick);
+        }
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||

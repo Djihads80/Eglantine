@@ -288,8 +288,14 @@ private:
             }
             if (buffer_pops != 0) {
                 std::scoped_lock lock{buffer_cache.mutex};
+                const u64 start = Nx2Profile::Enabled() ? Nx2Profile::Now() : 0;
                 for (size_t i = 0; i < buffer_pops; ++i) {
                     buffer_cache.PopAsyncFlushes();
+                }
+                if (Nx2Profile::Enabled()) {
+                    Nx2Profile::g_fencing_lock_ns.fetch_add(Nx2Profile::Now() - start,
+                                                            std::memory_order_relaxed);
+                    Nx2Profile::g_fencing_pops.fetch_add(buffer_pops, std::memory_order_relaxed);
                 }
             }
             // Queries and operations keep their per-fence order.
