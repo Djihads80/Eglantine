@@ -268,6 +268,10 @@ public:
     /// Notify rasterizer that any caches of the specified region should be invalidated
     void InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes = false);
 
+    /// As InvalidateRegion with preserve_gpu_writes, but only where that needs no GPU thread:
+    /// returns false (and does nothing) for a region with GPU-written data.
+    bool TryInvalidateRegion(DAddr addr, u64 size);
+
     /// Notify rasterizer that CPU is trying to write this area. It returns true if the area is
     /// sensible, false otherwise, addr and size must be a valid combination
     bool OnCPUWrite(DAddr addr, u64 size);

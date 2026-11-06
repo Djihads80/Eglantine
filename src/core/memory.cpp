@@ -923,6 +923,29 @@ struct Memory::Impl {
         PAddr last_address;
     };
 
+    /// InvalidateGPUMemory where that needs no GPU thread; false where it would.
+    bool TryInvalidateGPUMemory(u8* p, size_t size) {
+        constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
+        const size_t core = (std::min)(system.GetCurrentHostThreadID(), sys_core);
+        if (!gpu_device_memory) [[unlikely]] {
+            gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        if (core == sys_core) [[unlikely]] {
+            sys_core_guard.lock();
+        }
+        SCOPE_EXIT {
+            if (core == sys_core) [[unlikely]] {
+                sys_core_guard.unlock();
+            }
+        };
+        auto& gpu = system.GPU();
+        bool done = true;
+        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            done = done && gpu.TryInvalidateRegion(address, size);
+        });
+        return done;
+    }
+
     void InvalidateGPUMemory(u8* p, size_t size) {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
@@ -1184,6 +1207,26 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
     }
 
     return mapped && ptr != nullptr;
+}
+
+bool Memory::IsRasterizerCachedPage(Common::ProcessAddress vaddr) const {
+    bool rasterizer = false;
+    [[maybe_unused]] const u8* const ptr =
+        impl->GetPointerImpl(GetInteger(vaddr), [] {}, [&] { rasterizer = true; });
+    return rasterizer;
+}
+
+size_t Memory::InvalidateNCEAhead(Common::ProcessAddress vaddr, size_t pages) {
+    size_t done = 0;
+    for (; done < pages; ++done) {
+        const u64 page = GetInteger(vaddr) + done * YUZU_PAGESIZE;
+        bool rasterizer = false;
+        u8* const ptr = impl->GetPointerImpl(page, [] {}, [&] { rasterizer = true; });
+        if (!rasterizer || ptr == nullptr || !impl->TryInvalidateGPUMemory(ptr, YUZU_PAGESIZE)) {
+            break;
+        }
+    }
+    return done;
 }
 
 bool Memory::InvalidateSeparateHeap(void* fault_address) {

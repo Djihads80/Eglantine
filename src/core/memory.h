@@ -512,6 +512,14 @@ public:
     bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size,
                        NceInvalidateResult* result = nullptr);
 
+    /// Whether the page at vaddr is GPU-cached (its host pages are write-protected).
+    bool IsRasterizerCachedPage(Common::ProcessAddress vaddr) const;
+
+    /// Invalidates the GPU caches of up to `pages` GPU-cached pages from vaddr, as a write fault on
+    /// each would, stopping at the first page that isn't GPU-cached or would need the GPU thread
+    /// (GPU-written data). Returns how many pages were invalidated.
+    size_t InvalidateNCEAhead(Common::ProcessAddress vaddr, size_t pages);
+
     bool InvalidateSeparateHeap(void* fault_address);
 
 private:

@@ -115,6 +115,8 @@ struct CoreSnapshot {
     u64 runs{}, signal_entries{}, svc_exits{}, interrupt_exits{};
     u64 idle_calls{}, idle_wakes{}, wake_ticks{};
     u64 interrupt_signals{}, interrupt_idle{};
+    u64 sequential_faults{}, same_page_faults{}, scalar_faults{}, ahead_pages{};
+    u64 emulate_fallbacks{};
     std::array<u64, SvcSlots> svc_count{};
     std::array<u64, SvcSlots> svc_ticks{};
 };
@@ -142,6 +144,11 @@ CoreSnapshot Take(const CoreCounters& c) {
     s.wake_ticks = c.wake_ticks.load(std::memory_order_relaxed);
     s.interrupt_signals = c.interrupt_signals.load(std::memory_order_relaxed);
     s.interrupt_idle = c.interrupt_idle.load(std::memory_order_relaxed);
+    s.sequential_faults = c.sequential_faults.load(std::memory_order_relaxed);
+    s.same_page_faults = c.same_page_faults.load(std::memory_order_relaxed);
+    s.scalar_faults = c.scalar_faults.load(std::memory_order_relaxed);
+    s.ahead_pages = c.ahead_pages.load(std::memory_order_relaxed);
+    s.emulate_fallbacks = c.emulate_fallbacks.load(std::memory_order_relaxed);
     return s;
 }
 
@@ -319,7 +326,9 @@ void Report(double seconds, double frequency, const std::vector<CoreSnapshot>& n
                  per_second(d(a.interrupt_idle, b.interrupt_idle)));
         if (fault_count != 0) {
             static constexpr std::array<const char*, static_cast<size_t>(Fault::Count)> names{
-                "GPU-cached write", "separate heap", "mapped", "unhandled", "alignment"};
+                "GPU-cached write", "GPU-cached write waiting for the GPU thread",
+                "GPU-cached store emulated", "separate heap", "mapped", "unhandled",
+                "alignment"};
             std::string text;
             for (size_t i = 0; i < names.size(); ++i) {
                 const u64 count = d(a.fault_count[i], b.fault_count[i]);
@@ -329,12 +338,19 @@ void Report(double seconds, double frequency, const std::vector<CoreSnapshot>& n
                 text += fmt::format(" | {} {:.1f}/s, {:.1f} us avg", names[i], per_second(count),
                                     micros(d(a.fault_ticks[i], b.fault_ticks[i]), count));
             }
-            LOG_INFO(Core_ARM, "NCE faults core {}: {:.1f}/s, {:.2f} ms max{}", core,
-                     per_second(fault_count),
+            LOG_INFO(Core_ARM,
+                     "NCE faults core {}: {:.1f}/s, {:.2f} ms max{} | GPU-cached writes: next page "
+                     "{:.0f}/s, same page {:.0f}/s, single-register stores {:.0f}/s, pages "
+                     "invalidated ahead {:.0f}/s, stores not emulated {:.0f}/s",
+                     core, per_second(fault_count),
                      micros(g_cores[core].fault_max_ticks.exchange(0, std::memory_order_relaxed),
                             1) /
                          1000.0,
-                     text);
+                     text, per_second(d(a.sequential_faults, b.sequential_faults)),
+                     per_second(d(a.same_page_faults, b.same_page_faults)),
+                     per_second(d(a.scalar_faults, b.scalar_faults)),
+                     per_second(d(a.ahead_pages, b.ahead_pages)),
+                     per_second(d(a.emulate_fallbacks, b.emulate_fallbacks)));
         }
     }
 

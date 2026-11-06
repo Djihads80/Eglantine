@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <mutex>
 
 #include "core/arm/arm_interface.h"
@@ -96,6 +97,19 @@ public:
     u64 m_repeat_fault_pc{};
     u64 m_repeat_fault_address{};
     u64 m_repeat_fault_count{};
+
+    // Fault handler state for GPU-cached page writes (this core's thread only): the previous
+    // faulting page, and the stores emulated on recent pages (EDEN_NCE_EMULATE_WRITES).
+    u64 m_last_raster_page{};
+    struct EmulatedPage {
+        u64 page;
+        u32 stores;
+    };
+    std::array<EmulatedPage, 4> m_emulated_pages{};
+    u32 m_emulated_next{};
+
+    /// Whether another store to `page` may be emulated (at most `budget` while it stays recent).
+    bool TakeEmulateBudget(u64 page, u32 budget);
 };
 
 } // namespace Core

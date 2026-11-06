@@ -295,6 +295,7 @@ struct GPU::Impl {
                 gpu_thread.TickGPU(is_async);
                 WaitForSyncOperation(fence);
                 if (stats) {
+                    Core::NceStats::t_invalidate_waited = true;
                     auto& shared = Core::NceStats::Shared();
                     shared.gpu_invalidate_sync.fetch_add(1, std::memory_order_relaxed);
                     shared.gpu_invalidate_sync_ticks.fetch_add(Core::NceStats::Ticks() - start,
@@ -307,6 +308,10 @@ struct GPU::Impl {
             return;
         }
         gpu_thread.InvalidateRegion(addr, size);
+    }
+
+    bool TryInvalidateRegion(DAddr addr, u64 size) {
+        return renderer->ReadRasterizer()->TryCacheInvalidation(addr, size);
     }
 
     bool OnCPUWrite(DAddr addr, u64 size) {
@@ -631,6 +636,10 @@ bool GPU::IsMapPending(GPUVAddr gpu_addr, u64 size) const {
 
 void GPU::InvalidateRegion(DAddr addr, u64 size, bool preserve_gpu_writes) {
     impl->InvalidateRegion(addr, size, preserve_gpu_writes);
+}
+
+bool GPU::TryInvalidateRegion(DAddr addr, u64 size) {
+    return impl->TryInvalidateRegion(addr, size);
 }
 
 bool GPU::OnCPUWrite(DAddr addr, u64 size) {

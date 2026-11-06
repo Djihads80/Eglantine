@@ -44,8 +44,10 @@ enum class State : u32 { Host, Guest, Idle, Svc, Count };
 
 /// Guest faults that the NCE signal handlers take.
 enum class Fault : u32 {
-    Rasterizer,   ///< A write to a page the GPU caches: the GPU caches are invalidated
-    SeparateHeap, ///< A separate-heap page the heap tracker had unmapped is mapped back in
+    Rasterizer,     ///< A write to a page the GPU caches: the GPU caches are invalidated
+    RasterizerWait, ///< ... which waited for the GPU thread to do it (GPU-written page)
+    Emulated,       ///< ... or the store was emulated, as Dynarmic does (EDEN_NCE_EMULATE_WRITES)
+    SeparateHeap,   ///< A separate-heap page the heap tracker had unmapped is mapped back in
     Mapped,       ///< A mapped page with nothing to fix (protection already lifted)
     Unhandled,    ///< An unmapped address: the access is skipped or the thread stops
     Alignment,    ///< SIGBUS: the instruction is interpreted
@@ -71,6 +73,12 @@ struct alignas(64) CoreCounters {
     std::atomic<u64> wake_max_ticks{};
     std::array<std::atomic<u64>, SvcSlots> svc_count{};
     std::array<std::atomic<u64>, SvcSlots> svc_ticks{};
+    // GPU-cached page write faults: the shape of the writes.
+    std::atomic<u64> sequential_faults{}; ///< On the page after this core's previous one
+    std::atomic<u64> same_page_faults{};  ///< On the same page again
+    std::atomic<u64> scalar_faults{};     ///< By a single-register store (else pair/vector/atomic)
+    std::atomic<u64> ahead_pages{};       ///< Pages invalidated ahead (EDEN_NCE_FAULT_AHEAD)
+    std::atomic<u64> emulate_fallbacks{}; ///< Stores not emulated: budget used up or unsupported
 
     // Written by any thread.
     std::atomic<u64> interrupt_signals{}; ///< Interrupts that stopped running guest code
@@ -83,6 +91,10 @@ struct alignas(64) CoreCounters {
 };
 
 CoreCounters& Counters(size_t core);
+
+/// Set when GPU::InvalidateRegion waited for the GPU thread on this thread: the fault handler
+/// reads and clears it.
+inline thread_local bool t_invalidate_waited = false;
 
 /// Memory-tracking counters, written by any thread.
 struct SharedCounters {

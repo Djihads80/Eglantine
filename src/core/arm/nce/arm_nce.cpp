@@ -107,6 +107,28 @@ const char* AccessKind(u64 esr) {
     return "access";
 }
 
+// A data abort on a write (not a cache maintenance instruction) to a page without write
+// permission: a store to a GPU-cached page.
+bool IsWritePermissionFault(u64 esr) {
+    const u64 ec = esr >> 26;
+    const bool data_abort = ec == 0x24 || ec == 0x25;
+    const bool write = ((esr >> 6) & 1) != 0;
+    const bool cache_maintenance = ((esr >> 8) & 1) != 0;
+    const u64 dfsc = esr & 0x3f;
+    return data_abort && write && !cache_maintenance && dfsc >= 0x0c && dfsc <= 0x0f;
+}
+
+// EDEN_NCE_EMULATE_WRITES=<n>: emulate up to n stores per GPU-cached page (in a row on a core)
+// before invalidating it. EDEN_NCE_FAULT_AHEAD=<n>: after a write fault on the GPU-cached page
+// following the previous one, invalidate the next n pages too. Read once, after env.txt.
+std::atomic<u32> g_emulate_writes{};
+std::atomic<u32> g_fault_ahead{};
+
+u32 ReadSwitch(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0;
+}
+
 const char* SignalName(int sig) {
     return sig == SIGILL ? "SIGILL" : sig == SIGTRAP ? "SIGTRAP" : sig == SIGFPE ? "SIGFPE" : "signal";
 }
@@ -453,6 +475,8 @@ bool ArmNce::HandleGuestAlignmentFault(GuestContext* guest_ctx, void* raw_info, 
 
 bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, void* raw_context) {
     auto* info = static_cast<siginfo_t*>(raw_info);
+    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
+    ArmNce* const core = guest_ctx->parent;
     const bool stats = NceStats::Enabled();
     const u64 start = stats ? NceStats::Ticks() : 0;
 
@@ -460,30 +484,102 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     // TODO: handle accesses which split a page?
     const Common::ProcessAddress addr =
         (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
-    auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+    auto& memory = core->m_running_thread->GetOwnerProcess()->GetMemory();
+
+    // A store to a GPU-cached page.
+    const u32 emulate_budget = g_emulate_writes.load(std::memory_order_relaxed);
+    const u32 ahead = g_fault_ahead.load(std::memory_order_relaxed);
+    bool sequential = false;
+    if (stats || emulate_budget != 0 || ahead != 0) {
+        const u64 esr = FaultEsr(host_ctx);
+        if (IsWritePermissionFault(esr) && memory.IsRasterizerCachedPage(addr)) {
+            const u64 page = GetInteger(addr);
+            sequential = page == core->m_last_raster_page + Memory::YUZU_PAGESIZE;
+            if (stats) {
+                auto& counters = NceStats::Counters(core->m_core_index);
+                if (sequential) {
+                    NceStats::Add(counters.sequential_faults, 1);
+                } else if (page == core->m_last_raster_page) {
+                    NceStats::Add(counters.same_page_faults, 1);
+                }
+                if (((esr >> 24) & 1) != 0) {
+                    NceStats::Add(counters.scalar_faults, 1);
+                }
+            }
+            core->m_last_raster_page = page;
+            if (emulate_budget != 0) {
+                // As Dynarmic does: the store goes through Memory, whose GPU-cached path holds
+                // it for the GPU thread to apply (GPU-written pages) or invalidates the caches,
+                // without waiting for the GPU thread. The page stays write-protected while the
+                // GPU caches it, so a page written more often than the budget falls back to
+                // invalidating it below.
+                if (core->TakeEmulateBudget(page, emulate_budget)) {
+                    auto* fpctx = GetFloatingPointState(host_ctx);
+                    if (const auto next_pc = MatchAndExecuteOneInstruction(memory, &host_ctx, fpctx)) {
+                        host_ctx.pc = *next_pc;
+                        if (stats) {
+                            NceStats::RecordFault(core->m_core_index, NceStats::Fault::Emulated,
+                                                  NceStats::Ticks() - start);
+                        }
+                        return true;
+                    }
+                }
+                if (stats) {
+                    NceStats::Add(NceStats::Counters(core->m_core_index).emulate_fallbacks, 1);
+                }
+            }
+        }
+    }
+
+    if (stats) {
+        NceStats::t_invalidate_waited = false;
+    }
     Memory::Memory::NceInvalidateResult invalidate{};
     const bool handled = memory.InvalidateNCE(addr, Memory::YUZU_PAGESIZE, &invalidate);
-    NoteGuestAccessFault(guest_ctx->parent, static_cast<ucontext_t*>(raw_context)->uc_mcontext,
-                         info, invalidate, handled);
+    NoteGuestAccessFault(core, host_ctx, info, invalidate, handled);
     if (handled) {
+        if (invalidate.rasterizer && sequential && ahead != 0) {
+            // A writer going through GPU-cached pages in order: take the next ones' faults now.
+            const size_t pages = memory.InvalidateNCEAhead(addr + Memory::YUZU_PAGESIZE, ahead);
+            core->m_last_raster_page += pages * Memory::YUZU_PAGESIZE;
+            if (stats) {
+                NceStats::Add(NceStats::Counters(core->m_core_index).ahead_pages, pages);
+            }
+        }
         if (stats) {
-            const auto kind = invalidate.rasterizer             ? NceStats::Fault::Rasterizer
+            const auto kind = invalidate.rasterizer
+                                  ? (NceStats::t_invalidate_waited ? NceStats::Fault::RasterizerWait
+                                                                   : NceStats::Fault::Rasterizer)
                               : invalidate.separate_heap_mapped ? NceStats::Fault::SeparateHeap
                                                                 : NceStats::Fault::Mapped;
-            NceStats::RecordFault(guest_ctx->parent->m_core_index, kind,
-                                  NceStats::Ticks() - start);
+            NceStats::RecordFault(core->m_core_index, kind, NceStats::Ticks() - start);
         }
         // We handled the access successfully and are returning to guest code.
         return true;
     }
 
     // We couldn't handle the access.
-    const size_t core = guest_ctx->parent->m_core_index;
+    const size_t core_index = core->m_core_index;
     const bool resume = HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
     if (stats) {
-        NceStats::RecordFault(core, NceStats::Fault::Unhandled, NceStats::Ticks() - start);
+        NceStats::RecordFault(core_index, NceStats::Fault::Unhandled, NceStats::Ticks() - start);
     }
     return resume;
+}
+
+bool ArmNce::TakeEmulateBudget(u64 page, u32 budget) {
+    for (EmulatedPage& entry : m_emulated_pages) {
+        if (entry.page == page) {
+            if (entry.stores >= budget) {
+                entry.page = ~u64{};
+                return false;
+            }
+            ++entry.stores;
+            return true;
+        }
+    }
+    m_emulated_pages[m_emulated_next++ % m_emulated_pages.size()] = {page, 1};
+    return true;
 }
 
 void ArmNce::HandleHostAlignmentFault(int sig, void* raw_info, void* raw_context) {
@@ -681,6 +777,15 @@ void ArmNce::Initialize() {
         Common::SigAction(SIGILL, &fatal_action, &g_orig_ill_action);
         Common::SigAction(SIGTRAP, &fatal_action, &g_orig_trap_action);
         Common::SigAction(SIGFPE, &fatal_action, &g_orig_fpe_action);
+
+        g_emulate_writes.store(ReadSwitch("EDEN_NCE_EMULATE_WRITES"), std::memory_order_relaxed);
+        g_fault_ahead.store(ReadSwitch("EDEN_NCE_FAULT_AHEAD"), std::memory_order_relaxed);
+        if (g_emulate_writes.load() != 0 || g_fault_ahead.load() != 0) {
+            LOG_INFO(Core_ARM,
+                     "NCE GPU-cached page writes: {} stores emulated per page "
+                     "(EDEN_NCE_EMULATE_WRITES), {} pages invalidated ahead (EDEN_NCE_FAULT_AHEAD)",
+                     g_emulate_writes.load(), g_fault_ahead.load());
+        }
 
         if (const char* sample = std::getenv("EDEN_NX2_NCE_SAMPLE");
             sample != nullptr && *sample != '\0' && *sample != '0') {
