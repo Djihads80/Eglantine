@@ -103,12 +103,8 @@ inline bool On(Opt opt) {
     static const unsigned off = [] {
         // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
         // set back to off (split_overlap stays quarantined either way).
-        // Always off: split_overlap (quarantined) and the macro JIT switches (with them on the front
-        // spent 923 ms/s in macros at 122k calls/s, ~7.5 us a call instead of ~100 ns: 8 FPS).
-        constexpr unsigned always_off = (1U << static_cast<unsigned>(Opt::SplitOverlap)) |
-                                        (1U << static_cast<unsigned>(Opt::MacroBatch)) |
-                                        (1U << static_cast<unsigned>(Opt::MacroBorrow)) |
-                                        (1U << static_cast<unsigned>(Opt::MacroState));
+        // Always off: split_overlap (quarantined).
+        constexpr unsigned always_off = 1U << static_cast<unsigned>(Opt::SplitOverlap);
         unsigned mask = std::getenv("EDEN_NX2_PERF_SAFE") != nullptr ? DefaultOffMask() | always_off
                                                                  : always_off;
         std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";
