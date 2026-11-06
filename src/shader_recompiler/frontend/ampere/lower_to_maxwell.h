@@ -269,7 +269,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (opcode == 0x81c) break; // PLOP3: bits 16-31 hold predicates and its LUT, not registers
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0xf66 &&
                 opcode != 0x986 && opcode != 0x987 && opcode != 0x988 && opcode != 0x59f &&
-                opcode != 0x927) continue; // ISBEWR: data register in 32-39
+                opcode != 0x98e && opcode != 0x927) continue; // RED, ISBEWR: data in 32-39
             const u32 reg = insn.Bits(bit, 8);
             if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
