@@ -99,6 +99,39 @@ TEST_CASE("Split write tracker keeps the kind of constant buffer writes",
     CHECK(tracker.LastWriteTo(0x8000, 0x8004, Kind::ConstantBuffer) == 6);
 }
 
+TEST_CASE("Split write tracker keeps write kinds apart (MacroReadOverlayWriters)",
+          "[video_core][split_writes]") {
+    using Kind = SplitWriteTracker::WriteKind;
+    SplitWriteTracker tracker;
+    tracker.SetSeparateKinds(true);
+    tracker.Write(0x1000, 0x2000, 3, Kind::ConstantBuffer);
+    tracker.Write(0x2000, 0x3000, 5);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000, Kind::Other) == 0);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000, Kind::ConstantBuffer) == 3);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000) == 3);
+    CHECK(tracker.LastWriteTo(0x2000, 0x3000, Kind::Other) == 5);
+    CHECK(tracker.LastWriteTo(0x1000, 0x3000) == 5);
+    // Same kinds still join: an Other write over the constant buffer page joins the Other
+    // record, and the constant buffer record keeps its kind.
+    tracker.Write(0x3000, 0x4000, 6);
+    CHECK(tracker.LastWriteTo(0x2000, 0x3000, Kind::Other) == 6);
+    tracker.Write(0x1000, 0x2000, 7);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000, Kind::Other) == 7);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000, Kind::ConstantBuffer) == 3);
+    tracker.Retire(3);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000, Kind::ConstantBuffer) == 0);
+    CHECK(tracker.LastWriteTo(0x1000, 0x2000) == 7);
+    tracker.Retire(7);
+    CHECK(tracker.LastWriteTo(0x1000, 0x4000) == 0);
+
+    // Off: the old rule, one merged record of kind Other.
+    SplitWriteTracker merged;
+    merged.Write(0x1000, 0x2000, 3, Kind::ConstantBuffer);
+    merged.Write(0x2000, 0x3000, 5);
+    CHECK(merged.LastWriteTo(0x1000, 0x2000, Kind::Other) == 5);
+    CHECK(merged.LastWriteTo(0x1000, 0x2000, Kind::ConstantBuffer) == 0);
+}
+
 TEST_CASE("Split write tracker skips only proven draws for writer reads",
           "[video_core][split_writes]") {
     SplitWriteTracker tracker;

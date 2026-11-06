@@ -119,6 +119,9 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
+    writes.SetSeparateKinds(Nx2Perf::On(Nx2Perf::Opt::MacroReadOverlayWriters) &&
+                            Nx2Perf::On(Nx2Perf::Opt::MacroReadCbOverlay) &&
+                            Nx2Perf::On(Nx2Perf::Opt::MacroReadWriterSet));
 #ifdef ARCHITECTURE_x86_64
     // Front macros run compiled (macro_turing_jit.h) only.
     const char* jit = std::getenv("EDEN_NX2_MME_JIT");

@@ -68,16 +68,24 @@ public:
         entry_epoch = entry_epoch == 0 ? epoch : (std::min)(entry_epoch, epoch);
     }
 
+    /// Nx2Perf MacroReadOverlayWriters: a write joins the previous one only when their kinds
+    /// match, so each noted range's kind describes exactly its bytes. Set before any Write.
+    void SetSeparateKinds(bool separate) {
+        separate_kinds = separate;
+    }
+
     /// The entry that ends at `end` writes the guest memory in [begin, end_address). Ends never
     /// decrease. A write next to or over the previous one joins it (conservative: the joined
-    /// range retires with the later write; one that mixes kinds is Other).
+    /// range retires with the later write; one that mixes kinds is Other, unless kinds are kept
+    /// apart: SetSeparateKinds).
     void Write(u64 begin, u64 end_address, u64 end, WriteKind kind = WriteKind::Other) {
         if (begin >= end_address) {
             return;
         }
         if (!writes.empty()) {
             PendingWrite& last = writes.back();
-            if (begin <= last.end && last.begin <= end_address) {
+            if (begin <= last.end && last.begin <= end_address &&
+                (!separate_kinds || last.kind == kind)) {
                 last.begin = (std::min)(last.begin, begin);
                 last.end = (std::max)(last.end, end_address);
                 last.position = end;
@@ -200,6 +208,7 @@ private:
     u64 gpu{};    ///< Past the newest entry that draws, dispatches or copies (Gpu or Draw)
     u64 writer{}; ///< Past the newest Gpu entry: the ones that can write guest memory
     u64 entry_epoch{};
+    bool separate_kinds{};
 };
 
 } // namespace VideoCommon

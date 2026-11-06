@@ -2077,11 +2077,19 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     // noted writes (Effect::None), so no writer but the queued constant buffer words (kept in
     // order, by device address like the tracker) touches them before the back runs those words.
     // Async writes are checked below as before.
-    const u64 unlocalized_target =
-        (std::max)(split.Writes().LastUnknown(), split.Writes().LastGpu());
-    const bool overlay = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadCbOverlay) &&
-                         write_target > unlocalized_target && other_write_target == 0 &&
-                         split.ConstBufferWordsKept(consumed);
+    // MacroReadOverlayWriters: wait for the unknown writes and the writers only. The queued
+    // draws past them are ones the back proved write no memory, checked again after the wait as
+    // for MacroReadWriterSet.
+    const bool cb_overlay =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadCbOverlay);
+    const bool overlay_writers =
+        cb_overlay && writer_set &&
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroReadOverlayWriters);
+    const u64 unlocalized_target = (std::max)(
+        split.Writes().LastUnknown(),
+        overlay_writers ? split.Writes().LastWriter() : split.Writes().LastGpu());
+    const bool overlay = cb_overlay && write_target > unlocalized_target &&
+                         other_write_target == 0 && split.ConstBufferWordsKept(consumed);
     if (overlay) {
         target = unlocalized_target;
     }
@@ -2103,7 +2111,9 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
                                                return Tegra::Nx2IsProvenCode(begin, end - begin);
                                            })) {
             if (Profile::Enabled()) {
-                Profile::Add(Profile::Counter::DmaReadsWriterSetFallback, 1);
+                Profile::Add(overlay ? Profile::Counter::DmaReadsOverlayFallback
+                                     : Profile::Counter::DmaReadsWriterSetFallback,
+                             1);
             }
             return false;
         }
@@ -2126,9 +2136,21 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
         Profile::Add(Profile::Counter::DmaReadsEarly, 1);
         if (target > consumed) {
             Profile::Add(wait_reason, 1);
+            if (wait_reason == Profile::Counter::DmaReadsWaitWrite && cb_overlay) {
+                Profile::Add(other_write_target != 0 ? Profile::Counter::DmaReadsWaitWriteOther
+                             : !split.ConstBufferWordsKept(consumed)
+                                 ? Profile::Counter::DmaReadsWaitWriteCbLost
+                                 : Profile::Counter::DmaReadsWaitWriteCbOlder,
+                             1);
+            }
         }
         if (skipped_draws) {
             Profile::Add(Profile::Counter::DmaReadsWriterSet, 1);
+        }
+        if (overlay) {
+            Profile::Add(target > consumed ? Profile::Counter::DmaReadsOverlayWaited
+                                           : Profile::Counter::DmaReadsOverlayNoWait,
+                         1);
         }
     }
     // Words the back ran up to consumed_now are in memory; the newer ones come from the overlay.
@@ -2184,6 +2206,11 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
     static u32 logged{};
     static u64 writer_set_reads{};
     static u64 writer_set_mismatches{};
+    // MacroReadOverlayWriters: every overlay read it allows, compared like the others.
+    static u32 overlay_writers_logged{};
+    static u64 overlay_writers_reads{};
+    static u64 overlay_writers_mismatches{};
+    const bool overlay_writers_read = overlay && overlay_writers;
     bool mismatch = false;
     for (u32 i = 0; i < words; ++i) {
         const u32 drained = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
@@ -2198,7 +2225,17 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
 
         if (drained != read[i]) {
             mismatch = true;
-            if (logged < 64) {
+            if (overlay_writers_read) {
+                if (overlay_writers_logged < 64) {
+                    ++overlay_writers_logged;
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf macro_read_overlay_writers: macro {:#x} DMA read of {} "
+                              "words at {:#x}: word {} is {:#x} without the drain, {:#x} after it "
+                              "({})",
+                              macro, words, source, i, read[i], drained,
+                              skipped_draws ? "queued proven draws skipped" : "no draws skipped");
+                }
+            } else if (logged < 64) {
                 ++logged;
                 LOG_ERROR(HW_GPU,
                           "Nx2Perf {}: macro {:#x} DMA read of {} words at {:#x}: word {} is "
@@ -2208,6 +2245,16 @@ bool Maxwell3D::FrontDmaReadEarly(VideoCommon::GpuSplit& split, FrontState& fs, 
             }
         }
         read[i] = drained;
+    }
+    if (overlay_writers_read) {
+        overlay_writers_mismatches += mismatch ? 1 : 0;
+        if ((++overlay_writers_reads & 4095) == 0 ||
+            (mismatch && overlay_writers_mismatches <= 64)) {
+            LOG_INFO(HW_GPU,
+                     "Nx2Perf overlay_writers totals: {} overlay reads, {} differed from the "
+                     "drained read",
+                     overlay_writers_reads, overlay_writers_mismatches);
+        }
     }
     if (skipped_draws) {
         writer_set_mismatches += mismatch ? 1 : 0;

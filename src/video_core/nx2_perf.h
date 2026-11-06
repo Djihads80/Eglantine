@@ -61,6 +61,9 @@ enum class Opt : unsigned {
     PipelineFastCache,  ///< Direct-mapped graphics pipeline cache in front of the slow path
     DrawPreamble,       ///< GPU::TickWork skips the sync mutex when no request is queued
     BindMemo,           ///< Unchanged non-written binds skip touch, sync and usage across draws
+    /// With MacroReadCbOverlay and MacroReadWriterSet: the overlay waits only for writers, not
+    /// for queued proven draws, and the write tracker keeps write kinds apart
+    MacroReadOverlayWriters,
     Count,
 };
 
@@ -77,6 +80,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "macro_batch", "macro_borrow", "macro_state",
     "download_batch",
     "dispatch_batch", "pipeline_fast_cache", "draw_preamble", "bind_memo",
+    "macro_read_overlay_writers",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
@@ -100,7 +104,7 @@ inline constexpr u64 DefaultOffMask() {
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
                           Opt::MacroBatch, Opt::MacroBorrow, Opt::MacroState, Opt::DownloadBatch,
                           Opt::DispatchBatch, Opt::PipelineFastCache, Opt::DrawPreamble,
-                          Opt::BindMemo}) {
+                          Opt::BindMemo, Opt::MacroReadOverlayWriters}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -108,9 +112,10 @@ inline constexpr u64 DefaultOffMask() {
 
 /// Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
 /// reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
-/// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode).
-inline constexpr u64 always_off =
-    Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) | Bit(Opt::DispatchBatch);
+/// dispatch_batch (delays GPU work; suspected of the flashes, no verify mode); new switches not
+/// yet measured.
+inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
+                                  Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters);
 
 static_assert(IsOff(always_off, 33));
 static_assert(IsOff(DefaultOffMask(), 36));
