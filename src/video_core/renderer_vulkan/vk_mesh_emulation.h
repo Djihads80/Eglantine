@@ -4,6 +4,8 @@
 #pragma once
 
 #include <unordered_map>
+#include <array>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -70,6 +72,14 @@ public:
     /// Times the draws' compute work while it captures.
     FrameDump* frame_dump{};
 
+    /// Breadcrumbs: a draw's number, and where its work notes reaching (start) and finishing
+    /// (end) its dispatches. A device loss logs them and the last draws.
+    struct Breadcrumb {
+        u32 number;
+        VkBuffer buffer;
+    };
+    [[nodiscard]] Breadcrumb NoteDraw(u64 pipeline, u32 groups, bool has_task, u32 capacity);
+
     /// The headers of emulated task draws are read back after their dispatches: the mesh
     /// workgroups their task programs launched size the slots of the pipeline's next draws
     /// (Fanout). EDEN_NX2_MESH_EMULATE_CHECK=1 reads back every draw's and logs them.
@@ -110,6 +120,20 @@ private:
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
     std::vector<Chunk> chunks;
+    struct NotedDraw {
+        u32 number;
+        u64 pipeline;
+        u32 groups;
+        u32 capacity;
+        bool has_task;
+        u64 tick;
+    };
+    void ReportLoss();
+
+    vk::Buffer breadcrumb_buffer;
+    std::mutex noted_mutex;
+    std::array<NotedDraw, 32> noted{};
+    u32 next_number{1};
     vk::Buffer check_buffer;
     bool checking{};
     std::vector<Check> checks;
@@ -117,6 +141,7 @@ private:
     u32 next_check_slot{};
     u32 checks_logged{};
     u32 overflows_logged{};
+    u32 learned_logged{};
     size_t current{};
     VkDeviceSize max_size{};
     VkDeviceSize alignment{};

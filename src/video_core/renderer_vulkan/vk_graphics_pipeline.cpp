@@ -1499,6 +1499,7 @@ struct EmulatedMeshWork {
     bool has_task{};
     PushConstants push{};
     std::optional<std::pair<VkQueryPool, u32>> timing; ///< a query pair per phase
+    MeshEmulationBuffer::Breadcrumb breadcrumb{};
     VkDescriptorSet descriptor_set{};                  ///< from phase 0
 
     static constexpr VkShaderStageFlags PUSH_STAGES{VK_SHADER_STAGE_ALL_GRAPHICS |
@@ -1546,6 +1547,8 @@ struct EmulatedMeshWork {
     }
 
     void Prepare(vk::CommandBuffer cmdbuf, bool first) {
+        // Breadcrumb: the GPU reached this draw's work.
+        cmdbuf.FillBuffer(breadcrumb.buffer, 0, sizeof(u32), breadcrumb.number);
         if (first) {
             // What the guest wrote for the programs: they read it from compute shaders now.
             static constexpr VkMemoryBarrier WRITE_BARRIER{
@@ -1635,6 +1638,8 @@ struct EmulatedMeshWork {
                                        VK_PIPELINE_STAGE_TRANSFER_BIT,
                                    0, MESH_BARRIER);
         }
+        // Breadcrumb: the GPU finished this draw's dispatches.
+        cmdbuf.FillBuffer(breadcrumb.buffer, sizeof(u32), sizeof(u32), breadcrumb.number);
         if (check.first && descriptor_set) {
             cmdbuf.CopyBuffer(buffer, check.first,
                               VkBufferCopy{
@@ -1679,6 +1684,9 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
     work->check = emulated_draw.check;
     work->groups = emulated_draw.groups;
     work->has_task = mesh_emulation->has_task;
+    work->breadcrumb = mesh_emulation_buffer->NoteDraw(key.Hash(), emulated_draw.groups,
+                                                       work->has_task,
+                                                       emulated_draw.header.capacity);
     work->push = {
         .rescaling = rescaling.Data(),
         .down_factor = texture_cache.IsRescaling() ? Settings::values.resolution_info.down_factor
@@ -1709,8 +1717,8 @@ bool GraphicsPipeline::ConfigureEmulatedMeshDraw(const RescalingPushConstant& re
         for (size_t phase = 0; phase < Scheduler::PRE_PHASES; ++phase) {
             // A phase without work for this draw still gets its barrier from its first draw.
             // (Timed, every phase writes its timestamps.)
-            const bool idle{(phase == 1 && !work->has_task) ||
-                            (phase == 3 && !work->check.first)};
+            // (Every draw reaches the readback phase: its breadcrumb.)
+            const bool idle{phase == 1 && !work->has_task};
             if (idle && !empty[phase] && !work->timing) {
                 continue;
             }

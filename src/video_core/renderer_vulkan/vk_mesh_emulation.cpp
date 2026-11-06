@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "common/alignment.h"
 #include "common/logging.h"
@@ -40,6 +41,19 @@ MeshEmulationBuffer::MeshEmulationBuffer(const Device& device_, MemoryAllocator&
     const VkDeviceSize range = device.GetMaxStorageBufferRange();
     max_size = std::min<VkDeviceSize>(range != 0 ? range : (128ULL << 20), 256ULL << 20);
     alignment = std::max<VkDeviceSize>(device.GetStorageBufferAlignment(), 256);
+    breadcrumb_buffer = memory_allocator.CreateBuffer(
+        VkBufferCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = 2 * sizeof(u32),
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        },
+        MemoryUsage::Download);
+    device.SetLossReporter([this] { ReportLoss(); });
     const char* const check = std::getenv("EDEN_NX2_MESH_EMULATE_CHECK");
     checking = check != nullptr && check[0] == '1';
     {
@@ -74,6 +88,36 @@ std::pair<VkBuffer, VkDeviceSize> MeshEmulationBuffer::CheckSlot(u64 pipeline, u
     return {*check_buffer, slot * sizeof(Shader::Backend::SPIRV::MeshEmulationHeader)};
 }
 
+MeshEmulationBuffer::Breadcrumb MeshEmulationBuffer::NoteDraw(u64 pipeline, u32 groups,
+                                                              bool has_task, u32 capacity) {
+    std::scoped_lock lock{noted_mutex};
+    const u32 number = next_number++;
+    noted[number % noted.size()] = {number, pipeline, groups, capacity, has_task,
+                                    scheduler.CurrentTick()};
+    return {number, *breadcrumb_buffer};
+}
+
+void MeshEmulationBuffer::ReportLoss() {
+    std::array<u32, 2> reached{};
+    breadcrumb_buffer.Invalidate();
+    std::memcpy(reached.data(), breadcrumb_buffer.Mapped().data(), sizeof(reached));
+    LOG_CRITICAL(Render_Vulkan,
+                 "Emulated task/mesh draws at the device loss: the GPU reached the work of draw "
+                 "{} and finished that of draw {}; {} were recorded",
+                 reached[0], reached[1], next_number - 1);
+    std::scoped_lock lock{noted_mutex};
+    for (u32 back = 0; back < noted.size(); ++back) {
+        const u32 number = next_number - 1 - back;
+        const NotedDraw& draw = noted[number % noted.size()];
+        if (number == 0 || draw.number != number) {
+            break;
+        }
+        LOG_CRITICAL(Render_Vulkan, "  draw {}: pipeline {:016x}, {} {} workgroups, {} slots, tick {}",
+                     draw.number, draw.pipeline, draw.groups, draw.has_task ? "task" : "mesh",
+                     draw.capacity, draw.tick);
+    }
+}
+
 u32 MeshEmulationBuffer::Fanout(u64 pipeline, u32 minimum) {
     ReportChecks();
     const auto it = fanouts.find(pipeline);
@@ -103,7 +147,7 @@ void MeshEmulationBuffer::ReportChecks() {
                 std::min<u64>((per_task + per_task / 4 + 7) / 8 * 8, MAX_FANOUT));
             u32& fanout = fanouts[entry.pipeline];
             if (wanted > fanout) {
-                if (overflow && overflows_logged < 32) {
+                if ((overflow && overflows_logged < 32) || learned_logged++ < 64) {
                     LOG_INFO(Render_Vulkan,
                              "Emulated mesh draws {:016x}: {} mesh workgroups per task workgroup "
                              "from now on",
@@ -125,7 +169,9 @@ void MeshEmulationBuffer::ReportChecks() {
     });
 }
 
-MeshEmulationBuffer::~MeshEmulationBuffer() = default;
+MeshEmulationBuffer::~MeshEmulationBuffer() {
+    device.SetLossReporter({});
+}
 
 MeshEmulationRegion MeshEmulationBuffer::Allocate(VkDeviceSize request) {
     const VkDeviceSize size = Common::AlignUp(request, alignment);
