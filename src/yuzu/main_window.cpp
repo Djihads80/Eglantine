@@ -70,6 +70,7 @@
 #include <QStyleHints>
 #endif
 
+#include <QAbstractButton>
 #include <QActionGroup>
 #include <QCheckBox>
 #include <QClipboard>
@@ -1987,7 +1988,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
             tr("Use the recommended settings for Mario Kart World?\n\n"
                "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
                "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
-               "Choose Yes to use them for this session. Remember these settings saves them for "
+               "Choose Yes to use them for this launch. Remember these settings saves them for "
                "Mario Kart World. Skipping this prompt uses your saved settings on future launches."),
             &dialog);
         description.setWordWrap(true);
@@ -2003,13 +2004,33 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
 
         QDialogButtonBox buttons(QDialogButtonBox::Yes | QDialogButtonBox::No, &dialog);
         buttons.button(QDialogButtonBox::No)->setDefault(true);
+        buttons.button(QDialogButtonBox::No)->setFocus();
         connect(buttons.button(QDialogButtonBox::Yes), &QPushButton::clicked, &dialog,
                 [&dialog] { dialog.done(QDialog::Accepted); });
         connect(buttons.button(QDialogButtonBox::No), &QPushButton::clicked, &dialog,
                 &QDialog::reject);
         layout.addWidget(&buttons);
 
+        ControllerNavigation controller_navigation(QtCommon::system->HIDCore());
+        connect(&controller_navigation, &ControllerNavigation::TriggerKeyboardEvent, &dialog,
+                [&dialog](Qt::Key key) {
+                    if (key == Qt::Key_Down || key == Qt::Key_Right) {
+                        key = Qt::Key_Tab;
+                    } else if (key == Qt::Key_Up || key == Qt::Key_Left) {
+                        key = Qt::Key_Backtab;
+                    } else if (key == Qt::Key_Enter || key == Qt::Key_Return) {
+                        if (auto* button = qobject_cast<QAbstractButton*>(dialog.focusWidget())) {
+                            button->click();
+                            return;
+                        }
+                    }
+                    auto* target = dialog.focusWidget();
+                    QCoreApplication::postEvent(
+                        target ? target : &dialog,
+                        new QKeyEvent(QEvent::KeyPress, key, Qt::NoModifier));
+                });
         use_recommended_mkw_settings = dialog.exec() == QDialog::Accepted;
+        controller_navigation.UnloadController();
         save_recommended_mkw_settings =
             use_recommended_mkw_settings && remember_settings.isChecked();
         UISettings::values.skip_mkw_settings_prompt = skip_prompt.isChecked();
