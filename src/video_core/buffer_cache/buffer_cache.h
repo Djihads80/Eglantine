@@ -106,6 +106,14 @@ void BufferCache<P>::TickFrame() {
     if (!channel_state) {
         return;
     }
+    // PreflushPerFrame(): the frame boundary is where this frame's Preflushable writes become
+    // the next fence's downloads (one commit per frame, not one per compute fence).
+    if (PreflushPerFrame() && !pending_preflush_adds.Empty()) {
+        pending_preflush_adds.ForEach([&](DAddr start, DAddr end) {
+            uncommitted_gpu_modified_ranges.Add(start, end - start);
+        });
+        pending_preflush_adds.Clear();
+    }
     runtime.TickFrame(slot_buffers);
     native_indirect_uniforms_this_frame.clear();
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
@@ -263,8 +271,13 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
     // Preflushable data is downloaded at fences, but only where it is marked (QueueGpuWrite): the
-    // rest of the range still needs this flush.
-    if (memory_tracker.IsRegionPreflushable(device_addr, size) &&
+    // rest of the range still needs this flush. With LazyPreflushDownloads nothing downloads at
+    // fences, so this fast path must not claim the data is already back: every read of a
+    // GPU-modified range flushes (preemtive false) through OnCPURead's synchronous flush.
+    // A range still pending its frame drain (PreflushPerFrame) is likewise not back yet.
+    if (!LazyPreflushDownloads() && memory_tracker.IsRegionPreflushable(device_addr, size) &&
+        !pending_preflush_adds.Intersects(device_addr_start_aligned,
+                                          device_addr_end_aligned - device_addr_start_aligned) &&
         !HasGpuWritesNotDownloadedAtFence(device_addr_start_aligned,
                                           device_addr_end_aligned - device_addr_start_aligned)) {
         area->preemtive = true;
