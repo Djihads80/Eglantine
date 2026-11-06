@@ -10072,7 +10072,7 @@ La maggior parte delle mod sono RomFS, ma le patch (.pchtxt) sono tipicamente Ex
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="96"/>
-        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eden or re-install firmware.</source>
+        <source>Firmware installation cancelled, firmware may be in a bad state or corrupted. Restart Eglantine or re-install firmware.</source>
         <translation>Installazione del firmware annullata, il firmware potrebbe essere corrotto o in cattivo stato. Riavvia Eden o reinstalla il firmware.</translation>
     </message>
     <message>
@@ -10087,12 +10087,12 @@ La maggior parte delle mod sono RomFS, ma le patch (.pchtxt) sono tipicamente Ex
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="110"/>
-        <source>Eden has detected user data for the following emulators:</source>
+        <source>Eglantine has detected user data for the following emulators:</source>
         <translation>Eden ha rilevato dati utente dei seguenti emulatori:</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="112"/>
-        <source>Would you like to migrate your data for use in Eden?
+        <source>Would you like to migrate your data for use in Eglantine?
 Select the corresponding button to migrate data from that emulator.
 This may take a while.</source>
         <translation>Volete trasferire i vostri dati per usarli in Eden?
@@ -10122,7 +10122,7 @@ Consigliato su sistemi con limiti di spazio.</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/qt_string_lookup.h" line="124"/>
-        <source>Creates a filesystem link between the old directory and Eden directory.
+        <source>Creates a filesystem link between the old directory and Eglantine directory.
 This is recommended if you want to share data between emulators.</source>
         <translation>Crea un collegamento tra la vecchia cartella e la cartella di Eden.
 Consigliato se si vuole condividere dati tra più emulatori.</translation>

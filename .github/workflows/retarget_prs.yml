@@ -1,0 +1,23 @@
+name: Retarget PRs
+on:
+  pull_request_target:
+    types: [opened, reopened]
+    branches: [nx2]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  retarget:
+    if: github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.ref != 'nx2-experimental'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --base nx2-experimental
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "Retargeted to \`nx2-experimental\` for pre-build testing. It will be promoted to \`nx2\` after validation."
