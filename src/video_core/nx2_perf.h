@@ -103,8 +103,12 @@ inline bool On(Opt opt) {
     static const unsigned off = [] {
         // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
         // set back to off (split_overlap stays quarantined either way).
-        // Always off: split_overlap (quarantined).
-        constexpr unsigned always_off = 1U << static_cast<unsigned>(Opt::SplitOverlap);
+        // Off unless named in EDEN_NX2_PERF_ON: split_overlap (quarantined); acquire_early (its early
+        // reads see "not met" where a drain sees "met", so channels wait up to 2 ms longer);
+        // dispatch_batch (delays GPU work; suspected of the flashes, no verify mode).
+        constexpr unsigned always_off = (1U << static_cast<unsigned>(Opt::SplitOverlap)) |
+                                        (1U << static_cast<unsigned>(Opt::AcquireEarly)) |
+                                        (1U << static_cast<unsigned>(Opt::DispatchBatch));
         unsigned mask = std::getenv("EDEN_NX2_PERF_SAFE") != nullptr ? DefaultOffMask() | always_off
                                                                  : always_off;
         std::string_view on_list = std::getenv("EDEN_NX2_PERF_ON") ? std::getenv("EDEN_NX2_PERF_ON") : "";
