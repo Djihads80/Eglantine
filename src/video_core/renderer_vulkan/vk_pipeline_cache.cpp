@@ -951,8 +951,20 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             for (auto& env : envs_) {
                 env_ptrs.push_back(&env);
             }
+            // EDEN_NX2_PIPE_TRACE: name the pipeline that never finishes. The precompilation
+            // screen only shows a count, so a pipeline stuck inside codegen or the driver leaves
+            // it one short with no clue which shader pair did it.
+            static const bool pipe_trace = std::getenv("EDEN_NX2_PIPE_TRACE") != nullptr;
+            if (pipe_trace) {
+                LOG_ERROR(Render_Vulkan, "PIPE start {:016x} vs={:016x} ps={:016x}", key.Hash(),
+                          key.unique_hashes[0], key.unique_hashes[1]);
+            }
             auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
                                                  state.statistics.get(), false)};
+            if (pipe_trace) {
+                LOG_ERROR(Render_Vulkan, "PIPE done {:016x} ok={}", key.Hash(),
+                          pipeline != nullptr);
+            }
 
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
@@ -1473,7 +1485,20 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     const auto begin = std::chrono::steady_clock::now();
+    // EDEN_NX2_PIPE_TRACE: the runtime path. A pipeline that never returns from here spins a core
+    // inside codegen, so the begin line without its end line names the shader pair to look at.
+    static const bool pipe_trace = std::getenv("EDEN_NX2_PIPE_TRACE") != nullptr;
+    if (pipe_trace) {
+        LOG_ERROR(Render_Vulkan, "RT PIPE begin vs={:016x} ps={:016x}",
+                  graphics_key.unique_hashes[0], graphics_key.unique_hashes[1]);
+    }
     SCOPE_EXIT {
+        if (pipe_trace) {
+            LOG_ERROR(Render_Vulkan, "RT PIPE end vs={:016x} ps={:016x} ms={:.1f}",
+                      graphics_key.unique_hashes[0], graphics_key.unique_hashes[1],
+                      std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - begin).count());
+        }
         ReportRuntimePipeline("Graphics", begin);
     };
     GraphicsEnvironments environments;
