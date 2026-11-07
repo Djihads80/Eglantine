@@ -235,6 +235,9 @@ enum class Opt : unsigned {
     /// Async shaders: once a frame spent its budget building pipelines at run time, a draw that
     /// may be skipped while its pipeline builds is skipped without building it (built next frame)
     ShaderBuildBudget,
+    /// Stale-slot compute rebuilds keep dispatching the previous pipeline while the replacement
+    /// compiles on a worker thread, swapping it in once IsBuilt() is true
+    ComputeRebuildAsync,
     Count,
 };
 
@@ -301,6 +304,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "back_replay_lean",
     "front_macro_call",
     "shader_build_budget",
+    "compute_rebuild_async",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -394,7 +398,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::RunAheadOwnWriteProbe,
                           Opt::BankDirtySkip,
                           Opt::BackReplayLean,
-                          Opt::FrontMacroCall}) {
+                          Opt::FrontMacroCall,
+                          Opt::ComputeRebuildAsync}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -469,7 +474,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadOwnWriteProbe) |
                                   Bit(Opt::BankDirtySkip) |
                                   Bit(Opt::BackReplayLean) |
-                                  Bit(Opt::FrontMacroCall);
+                                  Bit(Opt::FrontMacroCall) |
+                                  Bit(Opt::ComputeRebuildAsync);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -593,6 +599,9 @@ static_assert(static_cast<unsigned>(Opt::FrontMacroCall) == 90 &&
 static_assert(static_cast<unsigned>(Opt::ShaderBuildBudget) == 91 &&
               !IsOff(always_off, static_cast<size_t>(Opt::ShaderBuildBudget)) &&
               !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ShaderBuildBudget)));
+static_assert(static_cast<unsigned>(Opt::ComputeRebuildAsync) == 92 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ComputeRebuildAsync)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputeRebuildAsync)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -656,7 +665,8 @@ inline constexpr OffMask live_safe =
     Bit(Opt::CbBatch) | Bit(Opt::CleanWords) | Bit(Opt::UsageTracker) | Bit(Opt::FrontSleep) |
     Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
     Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
-    Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded);
+    Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded) |
+    Bit(Opt::ComputeRebuildAsync);
 
 /// One control file: the whole arm, computed from the startup off-mask.
 struct ControlResult {

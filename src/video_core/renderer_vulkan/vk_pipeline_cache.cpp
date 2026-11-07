@@ -965,21 +965,45 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     }
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& entry{pair->second};
+    const bool rebuild_async =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeRebuildAsync);
+    if (entry.pending) {
+        if (entry.pending->IsBuilt()) {
+            if (entry.pipeline) {
+                retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                       std::move(entry.pipeline));
+            }
+            entry.pipeline = std::move(entry.pending);
+        } else if (!rebuild_async) {
+            if (entry.pipeline) {
+                retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                       std::move(entry.pipeline));
+            }
+            entry.pipeline = std::move(entry.pending);
+        }
+    }
     if (is_new) {
         entry = CreateComputePipeline(key, shader);
-    } else if (!entry.null_pointer_slots.empty() && entry.rebuilds < MaxComputeRebuilds &&
-               StaleNullPointerSlot(entry)) {
+    } else if (!entry.pending && !entry.null_pointer_slots.empty() &&
+               entry.rebuilds < MaxComputeRebuilds && StaleNullPointerSlot(entry)) {
         // The translation dropped accesses through a pointer that was null back then. Which slots
         // the game fills depends on the area, so the new one keeps binding every pointer this one
         // binds, null now or not: a null pointer binds nothing.
         auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
         if (rebuilt.pipeline) {
-            if (entry.pipeline) {
-                retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
-                                                       std::move(entry.pipeline));
+            if (rebuild_async && entry.pipeline && !rebuilt.pipeline->IsBuilt()) {
+                entry.pending = std::move(rebuilt.pipeline);
+                entry.null_pointer_slots = std::move(rebuilt.null_pointer_slots);
+                entry.mapped_pointers = std::move(rebuilt.mapped_pointers);
+                ++entry.rebuilds;
+            } else {
+                if (entry.pipeline) {
+                    retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                           std::move(entry.pipeline));
+                }
+                rebuilt.rebuilds = entry.rebuilds + 1;
+                entry = std::move(rebuilt);
             }
-            rebuilt.rebuilds = entry.rebuilds + 1;
-            entry = std::move(rebuilt);
         } else {
             // Keep the working translation when the new one cannot be built (for example a
             // narrow access that now stays global across two buffers), and stop retrying.
@@ -988,7 +1012,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
             entry.rebuilds = MaxComputeRebuilds;
         }
     }
-    if (entry.pipeline &&
+    if (entry.pipeline && !entry.pending &&
         (entry.null_pointer_slots.empty() || entry.rebuilds >= MaxComputeRebuilds)) {
         fast_entry.key = key;
         fast_entry.pipeline = entry.pipeline.get();
