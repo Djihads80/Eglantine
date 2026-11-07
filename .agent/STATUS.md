@@ -1,9 +1,12 @@
-﻿# STATUS (shared, local-only; update it whenever a result changes the picture)
+# STATUS (shared, local-only; update it whenever a result changes the picture)
 
 Last updated: 2026-11-06 23:20 local (handoff from the long day session to a fresh one).
 
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
+
+## LOOP RUNNING 2026-11-06 ~23:45 (overnight, user asleep)
+Round 7+ loop started on the user's instruction ("continue the performance optimization loop"; no input until morning): `.agent/handoff/d13/oot-60fps-r7plus.js` (measure -> 5 research lanes: front-waits, front-cpu, safe-run-ahead, back-throughput, critical-path -> select up to 4 -> implement in worktrees + adversarial review -> integrate with verify/flash/fog gates). Brief: `.agent/prompts/overnight/BRIEF.md` "Current state for round 7+". Stops at the goal, after 3 rounds with no accepted change, or after round 16. Removed the 8 merged round 5/6 worktrees (wf_1a88cb7c-0df-*) first. Round notes: `.agent/prompts/overnight/round<N>-base.md` / `-integrate.md`.
 
 ## HANDOFF 2026-11-06 23:20 (read this first; older sections below are history)
 **State:** `local-combined` at `f36f16a1c9` (+ this note), built (eglantine.exe, eden-cli, tests) and clean. Tests 305/306: `nup_writer` fails, pre-existing, unrelated. Nothing running, lab lock free. Not pushed: the user pushes (`git push origin local-combined:oot-60fps-wip`); never push for them.
