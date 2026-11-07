@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
@@ -11,6 +13,24 @@
 #include "video_core/nx2_perf.h"
 
 namespace Tegra {
+
+// Semaphore reduction ops (ADD, MIN, MAX, INC, DEC, AND, OR, XOR) shared by QMD releases and the
+// compute report semaphore.
+inline std::uint32_t ReduceSemaphore(std::uint32_t op, bool is_signed, std::uint32_t value,
+                                     std::uint32_t payload) {
+    switch (op) {
+    case 0: return value + payload;
+    case 1: return is_signed ? std::uint32_t((std::min)(std::int32_t(value), std::int32_t(payload)))
+                             : (std::min)(value, payload);
+    case 2: return is_signed ? std::uint32_t((std::max)(std::int32_t(value), std::int32_t(payload)))
+                             : (std::max)(value, payload);
+    case 3: return value >= payload ? 0 : value + 1;
+    case 4: return value == 0 || value > payload ? payload : value - 1;
+    case 5: return value & payload;
+    case 6: return value | payload;
+    default: return value ^ payload;
+    }
+}
 
 // Native QMD 3.0 dependency scheduling; nonempty grids require a dispatch backend.
 class NativeQmdScheduler {
@@ -21,7 +41,18 @@ public:
     struct RejectShaderDispatch { bool operator()(const Descriptor&) const { return false; } };
     // Optional diagnostics: called with "load"/"count"/"defer"/"run" events.
     std::function<void(std::string_view, Address, std::int32_t)> trace;
+    // Optional diagnostics: called with the QMD, slot and raw words of a release it skips.
+    std::function<void(Address, std::size_t, std::span<const Word, 4>)> skipped_release;
     bool nx2_perf = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::QmdScratch);
+    // QMD V03_00 release flags: 7:0 address high, 19 membar, 22:20 reduction op, 23 enable,
+    // 25:24 reduction format, 26 reduction enable, 28:27 non-blocking interrupt, 29 64-bit
+    // payload, 31:30 structure size (0 four words with timestamp, 1 one word, 2 two words).
+    static bool IsDecodableRelease(Word flags) {
+        const Word size = flags >> 30;
+        if (flags & (1U << 29)) return false;
+        if (flags & (1U << 26)) return size == 1 && ((flags >> 24) & 3) < 2;
+        return size <= 1;
+    }
     template <typename Read, typename Release>
     std::string_view Signal(Address address, Word argument, Read read, Release release) {
         return Signal(address, argument, read, release, RejectShaderDispatch{});
@@ -84,35 +115,24 @@ public:
             if (!just_loaded && !read(request.address, state.descriptor)) return "unmapped QMD";
             const auto qmd = state.descriptor;
             if ((qmd[18] & 0xff) != 0x30 || (qmd[4] & 0x100)) return "unsupported QMD version or queue";
-            // Validate the release slots before making any visible.
-            for (const Word base : ReleaseSlots) {
-                const Word flags = qmd[base + 1];
-                if (!(flags & (1U << 23))) continue;
-                const bool add = (flags & (1U << 26)) != 0;
-                if ((flags & (0x3bU << 24)) || (flags >> 30) != 1 ||
-                    (add && (flags & (7U << 20)))) return "unsupported QMD release format";
-                if (add) {
-                    if constexpr (!std::is_invocable_r_v<bool, Release, Address, Word, Word>)
-                        return "unsupported QMD reduction callback";
-                }
-            }
             // A program Eden can't run is skipped, but the QMD still completes: its releases
             // are what other queues and the CPU wait on (the console never fails a launch).
             const bool dispatched = !(qmd[12] && (qmd[13] & 0xffff) && (qmd[14] & 0xffff)) || dispatch(qmd);
             if (!dispatched) error = "native shader dispatch required";
             if (trace) trace("run", request.address, dispatched ? 1 : 0);
             state.completed = true;
-            for (const Word base : ReleaseSlots) {
+            for (std::size_t slot = 0; slot < ReleaseSlots.size(); ++slot) {
+                const Word base = ReleaseSlots[slot];
                 const Word flags = qmd[base + 1];
                 if (!(flags & (1U << 23))) continue;
-                const Address destination = (Address{flags & 0xff} << 32) | qmd[base];
-                bool released{};
-                if constexpr (std::is_invocable_r_v<bool, Release, Address, Word, Word>) {
-                    released = release(destination, qmd[base + 2], flags);
-                } else {
-                    released = release(destination, qmd[base + 2]);
+                // Skip only this slot: the others are what other queues and the CPU wait on.
+                if (!IsDecodableRelease(flags)) {
+                    if (skipped_release) skipped_release(request.address, slot, std::span<const Word, 4>{&qmd[base], 4});
+                    if (error.empty()) error = "unsupported QMD release format";
+                    continue;
                 }
-                if (!released) return "unmapped QMD release";
+                const Address destination = (Address{flags & 0xff} << 32) | qmd[base];
+                if (!release(destination, qmd[base + 2], flags)) return "unmapped QMD release";
             }
             if (qmd[16] & 1) {
                 const Word action = (qmd[16] >> 1) & 7;
