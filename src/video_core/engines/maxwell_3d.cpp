@@ -33,6 +33,7 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
+#include "video_core/front_macro_memo.h"
 #include "video_core/macro_dma_forward.h"
 #include "video_core/macro_turing_jit.h"
 #endif
@@ -1110,6 +1111,7 @@ struct Maxwell3D::FrontState {
     u32 unknown_count{};
     std::bitset<256> dma_macros;
     VideoCommon::DmaForward::Memo dma_memo; ///< Nx2Perf dma_forward_memo
+    VideoCommon::FrontMacroMemo::Memo macro_memo; ///< Nx2Perf front_macro_memo
     void MarkUnknown(u32 method) {
         if (!unknown_regs[method]) {
             unknown_regs[method] = true;
@@ -2208,94 +2210,215 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                 fs.control == Regs::ShadowRamControl::Replay ? fs.shadow[address] : value;
             return fs.regs[address] == stored;
         };
-        const auto result = engine.native_jit->Execute(
-            start, fs.parameters, borrowed, std::span<u32>{native_data_ram},
-            [&](u32 address) {
-                if (address >= Regs::NUM_REGS) {
-                    return 0U;
+        const auto front_read = [&](u32 address) {
+            if (address >= Regs::NUM_REGS) {
+                return 0U;
+            }
+            if (fs.unknown_count != 0 && fs.unknown_regs[address]) [[unlikely]] {
+                fs.Learn(*this, split, address);
+            }
+            return fs.regs[address];
+        };
+        const auto front_emit = [&](u32 address, u32 value) {
+            if (trace) [[unlikely]] {
+                trace_line += fmt::format(" {:#x}={:#x}", address, value);
+            }
+            if (verify_forward && verify_count < verify_writes.size()) [[unlikely]] {
+                verify_writes[verify_count++] = {address, value};
+            }
+            if (address >= MacroRegistersStart) {
+                return false;
+            }
+            if (!options.batch || !same_value(address, value)) {
+                FrontWrite(split, fs, address, value, true, true);
+            } else if (!options.verify) [[likely]] {
+                if (profile) [[unlikely]] {
+                    Profile::Add(Profile::Counter::MethodWrites, 1);
+                    Profile::Add(Profile::Counter::SameValueWrites, 1);
                 }
-                if (fs.unknown_count != 0 && fs.unknown_regs[address]) [[unlikely]] {
-                    fs.Learn(*this, split, address);
+            } else {
+                const u64 ring = split.WritePosition();
+                const u32 reg = fs.regs[address];
+                const u32 shadow = fs.shadow[address];
+                const auto control = fs.control;
+                FrontWrite(split, fs, address, value, true, true);
+                static u64 differences{};
+                if ((split.WritePosition() != ring || fs.regs[address] != reg ||
+                     fs.shadow[address] != shadow || fs.control != control) &&
+                    ++differences <= 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf macro: macro {:#x} write {:#x} = {:#x} taken as same "
+                              "value: register {:#x} -> {:#x}, shadow {:#x} -> {:#x}, ring "
+                              "words {} ({} so far)",
+                              method, address, value, reg, fs.regs[address], shadow,
+                              fs.shadow[address], split.WritePosition() - ring, differences);
                 }
-                return fs.regs[address];
-            },
-            [&](u32 address, u32 value) {
+            }
+            // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
+            if (address == 0x157 || address == 0x158) {
+                // The read waits for the back, which may write the borrowed words.
+                if (!borrowed.empty() && fs.parameters.empty()) {
+                    fs.parameters.assign(borrowed.begin(), borrowed.end());
+                }
+                ++dma_reads;
+                if (macro_index < fs.dma_macros.size()) {
+                    fs.dma_macros[macro_index] = true;
+                }
+                const size_t parameters_before = fs.parameters.size();
+                FrontDmaRead(split, fs, method, address, value);
+                if (verify_forward && address == 0x158) [[unlikely]] {
+                    for (size_t i = parameters_before;
+                         i < fs.parameters.size() && verify_word_count < verify_words.size();
+                         ++i) {
+                        verify_words[verify_word_count++] = fs.parameters[i];
+                    }
+                }
                 if (trace) [[unlikely]] {
-                    trace_line += fmt::format(" {:#x}={:#x}", address, value);
-                }
-                if (verify_forward && verify_count < verify_writes.size()) [[unlikely]] {
-                    verify_writes[verify_count++] = {address, value};
-                }
-                if (address >= MacroRegistersStart) {
-                    return false;
-                }
-                if (!options.batch || !same_value(address, value)) {
-                    FrontWrite(split, fs, address, value, true, true);
-                } else if (!options.verify) [[likely]] {
-                    if (profile) [[unlikely]] {
-                        Profile::Add(Profile::Counter::MethodWrites, 1);
-                        Profile::Add(Profile::Counter::SameValueWrites, 1);
+                    trace_line += " [dma";
+                    if (address == 0x158) {
+                        for (size_t i = parameters_before; i < fs.parameters.size(); ++i) {
+                            trace_line += fmt::format(" {:#x}", fs.parameters[i]);
+                        }
+                    } else {
+                        const u32 ram = fs.regs[0x156];
+                        for (u32 i = 0; i < value && ram + i < native_data_ram.size(); ++i) {
+                            trace_line += fmt::format(" ram[{:#x}]={:#x}", ram + i,
+                                                      native_data_ram[ram + i]);
+                        }
                     }
+                    trace_line += "]";
+                }
+            }
+            return true;
+        };
+        const TuringMacroJit::Options jit_options{.batch_emits = options.batch,
+                                                  .keep_state = options.keep_state};
+        // Nx2Perf front_macro_memo: replay a recorded call of a start whose code uses no data
+        // RAM and no MME DMA (front_macro_memo.h). With PERF_VERIFY a hit runs the JIT anyway
+        // and compares its emits with the entry's.
+        namespace MacroMemo = VideoCommon::FrontMacroMemo;
+        static const bool macro_memo_on =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontMacroMemo);
+        bool replayed = false;
+        bool record = false;
+        const MacroMemo::Entry* check = nullptr;
+        std::span<const u32> memo_parameters;
+        const u64 generation = engine.native_code_generation;
+        if (macro_memo_on && !trace && !verify_forward &&
+            !(macro_index < fs.dma_macros.size() && fs.dma_macros[macro_index])) {
+            auto& memo = fs.macro_memo;
+            const u32 bucket = MacroMemo::Memo::Bucket(macro_index);
+            memo_parameters = borrowed.empty() ? std::span<const u32>{fs.parameters} : borrowed;
+            if (!memo.Memoizable(std::span<const u32>{engine.native_code}, generation, start,
+                                 MacroRegistersStart)) {
+                ++memo.skipped[bucket];
+            } else if (const MacroMemo::Entry* hit = memo.Find(
+                           generation, start, memo_parameters,
+                           [&fs](u32 address, u32 value) {
+                               return fs.regs[address] == value &&
+                                      !(fs.unknown_count != 0 && fs.unknown_regs[address]);
+                           })) {
+                ++memo.hits[bucket];
+                if (!options.verify) [[likely]] {
+                    for (u32 i = 0; i < hit->num_emits; ++i) {
+                        front_emit(hit->emits[i].first, hit->emits[i].second);
+                    }
+                    replayed = true;
                 } else {
-                    const u64 ring = split.WritePosition();
-                    const u32 reg = fs.regs[address];
-                    const u32 shadow = fs.shadow[address];
-                    const auto control = fs.control;
-                    FrontWrite(split, fs, address, value, true, true);
-                    static u64 differences{};
-                    if ((split.WritePosition() != ring || fs.regs[address] != reg ||
-                         fs.shadow[address] != shadow || fs.control != control) &&
-                        ++differences <= 64) {
-                        LOG_ERROR(HW_GPU,
-                                  "Nx2Perf macro: macro {:#x} write {:#x} = {:#x} taken as same "
-                                  "value: register {:#x} -> {:#x}, shadow {:#x} -> {:#x}, ring "
-                                  "words {} ({} so far)",
-                                  method, address, value, reg, fs.regs[address], shadow,
-                                  fs.shadow[address], split.WritePosition() - ring, differences);
-                    }
+                    check = hit;
                 }
-                // MME_DMA_READ (into data RAM) and MME_DMA_READ_FIFOED (into the load FIFO).
-                if (address == 0x157 || address == 0x158) {
-                    // The read waits for the back, which may write the borrowed words.
-                    if (!borrowed.empty() && fs.parameters.empty()) {
-                        fs.parameters.assign(borrowed.begin(), borrowed.end());
-                    }
-                    ++dma_reads;
-                    if (macro_index < fs.dma_macros.size()) {
-                        fs.dma_macros[macro_index] = true;
-                    }
-                    const size_t parameters_before = fs.parameters.size();
-                    FrontDmaRead(split, fs, method, address, value);
-                    if (verify_forward && address == 0x158) [[unlikely]] {
-                        for (size_t i = parameters_before;
-                             i < fs.parameters.size() && verify_word_count < verify_words.size();
-                             ++i) {
-                            verify_words[verify_word_count++] = fs.parameters[i];
-                        }
-                    }
-                    if (trace) [[unlikely]] {
-                        trace_line += " [dma";
-                        if (address == 0x158) {
-                            for (size_t i = parameters_before; i < fs.parameters.size(); ++i) {
-                                trace_line += fmt::format(" {:#x}", fs.parameters[i]);
-                            }
-                        } else {
-                            const u32 ram = fs.regs[0x156];
-                            for (u32 i = 0; i < value && ram + i < native_data_ram.size(); ++i) {
-                                trace_line += fmt::format(" ram[{:#x}]={:#x}", ram + i,
-                                                          native_data_ram[ram + i]);
+            } else {
+                ++memo.misses[bucket];
+                record = true;
+            }
+            if (++memo.calls_since_check >= 64) {
+                memo.calls_since_check = 0;
+                const u64 now = static_cast<u64>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+                if (now - memo.last_log_ns >= 1'000'000'000ULL) {
+                    if (memo.last_log_ns != 0) {
+                        u64 hits = 0, calls = 0, skipped = 0;
+                        std::string per_macro;
+                        for (u32 i = 0; i <= MacroMemo::MaxMacros; ++i) {
+                            const u64 macro_calls = memo.hits[i] + memo.misses[i] + memo.skipped[i];
+                            hits += memo.hits[i];
+                            skipped += memo.skipped[i];
+                            calls += macro_calls;
+                            if (macro_calls >= 1000) {
+                                per_macro += fmt::format(" {:#x}:{}%/{}{}", i,
+                                                         memo.hits[i] * 100 / macro_calls,
+                                                         macro_calls,
+                                                         memo.skipped[i] != 0 ? "(no)" : "");
                             }
                         }
-                        trace_line += "]";
+                        LOG_INFO(HW_GPU,
+                                 "Nx2Perf front_macro_memo: {} hits / {} calls ({}%), {} not "
+                                 "memoizable; verify {} checked, {} differed; per macro "
+                                 "(hit%/calls):{}",
+                                 hits, calls, calls ? hits * 100 / calls : 0, skipped,
+                                 memo.verify_checked, memo.verify_differed, per_macro);
                     }
+                    memo.last_log_ns = now;
+                    memo.hits.fill(0);
+                    memo.misses.fill(0);
+                    memo.skipped.fill(0);
                 }
-                return true;
-            },
-            {.batch_emits = options.batch, .keep_state = options.keep_state});
-        if (!result.success) {
-            engine.native_execution_failed = true;
-            LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
-                      start, result.consumed, parameter_count, result.error);
+            }
+        }
+        if (!replayed) {
+            // Writing `method` may change register `address` on the front (FrontWrite).
+            const auto touches = [](u32 method, u32 address) {
+                constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+                return method == address ||
+                       (address == MAXWELL3D_REG_INDEX(const_buffer.offset) && method >= cb_data &&
+                        method < cb_data + 16) ||
+                       (address == MAXWELL3D_REG_INDEX(shadow_scratch) &&
+                        method == MAXWELL3D_REG_INDEX(falcon[4])) ||
+                       (address == MAXWELL3D_REG_INDEX(load_mme.start_address_ptr) &&
+                        method == MAXWELL3D_REG_INDEX(load_mme.start_address));
+            };
+            MacroMemo::Recorder recorder;
+            const auto result =
+                record || check != nullptr
+                    ? engine.native_jit->Execute(
+                          start, fs.parameters, borrowed, std::span<u32>{native_data_ram},
+                          [&](u32 address) {
+                              const u32 value = front_read(address);
+                              recorder.Read(address, value, Regs::NUM_REGS, touches);
+                              return value;
+                          },
+                          [&](u32 address, u32 value) {
+                              recorder.Emit(address, value, MacroRegistersStart);
+                              return front_emit(address, value);
+                          },
+                          jit_options)
+                    : engine.native_jit->Execute(start, fs.parameters, borrowed,
+                                                 std::span<u32>{native_data_ram}, front_read,
+                                                 front_emit, jit_options);
+            if (!result.success) {
+                engine.native_execution_failed = true;
+                LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
+                          start, result.consumed, parameter_count, result.error);
+            }
+            if (record && result.success && engine.native_code_generation == generation) {
+                // Store looks at the parameters only when no MME DMA emit (which may move
+                // borrowed ones into fs.parameters) was recorded.
+                fs.macro_memo.Store(generation, start, memo_parameters, recorder);
+            }
+            if (check != nullptr) [[unlikely]] {
+                auto& memo = fs.macro_memo;
+                ++memo.verify_checked;
+                if (!(result.success && recorder.Matches(*check)) &&
+                    memo.verify_differed++ < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf front_macro_memo: macro {:#x} differs (start {:#x}, {} "
+                              "emits, entry {}; {} differences in {} checks)",
+                              macro_index, start, recorder.num_emits, check->num_emits,
+                              memo.verify_differed, memo.verify_checked);
+                }
+            }
         }
         if (verify_forward) [[unlikely]] {
             // The forwarded path's answer against this drained run's.
