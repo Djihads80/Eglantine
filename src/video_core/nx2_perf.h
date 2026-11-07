@@ -205,6 +205,9 @@ enum class Opt : unsigned {
     /// With DmaForward: the back evaluates a short tape of the DMA-word arithmetic, recorded by
     /// the dry run, instead of re-running the macro interpreter for a forwarded call
     DmaForwardTape,
+    /// Split front: a 3D state write whose register has an unpublished single-register entry
+    /// since the last executable entry is folded into that entry (its value patched)
+    StateDeadStore,
     Count,
 };
 
@@ -262,6 +265,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "diag_draw_lite",
     "report_submit_early",
     "dma_forward_tape",
+    "state_dead_store",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -347,7 +351,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::RunAheadSnapshotProbe,
                           Opt::DiagDrawLite,
                           Opt::ReportSubmitEarly,
-                          Opt::DmaForwardTape}) {
+                          Opt::DmaForwardTape,
+                          Opt::StateDeadStore}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -376,7 +381,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// list_writer_hook_copies_only (submit timing; round 10),
 /// front_macro_memo (unmeasured; round 10), run_ahead_snapshot_probe (measurement; round 11),
 /// report_submit_early (submit timing; round 11),
-/// dma_forward_tape (unmeasured; round 11).
+/// dma_forward_tape (unmeasured; round 11), state_dead_store (unmeasured; round 12).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -410,7 +415,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::FrontMacroMemo) |
                                   Bit(Opt::RunAheadSnapshotProbe) |
                                   Bit(Opt::ReportSubmitEarly) |
-                                  Bit(Opt::DmaForwardTape);
+                                  Bit(Opt::DmaForwardTape) |
+                                  Bit(Opt::StateDeadStore);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -507,6 +513,9 @@ static_assert(static_cast<unsigned>(Opt::ReportSubmitEarly) == 81 &&
 static_assert(static_cast<unsigned>(Opt::DmaForwardTape) == 82 &&
               IsOff(always_off, static_cast<size_t>(Opt::DmaForwardTape)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DmaForwardTape)));
+static_assert(static_cast<unsigned>(Opt::StateDeadStore) == 83 &&
+              IsOff(always_off, static_cast<size_t>(Opt::StateDeadStore)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::StateDeadStore)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

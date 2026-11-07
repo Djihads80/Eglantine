@@ -1156,6 +1156,14 @@ struct Maxwell3D::FrontState {
     /// change of program epoch makes every entry until then a writer.
     bool draw_window_writer{};
     u64 draw_window_epoch{};
+    /// Nx2Perf state_dead_store: per register, the entry a later state write may be folded into
+    /// (Regs::NUM_REGS of them; null when off), and the counts reported once a second.
+    std::unique_ptr<VideoCommon::DeadStoreSlot[]> dead_store;
+    std::array<u64, static_cast<size_t>(VideoCommon::DeadStoreDecision::Count)>
+        dead_store_counts{};
+    u64 dead_store_writes{};
+    u64 dead_store_claims_full{};
+    s64 dead_store_report_ns{};
 };
 
 namespace {
@@ -1550,6 +1558,12 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front->draw_begin_coalesce =
             VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DrawBeginCoalesce);
         front->verify = VideoCommon::Nx2Perf::Verify();
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::StateDeadStore)) {
+            front->dead_store = std::make_unique<VideoCommon::DeadStoreSlot[]>(Regs::NUM_REGS);
+            if (front->verify) {
+                split.SetFoldEngine(this);
+            }
+        }
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -1575,12 +1589,14 @@ void Maxwell3D::ReleaseFront() {
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
                            u32 argument, bool is_last_call, bool from_macro) {
     namespace Profile = VideoCommon::Nx2Profile;
+    bool stale_before = false; // state_dead_store: fs.regs[method] is not the back's value
     if (fs.unknown_count != 0 && fs.unknown_regs[method]) [[unlikely]] {
         // dma_forward: a tracked write sets both the register and its shadow copy again; any
         // other mode keeps or reads one of them, so take the back's values first.
         if (fs.control == Regs::ShadowRamControl::Track ||
             fs.control == Regs::ShadowRamControl::TrackWithFilter) {
             fs.ForgetUnknown(method);
+            stale_before = true;
         } else {
             fs.Learn(*this, split, method);
         }
@@ -1646,6 +1662,82 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
         if (fs.regs[method] == value && shadow_kept && fs.skip_same) {
             if (Profile::Enabled()) [[unlikely]] {
                 Profile::Add(Profile::Counter::SameValueWrites, 1);
+            }
+            return;
+        }
+        if (fs.dead_store != nullptr) [[unlikely]] {
+            // Nx2Perf state_dead_store: with nothing executable since this register's last
+            // single-register entry (still unpublished), that entry takes the new value instead
+            // of a second entry. Both change the register, so the back sets the same dirty
+            // flags and issues a deferred draw at the same point. Verify sends it and claims it.
+            using VideoCommon::DeadStoreDecision;
+            VideoCommon::DeadStoreSlot& slot = fs.dead_store[method];
+            const u32 before = fs.regs[method];
+            const u32 control = static_cast<u32>(fs.control);
+            DeadStoreDecision decision =
+                VideoCommon::DecideDeadStore(slot, split.ExecGen(), control, value);
+            bool folded = false;
+            u64 claim = ~u64{0};
+            if (decision == DeadStoreDecision::Fold) {
+                if (!fs.verify) {
+                    folded = split.PatchUnpublished(slot.position, method, argument, effect);
+                } else if (split.CanPatch(slot.position, method)) {
+                    if (split.FoldClaimRoom()) {
+                        claim = slot.position;
+                    } else {
+                        ++fs.dead_store_claims_full;
+                    }
+                }
+                if (!folded && claim == ~u64{0}) {
+                    decision = DeadStoreDecision::Published;
+                }
+            }
+            ++fs.dead_store_counts[static_cast<size_t>(decision)];
+            fs.regs[method] = value;
+            if (IsDrawProgramRegister(method)) {
+                fs.draw_key_valid = false;
+            }
+            if (!folded) {
+                const u64 position = split.StateMethod(this, method, argument, is_last_call,
+                                                       from_macro, effect, claim, slot.before);
+                if (claim == ~u64{0}) {
+                    // Only an entry that changes the register can take a later value: it issues
+                    // a deferred draw before any write between them can (not an instance loop
+                    // method: those don't).
+                    const bool changes = before != value && !stale_before &&
+                                         fs.control != Regs::ShadowRamControl::Replay &&
+                                         !DrawManager::IsInstanceLoopMethod(method);
+                    slot = {position, changes ? split.ExecGen() : 0, before, control};
+                }
+            }
+            if ((++fs.dead_store_writes & 4095) == 0) {
+                const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+                if (fs.dead_store_report_ns == 0) {
+                    fs.dead_store_report_ns = now;
+                } else if (now - fs.dead_store_report_ns >= 1'000'000'000) {
+                    const double seconds =
+                        static_cast<double>(now - fs.dead_store_report_ns) / 1e9;
+                    const auto rate = [&](DeadStoreDecision reason) {
+                        return static_cast<double>(
+                                   fs.dead_store_counts[static_cast<size_t>(reason)]) /
+                               seconds;
+                    };
+                    LOG_INFO(HW_GPU,
+                             "Nx2Perf state_dead_store: {:.0f} folds/s{} of {:.0f} state writes/s; "
+                             "not folded/s: {:.0f} no entry since an executable one, {:.0f} "
+                             "control, {:.0f} value returns, {:.0f} published, {} claims full",
+                             rate(DeadStoreDecision::Fold),
+                             fs.verify ? " (verify: claimed, sent)" : "",
+                             static_cast<double>(fs.dead_store_writes) / seconds,
+                             rate(DeadStoreDecision::Gen), rate(DeadStoreDecision::Control),
+                             rate(DeadStoreDecision::Returns), rate(DeadStoreDecision::Published),
+                             fs.dead_store_claims_full);
+                    fs.dead_store_counts = {};
+                    fs.dead_store_writes = 0;
+                    fs.dead_store_report_ns = now;
+                }
             }
             return;
         }

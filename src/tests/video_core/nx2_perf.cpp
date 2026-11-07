@@ -70,7 +70,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::FrontMacroMemo) ||
                                   i == Index(Opt::RunAheadSnapshotProbe) ||
                                   i == Index(Opt::ReportSubmitEarly) ||
-                                  i == Index(Opt::DmaForwardTape);
+                                  i == Index(Opt::DmaForwardTape) ||
+                                  i == Index(Opt::StateDeadStore);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
