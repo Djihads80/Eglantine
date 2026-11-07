@@ -1674,8 +1674,11 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
             VideoCommon::DeadStoreSlot& slot = fs.dead_store[method];
             const u32 before = fs.regs[method];
             const u32 control = static_cast<u32>(fs.control);
+            // A register dma_forward marked unknown after its entry was sent: the back's value
+            // before that entry may not be slot.before (the forwarded call runs earlier).
             DeadStoreDecision decision =
-                VideoCommon::DecideDeadStore(slot, split.ExecGen(), control, value);
+                stale_before ? DeadStoreDecision::Gen
+                             : VideoCommon::DecideDeadStore(slot, split.ExecGen(), control, value);
             bool folded = false;
             u64 claim = ~u64{0};
             if (decision == DeadStoreDecision::Fold) {
