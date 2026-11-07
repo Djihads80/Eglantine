@@ -371,6 +371,12 @@ public:
     void Nx2SetWriterGlobal(bool global) {
         nx2_writer_global = global;
     }
+    /// EDEN_NX2_FAST_BUFFERS: the vertex buffers the next draw's vertex shader reads (~0: all),
+    /// and whether only those are synchronized and bound (false: counted only, =verify).
+    void Nx2SetUsedVertexBuffers(u32 mask, bool skip) {
+        nx2_used_vertex_buffers = mask;
+        nx2_skip_unused_vertex_buffers = skip;
+    }
     /// EDEN_NX2_CL_SPECULATE (nx2_speculate.h): the signature of what the compute dispatch being
     /// recorded reads through the buffer cache (uniform buffer bytes, storage and texture buffer
     /// ranges with their signatures, written ones as they are before it).
@@ -585,6 +591,9 @@ private:
     [[nodiscard]] const Binding& VertexBufferSlot(u32 index) const;
 
     void UpdateVertexBufferSlot(u32 index, const Binding& binding);
+
+    /// EDEN_NX2_FAST_BUFFERS: counts the vertex buffer synchronizations a draw skips.
+    void Nx2NoteUnusedVertexBuffers(u32 unused);
 
     /// Flags the vertex buffers overlapping a written range so host copies derived from them are
     /// rebuilt.
@@ -825,6 +834,9 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+    u32 nx2_used_vertex_buffers = ~0U;
+    bool nx2_skip_unused_vertex_buffers{};
+
     /// EDEN_NX2_GPU_PROFILE: each graphics slot's previous bind (counted unchanged binds).
     std::array<std::array<std::pair<DAddr, u32>, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
         nx2_previous_ubos{};

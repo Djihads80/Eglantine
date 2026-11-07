@@ -155,6 +155,19 @@ void Nx2ReportQuickBind() {
     const u64 hits = stats.hits.exchange(0, std::memory_order_relaxed);
     const u64 mismatches = stats.mismatches.exchange(0, std::memory_order_relaxed);
     const u64 stale = stats.stale.exchange(0, std::memory_order_relaxed);
+    const u64 vertex_draws = stats.vertex_draws.exchange(0, std::memory_order_relaxed);
+    const u64 vertex_skipped = stats.vertex_skipped.exchange(0, std::memory_order_relaxed);
+    const u64 vertex_pending = stats.vertex_pending.exchange(0, std::memory_order_relaxed);
+    if (Nx2FastBuffers() == 2) {
+        LOG_INFO(HW_GPU,
+                 "Fast buffers in {:.1f} s: {} draws, {} vertex buffer synchronizations would be "
+                 "skipped ({} of streams with CPU writes to upload)",
+                 static_cast<double>(now - start) / 1e9, vertex_draws, vertex_skipped,
+                 vertex_pending);
+    }
+    if (Nx2QuickBind() == 0) {
+        return;
+    }
     LOG_INFO(HW_GPU,
              "Quick binds in {:.1f} s: {} draws, {} reused their textures ({:.0f}%){}",
              static_cast<double>(now - start) / 1e9, draws, hits,

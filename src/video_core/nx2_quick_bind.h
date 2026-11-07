@@ -34,6 +34,23 @@ namespace Tegra {
     return mode;
 }
 
+/// EDEN_NX2_FAST_BUFFERS=1: a draw synchronizes and binds only the vertex buffers its vertex
+/// shader reads (the bindings of the attributes it loads), not every enabled stream: Mario Kart
+/// World keeps all 32 enabled and synchronized them all for every draw (~1.5 million times a
+/// second). Streams it skips keep their dirty flags and are synchronized when a draw reads them.
+/// =verify binds them all and counts what would have been skipped. Off with the GPU split.
+/// 0: off, 1: on, 2: verify.
+[[nodiscard]] inline int Nx2FastBuffers() {
+    static const int mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_FAST_BUFFERS");
+        if (value == nullptr) {
+            return 0;
+        }
+        return value[0] == '1' ? 1 : value[0] == 'v' ? 2 : 0;
+    }();
+    return mode;
+}
+
 inline std::atomic<u64> g_nx2_pool_generation{1};
 
 /// Texture and sampler pools may have changed (see above).
@@ -48,6 +65,9 @@ struct Nx2QuickBindStats {
     std::atomic<u64> hits{};       ///< Of draws: reused the previous views and samplers
     std::atomic<u64> mismatches{}; ///< verify: hits whose full resolution differed
     std::atomic<u64> stale{};      ///< verify: hits with an image the full path would prepare
+    std::atomic<u64> vertex_draws{};   ///< EDEN_NX2_FAST_BUFFERS: draws
+    std::atomic<u64> vertex_skipped{}; ///< Vertex buffer synchronizations not made (unread)
+    std::atomic<u64> vertex_pending{}; ///< Of those: the stream had CPU writes to upload
     std::atomic<u64> window_start{};
 };
 inline Nx2QuickBindStats g_nx2_quick_bind{};

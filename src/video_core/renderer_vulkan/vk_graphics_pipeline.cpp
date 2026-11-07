@@ -803,6 +803,23 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         scheduler.RequestOutsideRenderPassOperationContext();
     }
 
+    // EDEN_NX2_FAST_BUFFERS: the vertex buffers this draw's vertex shader reads (the bindings of
+    // the attributes it loads); mesh pipelines and their emulation keep every one.
+    if (const int fast_buffers = Tegra::Nx2FastBuffers();
+        fast_buffers != 0 && !VideoCommon::GpuSplit::Get().Active()) {
+        u32 used = ~0U;
+        if (Spec::enabled_stages[0] && !IsMeshPipeline() && !IsMeshEmulated()) {
+            used = 0;
+            const Shader::Info& vertex_info{stage_infos[0]};
+            for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
+                const auto& attribute{regs.vertex_attrib_format[index]};
+                if (vertex_info.loads.Generic(index) && attribute.constant == 0) {
+                    used |= 1U << (attribute.buffer & 31);
+                }
+            }
+        }
+        buffer_cache.Nx2SetUsedVertexBuffers(used, fast_buffers == 1);
+    }
     {
         Profile::Scope scope{Profile::Zone::UpdateBuffers};
         buffer_cache.UpdateGraphicsBuffers(is_indexed);

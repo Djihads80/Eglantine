@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/nx2_speculate.h"
 #include "video_core/nx2_strato.h"
 #include "video_core/texture_cache/util.h"
@@ -1209,6 +1210,13 @@ void BufferCache<P>::BindHostVertexBuffers() {
     if (use_optimized_vertex_buffers) {
         auto& flags = maxwell3d->dirty.flags;
         u32 enabled_mask = enabled_vertex_buffers_mask;
+        if (nx2_used_vertex_buffers != ~0U) {
+            if (nx2_skip_unused_vertex_buffers) {
+                enabled_mask &= nx2_used_vertex_buffers;
+            } else {
+                Nx2NoteUnusedVertexBuffers(enabled_mask & ~nx2_used_vertex_buffers);
+            }
+        }
         HostBindings<Buffer> bindings{};
         u32 last_index = (std::numeric_limits<u32>::max)();
         const auto flush_bindings = [&]() {
@@ -1252,7 +1260,19 @@ void BufferCache<P>::BindHostVertexBuffers() {
         HostBindings<typename P::Buffer> host_bindings;
         bool any_valid{false};
         auto& flags = maxwell3d->dirty.flags;
+        // EDEN_NX2_FAST_BUFFERS: streams the vertex shader doesn't read keep their dirty flags.
+        u32 used = ~0U;
+        if (nx2_used_vertex_buffers != ~0U) {
+            if (nx2_skip_unused_vertex_buffers) {
+                used = nx2_used_vertex_buffers;
+            } else {
+                Nx2NoteUnusedVertexBuffers(~nx2_used_vertex_buffers);
+            }
+        }
         for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
+            if (((used >> index) & 1) == 0) {
+                continue;
+            }
             const Binding& binding = channel_state->vertex_buffers[index];
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
@@ -1287,6 +1307,29 @@ void BufferCache<P>::BindHostVertexBuffers() {
             runtime.BindVertexBuffers(host_bindings);
         }
     }
+}
+
+template <class P>
+void BufferCache<P>::Nx2NoteUnusedVertexBuffers(u32 unused) {
+    auto& stats = Tegra::g_nx2_quick_bind;
+    stats.vertex_draws.fetch_add(1, std::memory_order_relaxed);
+    u32 pending = 0;
+    u32 count = 0;
+    for (u32 mask = unused; mask != 0; mask &= mask - 1) {
+        const u32 index = static_cast<u32>(std::countr_zero(mask));
+        if (index >= NUM_VERTEX_BUFFERS) {
+            break;
+        }
+        ++count;
+        const Binding& binding = channel_state->vertex_buffers[index];
+        if (binding.size != 0 &&
+            memory_tracker.HasPendingCpuUpload(binding.device_addr, binding.size)) {
+            ++pending;
+        }
+    }
+    stats.vertex_skipped.fetch_add(count, std::memory_order_relaxed);
+    stats.vertex_pending.fetch_add(pending, std::memory_order_relaxed);
+    Tegra::Nx2ReportQuickBind();
 }
 
 template <class P>
