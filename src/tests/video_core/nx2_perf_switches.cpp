@@ -100,6 +100,24 @@ TEST_CASE("Nx2Perf bank_hash_shadow is off unless ON names it", "[nx2_perf]") {
             (always_off & ~Bit(Opt::BankHashShadow)));
 }
 
+TEST_CASE("Nx2Perf run_ahead_raw_probe is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::RunAheadRawProbe) == 76);
+    REQUIRE(opt_names[Index(Opt::RunAheadRawProbe)] == "run_ahead_raw_probe");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::RunAheadRawProbe)));
+    REQUIRE(IsOff(always_off, Index(Opt::RunAheadRawProbe)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::RunAheadRawProbe)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::RunAheadRawProbe)));
+    REQUIRE(ParseOffMask(false, "run_ahead_raw_probe", "", false) ==
+            (always_off & ~Bit(Opt::RunAheadRawProbe)));
+    REQUIRE(ParseOffMask(false,
+                         "frames_ahead,run_ahead_ledger,run_ahead_cow_probe,run_ahead_raw_probe",
+                         "", false) ==
+            (always_off & ~(Bit(Opt::FramesAhead) | Bit(Opt::RunAheadLedger) |
+                            Bit(Opt::RunAheadCowProbe) | Bit(Opt::RunAheadRawProbe))));
+    REQUIRE(ParseOffMask(false, "run_ahead_raw_probe", "run_ahead_raw_probe", false) ==
+            always_off);
+}
+
 TEST_CASE("Nx2PageHash: every single-bit flip of a 4 KiB page changes the hash", "[nx2_perf]") {
     std::vector<u8> page = RandomBytes(0x1000, 1);
     const u64 base = PageHash(page.data(), page.size());

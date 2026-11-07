@@ -533,6 +533,13 @@ public:
     Nx2CowArmResult Nx2CowArm();
 
     /**
+     * run_ahead_raw_probe (video_core/nx2_war_probe.h, measurement only), at vi2's reply: ORs into
+     * info each guest page's (vaddr >> 12) type (Nx2Raw::InfoTypeMask) and Nx2Raw::InfoArmed
+     * when the cow arm holds it.
+     */
+    void Nx2RawClassify(std::span<const u64> cpu_pages, std::span<u8> info);
+
+    /**
      * inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h): vi2 replies to the
      * present of fence (fence_id, fence_value) having waited only for (prev_id, prev_value).
      * Arms the guards and opens the epoch; false when none can open (the caller then waits).
