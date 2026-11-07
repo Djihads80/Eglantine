@@ -12,6 +12,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 
+#include "video_core/front_macro_memo.h"
 #include "video_core/nx2_page_hash.h"
 #include "video_core/nx2_perf.h"
 
@@ -124,7 +125,118 @@ TEST_CASE("Nx2Perf list_writer_hook_copies_only is off unless ON names it", "[nx
     REQUIRE(IsOff(always_off, Index(Opt::ListWriterHookCopiesOnly)));
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ListWriterHookCopiesOnly)));
     REQUIRE(ParseOffMask(false, "list_writer_hook_copies_only", "", false) ==
-            (always_off & ~Bit(Opt::ListWriterHookCopiesOnly)));
+            (always_off & ~Bit(Opt::ListWriterHookCopiesOnly))) |
+TEST_CASE("Nx2Perf front_macro_memo is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::FrontMacroMemo) == 78);
+    REQUIRE(opt_names[Index(Opt::FrontMacroMemo)] == "front_macro_memo");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::FrontMacroMemo)));
+    REQUIRE(IsOff(always_off, Index(Opt::FrontMacroMemo)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::FrontMacroMemo)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::FrontMacroMemo)));
+    REQUIRE(ParseOffMask(false, "front_macro_memo", "", false) ==
+            (always_off & ~Bit(Opt::FrontMacroMemo)));
+    // Read once into a static bool: not live-safe.
+    REQUIRE(!IsOff(live_safe, Index(Opt::FrontMacroMemo)));
+}
+
+namespace {
+// One native macro instruction: lane 0 runs `op` on r0 (zero) operands, writes nothing, and
+// sets the method to `method` (immediate) and emits the first FIFO load.
+std::array<u32, 3> MemoInstruction(u32 op, u32 method, bool end) {
+    std::array<u32, 3> bits{};
+    const auto field = [&](u32 offset, u32 count, u32 value) {
+        for (u32 bit = 0; bit < count; ++bit) {
+            bits[(offset + bit) / 32] |= ((value >> bit) & 1) << ((offset + bit) % 32);
+        }
+    };
+    field(0, 1, end);
+    field(10, 5, op);
+    for (u32 lane = 0; lane < 2; ++lane) {
+        field(15 + lane * 36, 5, 24);
+        field(20 + lane * 36, 5, 24);
+        field(25 + lane * 36, 5, 24);
+    }
+    field(30, 16, method);
+    field(82, 3, 5);
+    field(85, 4, 3);
+    return {bits[2], bits[1], bits[0]};
+}
+
+std::vector<u32> MemoCode(std::initializer_list<std::array<u32, 3>> instructions) {
+    std::vector<u32> code;
+    for (const auto& instruction : instructions) {
+        code.insert(code.end(), instruction.begin(), instruction.end());
+    }
+    return code;
+}
+} // namespace
+
+TEST_CASE("front_macro_memo: classification rejects data RAM and MME DMA starts", "[nx2_perf]") {
+    using VideoCommon::FrontMacroMemo::Classify;
+    constexpr u32 macro_start = 0xe00;
+    // Two emits to ordinary methods, then END and its last instruction.
+    const auto plain = MemoCode({MemoInstruction(0, 0x200, false), MemoInstruction(0, 0x201, true),
+                                 MemoInstruction(0, 0x202, false)});
+    CHECK(Classify(plain, 0, macro_start).empty());
+    CHECK(Classify(plain, 1, macro_start).empty());
+    // A data RAM read (op 30) or write (op 31) in the reachable code.
+    for (const u32 op : {30U, 31U}) {
+        const auto dram = MemoCode({MemoInstruction(0, 0x200, false),
+                                    MemoInstruction(op, 0x201, true),
+                                    MemoInstruction(0, 0x202, false)});
+        CHECK(!Classify(dram, 0, macro_start).empty());
+    }
+    // An emit to MME_DMA_ADDRESS_A (0x154) and to MME_DMA_READ_FIFOED (0x158).
+    for (const u32 method : {0x154U, 0x158U}) {
+        const auto dma = MemoCode({MemoInstruction(0, 0x200, false),
+                                   MemoInstruction(0, method, true),
+                                   MemoInstruction(0, 0x202, false)});
+        CHECK(!Classify(dma, 0, macro_start).empty());
+    }
+    // A method at or above the macro registers.
+    const auto macro = MemoCode({MemoInstruction(0, 0xe10, true), MemoInstruction(0, 0x200, false)});
+    CHECK(!Classify(macro, 0, macro_start).empty());
+    // Code after the END's last instruction belongs to another macro and is not scanned.
+    const auto after_end = MemoCode({MemoInstruction(0, 0x200, true),
+                                     MemoInstruction(0, 0x201, false),
+                                     MemoInstruction(30, 0x202, false)});
+    CHECK(Classify(after_end, 0, macro_start).empty());
+    CHECK(!Classify(after_end, 2, macro_start).empty());
+}
+
+TEST_CASE("front_macro_memo: a call is stored and found only with the same reads", "[nx2_perf]") {
+    using namespace VideoCommon::FrontMacroMemo;
+    const auto memo_storage = std::make_unique<Memo>();
+    Memo& memo = *memo_storage;
+    const auto code = MemoCode({MemoInstruction(0, 0x200, true), MemoInstruction(0, 0x201, false)});
+    REQUIRE(memo.Memoizable(code, 7, 0, 0xe00));
+    const std::array<u32, 2> parameters{5, 6};
+    Recorder recorder;
+    const auto touches = [](u32 method, u32 address) { return method == address; };
+    recorder.Read(0x300, 42, 0xe00, touches);
+    recorder.Emit(0x200, 5, 0xe00);
+    recorder.Emit(0x201, 6, 0xe00);
+    memo.Store(7, 0, parameters, recorder);
+    const auto holds = [](u32 value) {
+        return [value](u32 address, u32 read) { return address == 0x300 && read == value; };
+    };
+    const Entry* hit = memo.Find(7, 0, parameters, holds(42));
+    REQUIRE(hit != nullptr);
+    CHECK(recorder.Matches(*hit));
+    CHECK(memo.Find(7, 0, parameters, holds(43)) == nullptr);
+    CHECK(memo.Find(8, 0, parameters, holds(42)) == nullptr);
+    const std::array<u32, 2> other{5, 7};
+    CHECK(memo.Find(7, 0, other, holds(42)) == nullptr);
+    // A read of a register an earlier emit wrote, and an MME DMA emit, are not recorded.
+    Recorder stale;
+    stale.Emit(0x300, 1, 0xe00);
+    stale.Read(0x300, 1, 0xe00, touches);
+    CHECK(stale.overflow);
+    Recorder dma;
+    dma.Emit(0x157, 1, 0xe00);
+    CHECK(dma.excluded);
+    memo.Store(7, 0, other, dma);
+    CHECK(!memo.Memoizable(code, 7, 0, 0xe00));
 }
 
 TEST_CASE("Nx2PageHash: every single-bit flip of a 4 KiB page changes the hash", "[nx2_perf]") {
