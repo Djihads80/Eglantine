@@ -5,6 +5,8 @@ Last updated: 2026-11-06 23:20 local (handoff from the long day session to a fre
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
 
+## LOOP PAUSED 2026-11-07 ~11:10 (user wants to test the results): stopped during round 14 implementation (selected run_ahead_overlay, front_delay_probe, pipeline_key_memo; no code produced; empty worktrees a42-118..120 removed). HEAD 2ee32a120b, eglantine.exe current. Accepted overnight: pending_wake (r9, ~+1.5 FPS, ~1 ms/frame less fence wait) and diag_draw_lite (r11, lab-only: removes EDEN_NX2_DIAG overhead the user's game never has). Lab spawn ~40-41 FPS (with the diag overhead removed). Resume from round 14 only when the user asks (edit FIRST_ROUND/history in r7plus.js).
+
 ## LOOP RUNNING again 2026-11-07 ~00:20: wf_c2b11e26-a42 (same script), after the user placed the Kokiri save as the newest. Earlier run r7-base-a was on the wrong save (INVALID-wrong-save-r7-base-a).
 
 ## LOOP (started 2026-11-06 ~23:45)
