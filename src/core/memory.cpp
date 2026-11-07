@@ -982,6 +982,10 @@ struct Memory::Impl {
             if (war_inflight) [[unlikely]] {
                 VideoCommon::Nx2Inflight::read_note = {};
             }
+            if (snap_on) [[unlikely]] {
+                // Areas the texture cache answers never reach BufferCache::GetFlushArea.
+                VideoCommon::Nx2Snap::t_flush_gpu = false;
+            }
             current_area = system.GPU().OnCPURead(address, size);
             if (snap_on) [[unlikely]] {
                 snap_area_gpu[core] = VideoCommon::Nx2Snap::t_flush_gpu;
