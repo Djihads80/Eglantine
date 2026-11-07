@@ -162,15 +162,16 @@ TEST_CASE("Nx2Perf front_macro_memo is off unless ON names it", "[nx2_perf]") {
     REQUIRE(!IsOff(live_safe, Index(Opt::FrontMacroMemo)));
 }
 
-TEST_CASE("Nx2Perf diag_draw_lite is off unless ON names it", "[nx2_perf]") {
+TEST_CASE("Nx2Perf diag_draw_lite is on by default and off under SAFE", "[nx2_perf]") {
     static_assert(Index(Opt::DiagDrawLite) == 80);
     REQUIRE(opt_names[Index(Opt::DiagDrawLite)] == "diag_draw_lite");
     REQUIRE(IsOff(DefaultOffMask(), Index(Opt::DiagDrawLite)));
-    REQUIRE(IsOff(always_off, Index(Opt::DiagDrawLite)));
-    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::DiagDrawLite)));
+    REQUIRE(!IsOff(always_off, Index(Opt::DiagDrawLite)));
+    REQUIRE(!IsOff(ParseOffMask(false, "", "", false), Index(Opt::DiagDrawLite)));
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::DiagDrawLite)));
-    REQUIRE(ParseOffMask(false, "diag_draw_lite", "", false) ==
-            (always_off & ~Bit(Opt::DiagDrawLite)));
+    REQUIRE(!IsOff(ParseOffMask(true, "diag_draw_lite", "", false), Index(Opt::DiagDrawLite)));
+    REQUIRE(ParseOffMask(false, "", "diag_draw_lite", false) ==
+            (always_off | Bit(Opt::DiagDrawLite)));
     REQUIRE(!IsOff(live_safe, Index(Opt::DiagDrawLite)));
 }
 
