@@ -521,6 +521,21 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     const bool met = PollAcquire(dma_pusher);
     if (met) {
         Profile::Add(Profile::Counter::AcquirePollsMet, 1);
+        if (Nx2PendingWake::verify_resume) [[unlikely]] {
+            // pending_wake (Verify): a resume after a wake must still be met or latched.
+            DrainBack(VideoCommon::DrainSite::AcquirePoll);
+            const u32 word = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
+            if (!pending_acquire->Matches(word) && !Nx2SemaphoreWaiters::Get().Latched(this)) {
+                const u64 count = Nx2PendingWake::verify_unmet.fetch_add(1) + 1;
+                if (count <= 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf pending_wake: resumed unmet: channel {} semaphore {:#x} "
+                              "(op {}, {:#x}, now {:#x}) ({} differences)",
+                              dma_pusher.channel_state.bind_id, pending_acquire->address,
+                              pending_acquire->operation, pending_acquire->value, word, count);
+                }
+            }
+        }
     }
     return met;
 }

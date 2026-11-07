@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -13,6 +14,8 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/thread.h"
+#include "video_core/nx2_perf.h"
 
 namespace Tegra {
 
@@ -742,6 +745,44 @@ inline u64 Nx2SemaphoreMirror(u64 address) {
     return 0;
 }
 
+/// pending_wake: the GPU thread's 1 ms sleep while a channel waits on an acquire ends at once
+/// when a command is queued or a release latches a waiter. The timeout bounds a missed wake.
+namespace Nx2PendingWake {
+enum Reason : u32 { ByPush = 1, ByLatch = 2 };
+
+inline bool On() {
+    static const bool on = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PendingWake);
+    return on;
+}
+
+inline Common::Event wake_event;
+inline std::atomic<bool> front_sleeping{};
+inline std::atomic<u32> wake_reasons{};
+inline std::atomic<u64> push_seq{};
+inline std::atomic<u64> latch_seq{};
+inline std::atomic<s64> last_latch_ns{}; ///< Steady clock of the last latch (0: consumed)
+/// EDEN_NX2_PERF_VERIFY: resumes after a wake with the word unmet and nothing latched.
+inline std::atomic<u64> verify_unmet{};
+/// GPU thread only: the next pending poll follows a wake (Verify checks its resumes).
+inline bool verify_resume{};
+
+inline s64 NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// Bumps `seq`, then wakes the front if it sleeps. The front sets front_sleeping before it
+/// re-reads the counters (both seq_cst): it sees the bump or this sees the flag.
+inline void Wake(std::atomic<u64>& seq, u32 reason) {
+    seq.fetch_add(1, std::memory_order_seq_cst);
+    if (front_sleeping.load(std::memory_order_seq_cst)) {
+        wake_reasons.fetch_or(reason, std::memory_order_relaxed);
+        wake_event.Set();
+    }
+}
+} // namespace Nx2PendingWake
+
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
 /// Eden writes releases in bursts when fences signal and resumes waiters only between command
 /// lists, so an acquire-equal could miss its value. Writes latch the waiters they satisfy.
@@ -787,11 +828,19 @@ public:
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }
-        std::scoped_lock lk{mutex};
-        for (auto& w : waiters) {
-            if (w.address == device_address && !w.latched && Matches(w, value)) {
-                w.latched = true;
+        bool latched = false;
+        {
+            std::scoped_lock lk{mutex};
+            for (auto& w : waiters) {
+                if (w.address == device_address && !w.latched && Matches(w, value)) {
+                    w.latched = true;
+                    latched = true;
+                }
             }
+        }
+        if (latched && Nx2PendingWake::On()) {
+            Nx2PendingWake::last_latch_ns.store(Nx2PendingWake::NowNs(), std::memory_order_relaxed);
+            Nx2PendingWake::Wake(Nx2PendingWake::latch_seq, Nx2PendingWake::ByLatch);
         }
     }
 
