@@ -905,6 +905,43 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
 }
 
 template <class P>
+bool TextureCache<P>::ColorTargetHasPriorFrameOutput() noexcept {
+    if (!maxwell3d) {
+        return false;
+    }
+    const auto& regs = maxwell3d->regs;
+    if (regs.rt_control.count == 0) {
+        return false;
+    }
+    const auto& rt = regs.rt[0];
+    const GPUVAddr gpu_addr = rt.Address();
+    if (gpu_addr == 0 || rt.format == Tegra::RenderTargetFormat::NONE) {
+        return false;
+    }
+    std::scoped_lock lock{mutex};
+    ImageId image_id{};
+    if (!maxwell3d->dirty.flags[VideoCommon::Dirty::RenderTargets] &&
+        !maxwell3d->dirty.flags[VideoCommon::Dirty::ColorBuffer0]) {
+        image_id = rt_image_id[0];
+    } else {
+        const ImageInfo info(rt, regs.anti_alias_samples_mode);
+        if (info.format == PixelFormat::Invalid || info.size.width == 0 || info.size.height == 0 ||
+            info.size.depth == 0 || info.size.width > 65536 || info.size.height > 65536 ||
+            info.size.depth > 2048 || info.resources.layers <= 0 || info.resources.layers > 2048) {
+            return false;
+        }
+        image_id = FindImage(info, gpu_addr, RelaxedOptions{});
+    }
+    if (!image_id) {
+        return false;
+    }
+    const ImageBase& image = slot_images[image_id];
+    const u64 current_frame = frame_tick + 1;
+    return image.first_written_frame != 0 && image.first_written_frame < current_frame &&
+           image.cleared_frame != current_frame;
+}
+
+template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
     index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit,
@@ -3874,6 +3911,14 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         if (False(image.flags & ImageFlagBits::Tracked)) {
             TrackImage(image, image_id);
         }
+        if (clearing_render_targets && maxwell3d != nullptr) {
+            const auto& clear_surface = maxwell3d->regs.clear_surface;
+            const bool clears_color =
+                clear_surface.R || clear_surface.G || clear_surface.B || clear_surface.A;
+            if (clears_color || GetFormatType(image.info.format) != SurfaceType::ColorTexture) {
+                image.cleared_frame = frame_tick + 1;
+            }
+        }
     } else {
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             RefreshContents(image, image_id);
@@ -3917,6 +3962,13 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
         }
         MarkModification(image);
+        if (!clearing_render_targets) {
+            const u64 current_frame = frame_tick + 1;
+            if (image.first_written_frame == 0) {
+                image.first_written_frame = current_frame;
+            }
+            image.last_written_frame = current_frame;
+        }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }

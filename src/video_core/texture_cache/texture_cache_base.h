@@ -280,6 +280,10 @@ public:
     /// UpdateRenderTargets should be called before this
     Framebuffer* GetFramebuffer();
 
+    /// True when the current draw's color target 0 already holds an earlier frame's output and
+    /// was not fully cleared this frame (P2.1 stale_target_skip).
+    [[nodiscard]] bool ColorTargetHasPriorFrameOutput() noexcept;
+
     /// Mark images in a range as modified from the CPU
     void WriteMemory(DAddr cpu_addr, size_t size);
 

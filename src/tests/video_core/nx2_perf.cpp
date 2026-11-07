@@ -1038,3 +1038,14 @@ TEST_CASE("compute_preload_variants: on by default", "[nx2_perf]") {
     REQUIRE(ParseOffMask(false, "", "compute_preload_variants", false) ==
             (always_off | Bit(Opt::ComputePreloadVariants)));
 }
+
+TEST_CASE("stale_target_skip: on by default and live-safe", "[nx2_perf]") {
+    static_assert(Index(Opt::StaleTargetSkip) == 94);
+    REQUIRE(opt_names[Index(Opt::StaleTargetSkip)] == "stale_target_skip");
+    REQUIRE(!IsOff(DefaultOffMask(), Index(Opt::StaleTargetSkip)));
+    REQUIRE(!IsOff(always_off, Index(Opt::StaleTargetSkip)));
+    REQUIRE(!IsOff(ParseOffMask(false, "", "", false), Index(Opt::StaleTargetSkip)));
+    REQUIRE(ParseOffMask(false, "", "stale_target_skip", false) ==
+            (always_off | Bit(Opt::StaleTargetSkip)));
+    REQUIRE(IsOff(live_safe, Index(Opt::StaleTargetSkip)));
+}

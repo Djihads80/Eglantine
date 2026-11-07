@@ -1368,14 +1368,24 @@ bool PipelineCache::DeferRuntimeBuild() {
     if (build_budget_frame != frame_count || build_budget_spent < build_budget) {
         return false;
     }
-    // Small draws without depth wait for their pipeline (BuiltPipeline), so they are built now.
+    // Small draws without depth wait for their pipeline (BuiltPipeline), so they are built now
+    // unless stale_target_skip sees their target already holds an earlier frame's output.
     // Mesh draws are deferred too: their high-detail LODs then appear a few frames late.
     const auto& regs = maxwell3d->regs;
     if (regs.IsMeshEnabled()) {
         ++over_budget_mesh;
-    } else if (!regs.zeta_enable && maxwell3d->draw_manager.draw_state.draw_element_count <= 6) {
-        ++over_budget_small;
-        return false;
+    } else if (!regs.zeta_enable) {
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const bool stale_skip =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::StaleTargetSkip);
+        const bool is_small_draw = stale_skip
+                                       ? (draw_state.draw_element_count > 0 &&
+                                          draw_state.draw_element_count <= 6)
+                                       : (draw_state.draw_element_count <= 6);
+        if (is_small_draw && (!stale_skip || !texture_cache.ColorTargetHasPriorFrameOutput())) {
+            ++over_budget_small;
+            return false;
+        }
     }
     ++deferred_builds;
     return true;
@@ -1524,9 +1534,18 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
     }
     // If games are using a small index count, we can assume these are full screen quads.
     // Usually these shaders are only used once for building textures so we can assume they
-    // can't be built async
+    // can't be built async unless the target already holds an earlier frame's output.
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
-    if (draw_state.draw_element_count <= 6) {
+    const bool stale_skip = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::StaleTargetSkip);
+    const bool is_small_draw = stale_skip
+                                   ? (draw_state.draw_element_count > 0 &&
+                                      draw_state.draw_element_count <= 6)
+                                   : (draw_state.draw_element_count <= 6);
+    if (is_small_draw) {
+        if (stale_skip && texture_cache.ColorTargetHasPriorFrameOutput()) {
+            graphics_miss = "async-build-stale";
+            return nullptr;
+        }
         return pipeline;
     }
     graphics_miss = "async-build";

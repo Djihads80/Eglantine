@@ -241,6 +241,10 @@ enum class Opt : unsigned {
     /// Boot disk-cache loading compiles every persisted compute translation with a distinct
     /// MappedStoragePointerKeys and swaps to a built alternate on a stale-slot trigger
     ComputePreloadVariants,
+    /// Async shaders: skip a small no-depth draw instead of waiting when its color target already
+    /// holds an earlier frame's output and was not fully cleared this frame; treat indirect draws
+    /// (draw_element_count == 0) as not small
+    StaleTargetSkip,
     Count,
 };
 
@@ -309,6 +313,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "shader_build_budget",
     "compute_rebuild_async",
     "compute_preload_variants",
+    "stale_target_skip",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -608,6 +613,9 @@ static_assert(static_cast<unsigned>(Opt::ComputeRebuildAsync) == 92 &&
 static_assert(static_cast<unsigned>(Opt::ComputePreloadVariants) == 93 &&
               !IsOff(always_off, static_cast<size_t>(Opt::ComputePreloadVariants)) &&
               !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputePreloadVariants)));
+static_assert(static_cast<unsigned>(Opt::StaleTargetSkip) == 94 &&
+              !IsOff(always_off, static_cast<size_t>(Opt::StaleTargetSkip)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::StaleTargetSkip)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -672,7 +680,7 @@ inline constexpr OffMask live_safe =
     Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
     Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
     Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded) |
-    Bit(Opt::ComputeRebuildAsync);
+    Bit(Opt::ComputeRebuildAsync) | Bit(Opt::StaleTargetSkip);
 
 /// One control file: the whole arm, computed from the startup off-mask.
 struct ControlResult {
