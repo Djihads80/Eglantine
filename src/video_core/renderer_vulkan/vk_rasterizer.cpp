@@ -48,6 +48,7 @@
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_cache.h"
 #include "video_core/texture_cache/texture_cache_base.h"
+#include "video_core/textures/texture.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/nx2_diag.h"
@@ -1045,7 +1046,8 @@ void RasterizerVulkan::DispatchCompute() {
     FlushWork();
     gpu_memory->FlushCaching();
 
-    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};
+    u64 native_key{};
+    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline(native_key)};
     if (!pipeline) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;
@@ -1063,6 +1065,24 @@ void RasterizerVulkan::DispatchCompute() {
     }
 
     const auto& qmd{kepler_compute->launch_description};
+    const auto publish_collision_map = [&] {
+        static const bool enabled = [] {
+            const char* value = std::getenv("EDEN_MKW_WATER_FEEDBACK");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (!enabled || native_key != 0x6e0ae200ee9aa220ULL ||
+            (qmd.const_buffer_enable_mask & 1) == 0) {
+            return;
+        }
+        const auto& constants = qmd.const_buffer_config[0];
+        if (constants.size < 0x3c) {
+            return;
+        }
+        // WaterSurfaceCollisionHeightMap exposes its output handle in CB0.
+        const u32 handle = gpu_memory->Read<u32>(constants.Address() + 0x38);
+        const u32 index = Tegra::Texture::TexturePair(handle, qmd.linked_tsc != 0).first;
+        texture_cache.PublishComputeCollisionImage(index);
+    };
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
     if (indirect_address) {
         // DispatchIndirect
@@ -1079,6 +1099,7 @@ void RasterizerVulkan::DispatchCompute() {
             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
         });
         SubmitNx2ListCopies();
+        publish_collision_map();
         return;
     }
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
@@ -1102,6 +1123,7 @@ void RasterizerVulkan::DispatchCompute() {
         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
     });
     SubmitNx2ListCopies();
+    publish_collision_map();
 
     // Log compute dispatch
     if (GPU::Logging::IsActive() &&
