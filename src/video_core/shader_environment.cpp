@@ -706,9 +706,13 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     const auto& regs{maxwell3d->regs};
     const bool native{maxwell3d->GetNativeMacroEngine().native_turing};
+    // Opt-in: the geometry stage is still experimental, and on at least one vendor's Windows
+    // driver a pipeline that contains it does not fail to compile, it fast-fails the process
+    // (amdvlk64, exit 0xC0000409). Having it enabled by default meant every user of that card
+    // ran the experimental path without asking for it. Set the variable to 1 to enable it.
     static const bool geometry_enabled = [] {
         const char* value = std::getenv("EDEN_NX2_EXPERIMENTAL_GEOMETRY");
-        return !value || std::string_view{value} != "0";
+        return value != nullptr && std::string_view{value} == "1";
     }();
     const bool geometry{native && program == Maxwell::ShaderType::Geometry && geometry_enabled};
     // Task and mesh programs: the task in the vertex slot, its mesh program in the tessellation
