@@ -78,6 +78,7 @@ enum class Zone : u32 {
     SsboBind,         ///< Of bind stage buffers: BindHostGraphicsStorageBuffers
     TexBufBind,       ///< Of bind stage buffers: BindHostGraphicsTextureBuffers
     UboTracker,       ///< Of bind stage buffers: a uniform buffer's GPU-modified checks
+    UboBank,          ///< Of bind stage buffers: native 64 KiB banks' once-a-frame reupload check
     Count,
 };
 
@@ -93,6 +94,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "flush submit", "cmd list flush", "cmd list copy", "drain acquire", "drain cmd list",
     "drain run", "drain sync", "split dma wait", "sync buffer", "mark written",
     "bind index", "bind vertex", "update other", "ssbo bind", "texbuf bind", "ubo tracker",
+    "ubo bank",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
