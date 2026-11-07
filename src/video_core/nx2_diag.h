@@ -33,7 +33,8 @@
 //                            first time and each time its count doubles.
 //   EDEN_NX2_DIAG_DIR=<dir>  a control directory (see tools/nx2/shader_lab.py):
 //                            - diag-state.json: every program seen (vertex, pixel, compute) with its
-//                              draw/dispatch counts, written once a second;
+//                              draw/dispatch counts, key and shader hash, and the program id
+//                              ("title"), written once a second;
 //                            - ablate.txt: programs to skip, re-read when it changes. One entry per
 //                              line: "key <hex16>" (the shader dump key, stable across runs), or
 //                              "vs|ps|cs <hex>" (an address as logged); "#" starts a comment;
@@ -220,10 +221,18 @@ public:
     }
 
     // The shader dump's key for the program at that address, so draw lists and dumps from different
-    // runs can be matched (addresses change between runs, the key is a hash of the code).
-    void RegisterProgram(u64 address, u64 key) {
+    // runs can be matched (addresses change between runs, the key is a hash of the code). `hash` is
+    // its shader hash (frame dump "shaders") once it is lowered, 0 until then.
+    void RegisterProgram(u64 address, u64 key, u64 hash = 0) {
         std::scoped_lock lock{mutex};
         program_keys[address] = key;
+        program_hashes[address] = hash;
+    }
+
+    // The running program id, written to diag-state.json as "title".
+    void SetTitle(u64 program_id) {
+        std::scoped_lock lock{mutex};
+        title = program_id;
     }
 
     u64 ProgramKey(u64 address) {
@@ -429,6 +438,11 @@ private:
         return it == program_keys.end() ? 0 : it->second;
     }
 
+    u64 HashOf(u64 address) const {
+        const auto it = program_hashes.find(address);
+        return it == program_hashes.end() ? 0 : it->second;
+    }
+
     static bool Changed(const std::filesystem::path& path, std::filesystem::file_time_type& stamp) {
         std::error_code error;
         const auto now = std::filesystem::last_write_time(path, error);
@@ -493,12 +507,19 @@ private:
     void Export(const std::filesystem::path& dir, double seconds) {
         Poll();
         std::ostringstream out;
-        out << "{\"frame\":" << frame << ",\"programs\":[";
+        char title_text[17] = "";
+        if (title != 0) {
+            std::snprintf(title_text, sizeof(title_text), "%016llX",
+                          static_cast<unsigned long long>(title));
+        }
+        out << "{\"frame\":" << frame << ",\"title\":\"" << title_text << "\",\"programs\":[";
         bool first = true;
         for (auto& [id, program] : programs) {
             program.draws_per_second = seconds > 0 ? (program.draws - program.exported_draws) / seconds : 0;
             program.exported_draws = program.draws;
+            const u64 hash = HashOf(program.address);
             out << (first ? "" : ",") << "{\"kind\":\"" << id.first << "\",\"key\":\"" << Hex16(program.key)
+                << "\",\"hash\":\"" << (hash != 0 ? Hex16(hash) : std::string{})
                 << "\",\"addr\":\"" << std::hex << program.address << std::dec << "\",\"draws\":"
                 << program.draws << ",\"per_s\":" << static_cast<u64>(program.draws_per_second)
                 << ",\"instances\":" << program.instances << ",\"vertices\":" << program.vertices
@@ -570,6 +591,8 @@ private:
     std::map<std::pair<bool, std::string>, u64> window;
     std::map<std::pair<char, u64>, Program> programs;
     std::map<u64, u64> program_keys;
+    std::map<u64, u64> program_hashes;
+    u64 title{};
     std::map<std::pair<u64, u32>, Watch> watches;
     std::chrono::steady_clock::time_point last_summary{std::chrono::steady_clock::now()};
     std::chrono::steady_clock::time_point last_export{std::chrono::steady_clock::now()};

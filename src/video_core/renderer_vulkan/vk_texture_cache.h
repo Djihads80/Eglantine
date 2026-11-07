@@ -673,6 +673,10 @@ public:
         return image_handle;
     }
 
+    [[nodiscard]] const Image* BackingImage() const noexcept {
+        return slot_images && image_id ? &(*slot_images)[image_id] : nullptr;
+    }
+
     [[nodiscard]] VkImageView RenderTarget() const noexcept {
         return render_target;
     }
@@ -773,6 +777,15 @@ public:
 
     [[nodiscard]] VkSampler HandleFor(const ImageView& image_view, bool is_depth);
 
+    /// The guest descriptor and the host state built from it, for the frame dump.
+    [[nodiscard]] const Tegra::Texture::TSCEntry& Descriptor() const noexcept {
+        return descriptor;
+    }
+
+    [[nodiscard]] const VkSamplerCreateInfo& CreateInfo() const noexcept {
+        return base_ci;
+    }
+
 private:
     struct VariantKey {
         bool reduce_anisotropy;
@@ -804,6 +817,7 @@ private:
     std::vector<Variant> variants;
 
     const Device* device_ptr{nullptr};
+    Tegra::Texture::TSCEntry descriptor{};
     VkSamplerCreateInfo base_ci{};
     VkSamplerReductionModeEXT reduction_mode{VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE_EXT};
     std::array<float, 4> border_color{};

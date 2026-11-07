@@ -16,7 +16,6 @@
 #include "hid_core/hid_util.h"
 
 namespace Core::HID {
-constexpr s32 HID_JOYSTICK_MAX = 0x7fff;
 constexpr s32 HID_TRIGGER_MAX = 0x7fff;
 constexpr u32 TURBO_BUTTON_DELAY = 4;
 // Use a common UUID for TAS and Virtual Gamepad
@@ -1807,7 +1806,30 @@ CaptureButtonState EmulatedController::GetCaptureButtons() const {
 NpadButtonState EmulatedController::GetNpadButtons() const {
     if (is_configuring)
         return {};
-    return {controller.npad_button_state.raw & GetTurboButtonMask()};
+    NpadButtonState state{controller.npad_button_state.raw & GetTurboButtonMask()};
+    const auto injected = Injected();
+    if (!injected) {
+        return state;
+    }
+    state.raw |= injected->buttons;
+    const auto directions = [&state](const AnalogStickState& stick, NpadButton left, NpadButton up,
+                                     NpadButton right, NpadButton down) {
+        constexpr s32 threshold = HID_JOYSTICK_MAX / 2;
+        state.raw &= ~(left | up | right | down);
+        state.raw |= stick.x < -threshold ? left : NpadButton::None;
+        state.raw |= stick.x > threshold ? right : NpadButton::None;
+        state.raw |= stick.y > threshold ? up : NpadButton::None;
+        state.raw |= stick.y < -threshold ? down : NpadButton::None;
+    };
+    if (injected->left) {
+        directions(*injected->left, NpadButton::StickLLeft, NpadButton::StickLUp,
+                   NpadButton::StickLRight, NpadButton::StickLDown);
+    }
+    if (injected->right) {
+        directions(*injected->right, NpadButton::StickRLeft, NpadButton::StickRUp,
+                   NpadButton::StickRRight, NpadButton::StickRDown);
+    }
+    return state;
 }
 
 DebugPadButton EmulatedController::GetDebugPadButtons() const {
@@ -1819,7 +1841,26 @@ DebugPadButton EmulatedController::GetDebugPadButtons() const {
 AnalogSticks EmulatedController::GetSticks() const {
     if (is_configuring)
         return {};
-    return controller.analog_stick_state;
+    AnalogSticks sticks = controller.analog_stick_state;
+    if (const auto injected = Injected()) {
+        sticks.left = injected->left.value_or(sticks.left);
+        sticks.right = injected->right.value_or(sticks.right);
+    }
+    return sticks;
+}
+
+void EmulatedController::SetInputInjector(InputInjector injector_) {
+    std::scoped_lock lock{injector_mutex};
+    injector = std::move(injector_);
+    has_injector.store(static_cast<bool>(injector), std::memory_order_release);
+}
+
+std::optional<InjectedInput> EmulatedController::Injected() const {
+    if (!has_injector.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    std::scoped_lock lock{injector_mutex};
+    return injector ? injector() : std::nullopt;
 }
 
 NpadGcTriggerState EmulatedController::GetTriggers() const {

@@ -33,6 +33,8 @@ namespace VideoCommon {
 /// it so the environments built for the program's pipelines don't capture and lower it again.
 struct LoweredNativeCode {
     u64 diagnostic_key{};
+    /// Shader::Ampere::NativeProgramKey of the captured program (shader dump file names).
+    u64 native_program_key{};
     /// Shader header, lowered instructions with Maxwell scheduling words, then the native
     /// address map (what the environment's `code` used to be filled with).
     std::vector<u64> code;

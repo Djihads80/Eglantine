@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <span>
 
 #include <boost/container/static_vector.hpp>
 
@@ -20,6 +21,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -182,6 +184,11 @@ private:
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
 
+    /// Frame dump: starts a pass when the framebuffer changed (EDEN_NX2_FRAME_DUMP).
+    void FrameDumpPass(const Framebuffer* framebuffer);
+    /// Records the uniform and storage buffers of the current draw or dispatch for the frame dump.
+    bool FrameDumpBuffers(bool compute, std::span<const u64> shader_hashes);
+
     void UpdateDynamicStates();
 
     void HandleTransformFeedback();
@@ -244,6 +251,7 @@ private:
     PipelineCache pipeline_cache;
     AccelerateDMA accelerate_dma;
     FenceManager fence_manager;
+    FrameDump frame_dump;
 
     vk::Event wfi_event; // Only used when EGLANTINE_SYNC_FIX=0
 

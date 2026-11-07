@@ -31,6 +31,7 @@
 #include <fmt/ostream.h>
 
 #include "common/logging.h"
+#include "common/nx2_sampler.h"
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/string_util.h"
@@ -58,7 +59,6 @@
 #endif
 #include "yuzu_cmd/emu_window/emu_window_sdl3_null.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl3_vk.h"
-#include "yuzu_cmd/nx2_sampler.h"
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
