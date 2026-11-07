@@ -135,13 +135,26 @@ struct QueuedReleaseState {
     u64 forwarded_polls{};
     u64 window_mismatches{};
     u64 mismatches{};
+    u64 high_water{}; ///< The split's write position at the last table access
     std::chrono::steady_clock::time_point window_start{};
 };
 QueuedReleaseState g_queued_releases;
 
+// GpuSplit::Stop restarts the ring positions at 0 (a new session, or a settings change): the
+// entries from before would look queued again.
+QueuedReleaseTable& QueuedReleases(const VideoCommon::GpuSplit& split) {
+    auto& state = g_queued_releases;
+    const u64 position = split.WritePosition();
+    if (position < state.high_water) {
+        state.table = {};
+    }
+    state.high_water = position;
+    return state.table;
+}
+
 void RecordQueuedRelease(u64 device, u32 payload, u64 position) {
     DEBUG_ASSERT(!VideoCommon::GpuSplit::OnBackThread());
-    g_queued_releases.table.Record(device, payload, position);
+    QueuedReleases(VideoCommon::GpuSplit::Get()).Record(device, payload, position);
 }
 
 // A semaphore release: it writes the payload (and timestamp) at `address` and nothing else.
@@ -370,7 +383,7 @@ QueuedOutcome FindQueuedRelease(DmaPusher& dma_pusher, const Puller::PendingAcqu
         return QueuedOutcome::NoEntry;
     }
     const u64 slot = *device & ~u64{0xf};
-    const QueuedRelease* const entry = g_queued_releases.table.Find(slot);
+    const QueuedRelease* const entry = QueuedReleases(split).Find(slot);
     if (entry == nullptr || entry->device != *device) {
         return QueuedOutcome::NoEntry;
     }
@@ -603,6 +616,12 @@ bool Puller::PollAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
     }
     if (forward_verify) {
+        // The old answer as the trigger takes it: a fence release lands once the fences run.
+        ReleaseFences(dma_pusher);
+        if (Nx2SemaphoreWaiters::Get().Latched(this) ||
+            pending_acquire->Matches(ReadSemaphoreWord(dma_pusher, pending_acquire->address))) {
+            return true;
+        }
         ReportQueuedMismatch(dma_pusher, *pending_acquire, forwarded);
     }
     return false;
