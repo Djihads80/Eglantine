@@ -1,12 +1,18 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <cstdlib>
+#include <random>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 
 #include "common/common_types.h"
+#include "video_core/macro_dma_forward.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_war_probe.h"
 
@@ -61,7 +67,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::BankHashShadow) ||
                                   i == Index(Opt::RunAheadRawProbe) ||
                                   i == Index(Opt::ListWriterHookCopiesOnly) ||
-                                  i == Index(Opt::FrontMacroMemo);
+                                  i == Index(Opt::FrontMacroMemo) ||
+                                  i == Index(Opt::DmaForwardTape);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -278,4 +285,250 @@ TEST_CASE("Nx2Perf inflight_wait_v2 is off by default and keeps the inflight wai
         REQUIRE(!VideoCommon::Nx2Inflight::ReadExact());
         REQUIRE(!VideoCommon::Nx2Inflight::Any());
     }
+}
+
+namespace {
+namespace TapeTest {
+
+namespace DmaForward = VideoCommon::DmaForward;
+
+constexpr u32 MacroRegistersStart = 0xe00;
+
+/// One Turing macro instruction; idle lanes OR zero into the discard register (no carry).
+struct Ins {
+    std::array<u32, 2> op{14, 14};
+    std::array<u32, 2> dst{24, 24};
+    std::array<u32, 2> a{24, 24};
+    std::array<u32, 2> b{24, 24};
+    std::array<u32, 2> imm{0, 0};
+    std::array<u32, 2> method{0, 0};
+    std::array<u32, 2> emit{0, 0};
+    u32 pred_reg = 24;
+    u32 pred_mode = 0;
+    bool end = false;
+};
+
+void Append(std::vector<u32>& code, const Ins& in) {
+    std::array<u32, 3> bits{};
+    const auto set = [&](u32 low, u32 count, u32 value) {
+        for (u32 i = 0; i < count; ++i) {
+            if ((value >> i) & 1) {
+                bits[(low + i) / 32] |= 1U << ((low + i) % 32);
+            }
+        }
+    };
+    set(0, 1, in.end ? 1 : 0);
+    set(1, 4, in.pred_mode);
+    set(5, 5, in.pred_reg);
+    for (u32 lane = 0; lane < 2; ++lane) {
+        set(10 + lane * 36, 5, in.op[lane]);
+        set(15 + lane * 36, 5, in.dst[lane]);
+        set(20 + lane * 36, 5, in.a[lane]);
+        set(25 + lane * 36, 5, in.b[lane]);
+        set(30 + lane * 36, 16, in.imm[lane]);
+        set(82 + lane * 7, 3, in.method[lane]);
+        set(85 + lane * 7, 4, in.emit[lane]);
+    }
+    code.push_back(bits[2]);
+    code.push_back(bits[1]);
+    code.push_back(bits[0]);
+}
+
+/// MME DMA read of `words` words from the parameters' address, then `body`, then a delay slot.
+std::vector<u32> Macro(u32 words, std::vector<Ins> body) {
+    std::vector<u32> code;
+    Ins address;
+    address.method[0] = 5; // 0x154, increment 1
+    address.imm[0] = 0x1154;
+    address.emit = {3, 4};
+    Append(code, address);
+    Ins read;
+    read.method[0] = 5;
+    read.imm[0] = 0x158;
+    read.emit[0] = 6;
+    read.imm[1] = words;
+    Append(code, read);
+    body.back().end = true;
+    for (const Ins& in : body) {
+        Append(code, in);
+    }
+    Append(code, Ins{});
+    return code;
+}
+
+Ins Load(u32 reg0, u32 reg1) {
+    Ins in;
+    in.op = {0, 0};
+    in.dst = {reg0, reg1};
+    in.a = {28, 29};
+    return in;
+}
+
+Ins Lanes(u32 op0, u32 dst0, u32 a0, u32 b0, u32 op1, u32 dst1, u32 a1, u32 b1) {
+    Ins in;
+    in.op = {op0, op1};
+    in.dst = {dst0, dst1};
+    in.a = {a0, a1};
+    in.b = {b0, b1};
+    return in;
+}
+
+/// Emits two registers to consecutive methods from `first` (0 keeps the method going).
+Ins Emit(u32 reg0, u32 reg1, u32 first) {
+    Ins in;
+    in.a = {reg0, reg1};
+    in.emit = {1, 2};
+    if (first != 0) {
+        in.method[0] = 5;
+        in.imm[0] = 0x1000 | first;
+    }
+    return in;
+}
+
+DmaForward::Plan Analyze(const std::vector<u32>& code) {
+    const std::array<u32, 2> parameters{0x21, 0x13960e00};
+    static std::array<u32, 0xc00> ram{};
+    return DmaForward::Analyze<true>(
+        code, 0, parameters, ram, MacroRegistersStart,
+        [](u32, bool& unknown) {
+            unknown = false;
+            return 0U;
+        },
+        [](u32 method) { return method >= 0x500 && method < 0x510; });
+}
+
+/// EvalTape against Recompute over random words (both senses of equality and carries).
+void CheckTape(const DmaForward::Plan& plan, u32 seed) {
+    REQUIRE(plan.eligible);
+    REQUIRE(plan.tape_valid);
+    REQUIRE(plan.tape.num_ops <= DmaForward::MaxTapeOps);
+    std::mt19937 rng{seed};
+    constexpr std::array<u32, 6> special{0, 1, 2, ~0U, 0x80000000U, 0x7fffffffU};
+    for (u32 iteration = 0; iteration < 10000; ++iteration) {
+        std::array<u32, DmaForward::TapeSlots> slots{};
+        for (u32 i = 0; i < plan.snapshot.dma_words; ++i) {
+            slots[i] = (rng() & 1) ? static_cast<u32>(rng()) : special[rng() % special.size()];
+        }
+        std::vector<std::pair<u32, u32>> expected;
+        REQUIRE(DmaForward::Recompute(
+            plan.snapshot, std::span<const u32>{slots.data(), plan.snapshot.dma_words},
+            MacroRegistersStart,
+            [&](u32 method, u32 value) { expected.emplace_back(method, value); }));
+        std::vector<std::pair<u32, u32>> got;
+        DmaForward::EvalTape(plan.tape, slots,
+                             [&](u32 method, u32 value) { got.emplace_back(method, value); });
+        REQUIRE(got == expected);
+    }
+}
+
+} // namespace TapeTest
+} // namespace
+
+TEST_CASE("dma_forward_tape: add and subtract with carry", "[nx2_perf]") {
+    using namespace TapeTest;
+    const auto code = Macro(4, {Load(0, 1), Load(2, 3), Lanes(2, 4, 0, 2, 3, 5, 1, 3),
+                                Lanes(0, 6, 0, 2, 1, 7, 1, 3), Lanes(5, 8, 24, 24, 14, 24, 24, 24),
+                                Emit(4, 5, 0x500), Emit(7, 8, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    REQUIRE(plan.tape.num_writes == 4);
+    CheckTape(plan, 1);
+}
+
+TEST_CASE("dma_forward_tape: multiplies and count leading zeros", "[nx2_perf]") {
+    using namespace TapeTest;
+    const auto code = Macro(2, {Load(0, 1), Lanes(4, 2, 0, 1, 5, 3, 24, 24),
+                                Lanes(6, 4, 0, 1, 5, 5, 24, 24), Lanes(8, 6, 0, 24, 14, 24, 24, 24),
+                                Emit(2, 3, 0x500), Emit(5, 6, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    CheckTape(plan, 2);
+}
+
+TEST_CASE("dma_forward_tape: shifts", "[nx2_perf]") {
+    using namespace TapeTest;
+    Ins shifts = Lanes(11, 4, 0, 1, 9, 5, 25, 1); // sar r0, r1; imm << r1
+    shifts.imm[1] = 3;
+    Ins constant_shift = Lanes(9, 6, 0, 25, 14, 24, 24, 24); // r0 << 5
+    constant_shift.imm[0] = 5;
+    const auto code = Macro(2, {Load(0, 1), Lanes(9, 2, 0, 1, 10, 3, 0, 1), shifts,
+                                constant_shift, Emit(2, 3, 0x500), Emit(4, 5, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    CheckTape(plan, 3);
+    const auto plan6 = Analyze(Macro(2, {Load(0, 1), constant_shift, Emit(6, 6, 0x500)}));
+    INFO(plan6.reason);
+    CheckTape(plan6, 4);
+}
+
+TEST_CASE("dma_forward_tape: merge and logic", "[nx2_perf]") {
+    using namespace TapeTest;
+    Ins constant = Lanes(14, 9, 27, 24, 14, 24, 24, 24); // r9 = 0x12345678
+    constant.imm = {0x1234, 0x5678};
+    Ins merges = Lanes(16, 2, 0, 1, 16, 3, 9, 0);
+    merges.imm = {(8 << 10) | (12 << 5) | 4, (20 << 10) | (9 << 5) | 30};
+    const auto code =
+        Macro(2, {Load(0, 1), constant, merges, Lanes(12, 4, 0, 1, 13, 5, 0, 1),
+                  Lanes(15, 6, 4, 5, 14, 7, 0, 1), Emit(2, 3, 0x500), Emit(6, 7, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    CheckTape(plan, 5);
+}
+
+TEST_CASE("dma_forward_tape: compares", "[nx2_perf]") {
+    using namespace TapeTest;
+    const auto code = Macro(2, {Load(0, 1), Lanes(17, 2, 0, 1, 18, 3, 0, 1),
+                                Lanes(19, 4, 0, 1, 20, 5, 0, 1), Lanes(21, 6, 0, 1, 14, 24, 24, 24),
+                                Lanes(15, 7, 5, 6, 14, 24, 24, 24), Emit(2, 3, 0x500),
+                                Emit(4, 7, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    CheckTape(plan, 6);
+}
+
+TEST_CASE("dma_forward_tape: lanes on a predicate from the DMA words", "[nx2_perf]") {
+    using namespace TapeTest;
+    Ins init = Lanes(14, 3, 25, 24, 14, 24, 24, 24); // r3 = 100
+    init.imm[0] = 100;
+    // Mode 5: lane 0 runs when r0 is zero, lane 1 when it isn't; outputs always.
+    Ins predicated = Lanes(0, 3, 1, 0, 15, 1, 1, 0);
+    predicated.pred_reg = 0;
+    predicated.pred_mode = 5;
+    const auto code = Macro(2, {Load(0, 1), init, predicated,
+                                Lanes(5, 8, 24, 24, 14, 24, 24, 24), Emit(3, 1, 0x500),
+                                Emit(8, 8, 0)});
+    const auto plan = Analyze(code);
+    INFO(plan.reason);
+    CheckTape(plan, 7);
+
+    // The ALU outputs of predicated lanes are zero when the lane doesn't run.
+    Ins outputs = Lanes(0, 24, 0, 25, 15, 24, 0, 27);
+    outputs.pred_reg = 0;
+    outputs.pred_mode = 5;
+    outputs.imm = {9, 0x1500};
+    outputs.method[0] = 6;
+    outputs.emit = {1, 2};
+    const auto plan2 = Analyze(Macro(1, {Lanes(0, 0, 28, 24, 14, 24, 24, 24), outputs}));
+    INFO(plan2.reason);
+    CheckTape(plan2, 8);
+}
+
+TEST_CASE("dma_forward_tape: a tape that doesn't fit falls back", "[nx2_perf]") {
+    using namespace TapeTest;
+    std::vector<Ins> body{Load(0, 1), Lanes(15, 0, 0, 1, 14, 24, 24, 24)};
+    for (u32 i = 0; i < 8; ++i) {
+        body.push_back(Lanes(15, 0, 0, 28, 14, 24, 24, 24));
+    }
+    body.push_back(Emit(0, 0, 0x500));
+    const auto plan = Analyze(Macro(10, body));
+    INFO(plan.reason);
+    REQUIRE(plan.eligible);
+    REQUIRE_FALSE(plan.tape_valid);
+    REQUIRE(plan.tape_fallback == DmaForward::TapeFallback::Overflow);
+    // One op fewer fits.
+    body.erase(body.begin() + 2);
+    const auto fits = Analyze(Macro(9, body));
+    INFO(fits.reason);
+    CheckTape(fits, 9);
+    REQUIRE(fits.tape.num_ops == DmaForward::MaxTapeOps);
 }
