@@ -118,6 +118,7 @@ add_library(video_core STATIC
     nx2_frame_stats.h
     nx2_profile.h
     nx2_perf.cpp
+    nx2_page_hash.h
     nx2_perf.h
     nx2_war_probe.h
     present.h

@@ -525,7 +525,9 @@ public:
         u64 last_frame_tick{~u64{0}};
         u64 last_skipped_draw_ticket{~u64{0}}; ///< Profiler only: bank_once_per_frame skips
         u32 initialized_mask{};
-        std::array<u8, 0x10000> bytes{};
+        /// bank_hash_shadow: PageHash of each page's last bytes (17: an unaligned bank spans 17)
+        std::array<u64, 17> page_hash{};
+        std::array<u8, 0x10000> bytes{};  ///< With bank_hash_shadow, written only under Verify
     };
     std::unordered_map<DAddr, NativeUniformBankShadow> native_indirect_uniform_shadow;
     std::array<std::pair<DAddr, NativeUniformBankShadow*>, 8> native_indirect_uniform_cache{};

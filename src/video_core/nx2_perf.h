@@ -179,6 +179,9 @@ enum class Opt : unsigned {
     /// A suspended channel's 1 ms front sleep ends at once on a new submit or on a GPU release
     /// that latches a waiter (Tegra::Nx2PendingWake in nx2.h)
     PendingWake,
+    /// Native uniform banks: per-page 64-bit hashes of the guest bytes replace the 64 KiB byte
+    /// shadow's memcmp/memcpy (nx2_page_hash.h)
+    BankHashShadow,
     Count,
 };
 
@@ -228,6 +231,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "run_ahead_cow_probe",
     "sync_free_fetch",
     "pending_wake",
+    "bank_hash_shadow",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -305,7 +309,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::RunAheadCover,
                           Opt::RunAheadCowProbe,
                           Opt::SyncFreeFetch,
-                          Opt::PendingWake}) {
+                          Opt::PendingWake,
+                          Opt::BankHashShadow}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -330,7 +335,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
 /// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8),
 /// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch,
-/// pending_wake (round 9).
+/// pending_wake, bank_hash_shadow (round 9).
 /// dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -358,7 +363,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadCover) |
                                   Bit(Opt::RunAheadCowProbe) |
                                   Bit(Opt::SyncFreeFetch) |
-                                  Bit(Opt::PendingWake);
+                                  Bit(Opt::PendingWake) |
+                                  Bit(Opt::BankHashShadow);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -431,6 +437,9 @@ static_assert(static_cast<unsigned>(Opt::SyncFreeFetch) == 73 &&
 static_assert(static_cast<unsigned>(Opt::PendingWake) == 74 &&
               IsOff(always_off, static_cast<size_t>(Opt::PendingWake)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::PendingWake)));
+static_assert(static_cast<unsigned>(Opt::BankHashShadow) == 75 &&
+              IsOff(always_off, static_cast<size_t>(Opt::BankHashShadow)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BankHashShadow)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
