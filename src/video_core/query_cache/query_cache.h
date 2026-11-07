@@ -25,6 +25,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/query_cache/bank_base.h"
 #include "video_core/query_cache/query_base.h"
 #include "video_core/query_cache/query_cache_base.h"
@@ -270,9 +271,14 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             const u64 timestamp = impl->gpu.GetTicks();
             const u64 value = static_cast<u64>(payload);
             u8* const pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
+            if (Nx2Snap::g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+                Nx2Snap::OwnPointerWrite(pointer_timestamp, sizeof(timestamp), &timestamp);
+                Nx2Snap::OwnPointerWrite(pointer, sizeof(value), &value);
+            }
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
             std::memcpy(pointer, &value, sizeof(value));
         } else {
+            Nx2Snap::NoteOwnPointer(pointer, sizeof(payload), &payload);
             std::memcpy(pointer, &payload, sizeof(payload));
         }
         Tegra::Nx2SemaphoreWaiters::Get().OnWrite(cpu_addr, payload);
@@ -329,10 +335,15 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             const u64 timestamp = impl->gpu.GetTicks();
             u8* const pointer_timestamp =
                 impl->device_memory.template GetPointer<u8>(query_cpu_addr + 8);
+            if (Nx2Snap::g_own.load(std::memory_order_relaxed)) [[unlikely]] {
+                Nx2Snap::OwnPointerWrite(pointer_timestamp, sizeof(timestamp), &timestamp);
+                Nx2Snap::OwnPointerWrite(pointer, sizeof(query_base->value), &query_base->value);
+            }
             std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
             std::memcpy(pointer, &query_base->value, sizeof(query_base->value));
         } else {
             const u32 value = static_cast<u32>(query_base->value);
+            Nx2Snap::NoteOwnPointer(pointer, sizeof(value), &value);
             std::memcpy(pointer, &value, sizeof(value));
         }
         Tegra::Nx2SemaphoreWaiters::Get().OnWrite(query_cpu_addr,
@@ -627,10 +638,12 @@ bool QueryCacheBase<Traits>::SemiFlushQueryDirty(QueryCacheBase<Traits>::QueryLo
         False(query_base->flags & QueryFlagBits::IsGuestSynced)) {
         auto* ptr = impl->device_memory.template GetPointer<u8>(query_base->guest_address);
         if (True(query_base->flags & QueryFlagBits::HasTimestamp)) {
+            Nx2Snap::NoteOwnPointer(ptr, sizeof(query_base->value), &query_base->value);
             std::memcpy(ptr, &query_base->value, sizeof(query_base->value));
             return false;
         }
         u32 value_l = static_cast<u32>(query_base->value);
+        Nx2Snap::NoteOwnPointer(ptr, sizeof(value_l), &value_l);
         std::memcpy(ptr, &value_l, sizeof(value_l));
         return false;
     }

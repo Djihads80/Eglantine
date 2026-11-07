@@ -345,7 +345,7 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
     if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
         // run_ahead_cow_probe: a host write, not an unsized read.
         if (const auto device = GpuToCpuAddress(addr)) {
-            VideoCommon::Nx2Cow::HostWriteSlow(*device, sizeof(T));
+            VideoCommon::Nx2Cow::HostWriteSlow(*device, sizeof(T), &data, NX2_RETURN_ADDRESS());
         }
         VideoCommon::Nx2Cow::SkipNextPointer();
     }
@@ -563,7 +563,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
-        VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount);
+        VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount, src_buffer);
         VideoCommon::Nx2Cow::SkipNextPointer();
         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
@@ -581,7 +581,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         }
         const bool continuous = IsBigPageContinuous(page_index);
         if (continuous) {
-            VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount);
+            VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount, src_buffer);
             VideoCommon::Nx2Cow::SkipNextPointer();
         }
         u8* const physical = continuous ? memory.GetPointer<u8>(dev_addr_base) : nullptr;

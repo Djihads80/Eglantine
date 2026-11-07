@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <memory>
 #include <random>
 #include <span>
 #include <utility>
@@ -74,7 +75,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::RunAheadOverlayBudget) ||
                                   i == Index(Opt::AcquireDrainLite) ||
                                   i == Index(Opt::ExecSameDrop) ||
-                                  i == Index(Opt::StateDeadStore);
+                                  i == Index(Opt::StateDeadStore) ||
+                                  i == Index(Opt::RunAheadOwnWriteProbe);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -570,4 +572,117 @@ TEST_CASE("exec_same_drop: a bind repeats only the last one sent on its stage", 
     REQUIRE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
     memo.Clear();
     REQUIRE_FALSE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
+}
+
+TEST_CASE("Nx2Perf run_ahead_own_write_probe is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::RunAheadOwnWriteProbe) == 87);
+    REQUIRE(opt_names[Index(Opt::RunAheadOwnWriteProbe)] == "run_ahead_own_write_probe");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::RunAheadOwnWriteProbe)));
+    REQUIRE(IsOff(always_off, Index(Opt::RunAheadOwnWriteProbe)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::RunAheadOwnWriteProbe)));
+    REQUIRE(ParseOffMask(false, "run_ahead_own_write_probe", "", false) ==
+            (always_off & ~Bit(Opt::RunAheadOwnWriteProbe)));
+    REQUIRE(!IsOff(live_safe, Index(Opt::RunAheadOwnWriteProbe)));
+}
+
+TEST_CASE("run_ahead_own_write_probe: range table insert, overlap, overflow, classify",
+          "[nx2_perf]") {
+    using VideoCommon::Nx2Snap::OwnClass;
+    using VideoCommon::Nx2Snap::OwnRangeTable;
+    auto table = std::make_unique<OwnRangeTable>();
+    constexpr u32 gen = 7;
+
+    // Touching and overlapping writes merge; a covered write adds nothing.
+    REQUIRE(table->Insert(5, gen, 0, 8));
+    REQUIRE(table->Insert(5, gen, 8, 16));
+    REQUIRE(table->Insert(5, gen, 12, 20));
+    REQUIRE(table->Insert(5, gen, 2, 4));
+    REQUIRE(table->Insert(5, gen, 100, 104));
+    auto page = table->Find(5, gen);
+    REQUIRE(page.count == 2);
+    REQUIRE_FALSE(page.overflow);
+    REQUIRE(page.Classify(0) == OwnClass::Own);
+    REQUIRE(page.Classify(19) == OwnClass::Own);
+    REQUIRE(page.Classify(20) == OwnClass::Guest);
+    REQUIRE(page.Classify(103) == OwnClass::Own);
+    REQUIRE(page.Classify(104) == OwnClass::Guest);
+    REQUIRE(page.Classify(4095) == OwnClass::Guest);
+
+    // Another epoch or page is another key.
+    REQUIRE(table->Find(5, gen + 1).count == 0);
+    REQUIRE(table->Find(5, gen + 1).Classify(0) == OwnClass::Guest);
+    REQUIRE(table->Find(6, gen).Classify(0) == OwnClass::Guest);
+
+    // A ninth disjoint range overflows: bytes outside the kept ranges are unknown.
+    for (u32 i = 0; i < 9; ++i) {
+        REQUIRE(table->Insert(9, gen, i * 100, i * 100 + 10));
+    }
+    page = table->Find(9, gen);
+    REQUIRE(page.count == OwnRangeTable::MaxRanges);
+    REQUIRE(page.overflow);
+    REQUIRE(table->range_overflow.load() == 1);
+    REQUIRE(page.Classify(5) == OwnClass::Own);
+    REQUIRE(page.Classify(705) == OwnClass::Own);
+    REQUIRE(page.Classify(805) == OwnClass::Unknown);
+    REQUIRE(page.Classify(50) == OwnClass::Unknown);
+    // A write that merges into a kept range still lands after the overflow.
+    REQUIRE(table->Insert(9, gen, 10, 20));
+    REQUIRE(table->Find(9, gen).Classify(15) == OwnClass::Own);
+    REQUIRE(table->range_overflow.load() == 1);
+
+    // Empty or out-of-page ranges are ignored.
+    REQUIRE(table->Insert(11, gen, 8, 8));
+    REQUIRE(table->Insert(11, gen, 4000, 5000));
+    REQUIRE(table->Find(11, gen).count == 0);
+    REQUIRE(table->Find(11, gen).Classify(4095) == OwnClass::Guest);
+
+    // The last byte of a page.
+    REQUIRE(table->Insert(12, gen, 4088, 4096));
+    REQUIRE(table->Find(12, gen).Classify(4095) == OwnClass::Own);
+    REQUIRE(table->Find(12, gen).Classify(4087) == OwnClass::Guest);
+
+    // A full table: an insert that finds no slot makes the epoch's misses unknown.
+    bool lost = false;
+    for (u64 phys = 1000; phys < 1000 + OwnRangeTable::Slots + 64 && !lost; ++phys) {
+        lost = !table->Insert(phys, gen, 0, 4);
+    }
+    REQUIRE(lost);
+    REQUIRE(table->table_overflow.load() == 1);
+    REQUIRE(table->Find(999'999, gen).Classify(0) == OwnClass::Unknown);
+    REQUIRE(table->Find(999'999, gen + 1).Classify(0) == OwnClass::Guest);
+    REQUIRE(table->Find(5, gen).Classify(0) == OwnClass::Own);
+
+    // Clear empties it for a later epoch.
+    table->Clear();
+    REQUIRE(table->Find(5, gen).count == 0);
+    REQUIRE(table->Find(999'999, gen).Classify(0) == OwnClass::Guest);
+    REQUIRE(table->Insert(5, gen + 3, 1, 2));
+    REQUIRE(table->Find(5, gen + 3).Classify(1) == OwnClass::Own);
+    REQUIRE(table->Find(5, gen + 3).Classify(2) == OwnClass::Guest);
+}
+
+TEST_CASE("run_ahead_own_write_probe: the verify ring keeps each own write's bytes",
+          "[nx2_perf]") {
+    using VideoCommon::Nx2Snap::OwnRing;
+    auto ring = std::make_unique<OwnRing>();
+    const std::array<u8, 8> first{1, 2, 3, 4, 5, 6, 7, 8};
+    const std::array<u8, 4> second{0xa, 0xb, 0xc, 0xd};
+    ring->Push(5, 3, 0, 8, first.data());
+    ring->Push(5, 3, 4, 8, second.data());
+    ring->Push(6, 3, 0, 4, second.data());
+    ring->Push(5, 3, 16, 20, nullptr);
+    const auto refs = ring->Collect(5, 3);
+    REQUIRE(refs.count == 3);
+    REQUIRE(refs.complete);
+    u8 byte = 0;
+    // The newest write of a byte wins.
+    REQUIRE(ring->ByteOf(refs, refs.Covering(5), 5, byte));
+    REQUIRE(byte == 0xb);
+    REQUIRE(ring->ByteOf(refs, refs.Covering(2), 2, byte));
+    REQUIRE(byte == 3);
+    REQUIRE(refs.Covering(10) < 0);
+    // A write noted without its bytes is covered but cannot be checked.
+    REQUIRE(refs.Covering(17) >= 0);
+    REQUIRE_FALSE(ring->ByteOf(refs, refs.Covering(17), 17, byte));
+    REQUIRE(ring->Collect(5, 4).count == 0);
 }
