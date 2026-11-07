@@ -840,21 +840,38 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     const u64 nx2_epoch =
         writer_ranges ? Tegra::g_nx2_code_epoch.load(std::memory_order_acquire) : 0;
     const u64 nx2_map_serial = writer_ranges ? gpu_memory->GetMapSerial() : 0;
-    const auto publish = [&](ComputePipeline* pipeline) {
-        if (writer_ranges && pipeline != nullptr) {
-            Tegra::Nx2PublishComputeWrites(
-                kepler_compute->regs.code_loc.Address() +
-                    kepler_compute->launch_description.program_start,
-                static_cast<u32>(gpu_memory->GetID()), nx2_map_serial, nx2_epoch,
-                [pipeline] { return SummarizeComputeWrites(pipeline->GetInfo()); });
-        }
-        return pipeline;
-    };
 
     const ShaderInfo* const shader{ComputeShader()};
     if (!shader) {
         return nullptr;
     }
+    const auto publish = [&](ComputePipeline* pipeline) {
+        if (writer_ranges && pipeline != nullptr) {
+            const GPUVAddr program = kepler_compute->regs.code_loc.Address() +
+                                     kepler_compute->launch_description.program_start;
+            Tegra::Nx2PublishComputeWrites(
+                program, static_cast<u32>(gpu_memory->GetID()), nx2_map_serial, nx2_epoch,
+                [this, pipeline, shader, program] {
+                    Tegra::Nx2ComputeWrites writes = SummarizeComputeWrites(pipeline->GetInfo());
+                    if (!writes.localizable) {
+                        return writes;
+                    }
+                    // As Nx2ProveNonWriterDraw: a CPU write to GPU-modified pages reaches the
+                    // shader cache only later, so code there could change without moving the
+                    // epoch; elsewhere, marked as proven code, such a write moves it at once.
+                    const std::optional<DAddr> code = gpu_memory->GpuToCpuAddress(program);
+                    const u64 size = (std::max<u64>)(shader->size_bytes, 1);
+                    std::scoped_lock lock{buffer_cache.mutex};
+                    if (!code || buffer_cache.IsRegionGpuModified(*code, size)) {
+                        writes.localizable = false;
+                    } else {
+                        Tegra::Nx2MarkProvenCode(*code, size);
+                    }
+                    return writes;
+                });
+        }
+        return pipeline;
+    };
     const auto& qmd{kepler_compute->launch_description};
     const ComputePipelineCacheKey key{
         .unique_hash = shader->unique_hash,
