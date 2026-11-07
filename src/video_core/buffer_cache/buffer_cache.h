@@ -527,8 +527,10 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         break;
     case ObtainBufferOperation::NoteGpuWrite:
         NoteGpuWrite(slot_buffers[buffer_id], device_addr, size);
-        if (Tegra::Nx2ClSpeculate()) {
-            Tegra::Nx2SetRangeUnique(device_addr, size, runtime.CurrentTick());
+        if constexpr (!IS_OPENGL) {
+            if (Tegra::Nx2ClSpeculate()) {
+                Tegra::Nx2SetRangeUnique(device_addr, size, runtime.CurrentTick());
+            }
         }
         break;
     case ObtainBufferOperation::DiscardWrite: {
