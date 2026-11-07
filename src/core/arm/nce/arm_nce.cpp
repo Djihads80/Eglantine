@@ -7,6 +7,7 @@
 #include <cinttypes>
 #include <memory>
 
+#include "common/settings.h"
 #include "common/signal_chain.h"
 #include "core/arm/nce/arm_nce.h"
 #include "core/arm/nce/interpreter_visitor.h"
@@ -26,6 +27,7 @@ namespace {
 
 struct sigaction g_orig_bus_action;
 struct sigaction g_orig_segv_action;
+struct sigaction g_orig_ill_action;
 
 // Verify assembly offsets.
 using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
@@ -174,12 +176,37 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
     return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
 }
 
+bool ArmNce::HandleGuestIllegalInstruction(GuestContext* guest_ctx, void* raw_info,
+                                           void* raw_context) {
+    // knob2: skip undefined instructions in guest code, as Dynarmic does
+    if (Settings::GetDebugKnobAt(2)) {
+        static_cast<ucontext_t*>(raw_context)->uc_mcontext.pc += 4;
+        return true;
+    }
+
+    // Halt the guest thread instead of taking down the whole process.
+    // The faulting pc equals si_addr, so this is handled as a prefetch abort.
+    return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
+}
+
 void ArmNce::HandleHostAlignmentFault(int sig, void* raw_info, void* raw_context) {
     return g_orig_bus_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
 }
 
 void ArmNce::HandleHostAccessFault(int sig, void* raw_info, void* raw_context) {
     return g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
+}
+
+void ArmNce::HandleHostIllegalInstruction(int sig, void* raw_info, void* raw_context) {
+    if (g_orig_ill_action.sa_flags & SA_SIGINFO) {
+        return g_orig_ill_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
+    }
+    if (g_orig_ill_action.sa_handler == SIG_DFL || g_orig_ill_action.sa_handler == SIG_IGN) {
+        // Restore the original disposition; the instruction faults again on return.
+        Common::SigAction(sig, &g_orig_ill_action, nullptr);
+        return;
+    }
+    g_orig_ill_action.sa_handler(sig);
 }
 
 void ArmNce::LockThread(Kernel::KThread* thread) {
@@ -302,6 +329,7 @@ void ArmNce::Initialize() {
         sigaddset(&signal_mask, BreakFromRunCodeSignal);
         sigaddset(&signal_mask, GuestAlignmentFaultSignal);
         sigaddset(&signal_mask, GuestAccessFaultSignal);
+        sigaddset(&signal_mask, GuestIllegalInstructionSignal);
 
         struct sigaction return_to_run_code_action {};
         return_to_run_code_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -331,6 +359,14 @@ void ArmNce::Initialize() {
             reinterpret_cast<HandlerType>(&ArmNce::GuestAccessFaultSignalHandler);
         access_fault_action.sa_mask = signal_mask;
         Common::SigAction(GuestAccessFaultSignal, &access_fault_action, &g_orig_segv_action);
+
+        struct sigaction illegal_instruction_action {};
+        illegal_instruction_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        illegal_instruction_action.sa_sigaction =
+            reinterpret_cast<HandlerType>(&ArmNce::GuestIllegalInstructionSignalHandler);
+        illegal_instruction_action.sa_mask = signal_mask;
+        Common::SigAction(GuestIllegalInstructionSignal, &illegal_instruction_action,
+                          &g_orig_ill_action);
     });
 }
 
