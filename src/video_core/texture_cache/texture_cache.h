@@ -248,6 +248,11 @@ void TextureCache<P>::RunGarbageCollector() {
             runtime.Finish();
             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);
             ++gc_download_deletes;
+            // Guest memory holds the GPU's data now (DeleteImage must not mark it stale).
+            image.flags &= ~ImageFlagBits::GpuModified;
+            ClearStaleImage(image);
+        } else {
+            MarkStale(image); // before UntrackImage (see MarkStale)
         }
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
@@ -330,6 +335,134 @@ void TextureCache<P>::RunGarbageCollector() {
         Configure(true);
         Collect();
     }
+}
+
+template <class P>
+void TextureCache<P>::UpdateStaleTracking(u64 run_begin, u64 run_pages, s32 delta) {
+    if (run_pages != 0) {
+        device_memory.UpdatePagesCachedCount(run_begin << STALE_PAGE_BITS,
+                                             run_pages << STALE_PAGE_BITS, delta);
+    }
+}
+
+template <class P>
+void TextureCache<P>::MarkStale(const ImageBase& image) {
+    if (!tc_skip_stale || False(image.flags & ImageFlagBits::GpuModified) ||
+        True(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::Unbacked)) ||
+        image.guest_size_bytes == 0) {
+        return;
+    }
+    // Whole pages only: a page the image shares with other data keeps that data's state.
+    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
+    const u64 first = (image.cpu_addr + page_size - 1) >> STALE_PAGE_BITS;
+    const u64 end = (image.cpu_addr + image.guest_size_bytes) >> STALE_PAGE_BITS;
+    if (end <= first || end > (u64{1} << 28)) {
+        return;
+    }
+    if (stale_bits.size() * 64 < end) {
+        stale_bits.resize((end + 63) / 64);
+    }
+    // Tracked from here on so CPU writes reach WriteMemory. Marking before the image's own
+    // tracking goes keeps the pages' write protection from switching off and on again.
+    u64 run_begin = 0;
+    u64 run_pages = 0;
+    for (u64 page = first; page < end; ++page) {
+        u64& word = stale_bits[page / 64];
+        const u64 bit = u64{1} << (page % 64);
+        if ((word & bit) != 0) {
+            UpdateStaleTracking(run_begin, run_pages, 1);
+            run_pages = 0;
+            continue;
+        }
+        word |= bit;
+        ++stale_page_count;
+        if (run_pages == 0) {
+            run_begin = page;
+        }
+        ++run_pages;
+    }
+    UpdateStaleTracking(run_begin, run_pages, 1);
+}
+
+template <class P>
+void TextureCache<P>::ClearStale(DAddr addr, size_t size) {
+    if (stale_page_count == 0 || size == 0) {
+        return;
+    }
+    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
+    const u64 first = addr >> STALE_PAGE_BITS;
+    const u64 end = (std::min<u64>)((addr + size + page_size - 1) >> STALE_PAGE_BITS,
+                                    stale_bits.size() * 64);
+    u64 run_begin = 0;
+    u64 run_pages = 0;
+    for (u64 page = first; page < end;) {
+        u64& word = stale_bits[page / 64];
+        if (word == 0 && page % 64 == 0) {
+            UpdateStaleTracking(run_begin, run_pages, -1);
+            run_pages = 0;
+            page += 64;
+            continue;
+        }
+        const u64 bit = u64{1} << (page % 64);
+        if ((word & bit) != 0) {
+            word &= ~bit;
+            --stale_page_count;
+            if (run_pages == 0) {
+                run_begin = page;
+            }
+            ++run_pages;
+        } else {
+            UpdateStaleTracking(run_begin, run_pages, -1);
+            run_pages = 0;
+        }
+        ++page;
+    }
+    UpdateStaleTracking(run_begin, run_pages, -1);
+}
+
+template <class P>
+void TextureCache<P>::ClearStaleImage(const ImageBase& image) {
+    if (stale_page_count == 0) {
+        return;
+    }
+    if (False(image.flags & ImageFlagBits::Sparse)) {
+        ClearStale(image.cpu_addr, image.guest_size_bytes);
+        return;
+    }
+    for (const auto& [gpu_addr, size] :
+         gpu_memory->GetSubmappedRange(image.gpu_addr, image.guest_size_bytes)) {
+        if (const auto device_addr = gpu_memory->GpuToCpuAddress(gpu_addr)) {
+            ClearStale(*device_addr, size);
+        }
+    }
+}
+
+template <class P>
+bool TextureCache<P>::IsAllStale(DAddr addr, size_t size) const {
+    if (stale_page_count == 0 || size == 0) {
+        return false;
+    }
+    constexpr u64 page_size = u64{1} << STALE_PAGE_BITS;
+    const u64 first = addr >> STALE_PAGE_BITS;
+    const u64 end = (addr + size + page_size - 1) >> STALE_PAGE_BITS;
+    if (end > stale_bits.size() * 64) {
+        return false;
+    }
+    for (u64 page = first; page < end;) {
+        const u64 word = stale_bits[page / 64];
+        if (page % 64 == 0 && page + 64 <= end) {
+            if (word != ~u64{0}) {
+                return false;
+            }
+            page += 64;
+            continue;
+        }
+        if (((word >> (page % 64)) & 1) == 0) {
+            return false;
+        }
+        ++page;
+    }
+    return true;
 }
 
 template <class P>
@@ -509,6 +642,12 @@ void TextureCache<P>::TickFrame() {
                  async_decodes_queued, astc_opaque_images, astc_alpha_images);
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
+        LOG_INFO(HW_GPU,
+                 "Texture cache last 600 frames: stale uploads skipped {} ({} MiB), {} uploaded "
+                 "for buffer-written pages; {} MiB of pages marked stale",
+                 tc_stale_skips, tc_stale_skip_bytes >> 20, tc_stale_gpu_written,
+                 (stale_page_count << STALE_PAGE_BITS) >> 20);
+        tc_stale_skips = tc_stale_skip_bytes = tc_stale_gpu_written = 0;
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
         std::vector<std::pair<u32, u64>> shapes;
@@ -998,6 +1137,7 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
+    ClearStale(cpu_addr, size);
     ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
         if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
             // Written at last: a backed image replaces it where it is used next.
@@ -1075,6 +1215,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
             Image& image = slot_images[entry.image_id];
             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, entry.copies,
                          entry.map.mapped_span, swizzle_data_buffer);
+            ClearStaleImage(image);
         }
         pending.clear();
         pending_bytes = 0;
@@ -1131,6 +1272,7 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
         UnregisterImage(id);
         DeleteImage(id);
     }
+    ClearStale(cpu_addr, size);
 }
 
 template <class P>
@@ -1608,12 +1750,16 @@ void TextureCache<P>::PopAsyncFlushes() {
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
+                ClearStaleImage(image);
             } else {
                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
                                              buffer_info.size);
+                if (const auto device_addr = gpu_memory->GpuToCpuAddress(buffer_info.address)) {
+                    ClearStale(*device_addr, buffer_info.size);
+                }
                 slot_buffer_downloads.erase(download_info.object_id);
             }
         }
@@ -1656,6 +1802,7 @@ void TextureCache<P>::PopAsyncFlushes() {
             const ImageBase& image = download_info.GetImage(slot_images);
             const auto copies = FullDownloadCopies(image.info);
             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
+            ClearStaleImage(image);
             download_map.offset += image.unswizzled_size_bytes;
             download_span = download_span.subspan(image.unswizzled_size_bytes);
         }
@@ -1801,6 +1948,21 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
         TrackImage(image, image_id);
+    }
+
+    // Made where a dropped GPU-written image left stale bytes (MarkStale): nothing to upload.
+    // Pages the buffer cache wrote on the GPU may hold data written back since: upload those.
+    if (tc_skip_stale && image.dirty_layers.empty() &&
+        False(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
+                             ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
+        IsAllStale(image.cpu_addr, image.guest_size_bytes)) {
+        if (!Tegra::Nx2MayBeGpuWritten(image.cpu_addr, image.guest_size_bytes)) {
+            ++tc_stale_skips;
+            tc_stale_skip_bytes += image.guest_size_bytes;
+            runtime.TransitionImageLayout(image);
+            return;
+        }
+        ++tc_stale_gpu_written;
     }
 
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
@@ -3568,6 +3730,7 @@ template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
+    MarkStale(image);
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
     // a decode was in flight has two, and the first to finish clears the flag. A decode left
     // behind was uploaded into the next image to take this slot (another texture's data: garbage
