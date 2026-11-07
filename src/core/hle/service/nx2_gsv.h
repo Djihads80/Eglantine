@@ -1908,6 +1908,12 @@ private:
             if (const u64 address = process->GetOotDeltaAddress(); address != 0) {
                 system.ApplicationMemory().Write32(
                     address, std::bit_cast<u32>(m_oot_frame_delta.Update(entered)));
+                if (VideoCommon::Nx2Snap::BudgetOn()) [[unlikely]] {
+                    if (const u8* const host = system.ApplicationMemory().GetPointerSilent(address)) {
+                        VideoCommon::Nx2Snap::NoteVi2Delta(
+                            system.DeviceMemory().GetRawPhysicalAddr(host) >> 12);
+                    }
+                }
             }
         }
         // Where each frame's time goes on the present thread, averaged per 600 presents: the
@@ -2248,6 +2254,9 @@ private:
         if (!m_cow) {
             return;
         }
+        if (m_snap && VideoCommon::Nx2Snap::BudgetOn()) [[unlikely]] {
+            m_snap->BudgetArmCheck(); // Before the close: later writes take no pre-image
+        }
         VideoCommon::Nx2Cow::Close();
         if (VideoCommon::Nx2Raw::On()) [[unlikely]] {
             auto& device_memory = system.Host1x().MemoryManager();
@@ -2268,6 +2277,14 @@ private:
                     LOG_INFO(HW_GPU, "{}", line);
                 }
             }
+            if (VideoCommon::Nx2Snap::BudgetOn()) [[unlikely]] {
+                auto& device_memory = system.Host1x().MemoryManager();
+                for (const std::string& line : m_snap->BudgetLines([&device_memory](u64 address) {
+                         return device_memory.GetCpuBackingAddress(address);
+                     })) {
+                    LOG_INFO(HW_GPU, "{}", line);
+                }
+            }
         }
     }
 
@@ -2279,6 +2296,12 @@ private:
         namespace Snap = VideoCommon::Nx2Snap;
         if (!m_snap) {
             m_snap = std::make_unique<Snap::Vi2Window>();
+            if (Snap::BudgetOn()) [[unlikely]] {
+                m_snap->SetBudgetClassifier(
+                    [this](std::span<const u32> phys, std::span<u8> classes) {
+                        SnapBudgetClassify(phys, classes);
+                    });
+            }
         }
         const std::span<const u64> ledger_pages =
             m_ledger ? m_ledger->TakenPages() : std::span<const u64>{};
@@ -2286,6 +2309,26 @@ private:
         const size_t arm_count =
             system.ApplicationMemory().Nx2SnapshotArmSet(m_snap->ArmScratch(), arm_total);
         m_snap->Reply(ledger_pages, arm_count, arm_total);
+    }
+
+    /// run_ahead_overlay_budget: each physical page's tracker state (Nx2Ledger::TrackerClass)
+    /// through its first device mapping's guest page.
+    Common::ScratchBuffer<u32> m_snap_device_addresses;
+    std::vector<u64> m_snap_cpu_pages;
+    void SnapBudgetClassify(std::span<const u32> phys, std::span<u8> classes) {
+        auto& device_memory = system.Host1x().MemoryManager();
+        m_snap_cpu_pages.assign(phys.size(), 0);
+        for (size_t i = 0; i < phys.size(); ++i) {
+            const u64 paddr = u64{phys[i]} << 12;
+            u64 cpu = 0;
+            device_memory.ApplyOpOnPAddr(paddr, m_snap_device_addresses, [&](u64 device) {
+                if (cpu == 0 && device_memory.GetPhysicalRawAddressFromDAddr(device) == paddr) {
+                    cpu = device_memory.GetCpuBackingAddress(device) >> 12;
+                }
+            });
+            m_snap_cpu_pages[i] = cpu;
+        }
+        system.ApplicationMemory().Nx2CoverClassify(m_snap_cpu_pages, classes);
     }
 
     /// run_ahead_raw_probe, after HashReply: each reply page's state at the reply (cow arm set,
