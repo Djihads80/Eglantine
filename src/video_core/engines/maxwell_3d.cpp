@@ -2002,7 +2002,15 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         const auto forwardable = [](u32 address) {
             return address == MAXWELL3D_REG_INDEX(render_enable.mode);
         };
+        // dma_forward_tape: the back evaluates a recorded tape instead of re-running the call.
+        static const bool tape_on =
+            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForwardTape);
         const auto analyze = [&](auto&& read) {
+            if (tape_on) {
+                return DmaForward::Analyze<true>(
+                    std::span<const u32>{engine.native_code}, start, parameters,
+                    std::span<const u32>{native_data_ram}, MacroRegistersStart, read, forwardable);
+            }
             return DmaForward::Analyze(std::span<const u32>{engine.native_code}, start, parameters,
                                        std::span<const u32>{native_data_ram}, MacroRegistersStart,
                                        read, forwardable);
@@ -2091,6 +2099,24 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                 }
             }
         }
+        if (tape_on && dma_plan->eligible) {
+            static u64 tape_calls{};
+            static u64 tape_overflow{};
+            static u64 tape_unsupported{};
+            if (dma_plan->tape_valid) {
+                ++tape_calls;
+            } else if (dma_plan->tape_fallback == DmaForward::TapeFallback::Overflow) {
+                ++tape_overflow;
+            } else {
+                ++tape_unsupported;
+            }
+            if (((tape_calls + tape_overflow + tape_unsupported) & 0xffff) == 0) {
+                LOG_INFO(HW_GPU,
+                         "Nx2Perf dma_forward_tape: {} tape calls, fallbacks: {} overflow, {} "
+                         "unsupported op",
+                         tape_calls, tape_overflow, tape_unsupported);
+            }
+        }
         if (!dma_plan->eligible) {
             ++fallen_back;
             const auto logged = std::ranges::find(reasons_logged, dma_plan->reason);
@@ -2100,10 +2126,21 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                 LOG_INFO(HW_GPU, "Nx2Perf dma_forward: macro {:#x} not forwarded: {}", macro_index,
                          dma_plan->reason);
             }
-        } else if (VideoCommon::Nx2Perf::Verify()) {
+        } else if (VideoCommon::Nx2Perf::Verify() && !(tape_on && dma_plan->tape_valid)) {
             verify_forward = true; // The old path runs; its writes are compared below.
         } else {
             // The back's half: the read's flushes, the words, the forwarded writes.
+            struct ForwardRead {
+                static void Run(Maxwell3D* engine, GPUVAddr source, u32 dma_words, u32* words) {
+                    auto& memory = engine->memory_manager;
+                    const size_t bytes = size_t{dma_words} * sizeof(u32);
+                    if (memory.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
+                        memory.FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
+                    }
+                    memory.FlushQueryResults(source, bytes);
+                    memory.ReadWordsUnsafe(source, words, dma_words);
+                }
+            };
             struct ForwardCall {
                 Maxwell3D* engine;
                 Core::System* system;
@@ -2111,15 +2148,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                 static void Run(Maxwell3D* engine, Core::System* system,
                                 const DmaForward::SlimSnapshot& snapshot,
                                 std::span<const u32> code) {
-                    auto& memory = engine->memory_manager;
-                    const GPUVAddr source = snapshot.dma_source;
-                    const size_t bytes = size_t{snapshot.dma_words} * sizeof(u32);
-                    if (memory.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache)) {
-                        memory.FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
-                    }
-                    memory.FlushQueryResults(source, bytes);
                     std::array<u32, DmaForward::MaxDmaWords> words{};
-                    memory.ReadWordsUnsafe(source, words.data(), snapshot.dma_words);
+                    ForwardRead::Run(engine, snapshot.dma_source, snapshot.dma_words,
+                                     words.data());
                     const bool ok = DmaForward::Recompute(
                         snapshot, code, std::span<const u32>{words.data(), snapshot.dma_words},
                         MacroRegistersStart, [engine, system](u32 forwarded_method, u32 value) {
@@ -2147,10 +2178,124 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                                      std::span<const u32>{code, snapshot.num_code_words});
                 }
             };
+            // dma_forward_tape: the same read, then the tape's writes.
+            struct TapeCall {
+                Maxwell3D* engine;
+                Core::System* system;
+                GPUVAddr dma_source;
+                DmaForward::Tape tape;
+                void operator()() const {
+                    std::array<u32, DmaForward::TapeSlots> slots{};
+                    ForwardRead::Run(engine, dma_source, tape.dma_words, slots.data());
+                    DmaForward::EvalTape(tape, slots, [this](u32 forwarded_method, u32 value) {
+                        engine->ConsumeSink(*system);
+                        engine->CallMethod(*system, forwarded_method, value, true);
+                    });
+                }
+            };
+            static_assert(sizeof(TapeCall) == 0x70 && std::is_trivially_copyable_v<TapeCall>);
+            // EDEN_NX2_PERF_VERIFY: runs both, compares them and applies Recompute's writes.
+            struct VerifyTapeCall {
+                Maxwell3D* engine;
+                Core::System* system;
+                u32 macro_index;
+                DmaForward::Tape tape;
+                DmaForward::Snapshot snapshot;
+                void operator()() const {
+                    using Clock = std::chrono::steady_clock;
+                    static u64 calls{};
+                    static u64 differed{};
+                    static u64 logged_differed{};
+                    static u64 lines{};
+                    static u64 tape_ns{};
+                    static u64 recompute_ns{};
+                    static Clock::time_point last_log{};
+                    std::array<u32, DmaForward::TapeSlots> slots{};
+                    ForwardRead::Run(engine, snapshot.dma_source, snapshot.dma_words,
+                                     slots.data());
+                    std::array<std::pair<u32, u32>, DmaForward::MaxTapeWrites> from_tape{};
+                    size_t num_tape{};
+                    const auto t0 = Clock::now();
+                    DmaForward::EvalTape(tape, slots, [&](u32 forwarded_method, u32 value) {
+                        from_tape[num_tape++] = {forwarded_method, value};
+                    });
+                    const auto t1 = Clock::now();
+                    std::array<std::pair<u32, u32>, DmaForward::MaxWrites> from_recompute{};
+                    size_t num_recompute{};
+                    const bool ok = DmaForward::Recompute(
+                        snapshot,
+                        std::span<const u32>{slots.data(), snapshot.dma_words},
+                        MacroRegistersStart, [&](u32 forwarded_method, u32 value) {
+                            if (num_recompute < from_recompute.size()) {
+                                from_recompute[num_recompute++] = {forwarded_method, value};
+                            }
+                        });
+                    const auto t2 = Clock::now();
+                    tape_ns += static_cast<u64>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+                    recompute_ns += static_cast<u64>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+                    static u32 failures{};
+                    if (!ok && failures++ < 16) {
+                        LOG_ERROR(HW_GPU, "Nx2Perf dma_forward: the back's run of a forwarded "
+                                          "macro call failed or made other writes");
+                    }
+                    bool same = num_tape == num_recompute;
+                    for (size_t i = 0; i < (std::max)(num_tape, num_recompute); ++i) {
+                        const auto tape_write = i < num_tape ? from_tape[i]
+                                                             : std::pair<u32, u32>{~0U, ~0U};
+                        const auto old_write = i < num_recompute
+                                                   ? from_recompute[i]
+                                                   : std::pair<u32, u32>{~0U, ~0U};
+                        if (tape_write == old_write) {
+                            continue;
+                        }
+                        same = false;
+                        if (lines < 16) {
+                            ++lines;
+                            LOG_ERROR(HW_GPU,
+                                      "Nx2Perf dma_forward_tape: macro {:#x} write {:#x} tape "
+                                      "{:#x} recompute {:#x}",
+                                      macro_index, old_write.first, tape_write.second,
+                                      old_write.second);
+                        }
+                    }
+                    if (!same) {
+                        ++differed;
+                    }
+                    for (size_t i = 0; i < num_recompute; ++i) {
+                        engine->ConsumeSink(*system);
+                        engine->CallMethod(*system, from_recompute[i].first,
+                                           from_recompute[i].second, true);
+                    }
+                    if ((++calls & 0xffff) == 0) {
+                        LOG_INFO(HW_GPU,
+                                 "Nx2Perf dma_forward_tape: {} calls verified, {} differed; "
+                                 "EvalTape {} ns, Recompute {} ns (mean, last 65536)",
+                                 calls, differed, tape_ns / 65536, recompute_ns / 65536);
+                        tape_ns = recompute_ns = 0;
+                    }
+                    if (differed != logged_differed && t2 - last_log >= std::chrono::seconds{1}) {
+                        last_log = t2;
+                        logged_differed = differed;
+                        LOG_ERROR(HW_GPU, "Nx2Perf dma_forward_tape: {} of {} calls differed",
+                                  differed, calls);
+                    }
+                }
+            };
             for (size_t i = 0; i < dma_plan->num_writes; ++i) {
                 const DmaForward::Write& write = dma_plan->writes[i];
                 if (write.forwarded) {
-                    if (i == dma_plan->snapshot.first_forwarded) {
+                    if (i == dma_plan->snapshot.first_forwarded && tape_on &&
+                        dma_plan->tape_valid) {
+                        if (VideoCommon::Nx2Perf::Verify()) {
+                            split.Defer(VerifyTapeCall{this, &system, macro_index, dma_plan->tape,
+                                                       dma_plan->snapshot});
+                        } else {
+                            split.Defer(TapeCall{this, &system, dma_plan->snapshot.dma_source,
+                                                 dma_plan->tape});
+                        }
+                    } else if (i == dma_plan->snapshot.first_forwarded) {
                         DmaForward::CodeSlot* const slot =
                             memo ? fs.dma_memo.AcquireSlot(code_generation, dma_plan->snapshot,
                                                            split.ConsumedNow())

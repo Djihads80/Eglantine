@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <random>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -166,6 +169,39 @@ TEST_CASE("Recompute gives what macro 0x16's real run writes", "[macro_dma_forwa
                 [&](u32 method, u32 value) { forwarded.emplace_back(method, value); }));
             REQUIRE(forwarded.size() == 1);
             CHECK(forwarded[0] == std::pair<u32, u32>{RenderEnableMode, expected});
+        }
+    }
+}
+
+TEST_CASE("Macro 0x16's tape gives what Recompute writes", "[macro_dma_forward][nx2_perf]") {
+    const std::vector<u32> code = Code();
+    std::array<u32, 0xc00> ram{};
+    std::mt19937 rng{16};
+    for (const u32 sense : {0U, 1U}) {
+        const std::array<u32, 3> parameters{sense, 0x21, 0x13960e00};
+        const auto plan = VideoCommon::DmaForward::Analyze<true>(
+            code, 0, parameters, ram, MacroRegistersStart,
+            [](u32, bool& unknown) { unknown = false; return 0U; },
+            [](u32 method) { return method == RenderEnableMode; });
+        INFO(plan.reason);
+        REQUIRE(plan.eligible);
+        REQUIRE(plan.tape_valid);
+        REQUIRE(plan.tape.num_writes == 1);
+        REQUIRE(plan.tape.dma_words == 6);
+        for (u32 iteration = 0; iteration < 10000; ++iteration) {
+            std::array<u32, VideoCommon::DmaForward::TapeSlots> slots{};
+            // Counter pairs that often match, so both answers are covered.
+            for (u32 i = 0; i < 6; ++i) {
+                slots[i] = (rng() & 3) == 0 ? static_cast<u32>(rng()) : rng() % 2;
+            }
+            std::vector<std::pair<u32, u32>> expected;
+            REQUIRE(VideoCommon::DmaForward::Recompute(
+                plan.snapshot, std::span<const u32>{slots.data(), 6}, MacroRegistersStart,
+                [&](u32 method, u32 value) { expected.emplace_back(method, value); }));
+            std::vector<std::pair<u32, u32>> got;
+            VideoCommon::DmaForward::EvalTape(
+                plan.tape, slots, [&](u32 method, u32 value) { got.emplace_back(method, value); });
+            REQUIRE(got == expected);
         }
     }
 }

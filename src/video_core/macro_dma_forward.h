@@ -77,6 +77,330 @@ struct Write {
     bool forwarded;
 };
 
+// Nx2Perf dma_forward_tape: the forwarded values as straight-line code over the DMA words.
+// Slots 0..MaxDmaWords-1 hold the words, op i writes slot MaxDmaWords + i.
+inline constexpr size_t MaxTapeOps = 8;
+inline constexpr size_t MaxTapeWrites = 4;
+inline constexpr size_t TapeSlots = MaxDmaWords + MaxTapeOps;
+inline constexpr u8 TapeImm = 0xff; ///< Operand `a` or `b`: the op's `imm`
+
+enum class TapeOpcode : u8 {
+    Const, ///< imm
+    Add,
+    AddCarry,  ///< (a + b) < a
+    Sub,
+    SubBorrow, ///< (a - b) > a
+    MulLo,
+    MulHiS,
+    MulHiU,
+    Clz,
+    Shl,
+    Shr,
+    Sar,
+    And,
+    Nand,
+    Or,
+    Xor,
+    Merge, ///< imm: the merge immediate; a and b are slots
+    Lt,
+    Ltu,
+    Le,
+    Leu,
+    Eq,
+    Select, ///< imm: predicate slot; a when it is non-zero, else b (both slots)
+};
+
+struct TapeOp {
+    u8 op;
+    u8 dst;
+    u8 a;
+    u8 b;
+    u32 imm;
+};
+static_assert(sizeof(TapeOp) == 8 && std::has_unique_object_representations_v<TapeOp>);
+
+struct TapeWrite {
+    u16 method;
+    u8 slot;
+    u8 unused;
+};
+static_assert(sizeof(TapeWrite) == 4 && std::has_unique_object_representations_v<TapeWrite>);
+
+struct Tape {
+    u8 dma_words;
+    u8 num_ops;
+    u8 num_writes;
+    u8 unused;
+    std::array<TapeOp, MaxTapeOps> ops;
+    std::array<TapeWrite, MaxTapeWrites> writes;
+};
+static_assert(sizeof(Tape) == 0x54 && std::is_trivially_copyable_v<Tape> &&
+              std::has_unique_object_representations_v<Tape>);
+
+enum class TapeFallback : u8 { None, Overflow, Unsupported, NotRecorded };
+
+/// One tape op on values (Const and Select are handled by the callers).
+constexpr u32 EvalTapeOp(TapeOpcode op, u32 a, u32 b, u32 imm) {
+    switch (op) {
+    case TapeOpcode::Add: return a + b;
+    case TapeOpcode::AddCarry: return (a + b) < a ? 1U : 0U;
+    case TapeOpcode::Sub: return a - b;
+    case TapeOpcode::SubBorrow: return (a - b) > a ? 1U : 0U;
+    case TapeOpcode::MulLo: return a * b;
+    case TapeOpcode::MulHiS:
+        return u32((u64(s64(s32(a))) * u64(s64(s32(b)))) >> 32);
+    case TapeOpcode::MulHiU: return u32((u64{a} * u64{b}) >> 32);
+    case TapeOpcode::Clz: return u32(std::countl_zero(a));
+    case TapeOpcode::Shl: return a << (b & 31);
+    case TapeOpcode::Shr: return a >> (b & 31);
+    case TapeOpcode::Sar: return u32(s32(a) >> (b & 31));
+    case TapeOpcode::And: return a & b;
+    case TapeOpcode::Nand: return ~(a & b);
+    case TapeOpcode::Or: return a | b;
+    case TapeOpcode::Xor: return a ^ b;
+    case TapeOpcode::Merge: {
+        const u32 dest = (imm >> 10) & 63, count = (imm >> 5) & 31, source = imm & 31;
+        const u32 bits_mask = (1U << count) - 1;
+        return (a & ~(bits_mask << dest)) | (((b >> source) & bits_mask) << dest);
+    }
+    case TapeOpcode::Lt: return s32(a) < s32(b) ? ~0U : 0U;
+    case TapeOpcode::Ltu: return a < b ? ~0U : 0U;
+    case TapeOpcode::Le: return s32(a) <= s32(b) ? ~0U : 0U;
+    case TapeOpcode::Leu: return a <= b ? ~0U : 0U;
+    case TapeOpcode::Eq: return a == b ? ~0U : 0U;
+    case TapeOpcode::Const:
+    case TapeOpcode::Select: break;
+    }
+    return 0;
+}
+
+/// Runs a tape over `slots` (the DMA words in its first tape.dma_words entries) and calls
+/// `apply(method, value)` for each forwarded write, in order.
+template <typename Apply>
+void EvalTape(const Tape& tape, std::array<u32, TapeSlots>& slots, Apply&& apply) {
+    for (u32 i = 0; i < tape.num_ops; ++i) {
+        const TapeOp& op = tape.ops[i];
+        const auto opcode = static_cast<TapeOpcode>(op.op);
+        u32 value;
+        if (opcode == TapeOpcode::Const) {
+            value = op.imm;
+        } else if (opcode == TapeOpcode::Select) {
+            value = slots[op.imm] != 0 ? slots[op.a] : slots[op.b];
+        } else {
+            const u32 a = op.a == TapeImm ? op.imm : slots[op.a];
+            const u32 b = op.b == TapeImm ? op.imm : slots[op.b];
+            value = EvalTapeOp(opcode, a, b, op.imm);
+        }
+        slots[op.dst] = value;
+    }
+    for (u32 i = 0; i < tape.num_writes; ++i) {
+        apply(u32{tape.writes[i].method}, slots[tape.writes[i].slot]);
+    }
+}
+
+/// Builds a tape during Analyze's dry run: a value is a constant or a slot. Raw ops are numbered
+/// from slot MaxDmaWords; Finish drops the dead ones and renumbers the rest.
+class TapeRecorder {
+public:
+    static constexpr u8 ConstSlot = 0xff;
+    static constexpr size_t MaxRawOps = 64;
+
+    struct Val {
+        u8 slot = ConstSlot;
+        u32 value = 0; ///< When slot == ConstSlot
+    };
+
+    static constexpr Val Const(u32 value) {
+        return {ConstSlot, value};
+    }
+    static constexpr Val Slot(u32 slot) {
+        return {static_cast<u8>(slot), 0};
+    }
+    static constexpr bool IsConst(Val v) {
+        return v.slot == ConstSlot;
+    }
+    static constexpr bool IsConst(Val v, u32 value) {
+        return v.slot == ConstSlot && v.value == value;
+    }
+
+    bool Ok() const {
+        return fallback == TapeFallback::None;
+    }
+    void Fail(TapeFallback why) {
+        if (fallback == TapeFallback::None) {
+            fallback = why;
+        }
+    }
+
+    Val Bin(TapeOpcode op, Val a, Val b, u32 imm = 0) {
+        if (IsConst(a) && IsConst(b)) {
+            return Const(EvalTapeOp(op, a.value, b.value, imm));
+        }
+        // Exact identities only.
+        switch (op) {
+        case TapeOpcode::Add:
+        case TapeOpcode::Or:
+        case TapeOpcode::Xor:
+            if (IsConst(b, 0)) return a;
+            if (IsConst(a, 0)) return b;
+            break;
+        case TapeOpcode::Sub:
+            if (IsConst(b, 0)) return a;
+            break;
+        case TapeOpcode::AddCarry:
+            if (IsConst(a, 0) || IsConst(b, 0)) return Const(0);
+            break;
+        case TapeOpcode::SubBorrow:
+            if (IsConst(b, 0)) return Const(0);
+            break;
+        case TapeOpcode::And:
+            if (IsConst(b, ~0U)) return a;
+            if (IsConst(a, ~0U)) return b;
+            break;
+        default:
+            break;
+        }
+        if (op == TapeOpcode::Merge) {
+            const u8 sa = ToSlot(a);
+            const u8 sb = ToSlot(b);
+            return Emit({static_cast<u8>(op), 0, sa, sb, imm});
+        }
+        // At most one constant here: it goes in imm.
+        if (IsConst(a)) {
+            return Emit({static_cast<u8>(op), 0, TapeImm, b.slot, a.value});
+        }
+        if (IsConst(b)) {
+            return Emit({static_cast<u8>(op), 0, a.slot, TapeImm, b.value});
+        }
+        return Emit({static_cast<u8>(op), 0, a.slot, b.slot, 0});
+    }
+
+    /// `if_set` when the predicate is non-zero, else `if_clear`.
+    Val Select(Val predicate, Val if_set, Val if_clear) {
+        if (IsConst(predicate)) {
+            return predicate.value != 0 ? if_set : if_clear;
+        }
+        if (if_set.slot == if_clear.slot && (!IsConst(if_set) || if_set.value == if_clear.value)) {
+            return if_set;
+        }
+        const u8 sa = ToSlot(if_set);
+        const u8 sb = ToSlot(if_clear);
+        return Emit({static_cast<u8>(TapeOpcode::Select), 0, sa, sb, predicate.slot});
+    }
+
+    void Write(u32 method, Val v) {
+        if (num_writes == MaxTapeWrites) {
+            Fail(TapeFallback::Overflow);
+            return;
+        }
+        writes[num_writes++] = {static_cast<u16>(method), ToSlot(v), 0};
+    }
+
+    /// The live ops, renumbered, into `tape`. False (and `fallback` set) when they don't fit.
+    bool Finish(Tape& tape, u32 dma_words) {
+        if (!Ok()) {
+            return false;
+        }
+        std::array<bool, MaxRawOps> live{};
+        const auto mark = [&](u32 slot) {
+            if (slot >= MaxDmaWords && slot != TapeImm) {
+                live[slot - MaxDmaWords] = true;
+            }
+        };
+        for (u32 i = 0; i < num_writes; ++i) {
+            mark(writes[i].slot);
+        }
+        for (u32 i = num_raw; i-- > 0;) {
+            if (!live[i]) {
+                continue;
+            }
+            const TapeOp& op = raw[i];
+            const auto opcode = static_cast<TapeOpcode>(op.op);
+            if (opcode == TapeOpcode::Const) {
+                continue;
+            }
+            mark(op.a);
+            mark(op.b);
+            if (opcode == TapeOpcode::Select) {
+                mark(op.imm);
+            }
+        }
+        std::array<u8, MaxRawOps> renamed{};
+        u32 count = 0;
+        for (u32 i = 0; i < num_raw; ++i) {
+            if (live[i]) {
+                if (count == MaxTapeOps) {
+                    Fail(TapeFallback::Overflow);
+                    return false;
+                }
+                renamed[i] = static_cast<u8>(MaxDmaWords + count++);
+            }
+        }
+        const auto rename = [&](u32 slot) -> u8 {
+            return slot >= MaxDmaWords && slot != TapeImm ? renamed[slot - MaxDmaWords]
+                                                          : static_cast<u8>(slot);
+        };
+        tape = {};
+        tape.dma_words = static_cast<u8>(dma_words);
+        for (u32 i = 0; i < num_raw; ++i) {
+            if (!live[i]) {
+                continue;
+            }
+            TapeOp op = raw[i];
+            const auto opcode = static_cast<TapeOpcode>(op.op);
+            op.dst = renamed[i];
+            if (opcode != TapeOpcode::Const) {
+                op.a = rename(op.a);
+                op.b = rename(op.b);
+                if (opcode == TapeOpcode::Select) {
+                    op.imm = rename(op.imm);
+                }
+            }
+            tape.ops[tape.num_ops++] = op;
+        }
+        for (u32 i = 0; i < num_writes; ++i) {
+            tape.writes[i] = {writes[i].method, rename(writes[i].slot), 0};
+        }
+        tape.num_writes = static_cast<u8>(num_writes);
+        return true;
+    }
+
+    TapeFallback fallback = TapeFallback::None;
+    std::array<Val, 24> regs{}; ///< Valid for the registers Analyze marks tainted
+    std::array<Val, 2> load{};
+    std::array<Val, 2> alu{};
+    Val carry{};
+    u32 dma_fifo_base{}; ///< FIFO index of DMA word 0
+
+private:
+    u8 ToSlot(Val v) {
+        if (!IsConst(v)) {
+            return v.slot;
+        }
+        for (u32 i = 0; i < num_raw; ++i) {
+            if (raw[i].op == static_cast<u8>(TapeOpcode::Const) && raw[i].imm == v.value) {
+                return static_cast<u8>(MaxDmaWords + i);
+            }
+        }
+        return Emit({static_cast<u8>(TapeOpcode::Const), 0, 0, 0, v.value}).slot;
+    }
+
+    Val Emit(TapeOp op) {
+        if (num_raw == MaxRawOps) {
+            Fail(TapeFallback::Overflow);
+            return Const(0);
+        }
+        op.dst = static_cast<u8>(MaxDmaWords + num_raw);
+        raw[num_raw++] = op;
+        return Slot(op.dst);
+    }
+
+    std::array<TapeOp, MaxRawOps> raw{};
+    u32 num_raw{};
+    std::array<TapeWrite, MaxTapeWrites> writes{};
+    u32 num_writes{};
+};
+
 struct Plan {
     bool eligible{};
     std::string_view reason;
@@ -86,18 +410,25 @@ struct Plan {
     std::array<std::pair<u32, u32>, MaxRamWrites> ram_writes{};
     size_t num_ram_writes{};
     Snapshot snapshot{};
+    bool tape_valid{}; ///< dma_forward_tape: `tape` gives the forwarded writes
+    TapeFallback tape_fallback{TapeFallback::NotRecorded};
+    Tape tape{};
 };
 
 /// Dry run of one call. `read(address, unknown)` returns the front's value of a 3D register and
 /// sets `unknown` when the front doesn't know it (a forwarded write the back hasn't confirmed).
 /// `forwardable(method)` says whether a value from the DMA words may be written to that method.
-template <typename Read, typename Forwardable>
+/// RecordTape: also builds plan.tape (dma_forward_tape).
+template <bool RecordTape = false, typename Read, typename Forwardable>
 Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> parameters,
              std::span<const u32> data_ram, u32 macro_registers_start, Read&& read,
              Forwardable&& forwardable) {
     using Interpreter = Tegra::TuringMacroInterpreter;
     Plan plan;
     Snapshot& snapshot = plan.snapshot;
+    struct NoRecorder {};
+    [[maybe_unused]] std::conditional_t<RecordTape, TapeRecorder, NoRecorder> rec;
+    using Val = TapeRecorder::Val;
     const auto fail = [&](std::string_view why) {
         if (plan.reason.empty()) {
             plan.reason = why;
@@ -194,6 +525,12 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
                     break;
                 }
                 load_taint[i] = fifo_taint[consumed];
+                if constexpr (RecordTape) {
+                    if (load_taint[i]) {
+                        rec.load[i] = TapeRecorder::Slot(static_cast<u32>(consumed) -
+                                                         rec.dma_fifo_base);
+                    }
+                }
                 load[i] = fifo[consumed++];
             }
         }
@@ -223,9 +560,28 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
         // destination then derives from them); never an output, a branch or a data RAM write.
         u32 mask = 15;
         u32 maybe_lanes = 0;
+        [[maybe_unused]] Val predicate_val{};
+        // The tape's value of a source Analyze marks tainted (registers and loads only).
+        [[maybe_unused]] const auto tainted_val = [&](u32 reg) -> Val {
+            if constexpr (RecordTape) {
+                if (reg < 24) {
+                    return rec.regs[reg];
+                }
+                if (reg == 28 || reg == 29) {
+                    return rec.load[reg - 28];
+                }
+                rec.Fail(TapeFallback::Unsupported);
+            }
+            return {};
+        };
         if (d.pred_mode) {
             bool t{};
             const u32 predicate = get(d.pred_reg, 0, t);
+            if constexpr (RecordTape) {
+                if (t) {
+                    predicate_val = tainted_val(d.pred_reg);
+                }
+            }
             if (!t) {
                 mask = predicate ? d.mask_true : d.mask_false;
             } else {
@@ -239,10 +595,16 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
         }
         std::array<u32, 2> xs{}, ys{};
         std::array<bool, 2> xt{}, yt{};
+        [[maybe_unused]] std::array<Val, 2> xv{}, yv{};
         for (u32 lane = 0; lane < 2; ++lane) {
             if (mask & (1U << lane)) {
                 xs[lane] = get(d.src_a[lane], lane, xt[lane]);
                 ys[lane] = get(d.src_b[lane], lane, yt[lane]);
+                if constexpr (RecordTape) {
+                    // Both lanes read their operands before either writes.
+                    xv[lane] = xt[lane] ? tainted_val(d.src_a[lane]) : TapeRecorder::Const(xs[lane]);
+                    yv[lane] = yt[lane] ? tainted_val(d.src_b[lane]) : TapeRecorder::Const(ys[lane]);
+                }
             }
         }
         u32 next_pc = pc + 1;
@@ -259,6 +621,8 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
             }
             const u32 x = xs[lane], y = ys[lane];
             const u32 imm = d.imm[lane];
+            [[maybe_unused]] const u32 carry_before = carry;
+            [[maybe_unused]] const bool carry_taint_before = carry_taint;
             bool value_taint = xt[lane] || yt[lane] || maybe;
             u32 value{};
             const auto condition = [&](u32 comparison) {
@@ -351,6 +715,72 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
                 plan.ram_writes[plan.num_ram_writes++] = {x, y};
                 break;
             }
+            if constexpr (RecordTape) {
+                if (value_taint && plan.reason.empty()) {
+                    using enum TapeOpcode;
+                    const Val a = xv[lane], b = yv[lane];
+                    const Val carry_old =
+                        carry_taint_before ? rec.carry : TapeRecorder::Const(carry_before);
+                    Val result{};
+                    Val carry_new{};
+                    bool writes_carry = false;
+                    switch (op) {
+                    case 0: result = rec.Bin(Add, a, b); carry_new = rec.Bin(AddCarry, a, b); writes_carry = true; break;
+                    case 1: result = rec.Bin(Add, rec.Bin(Add, a, b), carry_old); break;
+                    case 2: result = rec.Bin(Sub, a, b); carry_new = rec.Bin(SubBorrow, a, b); writes_carry = true; break;
+                    case 3: result = rec.Bin(Sub, rec.Bin(Sub, a, b), carry_old); break;
+                    case 4: case 6:
+                        result = rec.Bin(MulLo, a, b);
+                        carry_new = rec.Bin(op == 4 ? MulHiS : MulHiU, a, b);
+                        writes_carry = true;
+                        break;
+                    case 5: result = carry_old; break;
+                    case 8: result = rec.Bin(Clz, a, TapeRecorder::Const(0)); break;
+                    case 9: result = rec.Bin(Shl, a, b); break;
+                    case 10: result = rec.Bin(Shr, a, b); break;
+                    case 11: result = rec.Bin(Sar, a, b); break;
+                    case 12: result = rec.Bin(And, a, b); break;
+                    case 13: result = rec.Bin(Nand, a, b); break;
+                    case 14: result = rec.Bin(Or, a, b); break;
+                    case 15: result = rec.Bin(Xor, a, b); break;
+                    case 16: result = rec.Bin(Merge, a, b, imm); break;
+                    case 17: result = rec.Bin(Lt, a, b); break;
+                    case 18: result = rec.Bin(Ltu, a, b); break;
+                    case 19: result = rec.Bin(Le, a, b); break;
+                    case 20: result = rec.Bin(Leu, a, b); break;
+                    case 21: result = rec.Bin(Eq, a, b); break;
+                    default: rec.Fail(TapeFallback::Unsupported); break;
+                    }
+                    const u32 dst = d.dst[lane];
+                    if (maybe) {
+                        // Select(predicate, ran, skipped) by which mask enables the lane.
+                        const bool runs_when_set = (d.mask_true & (1U << lane)) != 0;
+                        const auto choose = [&](Val ran, Val skipped) {
+                            return runs_when_set ? rec.Select(predicate_val, ran, skipped)
+                                                 : rec.Select(predicate_val, skipped, ran);
+                        };
+                        if (writes_carry) {
+                            carry_new = choose(carry_new, carry_old);
+                        }
+                        rec.alu[lane] = choose(result, TapeRecorder::Const(0));
+                        if (dst < 24) {
+                            if (!(initialized & (1U << dst))) {
+                                rec.Fail(TapeFallback::Unsupported);
+                            }
+                            result = choose(result, taint[dst] ? rec.regs[dst]
+                                                               : TapeRecorder::Const(regs[dst]));
+                        }
+                    } else {
+                        rec.alu[lane] = result;
+                    }
+                    if (writes_carry) {
+                        rec.carry = carry_new;
+                    }
+                    if (dst < 24) {
+                        rec.regs[dst] = result;
+                    }
+                }
+            }
             alu[lane] = value;
             alu_taint[lane] = value_taint;
             if (d.dst[lane] < 24) {
@@ -406,6 +836,18 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
                     break;
                 }
                 plan.writes[plan.num_writes++] = {method, value, t};
+                if constexpr (RecordTape) {
+                    if (t) {
+                        const u32 selector = d.out_emit[lane];
+                        if (selector == 1 || selector == 2) {
+                            rec.Write(method, rec.alu[selector - 1]);
+                        } else if (selector == 3 || selector == 4) {
+                            rec.Write(method, rec.load[selector - 3]);
+                        } else {
+                            rec.Fail(TapeFallback::Unsupported);
+                        }
+                    }
+                }
                 if (!t && method == 0x157) {
                     fail("MME DMA read into data RAM");
                     break;
@@ -420,6 +862,9 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
                     snapshot.dma_source = (GPUVAddr{hi & 0x1ffffff} << 32) | lo;
                     snapshot.dma_words = value;
                     plan.dma_write_index = plan.num_writes - 1;
+                    if constexpr (RecordTape) {
+                        rec.dma_fifo_base = static_cast<u32>(fifo_size);
+                    }
                     for (u32 i = 0; i < value; ++i) {
                         fifo[fifo_size] = 0;
                         fifo_taint[fifo_size++] = true;
@@ -447,6 +892,10 @@ Plan Analyze(std::span<const u32> code, u32 start, std::span<const u32> paramete
                         snapshot.code.begin());
             snapshot.num_writes = static_cast<u32>(plan.num_writes);
             plan.eligible = true;
+            if constexpr (RecordTape) {
+                plan.tape_valid = rec.Finish(plan.tape, snapshot.dma_words);
+                plan.tape_fallback = rec.fallback;
+            }
             return plan;
         }
         end_next = d.end && !branch_cancels_end;
@@ -520,7 +969,9 @@ inline bool SamePlan(const Plan& a, const Plan& b) {
         std::memcmp(static_cast<const SlimSnapshot*>(&a.snapshot),
                     static_cast<const SlimSnapshot*>(&b.snapshot), sizeof(SlimSnapshot)) != 0 ||
         std::memcmp(a.snapshot.code.data(), b.snapshot.code.data(),
-                    size_t{a.snapshot.num_code_words} * sizeof(u32)) != 0) {
+                    size_t{a.snapshot.num_code_words} * sizeof(u32)) != 0 ||
+        a.tape_valid != b.tape_valid || a.tape_fallback != b.tape_fallback ||
+        std::memcmp(&a.tape, &b.tape, sizeof(Tape)) != 0) {
         return false;
     }
     for (size_t i = 0; i < a.num_writes; ++i) {
