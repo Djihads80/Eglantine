@@ -295,6 +295,7 @@ private:
     void UpdateGameDlssStatus(bool complete, VideoCore::GameDlssReason blocker);
     std::pair<std::vector<u32>, std::vector<u32>> NativeImageHandles(GPUVAddr program);
     bool UpscaleInsteadOfNativeProgram();
+    void RememberNativeUpscaleInput();
     bool ReadConstBufferWords(u32 slot, std::vector<u32>& words) const;
     void FollowPhotoUpscale();
     bool UpscaleFromConstBuffers();
@@ -324,6 +325,15 @@ private:
         /// What the Graphics tab was last told.
         VideoCore::GameDlssStatus status{};
     } dlss_chain;
+
+    /// Ocarina of Time's movie network: a pass that reads one colour image and stores none
+    /// retains its input here; the pass that stores an image upscaling it is replaced by a plain
+    /// copy (the network's matrix passes cost seconds per frame on Pascal-class GPUs). Cleared
+    /// after the copy.
+    std::optional<Texture::TICEntry> native_upscale_input;
+    /// Native dispatches left to skip while a retained network is being replaced (bounded, so a
+    /// non-network pass cannot silence the engine forever).
+    u32 network_skip_remaining{};
 
     /// Mario Kart World's docked photo mode upscales 2560x1440 to 3840x2160 with a tensor-core
     /// network whose passes can't run. After its first rejected pass the next dispatches are
