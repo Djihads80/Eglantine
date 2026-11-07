@@ -522,6 +522,19 @@ bool IsStoreOnlyExecutable(u32 method) {
     }
 }
 
+// Nx2Perf exec_same_drop: the shader stage of a constant buffer bind register, ~0 otherwise.
+constexpr u32 BindGroupStage(u32 method) {
+    constexpr u32 first = MAXWELL3D_REG_INDEX(bind_groups[0].raw_config);
+    constexpr u32 stride = MAXWELL3D_REG_INDEX(bind_groups[1].raw_config) - first;
+    const u32 offset = method - first;
+    return offset % stride == 0 && offset / stride < Maxwell3D::Regs::MaxShaderStage
+               ? offset / stride
+               : ~0U;
+}
+static_assert(BindGroupStage(0x904) == 0 && BindGroupStage(0x90c) == 1 &&
+              BindGroupStage(0x924) == 4 && BindGroupStage(0x92c) == ~0U &&
+              BindGroupStage(0x905) == ~0U && BindGroupStage(0x5f7) == ~0U);
+
 } // Anonymous namespace
 
 // CallMethodSlow without the checks that cannot apply (CallMethod): no macro collects parameters,
@@ -1117,11 +1130,15 @@ struct Maxwell3D::FrontState {
             unknown_regs[method] = true;
             ++unknown_count;
         }
+        if (exec_same_drop && BindGroupStage(method) != ~0U) {
+            exec_bind_memo.Clear(); // The back binds a constant buffer the front can't see
+        }
     }
     void ForgetUnknown(u32 method) {
         if (unknown_regs[method]) {
             unknown_regs[method] = false;
             --unknown_count;
+            exec_relearned = true;
         }
     }
     /// Takes a forwarded register's value (and shadow copy) from the back, after draining it.
@@ -1156,6 +1173,16 @@ struct Maxwell3D::FrontState {
     /// change of program epoch makes every entry until then a writer.
     bool draw_window_writer{};
     u64 draw_window_epoch{};
+    /// Nx2Perf exec_same_drop, read once; its bind memo; whether a register was learned again
+    /// since the last executable write; the counts it logs (store-only and binds left out,
+    /// store-only kept for a dirty flag) and the system its Verify checks run with.
+    bool exec_same_drop{};
+    bool exec_relearned{};
+    VideoCommon::Nx2Perf::ExecBindMemo exec_bind_memo;
+    std::array<u64, 3> exec_counts{};
+    u64 exec_noted{};
+    s64 exec_logged_ns{};
+    Core::System* system{};
 };
 
 namespace {
@@ -1550,6 +1577,8 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front->draw_begin_coalesce =
             VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DrawBeginCoalesce);
         front->verify = VideoCommon::Nx2Perf::Verify();
+        front->exec_same_drop = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ExecSameDrop);
+        front->system = &system;
         front->executing_macro = executing_macro;
         front->parameters = std::move(macro_params);
         macro_params.clear();
@@ -1663,6 +1692,23 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     if (method == MAXWELL3D_REG_INDEX(shadow_ram_control) && FrontVerifyEnabled()) [[unlikely]] {
         fs.control_writes[fs.control_count++ % fs.control_writes.size()] = {
             argument, static_cast<u32>(fs.control), from_macro ? 2U : 1U};
+    }
+    // Nx2Perf exec_same_drop. With Verify the write still runs on the back, which checks that
+    // it changed nothing; the front's state moves on as if it were left out.
+    if (fs.exec_same_drop) [[unlikely]] {
+        if (const u32 kind = FrontExecSameDrop(split, fs, method, value, shadow_kept);
+            kind != ~0U) {
+            if (fs.verify) {
+                split.Defer(
+                    [this, system = fs.system, method, argument,
+                     last = from_macro || is_last_call,
+                     kind] { VerifyExecSameDrop(*system, method, argument, last, kind); },
+                    effect);
+            } else if (Profile::Enabled()) [[unlikely]] {
+                Profile::Add(Profile::Counter::SameValueWrites, 1);
+            }
+            return;
+        }
     }
     std::optional<GPUVAddr> cb_write;
     u32 cb_room{};
@@ -1820,6 +1866,9 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
             FrontRunMacro(system, split, fs);
         }
         return;
+    }
+    if (fs.exec_same_drop && BindGroupStage(method) != ~0U) [[unlikely]] {
+        fs.exec_bind_memo.Clear(); // exec_same_drop: binds the front doesn't track
     }
     // What CallMultiMethod does to the registers on the back, then one entry for all the words.
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -2664,6 +2713,173 @@ bool Maxwell3D::FrontSkipsLoopWrite(FrontState& fs, u32 method, u32 value, bool 
     // draws nothing in an instance loop, and it only reads the vertex buffer first and count
     // (index_buffer writes also mark the index buffer dirty, so they are always sent).
     return method != MAXWELL3D_REG_INDEX(draw.end) || fs.instance_loop;
+}
+
+u32 Maxwell3D::FrontExecSameDrop(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,
+                                 u32 value, bool shadow_kept) {
+    const bool relearned = std::exchange(fs.exec_relearned, false);
+    const u32 stage = BindGroupStage(method);
+    if (stage == ~0U && !IsStoreOnlyExecutable(method)) {
+        return ~0U;
+    }
+    // Both sides hold the value and the shadow RAM keeps it; no deferred instanced draw can be
+    // pending for ProcessDirtyRegisters to issue.
+    bool drop = !relearned && fs.regs[method] == value && shadow_kept && fs.skip_same &&
+                fs.control != Regs::ShadowRamControl::Replay && fs.executing_macro == 0 &&
+                !fs.draw_pending && !fs.instance_loop && !FrontVerifyEnabled();
+    if (drop && (dirty.tables[0][method] != 0 || dirty.tables[1][method] != 0)) {
+        ++fs.exec_counts[2]; // It marks state dirty (index_buffer.first: Dirty::IndexBuffer)
+        drop = false;
+    }
+    u32 kind = 0;
+    if (stage != ~0U) {
+        // The bind repeats the last one sent on the stage: same slot, address and size, and no
+        // queued function or GPU map since that could translate the address differently.
+        constexpr u32 high = MAXWELL3D_REG_INDEX(const_buffer.address_high);
+        constexpr u32 low = MAXWELL3D_REG_INDEX(const_buffer.address_low);
+        constexpr u32 size = MAXWELL3D_REG_INDEX(const_buffer.size);
+        const bool known =
+            fs.unknown_count == 0 ||
+            (!fs.unknown_regs[high] && !fs.unknown_regs[low] && !fs.unknown_regs[size]);
+        const u64 position = split.MapTarget();
+        const u64 serial = memory_manager.GetMapSerial();
+        drop = drop && known &&
+               fs.exec_bind_memo.Same(stage, value, fs.regs[high], fs.regs[low], fs.regs[size],
+                                      position, serial);
+        if (!drop) {
+            if (known) {
+                fs.exec_bind_memo.Record(stage, value, fs.regs[high], fs.regs[low],
+                                         fs.regs[size], position, serial);
+            } else {
+                fs.exec_bind_memo.Forget(stage);
+            }
+            return ~0U;
+        }
+        kind = 1;
+    } else if (!drop) {
+        return ~0U;
+    }
+    ++fs.exec_counts[kind];
+    if ((++fs.exec_noted & 0x3ff) == 0) {
+        const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (now - fs.exec_logged_ns >= 1'000'000'000) {
+            LOG_INFO(HW_GPU,
+                     "Nx2Perf exec_same_drop: {} store-only writes and {} constant buffer binds "
+                     "{} in {} ms; {} same-value store-only writes kept (they mark state dirty)",
+                     fs.exec_counts[0], fs.exec_counts[1],
+                     fs.verify ? "would be left out (Verify: sent for the back to check)"
+                               : "left out",
+                     fs.exec_logged_ns != 0 ? (now - fs.exec_logged_ns) / 1'000'000 : 0,
+                     fs.exec_counts[2]);
+            fs.exec_counts = {};
+            fs.exec_logged_ns = now;
+        }
+    }
+    return kind;
+}
+
+void Maxwell3D::VerifyExecSameDrop(Core::System& system, u32 method, u32 argument, bool is_last,
+                                   u32 kind) {
+    // The executable Method entry consumes the sink first.
+    ConsumeSink(system);
+    const u32 reg = regs.reg_array[method];
+    const u32 shadow = shadow_state.reg_array[method];
+    const DirtyState::Flags flags = dirty.flags;
+    const bool deferred = draw_manager.HasDeferredDraw();
+    const u32 stage = BindGroupStage(method);
+    const u32 slot = (argument >> 4) & 0x1f; // bind_groups shader_slot
+    const bool bind = kind == 1 && stage != ~0U && slot < Regs::MaxConstBuffers;
+    ConstBufferInfo buffer{};
+    std::array<u64, 6> binding{};
+    bool have_binding = false;
+    if (bind) {
+        buffer = state.shader_stages[stage].const_buffers[slot];
+        have_binding = rasterizer->Nx2UniformBinding(stage, slot, binding);
+    }
+    CallMethod(system, method, argument, is_last);
+
+    static std::atomic<u64> checks{};
+    static std::atomic<u64> binds{};
+    static std::atomic<u64> differences{};
+    static std::atomic<u64> deleted_rebinds{};
+    static std::atomic<u32> lines{};
+    static std::atomic<s64> logged_ns{};
+    checks.fetch_add(1, std::memory_order_relaxed);
+    std::string moved;
+    if (deferred) {
+        moved += " deferred-draw";
+    }
+    if (regs.reg_array[method] != reg) {
+        moved += fmt::format(" register {:#x}->{:#x}", reg, regs.reg_array[method]);
+    }
+    if (shadow_state.reg_array[method] != shadow) {
+        moved += fmt::format(" shadow {:#x}->{:#x}", shadow, shadow_state.reg_array[method]);
+    }
+    if (dirty.flags != flags) {
+        const DirtyState::Flags changed = dirty.flags ^ flags;
+        moved += " dirty";
+        for (size_t i = 0; i < changed.size(); ++i) {
+            if (changed[i]) {
+                moved += fmt::format(" {}", i);
+            }
+        }
+    }
+    if (bind) {
+        binds.fetch_add(1, std::memory_order_relaxed);
+        const ConstBufferInfo& now = state.shader_stages[stage].const_buffers[slot];
+        if (now.enabled != buffer.enabled || now.address != buffer.address ||
+            now.size != buffer.size) {
+            moved += fmt::format(" cb {}/{:#x}/{:#x}->{}/{:#x}/{:#x}", buffer.enabled,
+                                 buffer.address, buffer.size, now.enabled, now.address, now.size);
+        }
+        std::array<u64, 6> after{};
+        if (have_binding && rasterizer->Nx2UniformBinding(stage, slot, after) &&
+            after != binding) {
+            // After a buffer deletion the rebind leaves the buffer to the draw's FindBuffer,
+            // which returns the one still bound (DeleteBuffer cleared the ones it deleted).
+            const bool only_buffer = (binding[5] & 2) != 0 && after[0] == binding[0] &&
+                                     after[1] == binding[1] && after[2] == binding[2] &&
+                                     after[3] == binding[3];
+            if (only_buffer) {
+                deleted_rebinds.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                moved += fmt::format(" binding {:#x}/{:#x}/{}/{:#x}/{}/{}->{:#x}/{:#x}/{}/{:#x}/{}/{}",
+                                     binding[0], binding[1], binding[2], binding[3], binding[4],
+                                     binding[5], after[0], after[1], after[2], after[3],
+                                     after[4], after[5]);
+            }
+        }
+    }
+    if (!moved.empty()) {
+        differences.fetch_add(1, std::memory_order_relaxed);
+        if (lines.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU, "Nx2Perf exec_same_drop: method {:#x} = {:#x} would differ:{}",
+                      method, argument, moved);
+        }
+    }
+    {
+        const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+        if (now - logged_ns.load(std::memory_order_relaxed) >= 1'000'000'000) {
+            logged_ns.store(now, std::memory_order_relaxed);
+            const u64 total = checks.load(std::memory_order_relaxed);
+            const u64 bind_total = binds.load(std::memory_order_relaxed);
+            const u64 differed = differences.load(std::memory_order_relaxed);
+            const std::string text = fmt::format(
+                "Nx2Perf exec_same_drop: {} checks ({} store-only, {} binds), {} differed, {} "
+                "binds after a buffer deletion (buffer re-resolved at the draw)",
+                total, total - bind_total, bind_total, differed,
+                deleted_rebinds.load(std::memory_order_relaxed));
+            if (differed != 0) {
+                LOG_ERROR(HW_GPU, "{}", text);
+            } else {
+                LOG_INFO(HW_GPU, "{}", text);
+            }
+        }
+    }
 }
 
 void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 macro, u32 method,

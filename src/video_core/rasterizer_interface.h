@@ -76,6 +76,12 @@ public:
     /// Signal disabling of a uniform buffer
     virtual void DisableGraphicsUniformBuffer(size_t stage, u32 index) = 0;
 
+    /// Nx2Perf exec_same_drop verify: a uniform buffer binding as {device address, GPU address,
+    /// map serial, size, buffer id, unresolved | has_deleted_buffers << 1}; false if unknown.
+    virtual bool Nx2UniformBinding(size_t stage, u32 index, std::array<u64, 6>& out) {
+        return false;
+    }
+
     /// Signal a GPU based semaphore as a fence
     virtual void SignalFence(std::function<void()>&& func) = 0;
 

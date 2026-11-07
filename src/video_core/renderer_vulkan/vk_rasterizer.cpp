@@ -1629,6 +1629,11 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
     buffer_cache.DisableGraphicsUniformBuffer(stage, index);
 }
 
+bool RasterizerVulkan::Nx2UniformBinding(size_t stage, u32 index, std::array<u64, 6>& out) {
+    buffer_cache.Nx2UniformBinding(stage, index, out);
+    return true;
+}
+
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {

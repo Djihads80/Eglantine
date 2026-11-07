@@ -70,7 +70,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::FrontMacroMemo) ||
                                   i == Index(Opt::RunAheadSnapshotProbe) ||
                                   i == Index(Opt::ReportSubmitEarly) ||
-                                  i == Index(Opt::DmaForwardTape);
+                                  i == Index(Opt::DmaForwardTape) ||
+                                  i == Index(Opt::ExecSameDrop);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -533,4 +534,37 @@ TEST_CASE("dma_forward_tape: a tape that doesn't fit falls back", "[nx2_perf]") 
     INFO(fits.reason);
     CheckTape(fits, 9);
     REQUIRE(fits.tape.num_ops == DmaForward::MaxTapeOps);
+}
+
+TEST_CASE("exec_same_drop: off by default", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::ExecSameDrop)] == "exec_same_drop");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ExecSameDrop)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::ExecSameDrop)));
+    REQUIRE(ParseOffMask(false, "exec_same_drop", "", false) ==
+            (always_off & ~Bit(Opt::ExecSameDrop)));
+}
+
+TEST_CASE("exec_same_drop: a bind repeats only the last one sent on its stage", "[nx2_perf]") {
+    ExecBindMemo memo;
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1000, 0x100, 7, 3));
+    memo.Record(0, 0x31, 1, 0x1000, 0x100, 7, 3);
+    REQUIRE(memo.Same(0, 0x31, 1, 0x1000, 0x100, 7, 3));
+    // Another stage, word, address, size, queued function or GPU map.
+    REQUIRE_FALSE(memo.Same(1, 0x31, 1, 0x1000, 0x100, 7, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x30, 1, 0x1000, 0x100, 7, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x31, 2, 0x1000, 0x100, 7, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1100, 0x100, 7, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1000, 0x200, 7, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1000, 0x100, 8, 3));
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1000, 0x100, 7, 4));
+    // A bind of another slot on the stage replaces it.
+    memo.Record(0, 0x41, 1, 0x2000, 0x100, 7, 3);
+    REQUIRE_FALSE(memo.Same(0, 0x31, 1, 0x1000, 0x100, 7, 3));
+    REQUIRE(memo.Same(0, 0x41, 1, 0x2000, 0x100, 7, 3));
+    memo.Record(4, 0x11, 0, 0x3000, 0x40, 7, 3);
+    memo.Forget(0);
+    REQUIRE_FALSE(memo.Same(0, 0x41, 1, 0x2000, 0x100, 7, 3));
+    REQUIRE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
+    memo.Clear();
+    REQUIRE_FALSE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
 }
