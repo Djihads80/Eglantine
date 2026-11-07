@@ -287,7 +287,9 @@ inline constexpr OffMask DefaultOffMask() {
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
 /// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured);
-/// run_ahead_ledger (measurement). dma_forward and draw_begin_coalesce are on
+/// run_ahead_ledger (measurement); compute_writer_ranges (-2.5 FPS: many short list-writer waits),
+/// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
+/// round 7). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
