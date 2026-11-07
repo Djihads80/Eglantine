@@ -311,8 +311,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured);
 /// run_ahead_ledger (measurement); compute_writer_ranges (-2.5 FPS: many short list-writer waits),
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
-/// round 7); inflight_wait_v2 (runs ahead: flash check and a user play test first),
-/// list_fetch_after_sync, spin_handoff (round 8, unmeasured), run_ahead_cover (measurement).
+/// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
+/// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8).
 /// dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
