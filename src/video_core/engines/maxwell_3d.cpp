@@ -2804,6 +2804,7 @@ void Maxwell3D::VerifyExecSameDrop(Core::System& system, u32 method, u32 argumen
     static std::atomic<u64> binds{};
     static std::atomic<u64> differences{};
     static std::atomic<u64> deleted_rebinds{};
+    static std::atomic<u64> serial_refreshes{};
     static std::atomic<u32> lines{};
     static std::atomic<s64> logged_ns{};
     checks.fetch_add(1, std::memory_order_relaxed);
@@ -2837,12 +2838,15 @@ void Maxwell3D::VerifyExecSameDrop(Core::System& system, u32 method, u32 argumen
         std::array<u64, 6> after{};
         if (have_binding && rasterizer->Nx2UniformBinding(stage, slot, after) &&
             after != binding) {
-            // After a buffer deletion the rebind leaves the buffer to the draw's FindBuffer,
-            // which returns the one still bound (DeleteBuffer cleared the ones it deleted).
-            const bool only_buffer = (binding[5] & 2) != 0 && after[0] == binding[0] &&
-                                     after[1] == binding[1] && after[2] == binding[2] &&
+            // A GPU map after the front's decision only refreshes the serial when the address
+            // translates the same (only the bind's early-out reads it). After a buffer deletion
+            // the rebind leaves the buffer to the draw's FindBuffer, which returns the one
+            // still bound (DeleteBuffer cleared the ones it deleted).
+            const bool same_target = after[0] == binding[0] && after[1] == binding[1] &&
                                      after[3] == binding[3];
-            if (only_buffer) {
+            if (same_target && after[4] == binding[4] && after[5] == binding[5]) {
+                serial_refreshes.fetch_add(1, std::memory_order_relaxed);
+            } else if (same_target && (binding[5] & 2) != 0) {
                 deleted_rebinds.fetch_add(1, std::memory_order_relaxed);
             } else {
                 moved += fmt::format(" binding {:#x}/{:#x}/{}/{:#x}/{}/{}->{:#x}/{:#x}/{}/{:#x}/{}/{}",
@@ -2870,9 +2874,11 @@ void Maxwell3D::VerifyExecSameDrop(Core::System& system, u32 method, u32 argumen
             const u64 differed = differences.load(std::memory_order_relaxed);
             const std::string text = fmt::format(
                 "Nx2Perf exec_same_drop: {} checks ({} store-only, {} binds), {} differed, {} "
-                "binds after a buffer deletion (buffer re-resolved at the draw)",
+                "binds after a buffer deletion (buffer re-resolved at the draw), {} map serial "
+                "refreshes (same translation)",
                 total, total - bind_total, bind_total, differed,
-                deleted_rebinds.load(std::memory_order_relaxed));
+                deleted_rebinds.load(std::memory_order_relaxed),
+                serial_refreshes.load(std::memory_order_relaxed));
             if (differed != 0) {
                 LOG_ERROR(HW_GPU, "{}", text);
             } else {
