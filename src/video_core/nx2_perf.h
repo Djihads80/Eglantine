@@ -229,6 +229,9 @@ enum class Opt : unsigned {
     /// Split back: a run of plain 3D method entries goes through Maxwell3D::BackRun (one tight
     /// loop) instead of one Execute per entry; it stops where BackLoop would release the front
     BackReplayLean,
+    /// Split front: a 3D macro call whose words are all in the entry goes from its header to
+    /// FrontRunMacro in one call (Maxwell3D::FrontCallMacro), its parameters borrowed in place
+    FrontMacroCall,
     Count,
 };
 
@@ -293,6 +296,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "run_ahead_own_write_probe",
     "bank_dirty_skip",
     "back_replay_lean",
+    "front_macro_call",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -385,7 +389,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::StateDeadStore,
                           Opt::RunAheadOwnWriteProbe,
                           Opt::BankDirtySkip,
-                          Opt::BackReplayLean}) {
+                          Opt::BackReplayLean,
+                          Opt::FrontMacroCall}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -417,7 +422,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// dma_forward_tape (+0.35 FPS; round 11), run_ahead_overlay_budget (measurement; round 12),
 /// acquire_drain_lite (-0.2 FPS; round 12), exec_same_drop (~4.7k binds/s left out; round 12),
 /// state_dead_store (~950 folds/s; round 12), run_ahead_own_write_probe (measurement; round 13),
-/// bank_dirty_skip (unmeasured; round 13), back_replay_lean (unmeasured; round 13).
+/// bank_dirty_skip (unmeasured; round 13), back_replay_lean (unmeasured; round 13),
+/// front_macro_call (unmeasured; round 13).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -458,7 +464,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::StateDeadStore) |
                                   Bit(Opt::RunAheadOwnWriteProbe) |
                                   Bit(Opt::BankDirtySkip) |
-                                  Bit(Opt::BackReplayLean);
+                                  Bit(Opt::BackReplayLean) |
+                                  Bit(Opt::FrontMacroCall);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -576,6 +583,9 @@ static_assert(static_cast<unsigned>(Opt::BankDirtySkip) == 88 &&
 static_assert(static_cast<unsigned>(Opt::BackReplayLean) == 89 &&
               IsOff(always_off, static_cast<size_t>(Opt::BackReplayLean)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BackReplayLean)));
+static_assert(static_cast<unsigned>(Opt::FrontMacroCall) == 90 &&
+              IsOff(always_off, static_cast<size_t>(Opt::FrontMacroCall)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::FrontMacroCall)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

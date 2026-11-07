@@ -201,6 +201,11 @@ private:
     bool FrontRun(std::span<const CommandHeader> commands, size_t word_offset, size_t& index);
     void VerifyFrontRun(Engines::Maxwell3D& maxwell3d, std::span<const CommandHeader> commands,
                         size_t word_offset, size_t& index);
+    bool FrontMacroCall(std::span<const CommandHeader> commands, size_t word_offset,
+                        size_t& index);
+    void VerifyFrontMacroCall(Engines::Maxwell3D& maxwell3d,
+                              std::span<const CommandHeader> commands, size_t word_offset,
+                              size_t& index);
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;
@@ -298,6 +303,8 @@ public:
     std::condition_variable sync_cv;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
+
+    bool front_macro_call_on{}; ///< Nx2Perf front_macro_call (with macro_borrow), read once
 
     const bool ib_enable : 1 = true; ///< IB mode enabled
     bool dma_increment_once : 1 = false;

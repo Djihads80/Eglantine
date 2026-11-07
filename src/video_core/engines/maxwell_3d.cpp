@@ -1109,6 +1109,9 @@ void Maxwell3D::SetHLEReplacementAttributeType(u32 bank, u32 offset,
 // point of the method stream. That is every write the front sends, with the shadow RAM applied,
 // plus the few changes the back makes on its own (constant buffer offset, shadow_scratch[0] on
 // falcon[4], the macro bind pointer); the front loads and binds the macro code itself.
+namespace {
+struct FrontMacroSwitches;
+}
 struct Maxwell3D::FrontState {
     std::array<ControlWrite, 16> control_writes{};
     u32 control_count{};
@@ -1160,6 +1163,14 @@ struct Maxwell3D::FrontState {
     bool writer_set_exec{}; ///< Nx2Perf WriterSetExec, read once
     bool draw_begin_coalesce{}; ///< Nx2Perf DrawBeginCoalesce, read once
     bool verify{};      ///< Nx2Perf::Verify(), read once
+    /// Nx2Perf front_macro_call, read once; with it on, FrontRunMacro takes these switches from
+    /// here instead of reading them on every call.
+    bool macro_call{};
+    bool dma_forward{};
+    bool dma_forward_tape{};
+    bool dma_forward_memo{};
+    bool macro_memo_on{};
+    const FrontMacroSwitches* macro_options{};
     /// MacroReadWriterSet (FrontDrawEffect): the last lookup of the programs the registers bind,
     /// valid while those registers, the program epoch, the proofs and the GPU map are unchanged.
     bool draw_key_valid{};
@@ -1587,6 +1598,16 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         front->verify = VideoCommon::Nx2Perf::Verify();
         front->exec_same_drop = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ExecSameDrop);
         front->system = &system;
+        {
+            using VideoCommon::Nx2Perf::On;
+            using VideoCommon::Nx2Perf::Opt;
+            front->macro_call = On(Opt::FrontMacroCall);
+            front->dma_forward = On(Opt::DmaForward);
+            front->dma_forward_tape = On(Opt::DmaForwardTape);
+            front->dma_forward_memo = On(Opt::DmaForwardMemo);
+            front->macro_memo_on = On(Opt::FrontMacroMemo);
+            front->macro_options = &FrontMacroOptions();
+        }
         if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::StateDeadStore)) {
             front->dead_store = std::make_unique<VideoCommon::DeadStoreSlot[]>(Regs::NUM_REGS);
             if (front->verify) {
@@ -2068,6 +2089,23 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     }
 }
 
+bool Maxwell3D::FrontMacroIdle(Core::System& system, VideoCommon::GpuSplit& split) {
+    const auto& fs = Front(system, split);
+    return fs.executing_macro == 0 && fs.parameters.empty();
+}
+
+bool Maxwell3D::FrontCallMacro(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                               std::span<const u32> words) {
+    auto& fs = Front(system, split);
+    if (fs.executing_macro != 0 || !fs.parameters.empty()) {
+        return false;
+    }
+    // FrontCallMultiMethod's macro_borrow path: the macro reads the words where they are.
+    fs.executing_macro = method;
+    FrontRunMacro(system, split, fs, words);
+    return true;
+}
+
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                               FrontState& fs, std::span<const u32> borrowed) {
 #ifdef ARCHITECTURE_x86_64
@@ -2077,8 +2115,18 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     auto& engine = GetNativeMacroEngine();
     const auto positions = GetNativeMacroPositions();
     const u32 start = positions[((method - MacroRegistersStart) >> 1) % positions.size()];
-    const auto& options = FrontMacroOptions();
+    const auto& options = fs.macro_call ? *fs.macro_options : FrontMacroOptions();
     const bool profile = Profile::Enabled();
+    if (front_macro_record != nullptr) [[unlikely]] {
+        const std::span<const u32> parameters =
+            borrowed.empty() ? std::span<const u32>{fs.parameters} : borrowed;
+        const u64 ring = split.WritePosition();
+        front_macro_record->insert(front_macro_record->end(),
+                                   {method, static_cast<u32>(parameters.size()),
+                                    static_cast<u32>(ring), static_cast<u32>(ring >> 32)});
+        front_macro_record->insert(front_macro_record->end(), parameters.begin(),
+                                   parameters.end());
+    }
     // EDEN_NX2_MACRO_TRACE=<macro index>: log the first 32 calls of one macro (its parameters,
     // every write in order, the words its DMA reads return) and its code once.
     static const u32 trace_macro = [] {
@@ -2127,8 +2175,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     const DmaForward::Plan* dma_plan = nullptr;
     bool forwarded_call = false;
     bool verify_forward = false;
-    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForward) && !trace &&
-        macro_index < fs.dma_macros.size() && fs.dma_macros[macro_index]) [[unlikely]] {
+    if ((fs.macro_call ? fs.dma_forward
+                       : VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForward)) &&
+        !trace && macro_index < fs.dma_macros.size() && fs.dma_macros[macro_index]) [[unlikely]] {
         Profile::Scope profile_scope{Profile::Zone::Macro};
         static u64 forwarded_calls{};
         static u64 fallen_back{};
@@ -2147,8 +2196,11 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             return address == MAXWELL3D_REG_INDEX(render_enable.mode);
         };
         // dma_forward_tape: the back evaluates a recorded tape instead of re-running the call.
-        static const bool tape_on =
-            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForwardTape);
+        const bool tape_on = fs.macro_call ? fs.dma_forward_tape : [] {
+            static const bool on =
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForwardTape);
+            return on;
+        }();
         const auto analyze = [&](auto&& read) {
             if (tape_on) {
                 return DmaForward::Analyze<true>(
@@ -2159,7 +2211,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                                        std::span<const u32>{native_data_ram}, MacroRegistersStart,
                                        read, forwardable);
         };
-        const bool memo = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForwardMemo);
+        const bool memo =
+            fs.macro_call ? fs.dma_forward_memo
+                          : VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DmaForwardMemo);
         const u64 code_generation = engine.native_code_generation;
         if (fs.control == Regs::ShadowRamControl::Replay) {
             // The back would write the shadow copy, not the words.
@@ -2472,10 +2526,15 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             }
         }
     }
-    std::array<std::pair<u32, u32>, DmaForward::MaxWrites> verify_writes{};
+    // Read only under verify_forward, up to the counts: front_macro_call leaves them unset.
+    std::array<std::array<u32, 2>, DmaForward::MaxWrites> verify_writes;
     size_t verify_count{};
-    std::array<u32, DmaForward::MaxDmaWords> verify_words{};
+    std::array<u32, DmaForward::MaxDmaWords> verify_words;
     u32 verify_word_count{};
+    if (!fs.macro_call) {
+        verify_writes.fill({});
+        verify_words.fill(0);
+    }
     if (!forwarded_call) {
         Profile::Scope profile_scope{Profile::Zone::Macro};
         engine.native_interpreter.active_dram = &native_data_ram;
@@ -2586,8 +2645,11 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         // RAM and no MME DMA (front_macro_memo.h). With PERF_VERIFY a hit runs the JIT anyway
         // and compares its emits with the entry's.
         namespace MacroMemo = VideoCommon::FrontMacroMemo;
-        static const bool macro_memo_on =
-            VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontMacroMemo);
+        const bool macro_memo_on = fs.macro_call ? fs.macro_memo_on : [] {
+            static const bool on =
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontMacroMemo);
+            return on;
+        }();
         bool replayed = false;
         bool record = false;
         const MacroMemo::Entry* check = nullptr;
@@ -2716,14 +2778,14 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             bool same = verify_count == dma_plan->num_writes;
             for (size_t i = 0; same && i < dma_plan->snapshot.first_forwarded; ++i) {
                 same = verify_writes[i] ==
-                       std::pair<u32, u32>{dma_plan->writes[i].method, dma_plan->writes[i].value};
+                       std::array<u32, 2>{dma_plan->writes[i].method, dma_plan->writes[i].value};
             }
             size_t index = dma_plan->snapshot.first_forwarded;
             const bool ran = DmaForward::Recompute(
                 dma_plan->snapshot, std::span<const u32>{verify_words.data(), verify_word_count},
                 MacroRegistersStart, [&](u32 forwarded_method, u32 value) {
                     same = same && index < verify_count &&
-                           verify_writes[index] == std::pair<u32, u32>{forwarded_method, value};
+                           verify_writes[index] == std::array<u32, 2>{forwarded_method, value};
                     ++index;
                 });
             same = same && ran;

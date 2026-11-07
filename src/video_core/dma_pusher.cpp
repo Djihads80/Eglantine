@@ -59,7 +59,10 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
     , channel_state{channel_state_}
     , signal_sync{false}
     , synced{false}
-{}
+{
+    front_macro_call_on = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FrontMacroCall) &&
+                          VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::MacroBorrow);
+}
 
 DmaPusher::~DmaPusher() = default;
 
@@ -339,6 +342,53 @@ static const u32 g_semaphore_watch = [] {
     return value ? static_cast<u32>(std::strtoull(value, nullptr, 16)) : 0U;
 }();
 
+// Nx2Perf front_macro_call: what happened to the 3D macro calls, logged about once a second
+// (front thread only).
+enum class MacroCallCount : size_t {
+    Taken,
+    Split,
+    Pending,
+    Mode,
+    SemaphoreWatch,
+    OtherEngine,
+    Verified,
+    Count,
+};
+struct MacroCallStats {
+    std::array<u64, static_cast<size_t>(MacroCallCount::Count)> counts{};
+    u64 events{};
+    u64 differed{};
+    std::chrono::steady_clock::time_point last{};
+};
+static MacroCallStats g_macro_call_stats;
+
+static void CountMacroCall(MacroCallCount which) {
+    auto& stats = g_macro_call_stats;
+    ++stats.counts[static_cast<size_t>(which)];
+    if ((++stats.events & 0xfff) != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - stats.last < std::chrono::seconds{1}) {
+        return;
+    }
+    if (stats.last != std::chrono::steady_clock::time_point{}) {
+        const auto& c = stats.counts;
+        LOG_INFO(HW_GPU,
+                 "Nx2Perf front_macro_call: {} calls taken, fallbacks: {} split across entries, "
+                 "{} pending parameters, {} mode, {} semaphore watch, {} other engine",
+                 c[0], c[1], c[2], c[3], c[4], c[5]);
+        if (VideoCommon::Nx2Perf::Verify()) {
+            LOG_INFO(HW_GPU,
+                     "Nx2Perf front_macro_call differs: {} in total, {} calls checked in the "
+                     "last second",
+                     stats.differed, c[6]);
+        }
+    }
+    stats.last = now;
+    stats.counts.fill(0);
+}
+
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
 static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
 
@@ -408,13 +458,24 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                 SetState(command_header);
                 dma_state.non_incrementing = false;
                 dma_increment_once = false;
+                if (front_macro_call_on && command_header.method >= MacroRegistersStart)
+                    [[unlikely]] {
+                    CountMacroCall(MacroCallCount::Mode);
+                }
                 break;
             case SubmissionMode::NonIncreasing:
                 SetState(command_header);
                 dma_state.non_incrementing = true;
                 dma_increment_once = false;
+                if (front_macro_call_on) {
+                    FrontMacroCall(commands, word_offset, index);
+                }
                 break;
             case SubmissionMode::Inline:
+                if (front_macro_call_on && command_header.method >= MacroRegistersStart)
+                    [[unlikely]] {
+                    CountMacroCall(MacroCallCount::Mode);
+                }
                 dma_state.method = command_header.method;
                 dma_state.subchannel = command_header.subchannel;
                 dma_state.dma_word_offset = u64(-s64(dma_state.dma_get)); // negate to set address as 0
@@ -426,6 +487,9 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                 SetState(command_header);
                 dma_state.non_incrementing = false;
                 dma_increment_once = true;
+                if (front_macro_call_on) {
+                    FrontMacroCall(commands, word_offset, index);
+                }
                 break;
             default:
                 break;
@@ -527,6 +591,136 @@ void DmaPusher::VerifyFrontRun(Engines::Maxwell3D& maxwell3d,
                       "(first difference at {}), state {}, acquire mid-run {}",
                       method, count, recorded.size(), expected.size(), first,
                       state_ok ? "same" : "differs", acquire);
+        }
+    }
+}
+
+// Nx2Perf front_macro_call: an IncreaseOnce or NonIncreasing 3D macro call whose words are all
+// in `commands`, from its header (at `index`) to FrontRunMacro in one call. Leaves dma_state and
+// `index` (on the call's last word; the header branch adds one) as the word-by-word path does.
+bool DmaPusher::FrontMacroCall(std::span<const CommandHeader> commands, size_t word_offset,
+                               size_t& index) {
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    if (method < MacroRegistersStart || count == 0) {
+        return false;
+    }
+    auto& split = VideoCommon::GpuSplit::Get();
+    auto* const subchannel = subchannels[dma_state.subchannel];
+    if (subchannel == nullptr ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D ||
+        !split.Active() || !split.FrontMacros() ||
+        !static_cast<Engines::Maxwell3D*>(subchannel)->GetNativeMacroEngine().native_turing) {
+        CountMacroCall(MacroCallCount::OtherEngine);
+        return false;
+    }
+    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannel);
+    if (g_semaphore_watch != 0) {
+        CountMacroCall(MacroCallCount::SemaphoreWatch);
+        return false;
+    }
+    if (count > commands.size() - index - 1) {
+        CountMacroCall(MacroCallCount::Split);
+        return false;
+    }
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        if (!maxwell3d->FrontMacroIdle(system, split)) {
+            CountMacroCall(MacroCallCount::Pending);
+            return false;
+        }
+        VerifyFrontMacroCall(*maxwell3d, commands, word_offset, index);
+        return true;
+    }
+    if (!maxwell3d->FrontCallMacro(system, split, method,
+                                   std::span<const u32>{&commands[index + 1].argument, count})) {
+        CountMacroCall(MacroCallCount::Pending);
+        return false;
+    }
+    // IncreaseOnce: word 0 alone, then the rest in one CallMultiMethod from the second word.
+    const bool once = dma_increment_once;
+    dma_state.dma_word_offset =
+        u64((word_offset + index + (once && count > 1 ? 2 : 1)) * sizeof(u32));
+    dma_state.method = once ? method + 1 : method;
+    dma_state.method_count = 0;
+    dma_state.non_incrementing = true;
+    dma_state.is_last_call = true;
+    index += count;
+    CountMacroCall(MacroCallCount::Taken);
+    return true;
+}
+
+// EDEN_NX2_PERF_VERIFY: the words go through the per-word path (authoritative); the calls
+// FrontRunMacro gets, the ring position it starts at and the state left are compared with what
+// FrontMacroCall would have made.
+void DmaPusher::VerifyFrontMacroCall(Engines::Maxwell3D& maxwell3d,
+                                     std::span<const CommandHeader> commands, size_t word_offset,
+                                     size_t& index) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    const u32 method = dma_state.method;
+    const u32 count = dma_state.method_count;
+    const bool once = dma_increment_once;
+    const size_t header = index;
+    const u64 ring_before = split.WritePosition();
+    thread_local std::vector<u32> expected;
+    thread_local std::vector<u32> recorded;
+    expected.assign({method, count, static_cast<u32>(ring_before),
+                     static_cast<u32>(ring_before >> 32)});
+    for (u32 i = 0; i < count; ++i) {
+        expected.push_back(commands[header + 1 + i].argument);
+    }
+    recorded.clear();
+    maxwell3d.front_macro_record = &recorded;
+    size_t at = header + 1;
+    bool acquire = false;
+    // ProcessCommands' loop over the call's words, all of them in `commands`.
+    while (dma_state.method_count != 0) {
+        if (dma_state.non_incrementing) {
+            dma_state.dma_word_offset = u64((word_offset + at) * sizeof(u32));
+            const u32 max_write = dma_state.method_count;
+            CallMultiMethod(&commands[at].argument, max_write);
+            dma_state.method_count -= max_write;
+            dma_state.is_last_call = true;
+            at += max_write;
+        } else {
+            const auto command_header = commands[at];
+            dma_state.dma_word_offset = u64((word_offset + at) * sizeof(u32));
+            dma_state.is_last_call = dma_state.method_count <= 1;
+            CallMethod(command_header.argument);
+            dma_state.method += !dma_state.non_incrementing ? 1 : 0;
+            dma_state.non_incrementing |= dma_increment_once;
+            dma_state.method_count--;
+            at++;
+        }
+        if (puller.HasPendingAcquire()) {
+            acquire = true; // ProcessCommands returns after this word too
+            break;
+        }
+    }
+    maxwell3d.front_macro_record = nullptr;
+    index = at - 1;
+    const u64 ring_delta = split.WritePosition() - ring_before;
+    const bool state_ok =
+        dma_state.method == (once ? method + 1 : method) && dma_state.method_count == 0 &&
+        dma_state.non_incrementing && dma_state.is_last_call && at == header + 1 + count &&
+        dma_state.dma_word_offset ==
+            u64((word_offset + header + (once && count > 1 ? 2 : 1)) * sizeof(u32));
+    // The fast path borrows the words in place: they must not change during the call.
+    bool words_same = true;
+    for (u32 i = 0; i < count && words_same; ++i) {
+        words_same = commands[header + 1 + i].argument == expected[4 + i];
+    }
+    CountMacroCall(MacroCallCount::Taken);
+    CountMacroCall(MacroCallCount::Verified);
+    if (acquire || !state_ok || !words_same || recorded != expected) {
+        const u64 differed = ++g_macro_call_stats.differed;
+        if (differed <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf front_macro_call: macro {:#x} ({} words, {}) differs: {} words "
+                      "recorded for {} expected, ring {} +{}, state {}, words changed during "
+                      "the call {}, acquire mid-call {} ({} so far)",
+                      method, count, once ? "increase once" : "non-increasing", recorded.size(),
+                      expected.size(), ring_before, ring_delta, state_ok ? "same" : "differs",
+                      !words_same, acquire, differed);
         }
     }
 }
