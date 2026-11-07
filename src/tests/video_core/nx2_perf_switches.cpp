@@ -125,7 +125,9 @@ TEST_CASE("Nx2Perf list_writer_hook_copies_only is off unless ON names it", "[nx
     REQUIRE(IsOff(always_off, Index(Opt::ListWriterHookCopiesOnly)));
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ListWriterHookCopiesOnly)));
     REQUIRE(ParseOffMask(false, "list_writer_hook_copies_only", "", false) ==
-            (always_off & ~Bit(Opt::ListWriterHookCopiesOnly))) |
+            (always_off & ~Bit(Opt::ListWriterHookCopiesOnly)));
+}
+
 TEST_CASE("Nx2Perf front_macro_memo is off unless ON names it", "[nx2_perf]") {
     static_assert(Index(Opt::FrontMacroMemo) == 78);
     REQUIRE(opt_names[Index(Opt::FrontMacroMemo)] == "front_macro_memo");
