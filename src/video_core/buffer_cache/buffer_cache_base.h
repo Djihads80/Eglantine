@@ -861,6 +861,9 @@ private:
             if (Nx2Inflight::Any()) [[unlikely]] {
                 Nx2InflightNoteWriter(lower, upper);
             }
+            if (Nx2Ledger::g_is_back) [[unlikely]] {
+                Nx2Ledger::NoteWriter(lower, upper);
+            }
             uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
             cursor = upper;
         });

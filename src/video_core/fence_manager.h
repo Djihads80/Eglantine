@@ -27,6 +27,7 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace VideoCommon {
@@ -147,6 +148,11 @@ public:
             SubmitDeferred();
             Nx2Perf::NoteLandedForcedSubmit();
             return;
+        }
+        if (Nx2Ledger::g_is_back) [[unlikely]] {
+            // run_ahead_ledger: before the guest can see the value (vi2 takes the set then).
+            Nx2Ledger::BeforeBackIncrement(value,
+                                           syncpoint_manager.GetGuestSyncpointValue(value) + 1);
         }
         syncpoint_manager.IncrementGuest(value);
         if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {

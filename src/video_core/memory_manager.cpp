@@ -18,6 +18,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/invalidation_accumulator.h"
 #include "video_core/memory_manager.h"
@@ -475,6 +476,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         }
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+            VideoCommon::Nx2Ledger::Note(dev_addr_base, copy_amount);
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             std::memset(dest_buffer, 0, copy_amount);
@@ -491,6 +493,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
         if (physical != nullptr) [[likely]] {
+            VideoCommon::Nx2Ledger::Note(dev_addr_base, copy_amount);
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount);
@@ -515,6 +518,9 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
     constexpr std::size_t SmallPage = 0x1000;
     if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
         if (const u8* const pointer = GetPointer(gpu_src_addr)) {
+            if (VideoCommon::Nx2Ledger::g_is_back) [[unlikely]] {
+                VideoCommon::Nx2Ledger::Note(*GpuToCpuAddress(gpu_src_addr), size);
+            }
             std::memcpy(dest_buffer, pointer, size);
             return;
         }

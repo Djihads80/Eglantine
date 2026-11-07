@@ -29,6 +29,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_war_probe.h"
 
 namespace VideoCommon {
 
@@ -722,6 +723,7 @@ void GpuSplit::ReportLazySkip(const char* where) const {
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
+    Nx2Ledger::StartBackThread();
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();

@@ -17,6 +17,7 @@
 #include "common/assert.h"
 #include "core/memory.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace VideoCommon {
@@ -41,6 +42,7 @@ public:
     template <class MemoryManager>
     [[nodiscard]] std::pair<T, bool> Read(const MemoryManager& gpu_memory, u32 index) noexcept {
         DEBUG_ASSERT(index <= current_limit);
+        Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Descriptor};
         if (invalidated) {
             ClearReadDescriptors();
             invalidated = false;
@@ -74,6 +76,12 @@ public:
                     page_ptr = resolved;
                 }
                 if (page_ptr != nullptr) [[likely]] {
+                    if (Nx2Ledger::g_is_back) [[unlikely]] {
+                        // The cached host page skips device memory: note the read here.
+                        if (const auto device = gpu_memory.GpuToCpuAddress(gpu_addr)) {
+                            Nx2Ledger::Note(*device, sizeof(T));
+                        }
+                    }
                     std::memcpy(std::addressof(result.first), page_ptr + page_offset, sizeof(T));
                 } else {
                     gpu_memory.ReadBlockUnsafe(gpu_addr, std::addressof(result.first), sizeof(T));
