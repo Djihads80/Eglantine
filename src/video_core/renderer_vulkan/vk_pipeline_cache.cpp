@@ -999,10 +999,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                  skipped_pipelines);
     }
 
-    std::unique_lock lock{state.mutex};
+    std::unique_lock state_lock{state.mutex};
     callback(VideoCore::LoadCallbackStage::Build, 0, state.total);
     state.has_loaded = true;
-    lock.unlock();
+    state_lock.unlock();
 
     workers.WaitForRequests(stop_loading);
 
