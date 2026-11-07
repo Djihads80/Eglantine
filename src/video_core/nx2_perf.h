@@ -422,8 +422,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// dma_forward_tape (+0.35 FPS; round 11), run_ahead_overlay_budget (measurement; round 12),
 /// acquire_drain_lite (-0.2 FPS; round 12), exec_same_drop (~4.7k binds/s left out; round 12),
 /// state_dead_store (~950 folds/s; round 12), run_ahead_own_write_probe (measurement; round 13),
-/// bank_dirty_skip (unmeasured; round 13), back_replay_lean (unmeasured; round 13),
-/// front_macro_call (unmeasured; round 13).
+/// bank_dirty_skip (-0.8 FPS; round 13), back_replay_lean (-0.2 FPS; round 13),
+/// front_macro_call (-0.1 FPS; round 13).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
