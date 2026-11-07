@@ -342,10 +342,12 @@ public:
     std::vector<GPUVAddr> flushed_command_pages;
     size_t flushed_command_page_next{};
 
-    const bool ib_enable : 1 = true; ///< IB mode enabled
-    bool dma_increment_once : 1 = false;
-    bool signal_sync : 1 = false;
-    bool synced : 1 = false;
+    // Not bitfields: the fence thread sets synced, and a bitfield write would rewrite the byte it
+    // shares with dma_increment_once and signal_sync (#479).
+    const bool ib_enable = true; ///< IB mode enabled
+    bool dma_increment_once = false;
+    bool signal_sync = false;
+    std::atomic<bool> synced{false};
 };
 
 } // namespace Tegra

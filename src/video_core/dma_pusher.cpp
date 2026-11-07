@@ -291,7 +291,7 @@ bool DmaPusher::Step() {
 
     if (signal_sync && !synced) {
         std::unique_lock lk(sync_mutex);
-        sync_cv.wait(lk, [this]() { return synced; });
+        sync_cv.wait(lk, [this]() { return synced.load(); });
         signal_sync = false;
         synced = false;
     }
