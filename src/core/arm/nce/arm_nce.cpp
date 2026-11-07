@@ -17,6 +17,7 @@
 
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "common/signal_chain.h"
 #include "core/arm/debug.h"
 #include "core/arm/nce/arm_nce.h"
@@ -605,12 +606,33 @@ bool ArmNce::TakeEmulateBudget(u64 page, u32 budget) {
     return true;
 }
 
+bool ArmNce::HandleGuestIllegalInstruction(GuestContext* guest_ctx, void* raw_info,
+                                           void* raw_context) {
+    // knob2: skip undefined instructions in guest code, as Dynarmic does
+    if (Settings::GetDebugKnobAt(2)) {
+        static_cast<ucontext_t*>(raw_context)->uc_mcontext.pc += 4;
+        return true;
+    }
+
+    // Registers, code and backtrace, as for the other fatal guest signals (GuestFatalSignalHandler).
+    ReportGuestFatalSignal(SIGILL, static_cast<const siginfo_t*>(raw_info), raw_context,
+                           &guest_ctx->parent->m_running_thread->GetNativeExecutionParameters());
+
+    // Halt the guest thread instead of taking down the whole process.
+    // The faulting pc equals si_addr, so this is handled as a prefetch abort.
+    return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
+}
+
 void ArmNce::HandleHostAlignmentFault(int sig, void* raw_info, void* raw_context) {
     return g_orig_bus_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
 }
 
 void ArmNce::HandleHostAccessFault(int sig, void* raw_info, void* raw_context) {
     return g_orig_segv_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
+}
+
+void ArmNce::HandleHostIllegalInstruction(int sig, void* raw_info, void* raw_context) {
+    ChainFatalSignal(sig, static_cast<siginfo_t*>(raw_info), raw_context);
 }
 
 void ArmNce::LockThread(Kernel::KThread* thread) {
@@ -758,6 +780,7 @@ void ArmNce::Initialize() {
         sigaddset(&signal_mask, BreakFromRunCodeSignal);
         sigaddset(&signal_mask, GuestAlignmentFaultSignal);
         sigaddset(&signal_mask, GuestAccessFaultSignal);
+        sigaddset(&signal_mask, GuestIllegalInstructionSignal);
 
         struct sigaction return_to_run_code_action {};
         return_to_run_code_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -788,7 +811,8 @@ void ArmNce::Initialize() {
         access_fault_action.sa_mask = signal_mask;
         Common::SigAction(GuestAccessFaultSignal, &access_fault_action, &g_orig_segv_action);
 
-        // Diagnostics: report SIGILL/SIGTRAP/SIGFPE raised by guest code, then hand them on.
+        // Diagnostics: report SIGTRAP/SIGFPE raised by guest code, then hand them on (SIGILL:
+        // GuestIllegalInstructionSignalHandler below reports it and halts the guest thread).
         struct sigaction fatal_action {};
         fatal_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
         fatal_action.sa_sigaction = &GuestFatalSignalHandler;
@@ -797,9 +821,18 @@ void ArmNce::Initialize() {
         sigemptyset(&fatal_action.sa_mask);
         sigaddset(&fatal_action.sa_mask, ReturnToRunCodeByExceptionLevelChangeSignal);
         sigaddset(&fatal_action.sa_mask, BreakFromRunCodeSignal);
-        Common::SigAction(SIGILL, &fatal_action, &g_orig_ill_action);
         Common::SigAction(SIGTRAP, &fatal_action, &g_orig_trap_action);
         Common::SigAction(SIGFPE, &fatal_action, &g_orig_fpe_action);
+
+        struct sigaction illegal_instruction_action {};
+        illegal_instruction_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        illegal_instruction_action.sa_sigaction =
+            reinterpret_cast<HandlerType>(&ArmNce::GuestIllegalInstructionSignalHandler);
+        // As for the other fatal signals, a host fault while reporting still reaches the
+        // SIGSEGV/SIGBUS handlers (signal_mask would hold them off and the kernel kill us).
+        illegal_instruction_action.sa_mask = fatal_action.sa_mask;
+        Common::SigAction(GuestIllegalInstructionSignal, &illegal_instruction_action,
+                          &g_orig_ill_action);
 
         g_emulate_writes.store(ReadSwitch("EDEN_NCE_EMULATE_WRITES"), std::memory_order_relaxed);
         g_fault_ahead.store(ReadSwitch("EDEN_NCE_FAULT_AHEAD"), std::memory_order_relaxed);
