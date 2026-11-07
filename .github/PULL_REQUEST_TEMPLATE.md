@@ -36,6 +36,8 @@ e.g. Fixes #123
 
 E.g. Mario Kart World 1.8.0: no more black textures
 
+Regression test: <!-- bug fixes: the test under src/tests/ that proves it, or explain why there is none -->
+
 ## Checklist
 
 - [ ] I built it locally and it compiles without new warnings

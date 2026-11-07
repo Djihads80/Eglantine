@@ -1,0 +1,111 @@
+name: pr-template
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-template-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Pull request template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Reads only the pull request event, so no PR code is checked out or run. It warns instead of
+      # failing until the maintainers decide it should block.
+      - name: Check the description
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = (context.payload.pull_request.body || '').replace(/<!--[\s\S]*?-->/g, '');
+            const lines = body.split(/\r?\n/);
+            const problems = [];
+            const isHeading = (line) => /^#{1,6}\s*\S/.test(line);
+            // A nested heading (### under ##) stays part of its enclosing section; the section ends
+            // at the next heading of the same or a higher level.
+            const sections = {};
+            let current = null;
+            let currentLevel = 0;
+            for (const line of lines) {
+              const heading = line.match(/^(#{1,6})\s*(.+?)\s*$/);
+              if (heading && (!current || heading[1].length <= currentLevel)) {
+                current = heading[2].toLowerCase();
+                currentLevel = heading[1].length;
+                sections[current] = [];
+              } else if (current && !heading) {
+                // A nested heading itself is not an answer; the text under it is.
+                sections[current].push(line);
+              }
+            }
+            const unchecked = /^\s*[-*+]\s*\[ \]\s*(.+?)\s*$/;
+            const anyBox = /^\s*[-*+]\s*\[[ xX]\]/;
+            // The required boxes: the acknowledgements above the first heading and everything under
+            // "Checklist". The type and testing boxes are optional.
+            const required = [
+              ...lines.slice(0, lines.findIndex(isHeading) === -1 ? lines.length : lines.findIndex(isHeading)),
+              ...(sections['checklist'] || []),
+            ];
+            if (!lines.some((line) => anyBox.test(line))) {
+              problems.push('The template checklist is missing.');
+            } else {
+              for (const line of required) {
+                const item = line.match(unchecked);
+                if (item && !/HUMANMADE/.test(item[1])) {
+                  problems.push(`Unchecked: ${item[1].replace(/\*\*/g, '')}`);
+                }
+              }
+            }
+            // A section only counts as filled in once its untouched template prompts are removed.
+            const isPrompt = {
+              summary: (line) => /^What does this PR change and why\?$/.test(line.trim()),
+              testing: (line) => unchecked.test(line) || /^\*\*Games tested:\*\*$/.test(line.trim()) ||
+                                 /^E\.g\./.test(line.trim()) || /^Regression test:\s*$/.test(line.trim()),
+            };
+            for (const name of ['Summary', 'Testing']) {
+              const content = (sections[name.toLowerCase()] || []).filter((line) => !isPrompt[name.toLowerCase()](line));
+              if (!content.join('').trim()) {
+                problems.push(`Fill in the "${name}" section.`);
+              }
+            }
+            // A fix should ship the test that proves it, or say why it cannot.
+            const pr = context.payload.pull_request;
+            if (/\bfix(es|ed)?\b/i.test(pr.title)) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const hasTest = files.some((f) => f.filename.startsWith('src/tests/'));
+              // The reason is on the label's line or the next non-empty line, but never a heading,
+              // a checkbox or another label.
+              let reason = '';
+              const label = lines.findIndex((line) => /^\s*Regression test:/i.test(line));
+              if (label !== -1) {
+                reason = lines[label].replace(/^\s*Regression test:/i, '').trim();
+                for (let i = label + 1; !reason && i < lines.length; i++) {
+                  const line = lines[i].trim();
+                  if (!line) continue;
+                  if (isHeading(line) || anyBox.test(line) || /^\*\*[^*]+:\*\*/.test(line)) break;
+                  reason = line;
+                }
+              }
+              const stated = reason && !/^n\/a$/i.test(reason);
+              if (!hasTest && !stated) {
+                problems.push('This looks like a fix: add a test under src/tests/ or fill in "Regression test:" with why there is none.');
+              }
+            }
+            for (const problem of problems) {
+              core.warning(problem);
+            }
+            await core.summary
+              .addHeading('Pull request template')
+              .addRaw(problems.length ? problems.map((p) => `- ${p}`).join('\n') : 'All template items are filled in.', true)
+              .write();
