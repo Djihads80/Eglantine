@@ -516,7 +516,7 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
             auto& program_va{programs[0]};
             auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
             total_storage_buffers += Shader::NumDescriptors(program_vb.info.storage_buffers_descriptors);
-            programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
+            programs[index] = MergeDualVertexPrograms(program_va, program_vb, env, host_info);
         }
 
         if (programs[index].info.requires_layer_emulation) {
