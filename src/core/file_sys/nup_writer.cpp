@@ -594,7 +594,12 @@ public:
             }
             std::ranges::sort(addons);
             for (const auto& [name, path] : addons) {
-                AddPackage(KindAddon, path, 0, {}, 0, *ParseTitleId(name.substr(0, 16)));
+                const auto version = ParseDecimal(ToUtf8(path.filename())).value_or(0);
+                if (version > std::numeric_limits<u32>::max()) {
+                    throw PackError(PackResult::InvalidSource, "add-on content version exceeds u32");
+                }
+                AddPackage(KindAddon, path, static_cast<u32>(version), {}, 0,
+                           *ParseTitleId(name.substr(0, 16)));
             }
         }
 
