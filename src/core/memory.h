@@ -540,6 +540,13 @@ public:
     void Nx2RawClassify(std::span<const u64> cpu_pages, std::span<u8> info);
 
     /**
+     * run_ahead_snapshot_probe (video_core/nx2_war_probe.h, measurement only), at vi2's reply:
+     * the physical pages (>> 12) of the war_guard arm set (tracker pages the guest wrote since
+     * their upload). Returns how many fit; total is the set's size.
+     */
+    size_t Nx2SnapshotArmSet(std::span<u32> phys_pages, u64& total);
+
+    /**
      * inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h): vi2 replies to the
      * present of fence (fence_id, fence_value) having waited only for (prev_id, prev_value).
      * Arms the guards and opens the epoch; false when none can open (the caller then waits).

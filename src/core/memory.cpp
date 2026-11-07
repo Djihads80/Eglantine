@@ -101,6 +101,10 @@ struct Memory::Impl {
                 VideoCommon::Nx2Raw::SetModuleBase(Nx2ModuleBase());
             }
         }
+        snap_on = cow_on && VideoCommon::Nx2Snap::On();
+        if (snap_on) {
+            VideoCommon::Nx2Snap::SetModuleBase(Nx2ModuleBase());
+        }
     }
 
     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
@@ -965,6 +969,10 @@ struct Memory::Impl {
             const DAddr end_address = address + size;
             if (current_area.start_address <= address && end_address <= current_area.end_address)
                 [[likely]] {
+                if (snap_on && snap_area_gpu[core]) [[unlikely]] {
+                    // run_ahead_snapshot_probe: a read of GPU-written data that no longer traps.
+                    VideoCommon::Nx2Snap::GpuRead(false, snap_area_gen[core]);
+                }
                 return;
             }
             if (war_probe) [[unlikely]] {
@@ -975,6 +983,10 @@ struct Memory::Impl {
                 VideoCommon::Nx2Inflight::read_note = {};
             }
             current_area = system.GPU().OnCPURead(address, size);
+            if (snap_on) [[unlikely]] {
+                snap_area_gpu[core] = VideoCommon::Nx2Snap::t_flush_gpu;
+                snap_area_gen[core] = VideoCommon::Nx2Snap::EpochGen();
+            }
             if (war_inflight) [[unlikely]] {
                 InflightAfterRead(p, size, true);
             }
@@ -1524,6 +1536,32 @@ struct Memory::Impl {
             }
             info[i] |= value;
         }
+    }
+
+    /// run_ahead_snapshot_probe: see Memory::Nx2SnapshotArmSet.
+    size_t SnapshotArmSet(std::span<u32> phys_pages, u64& total) {
+        total = 0;
+        if (!war_probe) {
+            return 0;
+        }
+        std::scoped_lock lk{war_mutex};
+        size_t count = 0;
+        for (u32 i = 0; i < war_unprotected.count; ++i) {
+            const u64 page = war_unprotected.list[i];
+            const auto [pointer, type, block] =
+                std::as_const(current_page_table->entries)[page].PointerTypeBlock(true);
+            if (pointer == 0 ||
+                (type != Common::PageType::Memory && type != Common::PageType::DebugMemory)) {
+                continue;
+            }
+            ++total;
+            if (count < phys_pages.size()) {
+                const u8* const host =
+                    reinterpret_cast<const u8*>(pointer) + (page << YUZU_PAGEBITS);
+                phys_pages[count++] = static_cast<u32>(CowPhysPage(host));
+            }
+        }
+        return count;
     }
 
     /// run_ahead_cover: see Memory::Nx2CoverClassify.
@@ -2107,6 +2145,11 @@ struct Memory::Impl {
     u32 cow_rearm_count = 0;
     u64 cow_rearm_overflow = 0;
     bool cow_full_pending = true;
+    // run_ahead_snapshot_probe: whether each core's kept read area holds GPU-written data, and
+    // the cow epoch it was kept in.
+    bool snap_on = false;
+    std::array<bool, Core::Hardware::NUM_CPU_CORES> snap_area_gpu{};
+    std::array<u32, Core::Hardware::NUM_CPU_CORES> snap_area_gen{};
 #ifdef __ANDROID__
     std::optional<Common::HeapTracker> heap_tracker;
     Common::HeapTracker* host_buffer{};
@@ -2317,6 +2360,10 @@ Memory::Nx2CowArmResult Memory::Nx2CowArm() {
 
 void Memory::Nx2RawClassify(std::span<const u64> cpu_pages, std::span<u8> info) {
     impl->RawClassify(cpu_pages, info);
+}
+
+size_t Memory::Nx2SnapshotArmSet(std::span<u32> phys_pages, u64& total) {
+    return impl->SnapshotArmSet(phys_pages, total);
 }
 
 bool Memory::Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value) {

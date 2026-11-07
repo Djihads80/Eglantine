@@ -342,6 +342,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
             Nx2Ledger::NoteGuestRead(device_addr_start_aligned, device_addr_end_aligned,
                                      device_addr, size);
         }
+        if (Nx2Snap::On()) [[unlikely]] {
+            Nx2Snap::FlushArea(true); // run_ahead_snapshot_probe: a trapped preflushed read
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -382,6 +385,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         // again, which ends the area and sets the trap.
         read_trapped_ranges.Subtract(device_addr_start_aligned,
                                      device_addr_end_aligned - device_addr_start_aligned);
+    }
+    if (Nx2Snap::On()) [[unlikely]] {
+        Nx2Snap::FlushArea(!area->preemtive);
     }
     return area;
 }
