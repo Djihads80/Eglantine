@@ -5,7 +5,7 @@ Last updated: 2026-11-06 23:20 local (handoff from the long day session to a fre
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
 
-## LOOP PAUSED 2026-11-07 ~00:10 (user): the lab's newest save was not at Kokiri (lighter scene); the user is placing a Kokiri save first. Run r7-base-a renamed INVALID-wrong-save-r7-base-a. Restart wf_8f5623ff-d32 from scratch (measure r7) once the user says the save is in place.
+## LOOP RUNNING again 2026-11-07 ~00:20: wf_c2b11e26-a42 (same script), after the user placed the Kokiri save as the newest. Earlier run r7-base-a was on the wrong save (INVALID-wrong-save-r7-base-a).
 
 ## LOOP (started 2026-11-06 ~23:45)
 Round 7+ loop started on the user's instruction ("continue the performance optimization loop"; no input until morning): `.agent/handoff/d13/oot-60fps-r7plus.js` (measure -> 5 research lanes: front-waits, front-cpu, safe-run-ahead, back-throughput, critical-path -> select up to 4 -> implement in worktrees + adversarial review -> integrate with verify/flash/fog gates). Brief: `.agent/prompts/overnight/BRIEF.md` "Current state for round 7+". Stops at the goal, after 3 rounds with no accepted change, or after round 16. Removed the 8 merged round 5/6 worktrees (wf_1a88cb7c-0df-*) first. Round notes: `.agent/prompts/overnight/round<N>-base.md` / `-integrate.md`.
