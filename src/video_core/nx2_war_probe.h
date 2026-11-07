@@ -4031,7 +4031,9 @@ struct OwnRing {
             if (e.seq.load(std::memory_order_relaxed) != n) {
                 continue;
             }
-            if (static_cast<u32>(key >> 32) < gen) {
+            // A writer that read gen - 1 just before vi2's Begin can push after early gen
+            // writes (fence releases land right at the reply): stop two epochs back.
+            if (static_cast<u32>(key >> 32) + 1 < gen) {
                 refs.complete = true; // Reached an older epoch
                 break;
             }

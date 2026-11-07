@@ -685,4 +685,14 @@ TEST_CASE("run_ahead_own_write_probe: the verify ring keeps each own write's byt
     REQUIRE(refs.Covering(17) >= 0);
     REQUIRE_FALSE(ring->ByteOf(refs, refs.Covering(17), 17, byte));
     REQUIRE(ring->Collect(5, 4).count == 0);
+
+    // A previous-epoch write pushed late does not hide the epoch's earlier writes.
+    auto late = std::make_unique<OwnRing>();
+    late->Push(1, 2, 0, 4, nullptr);
+    late->Push(5, 3, 0, 4, first.data());
+    late->Push(7, 2, 0, 4, nullptr);
+    late->Push(6, 3, 0, 4, second.data());
+    const auto late_refs = late->Collect(5, 3);
+    REQUIRE(late_refs.count == 1);
+    REQUIRE(late_refs.complete);
 }
