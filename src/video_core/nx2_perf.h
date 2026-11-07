@@ -173,6 +173,9 @@ enum class Opt : unsigned {
     /// first-write traps of every device-mapped page (the CoW budget) and the bytes the front
     /// and back read after the reply that differ from the reply-time bytes (Nx2Cow)
     RunAheadCowProbe,
+    /// Split front: an acquire met early (acquire_trigger_early) creates no sync point for list
+    /// fetches; implies the acquire_trigger_early and list_fetch_after_sync paths
+    SyncFreeFetch,
     Count,
 };
 
@@ -220,6 +223,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "spin_handoff",
     "run_ahead_cover",
     "run_ahead_cow_probe",
+    "sync_free_fetch",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -295,7 +299,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::ListFetchAfterSync,
                           Opt::SpinHandoff,
                           Opt::RunAheadCover,
-                          Opt::RunAheadCowProbe}) {
+                          Opt::RunAheadCowProbe,
+                          Opt::SyncFreeFetch}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -319,7 +324,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
 /// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
 /// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8),
-/// run_ahead_cow_probe (measurement, adds page traps; round 9).
+/// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch (round 9).
 /// dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -345,7 +350,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::ListFetchAfterSync) |
                                   Bit(Opt::SpinHandoff) |
                                   Bit(Opt::RunAheadCover) |
-                                  Bit(Opt::RunAheadCowProbe);
+                                  Bit(Opt::RunAheadCowProbe) |
+                                  Bit(Opt::SyncFreeFetch);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -409,10 +415,12 @@ static_assert(static_cast<unsigned>(Opt::RunAheadCover) == 71 &&
               IsOff(always_off, static_cast<size_t>(Opt::RunAheadCover)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::RunAheadCover)));
 
-// Tentative bit (round 9): the integrator renumbers.
 static_assert(static_cast<unsigned>(Opt::RunAheadCowProbe) == 72 &&
               IsOff(always_off, static_cast<size_t>(Opt::RunAheadCowProbe)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::RunAheadCowProbe)));
+static_assert(static_cast<unsigned>(Opt::SyncFreeFetch) == 73 &&
+              IsOff(always_off, static_cast<size_t>(Opt::SyncFreeFetch)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::SyncFreeFetch)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

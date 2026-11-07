@@ -44,3 +44,16 @@ TEST_CASE("Nx2Perf run_ahead_cow_probe is off unless ON names it", "[nx2_perf]")
     REQUIRE(ParseOffMask(false, "run_ahead_cow_probe", "run_ahead_cow_probe", false) ==
             always_off);
 }
+
+TEST_CASE("Nx2Perf sync_free_fetch is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::SyncFreeFetch) == 73);
+    REQUIRE(opt_names[Index(Opt::SyncFreeFetch)] == "sync_free_fetch");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::SyncFreeFetch)));
+    REQUIRE(IsOff(always_off, Index(Opt::SyncFreeFetch)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::SyncFreeFetch)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::SyncFreeFetch)));
+    REQUIRE(ParseOffMask(false, "sync_free_fetch", "", false) ==
+            (always_off & ~Bit(Opt::SyncFreeFetch)));
+    // Not live-safe: read once into static bools.
+    REQUIRE(!IsOff(live_safe, Index(Opt::SyncFreeFetch)));
+}

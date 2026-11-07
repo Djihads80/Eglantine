@@ -188,7 +188,8 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
     ring = std::make_unique<u64[]>(RingWords);
     verify_repeats = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::DrawBeginCoalesce);
-    track_back_read = Nx2Perf::On(Nx2Perf::Opt::ListFetchAfterSync);
+    track_back_read = Nx2Perf::On(Nx2Perf::Opt::ListFetchAfterSync) ||
+                      Nx2Perf::On(Nx2Perf::Opt::SyncFreeFetch);
     Tegra::g_nx2_list_fetch_after_sync.store(track_back_read, std::memory_order_relaxed);
     spin_handoff = Nx2Perf::On(Nx2Perf::Opt::SpinHandoff);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
@@ -230,6 +231,7 @@ void GpuSplit::Stop() {
     last_writer_position = 0;
     last_unlocalized_writer_position = 0;
     last_sync_position = 0;
+    last_fetch_sync_position = 0;
     last_function_position = 0;
     writes.Reset();
     async_writes.clear();
@@ -357,7 +359,17 @@ bool GpuSplit::WaitForSync() {
 }
 
 bool GpuSplit::WaitForListSync() {
-    return WaitFor(std::min(last_sync_position, write_position), DrainSite::ListFetchSync);
+    static const bool sync_free = Nx2Perf::On(Nx2Perf::Opt::SyncFreeFetch);
+    if (!sync_free) {
+        return WaitFor(std::min(last_sync_position, write_position), DrainSite::ListFetchSync);
+    }
+    const u64 sync_target = std::min(last_sync_position, write_position);
+    const u64 fetch_target = std::min(last_fetch_sync_position, write_position);
+    const bool waited = WaitFor(fetch_target, DrainSite::ListFetchSync);
+    if (fetch_target < sync_target && consumed_cache < sync_target) {
+        Nx2Profile::Add(Nx2Profile::Counter::ListFetchSyncSkipped, 1);
+    }
+    return waited;
 }
 
 bool GpuSplit::WaitFor(u64 target, DrainSite site) {
