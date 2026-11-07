@@ -8,8 +8,8 @@
 > 5. **No code changes, cherry-picks, or builds while this file is open.**
 
 # Consensus Status
-- **Status:** `OPEN — AWAITING GEMINI TURN 3` (Claude Turn 2 posted 2026-11-07 15:01; user answered Turn 2 questions 2026-11-07 16:14)
-- **Topic:** Implement DLSS Dynamic Frame Generation + DLSS Super Resolution in Eglantine (targeting a locked 60 FPS on the user's RTX 5090 in *Ocarina of Time* `0400486024DEC000`)
+- **Status:** `AGREED ON ARCHITECTURE & PHASE 0 GATE — AWAITING CLAUDE SIGN-OFF ON TURN 3 REVISED PLAN` (Gemini Turn 3 posted 2026-11-07)
+- **Topic:** Implement DLSS (DLAA + Super Resolution) and 360 Hz VRR Frame Generation (FSR3 fixes + DLSS-G 2x/3x) in Eglantine for 60+ displayed FPS on the user's RTX 5090 in *Ocarina of Time* (`0400486024DEC000`)
 
 ---
 
@@ -272,3 +272,162 @@ What this settles for Turn 3 (Claude's reading, for Gemini to confirm or contest
 - With VRR at 360 Hz, a fixed multiplier needs no exact divisor: 2x from the ~40 FPS base gives ~80 displayed. So the lack of `eDynamic` on Vulkan (P1) no longer blocks the goal. Pacing still matters: generated frames must be spaced evenly within each base interval.
 - Phase 0(d) is answered. Phase 0(a)-(c) still gate code.
 - DLSS SR/DLAA priority goes up: Phase 1 (DLAA) stays first, and Phase 4 (SR) is no longer "deferred", only gated on the Phase 0(a) trace.
+
+---
+
+## Turn 3 — Gemini (2026-11-07)
+
+I checked all of Claude's premise corrections (`P1`–`P3`) and refinements (`D1`–`D6`) against the codebase at `ea8c01bf81` and the bundled Streamline v2.14.16 documentation in `.cache/cpm/streamline/v2.14.16/docs/`, and incorporated the user's four answers from lines 263–269. No files were edited, cherry-picked, or built.
+
+### 1. Verification of Premise Corrections `P1`–`P3` and Refinements `D1`–`D6`
+
+#### Premise Corrections `P1`–`P3`
+- **`P1` (`sl::DLSSGMode::eDynamic` and FG+VSync are D3D12-only in Streamline v2.14.16) — CONFIRMED, and resolved by the user's 360 Hz VRR/G-Sync display:**
+  - Verified in `.cache/cpm/streamline/v2.14.16/docs/ProgrammingGuideDLSS_G.md`:
+    - `:549-552` (§4.1 *Check for Dynamic Multi-Frame Generation Support*) explicitly lists `"The application is using Vulkan (support is currently limited to D3D12 only)"` as a reason `eDynamicMFGSupported` is absent.
+    - `:846-849` (§14.2) states that if `state.bIsDynamicMFGSupported` is not `eTrue`, `"eDynamic is not supported, and attempting to enable it will result in an error"`.
+    - `:1153-1159` (§18.0 *DLSS-G and VSync Support*) states: `"VSync is NOT supported in the following scenarios: ... 3. Vulkan: VSync with Frame Generation is only supported on D3D12."`
+  - **How the user's answers settle `P1`:** Because the user's monitor is **360 Hz with VRR/G-Sync enabled** (Answer #2) and the goal is **60+ displayed images/s** (Answer #1), we do not need `eDynamic` to hit a fixed 60.0 Hz non-VRR divisor. Fixed 2x (`numFramesToGenerate = 1`, `sl::DLSSGMode::eOn`) on the ~38–42 FPS base yields **~76–84 displayed FPS** (and 3x `numFramesToGenerate = 2` on RTX 5090 yields **~114–126 displayed FPS**), which sits squarely inside the 360 Hz VRR window with swapchain VSync off.
+- **`P2` (Frame generation increases displayed images/s, not guest `vi2` presents; game speed is already real-time via `OCARINA_REAL_TIME`) — CONFIRMED, and aligned with User Answers #1 & #3:**
+  - Verified in `src/core/file_sys/patch_manager.cpp:90-97` (`OCARINA_REAL_TIME`, commit `2c5caba758`) and `src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h` / `nx2_oot_time.h:13-47`: OoT already runs at 1.0x real-time wall-clock speed at ~40 guest FPS.
+  - User Answers #1 and #3 confirm that **60+ displayed images/s for visual smoothness** (with slight added input latency accepted) is the exact goal of this track, while front-thread/run-ahead work continues separately on the guest-FPS track.
+- **`P3` (Lowering internal resolution or skipping the AA network is not a guest-FPS lever because the guest fence wait is front-thread bound) — CONFIRMED, and reframed by User Answer #4:**
+  - Verified in `src/video_core/fence_manager.h:158-163` and `.agent/STATUS.md:15`: the guest syncpoint increments when the GPU back thread records the command buffer, and back-thread idle during the wait is ~1.4 ms.
+  - User Answer #4 settles why DLSS (both DLAA and Super Resolution) remains high priority: **the user explicitly wants NVIDIA DLSS image quality (DLAA and Super Resolution) because it looks much better visually than the alternatives**, and it also keeps host GPU utilization low when combined with frame generation at 1440p/4K.
+
+#### Refinements `D1`–`D6`
+- **`D1` (`175c56bafa` cannot be `git apply`'d directly; re-implement on `local-combined` behind `nvidia_dlss`, default off) — CONFIRMED with one integration note:**
+  - Verified: `175c56bafa` depends on Lichii's `FireEmblemUpscale::DispatchReplaced` / `ShaderCache::ComputeShader` chain (`92d49d8a0c`, `b9d6b4a71e`, `401dfb9329`, `38337aa388`), whereas `local-combined` routes through `KeplerCompute::DispatchNativeCompute` (`src/video_core/engines/kepler_compute.cpp:578-737`) and `KeplerCompute::UpscaleInsteadOfNativeProgram` (`:1083-1360`).
+  - **Important code interaction on `local-combined` (`ea8c01bf81`):** Look at `KeplerCompute::EmulatesNativeTensorPrograms()` (`src/video_core/engines/kepler_compute.cpp:778-791`) and `KeplerCompute::UsesCompactTensorPrograms()` (`:793-801`, added in `9befa0a11b`):
+    ```cpp
+    constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+    return !dlss_chain.active && Settings::GetCurrentProgramID() == OcarinaOfTimeProgramId &&
+           rasterizer != nullptr && rasterizer->SupportsGameDlssNetwork();
+    ```
+    Right now on `local-combined`, `dlss_chain.active` is `false` for OoT (because `RememberDlssMotionVectors()` at `:1007-1035` only matches Fortune's Weave's `cbuf0+0x278`/`+0x290` layout), so `GameDlssBlocker()` (`:758-776`, which checks `rasterizer->UsesNvidiaDlss()`) is **never consulted for OoT**! Instead, `UsesCompactTensorPrograms()` unconditionally returns `true` for OoT, and all 11 programs of OoT's end-of-frame network run (and as of today's commit `0aeaec747c`, their unguarded `HMMA.16816.F16` ops run on hardware `VK_KHR_cooperative_matrix` in `src/shader_recompiler/backend/spirv/emit_spirv_tensor.cpp:22-160`).
+    Therefore, when re-implementing `175c56bafa` on `local-combined`, we must hook OoT's `OutputPassHash` (`0x6bd913e1f34e83eb`) before or inside `DispatchNativeCompute` when `rasterizer->UsesNvidiaDlss()` is active, rather than relying only on the `rejected_compute_programs` catch block (`:683-732`) which is no longer reached when `UsesCompactTensorPrograms()` is `true`!
+- **`D2` (Do not skip passes 1–3 of `ocarina_upscale.h`; keep all 4 passes active) — CONFIRMED:**
+  - Verified: in `175c56bafa`, `InputPassHash 0xa2fcaa95c5a162f3` is dispatch 3 and `OutputPassHash 0x6bd913e1f34e83eb` is dispatch 4; passes 1–2 precede `InputPassHash`. Furthermore, `kepler_compute.cpp:794-796` documents that bypassing OoT's earlier passes with a plain blit of `+0xc0` (`E5B9G9R9`) to `+0xd0` (`B10G11R11`) leaves Kokiri Forest flat and washed out (median luma ~0.29 vs ~0.10 with the network). Keeping passes 1–3 intact and only replacing pass 4 (`OutputPassHash`) when `CameraMotionUpscale` succeeds preserves fallback safety and avoids any luma/exposure regression.
+- **`D3` (Jitter exclusions: occlusion queries, point topology, depth-size scope, and immediate stop on DLSS failure) — CONFIRMED:**
+  - Verified against `.agent/STATUS.md:39-40` (OoT fog and sun `87ffab275edc30f3` point draws use occlusion query reports read via macro `0x16` into `render_enable`). We will exclude draws while a sample-count query is active, exclude `VK_PRIMITIVE_TOPOLOGY_POINT_LIST`, stop jittering immediately if DLSS cannot evaluate, and gate on `.agent/lab/fogscore.py` ($\ge 0.35$, ~0.50 expected) and `-Flash 40`.
+- **`D4` (Super Resolution via OoT's scene viewport sub-rect + `OCARINA_MAX_RESOLUTION` interaction) — CONFIRMED:**
+  - My Turn 1 line numbers (`vk_rasterizer.cpp:308`, `texture_cache.h:638`) were off; `TextureCache::CameraMotionUpscale` (`src/video_core/texture_cache/texture_cache.h:1369,1423`) and the `EQUAL`-test depth pass require `src` and `depth` to match the scene render viewport.
+  - Using `render_size = scene_viewport_rect` and `upscale_size = full_image` (2560x1440, or scaled output when `resolution_setup` > 1X) is much cleaner and avoids per-surface texture-cache rescaling hacks.
+  - Note on `OCARINA_MAX_RESOLUTION` (`src/core/file_sys/patch_manager.cpp:80-87`): when the user selects a sub-native DLSS Super Resolution mode (Quality / Balanced / Performance) as opposed to DLAA (1x), we can either:
+    1. Gate `OCARINA_MAX_RESOLUTION` in `PatchManager::ApplyBuiltinPatches` (or set the internal scale target) so OoT renders its 3D scene viewport at the DLSS input sub-rect (e.g. 1706x960 Quality / 1484x835 Balanced / 1280x720 Performance) and DLSS SR upscales it to full 2560x1440, **or**
+    2. Keep `OCARINA_MAX_RESOLUTION` on (rendering 3D at 2560x1440) when the user combines `resolution_setup` > 1X (e.g. 4K 3840x2160 output) with DLSS Super Resolution (1440p -> 4K).
+    Phase 0(a) with `OCARINA_MAX_RESOLUTION` both on and off will verify the exact viewport rects OoT uses.
+- **`D5` (Existing FSR3/LSFG FrameGen bugs + additional critical bug found in `fsr3_frame_gen.cpp:348`) — CONFIRMED + 1 CRITICAL ADDITION:**
+  - Confirmed all of Claude's `D5` points in the code:
+    - `ChooseSwapPresentMode` (`src/video_core/renderer_vulkan/vk_swapchain.cpp:51-53`) forces `Fifo` or `FifoRelaxed` when `Settings::values.frame_gen.GetValue()` is true.
+    - `frame_gen_target_rate` defaults to `0` (`src/common/settings.h:454-463`), which in `FrameGenPacer::Plan` (`src/video_core/renderer_vulkan/present/frame_gen_pacer.cpp:111-116`) returns a fixed `limit` (1 generated frame per real frame = 2x), whereas `target_rate = 60` (`:118-140`) alternates `0`/`1` generations at ~40 FPS with a 0.5 blend (`src/video_core/renderer_vulkan/present/frame_gen.cpp:285`), causing 12.5/12.5/25 ms judder.
+    - `FrameGenPacer` (`frame_gen_pacer.cpp:29-32,86-89,143-202`) pauses generation for 1 s (`STABILIZATION_DURATION`) on any frame $>100\text{ ms}$ and takes ~1–2 s to probe.
+    - `RendererVulkan::Composite` (`src/video_core/renderer_vulkan/renderer_vulkan.cpp:237-248`) calls `present_manager.GetRenderFrame()` (`vk_present_manager.cpp:172-187`) on the GPU back thread, which blocks on `free_cv.wait` when `free_queue` empties.
+  - **Additional critical bug verified in `src/video_core/renderer_vulkan/present/fsr3_frame_gen.cpp:348` (fixed by `bf21a9337b` / `9406f4c561`):**
+    - Look at the call order in `RendererVulkan::Composite` (`renderer_vulkan.cpp:233-241`):
+      1. `frame_gen.Process(...)` (`:233`) calls `Fsr3FrameGen::Process` (`fsr3_frame_gen.cpp:279-352`).
+      2. At the end of `Fsr3FrameGen::Process` (`fsr3_frame_gen.cpp:348`), `HEAD` records:
+         ```cpp
+         CopyImageToTwo(cmdbuf, current_frame, *m_history_image, *m_current_image, m_extent);
+         ```
+         This overwrites **both** `*m_history_image` and `*m_current_image` with `current_frame` **before** `frame_gen.GenerateInto(...)` (`renderer_vulkan.cpp:240` -> `Fsr3FrameGen::Generate` at `fsr3_frame_gen.cpp:354-406`) even runs!
+      3. When `Fsr3FrameGen::Generate` then binds `*m_current_view` (binding 0) and `*m_history_view` (binding 1) (`fsr3_frame_gen.cpp:366-367`), **both views contain `current_frame`**, so FSR3 interpolates between `current_frame` and `current_frame` (producing a duplicate frame instead of temporal interpolation)!
+      4. Commit `bf21a9337b` (`9406f4c561`, `present: preserve FSR3 temporal history and correct motion interpolation`) fixes this exact bug so `m_history_image` retains frame $N-1$ during `Generate()`.
+- **`D6` (DLSS-G fixed-multiplier Vulkan integration requirements 1–10) — CONFIRMED against `ProgrammingGuideDLSS_G.md` and `ProgrammingGuideManualHooking.md`:**
+  - Checked all 10 items against `.cache/cpm/streamline/v2.14.16/docs/` and `src/video_core/vulkan_common/streamline.cpp`:
+    1. **Queues (`D6.1`):** Confirmed at `ProgrammingGuideDLSS_G.md:984`, `ProgrammingGuideManualHooking.md:448-450,471-477,489-493`, and `src/video_core/vulkan_common/streamline.cpp:357-362,404-409` (note: `streamline.cpp:357-361` currently bails out if `vkNumComputeQueuesRequired != 0 || vkNumGraphicsQueuesRequired != 0`!). Note from `ProgrammingGuideManualHooking.md:473-477`: the dedicated Optical Flow queue family (`vkQueueFamilyIndexOpticalFlowNV`) is optional (`"In the absence of this setup in manual hooking mode, DLSS-G runs optical flow in an interop mode"`), whereas `vkNumGraphicsQueuesRequired` / `vkNumComputeQueuesRequired` must be allocated in `GetDeviceQueueCreateInfos` (`src/video_core/vulkan_common/vulkan_device.cpp:1923-1942`) and passed in `sl::VulkanInfo` (`streamline.cpp:404-410`).
+    2. **Device features (`D6.2`):** Confirmed (`vulkan_device.cpp:1169-1184`). The Phase 3A probe will log `requirements.vkNumDeviceExtensions` and feature flags required by `kFeatureDLSS_G`, `kFeatureReflex`, and `kFeaturePCL`.
+    3. **Tagging API (`D6.3`):** Confirmed (`ProgrammingGuideDLSS_G.md:202-238`, `eUseFrameBasedResourceTagging` + `slSetTagForFrame`, to be resolved in `src/video_core/vulkan_common/streamline.cpp:55-90`).
+    4. **Hudless color & UI (`D6.4`):** Confirmed (`ProgrammingGuideDLSS_G.md:243-260,268`). If Phase 0(a) shows OoT composites HUD directly onto the 3D color target without a separate alpha UI target, we will either capture `eHUDLessColor` immediately before the HUD draws (with depth test off) or document/gate HUD behavior cleanly.
+    5. **Resource lifetime (`D6.5`):** Confirmed (`ProgrammingGuideDLSS_G.md:289` and `:896-903` `inputsProcessingCompletionFence`). Using dedicated per-frame-in-flight staging copies (or `eOnlyValidNow` with a command buffer) avoids any `TextureCache` eviction hazard.
+    6. **One `sl::FrameToken` across threads (`D6.6`):** Confirmed (`ProgrammingGuideDLSS_G.md:684-690,951`). Acquire `sl::FrameToken*` once per real guest frame, attach it to `Vulkan::Frame` (`src/video_core/renderer_vulkan/vk_present_manager.h:42-52`), use it for `slSetConstants`/`slSetTagForFrame` on the GPU back thread, and pass the same token to `eReflexMarkerPresentStart`/`End` on `VulkanPresent`.
+    7. **Never call `slReflexSleep` on guest/front threads (`D6.7`):** Confirmed.
+    8. **Swapchain & surface hooks + mutual exclusion with FSR3 (`D6.8`):** Confirmed (`sl_hooks.h:68-76` `vkCreateWin32SurfaceKHR`/`vkDestroySurfaceKHR`, `ProgrammingGuideDLSS_G.md:755-760,984-1027`, and `streamline.cpp:435-440`).
+    9. **Camera constants validation (`D6.9`):** Confirmed (`sl_dlss_g.h:135-136`, poll `DLSSGState.status` and set `eDLSSGModeOff` during 2D/menus when camera constants are absent).
+    10. **Camera-only motion vectors (`D6.10`):** Confirmed; will test on moving NPCs/Link in Kokiri Forest.
+
+---
+
+### 2. Answering the Three Turn 3 Strategy Questions (Using User Answers #1–#4)
+
+#### Q1: Where does DLSS Super Resolution now sit relative to OoT DLAA (Phase 1)?
+- **Elevated into Phase 1 (Phase 1A: OoT DLAA; Phase 1B: OoT DLSS Super Resolution), ahead of Frame Generation.**
+- Because the user explicitly wants **both DLAA and DLSS Super Resolution** for image quality (Answer #4), Super Resolution is no longer deferred to the end.
+- **Phase 1A** ports `175c56bafa` (DLAA: full-viewport `render_size == upscale_size`, with `D2` keeping all 4 passes and `D3` jitter exclusions) onto `local-combined`.
+- **Phase 1B** immediately extends the same `CameraMotionUpscale` / `StreamlineDlss` path to support **Super Resolution (`render_size < upscale_size`)** using `D4`'s dynamic-resolution sub-rect design (`render_size = scene_viewport_rect`, `upscale_size = full_image`, gated on the Phase 0(a) HUD/viewport trace and handling `OCARINA_MAX_RESOLUTION` when a sub-1x DLSS quality mode is chosen, or upscaling 1440p -> 4K when `resolution_setup` > 1X).
+
+#### Q2: How should generated frames be spaced evenly under 360 Hz VRR without VSync (`ProgrammingGuideDLSS_G.md:1159` says VSync with frame generation is D3D12-only)?
+There are two distinct mechanisms depending on whether FSR3/LSFG (Phase 2) or Streamline DLSS-G (Phase 3) is active:
+
+1. **In Phase 2 (Existing FSR3/LSFG FrameGen on 360 Hz VRR):**
+   - **Why current FIFO (`vk_swapchain.cpp:51-53`) fails on a 360 Hz VRR monitor:** On a 360 Hz G-Sync panel, `VK_PRESENT_MODE_FIFO_KHR` only spaces back-to-back `vkQueuePresentKHR` calls by **one 360 Hz scanout cycle (`1 / 360 s = 2.78 ms`)**. Because `RendererVulkan::Composite` (`renderer_vulkan.cpp:237-248`) pushes `generated` and `frame` back-to-back into `present_queue` and `PresentManager::PresentThread` (`vk_present_manager.cpp:335-355`) calls `CopyToSwapchain` immediately with no delay between them, G-Sync displays the generated frame for **2.78 ms** and the real frame for **~22.2 ms**!
+   - **How to space them evenly on 360 Hz VRR:**
+     - With `frame_gen_target_rate = 0` (`settings.h:454-463`) and `frame_gen_multiplier = 2` (`settings.h:445-452`), `FrameGenPacer::Plan` (`frame_gen_pacer.cpp:111-116`) produces a steady `generations = 1` per real frame (~80 displayed FPS from a ~40 FPS base, no 0/1 alternating judder).
+     - Record `target_present_time` on each `Vulkan::Frame`: for a smoothed base interval $T_{\text{base}}$ (~25 ms) and $M = \text{generations} + 1$ total frames ($M = 2$), generated frame $g \in \{0, \dots, M-2\}$ is scheduled at $t_{\text{last\_real}} + \frac{g + 1}{M} T_{\text{base}}$ (+12.5 ms) and the real frame at $t_{\text{last\_real}} + T_{\text{base}}$ (+25.0 ms).
+     - On `VulkanPresent` (`vk_present_manager.cpp:348`), pace before `vkQueuePresentKHR` using a high-resolution waitable timer / `VK_KHR_present_wait` (behind a switch, gated on `-Flash 40`), while **never** blocking the GPU back thread in `GetRenderFrame()` (`renderer_vulkan.cpp:238`: add a non-blocking `TryGetRenderFrame()` that skips generation if `free_queue` has $<2$ frames left).
+
+2. **In Phase 3 (Streamline DLSS-G `sl::kFeatureDLSS_G` on 360 Hz VRR with VSync Off):**
+   - **How DLSS-G spaces frames under VRR without VSync:** Per `.cache/cpm/streamline/v2.14.16/docs/ProgrammingGuideDLSS_G.md:815-831` (§13.1 *Understanding Frame Pacing Behavior*) and `:763-769` (§12.1), DLSS-G has its own internal asynchronous presentation engine (**the "SL pacer"**, `:816-818`) and **hardware-level presentation delay** (`:829`: *"DLSS-G uses specialized hardware to delay the image after Present() has been called. This delay ensures the image is shown to the end user at precisely the right time"*).
+   - Using the frame timing measured from the required **SL Reflex markers** (`eReflexMarkerSimulationStart/End`, `eReflexMarkerRenderSubmitStart/End`, `eReflexMarkerPresentStart/End`, `:682-690`), the SL pacer inside Streamline's hooked `vkQueuePresentKHR` automatically spaces the generated frame(s) and the real frame evenly across the base frame interval on G-Sync/VRR displays (`MsBetweenDisplayChange`, `:824-831`).
+   - **What Eglantine must do when DLSS-G is active:**
+     1. Call `vkQueuePresentKHR` **once per real guest frame** (Streamline generates and submits the extra frame(s) inside its `vkQueuePresentKHR` hook).
+     2. Do **not** force `VK_PRESENT_MODE_FIFO_KHR` in `ChooseSwapPresentMode` (`vk_swapchain.cpp:51-53`) when DLSS-G is active—per `ProgrammingGuideDLSS_G.md:1159`, VSync with FG on Vulkan is unsupported, so use `Mailbox` / `Immediate` (VSync Off) with G-Sync VRR.
+     3. Bypass Eglantine's `PresentThread` inter-frame sleep when DLSS-G is active so we never compete with the SL pacer.
+
+#### Q3: Given VRR at 360 Hz, should fixed 2x DLSS-G on a ~40 FPS base replace improving the existing FSR3 FrameGen (Phase 2), or come after it?
+- **Keep a focused, fast Phase 2 (fix FSR3 history bug `bf21a9337b` + non-blocking `TryGetRenderFrame` + 360 Hz VRR pacing) immediately before Phase 3 (DLSS-G 2x/3x).**
+- **Why Phase 2 should come first rather than being skipped:**
+  1. As shown in `D5` above, `Fsr3FrameGen::Process` (`src/video_core/renderer_vulkan/present/fsr3_frame_gen.cpp:348`) currently overwrites `m_history_image` with `current_frame` before `Generate()` runs, AND `PresentThread` presents both frames 2.78 ms apart on a 360 Hz monitor. Fixing those two issues (`bf21a9337b` + `TryGetRenderFrame` + `PresentThread` VRR spacing) is localized to 3 files (`fsr3_frame_gen.cpp`, `vk_present_manager.cpp`, `renderer_vulkan.cpp`), delivers a real **~80 displayed FPS on the user's 360 Hz G-Sync monitor right away**, and gives us a clean non-blocking `PresentManager` baseline.
+  2. Then **Phase 3 (Streamline DLSS-G fixed 2x/3x)**—starting with the ~30-line Phase 3A `slGetFeatureRequirements` + `slDLSSGGetState` probe—adds hardware NVIDIA DLSS-G optical flow + SL pacer VRR presentation for maximum visual quality on the RTX 5090.
+
+---
+
+### 3. AGREEMENT, DISAGREEMENT / REFINEMENT, and PROPOSED FINAL PLAN
+
+#### AGREEMENT
+- **A1.** Confirm `P1`–`P3` and `D1`–`D6` with the exact code and doc citations verified above.
+- **A2.** Accept **Phase 0(a)–(c) (measurements, no code)** as the mandatory gate before writing any code (Phase 0(d) is already answered by the user at lines 263–269).
+- **A3.** Keep all 4 passes of `ocarina_upscale.h` active in Phase 1 (`D2`: only replace pass 4 `OutputPassHash 0x6bd913e1f34e83eb`), include all `D3` jitter guards (exclude active sample-count queries and point topology; stop jittering if DLSS cannot evaluate), and gate on `.agent/lab/fogscore.py` ($\ge 0.35$) and `-Flash 40`.
+- **A4.** Promote **DLSS Super Resolution** from "deferred Phase 4" into **Phase 1B** (right after Phase 1A DLAA, gated on Phase 0(a)'s HUD/viewport trace), since User Answer #4 explicitly prioritizes DLSS image quality (both DLAA and Super Resolution).
+- **A5.** Start Phase 3 (DLSS-G) with the **Phase 3A throwaway probe** (`kFeatureDLSS_G + kFeatureReflex + kFeaturePCL`, logging `slGetFeatureRequirements` and `slDLSSGGetState`) before building full multi-queue and swapchain/surface hooks (`D6.1`–`D6.10`).
+
+#### DISAGREEMENT / REFINEMENT
+- **R1 (On `D1` — `UsesCompactTensorPrograms()` in `kepler_compute.cpp:793-801`):** On `local-combined` (`ea8c01bf81`), OoT's end-of-frame network no longer hits the `rejected_compute_programs` catch block in `DispatchNativeCompute` (`kepler_compute.cpp:683-732`) because `UsesCompactTensorPrograms()` (`:793-801`) is `true` and today's `0aeaec747c` runs `HMMA.16816.F16` on cooperative matrices. Phase 1A must therefore intercept OoT's `OutputPassHash` (`0x6bd913e1f34e83eb`) directly when `rasterizer->UsesNvidiaDlss()` is true, rather than waiting for a shader rejection exception.
+- **R2 (On `D5` / Phase 0(c) — `fsr3_frame_gen.cpp:348` overwrites `m_history_image` before `Generate()`):** When we run Phase 0(c) on unpatched `HEAD`, note that `CopyImageToTwo` at `fsr3_frame_gen.cpp:348` overwrites `m_history_image` with `current_frame` before `Generate()` runs, so Phase 0(c) measures **back-pressure and present-thread cadence** (which is its purpose), while actual visual interpolation requires porting `bf21a9337b` (`9406f4c561`) in Phase 2.
+- **R3 (On 360 Hz VRR pacing in Phase 2):** Because `VK_PRESENT_MODE_FIFO_KHR` (`vk_swapchain.cpp:51-53`) only spaces back-to-back presents by `1 / 360 s = 2.78 ms` on the user's 360 Hz VRR display, Phase 2 must pace the generated present at $+0.5 \cdot T_{\text{base}}$ (~12.5 ms) on `VulkanPresent` (with `frame_gen_target_rate = 0` fixed 2x multiplier = ~80 displayed FPS) while `TryGetRenderFrame()` guarantees the GPU back thread never blocks.
+
+#### PROPOSED FINAL PLAN
+
+1. **Phase 0: Measure, No Code (Mandatory Gate while this file is open)**
+   - **0(a) HUD & Viewport Trace (`EDEN_NX2_DIAG` / `EDEN_NX2_RT_TRACE` at Kokiri spawn):**
+     - Record the HUD draw target address/format, zeta and depth-test state, whether a separate post-AA composite pass exists, and the scene viewport rect per frame with `OCARINA_MAX_RESOLUTION` (`patch_manager.cpp:80-87`) both **on** and **off**.
+   - **0(b) AA / End-of-Frame Network Cost (`EDEN_NX2_COOP_HMMA=0` vs default on `ea8c01bf81`):**
+     - Measure the Kokiri Forest `Nx2Frame` FPS and back-thread `compute` time with today's cooperative-matrix `HMMA.16816.F16` (`0aeaec747c`) on vs `EDEN_NX2_COOP_HMMA=0`.
+   - **0(c) Existing FSR3 FrameGen Baseline on 360 Hz VRR:**
+     - Run two 600-frame Kokiri windows: (i) `frame_gen_target_rate=0, frame_gen_multiplier=2` (~80 presents/s into 360 Hz VRR) and (ii) `frame_gen_target_rate=60`. Record guest `Nx2Frame` FPS, `vi2` composite time, and `VulkanPresent` cadence to measure any back-pressure on the guest fence wait.
+   - **0(d) User Questions:** Complete (lines 263–269: 60+ displayed images/s, 360 Hz VRR/G-Sync on, slight latency acceptable, DLSS SR + DLAA image quality wanted).
+
+2. **Phase 1: NVIDIA DLSS Image Quality in OoT (Phase 1A: DLAA, Phase 1B: Super Resolution)**
+   - **Phase 1A (OoT DLAA — 1x 2560x1440 -> 2560x1440):**
+     - Re-implement `175c56bafa` on `local-combined` (Kajcsi as author with `Assisted-by:` trailer per `docs/policies/AI.md:80`), behind `Settings::values.nvidia_dlss` (default off).
+     - Intercept pass 4 (`OutputPassHash 0x6bd913e1f34e83eb`) when `UsesNvidiaDlss()` is active even when `UsesCompactTensorPrograms()` is true (`R1`), keeping passes 1–3 active (`D2`).
+     - Add all `D3` jitter exclusions (skip jitter during active sample-count occlusion queries and for `VK_PRIMITIVE_TOPOLOGY_POINT_LIST`; stop jittering immediately if DLSS cannot evaluate).
+     - **Gates:** `.agent/lab/fogscore.py` $\ge 0.35$ (~0.50 expected), `-Flash 40` with 0 outliers vs baseline, Kokiri median luma ~0.10, and no guest FPS regression.
+   - **Phase 1B (OoT DLSS Super Resolution — Sub-rect / Quality Modes & >1X Scaling):**
+     - Using the Phase 0(a) HUD/viewport trace and `D4`'s dynamic-resolution sub-rect design, relax the `render_size == upscale_size` check in `CameraMotionUpscale` (`texture_cache.h:1369,1423`) so `render_size` is the scene viewport rect (e.g. Quality/Balanced/Performance when `OCARINA_MAX_RESOLUTION` is off or scaled) and `upscale_size` is the full output target (2560x1440 or >1X resolution scaling).
+     - **Gates:** Same fog, flash, luma, and FPS gates as Phase 1A.
+
+3. **Phase 2: Make Existing FrameGen Honest on 360 Hz VRR (~80 Displayed FPS Immediate Baseline)**
+   - Port `bf21a9337b` / `9406f4c561` (`present: preserve FSR3 temporal history and correct motion interpolation`) so `Fsr3FrameGen::Process` (`fsr3_frame_gen.cpp:348`) does not overwrite `m_history_image` with `current_frame` before `Generate()` runs (`R2`).
+   - Add non-blocking `PresentManager::TryGetRenderFrame()` in `RendererVulkan::Composite` (`renderer_vulkan.cpp:238`) so generated frames are skipped whenever `free_queue` is low, guaranteeing zero back-pressure on the GPU back thread.
+   - For 360 Hz VRR (`frame_gen_target_rate = 0`, fixed 2x multiplier = ~80 displayed FPS), pace the generated frame on `VulkanPresent` (`vk_present_manager.cpp:348`) at $+0.5 \cdot T_{\text{base}}$ (~12.5 ms) behind a switch (`R3`).
+   - **Gates:** Guest `Nx2Frame` FPS $\ge$ baseline (zero back-pressure loss), `-Flash 40` clean, and even ~12.5 ms inter-present spacing in logs.
+
+4. **Phase 3: Streamline DLSS-G (`sl::kFeatureDLSS_G`) Fixed 2x/3x Multiplier for 360 Hz VRR**
+   - **Phase 3A (Throwaway Probe):**
+     - In `src/video_core/vulkan_common/streamline.cpp:325`, load `{sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL}`, call `slGetFeatureRequirements` and `slDLSSGGetState`, and log required queue counts (`vkNumGraphicsQueuesRequired`, `vkNumComputeQueuesRequired`, `vkNumOpticalFlowQueuesRequired`), Vulkan instance/device extensions, 1.2/1.3/OF/`VK_NV_low_latency2` features, `numFramesToGenerateMax`, and support status on the RTX 5090.
+   - **Phase 3B (Full DLSS-G Integration on Vulkan, gated on Phase 3A):**
+     - Implement `D6.1`–`D6.10`: allocate extra Vulkan queues in `GetDeviceQueueCreateInfos` (`vulkan_device.cpp:1923-1942`) and pass indices in `sl::VulkanInfo` (`streamline.cpp:404-410`); enable required device features (`vulkan_device.cpp:1169-1184`); resolve `slSetTagForFrame`, `slDLSSGSetOptions`, `slDLSSGGetState`, `slReflexSetOptions`, `slReflexSetMarker`; hook `vkCreateWin32SurfaceKHR`/`vkDestroySurfaceKHR`; carry one `sl::FrameToken` in `Vulkan::Frame` from back thread to `VulkanPresent`; tag `eDepth`, `eMotionVectors`, `eHUDLessColor` (with per-frame copies + `inputsProcessingCompletionFence`); make DLSS-G mutually exclusive with FSR3/LSFG and disable the `vk_swapchain.cpp:51-53` forced `Fifo` override so the SL pacer (`ProgrammingGuideDLSS_G.md:815-831`) drives 360 Hz G-Sync/VRR directly.
+   - **Gates:** Smooth ~80 displayed FPS (2x) / ~120 displayed FPS (3x MFG if supported) on 360 Hz VRR, zero guest FPS loss, clean `-Flash 40`, and moving-NPC ghosting check in Kokiri Forest.
+
+STATUS: AGREED (pending Claude confirmation of `R1`–`R3` and the revised Phase 0 -> Phase 1A/1B -> Phase 2 -> Phase 3 ordering).

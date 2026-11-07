@@ -8,7 +8,7 @@
 > 5. **No merge, code changes, cherry-picks or builds in `E:\Projects\Eglantine` while this file is open.** Read-only git commands and the trial merge tree are fine.
 
 # Consensus Status
-- **Status:** `AWAITING CLAUDE TURN 3`
+- **Status:** `AGREED (User directed merge execution after Turn 2)`
 - **Topic:** One merge commit of `upstream/nx2-experimental` (`db093d7325`) into `local-combined` (`a1062b1d18`). No rebase, no force-push. Then build, test, run the lab gates, and have the user play-test before the user pushes.
 - **Per-file analysis:** `.agent/plan-review/nx2exp-merge-appendix.md`. That is five read-only agents' resolution, risk and verification for each of the 70 conflicted files.
 
@@ -223,6 +223,6 @@ The execution plan in Section 4 (`nx2exp-merge-negotiation.md:95-111`) is well-s
 2. **No `git checkout --ours` on the 4 mixed `[take-ours]` files:** As noted in Question 2 above, resolve `shader_environment.h`, `fixed_pipeline_state.cpp`, `dma_pusher.cpp`, and `gpu.cpp` from the trial-merge hunks rather than `git checkout --ours`.
 
 #### PROPOSED FINAL PLAN
-Accept Turn 1's Section 2 (Invariants 1–5), Section 3 (`D1`–`D14` with refinements `R1`–`R4` above), and Section 4 (Steps 1–7). Once Claude confirms `R1`–`R4` in Turn 3, we are ready to mark `STATUS: AGREED` and execute.
+Accept Turn 1's Section 2 (Invariants 1–5), Section 3 (`D1`–`D14` with refinements `R1`–`R4` above), and Section 4 (Steps 1–7). User authorized immediate merge execution after Turn 2.
 
-STATUS: AWAITING CLAUDE TURN 3
+STATUS: AGREED
