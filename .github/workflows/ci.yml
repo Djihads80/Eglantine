@@ -63,7 +63,7 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'ci:build') &&
         (github.event.action != 'labeled' || github.event.label.name == 'ci:build')
       )
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read
@@ -169,7 +169,7 @@ jobs:
       tag: ${{ needs.prepare.outputs.tag }}
       release: ${{ needs.prepare.outputs.kind == 'stable' || needs.prepare.outputs.kind == 'rc' }}
       nightly: ${{ needs.prepare.outputs.nightly == 'true' }}
-      runner: ${{ vars.MACOS_RUNNER || 'macos-15' }}
+      runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
 
   # Publishes only when every OS that ran succeeded (skipped OSes don't count).
   release:
@@ -195,4 +195,4 @@ jobs:
       sha: ${{ needs.prepare.outputs.sha }}
       prev_tag: ${{ needs.prepare.outputs.prev_tag }}
       branch: ${{ needs.prepare.outputs.branch }}
-      macos_runner: ${{ vars.MACOS_RUNNER || 'macos-15' }}
+      macos_runner: ${{ vars.MACOS_RUNNER || 'macos-26' }}
