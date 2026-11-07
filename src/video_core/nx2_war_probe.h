@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -368,7 +369,12 @@ inline thread_local bool t_front_macro = false;
 inline thread_local const void* t_site = nullptr;
 inline void NotePreImage(u32 pool_slot, bool tracked);
 inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
-                   size_t category, u32 touch_bits, u32 gen);
+                   size_t category, u32 touch_bits, u32 gen, u64 device_addr);
+/// run_ahead_overlay_budget (with the snapshot probe).
+inline bool BudgetOn();
+/// The read Nx2Cow::ReadSlow is classifying is a GetSpan over several pages.
+inline thread_local bool t_span = false;
+inline void HostWritePages(u64 device_addr, u64 size);
 } // namespace VideoCommon::Nx2Snap
 
 // Nx2Perf run_ahead_ledger (measurement only): the device pages the split back reads for frame N
@@ -2170,7 +2176,8 @@ inline bool ReadPage(size_t role, size_t category, u64 phys, const u8* host, u64
         const u64 hazard = DiffBytes(pre + offset, host + offset, len);
         AddCat(role, category, HazardBytes, hazard);
         if (hazard != 0 && Nx2Snap::On()) [[unlikely]] {
-            Nx2Snap::Hazard(phys, entry - 1, pre, hazard, role, category, old, gen);
+            Nx2Snap::Hazard(phys, entry - 1, pre, hazard, role, category, old, gen,
+                            (device_page << PageBits) + offset);
         }
     }
     if (check) {
@@ -2205,6 +2212,10 @@ inline void ReadSlow(u64 device_addr, u64 size, Nx2Ledger::NoteKind kind, const 
                   : (std::min<size_t>)(Nx2Ledger::g_ledger_category, Nx2Ledger::NumCategories - 1);
     if (Nx2Snap::On()) [[unlikely]] {
         Nx2Snap::t_site = site;
+        if (Nx2Snap::BudgetOn()) [[unlikely]] {
+            Nx2Snap::t_span = kind == Nx2Ledger::NoteKind::Span &&
+                              (device_addr & (PageSize - 1)) + size > PageSize;
+        }
     }
     if (kind == Nx2Ledger::NoteKind::Pointer) {
         Add(static_cast<Counter>(UnsizedReads + role));
@@ -2240,6 +2251,9 @@ inline void ReadSlow(u64 device_addr, u64 size, Nx2Ledger::NoteKind kind, const 
 /// Device memory, before a host write of [device_addr, device_addr + size) lands.
 inline void HostWriteSlow(u64 device_addr, u64 size) {
     State& s = Get();
+    if (Nx2Snap::BudgetOn()) [[unlikely]] {
+        Nx2Snap::HostWritePages(device_addr, size);
+    }
     if (size == 0 || !s.open.load(std::memory_order_acquire)) {
         return;
     }
@@ -3445,6 +3459,27 @@ inline bool On() {
     return on;
 }
 
+// Nx2Perf run_ahead_overlay_budget (measurement only, with the snapshot probe): at the reply, the
+// union pages a guest write would not trap on (the copy set without the arm set) and a timed copy
+// of them; at the close, the arm pages read and changed this epoch and whether each change
+// trapped; the hazard bytes split by S_N source, read through multi-page spans, and the
+// front_macro residual's page category. Nothing waits, nothing is protected.
+inline bool BudgetOn() {
+    static const bool on = [] {
+        if (!Nx2Perf::On(Nx2Perf::Opt::RunAheadOverlayBudget)) {
+            return false;
+        }
+        if (!On()) {
+            LOG_WARNING(HW_GPU, "Nx2Perf run_ahead_overlay_budget: needs frames_ahead, "
+                                "run_ahead_ledger, run_ahead_cow_probe and "
+                                "run_ahead_snapshot_probe on; the probe stays off");
+            return false;
+        }
+        return true;
+    }();
+    return on;
+}
+
 inline constexpr u64 PageBits = Nx2Cow::PageBits;
 inline constexpr u64 PageSize = Nx2Cow::PageSize;
 inline constexpr size_t K = 16;
@@ -3490,6 +3525,14 @@ enum Reason : size_t { Miss, Stale, PoolFull, NoSnapshot, NumReasons };
 inline constexpr std::array<std::string_view, NumReasons> reason_names{"miss", "stale",
                                                                        "pool_full", "no_snapshot"};
 
+/// run_ahead_overlay_budget: the page of a front_macro residual.
+enum ResidCat : size_t { Vi2Delta, Download, PreCopy, OtherResid, NumResidCats };
+inline constexpr std::array<std::string_view, NumResidCats> resid_cat_names{
+    "vi2_delta", "download", "pre_copy", "other"};
+inline constexpr u32 NumResidRecords = 64;
+inline constexpr size_t HostBitWords = Nx2Cow::NumPhysPages / 64;
+inline constexpr size_t NumHostBitSets = 3; ///< By gen % 3: late readers keep their set
+
 enum Counter : size_t {
     BytesA,
     BytesB,
@@ -3501,7 +3544,27 @@ enum Counter : size_t {
     UntrappedGpuReads,
     UntrappedPreReply, ///< Its kept area is older than the reply
     SiteOverflow,
+    // run_ahead_overlay_budget
+    BytesAUnion,
+    BytesAArm,
+    BytesABoth,
+    SpanGetSpan, ///< Hazard bytes read through a GetSpan over several pages
+    SpanBank,    ///< Hazard bytes of bank compare reads (the contiguous base_ptr path)
+    Resid0,      ///< + ResidCat: front_macro residual bytes
+    ResidEvents0 = Resid0 + NumResidCats,
+    SpanSiteOverflow = ResidEvents0 + NumResidCats,
     NumCounters,
+};
+
+/// run_ahead_overlay_budget: one front_macro residual, logged by vi2.
+struct ResidRecord {
+    std::atomic<bool> ready{false};
+    u64 device_addr = 0;
+    u64 phys = 0;
+    u64 bytes = 0;
+    uintptr_t site = 0;
+    u32 gen = 0;
+    u8 cat = 0;
 };
 
 /// S_N of one epoch, keyed by physical page; vi2 builds it before the readers open.
@@ -3592,6 +3655,18 @@ struct State {
     std::array<std::atomic<u64>, NumSites> site_bytes{};
     std::atomic<uintptr_t> module_base{0};
     std::atomic<u64> verify_differences{0};
+
+    // run_ahead_overlay_budget
+    std::atomic<bool> budget_ready{false}; ///< host_bits exist (vi2 sets it once)
+    std::array<std::atomic<u8>, Nx2Cow::PoolSlots> pre_early{}; ///< Trapped before S_N was copied
+    std::array<std::unique_ptr<std::atomic<u64>[]>, NumHostBitSets> host_bits; ///< Physical pages
+    std::atomic<u32> host_target{0}; ///< The set host writes go to
+    std::atomic<u64> vi2_delta_phys{~u64{0}};
+    std::array<std::atomic<uintptr_t>, NumSites> span_site_addr{};
+    std::array<std::atomic<u64>, NumSites> span_site_bytes{};
+    std::array<ResidRecord, NumResidRecords> records{};
+    std::atomic<u32> record_claim{0};
+    std::atomic<u64> budget_verify_differences{0};
 };
 
 inline State& Get() {
@@ -3601,6 +3676,52 @@ inline State& Get() {
 
 inline s64 NowNs() {
     return Nx2WarProbe::NowNs();
+}
+
+template <typename... Args>
+void BudgetVerifyDifference(fmt::format_string<Args...> format, Args&&... args) {
+    const u64 count = Get().budget_verify_differences.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_overlay_budget: {} ({} so far)",
+                  fmt::format(format, std::forward<Args>(args)...), count);
+    }
+}
+
+/// Device memory and the GPU's memory manager, before a host write lands (any time).
+inline void HostWritePages(u64 device_addr, u64 size) {
+    State& s = Get();
+    if (size == 0 || !s.budget_ready.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::atomic<u64>* const bits =
+        s.host_bits[s.host_target.load(std::memory_order_acquire) % NumHostBitSets].get();
+    const u64 end = device_addr + size;
+    for (u64 page = device_addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
+        const u8* const host = Nx2Cow::DevicePointer(page << PageBits);
+        if (host == nullptr) {
+            continue;
+        }
+        const u64 phys = Nx2Cow::PhysOf(host);
+        if (phys < Nx2Cow::NumPhysPages) {
+            bits[phys >> 6].fetch_or(u64{1} << (phys & 63), std::memory_order_relaxed);
+        }
+    }
+}
+
+/// Whether a host write reached phys between the replies before and at gen.
+inline bool HostWrittenBefore(u32 gen, u64 phys) {
+    State& s = Get();
+    if (!s.budget_ready.load(std::memory_order_acquire) || phys >= Nx2Cow::NumPhysPages) {
+        return false;
+    }
+    return ((s.host_bits[gen % NumHostBitSets][phys >> 6].load(std::memory_order_relaxed) >>
+             (phys & 63)) &
+            1) != 0;
+}
+
+/// vi2, right after OoT's frame-delta Write32 (before the reply): the page it wrote.
+inline void NoteVi2Delta(u64 phys) {
+    Get().vi2_delta_phys.store(phys, std::memory_order_relaxed);
 }
 
 inline void Add(size_t counter, u64 amount = 1) {
@@ -3625,6 +3746,14 @@ inline void NotePreImage(u32 pool_slot, bool tracked) {
     if (pool_slot < Nx2Cow::PoolSlots) {
         Get().pre_path[pool_slot].store(tracked ? PathTracked : PathUntracked,
                                         std::memory_order_release);
+        if (BudgetOn()) [[unlikely]] {
+            // Taken before vi2 published this epoch's S_N: the copy may be newer than it.
+            State& s = Get();
+            const u32 gen = Nx2Cow::Get().gen.load(std::memory_order_acquire);
+            const bool early = !s.ready.load(std::memory_order_acquire) ||
+                               s.tables[gen & 1]->gen.load(std::memory_order_acquire) != gen;
+            s.pre_early[pool_slot].store(early ? 1 : 0, std::memory_order_release);
+        }
     }
 }
 
@@ -3668,11 +3797,76 @@ inline void NoteSite(const void* site, u64 bytes) {
     Add(SiteOverflow);
 }
 
-/// Nx2Cow::ReadPage: an epoch-gen read of phys got `bytes` bytes that differ from its pre-image
-/// (cow pool slot pool_slot, bytes pre).
-inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
-                   size_t category, u32 touch_bits, u32 gen) {
+/// run_ahead_overlay_budget: span hazard bytes by call site.
+inline void NoteSpanSite(const void* site, u64 bytes) {
     State& s = Get();
+    const uintptr_t address = site == nullptr ? 1 : reinterpret_cast<uintptr_t>(site);
+    size_t i = static_cast<size_t>((u64{address} * 0x9E3779B97F4A7C15ULL) >> 59);
+    for (size_t probes = 0; probes < NumSites; ++probes, i = (i + 1) % NumSites) {
+        uintptr_t current = s.span_site_addr[i].load(std::memory_order_acquire);
+        if (current == 0 && s.span_site_addr[i].compare_exchange_strong(
+                                current, address, std::memory_order_acq_rel)) {
+            current = address;
+        }
+        if (current == address) {
+            s.span_site_bytes[i].fetch_add(bytes, std::memory_order_relaxed);
+            return;
+        }
+    }
+    Add(SpanSiteOverflow);
+}
+
+/// run_ahead_overlay_budget: hazard bytes a per-page overlay could not redirect.
+inline void BudgetSpan(size_t role, size_t category, u64 bytes) {
+    if (t_span) {
+        Add(SpanGetSpan, bytes);
+        NoteSpanSite(t_site, bytes);
+    } else if (role == 1 && category == static_cast<size_t>(Nx2Ledger::Category::BankCompare)) {
+        Add(SpanBank, bytes);
+        NoteSpanSite(t_site, bytes);
+    }
+}
+
+/// run_ahead_overlay_budget: a front_macro residual's page category and its record.
+inline void BudgetResidual(u64 phys, u32 pool_slot, u64 bytes, u32 touch_bits, u32 gen,
+                           u64 device_addr) {
+    State& s = Get();
+    ResidCat cat = OtherResid;
+    if (phys == s.vi2_delta_phys.load(std::memory_order_relaxed)) {
+        cat = Vi2Delta;
+    } else if ((touch_bits & Nx2Cow::BitHostWritten) != 0 || HostWrittenBefore(gen, phys)) {
+        cat = Download;
+    } else if (s.pre_early[pool_slot % Nx2Cow::PoolSlots].load(std::memory_order_acquire) != 0) {
+        cat = PreCopy;
+    }
+    Add(Resid0 + cat, bytes);
+    Add(ResidEvents0 + cat);
+    if (s.record_claim.load(std::memory_order_relaxed) >= NumResidRecords) {
+        return;
+    }
+    const u32 n = s.record_claim.fetch_add(1, std::memory_order_relaxed);
+    if (n >= NumResidRecords) {
+        return;
+    }
+    ResidRecord& record = s.records[n];
+    record.device_addr = device_addr;
+    record.phys = phys;
+    record.bytes = bytes;
+    record.site = reinterpret_cast<uintptr_t>(t_site);
+    record.gen = gen;
+    record.cat = static_cast<u8>(cat);
+    record.ready.store(true, std::memory_order_release);
+}
+
+/// Nx2Cow::ReadPage: an epoch-gen read of phys (at device_addr) got `bytes` bytes that differ
+/// from its pre-image (cow pool slot pool_slot, bytes pre).
+inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
+                   size_t category, u32 touch_bits, u32 gen, u64 device_addr) {
+    State& s = Get();
+    const bool budget = BudgetOn();
+    if (budget) [[unlikely]] {
+        BudgetSpan(role, category, bytes);
+    }
     bool covered = false;
     Reason reason = NoSnapshot;
     u8 from = 0;
@@ -3731,6 +3925,12 @@ inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t rol
     }
     if (covered) {
         Add(BytesA, bytes);
+        if (budget) [[unlikely]] {
+            Add((from & FromArmSet) == 0   ? BytesAUnion
+                : (from & FromUnion) == 0 ? BytesAArm
+                                          : BytesABoth,
+                bytes);
+        }
         return;
     }
     if (s.pre_path[pool_slot % Nx2Cow::PoolSlots].load(std::memory_order_acquire) == PathTracked) {
@@ -3745,6 +3945,9 @@ inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t rol
     Add(ResTracker0 + tracker, bytes);
     Add(ResReason0 + reason, bytes);
     NoteSite(t_site, bytes);
+    if (budget && ResCatOf(role, category) == FrontMacro) [[unlikely]] {
+        BudgetResidual(phys, pool_slot, bytes, touch_bits, gen, device_addr);
+    }
 }
 
 /// The cow epoch the guest reads in (core memory tags its kept read areas with it).
@@ -3838,6 +4041,33 @@ public:
                  "data hits a core-kept area (re-armable at the reply) and t_first p50 >= 3 ms "
                  "(fastmem reads of kept areas are not visible to the probe)",
                  K, PoolPages);
+        if (BudgetOn()) [[unlikely]] {
+            budget_phys = std::make_unique<std::array<u32, TableSlots>>();
+            budget_class = std::make_unique<std::array<u8, TableSlots>>();
+            if (!s.budget_ready.load(std::memory_order_acquire)) {
+                for (auto& bits : s.host_bits) {
+                    bits = std::make_unique<std::atomic<u64>[]>(HostBitWords);
+                }
+                s.budget_ready.store(true, std::memory_order_release);
+            }
+            LOG_INFO(HW_GPU,
+                     "Nx2RunAheadOverlayBudget: probe on (measurement only, with "
+                     "run_ahead_snapshot_probe). Hazard bytes of class a split by S_N source "
+                     "(union only, arm set only, both). unprot_union = union pages a guest write "
+                     "would not trap on (arm set or untracked), copied alone and timed. "
+                     "arm_needed = arm pages read this epoch and changed since the reply; "
+                     "unarmed_changed = those changed without a trap (no pre-image), as a "
+                     "re-protected arm set would miss them. span_hazard_bytes = hazard bytes read "
+                     "through a GetSpan over several pages or a bank compare (base_ptr path). "
+                     "front_macro residual pages: vi2_delta = vi2's OoT frame-delta page, "
+                     "download = host-written since the previous reply, pre_copy = trapped "
+                     "before S_N was copied, other");
+        }
+    }
+
+    /// run_ahead_overlay_budget: vi2's classifier of physical pages (Nx2Ledger::TrackerClass).
+    void SetBudgetClassifier(std::function<void(std::span<const u32>, std::span<u8>)> classify) {
+        budget_classify = std::move(classify);
     }
 
     /// Scratch for core memory's arm set (physical pages).
@@ -3857,6 +4087,9 @@ public:
             window_base = Take();
             epoch_base = window_base;
             have_base = true;
+        }
+        if (BudgetOn()) [[unlikely]] {
+            BudgetBegin(gen);
         }
         const s64 start = NowNs();
         // The ring's new epoch: the closed epoch's front and back reads, the ledger frame set.
@@ -3907,6 +4140,11 @@ public:
             t.Insert((*arm)[i], FromArmSet);
         }
         const s64 built = NowNs();
+        s64 budget_ns = 0;
+        if (BudgetOn()) [[unlikely]] {
+            BudgetReply(t, union_pages, base);
+            budget_ns = NowNs() - built;
+        }
         u8* const pool = s.pool.get();
         u32 pooled = 0;
         for (u32 i = 0; i < t.used_count; ++i) {
@@ -3946,7 +4184,7 @@ public:
             metrics[PagesM][frames] = static_cast<float>(t.used_count);
             metrics[KibM][frames] = static_cast<float>(pooled) * 4.0f;
             metrics[BuildMsM][frames] = static_cast<float>(built - start) / 1e6f;
-            metrics[CopyMsM][frames] = static_cast<float>(copied - built) / 1e6f;
+            metrics[CopyMsM][frames] = static_cast<float>(copied - built - budget_ns) / 1e6f;
             metrics[HashMsM][frames] = static_cast<float>(hashed - copied) / 1e6f;
         }
         s.reply_ns.store(NowNs(), std::memory_order_relaxed);
@@ -4014,6 +4252,10 @@ public:
             return lines;
         }
         Report(now, lines);
+        if (BudgetOn()) [[unlikely]] {
+            BudgetReport(now, lines);
+            bsum = BudgetSums{};
+        }
         frames = 0;
         n_first = 0;
         no_gpu_read = 0;
@@ -4022,14 +4264,307 @@ public:
         return lines;
     }
 
+    /// run_ahead_overlay_budget, vi2 before Nx2Cow::Close: the arm pages the front or back read
+    /// this epoch that changed since the reply, and whether each change trapped (has a
+    /// pre-image). A change without one bypassed the trap hooks (host or raw pointer writes).
+    void BudgetArmCheck() {
+        if (epoch_gen == 0) {
+            return;
+        }
+        const u32 gen = epoch_gen;
+        State& s = Get();
+        const Table& t = *s.tables[gen & 1];
+        const Nx2Cow::State& cow = Nx2Cow::Get();
+        const uintptr_t base = cow.physical_base.load(std::memory_order_relaxed);
+        if (base == 0 || t.gen.load(std::memory_order_acquire) != gen) {
+            return;
+        }
+        const Nx2Cow::TouchSet& touch = *cow.touch[gen & 1];
+        for (u32 i = 0; i < t.used_count; ++i) {
+            const u32 slot = t.used[i];
+            if ((t.from[slot] & FromArmSet) == 0) {
+                continue;
+            }
+            const u64 phys = t.key[slot].load(std::memory_order_relaxed) - 1;
+            if (phys >= Nx2Cow::NumPhysPages) {
+                continue;
+            }
+            const u32 touch_slot = touch.Find(phys);
+            if (touch_slot == Nx2Cow::SetSlots) {
+                continue;
+            }
+            const u32 bits = touch.bits[touch_slot].load(std::memory_order_relaxed);
+            if ((bits & (Nx2Cow::BitFront | Nx2Cow::BitBack)) == 0) {
+                continue;
+            }
+            ++bsum.arm_read;
+            const u8* const now = reinterpret_cast<const u8*>(base) + (phys << PageBits);
+            bool changed = false;
+            if (const u32 index = t.pool[slot]; index != NoPool) {
+                changed = Nx2Ledger::HashPage(now) != t.pool_hash[slot];
+                if (Nx2Perf::Verify()) {
+                    const bool old =
+                        std::memcmp(now, s.pool.get() + size_t{index} * PageSize, PageSize) != 0;
+                    if (old != changed) {
+                        BudgetVerifyDifference("arm page {:#x}: {} by its hash, {} by a byte "
+                                               "compare with the reply copy",
+                                               phys << PageBits, changed ? "changed" : "unchanged",
+                                               old ? "changed" : "unchanged");
+                        changed = old;
+                    }
+                }
+            } else if (u64 reply_hash = 0; cow.reply->Find(phys, reply_hash)) {
+                changed = Nx2Ledger::HashPage(now) != reply_hash;
+            } else {
+                ++bsum.arm_unknown; // Neither pooled nor hashed at the reply
+                continue;
+            }
+            if (!changed) {
+                continue;
+            }
+            ++bsum.arm_needed;
+            if (Nx2Cow::PreImageEntry(phys, gen) != 0) {
+                ++bsum.arm_trapped;
+                continue;
+            }
+            ++bsum.unarmed_changed;
+            if ((bits & Nx2Cow::BitHostWritten) != 0) {
+                ++bsum.unarmed_hostw;
+            }
+        }
+    }
+
+    /// run_ahead_overlay_budget, vi2 after Close: the front_macro residual records not logged
+    /// yet (at most NumResidRecords in all), the window lines and the verify count.
+    /// cpu_of(device address) is the guest address behind it.
+    template <typename CpuOf>
+    std::vector<std::string> BudgetLines(CpuOf&& cpu_of) {
+        std::vector<std::string> out;
+        State& s = Get();
+        const uintptr_t module = s.module_base.load(std::memory_order_relaxed);
+        while (records_logged < NumResidRecords &&
+               s.records[records_logged].ready.load(std::memory_order_acquire)) {
+            const ResidRecord& r = s.records[records_logged++];
+            out.push_back(fmt::format(
+                "Nx2Perf run_ahead_overlay_budget: front_macro residual #{} epoch={} device={:#x} "
+                "va={:#x} phys_page={:#x} bytes={} site_rva={:#x} category={}",
+                records_logged, r.gen, r.device_addr, static_cast<u64>(cpu_of(r.device_addr)),
+                r.phys, r.bytes, module != 0 && r.site >= module ? r.site - module : r.site,
+                resid_cat_names[r.cat]));
+        }
+        for (std::string& line : budget_lines) {
+            if (!line.empty()) {
+                out.push_back(std::move(line));
+                line.clear();
+            }
+        }
+        if (Nx2Perf::Verify()) {
+            const s64 time = NowNs();
+            const u64 count = s.budget_verify_differences.load(std::memory_order_relaxed);
+            if (count != budget_verify_logged && time - budget_verify_log_ns >= 1'000'000'000) {
+                out.push_back(fmt::format(
+                    "Nx2Perf run_ahead_overlay_budget: {} verify differences so far", count));
+                budget_verify_logged = count;
+                budget_verify_log_ns = time;
+            }
+        }
+        return out;
+    }
+
 private:
-    enum Metric : size_t { PagesM, KibM, BuildMsM, CopyMsM, HashMsM, AM, BM, CM, NumMetrics };
+    enum Metric : size_t {
+        PagesM,
+        KibM,
+        BuildMsM,
+        CopyMsM,
+        HashMsM,
+        AM,
+        BM,
+        CM,
+        UnprotM,    ///< run_ahead_overlay_budget: unprotected union pages
+        UCopyMsM,   ///< Their timed copy
+        NumMetrics,
+    };
 
     struct Counts {
         std::array<u64, NumCounters> c{};
         std::array<u64, NumSites> site{};
+        std::array<u64, NumSites> span_site{};
         u64 cow_hazard = 0;
     };
+
+    struct BudgetSums {
+        u64 classes[Nx2Ledger::NumTrackerClasses]{};
+        u64 unprot = 0;
+        u64 ucopy_overflow = 0;
+        u64 arm_read = 0;
+        u64 arm_needed = 0;
+        u64 arm_trapped = 0;
+        u64 unarmed_changed = 0;
+        u64 unarmed_hostw = 0;
+        u64 arm_unknown = 0;
+    };
+
+    /// run_ahead_overlay_budget, vi2 at the reply for gen: host writes from here count for gen+1.
+    void BudgetBegin(u32 gen) {
+        State& s = Get();
+        std::atomic<u64>* const next = s.host_bits[(gen + 1) % NumHostBitSets].get();
+        for (size_t i = 0; i < HostBitWords; ++i) {
+            next[i].store(0, std::memory_order_relaxed);
+        }
+        s.host_target.store((gen + 1) % NumHostBitSets, std::memory_order_release);
+    }
+
+    /// run_ahead_overlay_budget, vi2 at the reply after S_N is built: the union pages' tracker
+    /// state and a timed copy of those a guest write would not trap on. It writes pool pages
+    /// the S_N copy right after overwrites.
+    void BudgetReply(const Table& t, u32 union_pages, uintptr_t base) {
+        using TC = Nx2Ledger::TrackerClass;
+        const u32 n = (std::min)(union_pages, TableSlots);
+        auto& phys = *budget_phys;
+        auto& classes = *budget_class;
+        for (u32 i = 0; i < n; ++i) {
+            phys[i] = t.key[t.used[i]].load(std::memory_order_relaxed) - 1;
+            classes[i] = static_cast<u8>(TC::NoCpu);
+        }
+        if (budget_classify) {
+            budget_classify(std::span<const u32>(phys.data(), n), std::span<u8>(classes.data(), n));
+        }
+        u32 unprot = 0;
+        for (u32 i = 0; i < n; ++i) {
+            const size_t cls = (std::min<size_t>)(classes[i], Nx2Ledger::NumTrackerClasses - 1);
+            ++bsum.classes[cls];
+            unprot += IsUnprotected(classes[i]) ? 1 : 0;
+        }
+        u8* const pool = Get().pool.get();
+        const s64 copy_start = NowNs();
+        u32 copied = 0;
+        for (u32 i = 0; i < n; ++i) {
+            if (!IsUnprotected(classes[i])) {
+                continue;
+            }
+            if (copied == PoolPages || base == 0 || phys[i] >= Nx2Cow::NumPhysPages) {
+                ++bsum.ucopy_overflow;
+                continue;
+            }
+            std::memcpy(pool + size_t{copied++} * PageSize,
+                        reinterpret_cast<const u8*>(base) + (u64{phys[i]} << PageBits), PageSize);
+        }
+        const s64 copy_end = NowNs();
+        bsum.unprot += unprot;
+        if (frames < WindowFrames) {
+            metrics[UnprotM][frames] = static_cast<float>(unprot);
+            metrics[UCopyMsM][frames] = static_cast<float>(copy_end - copy_start) / 1e6f;
+        }
+    }
+
+    static bool IsUnprotected(u8 cls) {
+        using TC = Nx2Ledger::TrackerClass;
+        return cls == static_cast<u8>(TC::ArmSet) || cls == static_cast<u8>(TC::Untracked);
+    }
+
+    void BudgetReport(const Counts& now, std::array<std::string, 4>& lines) {
+        State& s = Get();
+        const auto delta = [&](size_t counter) {
+            return now.c[counter] - window_base.c[counter];
+        };
+        const u64 a_union = delta(BytesAUnion);
+        const u64 a_arm = delta(BytesAArm);
+        const u64 a_both = delta(BytesABoth);
+        const u64 b = delta(BytesB);
+        const u64 c = delta(BytesC);
+        const u64 split = a_union + a_arm + a_both + b + c;
+        const u64 cow_hazard = now.cow_hazard - window_base.cow_hazard;
+        lines[1] += fmt::format("; budget self-check mismatch={} (a_union+a_arm+a_both+b+c {} vs "
+                                "cow hazard bytes {}; a {} vs a_union+a_arm+a_both {})",
+                                static_cast<s64>(cow_hazard - split), split, cow_hazard,
+                                delta(BytesA), a_union + a_arm + a_both);
+        const float unprot50 = MetricPct(UnprotM, 50);
+        const float unprot99 = MetricPct(UnprotM, 99);
+        const float ucopy50 = MetricPct(UCopyMsM, 50);
+        const float ucopy99 = MetricPct(UCopyMsM, 99);
+        constexpr float mib_per_page = static_cast<float>(PageSize) / (1024.0f * 1024.0f);
+        const u64 span_getspan = delta(SpanGetSpan);
+        const u64 span_bank = delta(SpanBank);
+        const u64 span_total = span_getspan + span_bank;
+        // Span hazard sites this window, most bytes first.
+        std::array<std::pair<u64, uintptr_t>, NumSites> sites{};
+        for (size_t i = 0; i < NumSites; ++i) {
+            sites[i] = {now.span_site[i] - window_base.span_site[i],
+                        s.span_site_addr[i].load(std::memory_order_relaxed)};
+        }
+        std::sort(sites.begin(), sites.end(), std::greater<>{});
+        const uintptr_t module = s.module_base.load(std::memory_order_relaxed);
+        std::string top;
+        size_t shown = 0;
+        bool unknown_site = delta(SpanSiteOverflow) != 0;
+        for (const auto& [bytes, address] : sites) {
+            if (bytes == 0) {
+                continue;
+            }
+            unknown_site |= address == 1;
+            if (shown == 8) {
+                continue;
+            }
+            ++shown;
+            if (address == 1) {
+                top += fmt::format(" unknown:{}", bytes);
+            } else if (module != 0 && address >= module) {
+                top += fmt::format(" {:#x}:{}", address - module, bytes);
+            } else {
+                top += fmt::format(" abs{:#x}:{}", address, bytes);
+            }
+        }
+        std::string resid;
+        std::string resid_events;
+        u64 resid_total = 0;
+        for (size_t i = 0; i < NumResidCats; ++i) {
+            resid += fmt::format("{}{}", i == 0 ? "" : ",", delta(Resid0 + i));
+            resid_events += fmt::format("{}{}", i == 0 ? "" : ",", delta(ResidEvents0 + i));
+            resid_total += delta(Resid0 + i);
+        }
+        const u64 resid_other = delta(Resid0 + OtherResid);
+        using TC = Nx2Ledger::TrackerClass;
+        budget_lines[0] = fmt::format(
+            "Nx2Perf run_ahead_overlay_budget: a_union={} a_arm={} a_both={} b={} c={} "
+            "unprot_union_pages p50/p99={:.0f}/{:.0f} MiB={:.1f}/{:.1f} copy_ms "
+            "p50/p99={:.3f}/{:.3f} arm_needed={} unarmed_changed={} span_hazard_bytes={} "
+            "residual{{vi2_delta,download,pre_copy,other}}={} (events {}) | epochs={} union "
+            "pages by class per epoch: tracked={:.1f} arm_set={:.1f} untracked={:.1f} "
+            "no_cpu={:.1f}; ucopy_overflow={}; arm pages read={} changed={} trapped={} "
+            "unarmed_changed hostw={} unknown(no reply copy or hash)={}; span getspan={} "
+            "bank={} top_span_sites_rva(base {:#x}):{} span_site_overflow={}; "
+            "budget_verify_differences={}",
+            a_union, a_arm, a_both, b, c, unprot50, unprot99, unprot50 * mib_per_page,
+            unprot99 * mib_per_page, ucopy50, ucopy99, bsum.arm_needed, bsum.unarmed_changed,
+            span_total, resid, resid_events, frames,
+            static_cast<double>(bsum.classes[static_cast<size_t>(TC::Tracked)]) / frames,
+            static_cast<double>(bsum.classes[static_cast<size_t>(TC::ArmSet)]) / frames,
+            static_cast<double>(bsum.classes[static_cast<size_t>(TC::Untracked)]) / frames,
+            static_cast<double>(bsum.classes[static_cast<size_t>(TC::NoCpu)]) / frames,
+            bsum.ucopy_overflow, bsum.arm_read, bsum.arm_needed, bsum.arm_trapped,
+            bsum.unarmed_hostw, bsum.arm_unknown, span_getspan, span_bank, module, top,
+            delta(SpanSiteOverflow),
+            s.budget_verify_differences.load(std::memory_order_relaxed));
+        const bool copy_pass = unprot99 <= 3072.0f && ucopy50 <= 0.6f;
+        const char* const arm_verdict = bsum.unarmed_changed != 0 ? "FAIL"
+                                        : bsum.arm_unknown != 0  ? "INCONCLUSIVE"
+                                                                 : "PASS";
+        const char* const span_verdict = span_total == 0 ? "PASS"
+                                         : unknown_site  ? "FAIL"
+                                                         : "PASS (sites named)";
+        const char* const resid_verdict = resid_total == 0  ? "PASS (no residual)"
+                                          : resid_other == 0 ? "PASS"
+                                                             : "FAIL";
+        budget_lines[1] = fmt::format(
+            "Nx2Perf run_ahead_overlay_budget: decision copy_set {} (unprot_union p99 {:.0f} "
+            "pages, needs <= 3072; copy_ms p50 {:.3f}, needs <= 0.6); arm_trap {} (arm_needed "
+            "{}, unarmed_changed {}, needs 0; unknown {}); span {} (span_hazard_bytes {}, needs 0 "
+            "or named sites); front_macro_residual {} ({} B, unattributed {} B)",
+            copy_pass ? "PASS" : "FAIL", unprot99, ucopy50, arm_verdict, bsum.arm_needed,
+            bsum.unarmed_changed, bsum.arm_unknown, span_verdict, span_total, resid_verdict,
+            resid_total, resid_other);
+    }
 
     struct Sums {
         u64 union_pages = 0;
@@ -4057,6 +4592,11 @@ private:
         }
         for (size_t i = 0; i < NumSites; ++i) {
             counts.site[i] = s.site_bytes[i].load(std::memory_order_relaxed);
+        }
+        if (BudgetOn()) [[unlikely]] {
+            for (size_t i = 0; i < NumSites; ++i) {
+                counts.span_site[i] = s.span_site_bytes[i].load(std::memory_order_relaxed);
+            }
         }
         for (size_t r = 0; r < Nx2Cow::NumRoles; ++r) {
             for (size_t c = 0; c < Nx2Cow::NumCats; ++c) {
@@ -4202,6 +4742,16 @@ private:
     u64 differs = 0;
     u64 verify_logged = 0;
     s64 verify_log_ns = 0;
+
+    // run_ahead_overlay_budget
+    std::unique_ptr<std::array<u32, TableSlots>> budget_phys;
+    std::unique_ptr<std::array<u8, TableSlots>> budget_class;
+    std::function<void(std::span<const u32>, std::span<u8>)> budget_classify;
+    BudgetSums bsum{};
+    std::array<std::string, 2> budget_lines{};
+    u32 records_logged = 0;
+    u64 budget_verify_logged = 0;
+    s64 budget_verify_log_ns = 0;
 };
 
 } // namespace VideoCommon::Nx2Snap

@@ -140,6 +140,18 @@ TEST_CASE("Nx2Perf run_ahead_snapshot_probe is off unless ON names it", "[nx2_pe
             always_off);
 }
 
+TEST_CASE("Nx2Perf run_ahead_overlay_budget is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::RunAheadOverlayBudget) == 83);
+    REQUIRE(opt_names[Index(Opt::RunAheadOverlayBudget)] == "run_ahead_overlay_budget");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::RunAheadOverlayBudget)));
+    REQUIRE(IsOff(always_off, Index(Opt::RunAheadOverlayBudget)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::RunAheadOverlayBudget)));
+    REQUIRE(ParseOffMask(false, "run_ahead_overlay_budget", "", false) ==
+            (always_off & ~Bit(Opt::RunAheadOverlayBudget)));
+    // Read once into a static bool: not live-safe.
+    REQUIRE(!IsOff(live_safe, Index(Opt::RunAheadOverlayBudget)));
+}
+
 TEST_CASE("Nx2Perf list_writer_hook_copies_only is off unless ON names it", "[nx2_perf]") {
     REQUIRE(opt_names[Index(Opt::ListWriterHookCopiesOnly)] == "list_writer_hook_copies_only");
     REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ListWriterHookCopiesOnly)));
