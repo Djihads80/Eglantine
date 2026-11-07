@@ -704,18 +704,23 @@ void DmaPusher::VerifyFrontMacroCall(Engines::Maxwell3D& maxwell3d,
         dma_state.non_incrementing && dma_state.is_last_call && at == header + 1 + count &&
         dma_state.dma_word_offset ==
             u64((word_offset + header + (once && count > 1 ? 2 : 1)) * sizeof(u32));
+    // The fast path borrows the words in place: they must not change during the call.
+    bool words_same = true;
+    for (u32 i = 0; i < count && words_same; ++i) {
+        words_same = commands[header + 1 + i].argument == expected[4 + i];
+    }
     CountMacroCall(MacroCallCount::Taken);
     CountMacroCall(MacroCallCount::Verified);
-    if (acquire || !state_ok || recorded != expected) {
+    if (acquire || !state_ok || !words_same || recorded != expected) {
         const u64 differed = ++g_macro_call_stats.differed;
         if (differed <= 64) {
             LOG_ERROR(HW_GPU,
                       "Nx2Perf front_macro_call: macro {:#x} ({} words, {}) differs: {} words "
-                      "recorded for {} expected, ring {} +{}, state {}, acquire mid-call {} ({} "
-                      "so far)",
+                      "recorded for {} expected, ring {} +{}, state {}, words changed during "
+                      "the call {}, acquire mid-call {} ({} so far)",
                       method, count, once ? "increase once" : "non-increasing", recorded.size(),
                       expected.size(), ring_before, ring_delta, state_ok ? "same" : "differs",
-                      acquire, differed);
+                      !words_same, acquire, differed);
         }
     }
 }
