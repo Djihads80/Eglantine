@@ -192,6 +192,9 @@ enum class Opt : unsigned {
     /// Split front: a native macro call whose code uses no data RAM and no MME DMA replays the
     /// emits recorded for the same start, parameters and register reads (front_macro_memo.h)
     FrontMacroMemo,
+    /// Split back: a report a forwarded 0x16 call waited on before is covered by a fence submitted
+    /// at the next draw boundary; the next wait for it waits on that fence instead of a new one
+    ReportSubmitEarly,
     Count,
 };
 
@@ -245,6 +248,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "run_ahead_raw_probe",
     "list_writer_hook_copies_only",
     "front_macro_memo",
+    "report_submit_early",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -326,7 +330,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::BankHashShadow,
                           Opt::RunAheadRawProbe,
                           Opt::ListWriterHookCopiesOnly,
-                          Opt::FrontMacroMemo}) {
+                          Opt::FrontMacroMemo,
+                          Opt::ReportSubmitEarly}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -353,7 +358,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch (-0.5 FPS),
 /// bank_hash_shadow (-0.3 FPS; round 9), run_ahead_raw_probe (measurement; round 10),
 /// list_writer_hook_copies_only (submit timing; round 10),
-/// front_macro_memo (unmeasured; round 10).
+/// front_macro_memo (unmeasured; round 10), report_submit_early (submit timing; round 11).
 /// dma_forward and draw_begin_coalesce (round 5) and pending_wake (round 9) are on
 /// by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -384,7 +389,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::BankHashShadow) |
                                   Bit(Opt::RunAheadRawProbe) |
                                   Bit(Opt::ListWriterHookCopiesOnly) |
-                                  Bit(Opt::FrontMacroMemo);
+                                  Bit(Opt::FrontMacroMemo) |
+                                  Bit(Opt::ReportSubmitEarly);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -469,6 +475,9 @@ static_assert(static_cast<unsigned>(Opt::ListWriterHookCopiesOnly) == 77 &&
 static_assert(static_cast<unsigned>(Opt::FrontMacroMemo) == 78 &&
               IsOff(always_off, static_cast<size_t>(Opt::FrontMacroMemo)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::FrontMacroMemo)));
+static_assert(static_cast<unsigned>(Opt::ReportSubmitEarly) == 79 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ReportSubmitEarly)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ReportSubmitEarly)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

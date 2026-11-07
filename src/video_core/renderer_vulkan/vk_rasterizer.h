@@ -7,6 +7,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 #include <boost/container/static_vector.hpp>
 
@@ -213,6 +216,19 @@ private:
     /// list_writer_hook_copies_only, not for WaitLists unless it holds list copies).
     void FlushSplitIdle(VideoCommon::IdleHookReason reason);
 
+    /// FlushQueryResults' wait: a new fence behind the pending report writes. False if it gave up.
+    bool WaitQueryResultsFence(DAddr addr);
+    /// FlushQueryResults with Nx2Perf report_submit_early or fence_timeline: counts and times it.
+    void FlushQueryResultsMeasured(DAddr addr, u64 size);
+    /// report_submit_early: waits on the earliest early fence covering every back report into
+    /// [addr, addr + size). False when none does (the caller takes the new-fence path).
+    bool WaitEarlyReportFence(DAddr addr, u64 size);
+    /// report_submit_early: a back report into a hot range marks an early submit.
+    void NoteEarlyReport(GPUVAddr gpu_addr);
+    /// report_submit_early: a fence covering every back report so far, submitted now.
+    void SubmitEarlyReports();
+    void LogReportStats();
+
     void UpdateDynamicStates(bool has_dynamic_vertex_input = false);
 
     void HandleTransformFeedback();
@@ -274,6 +290,13 @@ private:
     QueryCache query_cache;
     PipelineCache pipeline_cache;
     AccelerateDMA accelerate_dma;
+    /// report_submit_early: the last early marker whose operation ran (they run in order).
+    /// Declared before fence_manager so its fencing thread stops first.
+    struct {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::atomic<u64> done{};
+    } report_early_wait;
     FenceManager fence_manager;
 
     vk::Event wfi_event;
@@ -291,6 +314,46 @@ private:
     bool hook_lazy_flush{}; ///< Nx2Perf hook_lazy_flush, read once
     u64 list_copy_deferred_tick{}; ///< The tick of the last list copies DeferFlush held back
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+
+    bool report_submit_early{}; ///< Nx2Perf report_submit_early, read once
+    bool report_measure{};      ///< report_submit_early or fence_timeline: count FlushQueryResults
+    /// report_submit_early, back only: ranges FlushQueryResults waited on, reports into them and
+    /// the early markers submitted for them. Fixed size, no heap.
+    struct ReportHotRange {
+        DAddr begin{};
+        DAddr end{};
+        u64 last_report{};   ///< report_seq of the last back report into it
+        u64 tracked_since{}; ///< report_seq when it was inserted
+        u64 last_use{};
+    };
+    struct ReportEarlyMarker {
+        u64 id{};      ///< 0: empty
+        u64 covers{};  ///< report_seq at its fence: every back report up to it
+        u64 foreign{}; ///< report_foreign at its fence
+    };
+    struct {
+        std::array<ReportHotRange, 64> hot{};
+        u32 hot_count{};
+        u64 use_clock{};
+        std::array<ReportEarlyMarker, 16> markers{};
+        u64 report_seq{};
+        u64 marker_issued{};
+        bool flush_pending{};
+    } report_early;
+    std::atomic<u64> report_foreign{}; ///< Reports recorded off the back thread
+    struct {
+        std::atomic<u64> calls_back{};
+        std::atomic<u64> calls_other{};
+        std::atomic<u64> pending{};
+        std::atomic<u64> blocked_ns{};
+        std::atomic<u64> blocked_max_ns{};
+        std::atomic<u64> early_submits{};
+        std::atomic<u64> early_waits{};
+        std::atomic<u64> fallbacks{};
+        std::atomic<u64> recheck_fails{};
+        std::atomic<u64> verify_diffs{}; ///< In all
+        std::atomic<s64> last_log_ns{};
+    } report_stats;
 };
 
 } // namespace Vulkan
