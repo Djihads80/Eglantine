@@ -115,6 +115,17 @@ void DefineSoftwareMatrixFunctions(EmitContext& ctx, const IR::Program& program)
         const auto and_ = [&](Id a, u32 b) { return ctx.OpBitwiseAnd(u32ty, a, imm(b)); };
         const auto unpack = [&](Id v) { return ctx.OpUnpackHalf2x16(ctx.F32[2], v); };
         const auto round_half = [&](Id value) {
+            if (program.info.uses_fp16) {
+                // A round trip through a half: the conversion rounds to nearest even, keeps half
+                // subnormals and overflows to infinity, as the bit operations below do, in two
+                // instructions (RADV fuses it into the last FMA). NoContraction keeps the pair
+                // exact so it is not folded away.
+                const Id half = ctx.OpFConvert(ctx.F16[1], value);
+                ctx.Decorate(half, spv::Decoration::NoContraction);
+                const Id widened = ctx.OpFConvert(f32ty, half);
+                ctx.Decorate(widened, spv::Decoration::NoContraction);
+                return widened;
+            }
             // Do not express the intermediate rounding as unpack(pack(value)): drivers may
             // eliminate that round trip. Round normal significands explicitly, ties to even;
             // half subnormals lie on the exactly representable 2^-24 grid.

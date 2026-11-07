@@ -164,6 +164,47 @@ bool HasCapability(const std::vector<u32>& code, u32 capability) {
                                [=](const auto& words) { return words[0] == capability; });
 }
 
+struct HelperCounts {
+    u32 fma{};
+    u32 shuffles{};
+    u32 quad_broadcasts{};
+    u32 conversions{};
+    std::vector<u32> fma_before_rounding; ///< FMAs emitted before each RoundEven
+    std::vector<u32> quad_indices;
+    std::vector<u32> conversion_ids;
+};
+
+HelperCounts CountHelper(const std::vector<u32>& code) {
+    std::map<u32, u32> constants;
+    for (const auto& words : Instructions(code, 43)) { // OpConstant
+        constants.emplace(words[1], words[2]);
+    }
+    HelperCounts counts;
+    for (size_t offset = 5; offset < code.size();) {
+        const u32 length = code[offset] >> 16;
+        const u32 opcode = code[offset] & 0xffffU;
+        REQUIRE(length != 0);
+        REQUIRE(offset + length <= code.size());
+        const auto words = std::span{code}.subspan(offset + 1, length - 1);
+        if (opcode == 12 && words[3] == 2) { // GLSL.std.450 RoundEven
+            counts.fma_before_rounding.push_back(counts.fma);
+        } else if (opcode == 12 && words[3] == 50) { // GLSL.std.450 Fma
+            ++counts.fma;
+        } else if (opcode == 345) { // OpGroupNonUniformShuffle
+            ++counts.shuffles;
+        } else if (opcode == 365) { // OpGroupNonUniformQuadBroadcast
+            ++counts.quad_broadcasts;
+            REQUIRE(constants.contains(words[4]));
+            counts.quad_indices.push_back(constants.at(words[4]));
+        } else if (opcode == 115) { // OpFConvert
+            ++counts.conversions;
+            counts.conversion_ids.push_back(words[1]);
+        }
+        offset += length;
+    }
+    return counts;
+}
+
 } // namespace
 
 TEST_CASE("Software HMMA shares a bounded loop without tensor extensions",
@@ -184,124 +225,33 @@ TEST_CASE("Software HMMA shares a bounded loop without tensor extensions",
     }
 }
 
-TEST_CASE("Software HMMA rounds only on uniform K8 boundaries", "[video_core][tensor][ampere]") {
+TEST_CASE("Software HMMA rounds once per K8 group", "[video_core][tensor][ampere]") {
     for (const u32 depth : {8U, 16U}) {
-        TensorProgram fixture{1, depth};
-        const auto code = fixture.Emit();
-        std::map<u32, u32> constants;
-        for (const auto& words : Instructions(code, 43)) { // OpConstant
-            constants.emplace(words[1], words[2]);
-        }
-
-        const auto selections = Instructions(code, 247); // OpSelectionMerge
-        REQUIRE(selections.size() == 1);
-        REQUIRE(selections.front()[1] == 2); // DontFlatten
-        const u32 merge = selections.front()[0];
-        const auto branches = Instructions(code, 250); // OpBranchConditional
-        const auto branch =
-            std::ranges::find_if(branches, [=](const auto& words) { return words[2] == merge; });
-        REQUIRE(branch != branches.end());
-        const u32 condition = (*branch)[0];
-        const u32 round_block = (*branch)[1];
-        REQUIRE(round_block != merge);
-
-        const auto comparisons = Instructions(code, 170); // OpIEqual
-        const auto comparison = std::ranges::find_if(
-            comparisons, [=](const auto& words) { return words[1] == condition; });
-        REQUIRE(comparison != comparisons.end());
-        const u32 component = (*comparison)[2];
-        const u32 boundary = constants.at((*comparison)[3]);
-        const auto masks = Instructions(code, 199); // OpBitwiseAnd
-        const auto mask =
-            std::ranges::find_if(masks, [=](const auto& words) { return words[1] == component; });
-        REQUIRE(mask != masks.end());
-        const u32 pair = (*mask)[2];
-        const u32 pair_mask = constants.at((*mask)[3]);
-        REQUIRE(pair_mask == 3);
-        REQUIRE(boundary == 3);
-        const auto loads = Instructions(code, 61); // OpLoad
-        const auto pair_load =
-            std::ranges::find_if(loads, [=](const auto& words) { return words[1] == pair; });
-        REQUIRE(pair_load != loads.end());
-        const u32 counter = (*pair_load)[2];
-        const auto stores = Instructions(code, 62);     // OpStore
-        const auto additions = Instructions(code, 128); // OpIAdd
-        u32 initializations = 0;
-        u32 increments = 0;
-        for (const auto& store : stores) {
-            if (store[0] != counter) {
-                continue;
+        for (const bool quad : {false, true}) {
+            TensorProgram fixture{1, depth};
+            fixture.profile.support_quad_shuffles = quad;
+            const auto code = fixture.Emit();
+            std::map<u32, u32> constants;
+            for (const auto& words : Instructions(code, 43)) { // OpConstant
+                constants.emplace(words[1], words[2]);
             }
-            if (constants.contains(store[1])) {
-                REQUIRE(constants.at(store[1]) == 0);
-                ++initializations;
-            } else {
-                const auto increment = std::ranges::find_if(
-                    additions, [&](const auto& words) { return words[1] == store[1]; });
-                REQUIRE(increment != additions.end());
-                REQUIRE((*increment)[2] == pair);
-                REQUIRE(constants.at((*increment)[3]) == 1);
-                ++increments;
+            REQUIRE(Instructions(code, 247).empty()); // OpSelectionMerge: no lane-dependent branch
+            REQUIRE(HasCapability(code, 68) == quad); // GroupNonUniformQuad
+            // The loop runs once per K8 group.
+            const auto limits = Instructions(code, 176); // OpULessThan
+            REQUIRE(limits.size() == 1);
+            REQUIRE(constants.at(limits.front()[3]) == depth / 8);
+            const HelperCounts counts = CountHelper(code);
+            // Four K pairs x 2 rows x 2 columns x 2 halves, then the four accumulators rounded.
+            REQUIRE(counts.fma == 32);
+            REQUIRE(counts.fma_before_rounding == std::vector<u32>(4, 32));
+            // B always needs a general shuffle (two columns); A comes from its own quad.
+            REQUIRE(counts.shuffles == (quad ? 8U : 16U));
+            REQUIRE(counts.quad_broadcasts == (quad ? 8U : 0U));
+            for (u32 i = 0; i < counts.quad_indices.size(); ++i) {
+                REQUIRE(counts.quad_indices[i] == i / 2);
             }
         }
-        REQUIRE(initializations == 1);
-        REQUIRE(increments == 1);                    // No lane-dependent input controls rounding.
-        const auto limits = Instructions(code, 176); // OpULessThan
-        const auto limit =
-            std::ranges::find_if(limits, [=](const auto& words) { return words[2] == pair; });
-        REQUIRE(limit != limits.end());
-        const u32 pairs = constants.at((*limit)[3]);
-        REQUIRE(pairs == depth / 2);
-        std::vector<u32> rounded_pairs;
-        for (u32 value = 0; value < pairs; ++value) {
-            if ((value & pair_mask) == boundary) {
-                rounded_pairs.push_back(value);
-            }
-        }
-        REQUIRE(rounded_pairs == (depth == 8 ? std::vector<u32>{3} : std::vector<u32>{3, 7}));
-
-        // Inspect the generated function, not a second implementation of its branch.
-        // Every expensive conversion is inside the true block; no collective is.
-        u32 block = 0;
-        u32 rounding_operations = 0;
-        u32 fma_operations = 0;
-        u32 shuffles = 0;
-        std::vector<u32> rounded_accumulators;
-        bool round_rejoins = false;
-        for (size_t offset = 5; offset < code.size();) {
-            const u32 length = code[offset] >> 16;
-            const u32 opcode = code[offset] & 0xffffU;
-            REQUIRE(length != 0);
-            REQUIRE(offset + length <= code.size());
-            const auto words = std::span{code}.subspan(offset + 1, length - 1);
-            if (opcode == 248) { // OpLabel
-                block = words[0];
-            } else if (opcode == 12 && words[3] == 2) { // GLSL.std.450 RoundEven
-                REQUIRE(block == round_block);
-                ++rounding_operations;
-            } else if (opcode == 12 && words[3] == 50) { // GLSL.std.450 Fma
-                REQUIRE(block != round_block);
-                ++fma_operations;
-            } else if (opcode == 345) { // OpGroupNonUniformShuffle
-                REQUIRE(block != round_block);
-                ++shuffles;
-            } else if (opcode == 62 && block == round_block) { // OpStore
-                rounded_accumulators.push_back(words[0]);
-            } else if (opcode == 249 && block == round_block) { // OpBranch
-                REQUIRE(words[0] == merge);
-                round_rejoins = true;
-            } else if (opcode == 169) { // OpSelect must not evaluate a discarded conversion.
-                REQUIRE(words[2] != condition);
-            }
-            offset += length;
-        }
-        REQUIRE(rounding_operations == 4);
-        REQUIRE(fma_operations == 8);
-        REQUIRE(shuffles == 4);
-        REQUIRE(round_rejoins);
-        REQUIRE(rounded_accumulators.size() == 4);
-        std::ranges::sort(rounded_accumulators);
-        REQUIRE(std::ranges::adjacent_find(rounded_accumulators) == rounded_accumulators.end());
     }
 }
 
@@ -314,7 +264,7 @@ TEST_CASE("Software matrix helpers also emit for 64-lane host subgroups",
         const auto code = fixture.Emit(depth == 8 ? "software-k8-wave64" : "software-k16-wave64");
         REQUIRE_FALSE(HasCapability(code, 5357));
         REQUIRE(Instructions(code, 246).size() == 1);
-        REQUIRE(Instructions(code, 345).size() == 4); // OpGroupNonUniformShuffle
+        REQUIRE(Instructions(code, 345).size() == 16); // OpGroupNonUniformShuffle
     }
 }
 
