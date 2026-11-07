@@ -181,7 +181,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dma_forward_memo",
 };
 
-static_assert(static_cast<size_t>(Opt::Count) <= 64, "the off-mask is 64 bits");
+static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
 static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemo) == 36 &&
               static_cast<unsigned>(Opt::WriterSetExec) == 45 &&
@@ -194,18 +194,47 @@ static_assert(static_cast<unsigned>(Opt::DispatchBatch) == 33 &&
               static_cast<unsigned>(Opt::BindMemoLocal) == 52 &&
               static_cast<unsigned>(Opt::WarGuardProbe) == 57);
 
-constexpr u64 Bit(Opt opt) {
-    return u64{1} << static_cast<unsigned>(opt);
+/// A set of switches: bit i (lo for i < 64, hi bit i - 64 above) is opt_names[i].
+struct OffMask {
+    u64 lo{};
+    u64 hi{};
+
+    constexpr OffMask operator|(const OffMask& other) const {
+        return {lo | other.lo, hi | other.hi};
+    }
+    constexpr OffMask operator&(const OffMask& other) const {
+        return {lo & other.lo, hi & other.hi};
+    }
+    constexpr OffMask operator~() const {
+        return {~lo, ~hi};
+    }
+    constexpr bool operator==(const OffMask&) const = default;
+    constexpr OffMask& operator|=(const OffMask& other) {
+        lo |= other.lo;
+        hi |= other.hi;
+        return *this;
+    }
+    constexpr OffMask& operator&=(const OffMask& other) {
+        lo &= other.lo;
+        hi &= other.hi;
+        return *this;
+    }
+};
+
+constexpr OffMask Bit(Opt opt) {
+    const unsigned index = static_cast<unsigned>(opt);
+    const u64 bit = u64{1} << (index & 63);
+    return index < 64 ? OffMask{bit, 0} : OffMask{0, bit};
 }
 
 /// Bit i of an off-mask is opt_names[i]: set means off.
-constexpr bool IsOff(u64 mask, size_t index) {
-    return ((mask >> index) & 1) != 0;
+constexpr bool IsOff(const OffMask& mask, size_t index) {
+    return (((index < 64 ? mask.lo : mask.hi) >> (index & 63)) & 1) != 0;
 }
 
 /// Off unless EDEN_NX2_PERF_ON names them: quarantined or not yet verified.
-inline constexpr u64 DefaultOffMask() {
-    u64 mask = 0;
+inline constexpr OffMask DefaultOffMask() {
+    OffMask mask{};
     for (const Opt opt : {Opt::SplitOverlap, Opt::AcquireEarly, Opt::MacroReadCbOverlay,
                           Opt::MacroReadWriterSet, Opt::PreflushAging, Opt::EagerPublish,
                           Opt::FrontSameFirst, Opt::FrontClassTable, Opt::FrontRun,
@@ -243,7 +272,7 @@ inline constexpr u64 DefaultOffMask() {
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
 /// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
-inline constexpr u64 always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
+inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
                                   Bit(Opt::PresentOneAhead) | Bit(Opt::FramesAhead) |
@@ -292,22 +321,22 @@ static_assert(IsOff(always_off, static_cast<size_t>(Opt::InflightWriteWait)) &&
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
-inline constexpr u64 front_sync_trio_set =
+inline constexpr OffMask front_sync_trio_set =
     Bit(Opt::AcquireTriggerEarly) | Bit(Opt::ExactNotedWrites) | Bit(Opt::WriterSetExec);
 
 /// The off-mask from EDEN_NX2_PERF_SAFE (safe), EDEN_NX2_PERF_ON (on), EDEN_NX2_PERF_OFF (off)
 /// and EDEN_NX2_PERF_FRAMES_AHEAD=0 (frames_ahead_off).
-inline u64 ParseOffMask(bool safe, std::string_view on, std::string_view off,
-                        bool frames_ahead_off) {
+inline OffMask ParseOffMask(bool safe, std::string_view on, std::string_view off,
+                            bool frames_ahead_off) {
     // Every candidate is on for the user's play test; EDEN_NX2_PERF_SAFE=1 puts the experimental
     // set back to off (split_overlap stays quarantined either way).
-    u64 mask = safe ? DefaultOffMask() | always_off : always_off;
+    OffMask mask = safe ? DefaultOffMask() | always_off : always_off;
     while (!on.empty()) {
         const size_t comma = on.find(',');
         const std::string_view name = on.substr(0, comma);
         for (size_t i = 0; i < opt_names.size(); ++i) {
             if (name == opt_names[i]) {
-                mask &= ~(u64{1} << i);
+                mask &= ~Bit(static_cast<Opt>(i));
             }
         }
         if (name == "front_sync_trio") {
@@ -324,7 +353,7 @@ inline u64 ParseOffMask(bool safe, std::string_view on, std::string_view off,
         bool known = false;
         for (size_t i = 0; i < opt_names.size(); ++i) {
             if (name == opt_names[i]) {
-                mask |= u64{1} << i;
+                mask |= Bit(static_cast<Opt>(i));
                 known = true;
             }
         }
@@ -348,7 +377,7 @@ inline bool Enabled() {
 /// call-site audit shows none caches On() or keeps state the other branch does not handle.
 /// Switches without an On() call site (bank_check, write_intersections, immediate_callbacks)
 /// are left out so a live flip of them is reported as ignored instead of measuring nothing.
-inline constexpr u64 live_safe =
+inline constexpr OffMask live_safe =
     Bit(Opt::CbBatch) | Bit(Opt::CleanWords) | Bit(Opt::UsageTracker) | Bit(Opt::FrontSleep) |
     Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
     Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
@@ -356,29 +385,36 @@ inline constexpr u64 live_safe =
 
 /// One control file: the whole arm, computed from the startup off-mask.
 struct ControlResult {
-    u64 mask;
+    OffMask mask;
     std::string label;
-    u64 on_vs_startup;
-    u64 off_vs_startup;
+    OffMask on_vs_startup;
+    OffMask off_vs_startup;
     std::string ignored; ///< Names not live-safe or unknown and unknown directives, comma list
 };
-ControlResult ParseControl(u64 startup_mask, std::string_view text, u64 live_safe_mask);
-/// "set=<label> on=<names|-> off=<names|-> ignored=<names|-> mask=0x<16 hex>"
-std::string FormatControl(const ControlResult& result, u64 effective_mask);
+ControlResult ParseControl(const OffMask& startup_mask, std::string_view text,
+                           const OffMask& live_safe_mask);
+/// "set=<label> on=<names|-> off=<names|-> ignored=<names|-> mask=0x<hi 16 hex><lo 16 hex>"
+std::string FormatControl(const ControlResult& result, const OffMask& effective_mask);
 
 namespace detail {
-/// Off-mask in effect (bit set = off; every switch when EDEN_NX2_PERF_OPT=0); ~0 before the
-/// first On(). The live poller stores into it.
-inline std::atomic<u64> live_off_mask{~u64{0}};
-u64 InitOffMask();
+/// Off-mask in effect, words lo and hi (bit set = off; every switch when EDEN_NX2_PERF_OPT=0);
+/// both words ~0 before the first On(). The live poller stores into it, hi first.
+inline std::array<std::atomic<u64>, 2> live_off_mask{~u64{0}, ~u64{0}};
+OffMask InitOffMask();
 } // namespace detail
 
 inline bool On(Opt opt) {
-    u64 off = detail::live_off_mask.load(std::memory_order_relaxed);
+    const size_t index = static_cast<size_t>(opt);
+    u64 off = detail::live_off_mask[index >> 6].load(std::memory_order_relaxed);
     if (off == ~u64{0}) [[unlikely]] {
-        off = detail::InitOffMask();
+        // Uninitialized only while both words are ~0.
+        if (detail::live_off_mask[0].load(std::memory_order_relaxed) == ~u64{0} &&
+            detail::live_off_mask[1].load(std::memory_order_relaxed) == ~u64{0}) {
+            const OffMask mask = detail::InitOffMask();
+            off = index < 64 ? mask.lo : mask.hi;
+        }
     }
-    return !IsOff(off, static_cast<size_t>(opt));
+    return ((off >> (index & 63)) & 1) == 0;
 }
 
 inline bool Verify() {
