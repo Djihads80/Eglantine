@@ -79,6 +79,14 @@ jobs:
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
 
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
       - name: Install Linux dependencies
         shell: bash
         run: |

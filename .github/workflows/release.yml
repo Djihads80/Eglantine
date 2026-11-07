@@ -174,7 +174,7 @@ jobs:
 
       - name: Ping Discord
         if: >-
-          (inputs.kind == 'stable' || inputs.kind == 'rc') &&
+          (inputs.kind == 'stable' || inputs.kind == 'rc' || inputs.kind == 'daily') &&
           github.repository == 'Djihads80/Eglantine'
         shell: bash
         env:
