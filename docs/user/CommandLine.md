@@ -16,6 +16,9 @@ There are two main applications, an SDL-based app (`eden-cli`) and a Qt based ap
 - `--null-render/-n`: Forces the usage of the "Null" render backend irrespective of settings.
 - `--filter/-x`: Sets the debug log filter irrespective of settings.
 - `--singlecore/-s`: Forces single-core regardless of settings.
+- `--mcp`: Start the built-in [MCP server](./MCP.md) for this run.
+- `--mcp-port <port>`: Use another port for the MCP server (implies `--mcp`).
+- `--mcp-allow-writes`: Let MCP clients change emulator state (input, memory, settings) for this run.
 
 Only the Qt frontend supports the following arguments:
 

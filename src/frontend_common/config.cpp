@@ -906,6 +906,7 @@ void Config::WriteCategory(const Settings::Category category) {
     std::ranges::for_each(settings, [&](const auto& setting) { WriteSettingGeneric(setting); });
 }
 
+/// Loads one setting from the config file, honoring its global and default flags.
 void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     if (!setting->Save() || (!setting->Switchable() && !global)) {
         return;
@@ -913,6 +914,14 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
 
     const std::string key = AdjustKey(setting->GetLabel());
     const std::string default_value(setting->DefaultToString());
+
+    if (setting->Id() == Settings::values.mcp_token.Id()) {
+        // Read as stored, ignoring the \default flag: a token in the file must never be dropped
+        // (the server would then run without authentication), and the path adjustments of the
+        // default read would change it.
+        setting->LoadString(ReadStringSetting(key));
+        return;
+    }
 
     bool use_global = true;
     if (setting->Switchable() && !global) {
@@ -931,6 +940,7 @@ void Config::ReadSettingGeneric(Settings::BasicSetting* const setting) {
     }
 }
 
+/// Writes one setting to the config file with its global and default flags.
 void Config::WriteSettingGeneric(const Settings::BasicSetting* const setting) {
     if (!setting->Save()) {
         return;
@@ -950,7 +960,12 @@ void Config::WriteSettingGeneric(const Settings::BasicSetting* const setting) {
     } else if (global) {
         WriteBooleanSetting(std::string(key).append("\\default"),
                             setting->ToString() == setting->DefaultToString());
-        WriteStringSetting(key, setting->ToString());
+        if (setting->Id() == Settings::values.mcp_token.Id()) {
+            // Stored as is: the path adjustments of WriteStringSetting would change a token.
+            WritePreparedSetting(key, setting->ToString(), std::nullopt, std::nullopt);
+        } else {
+            WriteStringSetting(key, setting->ToString());
+        }
     }
 }
 

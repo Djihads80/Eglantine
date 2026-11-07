@@ -50,3 +50,4 @@ A copy of this handbook is [available online](https://git.eden-emu.dev/eden-emu/
 - **[Platforms and Architectures](./Architectures.md)**
 - **[Native Application Development](./Native.md)**
 - **[Testing](./Testing.md)**
+- **[MCP Server (AI agents)](./MCP.md)**

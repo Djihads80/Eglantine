@@ -4,10 +4,15 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -64,11 +69,52 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "fence skipped", "method", "split drain", "split wait",
 };
 
-// Read once at startup: Enabled() runs several times per method write (no guard to check).
-inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+// On from startup with EDEN_NX2_GPU_PROFILE; the MCP server can toggle it. Enabled() runs several
+// times per method write: a relaxed load is as cheap as the plain bool it replaced.
+inline std::atomic<bool> g_enabled{std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr};
+/// Report window (each thread logs and publishes its totals this often).
+inline std::atomic<u64> g_window_ns{10'000'000'000ULL};
 
 inline bool Enabled() {
-    return g_enabled;
+    return g_enabled.load(std::memory_order_relaxed);
+}
+
+/// Bumped on every toggle: threads drop totals from before it (thread_local, so they reset
+/// themselves at their next Report).
+inline std::atomic<u32> g_generation{0};
+
+/// Turns the profiler on or off at runtime (thread-safe). Each thread restarts its window at
+/// its next Report, so the first numbers after a toggle take one full window.
+inline void SetEnabled(bool enabled) {
+    g_generation.fetch_add(1, std::memory_order_relaxed);
+    g_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+/// One thread's last report, per second of wall time (for the MCP gpu_profile tool).
+struct Snapshot {
+    std::string thread;
+    u64 when_ns{};   ///< Now() at the report
+    u64 window_ns{};
+    /// Exclusive time (ms) and entries of one zone, both per second.
+    struct ZoneStat {
+        const char* name;
+        double ms;
+        double calls;
+    };
+    std::vector<ZoneStat> zones;
+    std::vector<std::pair<const char*, double>> counters;
+};
+
+/// Guards Snapshots(): Report writes under it from each profiled thread.
+inline std::mutex& SnapshotMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+/// Last report per thread name. Lock SnapshotMutex() while reading.
+inline std::map<std::string, Snapshot>& Snapshots() {
+    static std::map<std::string, Snapshot> snapshots;
+    return snapshots;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
@@ -83,6 +129,7 @@ struct ThreadData {
     std::array<u64, 8> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
+    u32 generation{};
 };
 
 inline thread_local ThreadData t_data;
@@ -153,13 +200,15 @@ inline void Report(const char* thread_name = "GPU thread") {
     }
     auto& data = t_data;
     const u64 now = Now();
-    if (data.window_start == 0) {
+    const u32 generation = g_generation.load(std::memory_order_relaxed);
+    if (data.window_start == 0 || data.generation != generation) {
+        data = {};
         data.window_start = now;
-        data.child_ns = 0;
+        data.generation = generation;
         return;
     }
     const u64 window = now - data.window_start;
-    if (window < 10'000'000'000ULL) {
+    if (window < g_window_ns.load(std::memory_order_relaxed)) {
         return;
     }
     // Time in no zone at all is the wall time minus the zones' totals.
@@ -191,8 +240,32 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[6]) * 1e9 / window,
                         static_cast<double>(data.counters[7]) * 1e9 / window);
     LOG_INFO(HW_GPU, "{} per second:{}", thread_name, line);
+    {
+        static constexpr std::array<const char*, std::tuple_size_v<decltype(data.counters)>>
+            counter_names{"download_bytes",  "download_copies",
+                          "mme_dma_read_bytes", "download_bytes_on_dma_pages",
+                          "method_writes",   "same_value_writes",
+                          "acquire_checks",  "acquire_waits"};
+        const double per_s = 1e9 / static_cast<double>(window);
+        Snapshot snap{.thread = thread_name, .when_ns = now, .window_ns = window};
+        for (size_t i = 0; i < data.exclusive_ns.size(); ++i) {
+            if (data.exclusive_ns[i] != 0 || data.count[i] != 0) {
+                snap.zones.push_back({zone_names[i],
+                                      static_cast<double>(data.exclusive_ns[i]) * 1000.0 /
+                                          static_cast<double>(window),
+                                      static_cast<double>(data.count[i]) * per_s});
+            }
+        }
+        for (size_t i = 0; i < counter_names.size(); ++i) {
+            snap.counters.emplace_back(counter_names[i],
+                                       static_cast<double>(data.counters[i]) * per_s);
+        }
+        std::scoped_lock lock{SnapshotMutex()};
+        Snapshots()[thread_name] = std::move(snap);
+    }
     data = {};
     data.window_start = now;
+    data.generation = generation;
 }
 
 } // namespace VideoCommon::Nx2Profile
