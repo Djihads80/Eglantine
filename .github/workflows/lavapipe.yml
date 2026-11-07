@@ -1,0 +1,123 @@
+name: lavapipe
+
+on:
+  pull_request:
+    paths:
+      - "src/video_core/**"
+      - "src/shader_recompiler/**"
+      - "src/tests/**"
+      - "CMakeLists.txt"
+      - "CMakeModules/**"
+      - "cpmfile.json"
+      - ".github/workflows/lavapipe.yml"
+  push:
+    branches:
+      - nx2
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lavapipe-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vulkan-tests:
+    name: Tests on Mesa lavapipe (software Vulkan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2000M
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install dependencies and lavapipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
+            libpulse-dev libtool libudev-dev mesa-common-dev nasm ninja-build \
+            libavfilter-dev libavcodec-dev libswscale-dev pkg-config zlib1g-dev \
+            libva-dev libvdpau-dev spirv-tools spirv-headers libusb-1.0-0-dev \
+            libboost-dev libboost-fiber-dev libboost-context-dev \
+            libopus-dev libasound2-dev ccache catch2 mold \
+            libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
+
+      # Fail here, not inside a skipped test, if the software driver is missing.
+      - name: Verify lavapipe is the Vulkan device
+        run: |
+          vulkaninfo --summary | tee vulkaninfo.txt
+          grep -qi "llvmpipe" vulkaninfo.txt || { echo "::error::lavapipe (llvmpipe) not found"; exit 1; }
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+
+      # Pull requests only read the caches; nx2 pushes and the weekly run write them.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: lavapipe-ccache-${{ github.sha }}
+          restore-keys: lavapipe-ccache-
+
+      - name: Restore dependency sources
+        id: cpm
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DYUZU_TESTS=ON \
+            -DENABLE_QT=OFF \
+            -DYUZU_CMD=OFF \
+            -DYUZU_ROOM=OFF \
+            -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DVulkanHeaders_FORCE_BUNDLED=ON \
+            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
+            -DENABLE_UPDATE_CHECKER=OFF \
+            -DUSE_DISCORD_PRESENCE=OFF \
+            -DENABLE_WERROR=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold \
+            -DUSE_CCACHE=ON
+
+      - name: Build tests
+        run: |
+          ccache -z
+          cmake --build build --target tests --parallel
+          ccache -s
+
+      # A Vulkan test that skips because no driver was found must not pass as a green run.
+      - name: Run Vulkan tests
+        shell: bash
+        run: ./build/bin/tests "[vulkan]" --success 2>&1 | tee vulkan-tests.log
+
+      - name: Check the Vulkan test ran instead of skipping
+        run: |
+          if grep -q "Validation Error" vulkan-tests.log; then echo "::error::Vulkan validation errors in log"; exit 1; fi
+          grep -qiE "skipped" vulkan-tests.log && { echo "::error::Vulkan test was skipped"; exit 1; } || true
+          grep -qE "passed" vulkan-tests.log
+
+      - name: Save ccache
+        if: ${{ always() && github.ref == 'refs/heads/nx2' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: lavapipe-ccache-${{ github.sha }}
+
+      - name: Save dependency sources
+        if: ${{ always() && github.ref == 'refs/heads/nx2' && steps.cpm.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', 'CMakeModules/**', '.patch/**') }}
