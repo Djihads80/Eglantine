@@ -52,6 +52,9 @@ using namespace Common::Literals;
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : runtime{runtime_}, device_memory{device_memory_} {
+    debug_stats = std::getenv("EDEN_NX2_TC_LOG") != nullptr &&
+                  Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
+
     // Configure null sampler
     TSCEntry sampler_descriptor{};
     sampler_descriptor.min_filter.Assign(Tegra::Texture::TextureFilter::Linear);
