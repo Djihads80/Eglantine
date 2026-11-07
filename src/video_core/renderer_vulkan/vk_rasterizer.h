@@ -14,6 +14,7 @@
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -181,6 +182,23 @@ private:
     /// Nx2Perf MacroReadWriterSet: records that draws binding the current programs write no
     /// guest memory, when the pipeline proves it. Holds buffer_cache.mutex.
     void Nx2ProveNonWriterDraw(const GraphicsPipeline& pipeline);
+    /// Tegra::Nx2IsNonWriterDraw through nx2_nonwriter_memo (nonwriter_proof_memo).
+    bool Nx2IsNonWriterDrawMemo(const Tegra::Nx2DrawPrograms& programs, u64 epoch);
+    /// Nx2Perf nonwriter_proof_memo (back thread only): program sets the lookup found proven,
+    /// direct-mapped by the set's hash. Valid only for the same epoch and set version.
+    struct Nx2NonWriterMemoEntry {
+        Tegra::Nx2DrawPrograms programs;
+        u64 epoch = 0;
+        u64 version = 0;
+        bool proven = false;
+    };
+    struct {
+        std::array<Nx2NonWriterMemoEntry, 16> entries{};
+        u64 hits = 0; ///< Since the last report (logged under Verify)
+        u64 misses = 0;
+        u64 mismatches = 0; ///< Verify: memo hits the lookup did not confirm, in all
+        s64 last_report_ns = 0;
+    } nx2_nonwriter_memo;
 
     void FlushWork();
     /// Nx2Perf submit_while_waited, at FlushWork's dispatch check: submits the recorded draws
