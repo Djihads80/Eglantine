@@ -163,7 +163,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
     }};
     if (thread_worker) {
-        thread_worker->QueueWork(std::move(func));
+        build_task_done = false;
+        thread_worker->QueueWork([this, func = std::move(func)] {
+            func();
+            // The last access to this pipeline from the worker.
+            build_task_done.store(true, std::memory_order::release);
+        });
     } else {
         func();
     }
