@@ -132,6 +132,8 @@ add_library(core STATIC
     file_sys/program_metadata.h
     file_sys/registered_cache.cpp
     file_sys/registered_cache.h
+    file_sys/nup2_container.cpp
+    file_sys/nup2_container.h
     file_sys/nup_container.cpp
     file_sys/nup_container.h
     file_sys/nup_writer.cpp
@@ -1160,6 +1162,8 @@ add_library(core STATIC
     loader/nso.h
     loader/nsp.cpp
     loader/nsp.h
+    loader/nup2.cpp
+    loader/nup2.h
     loader/nup.cpp
     loader/nup.h
     loader/xci.cpp

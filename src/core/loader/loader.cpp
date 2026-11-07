@@ -30,6 +30,7 @@
 #include "core/loader/nso.h"
 #include "core/loader/nsp.h"
 #include "core/loader/nup.h"
+#include "core/loader/nup2.h"
 #include "core/loader/xci.h"
 
 namespace Loader {
@@ -129,6 +130,8 @@ bool HasApplicationProgramContent(const std::shared_ptr<FileSys::NSP>& nsp) {
 FileType IdentifyFile(FileSys::VirtualFile file) {
     if (const auto nsp_type = IdentifyFileLoader<AppLoader_NSP>(file)) {
         return *nsp_type;
+    } else if (const auto nup2_type = IdentifyFileLoader<AppLoader_NUP2>(file)) {
+        return *nup2_type;
     } else if (const auto xci_type = IdentifyFileLoader<AppLoader_XCI>(file)) {
         return *xci_type;
     } else if (const auto nup_type = IdentifyFileLoader<AppLoader_NUP>(file)) {
@@ -164,6 +167,22 @@ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 progr
 
     if (type == FileType::Unknown) {
         type = IdentifyFile(file);
+    }
+
+    if (type == FileType::NUP && FileSys::Nup2Container::IsNup2File(file)) {
+        FileSys::Nup2Container nup2{file};
+        if (nup2.GetStatus() != ResultStatus::Success) {
+            return false;
+        }
+        if (const auto base = nup2.FindBasePackage();
+            base.has_value() && nup2.GetExeFSDir(*base) != nullptr) {
+            return true;
+        }
+        if (const auto update = nup2.FindBestUpdatePackage();
+            update.has_value() && nup2.GetExeFSDir(*update) != nullptr) {
+            return true;
+        }
+        return false;
     }
 
     if (type == FileType::NUP) {
@@ -407,8 +426,11 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
     case FileType::KIP:
         return std::make_unique<AppLoader_KIP>(std::move(file));
 
-    // NUP (NX Package) container format.
+    // NUP (NX Package) container format: v2 (HFS0 + meta.nup) or v1.
     case FileType::NUP:
+        if (FileSys::Nup2Container::IsNup2File(file)) {
+            return std::make_unique<AppLoader_NUP2>(std::move(file));
+        }
         return std::make_unique<AppLoader_NUP>(std::move(file));
 
     // NX deconstructed ROM directory.
