@@ -23,8 +23,8 @@
 #include <mutex>
 #include <optional>
 #include <thread>
-#include "common/container/unordered_map.h"
 #include <common/settings.h>
+#include "common/container/unordered_map.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -122,6 +122,7 @@ static_assert(sizeof(IpAddressSetting) == 0xD, "IpAddressSetting has incorrect s
 // Room fake IPs are spread over 192.168.0.0/16, and some room servers give members different /24s.
 // A host /24 mask would then put room members on different subnets, so LAN games ignore each other.
 constexpr Network::IPv4Address RoomSubnetMask{255, 255, 0, 0};
+constexpr std::string_view RoomNetworkName{"Emulator Room"};
 
 static void ApplyRoomAddress(IpAddressSetting& setting) {
     if (const auto room_ip = Network::GetRoomIPv4Address()) {
@@ -219,6 +220,22 @@ struct SfNetworkProfileData {
 #pragma pack(pop)
 static_assert(sizeof(SfNetworkProfileData) == 0x17C, "SfNetworkProfileData has incorrect size.");
 
+static void ApplyRoomProfile(SfNetworkProfileData& profile) {
+    ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
+    profile.ip_setting_data.ip_address_setting.is_automatic = true;
+    profile.ip_setting_data.ip_address_setting.default_gateway = {};
+    profile.ip_setting_data.dns_setting.is_automatic = true;
+    profile.ip_setting_data.dns_setting.primary_dns = {1, 1, 1, 1};
+    profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
+    profile.ip_setting_data.mtu = 1500;
+    profile.uuid = MakeUuidFromName(RoomNetworkName);
+    profile.profile_type = static_cast<u8>(NetworkProfileType::User);
+    profile.interface_type = static_cast<u8>(NetworkInterfaceType::Ethernet);
+    profile.wireless_setting_data = {};
+    profile.network_name = {};
+    std::copy(RoomNetworkName.begin(), RoomNetworkName.end(), profile.network_name.begin());
+}
+
 // This is nn::nifm::NetworkProfileData
 #pragma pack(push, 1)
 struct NifmNetworkProfileData {
@@ -233,7 +250,8 @@ struct NifmNetworkProfileData {
     IpSettingData ip_setting_data{};
 };
 #pragma pack(pop)
-static_assert(sizeof(NifmNetworkProfileData) == 0x18E, "NifmNetworkProfileData has incorrect size.");
+static_assert(sizeof(NifmNetworkProfileData) == 0x18E,
+              "NifmNetworkProfileData has incorrect size.");
 
 struct PendingProfile {
     std::array<char, 0x21> ssid{};
@@ -590,12 +608,11 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
 
         std::strncpy(profile.network_name.data(), st.ssid, sizeof(profile.network_name) - 1);
 
-        if (auto room_member = Network::GetRoomMember().lock()) {
-            ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
-            profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
+        if (Network::GetRoomIPv4Address()) {
+            ApplyRoomProfile(profile);
         }
 
-        if (st.via_wifi) {
+        if (st.via_wifi && !Network::GetRoomIPv4Address()) {
             profile.wireless_setting_data.ssid_length = static_cast<u8>(std::strlen(st.ssid));
             std::memcpy(profile.wireless_setting_data.ssid.data(), st.ssid,
                         profile.wireless_setting_data.ssid_length);
@@ -603,16 +620,7 @@ void IGeneralService::GetCurrentNetworkProfile(HLERequestContext& ctx) {
     } else if (Network::GetRoomIPv4Address()) {
         // The selected adapter is missing, but the room still works and IsNetworkAvailable
         // reports it, so describe the room as a wired network
-        profile.ip_setting_data.ip_address_setting.is_automatic = true;
-        ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
-
-        profile.ip_setting_data.dns_setting.is_automatic = true;
-        profile.ip_setting_data.dns_setting.primary_dns = {1, 1, 1, 1};
-        profile.ip_setting_data.dns_setting.secondary_dns = {8, 8, 8, 8};
-
-        profile.uuid = MakeUuidFromName(st.ssid);
-        profile.profile_type = static_cast<u8>(NetworkProfileType::User);
-        profile.interface_type = static_cast<u8>(NetworkInterfaceType::Ethernet);
+        ApplyRoomProfile(profile);
     }
 
     ctx.WriteBuffer(profile);
@@ -630,7 +638,17 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
     const auto room_ip = Network::GetRoomIPv4Address();
     constexpr size_t kEntry = 0x3F0;
 
-    std::vector<u8> blob(adapters.size() * kEntry, 0);
+    const size_t interface_count = adapters.empty() && room_ip ? 1 : adapters.size();
+    std::vector<u8> blob(interface_count * kEntry, 0);
+
+    if (adapters.empty() && room_ip) {
+        u8* const base = blob.data();
+        *reinterpret_cast<u32*>(base + 0x0) = 2u;
+        *reinterpret_cast<u32*>(base + 0x4) = 1u;
+        std::memcpy(base + 0x18, room_ip->data(), room_ip->size());
+        std::memcpy(base + 0x1C, RoomSubnetMask.data(), RoomSubnetMask.size());
+        std::memcpy(base + 0x2E0, RoomNetworkName.data(), RoomNetworkName.size());
+    }
 
     for (size_t i = 0; i < adapters.size(); ++i) {
         const auto& host = adapters[i];
@@ -661,13 +679,14 @@ void IGeneralService::EnumerateNetworkInterfaces(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    rb.Push<u32>(static_cast<u32>(adapters.size()));
+    rb.Push<u32>(static_cast<u32>(interface_count));
 }
 
 void IGeneralService::EnumerateNetworkProfiles(HLERequestContext& ctx) {
     const auto adapter = Network::GetSelectedNetworkInterface();
+    const bool room_active = Network::GetRoomIPv4Address().has_value();
 
-    if (!adapter) {
+    if (!adapter && !room_active) {
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
         rb.Push(0);
@@ -679,7 +698,7 @@ void IGeneralService::EnumerateNetworkProfiles(HLERequestContext& ctx) {
     std::vector<u128> uuids;
     uuids.reserve(count);
 
-    uuids.push_back(MakeUuidFromName(adapter.value().name));
+    uuids.push_back(MakeUuidFromName(room_active ? RoomNetworkName : adapter->name));
 
     const size_t guest_sz = ctx.GetWriteBufferSize();
     if (guest_sz && uuids.size()) {
@@ -703,8 +722,14 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
     const auto net_iface = Network::GetSelectedNetworkInterface();
 
     SfNetworkProfileData profile = [&] {
-        if (!net_iface) {
+        if (!net_iface && !Network::GetRoomIPv4Address()) {
             return SfNetworkProfileData{};
+        }
+
+        if (!net_iface) {
+            SfNetworkProfileData room_profile{};
+            ApplyRoomProfile(room_profile);
+            return room_profile;
         }
 
         const auto& net_state = Network::EmuNetState::Get();
@@ -749,7 +774,9 @@ void IGeneralService::GetNetworkProfile(HLERequestContext& ctx) {
             .wireless_setting_data{wifi}};
     }();
 
-    ApplyRoomAddress(profile.ip_setting_data.ip_address_setting);
+    if (Network::GetRoomIPv4Address()) {
+        ApplyRoomProfile(profile);
+    }
 
     ctx.WriteBuffer(profile);
 
@@ -933,7 +960,7 @@ void IGeneralService::GetCurrentIpConfigInfo(HLERequestContext& ctx) {
         info.dns.secondary_dns = {8, 8, 8, 8};
     }
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
+    if (Network::GetRoomIPv4Address()) {
         ApplyRoomAddress(info.ip);
         info.dns.is_automatic = true;
         info.dns.primary_dns = {1, 1, 1, 1};
@@ -973,7 +1000,11 @@ void IGeneralService::GetInternetConnectionStatus(HLERequestContext& ctx) {
     };
     Output out{};
 
-    if (!st.connected) {
+    if (Network::GetRoomIPv4Address()) {
+        out.type = 2;
+        out.bars = 3;
+        out.state = InternetConnectionStatus::Connected;
+    } else if (!st.connected) {
         out.type = 1;
         out.bars = 0;
         out.state = InternetConnectionStatus::ConnectingUnknown1;
@@ -1002,7 +1033,7 @@ void IGeneralService::IsEthernetCommunicationEnabled(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
-    if (Network::GetHostIPv4Address().has_value() && !Settings::values.airplane_mode.GetValue()) {
+    if (IsNetworkAvailable()) {
         rb.Push<u8>(1);
     } else {
         rb.Push<u8>(0);
@@ -1066,7 +1097,7 @@ void IGeneralService::GetCurrentAccessPoint(HLERequestContext& ctx) {
 
     AccessPointDataV3 access_point_info{};
 
-    if (st.connected && st.via_wifi) {
+    if (!Network::GetRoomIPv4Address() && st.connected && st.via_wifi) {
         access_point_info.ssid_len = static_cast<u8>(std::strlen(st.ssid));
         access_point_info.strength = st.bars;
         access_point_info.visible = 1;
@@ -1174,9 +1205,12 @@ private:
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
 
-    server_manager->RegisterNamedService("nifm:a", std::make_shared<NetworkInterface>("nifm:a", system), 2);
-    server_manager->RegisterNamedService("nifm:s", std::make_shared<NetworkInterface>("nifm:s", system), 16);
-    server_manager->RegisterNamedService("nifm:u", std::make_shared<NetworkInterface>("nifm:u", system), 5);
+    server_manager->RegisterNamedService("nifm:a",
+                                         std::make_shared<NetworkInterface>("nifm:a", system), 2);
+    server_manager->RegisterNamedService("nifm:s",
+                                         std::make_shared<NetworkInterface>("nifm:s", system), 16);
+    server_manager->RegisterNamedService("nifm:u",
+                                         std::make_shared<NetworkInterface>("nifm:u", system), 5);
     ServerManager::RunServer(std::move(server_manager));
 }
 

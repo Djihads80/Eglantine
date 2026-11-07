@@ -11,8 +11,8 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <vector>
 #include <variant>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/socket_types.h"
@@ -76,12 +76,18 @@ private:
         /// File status flags of a socket. An eventfd keeps its own, shared by its duplicates.
         s32 flags = 0;
         bool is_connection_based = false;
+        Domain domain{};
+        Type type{};
+        Protocol protocol{};
         /// Set once a duplicate sharing the socket was closed, which closed the socket.
         bool socket_closed = false;
         /// The socket's SO_RCVTIMEO and SO_SNDTIMEO in milliseconds, 0 for none: how long a
         /// deferred receive or send waits. Set on every duplicate sharing the socket.
         u32 receive_timeout = 0;
         u32 send_timeout = 0;
+        bool reuse_addr = false;
+        bool reuse_port = false;
+        bool broadcast = false;
     };
 
     /// What a deferred Select, Poll, RecvMMsg, SendMMsg, Read or Write goes on with when retried.

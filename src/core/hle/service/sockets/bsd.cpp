@@ -22,6 +22,7 @@
 
 #include <fmt/ranges.h>
 
+#include <common/settings.h>
 #include "common/logging.h"
 #include "common/polyfill_thread.h"
 #include "common/socket_types.h"
@@ -39,17 +40,19 @@
 #include "core/internal_network/sockets.h"
 #include "core/memory.h"
 #include "network/network.h"
-#include <common/settings.h>
 
 namespace Service::Sockets {
 
 namespace {
+
+constexpr u64 MarioKartWorldProgramId = 0x0400C3F00006E000ULL;
 
 bool IsConnectionBased(Type type) {
     switch (type) {
     case Type::STREAM:
         return true;
     case Type::DGRAM:
+    case Type::RAW:
         return false;
     default:
         UNIMPLEMENTED_MSG("Unimplemented type={}", type);
@@ -482,7 +485,8 @@ private:
         // A full receive buffer wakes the poll as well.
         wake_pending = host_errno == Network::Errno::SUCCESS || host_errno == Network::Errno::AGAIN;
         if (!wake_pending) {
-            LOG_ERROR(Service, "Failed to wake Select's host poll: {}", static_cast<int>(host_errno));
+            LOG_ERROR(Service, "Failed to wake Select's host poll: {}",
+                      static_cast<int>(host_errno));
         }
     }
 
@@ -496,7 +500,8 @@ private:
                        descriptor->event_fd == entry.event_fd &&
                        (!entry.generation ||
                         file_descriptor_generations[entry.fd] == *entry.generation) &&
-                       (!entry.event_fd || entry.event_fd->version.load(std::memory_order_relaxed) ==
+                       (!entry.event_fd ||
+                        entry.event_fd->version.load(std::memory_order_relaxed) ==
                                                entry.event_fd_version);
             });
     }
@@ -504,11 +509,11 @@ private:
     /// Whether an emulated socket of a wait is ready for what it waits for. The caller holds
     /// file_descriptors_mutex.
     static bool HasEmulatedReady(const SelectWait& wait) {
-        return std::any_of(
-            wait.entries.begin(), wait.entries.end(), [](const SelectWait::Entry& entry) {
+        return std::any_of(wait.entries.begin(), wait.entries.end(),
+                           [](const SelectWait::Entry& entry) {
                 return entry.emulated && True(entry.events) &&
-                       True(entry.socket->EmulatedPoll(entry.events).value_or(
-                           Network::PollEvents{}));
+                                      True(entry.socket->EmulatedPoll(entry.events)
+                                               .value_or(Network::PollEvents{}));
             });
     }
 
@@ -545,7 +550,8 @@ private:
                         retry = true;
                         continue;
                     }
-                    wake_at = (std::min)({wake_at, deferred.request.deadline, deferred.wait.recheck});
+                    wake_at =
+                        (std::min)({wake_at, deferred.request.deadline, deferred.wait.recheck});
                     for (const SelectWait::Entry& entry : deferred.wait.entries) {
                         if (entry.emulated || False(entry.events)) {
                             continue;
@@ -604,8 +610,7 @@ private:
 
             // A failed poll retries every request it was for, which then polls by itself; the
             // next poll waits a while, should it fail at once again.
-            const bool failed =
-                polled < 0 || True(wake_revents & (Network::PollEvents::Err |
+            const bool failed = polled < 0 || True(wake_revents & (Network::PollEvents::Err |
                                                    Network::PollEvents::Hup |
                                                    Network::PollEvents::Nval));
             if (failed) {
@@ -681,7 +686,8 @@ bool BSD_USA::DeferSocketWait(HLERequestContext& ctx, s32 fd, const FileDescript
     }
     // RdNorm rather than In: on Windows, In also reports out-of-band data, which a receive does
     // not take, so the wait would end over and over.
-    const Network::PollEvents events = send ? Network::PollEvents::Out : Network::PollEvents::RdNorm;
+    const Network::PollEvents events =
+        send ? Network::PollEvents::Out : Network::PollEvents::RdNorm;
     request.file_descriptor_generation = generation;
     SelectWait wait{
         .entries = {SelectWait::Entry{
@@ -921,9 +927,8 @@ void BSD_USA::Select(HLERequestContext& ctx) {
     // As in FreeBSD, the sets go back only when select succeeds, if with none ready.
     if (ret >= 0) {
         for (size_t set = 0; set < ready_sets.size(); ++set) {
-            const size_t size =
-                ctx.CanWriteBuffer(set)
-                    ? (std::min)(ready_sets[set].size(), ctx.GetWriteBufferSize(set))
+            const size_t size = ctx.CanWriteBuffer(set) ? (std::min)(ready_sets[set].size(),
+                                                                     ctx.GetWriteBufferSize(set))
                     : 0;
             if (size > 0) {
                 ctx.WriteBuffer(ready_sets[set].data(), size, set);
@@ -1193,8 +1198,8 @@ void BSD_USA::RecvMMsg(HLERequestContext& ctx) {
               input.vlen, input.flags, input.timeout_seconds, input.timeout_nanoseconds,
               messages.size());
 
-    const auto result = RecvMMsgImpl(ctx, input.fd, input.vlen, input.flags,
-                                     input.timeout_seconds, input.timeout_nanoseconds, messages);
+    const auto result = RecvMMsgImpl(ctx, input.fd, input.vlen, input.flags, input.timeout_seconds,
+                                     input.timeout_nanoseconds, messages);
     // A deferred call is answered once retried; no reply is built, so the command buffer keeps
     // the request for the retry.
     if (!result) {
@@ -1391,13 +1396,17 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     }
 
     std::shared_ptr<Network::SocketBase> socket;
-    auto room_member = Network::GetRoomMember().lock();
-    if (room_member && room_member->IsConnected()) {
+    if (system.GetApplicationProcessProgramID() == MarioKartWorldProgramId &&
+        domain == Domain::INET && type == Type::RAW && protocol == Protocol::ICMP) {
         socket = std::make_shared<Network::ProxySocket>();
     } else {
         socket = std::make_shared<Network::Socket>();
     }
+    const auto initialize_error =
     socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
+    if (initialize_error != Network::Errno::SUCCESS) {
+        return {-1, Translate(initialize_error)};
+    }
 
     // Publish the socket only once it is set up, since the room thread delivers packets to it
     std::scoped_lock lock{file_descriptors_mutex};
@@ -1410,6 +1419,9 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     file_descriptors[fd] = FileDescriptor{
         .socket = std::move(socket),
         .is_connection_based = IsConnectionBased(type),
+        .domain = domain,
+        .type = type,
+        .protocol = protocol,
     };
 
     LOG_INFO(Service, "New socket fd={}", fd);
@@ -1716,7 +1728,7 @@ std::optional<std::pair<s32, Errno>> BSD_USA::SelectImpl(const SelectRequest& re
 }
 
 std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer) {
-    const auto descriptor = CopyDescriptor(fd);
+    auto descriptor = CopyDescriptor(fd);
     if (!descriptor) {
         return {-1, Errno::BADF};
     }
@@ -1738,6 +1750,9 @@ std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer)
         file_descriptors[new_fd] = FileDescriptor{
             .socket = std::move(result.socket),
             .is_connection_based = descriptor->is_connection_based,
+            .domain = descriptor->domain,
+            .type = descriptor->type,
+            .protocol = descriptor->protocol,
             // As in FreeBSD, an accepted socket takes the listening socket's timeouts.
             .receive_timeout = descriptor->receive_timeout,
             .send_timeout = descriptor->send_timeout,
@@ -1757,9 +1772,42 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
     }
     ASSERT(addr.size() >= 16);
 
-    auto addr_in = GetValue<SockAddrIn>(addr);
+    const auto addr_in = GetValue<SockAddrIn>(addr);
+    const auto translated_addr = Translate(addr_in);
+    auto socket = descriptor->socket;
 
-    return Translate(descriptor->socket->Bind(Translate(addr_in)));
+    if (descriptor->domain == Domain::INET && descriptor->type == Type::DGRAM &&
+        (descriptor->protocol == Protocol::IP || descriptor->protocol == Protocol::UDP) &&
+        translated_addr.portno == 12345 && translated_addr.ip[0] != 127 &&
+        descriptor->socket->GetFD() != Network::SocketBase::INVALID_SOCKET &&
+        Network::GetRoomIPv4Address()) {
+        auto proxy = std::make_shared<Network::ProxySocket>();
+        const auto error =
+            proxy->Initialize(Network::Domain::INET, Network::Type::DGRAM, Network::Protocol::UDP);
+        if (error != Network::Errno::SUCCESS) {
+            return Translate(error);
+        }
+        proxy->SetReuseAddr(descriptor->reuse_addr);
+        proxy->SetReusePort(descriptor->reuse_port);
+        proxy->SetBroadcast(descriptor->broadcast);
+        proxy->SetRcvTimeo(descriptor->receive_timeout);
+        proxy->SetSndTimeo(descriptor->send_timeout);
+        proxy->SetNonBlock((descriptor->flags & Network::FLAG_O_NONBLOCK) != 0);
+        {
+            std::scoped_lock lock{file_descriptors_mutex};
+            for (auto& entry : file_descriptors) {
+                if (entry && entry->socket == descriptor->socket) {
+                    entry->socket = proxy;
+                }
+            }
+        }
+        // Deferred waits let go of the host socket before it closes.
+        select_notifier->NotifyChange(descriptor->socket.get());
+        descriptor->socket->Close();
+        socket = std::move(proxy);
+    }
+
+    return Translate(socket->Bind(translated_addr));
 }
 
 Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
@@ -1847,8 +1895,10 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
         if (bsd_errno != Errno::SUCCESS) {
             return {-1, bsd_errno};
         }
-        if (auto& entry = file_descriptors[fd]; entry && entry->socket == descriptor->socket) {
-            entry->flags = arg;
+        for (auto& entry : file_descriptors) {
+            if (entry && entry->socket == descriptor->socket) {
+                entry->flags = arg;
+            }
         }
         return {0, Errno::SUCCESS};
     }
@@ -1916,7 +1966,7 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
 }
 
 Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<const u8> optval) {
-    const auto descriptor = CopyDescriptor(fd);
+    auto descriptor = CopyDescriptor(fd);
     if (!descriptor) {
         return Errno::BADF;
     }
@@ -1956,13 +2006,39 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     switch (optname) {
     case OptName::REUSEADDR:
         ASSERT(value == 0 || value == 1);
-        return Translate(socket->SetReuseAddr(value != 0));
+        descriptor->reuse_addr = value != 0;
+        if (const auto error = Translate(socket->SetReuseAddr(descriptor->reuse_addr));
+            error != Errno::SUCCESS) {
+            return error;
+        }
+        break;
+    case OptName::REUSEPORT:
+        ASSERT(value == 0 || value == 1);
+        descriptor->reuse_port = value != 0;
+        if (const auto error = Translate(socket->SetReusePort(descriptor->reuse_port));
+            error != Errno::SUCCESS) {
+            const bool pending_room_socket =
+                error == Errno::OPNOTSUPP &&
+                system.GetApplicationProcessProgramID() == MarioKartWorldProgramId &&
+                descriptor->domain == Domain::INET && descriptor->type == Type::DGRAM &&
+                (descriptor->protocol == Protocol::IP || descriptor->protocol == Protocol::UDP) &&
+                Network::GetRoomIPv4Address();
+            if (!pending_room_socket) {
+                return error;
+            }
+        }
+        break;
     case OptName::KEEPALIVE:
         ASSERT(value == 0 || value == 1);
         return Translate(socket->SetKeepAlive(value != 0));
     case OptName::BROADCAST:
         ASSERT(value == 0 || value == 1);
-        return Translate(socket->SetBroadcast(value != 0));
+        descriptor->broadcast = value != 0;
+        if (const auto error = Translate(socket->SetBroadcast(descriptor->broadcast));
+            error != Errno::SUCCESS) {
+            return error;
+        }
+        break;
     case OptName::SNDBUF:
         return Translate(socket->SetSndBuf(value));
     case OptName::RCVBUF:
@@ -1986,8 +2062,8 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
                 ? max_timeout_ms
                 : (std::min)(max_timeout_ms, seconds * 1000 + (microseconds + 999) / 1000));
         const bool receive = optname == OptName::RCVTIMEO;
-        const Errno result = Translate(receive ? socket->SetRcvTimeo(timeout_ms)
-                                               : socket->SetSndTimeo(timeout_ms));
+        const Errno result =
+            Translate(receive ? socket->SetRcvTimeo(timeout_ms) : socket->SetSndTimeo(timeout_ms));
         if (result == Errno::SUCCESS) {
             // Deferred receives and sends wait as long. The option belongs to the socket, which
             // its duplicates share.
@@ -2007,6 +2083,16 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         UNIMPLEMENTED_MSG("Unimplemented optname={}", optname);
         return Errno::SUCCESS;
     }
+
+    std::scoped_lock lock{file_descriptors_mutex};
+    for (auto& entry : file_descriptors) {
+        if (entry && entry->socket.get() == socket) {
+            entry->reuse_addr = descriptor->reuse_addr;
+            entry->reuse_port = descriptor->reuse_port;
+            entry->broadcast = descriptor->broadcast;
+        }
+    }
+    return Errno::SUCCESS;
 }
 
 Errno BSD_USA::ShutdownImpl(s32 fd, s32 how) {
@@ -2202,8 +2288,7 @@ std::optional<std::pair<s32, Errno>> BSD_USA::RecvMMsgImpl(HLERequestContext& ct
                     if (copied == static_cast<size_t>(ret)) {
                         break;
                     }
-                    const size_t count =
-                        (std::min)(iov.size(), static_cast<size_t>(ret) - copied);
+                    const size_t count = (std::min)(iov.size(), static_cast<size_t>(ret) - copied);
                     std::memcpy(iov.data(), scattered.data() + copied, count);
                     copied += count;
                 }
@@ -2214,8 +2299,8 @@ std::optional<std::pair<s32, Errno>> BSD_USA::RecvMMsgImpl(HLERequestContext& ct
             u32 name_size = 0;
             if (!descriptor->is_connection_based) {
                 guest_source = Translate(source);
-                name_size = static_cast<u32>((std::min)(
-                    message.fields.name.size(), static_cast<size_t>(guest_source.len)));
+                name_size = static_cast<u32>(
+                    (std::min)(message.fields.name.size(), static_cast<size_t>(guest_source.len)));
             }
             append(&name_size, sizeof(name_size));
             append(&guest_source, name_size);
@@ -2244,9 +2329,8 @@ std::optional<std::pair<s32, Errno>> BSD_USA::RecvMMsgImpl(HLERequestContext& ct
     // timeout, which leaves that wait to the socket's mode, as any later one unless MSG_WAITFORONE.
     const bool timed = timeout_seconds != 0 || timeout_nanoseconds != 0;
     const bool socket_waits = blocking && (flags & FLAG_MSG_DONTWAIT) == 0;
-    const bool may_wait = received == 0
-                              ? timed || socket_waits
-                              : socket_waits && (flags & FLAG_MSG_WAITFORONE) == 0;
+    const bool may_wait =
+        received == 0 ? timed || socket_waits : socket_waits && (flags & FLAG_MSG_WAITFORONE) == 0;
     if (!may_wait) {
         return finish(Errno::AGAIN);
     }
@@ -2257,8 +2341,8 @@ std::optional<std::pair<s32, Errno>> BSD_USA::RecvMMsgImpl(HLERequestContext& ct
     } else if (received == 0 && timed) {
         const auto now = SelectClock::now();
         // A timeout longer than the clock counts never passes.
-        const auto max_seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                                     SelectClock::time_point::max() - now)
+        const auto max_seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(SelectClock::time_point::max() - now)
                                      .count() -
                                  1;
         deadline = timeout_seconds >= max_seconds
@@ -2798,9 +2882,8 @@ bool BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
 
 BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_,
                  std::shared_ptr<SelectNotifier> select_notifier_)
-    : ServiceFramework{system_, name}
-    , select_notifier{std::move(select_notifier_)}
-    , is_user{is_user_} {
+    : ServiceFramework{system_, name}, select_notifier{std::move(select_notifier_)},
+      is_user{is_user_} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, &BSD_USA::RegisterClient, "RegisterClient"},
@@ -2892,8 +2975,7 @@ std::unique_lock<std::mutex> BSD_USA::LockService() noexcept {
     return {};
 }
 
-BSDCFG::BSDCFG(Core::System& system_, const char *name)
-    : ServiceFramework{system_, name} {
+BSDCFG::BSDCFG(Core::System& system_, const char* name) : ServiceFramework{system_, name} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, &BSDCFG::StubReplyZeroed, "SetIfUp"},
@@ -2926,8 +3008,7 @@ BSDCFG::BSDCFG(Core::System& system_, const char *name)
 
 BSDCFG::~BSDCFG() = default;
 
-BSD_NU::BSD_NU(Core::System& system_)
-    : ServiceFramework{system_, "bsd:nu"} {
+BSD_NU::BSD_NU(Core::System& system_) : ServiceFramework{system_, "bsd:nu"} {
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, nullptr, "CreateUserService"},

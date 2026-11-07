@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 
@@ -21,6 +22,42 @@
 
 namespace Network {
 
+namespace {
+
+constexpr u16 EphemeralPortFirst = 49152;
+constexpr u16 EphemeralPortLast = 65535;
+
+u16 AllocateEphemeralPort() {
+    static std::atomic<u32> next{EphemeralPortFirst};
+    const u32 value = next.fetch_add(1, std::memory_order_relaxed);
+    return static_cast<u16>(EphemeralPortFirst + (value - EphemeralPortFirst) %
+                                                     (EphemeralPortLast - EphemeralPortFirst + 1));
+}
+
+bool IsAnyAddress(const IPv4Address& address) {
+    return std::all_of(address.begin(), address.end(), [](u8 octet) { return octet == 0; });
+}
+
+bool IsRoomBroadcast(const IPv4Address& address) {
+    return address == IPv4Address{255, 255, 255, 255} || address == IPv4Address{192, 168, 255, 255};
+}
+
+u16 InternetChecksum(std::span<const u8> data) {
+    u32 sum = 0;
+    for (size_t i = 0; i + 1 < data.size(); i += 2) {
+        sum += static_cast<u16>((static_cast<u16>(data[i]) << 8) | data[i + 1]);
+    }
+    if (data.size() % 2 != 0) {
+        sum += static_cast<u16>(data.back() << 8);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return static_cast<u16>(~sum);
+}
+
+} // namespace
+
 ProxySocket::ProxySocket() noexcept {}
 
 ProxySocket::~ProxySocket() {
@@ -35,8 +72,12 @@ bool ProxySocket::MatchesPacket(const ProxyPacket& packet) const {
         closed) {
         return false;
     }
-    if (!broadcast && packet.broadcast) {
-        LOG_INFO(Network, "Received broadcast packet, but not configured for broadcast mode");
+    if (!packet.broadcast && !IsAnyAddress(local_endpoint.ip) &&
+        local_endpoint.ip != packet.remote_endpoint.ip) {
+        return false;
+    }
+    if (peer_endpoint && (peer_endpoint->ip != packet.local_endpoint.ip ||
+                          peer_endpoint->portno != packet.local_endpoint.portno)) {
         return false;
     }
     return true;
@@ -84,7 +125,9 @@ Errno ProxySocket::Initialize(Domain domain, Type type, Protocol socket_protocol
     {
         std::lock_guard guard(packets_mutex);
         socket_type = type;
-        protocol = socket_protocol;
+        protocol = socket_protocol == Protocol::Unspecified && type == Type::DGRAM
+                       ? Protocol::UDP
+                       : socket_protocol;
     }
     SetSockOpt(fd, SO_TYPE, type);
 
@@ -97,25 +140,37 @@ std::pair<ProxySocket::AcceptResult, Errno> ProxySocket::Accept() {
 }
 
 Errno ProxySocket::Connect(SockAddrIn addr_in) {
-    LOG_WARNING(Network, "(STUBBED) called");
+    std::lock_guard guard(packets_mutex);
+    if (closed) {
+        return Errno::BADF;
+    }
+    peer_endpoint = addr_in;
     return Errno::SUCCESS;
 }
 
 std::pair<SockAddrIn, Errno> ProxySocket::GetPeerName() {
-    LOG_WARNING(Network, "(STUBBED) called");
-    return {SockAddrIn{}, Errno::SUCCESS};
+    std::lock_guard guard(packets_mutex);
+    if (!peer_endpoint) {
+        return {SockAddrIn{}, Errno::NOTCONN};
+    }
+    return {*peer_endpoint, Errno::SUCCESS};
 }
 
 std::pair<SockAddrIn, Errno> ProxySocket::GetSockName() {
-    LOG_WARNING(Network, "(STUBBED) called");
-    return {SockAddrIn{}, Errno::SUCCESS};
+    std::lock_guard guard(packets_mutex);
+    return {local_endpoint, Errno::SUCCESS};
 }
 
 Errno ProxySocket::Bind(SockAddrIn addr) {
     std::lock_guard guard(packets_mutex);
     if (is_bound) {
-        LOG_WARNING(Network, "Rebinding Socket is unimplemented!");
-        return Errno::SUCCESS;
+        return Errno::INVAL;
+    }
+    if (addr.family != Domain::INET) {
+        return Errno::INVAL;
+    }
+    if (addr.portno == 0) {
+        addr.portno = AllocateEphemeralPort();
     }
     local_endpoint = addr;
     is_bound = true;
@@ -172,8 +227,8 @@ std::pair<s32, Errno> ProxySocket::Receive(int flags, std::span<u8> message, Soc
         }
         // TODO (flTobi): Verify the timeout behavior and break when connection is lost
         // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
-        // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
-        // the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
+        // packet arrives. In order to prevent lost packets from hanging the emulation thread, we
+        // set the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
         const u32 timeout = receive_timeout == 0 ? 5000 : receive_timeout;
         if (!packets_cv.wait_for(lock, std::chrono::milliseconds{timeout},
                                  [this] { return closed || !received_packets.empty(); })) {
@@ -222,58 +277,109 @@ std::pair<s32, Errno> ProxySocket::ReceivePacket(int flags, std::span<u8> messag
 }
 
 std::pair<s32, Errno> ProxySocket::Send(std::span<const u8> message, int flags) {
-    LOG_WARNING(Network, "(STUBBED) called");
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
     ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
 
-    return {static_cast<s32>(0), Errno::SUCCESS};
+    std::optional<SockAddrIn> peer;
+    {
+        std::lock_guard guard(packets_mutex);
+        peer = peer_endpoint;
+    }
+    if (!peer) {
+        return {-1, Errno::NOTCONN};
+    }
+    return SendTo(static_cast<u32>(flags), message, &*peer);
 }
 
-void ProxySocket::SendPacket(ProxyPacket& packet) {
+bool ProxySocket::SendPacket(ProxyPacket& packet) {
     if (auto room_member = Network::GetRoomMember().lock()) {
-        if (room_member->IsConnected()) {
+        if (Network::GetRoomIPv4Address()) {
             packet.data = Common::Compression::CompressDataZSTDDefault(packet.data.data(),
                                                                        packet.data.size());
             room_member->SendProxyPacket(packet);
+            return true;
         }
     }
+    return false;
 }
 
 std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message,
                                           const SockAddrIn* addr) {
     ASSERT((flags & ~FLAG_MSG_DONTWAIT) == 0);
 
-    if (!is_bound) {
-        LOG_ERROR(Network, "ProxySocket is not bound!");
-        return {static_cast<s32>(message.size()), Errno::SUCCESS};
+    if (addr == nullptr) {
+        return {-1, Errno::NOTCONN};
     }
 
-    if (auto room_member = Network::GetRoomMember().lock()) {
-        if (!room_member->IsConnected()) {
+    Type current_type;
+    Protocol current_protocol;
+    SockAddrIn current_local_endpoint;
+    bool current_broadcast;
+    {
+        std::lock_guard guard(packets_mutex);
+        if (closed) {
+            return {-1, Errno::BADF};
+        }
+    if (!is_bound) {
+            local_endpoint = {
+                .family = Domain::INET,
+                .ip = {},
+                .portno = AllocateEphemeralPort(),
+            };
+            is_bound = true;
+        }
+        current_type = socket_type;
+        current_protocol = protocol;
+        current_local_endpoint = local_endpoint;
+        current_broadcast = broadcast;
+    }
+
+    if (current_type == Type::RAW && current_protocol == Protocol::ICMP) {
+        if (message.size() < 8 || message[0] != 8) {
+            return {-1, Errno::INVAL};
+        }
+
+        ProxyPacket reply{};
+        reply.local_endpoint = *addr;
+        reply.remote_endpoint = current_local_endpoint;
+        reply.protocol = Protocol::ICMP;
+        reply.data.assign(message.begin(), message.end());
+        reply.data[0] = 0;
+        reply.data[2] = 0;
+        reply.data[3] = 0;
+        const u16 checksum = InternetChecksum(reply.data);
+        reply.data[2] = static_cast<u8>(checksum >> 8);
+        reply.data[3] = static_cast<u8>(checksum);
+
+        {
+            std::lock_guard guard(packets_mutex);
+            received_packets.push(std::move(reply));
+        }
+        packets_cv.notify_all();
             return {static_cast<s32>(message.size()), Errno::SUCCESS};
         }
+
+    const auto room_ip = Network::GetRoomIPv4Address();
+    if (!room_ip) {
+        return {-1, Errno::NETDOWN};
     }
 
     ProxyPacket packet;
-    packet.local_endpoint = local_endpoint;
+    packet.local_endpoint = current_local_endpoint;
     packet.remote_endpoint = *addr;
-    packet.protocol = protocol;
-    packet.broadcast = broadcast && packet.remote_endpoint.ip[3] == 255;
-
-    auto& ip = local_endpoint.ip;
-    auto ipv4 = Network::GetHostIPv4Address();
-    // If the ip is all zeroes (INADDR_ANY) or if it matches the hosts ip address,
-    // replace it with a "fake" routing address
-    if (std::all_of(ip.begin(), ip.end(), [](u8 i) { return i == 0; }) || (ipv4 && ipv4 == ip)) {
-        if (auto room_member = Network::GetRoomMember().lock()) {
-            packet.local_endpoint.ip = room_member->GetFakeIpAddress();
-        }
+    packet.protocol = current_protocol;
+    packet.broadcast = IsRoomBroadcast(packet.remote_endpoint.ip);
+    if (packet.broadcast && !current_broadcast) {
+        return {-1, Errno::INVAL};
     }
+    packet.local_endpoint.ip = *room_ip;
 
     packet.data.clear();
     std::copy(message.begin(), message.end(), std::back_inserter(packet.data));
 
-    SendPacket(packet);
+    if (!SendPacket(packet)) {
+        return {-1, Errno::NETDOWN};
+    }
 
     return {static_cast<s32>(message.size()), Errno::SUCCESS};
 }
@@ -308,6 +414,12 @@ Errno ProxySocket::SetReuseAddr(bool enable) {
         reuse_addr = enable;
     }
     return SetSockOpt<u32>(fd, SO_REUSEADDR, enable ? 1 : 0);
+}
+
+Errno ProxySocket::SetReusePort(bool enable) {
+    std::lock_guard guard(packets_mutex);
+    reuse_port = enable;
+    return Errno::SUCCESS;
 }
 
 Errno ProxySocket::SetBroadcast(bool enable) {
