@@ -402,9 +402,7 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::RunAheadOwnWriteProbe,
                           Opt::BankDirtySkip,
                           Opt::BackReplayLean,
-                          Opt::FrontMacroCall,
-                          Opt::ComputeRebuildAsync,
-                          Opt::ComputePreloadVariants}) {
+                          Opt::FrontMacroCall}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -479,9 +477,7 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadOwnWriteProbe) |
                                   Bit(Opt::BankDirtySkip) |
                                   Bit(Opt::BackReplayLean) |
-                                  Bit(Opt::FrontMacroCall) |
-                                  Bit(Opt::ComputeRebuildAsync) |
-                                  Bit(Opt::ComputePreloadVariants);
+                                  Bit(Opt::FrontMacroCall);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && !IsOff(always_off, 44) &&
@@ -607,11 +603,11 @@ static_assert(static_cast<unsigned>(Opt::ShaderBuildBudget) == 91 &&
               !IsOff(always_off, static_cast<size_t>(Opt::ShaderBuildBudget)) &&
               !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ShaderBuildBudget)));
 static_assert(static_cast<unsigned>(Opt::ComputeRebuildAsync) == 92 &&
-              IsOff(always_off, static_cast<size_t>(Opt::ComputeRebuildAsync)) &&
-              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputeRebuildAsync)));
+              !IsOff(always_off, static_cast<size_t>(Opt::ComputeRebuildAsync)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputeRebuildAsync)));
 static_assert(static_cast<unsigned>(Opt::ComputePreloadVariants) == 93 &&
-              IsOff(always_off, static_cast<size_t>(Opt::ComputePreloadVariants)) &&
-              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputePreloadVariants)));
+              !IsOff(always_off, static_cast<size_t>(Opt::ComputePreloadVariants)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputePreloadVariants)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

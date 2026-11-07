@@ -1148,6 +1148,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         });
         ++state.total;
     }};
+    bool driver_updated = false;
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
@@ -1180,7 +1181,21 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             return;
         }
 
+        const u64 stored_hash = key.Hash();
+        if (key.state.driver_id != dynamic_features.driver_id ||
+            key.state.driver_version != dynamic_features.driver_version) {
+            key.state.driver_id = dynamic_features.driver_id;
+            key.state.driver_version = dynamic_features.driver_version;
+        }
         const u64 hash = key.Hash();
+        if (stored_hash != hash) {
+            if (const auto it = used_pipelines.find(stored_hash); it != used_pipelines.end()) {
+                const u8 age = it->second;
+                used_pipelines.erase(it);
+                used_pipelines.try_emplace(hash, age);
+                driver_updated = true;
+            }
+        }
         {
             std::scoped_lock lock{state.mutex};
             disk_pipelines.insert(hash);
@@ -1217,6 +1232,16 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }};
     VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
                                load_graphics);
+    if (driver_updated && !used_pipelines_filename.empty()) {
+        std::ofstream file{used_pipelines_filename, std::ios::binary | std::ios::trunc};
+        const u32 count = static_cast<u32>(used_pipelines.size());
+        file.write(reinterpret_cast<const char*>(&UsedPipelinesMagic), sizeof(UsedPipelinesMagic));
+        file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        for (const auto& [hash, age] : used_pipelines) {
+            file.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
+            file.write(reinterpret_cast<const char*>(&age), sizeof(age));
+        }
+    }
     for (auto& [key, candidates] : compute_envs) {
         OrderComputeTranslations(candidates);
         queue_compute(key, std::move(candidates));
