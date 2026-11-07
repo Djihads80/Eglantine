@@ -176,6 +176,9 @@ enum class Opt : unsigned {
     /// Split front: an acquire met early (acquire_trigger_early) creates no sync point for list
     /// fetches; implies the acquire_trigger_early and list_fetch_after_sync paths
     SyncFreeFetch,
+    /// A suspended channel's 1 ms front sleep ends at once on a new submit or on a GPU release
+    /// that latches a waiter (Tegra::Nx2PendingWake in nx2.h)
+    PendingWake,
     Count,
 };
 
@@ -224,6 +227,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "run_ahead_cover",
     "run_ahead_cow_probe",
     "sync_free_fetch",
+    "pending_wake",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -300,7 +304,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::SpinHandoff,
                           Opt::RunAheadCover,
                           Opt::RunAheadCowProbe,
-                          Opt::SyncFreeFetch}) {
+                          Opt::SyncFreeFetch,
+                          Opt::PendingWake}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -324,7 +329,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
 /// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
 /// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8),
-/// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch (round 9).
+/// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch,
+/// pending_wake (round 9).
 /// dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -351,7 +357,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::SpinHandoff) |
                                   Bit(Opt::RunAheadCover) |
                                   Bit(Opt::RunAheadCowProbe) |
-                                  Bit(Opt::SyncFreeFetch);
+                                  Bit(Opt::SyncFreeFetch) |
+                                  Bit(Opt::PendingWake);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -421,6 +428,9 @@ static_assert(static_cast<unsigned>(Opt::RunAheadCowProbe) == 72 &&
 static_assert(static_cast<unsigned>(Opt::SyncFreeFetch) == 73 &&
               IsOff(always_off, static_cast<size_t>(Opt::SyncFreeFetch)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::SyncFreeFetch)));
+static_assert(static_cast<unsigned>(Opt::PendingWake) == 74 &&
+              IsOff(always_off, static_cast<size_t>(Opt::PendingWake)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::PendingWake)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -588,6 +598,7 @@ inline std::array<Ring, NumIds> back_incr{};
 inline std::atomic<s64> last_submit_pop_ns{};
 inline std::atomic<s64> back_idle_ns_total{}; ///< Read as a difference
 inline std::atomic<s64> back_idle_since_ns{}; ///< 0 while the back works
+inline std::atomic<s64> guest_wait_entered_ns{}; ///< vi2's fence wait in progress since (0: none)
 
 inline bool On() {
     static const bool on = Nx2Perf::On(Opt::FenceTimeline);

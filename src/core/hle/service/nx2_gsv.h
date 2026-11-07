@@ -1794,6 +1794,9 @@ private:
         const s64 timeline_idle = Timeline::On() ? Timeline::BackIdleAt(TimelineNs(entered)) : 0;
         const s64 timeline_pop =
             Timeline::On() ? Timeline::last_submit_pop_ns.load(std::memory_order_relaxed) : 0;
+        if (Timeline::On()) [[unlikely]] {
+            Timeline::guest_wait_entered_ns.store(TimelineNs(entered), std::memory_order_relaxed);
+        }
         // landed_prev_always / one_ahead_landed: before the reply, wait for the previous frame's
         // host syncpoint value (its downloads and reports in guest memory), not only its guest one.
         LandedLane landed_lane = LandedLane::None;
@@ -1864,6 +1867,9 @@ private:
             app_program_id == OcarinaOfTimeProgramId && VideoCommon::Nx2Cow::On();
         if (cow_probe) [[unlikely]] {
             CowClose();
+        }
+        if (Timeline::On()) [[unlikely]] {
+            Timeline::guest_wait_entered_ns.store(0, std::memory_order_relaxed);
         }
         if (ledger && ~w[22] < 192) [[unlikely]] {
             // The back is done with this frame: hash the pages it read for it.

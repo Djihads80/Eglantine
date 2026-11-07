@@ -122,7 +122,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(FlushOrigin::Count)
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 64> counters{}; ///< See Counter
+    std::array<u64, 80> counters{}; ///< See Counter
     std::array<u64, static_cast<size_t>(FlushOrigin::Count)> flushes{};
     u64 hook_flushes_skipped{}; ///< Nx2Perf hook_lazy_flush: deferred submits the idle hook left
     u64 list_copy_done_ns{}; ///< Command list copies the front waited for: recorded to done
@@ -262,6 +262,14 @@ enum class Counter : u32 {
     /// Nx2Perf sync_free_fetch: list fetch sync waits skipped because only an early-met
     /// acquire's sync (NoteSyncExceptFetch) was still queued
     ListFetchSyncSkipped,
+    /// Nx2Perf pending_wake: pending 1 ms sleeps, those ended by a submit, a latch or the
+    /// timeout, and those inside vi2's fence wait (fence_timeline), of them ended early
+    PendingWaits,
+    PendingWakePush,
+    PendingWakeLatch,
+    PendingWakeTimeout,
+    PendingWaitsInFence,
+    PendingWakeInFence,
     Count,
 };
 
@@ -460,6 +468,16 @@ inline void Report(const char* thread_name = "GPU thread") {
     }
     if (const double skipped = per_second(Counter::ListFetchSyncSkipped); skipped != 0) {
         line += fmt::format(" | list fetch sync waits skipped (sync_free_fetch) {:.0f}", skipped);
+    }
+    if (data.counters[static_cast<size_t>(Counter::PendingWaits)] != 0) {
+        line += fmt::format(" | pending_wake sleeps {:.0f} (ended by push {:.0f}, latch {:.0f}, "
+                            "timeout {:.0f}; in guest fence waits {:.0f}, {:.0f} ended early)",
+                            per_second(Counter::PendingWaits),
+                            per_second(Counter::PendingWakePush),
+                            per_second(Counter::PendingWakeLatch),
+                            per_second(Counter::PendingWakeTimeout),
+                            per_second(Counter::PendingWaitsInFence),
+                            per_second(Counter::PendingWakeInFence));
     }
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
