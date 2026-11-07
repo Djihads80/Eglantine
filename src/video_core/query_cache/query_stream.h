@@ -44,6 +44,11 @@ public:
         return false;
     }
 
+    // PresyncWrites may move pending queries into a prepared copy batch.
+    virtual bool HasPreparedSyncWrites() const {
+        return HasPendingSync();
+    }
+
     virtual void PresyncWrites() {
         /* Do Nothing */
     }
