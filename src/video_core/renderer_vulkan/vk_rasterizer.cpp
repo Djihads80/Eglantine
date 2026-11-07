@@ -552,8 +552,75 @@ u64 DiagShader(const Tegra::Engines::Maxwell3D& maxwell3d, size_t stage) {
     return (u64{regs.pipelines[stage].reserved[0] & 0xff} << 32) | regs.pipelines[stage].reserved[1];
 }
 
+// diag_draw_lite (lab diagnostics only): the back's draw bookkeeping without a lock per draw.
+bool DiagLite() {
+    static const bool on = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::DiagDrawLite);
+    return on;
+}
+
+// Verify only, back thread: differences found and the error lines left to log.
+u64 g_lite_differences{};
+u32 g_lite_lines{64};
+
+VideoCommon::Nx2Diag::LiteTable& DiagLiteTable() {
+    auto& table = VideoCommon::Nx2Diag::ThreadLite();
+    if (!table) [[unlikely]] {
+        table = std::make_unique<VideoCommon::Nx2Diag::LiteTable>();
+        VideoCommon::Nx2Diag::Diagnostics::Get().EnableLite();
+    }
+    return *table;
+}
+
+// The cached answers for a draw's programs. Verify: the synchronous answers, compared with the
+// cached ones when no generation change came between.
+VideoCommon::Nx2Diag::LiteAnswer DiagLiteAnswer(VideoCommon::Nx2Diag::Diagnostics& diag,
+                                                VideoCommon::Nx2Diag::LiteTable& table, u64 vs,
+                                                u64 ps) {
+    const auto& cached = diag.LiteLookup(table, vs, ps);
+    if (!VideoCommon::Nx2Perf::Verify()) {
+        return cached;
+    }
+    // Polled like the synchronous Ablated/Inspecting calls.
+    const auto fresh = diag.Resolve(vs, ps, true);
+    if (fresh.generation == cached.generation &&
+        (fresh.vkey != cached.vkey || fresh.pkey != cached.pkey ||
+         fresh.ablated_v != cached.ablated_v || fresh.ablated_p != cached.ablated_p ||
+         fresh.inspect_v != cached.inspect_v || fresh.inspect_p != cached.inspect_p)) {
+        ++g_lite_differences;
+        if (g_lite_lines > 0) {
+            --g_lite_lines;
+            LOG_ERROR(HW_GPU, "Nx2Perf diag_draw_lite: answer differs for vs={:#x} ps={:#x}", vs, ps);
+        }
+    }
+    return fresh;
+}
+
+// Verify, after the present's fold: the folded state against the shadow's synchronous one.
+void DiagLiteVerifyFrame() {
+    auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    if (const auto& table = VideoCommon::Nx2Diag::ThreadLite(); table && table->used != 0) {
+        diag.FoldLite(*table);
+    }
+    g_lite_differences += diag.DrawDifferences(VideoCommon::Nx2Diag::Diagnostics::Shadow(), g_lite_lines);
+    static std::chrono::steady_clock::time_point last_log{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_log >= std::chrono::seconds{1}) {
+        last_log = now;
+        if (g_lite_differences != 0) {
+            LOG_ERROR(HW_GPU, "Nx2Perf diag_draw_lite: {} differences", g_lite_differences);
+        } else {
+            LOG_INFO(HW_GPU, "Nx2Perf diag_draw_lite: 0 differences");
+        }
+    }
+}
+
 bool DiagAblated(const Tegra::Engines::Maxwell3D& maxwell3d) {
     auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
+    if (DiagLite()) {
+        const auto answer = DiagLiteAnswer(diag, DiagLiteTable(), DiagShader(maxwell3d, 1),
+                                           DiagShader(maxwell3d, 5));
+        return answer.ablated_v || answer.ablated_p;
+    }
     return diag.Ablated('v', DiagShader(maxwell3d, 1)) || diag.Ablated('p', DiagShader(maxwell3d, 5));
 }
 
@@ -581,6 +648,32 @@ void DiagRecordDraw(Tegra::Engines::Maxwell3D& maxwell3d, Tegra::MemoryManager& 
     auto& diag = VideoCommon::Nx2Diag::Diagnostics::Get();
     const u64 vs = DiagShader(maxwell3d, 1);
     const u64 ps = DiagShader(maxwell3d, 5);
+    if (DiagLite()) {
+        auto& table = DiagLiteTable();
+        const auto answer = DiagLiteAnswer(diag, table, vs, ps);
+        const auto& rt = maxwell3d.regs.rt[0];
+        if (VideoCommon::Nx2Perf::Verify()) {
+            VideoCommon::Nx2Diag::Diagnostics::Shadow().ShadowDraw(
+                diag.CurrentFrame(), answer, outcome, g_diag_draw.instances, g_diag_draw.vertices,
+                rt.width, rt.height, VideoCommon::Nx2Diag::CountersEnabled());
+        }
+        if (!diag.Capturing()) {
+            diag.LiteAdd(table, answer, outcome, g_diag_draw.instances, g_diag_draw.vertices,
+                         rt.width, rt.height);
+            if (answer.inspect_v) {
+                DiagObserveStage(maxwell3d, gpu_memory, 0, answer.vkey);
+            }
+            if (answer.inspect_p) {
+                DiagObserveStage(maxwell3d, gpu_memory, 4, answer.pkey);
+            }
+            g_diag_query = -1;
+            return;
+        }
+        // A capture: the synchronous path, after this thread's earlier draws.
+        if (table.used != 0) {
+            diag.FoldLite(table);
+        }
+    }
     {
         const auto& rt = maxwell3d.regs.rt[0];
         diag.Touch('v', vs, outcome, g_diag_draw.instances, g_diag_draw.vertices, rt.width, rt.height);
@@ -1925,6 +2018,9 @@ void RasterizerVulkan::TickFrame() {
             }
         }
         diag.TickFrame();
+        if (DiagLite() && VideoCommon::Nx2Perf::Verify()) {
+            DiagLiteVerifyFrame();
+        }
         if (diag.Capturing() && VideoCommon::Nx2Diag::SamplesEnabled()) {
             // A capture just began: (re)create and reset the probe pool.
             if (g_diag_pool == nullptr) {
