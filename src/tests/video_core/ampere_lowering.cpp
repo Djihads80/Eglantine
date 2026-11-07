@@ -306,6 +306,30 @@ TEST_CASE("Ampere gathers take arrays, per-pixel offsets and depth references",
 
     // Offset mode 3 is not an offset form.
     CHECK_FALSE(lower({{0x082c7b63, 0xb0801004, 0x001e3f2a, 0x00014200}}));
+
+    // A gather from a second descriptor buffer loads the handle from c[binding][offset] into R246
+    // and emits Maxwell TLD4.B (0xdec0...) with meta_reg = 246 and any offsets/dref in R247+.
+    const Instruction depth_gather{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}}; // binding 2
+    const Instruction plain_b14{{0x040a7b63, 0x33800408, 0x041e0f08, 0x100fc200}};    // binding 14
+    auto aoffi_b14 = plain_b14;
+    aoffi_b14.words[2] |= 1U << 12;
+    const auto mixed_plain = LowerToMaxwell(std::array{depth_gather, plain_b14, EXIT});
+    INFO(mixed_plain.error);
+    REQUIRE(static_cast<bool>(mixed_plain));
+    CHECK(mixed_plain.required_texture_buffer == 2);
+    const u64 tld4b_plain = FindMaxwell(mixed_plain, 0xde, 56);
+    REQUIRE(tld4b_plain != 0);
+    CHECK(field(tld4b_plain, 20, 8) == 246);
+    CHECK(field(tld4b_plain, 36, 2) == 0);
+
+    const auto mixed_aoffi = LowerToMaxwell(std::array{depth_gather, aoffi_b14, EXIT});
+    INFO(mixed_aoffi.error);
+    REQUIRE(static_cast<bool>(mixed_aoffi));
+    CHECK(mixed_aoffi.required_texture_buffer == 2);
+    const u64 tld4b_aoffi = FindMaxwell(mixed_aoffi, 0xde, 56);
+    REQUIRE(tld4b_aoffi != 0);
+    CHECK(field(tld4b_aoffi, 20, 8) == 246);
+    CHECK(field(tld4b_aoffi, 36, 2) == 1);
 }
 
 TEST_CASE("Ampere Ocarina sign extends, uniform shifts and carries, LEA.HI and SURED forms",

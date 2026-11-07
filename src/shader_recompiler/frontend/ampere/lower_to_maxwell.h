@@ -2419,14 +2419,19 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (source_a != 255 && source_a + in_a > 246) || (source_b != 255 && source_b + in_b > 246) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
-                          : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
-                             (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))))
+                          : (insn.Bits(40, 14) > 0x1fff || binding >= 18)))
                 return fail(index, "native texture gather mode");
-            if (!bindless) result.required_texture_buffer = binding;
+            // A second descriptor buffer is gathered bindless (TLD4.B), its handle loaded from that
+            // buffer, as TEX does; the shaders mixing two buffers were rejected before.
+            const bool second_buffer = !bindless && !bind_texture_buffer(binding);
             const auto element = [](u32 base, u32 offset) { return base == 255 ? 255U : base + offset; };
             for (u32 i = 0; i < coordinates; ++i) {
                 const u32 source = i < in_a ? element(source_a, i) : element(source_b, i - in_a);
                 emit(0x5c98000000000000ULL | predicate | (250 + i) | (u64{15} << 39) | (u64{source} << 20));
+            }
+            if (second_buffer) {
+                emit(0x4c98000000070000ULL | 246 | (u64{15} << 39) |
+                     (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
             }
             for (u32 i = 0; i < meta; ++i) {
                 const u32 reg = element(source_b, i);
@@ -2487,14 +2492,20 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                         break;
                     }
                 }
+                const u32 meta_reg = 246 + (second_buffer ? 1U : 0U) + i;
                 if (imm) {
-                    emit(0x010000000007f000ULL | (246 + i) | (u64{*imm} << 20));
+                    emit(0x010000000007f000ULL | meta_reg | (u64{*imm} << 20));
                 } else {
-                    emit(0x5c98000000000000ULL | predicate | (246 + i) | (u64{15} << 39) |
+                    emit(0x5c98000000000000ULL | predicate | meta_reg | (u64{15} << 39) |
                          (u64{reg} << 20));
                 }
             }
-            if (bindless) {
+            if (second_buffer) {
+                emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
+                     (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{offset_mode} << 36) |
+                     (u64{insn.Bits(87, 2)} << 38) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{depth} << 50) | (u64{7} << 51));
+            } else if (bindless) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
                 emit(0xdec0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
                      (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(87, 2)} << 38) |
