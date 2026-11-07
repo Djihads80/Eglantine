@@ -51,6 +51,7 @@ enum class DrainSite : u32 {
     Map,            ///< GPU memory maps before later command reads
     FrontStart,     ///< The front takes an engine's macros over
     FrontVerify,    ///< EDEN_NX2_FRONT_VERIFY
+    ListFetchSync,  ///< Nx2Perf list_fetch_after_sync: a list fetch waits for the last host sync
     Count,
 };
 
@@ -60,6 +61,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> 
     "list writers", "list sync",      "list flush", "macro dma read",  "macro dma writes",
     "macro dma flush",
     "gp sync fence", "map",           "front start", "front verify",
+    "list fetch sync",
 };
 
 /// Why the split's back runs its idle hook (Nx2Perf hook_lazy_flush submits deferred work at
@@ -302,6 +304,12 @@ public:
     /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
     /// of it was still queued.
     bool WaitForSync();
+    /// Nx2Perf list_fetch_after_sync: the same, profiled as DrainSite::ListFetchSync.
+    bool WaitForListSync();
+    /// Back: the ring position of the entry it runs (stored only with list_fetch_after_sync).
+    [[nodiscard]] u64 BackReadPosition() const {
+        return back_read_position.load(std::memory_order_relaxed);
+    }
     /// The entry just sent also writes [address, address + size) of `memory`, noted by device
     /// page (other mappings may alias it, and the caches keep state per page; with
     /// Nx2Perf ExactNotedWrites, by device byte in each page). `size` must cover every byte the
@@ -499,6 +507,8 @@ private:
     bool release_before_hook{}; ///< Nx2Perf::Opt::ReleaseBeforeHook, read once at Start
     /// Nx2Perf::Verify() with draw_begin_coalesce, read once at Start before the back starts
     bool verify_repeats{};
+    /// Nx2Perf list_fetch_after_sync, read once at Start before the back starts
+    bool track_back_read{};
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -529,6 +539,7 @@ private:
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
+    std::atomic<u64> back_read_position{}; ///< BackReadPosition
     /// VerifyRepeat: the last entry's word, the Repeatable entries seen and those that did not
     /// follow the same word, since the last report
     u64 verify_previous{};

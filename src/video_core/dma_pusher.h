@@ -237,6 +237,9 @@ public:
     /// Nx2Perf compute_writer_ranges: the same, waiting only for the unlocalized writers, unknown
     /// writes and noted writes to the entry's pages (GpuSplit::LocalizedListTarget).
     bool WaitForLocalizedListWriters(GPUVAddr address, size_t size);
+    /// Nx2Perf list_fetch_after_sync: the same, waiting only for the work before the last
+    /// host-level sync (GpuSplit::WaitForListSync); the full wait once the detector tripped.
+    bool WaitForListFetchSync(GPUVAddr address, size_t size);
 
 private:
 

@@ -155,6 +155,10 @@ enum class Opt : unsigned {
     /// With MacroReadWriterSet: the back skips the non-writer proof lookup when the draw's
     /// programs, program epoch and the set's version repeat its last proven draw
     NonwriterProofMemo,
+    /// Split front: a command list fetch from pages no GPU work wrote waits only for the work
+    /// before the last host-level sync, not every queued writer (the PBDMA fetches ahead of the
+    /// engines); a back-side detector falls back to the full wait if the skip ever mattered
+    ListFetchAfterSync,
     Count,
 };
 
@@ -197,6 +201,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "compute_writer_ranges",
     "acquire_queued_release",
     "nonwriter_proof_memo",
+    "list_fetch_after_sync",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -267,7 +272,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
                           Opt::InflightReadExact,
-                          Opt::FenceTimeline, Opt::RunAheadLedger, Opt::ComputeWriterRanges, Opt::AcquireQueuedRelease, Opt::NonwriterProofMemo}) {
+                          Opt::FenceTimeline, Opt::RunAheadLedger, Opt::ComputeWriterRanges, Opt::AcquireQueuedRelease, Opt::NonwriterProofMemo,
+                          Opt::ListFetchAfterSync}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -289,7 +295,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// (timing change: flash check and a user play test first); fence_timeline (measurement); dma_forward_memo (unmeasured);
 /// run_ahead_ledger (measurement); compute_writer_ranges (-2.5 FPS: many short list-writer waits),
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
-/// round 7). dma_forward and draw_begin_coalesce are on
+/// round 7), list_fetch_after_sync (round 8, unmeasured). dma_forward and draw_begin_coalesce are on
 /// by default (round 5); SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
@@ -309,7 +315,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadLedger) |
                                   Bit(Opt::ComputeWriterRanges) |
                                   Bit(Opt::AcquireQueuedRelease) |
-                                  Bit(Opt::NonwriterProofMemo);
+                                  Bit(Opt::NonwriterProofMemo) |
+                                  Bit(Opt::ListFetchAfterSync);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -356,6 +363,10 @@ static_assert(static_cast<unsigned>(Opt::AcquireQueuedRelease) == 66 &&
 static_assert(static_cast<unsigned>(Opt::NonwriterProofMemo) == 67 &&
               IsOff(always_off, static_cast<size_t>(Opt::NonwriterProofMemo)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::NonwriterProofMemo)));
+
+static_assert(static_cast<unsigned>(Opt::ListFetchAfterSync) == 68 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ListFetchAfterSync)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ListFetchAfterSync)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

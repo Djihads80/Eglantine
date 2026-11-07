@@ -48,7 +48,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::RunAheadLedger) ||
                                   i == Index(Opt::ComputeWriterRanges) ||
                                   i == Index(Opt::AcquireQueuedRelease) ||
-                                  i == Index(Opt::NonwriterProofMemo);
+                                  i == Index(Opt::NonwriterProofMemo) ||
+                                  i == Index(Opt::ListFetchAfterSync);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -61,6 +62,15 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ExactNotedWrites)));
     REQUIRE(ParseOffMask(false, "exact_noted_writes", "", false) ==
             (always_off & ~Bit(Opt::ExactNotedWrites)));
+}
+
+TEST_CASE("Nx2Perf list_fetch_after_sync is off unless ON names it", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::ListFetchAfterSync)] == "list_fetch_after_sync");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ListFetchAfterSync)));
+    REQUIRE(IsOff(always_off, Index(Opt::ListFetchAfterSync)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::ListFetchAfterSync)));
+    REQUIRE(ParseOffMask(false, "list_fetch_after_sync", "", false) ==
+            (always_off & ~Bit(Opt::ListFetchAfterSync)));
 }
 
 TEST_CASE("Nx2Perf front_sync_trio turns on its three switches", "[nx2_perf]") {
