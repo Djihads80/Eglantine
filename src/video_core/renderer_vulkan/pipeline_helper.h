@@ -42,13 +42,14 @@ inline void ReportPipelineBuild(const char* kind, u64 hash,
 }
 
 inline void ReportPipelineBuildWait(const char* kind, u64 hash,
-                                    std::chrono::steady_clock::time_point begin) {
+                                    std::chrono::steady_clock::time_point begin,
+                                    std::string_view details = {}) {
     static std::atomic<u32> logged{};
     const auto elapsed = std::chrono::steady_clock::now() - begin;
     if (elapsed > std::chrono::milliseconds{2} && logged.fetch_add(1) < 400) {
         LOG_INFO(Render_Vulkan,
-                 "Submission thread waited {:.1f} ms for {} pipeline {:016x} to finish building",
-                 std::chrono::duration<double, std::milli>(elapsed).count(), kind, hash);
+                 "Submission thread waited {:.1f} ms for {} pipeline {:016x} to finish building{}",
+                 std::chrono::duration<double, std::milli>(elapsed).count(), kind, hash, details);
     }
 }
 

@@ -727,11 +727,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         return false;
     }
     Profile::Scope scope{Profile::Zone::ConfigureDraw};
-    return ConfigureDraw(rescaling, render_area);
+    return ConfigureDraw(rescaling, render_area, is_indexed);
 }
 
 bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
-                                     const RenderAreaPushConstant& render_area) {
+                                     const RenderAreaPushConstant& render_area,
+                                     bool is_indexed) {
     const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
 
     VkDeviceSize descriptor_buffer_offset{};
@@ -777,14 +778,30 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     }
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
-        scheduler.Record([this](vk::CommandBuffer) {
+        const auto& regs{maxwell3d->regs};
+        const auto& draw_state{maxwell3d->draw_manager.draw_state};
+        const GPUVAddr rt0_addr{regs.rt[0].Address()};
+        const u32 rt0_w{regs.rt[0].width};
+        const u32 rt0_h{regs.rt[0].height};
+        const u32 elem_count{draw_state.draw_element_count};
+        const u32 inst_count{draw_state.instance_count + 1};
+        const u32 zeta{regs.zeta_enable};
+        const u32 num_rt{static_cast<u32>(NumAttachments(key.state))};
+        const bool mesh{IsMeshPipeline()};
+        const bool indirect{elem_count == 0 && !mesh};
+        scheduler.Record([this, rt0_addr, rt0_w, rt0_h, elem_count, inst_count, is_indexed,
+                          indirect, zeta, num_rt, mesh](vk::CommandBuffer) {
             const auto begin = std::chrono::steady_clock::now();
             {
                 std::unique_lock lock{build_mutex};
                 build_condvar.wait(lock,
                                    [this] { return is_built.load(std::memory_order::relaxed); });
             }
-            ReportPipelineBuildWait("Graphics", key.Hash(), begin);
+            const std::string details = fmt::format(
+                " (rt0={:#x} {}x{} elems={} inst={} {}{} zeta={} rts={}{})", rt0_addr, rt0_w,
+                rt0_h, elem_count, inst_count, is_indexed ? "indexed" : "array",
+                indirect ? "-indirect" : "", zeta, num_rt, mesh ? " mesh" : "");
+            ReportPipelineBuildWait("Graphics", key.Hash(), begin, details);
         });
     }
     const bool is_rescaling{texture_cache.IsRescaling()};

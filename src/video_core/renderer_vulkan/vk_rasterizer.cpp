@@ -731,14 +731,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
 
     const char* diag_outcome = "drawn";
     const auto report_failure = [&](std::string_view reason) {
+        const std::string_view skip_reason =
+            reason == "no pipeline" ? std::string_view{pipeline_cache.GraphicsMissReason()} : reason;
         diag_outcome = reason == "no pipeline" ? pipeline_cache.GraphicsMissReason()
                        : reason == "configure failed" ? "configure-failed" : "mesh-disabled";
         static std::set<std::tuple<u64, u64, std::string_view>> seen;
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
-            LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
+        if (seen.size() < 64 && seen.emplace(vs, ps, skip_reason).second) {
+            LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", skip_reason, vs, ps,
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
         }
     };

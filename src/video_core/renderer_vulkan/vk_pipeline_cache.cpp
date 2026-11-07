@@ -1635,19 +1635,25 @@ namespace {
 // workers): every one over 2 ms is logged, and the total every 10 s, to tell how much of the
 // stutter on new content is translation.
 void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_point begin,
-                           bool after_eviction) {
+                           bool after_eviction, bool from_disk) {
     static std::chrono::steady_clock::duration total{};
-    static u32 count{}, logged{}, rebuilt{};
+    static u32 count{}, logged{}, rebuilt{}, on_disk{}, true_misses{};
     static auto window = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = now - begin;
     total += elapsed;
     ++count;
     rebuilt += after_eviction ? 1 : 0;
+    on_disk += from_disk ? 1 : 0;
+    true_misses += (!after_eviction && !from_disk) ? 1 : 0;
     const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
     if (elapsed > std::chrono::milliseconds{2} && logged < 400) {
         ++logged;
-        LOG_INFO(Render_Vulkan, "{} pipeline built on the GPU thread in {:.1f} ms", kind, ms(elapsed));
+        LOG_INFO(Render_Vulkan, "{} pipeline built on the GPU thread in {:.1f} ms{}", kind,
+                 ms(elapsed),
+                 after_eviction ? " (after eviction)"
+                 : from_disk    ? " (in disk cache, skipped at boot)"
+                                : " (new miss)");
     }
     if (now - window > std::chrono::seconds{10}) {
         const auto phase_ms = [](BuildPhase phase) {
@@ -1660,13 +1666,17 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
         const double module_ms = phase_ms(BuildPhase::Module);
         const double object_ms = phase_ms(BuildPhase::Object);
         LOG_INFO(Render_Vulkan,
-                 "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread, "
-                 "{} rebuilt after eviction (graphics: environments {:.1f}, translate {:.1f}, "
-                 "SPIR-V {:.1f}, modules {:.1f}, pipeline object {:.1f} ms)",
-                 count, ms(total), rebuilt, env_ms, translate_ms, emit_ms, module_ms, object_ms);
+                 "Runtime pipelines in the last 10 s: {} built ({} new misses, {} in disk cache, "
+                 "{} rebuilt after eviction), {:.1f} ms on the GPU thread (graphics: environments "
+                 "{:.1f}, translate {:.1f}, SPIR-V {:.1f}, modules {:.1f}, pipeline object {:.1f} "
+                 "ms)",
+                 count, true_misses, on_disk, rebuilt, ms(total), env_ms, translate_ms, emit_ms,
+                 module_ms, object_ms);
         total = {};
         count = 0;
         rebuilt = 0;
+        on_disk = 0;
+        true_misses = 0;
         window = now;
     }
 }
@@ -1674,9 +1684,11 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     const auto begin = std::chrono::steady_clock::now();
-    const bool after_eviction = evicted_keys.contains(graphics_key.Hash());
+    const u64 key_hash = graphics_key.Hash();
+    const bool after_eviction = evicted_keys.contains(key_hash);
+    const bool from_disk = !after_eviction && disk_pipelines.contains(key_hash);
     SCOPE_EXIT {
-        ReportRuntimePipeline("Graphics", begin, after_eviction);
+        ReportRuntimePipeline("Graphics", begin, after_eviction, from_disk);
         ChargeRuntimeBuild(begin);
     };
     GraphicsEnvironments environments;
@@ -1716,7 +1728,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipe
                                                                std::span<const u64> keep_pointers) {
     const auto begin = std::chrono::steady_clock::now();
     SCOPE_EXIT {
-        ReportRuntimePipeline("Compute", begin, false);
+        ReportRuntimePipeline("Compute", begin, false, false);
         ChargeRuntimeBuild(begin);
     };
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
