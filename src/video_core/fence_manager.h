@@ -138,6 +138,7 @@ public:
             // passes finds this fence's downloads and query results in guest memory.
             SyncOperation([this, value] {
                 syncpoint_manager.IncrementHost(value);
+                NoteHostIncrement(value);
                 syncpoint_manager.IncrementGuest(value);
                 if (Nx2Perf::FenceTimeline::On()) [[unlikely]] {
                     Nx2Perf::FenceTimeline::StampBack(
@@ -167,13 +168,26 @@ public:
             // operations of every fence before it: "all recorded so far is in guest memory".
             // The queued operation keeps SkipEmptyFence from dropping the fence. A deferred
             // flush (this fence's or an earlier one's) is submitted now so landing isn't held.
-            SyncOperation([this, value] { syncpoint_manager.IncrementHost(value); });
+            SyncOperation([this, value] {
+                syncpoint_manager.IncrementHost(value);
+                NoteHostIncrement(value);
+            });
             SignalFence([] {});
             SubmitDeferred();
             return;
         }
-        std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
+        std::function<void()> func([this, value] {
+            syncpoint_manager.IncrementHost(value);
+            NoteHostIncrement(value);
+        });
         SignalFence(std::move(func));
+    }
+
+    /// run_ahead_cover: when the host value of a present fence rose.
+    void NoteHostIncrement(u32 value) {
+        if (Nx2Ledger::CoverOn()) [[unlikely]] {
+            Nx2Ledger::AfterHostIncrement(value, syncpoint_manager.GetHostSyncpointValue(value));
+        }
     }
 
     void WaitPendingFences([[maybe_unused]] bool force) {

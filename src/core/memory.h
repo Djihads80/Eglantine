@@ -508,6 +508,13 @@ public:
     Nx2WarProbeArmResult Nx2WarProbeArm(std::span<const u64> bank_cpu_pages);
 
     /**
+     * run_ahead_cover (video_core/nx2_war_probe.h, measurement only): the tracker state of each
+     * guest page (vaddr >> 12) as a Nx2Ledger::TrackerClass. Returns whether the war_guard arm
+     * set is kept (without it no page is classed ArmSet).
+     */
+    bool Nx2CoverClassify(std::span<const u64> cpu_pages, std::span<u8> classes);
+
+    /**
      * inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h): vi2 replies to the
      * present of fence (fence_id, fence_value) having waited only for (prev_id, prev_value).
      * Arms the guards and opens the epoch; false when none can open (the caller then waits).
