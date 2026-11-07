@@ -1162,22 +1162,29 @@ struct Memory::Impl {
         }
         const u64 first = vaddr >> YUZU_PAGEBITS;
         const u64 end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
-        WarForgetIn(war_unprotected, first, end);
+        WarForgetIn(war_unprotected, first, end, false);
         if (cow_on) {
-            WarForgetIn(cow_armed, first, end);
+            // run_ahead_cow_probe: the next arm checks these pages again (still Memory, re-armed).
+            WarForgetIn(cow_armed, first, end, true);
         }
     }
 
     template <typename Set>
-    void WarForgetIn(Set& set, u64 first, u64 end) {
+    void WarForgetIn(Set& set, u64 first, u64 end, bool cow_rearm_page) {
         if (set.count == 0) {
             return;
         }
+        const auto forget = [&](u64 page) {
+            WarUnguard(page);
+            set.Erase(page);
+            if (cow_rearm_page) {
+                CowRearmPush(page);
+            }
+        };
         if (end - first <= set.count) {
             for (u64 page = first; page != end; ++page) {
                 if (set.Contains(page)) {
-                    WarUnguard(page);
-                    set.Erase(page);
+                    forget(page);
                 }
             }
             return;
@@ -1185,8 +1192,7 @@ struct Memory::Impl {
         for (u32 i = set.count; i-- > 0;) {
             const u64 page = set.list[i];
             if (page >= first && page < end) {
-                WarUnguard(page);
-                set.Erase(page);
+                forget(page);
             }
         }
     }
@@ -1421,7 +1427,8 @@ struct Memory::Impl {
         bool collect_overflow = false;
         const size_t collected = gpu_device_memory->Nx2CowCollectCpuPages(
             owner, full, cow_collect.get(), CowListCapacity, collect_overflow);
-        cow_full_pending = false;
+        // New mappings a partial collection could not hold: collect every mapped page next time.
+        cow_full_pending = collect_overflow && !full;
         result.full = full ? 1 : 0;
         result.new_mapped = collected;
         result.overflow += collect_overflow ? 1 : 0;
