@@ -388,6 +388,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::GlobalAtomicOr32:
     case IR::Opcode::GlobalAtomicXor32:
     case IR::Opcode::GlobalAtomicExchange32:
+    case IR::Opcode::GlobalAtomicCompareExchange32:
     case IR::Opcode::GlobalAtomicIAdd64:
     case IR::Opcode::GlobalAtomicSMin64:
     case IR::Opcode::GlobalAtomicUMin64:
@@ -477,6 +478,9 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         break;
     case IR::Opcode::InvocationInfo:
         info.uses_invocation_info = true;
+        break;
+    case IR::Opcode::SampleMask:
+        info.uses_sample_mask = true;
         break;
     case IR::Opcode::SampleId:
         info.uses_sample_id = true;
@@ -635,6 +639,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::StorageAtomicOr32:
     case IR::Opcode::StorageAtomicXor32:
     case IR::Opcode::StorageAtomicExchange32:
+    case IR::Opcode::StorageAtomicCompareExchange32:
         info.used_storage_buffer_types |= IR::Type::U32;
         break;
     case IR::Opcode::LoadStorage64:
@@ -742,6 +747,16 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         info.used_storage_buffer_types |= IR::Type::U64 | IR::Type::U32x2;
         info.uses_int64_bit_atomics = true;
         break;
+    case IR::Opcode::BindlessImageAtomicUMax64:
+    case IR::Opcode::BoundImageAtomicUMax64:
+    case IR::Opcode::ImageAtomicUMax64: {
+        const auto flags{inst.Flags<IR::TextureInstInfo>()};
+        info.uses_int64 = true;
+        info.uses_atomic_image_u64 = true;
+        info.uses_image_1d |=
+            flags.type == TextureType::Color1D || flags.type == TextureType::ColorArray1D;
+        break;
+    }
     case IR::Opcode::BindlessImageAtomicIAdd32:
     case IR::Opcode::BindlessImageAtomicSMin32:
     case IR::Opcode::BindlessImageAtomicUMin32:

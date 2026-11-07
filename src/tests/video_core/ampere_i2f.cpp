@@ -71,4 +71,20 @@ TEST_CASE("Ampere I2F converts 16-bit uniform sources", "[video_core][ampere]") 
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
 }
 
+TEST_CASE("Ampere I2F.F16 converts 32-bit integer sources", "[video_core][ampere]") {
+    // ptxas SM86: cvt.rn.f16.u32 -> I2F.F16.U32 R0, R0 (00007306 00000000 00200800) and
+    // cvt.rn.f16.s32 -> I2F.F16 R6, R6 (00067306 00000006 00200c00); Star Wars Outlaws uses the former.
+    const auto lower = [](Instruction native) { return LowerToMaxwell(std::array{native, EXIT}); };
+    const auto unsigned_source = lower({{0x00157306, 0x00000007, 0x00200800, 0}});
+    REQUIRE(static_cast<bool>(unsigned_source));
+    // Maxwell I2F: F16 (bits 8-9 = 1), 32-bit source (bits 10-11 = 2), unsigned, round to nearest.
+    REQUIRE(Contains(unsigned_source, 0x5cb8000000770915ULL));
+    const auto signed_source = lower({{0x00067306, 0x00000006, 0x00200c00, 0}});
+    REQUIRE(static_cast<bool>(signed_source));
+    REQUIRE(Contains(signed_source, 0x5cb8000000672906ULL));
+    CHECK_FALSE(static_cast<bool>(lower({{0x00067306, 0x10000006, 0x00200800, 0}}))); // Selector.
+    CHECK_FALSE(static_cast<bool>(lower({{0x00067306, 0x00000006, 0x00204800, 0}}))); // Rounding.
+    CHECK_FALSE(static_cast<bool>(lower({{0x00067306, 0x00000006, 0x00201000, 0}}))); // F32 result.
+}
+
 } // namespace

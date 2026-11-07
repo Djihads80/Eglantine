@@ -44,7 +44,8 @@ union TextureInstInfo {
     BitField<22, 1, u32> relaxed_precision;
     BitField<23, 2, u32> gather_component;
     BitField<25, 2, u32> num_derivatives;
-    BitField<27, 3, ImageFormat> image_format;
+    // Storage images only; the high bit overlaps sampled-texture ndv_is_active.
+    BitField<27, 4, ImageFormat> image_format;
     BitField<30, 1, u32> ndv_is_active;
     /// Only meaningful for the sampled-texture family (ImageSampleImplicitLod, ImageFetch,
     /// ImageGather, etc.); unused/zero for storage-image opcodes, which carry their own

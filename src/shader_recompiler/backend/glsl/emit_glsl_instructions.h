@@ -93,6 +93,7 @@ void EmitWorkgroupId(EmitContext& ctx, IR::Inst& inst);
 void EmitLocalInvocationId(EmitContext& ctx, IR::Inst& inst);
 void EmitInvocationId(EmitContext& ctx, IR::Inst& inst);
 void EmitInvocationInfo(EmitContext& ctx, IR::Inst& inst);
+void EmitSampleMask(EmitContext& ctx, IR::Inst& inst);
 void EmitSampleId(EmitContext& ctx, IR::Inst& inst);
 void EmitIsHelperInvocation(EmitContext& ctx, IR::Inst& inst);
 void EmitSR_WScaleFactorXY(EmitContext& ctx, IR::Inst& inst);
@@ -478,6 +479,7 @@ void EmitStorageAtomicOr32(EmitContext& ctx, IR::Inst& inst, const IR::Value& bi
                            const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicXor32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                             const IR::Value& offset, std::string_view value);
+void EmitStorageAtomicCompareExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding, const IR::Value& offset, std::string_view operands);
 void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                                  const IR::Value& offset, std::string_view value);
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
@@ -540,6 +542,7 @@ void EmitGlobalAtomicDec32(EmitContext& ctx);
 void EmitGlobalAtomicAnd32(EmitContext& ctx);
 void EmitGlobalAtomicOr32(EmitContext& ctx);
 void EmitGlobalAtomicXor32(EmitContext& ctx);
+void EmitGlobalAtomicCompareExchange32(EmitContext& ctx);
 void EmitGlobalAtomicExchange32(EmitContext& ctx);
 void EmitGlobalAtomicIAdd64(EmitContext& ctx);
 void EmitGlobalAtomicSMin64(EmitContext& ctx);
@@ -689,6 +692,9 @@ void EmitBindlessImageAtomicIAdd32(EmitContext&);
 void EmitBindlessImageAtomicSMin32(EmitContext&);
 void EmitBindlessImageAtomicUMin32(EmitContext&);
 void EmitBindlessImageAtomicSMax32(EmitContext&);
+void EmitBindlessImageAtomicUMax64(EmitContext&);
+void EmitBoundImageAtomicUMax64(EmitContext&);
+void EmitImageAtomicUMax64(EmitContext&);
 void EmitBindlessImageAtomicUMax32(EmitContext&);
 void EmitBindlessImageAtomicInc32(EmitContext&);
 void EmitBindlessImageAtomicDec32(EmitContext&);

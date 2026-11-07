@@ -92,7 +92,7 @@ TEST_CASE("SPIR-V CAS retries use the exchange result as the next expected word"
             const auto variables = Instructions(code, spv::Op::OpVariable);
             const auto integers = Instructions(code, spv::Op::OpTypeInt);
             const auto comparisons = Instructions(code, spv::Op::OpIEqual);
-            REQUIRE(exchanges.size() == (explicit_shared ? 9 : 11));
+            REQUIRE(exchanges.size() == (explicit_shared ? 9U : 11U));
             for (const auto& exchange : exchanges) {
                 REQUIRE(exchange.size() == 8);
                 const u32 type = exchange[0];

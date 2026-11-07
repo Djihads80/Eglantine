@@ -436,6 +436,10 @@ void EmitInvocationInfo(EmitContext& ctx, IR::Inst& inst) {
     }
 }
 
+void EmitSampleMask(EmitContext& ctx, IR::Inst& inst) {
+    ctx.AddU32("{}=uint(gl_SampleMaskIn[0]);", inst);
+}
+
 void EmitSampleId(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddU32("{}=uint(gl_SampleID);", inst);
 }

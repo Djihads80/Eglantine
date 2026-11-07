@@ -254,6 +254,7 @@ public:
 
     Id image_buffer_type{};
     Id image_u32{};
+    Id image_u64{};
 
     std::array<UniformDefinitions, Info::MAX_CBUFS> cbufs{};
     std::array<StorageDefinitions, Info::MAX_SSBOS> ssbos{};
@@ -266,6 +267,7 @@ public:
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};
+    Id input_sample_mask{};
     Id sample_id{};
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};
@@ -345,7 +347,7 @@ public:
     Id write_global_func_u32x4{};
     // 32-bit global atomics on untracked addresses, routed to the storage buffer holding them.
     enum class GlobalAtomic : size_t {
-        IAdd, SMin, UMin, SMax, UMax, Inc, Dec, And, Or, Xor, Exchange, AddF32, Count,
+        IAdd, SMin, UMin, SMax, UMax, Inc, Dec, And, Or, Xor, Exchange, CompareExchange, AddF32, Count,
     };
     std::array<Id, static_cast<size_t>(GlobalAtomic::Count)> global_atomic_funcs{};
 

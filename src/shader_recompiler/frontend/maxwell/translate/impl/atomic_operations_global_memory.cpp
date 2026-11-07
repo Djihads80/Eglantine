@@ -201,6 +201,17 @@ void TranslatorVisitor::ATOM(u64 insn) {
     GlobalAtomic(*this, atom.dest_reg, atom.operand_reg, offset, atom.size, atom.op, true);
 }
 
+void TranslatorVisitor::ATOM_cas(u64 insn) {
+    // Maxwell CAS packs the comparator and replacement in two consecutive GPRs.
+    const IR::Reg dest = static_cast<IR::Reg>(insn & 255);
+    const IR::Reg operand = static_cast<IR::Reg>((insn >> 20) & 255);
+    if (((insn >> 49) & 3) != 0 || operand == IR::Reg::RZ)
+        throw NotImplementedException("ATOM CAS size or operand span");
+    const IR::U32 compare{X(operand)};
+    const IR::U32 value{X(static_cast<IR::Reg>(static_cast<u32>(operand) + 1))};
+    X(dest, ir.GlobalAtomicCompareExchange(AtomOffset(*this, insn), compare, value));
+}
+
 void TranslatorVisitor::RED(u64 insn) {
     union {
         u64 raw;

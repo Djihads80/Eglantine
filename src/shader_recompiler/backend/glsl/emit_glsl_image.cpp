@@ -794,6 +794,18 @@ void EmitBindlessImageAtomicSMax32(EmitContext&) {
     NotImplemented();
 }
 
+void EmitBindlessImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
+}
+
+void EmitBoundImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
+}
+
+void EmitImageAtomicUMax64(EmitContext&) {
+    throw NotImplementedException("64-bit image atomics require the Vulkan backend");
+}
+
 void EmitBindlessImageAtomicUMax32(EmitContext&) {
     NotImplemented();
 }

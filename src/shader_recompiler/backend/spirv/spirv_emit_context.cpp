@@ -73,6 +73,8 @@ spv::ImageFormat GetImageFormat(ImageFormat format) {
         return spv::ImageFormat::R16ui;
     case ImageFormat::R16_SINT:
         return spv::ImageFormat::R16i;
+    case ImageFormat::R64_UINT:
+        return spv::ImageFormat::R64ui;
     case ImageFormat::R32_UINT:
         return spv::ImageFormat::R32ui;
     case ImageFormat::R32G32_UINT:
@@ -552,6 +554,10 @@ Id EmitContext::BitOffset16(const IR::Value& offset) {
 }
 
 void EmitContext::DefineCommonTypes(const Info& info) {
+    if (info.uses_atomic_image_u64 &&
+        (!profile.support_int64 || !profile.support_image_int64_atomics)) {
+        throw NotImplementedException("64-bit image atomics require VK_EXT_shader_image_atomic_int64");
+    }
     void_id = TypeVoid();
 
     U1 = Name(TypeBool(), "u1");
@@ -1153,6 +1159,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         case IR::Opcode::GlobalAtomicAnd32: return And;
         case IR::Opcode::GlobalAtomicOr32: return Or;
         case IR::Opcode::GlobalAtomicXor32: return Xor;
+        case IR::Opcode::GlobalAtomicCompareExchange32: return CompareExchange;
         case IR::Opcode::GlobalAtomicExchange32: return Exchange;
         case IR::Opcode::GlobalAtomicAddF32: return AddF32;
         default: return std::nullopt;
@@ -1174,9 +1181,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
         const auto kind = static_cast<GlobalAtomic>(index);
         const Id type{kind == AddF32 ? F32[1] : U32[1]};
         const Id func_id{OpFunction(type, spv::FunctionControlMask::MaskNone,
-                                    TypeFunction(type, U64, type))};
+                                    TypeFunction(type, U64, kind == CompareExchange ? U32[2] : type))};
         const Id addr{OpFunctionParameter(U64)};
-        const Id value{OpFunctionParameter(type)};
+        const Id value{OpFunctionParameter(kind == CompareExchange ? U32[2] : type)};
         define_body(&StorageDefinitions::U32, addr, storage_types.U32.element, 2,
                     [&](Id pointer, Id ssbo, Id word) {
                         const auto atomic = [&](Id (Sirit::Module::*op)(Id, Id, Id, Id, Id)) {
@@ -1192,6 +1199,10 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                         case Or: OpReturnValue(atomic(&Sirit::Module::OpAtomicOr)); break;
                         case Xor: OpReturnValue(atomic(&Sirit::Module::OpAtomicXor)); break;
                         case Exchange: OpReturnValue(atomic(&Sirit::Module::OpAtomicExchange)); break;
+                        case CompareExchange:
+                            OpReturnValue(OpAtomicCompareExchange(U32[1], pointer, scope, zero, zero,
+                                OpCompositeExtract(U32[1], value, 1), OpCompositeExtract(U32[1], value, 0)));
+                            break;
                         case Inc:
                             OpReturnValue(OpFunctionCall(U32[1], increment_cas_ssbo, word, value, ssbo));
                             break;
@@ -1589,6 +1600,9 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
         ++binding;
         ++scaling_index;
     }
+    if (info.uses_atomic_image_u64) {
+        image_u64 = TypePointer(spv::StorageClass::Image, U64);
+    }
     if (info.uses_atomic_image_u32) {
         image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
     }
@@ -1597,7 +1611,8 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
 void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_index) {
     images.reserve(info.image_descriptors.size());
     for (const ImageDescriptor& desc : info.image_descriptors) {
-        const Id sampled_type{desc.is_integer ? U32[1] : F32[1]};
+        const Id sampled_type{desc.format == ImageFormat::R64_UINT ? U64
+                             : desc.is_integer ? U32[1] : F32[1]};
         const Id image_type{ImageType(*this, desc, sampled_type)};
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
         const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};
@@ -1635,6 +1650,10 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_invocation_info &&
         (stage == Shader::Stage::TessellationControl || stage == Shader::Stage::TessellationEval)) {
         patch_vertices_in = DefineInput(*this, U32[1], false, spv::BuiltIn::PatchVertices);
+    }
+    if (info.uses_sample_mask) {
+        input_sample_mask = DefineInput(*this, TypeArray(U32[1], Const(1U)), false,
+                                       spv::BuiltIn::SampleMask);
     }
     if (info.uses_sample_id) {
         sample_id = DefineInput(*this, U32[1], false, spv::BuiltIn::SampleId);

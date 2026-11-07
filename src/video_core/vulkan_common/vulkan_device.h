@@ -69,6 +69,7 @@ VK_DEFINE_HANDLE(VmaPool)
     FEATURE(EXT, 4444Formats, 4444_FORMATS, format_a4b4g4r4)                                       \
     FEATURE(EXT, IndexTypeUint8, INDEX_TYPE_UINT8, index_type_uint8)                               \
     FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \
+    FEATURE(EXT, ShaderImageAtomicInt64, SHADER_IMAGE_ATOMIC_INT64, shader_image_atomic_int64)      \
     FEATURE(EXT, MeshShader, MESH_SHADER, mesh_shader)                                             \
     FEATURE(EXT, PrimitiveTopologyListRestart, PRIMITIVE_TOPOLOGY_LIST_RESTART,                    \
             primitive_topology_list_restart)                                                       \
@@ -959,6 +960,11 @@ FN_MAX_LIMIT_LIST
     /// Returns true if the device supports VK_KHR_shader_atomic_int64.
     bool IsExtShaderAtomicInt64Supported() const {
         return extensions.shader_atomic_int64;
+    }
+
+    bool IsImageInt64AtomicsSupported() const {
+        return extensions.shader_image_atomic_int64 && features.features.shaderInt64 &&
+               features.shader_image_atomic_int64.shaderImageInt64Atomics;
     }
 
     bool IsSharedInt64AtomicsSupported() const {

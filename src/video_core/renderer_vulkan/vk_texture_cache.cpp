@@ -1027,6 +1027,8 @@ void TryTransformSwizzleIfNeeded(PixelFormat format, std::array<SwizzleSource, 4
         return VK_FORMAT_R16_UINT;
     case Shader::ImageFormat::R16_SINT:
         return VK_FORMAT_R16_SINT;
+    case Shader::ImageFormat::R64_UINT:
+        return VK_FORMAT_R64_UINT;
     case Shader::ImageFormat::R32_UINT:
         return VK_FORMAT_R32_UINT;
     case Shader::ImageFormat::R32G32_UINT:
@@ -1232,6 +1234,10 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
         const auto image_format = static_cast<PixelFormat>(index_a);
         if (IsPixelFormatASTC(image_format) && !device.IsOptimalAstcSupported()) {
             view_formats[index_a].push_back(VK_FORMAT_A8B8G8R8_UNORM_PACK32);
+        }
+        if (device.IsImageInt64AtomicsSupported() &&
+            VideoCore::Surface::IsViewCompatible(image_format, PixelFormat::R32G32_UINT, false, true)) {
+            view_formats[index_a].push_back(VK_FORMAT_R64_UINT);
         }
         for (size_t index_b = 0; index_b < VideoCore::Surface::MaxPixelFormat; index_b++) {
             const auto view_format = static_cast<PixelFormat>(index_b);
@@ -4123,7 +4129,8 @@ VkImageView ImageView::StorageView(Shader::TextureType texture_type,
             || image_format == Shader::ImageFormat::R16_SINT;
         if (!storage_views)
             storage_views.emplace();
-        auto& views{is_signed ? storage_views->signeds : storage_views->unsigneds};
+        auto& views{image_format == Shader::ImageFormat::R64_UINT ? storage_views->unsigned64 :
+                    is_signed ? storage_views->signeds : storage_views->unsigneds};
         auto& view{views[size_t(texture_type)]};
         if (!view)
             view = MakeView(Format(image_format), VK_IMAGE_ASPECT_COLOR_BIT, texture_type);

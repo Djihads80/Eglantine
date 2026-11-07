@@ -40,8 +40,11 @@ TEST_CASE("Ampere surface reductions preserve 3D coordinates", "[video_core][amp
     REQUIRE(((lowered.instructions[0] >> 24) & 7) == 6); // OR
     REQUIRE(((lowered.instructions[0] >> 33) & 7) == 5); // still 3D
     sured.words[2] = 0x0010e000;
-    sured.words[2] |= 1U << 23; // unimplemented atomic operation must still be rejected
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{sured, exit})));
+    sured.words[2] |= 1U << 23; // MIN preserves the 3D coordinates too.
+    lowered = LowerToMaxwell(std::array{sured, exit});
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(((lowered.instructions[0] >> 24) & 7) == 1);
+    REQUIRE(((lowered.instructions[0] >> 33) & 7) == 5);
 }
 
 TEST_CASE("Ampere surface atomic add returns the old 3D texel value", "[video_core][ampere]") {
