@@ -791,7 +791,7 @@ size_t GraphicsFastCacheSlot(const GraphicsPipelineCacheKey& key, size_t size) {
 }
 } // Anonymous namespace
 
-GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
+GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline(bool is_indexed) {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
@@ -805,13 +805,13 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         if (next) {
             current_pipeline = next;
             current_pipeline->MarkUsed(frame_count);
-            return BuiltPipeline(current_pipeline);
+            return BuiltPipeline(current_pipeline, is_indexed);
         }
     }
     static const bool fast_cache =
         VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineFastCache);
     if (!fast_cache) {
-        return CurrentGraphicsPipelineSlowPath();
+        return CurrentGraphicsPipelineSlowPath(is_indexed);
     }
     // Every cached pipeline went through the slow path, so used_this_session already holds it.
     GraphicsPipeline*& fast_entry =
@@ -840,10 +840,10 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
             }
             current_pipeline = pipeline;
             current_pipeline->MarkUsed(frame_count);
-            return BuiltPipeline(current_pipeline);
+            return BuiltPipeline(current_pipeline, is_indexed);
         }
     }
-    GraphicsPipeline* const result = CurrentGraphicsPipelineSlowPath();
+    GraphicsPipeline* const result = CurrentGraphicsPipelineSlowPath(is_indexed);
     if (current_pipeline != nullptr && current_pipeline->Key() == graphics_key) {
         fast_entry = current_pipeline;
     }
@@ -1358,20 +1358,168 @@ void ReportNewPipelineKey(const GraphicsPipelineCacheKey& key) {
                  diffs.empty() ? std::string{" nothing in the key prefix"} : diffs);
     }
 }
+u32 ActiveColorTargetCount(const Maxwell& regs) noexcept {
+    const u32 count =
+        std::min<u32>(regs.rt_control.count, static_cast<u32>(Maxwell::NumRenderTargets));
+    u32 active = 0;
+    for (u32 i = 0; i < count; ++i) {
+        const u32 rt_index = regs.rt_control.Map(i);
+        if (rt_index < Maxwell::NumRenderTargets &&
+            regs.rt[rt_index].format != Tegra::RenderTargetFormat::NONE &&
+            regs.color_mask[regs.color_mask_common ? 0 : rt_index].raw != 0) {
+            ++active;
+        }
+    }
+    return active;
+}
+
+bool IsDepthTestedColorDraw(const Maxwell& regs) noexcept {
+    return regs.zeta_enable != 0 && ActiveColorTargetCount(regs) > 0;
+}
+
+bool IsDepthOnlyDraw(const Maxwell& regs) noexcept {
+    return regs.zeta_enable != 0 && ActiveColorTargetCount(regs) == 0;
+}
+
+bool IsGBufferDraw(const Maxwell& regs) noexcept {
+    return regs.zeta_enable != 0 && ActiveColorTargetCount(regs) > 1;
+}
+
+u64 DrawGeometryKey(const Tegra::Engines::Maxwell3D& maxwell3d, bool is_indexed) noexcept {
+    const auto& draw_state = maxwell3d.draw_manager.draw_state;
+    if (draw_state.draw_element_count == 0) {
+        return 0;
+    }
+    u64 hash = 0x9e3779b97f4a7c15ULL;
+    const auto mix = [&](u64 word) noexcept {
+        hash = (hash ^ word) * 0xff51afd7ed558ccdULL;
+        hash ^= hash >> 33;
+    };
+    if (is_indexed) {
+        mix(draw_state.index_buffer.StartAddress());
+        mix((u64{draw_state.index_buffer.first} << 32) | draw_state.index_buffer.count);
+        mix(draw_state.base_index);
+    } else {
+        mix(maxwell3d.regs.vertex_streams[0].Address());
+        mix((u64{draw_state.vertex_buffer.first} << 32) | draw_state.vertex_buffer.count);
+    }
+    return hash == 0 ? 1ULL : hash;
+}
 } // Anonymous namespace
+
+void PipelineCache::RecordSkippedGeometry(bool is_indexed,
+                                          const GraphicsPipeline* pipeline) noexcept {
+    if (!maxwell3d ||
+        !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GeometryConsistency) ||
+        !IsDepthTestedColorDraw(maxwell3d->regs)) {
+        return;
+    }
+    const u64 geom_key = DrawGeometryKey(*maxwell3d, is_indexed);
+    if (geom_key == 0) {
+        return;
+    }
+    const size_t base =
+        static_cast<size_t>(geom_key ^ (geom_key >> 29)) & (SkippedGeometryTableSize - 1);
+    size_t target_slot = base;
+    for (size_t probe = 0; probe < 4; ++probe) {
+        const size_t slot = (base + probe) & (SkippedGeometryTableSize - 1);
+        const auto& entry = skipped_geometry[slot];
+        if (entry.key == geom_key || entry.key == 0 || frame_count > entry.frame + 1 ||
+            (entry.pipeline != nullptr && entry.pipeline->IsBuilt())) {
+            target_slot = slot;
+            break;
+        }
+    }
+    skipped_geometry[target_slot] = {
+        .key = geom_key,
+        .frame = frame_count,
+        .pipeline = pipeline,
+    };
+    last_skipped_geometry_frame = frame_count;
+}
+
+bool PipelineCache::ShouldSkipDepthOnlyGeometry(bool is_indexed) noexcept {
+    if (!maxwell3d || last_skipped_geometry_frame == ~u64{} ||
+        frame_count > last_skipped_geometry_frame + 1 ||
+        !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GeometryConsistency) ||
+        !IsDepthOnlyDraw(maxwell3d->regs)) {
+        return false;
+    }
+    const u64 geom_key = DrawGeometryKey(*maxwell3d, is_indexed);
+    if (geom_key == 0) {
+        return false;
+    }
+    const size_t base =
+        static_cast<size_t>(geom_key ^ (geom_key >> 29)) & (SkippedGeometryTableSize - 1);
+    for (size_t probe = 0; probe < 4; ++probe) {
+        auto& entry = skipped_geometry[(base + probe) & (SkippedGeometryTableSize - 1)];
+        if (entry.key != geom_key) {
+            continue;
+        }
+        if (frame_count <= entry.frame + 1 &&
+            (entry.pipeline == nullptr || !entry.pipeline->IsBuilt())) {
+            return true;
+        }
+        entry = {};
+        return false;
+    }
+    return false;
+}
+
+void PipelineCache::ClearSkippedGeometryIfDrawn(bool is_indexed) noexcept {
+    if (!maxwell3d || last_skipped_geometry_frame == ~u64{} ||
+        frame_count > last_skipped_geometry_frame + 1 ||
+        !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::GeometryConsistency) ||
+        !IsDepthTestedColorDraw(maxwell3d->regs)) {
+        return;
+    }
+    const u64 geom_key = DrawGeometryKey(*maxwell3d, is_indexed);
+    if (geom_key == 0) {
+        return;
+    }
+    const size_t base =
+        static_cast<size_t>(geom_key ^ (geom_key >> 29)) & (SkippedGeometryTableSize - 1);
+    for (size_t probe = 0; probe < 4; ++probe) {
+        auto& entry = skipped_geometry[(base + probe) & (SkippedGeometryTableSize - 1)];
+        if (entry.key == geom_key) {
+            entry = {};
+            return;
+        }
+    }
+}
 
 bool PipelineCache::DeferRuntimeBuild() {
     if (!use_asynchronous_shaders ||
         !VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ShaderBuildBudget)) {
         return false;
     }
-    if (build_budget_frame != frame_count || build_budget_spent < build_budget) {
+    const auto& regs = maxwell3d->regs;
+    const bool use_priority =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::BuildOrderPriority);
+    const u64 key_hash = use_priority ? graphics_key.Hash() : 0;
+    const bool is_gbuffer = use_priority && IsGBufferDraw(regs);
+    size_t priority_index = priority_build_key_count;
+    if (use_priority) {
+        for (size_t i = 0; i < priority_build_key_count; ++i) {
+            if (priority_build_keys[i] == key_hash) {
+                priority_index = i;
+                break;
+            }
+        }
+    }
+    const bool has_priority =
+        !use_priority || is_gbuffer || priority_index < priority_build_key_count;
+    const auto effective_budget = has_priority ? build_budget : (build_budget / 2);
+    if (build_budget_frame != frame_count || build_budget_spent < effective_budget) {
+        if (priority_index < priority_build_key_count) {
+            priority_build_keys[priority_index] =
+                priority_build_keys[--priority_build_key_count];
+        }
         return false;
     }
     // Small draws without depth wait for their pipeline (BuiltPipeline), so they are built now
     // unless stale_target_skip sees their target already holds an earlier frame's output.
     // Mesh draws are deferred too: their high-detail LODs then appear a few frames late.
-    const auto& regs = maxwell3d->regs;
     if (regs.IsMeshEnabled()) {
         ++over_budget_mesh;
     } else if (!regs.zeta_enable) {
@@ -1387,6 +1535,37 @@ bool PipelineCache::DeferRuntimeBuild() {
             return false;
         }
     }
+    if (use_priority) {
+        bool recorded = false;
+        for (size_t i = 0; i < deferred_candidate_count; ++i) {
+            if (deferred_candidates[i].key_hash == key_hash) {
+                ++deferred_candidates[i].draws;
+                deferred_candidates[i].is_gbuffer |= is_gbuffer;
+                recorded = true;
+                break;
+            }
+        }
+        if (!recorded) {
+            if (deferred_candidate_count < DeferredCandidateSlots) {
+                deferred_candidates[deferred_candidate_count++] = {
+                    .key_hash = key_hash,
+                    .draws = 1,
+                    .is_gbuffer = is_gbuffer,
+                };
+            } else if (is_gbuffer) {
+                for (size_t i = 0; i < DeferredCandidateSlots; ++i) {
+                    if (!deferred_candidates[i].is_gbuffer) {
+                        deferred_candidates[i] = {
+                            .key_hash = key_hash,
+                            .draws = 1,
+                            .is_gbuffer = true,
+                        };
+                        break;
+                    }
+                }
+            }
+        }
+    }
     ++deferred_builds;
     return true;
 }
@@ -1399,10 +1578,11 @@ void PipelineCache::ChargeRuntimeBuild(std::chrono::steady_clock::time_point beg
     build_budget_spent += std::chrono::steady_clock::now() - begin;
 }
 
-GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
+GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath(bool is_indexed) {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     if (is_new && DeferRuntimeBuild()) {
         graphics_cache.erase(pair);
+        RecordSkippedGeometry(is_indexed, nullptr);
         graphics_miss = "build-deferred";
         return nullptr;
     }
@@ -1427,10 +1607,26 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     }
     current_pipeline = pipeline.get();
     current_pipeline->MarkUsed(frame_count);
-    return BuiltPipeline(current_pipeline);
+    return BuiltPipeline(current_pipeline, is_indexed);
 }
 
 void PipelineCache::TickFrame() {
+    if (deferred_candidate_count != 0) {
+        const auto span = std::span{deferred_candidates.data(), deferred_candidate_count};
+        std::ranges::sort(span, [](const DeferredCandidate& lhs, const DeferredCandidate& rhs) {
+            if (lhs.is_gbuffer != rhs.is_gbuffer) {
+                return lhs.is_gbuffer;
+            }
+            return lhs.draws > rhs.draws;
+        });
+        priority_build_key_count = std::min(deferred_candidate_count, PriorityBuildKeySlots);
+        for (size_t i = 0; i < priority_build_key_count; ++i) {
+            priority_build_keys[i] = deferred_candidates[i].key_hash;
+        }
+        deferred_candidate_count = 0;
+    } else {
+        priority_build_key_count = 0;
+    }
     ++frame_count;
     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
         evicted_pipelines.pop_front();
@@ -1515,20 +1711,30 @@ void PipelineCache::EvictUnusedPipelines() {
         }
     }
     graphics_fast_cache.fill(nullptr);
+    skipped_geometry = {};
+    last_skipped_geometry_frame = ~u64{};
     LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
              EvictAfterFrames, graphics_cache.size());
 }
 
-GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline,
+                                               bool is_indexed) noexcept {
     if (pipeline->IsBuilt()) {
+        if (ShouldSkipDepthOnlyGeometry(is_indexed)) {
+            graphics_miss = "geometry-consistency";
+            return nullptr;
+        }
+        ClearSkippedGeometryIfDrawn(is_indexed);
         return pipeline;
     }
     if (!use_asynchronous_shaders || pipeline->IsMeshPipeline()) {
+        ClearSkippedGeometryIfDrawn(is_indexed);
         return pipeline;
     }
     // If something is using depth, we can assume that games are not rendering anything which
     // will be used one time.
     if (maxwell3d->regs.zeta_enable) {
+        RecordSkippedGeometry(is_indexed, pipeline);
         graphics_miss = "async-build";
         return nullptr;
     }

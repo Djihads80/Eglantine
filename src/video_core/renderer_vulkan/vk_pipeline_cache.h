@@ -138,7 +138,7 @@ public:
                            TextureCache& texture_cache, VideoCore::ShaderNotify& shader_notify_);
     ~PipelineCache();
 
-    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline(bool is_indexed = false);
     [[nodiscard]] bool IsIndirectResetShader() const;
     /// Nx2Perf MacroReadWriterSet: the program epoch the current programs were resolved in
     /// (0: none) and their device code ranges.
@@ -165,9 +165,14 @@ public:
                            const VideoCore::DiskResourceLoadCallback& callback);
 
 private:
-    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath(bool is_indexed);
 
-    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
+    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline,
+                                                  bool is_indexed) noexcept;
+
+    void RecordSkippedGeometry(bool is_indexed, const GraphicsPipeline* pipeline) noexcept;
+    [[nodiscard]] bool ShouldSkipDepthOnlyGeometry(bool is_indexed) noexcept;
+    void ClearSkippedGeometryIfDrawn(bool is_indexed) noexcept;
 
     /// Nx2Perf shader_build_budget: whether a new graphics pipeline is left unbuilt this frame.
     [[nodiscard]] bool DeferRuntimeBuild();
@@ -268,6 +273,27 @@ private:
     u64 over_budget_small{};
     u64 over_budget_mesh{};
     void SaveUsedPipelines();
+
+    static constexpr size_t SkippedGeometryTableSize = 256;
+    struct SkippedGeometryEntry {
+        u64 key{};
+        u64 frame{};
+        const GraphicsPipeline* pipeline{};
+    };
+    std::array<SkippedGeometryEntry, SkippedGeometryTableSize> skipped_geometry{};
+    u64 last_skipped_geometry_frame{~u64{}};
+
+    static constexpr size_t DeferredCandidateSlots = 64;
+    struct DeferredCandidate {
+        u64 key_hash{};
+        u32 draws{};
+        bool is_gbuffer{};
+    };
+    std::array<DeferredCandidate, DeferredCandidateSlots> deferred_candidates{};
+    size_t deferred_candidate_count{};
+    static constexpr size_t PriorityBuildKeySlots = 16;
+    std::array<u64, PriorityBuildKeySlots> priority_build_keys{};
+    size_t priority_build_key_count{};
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;

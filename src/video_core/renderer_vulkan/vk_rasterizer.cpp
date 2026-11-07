@@ -752,7 +752,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     };
     GraphicsPipeline* const pipeline{[&] {
         Profile::Scope scope{Profile::Zone::PipelineLookup};
-        return pipeline_cache.CurrentGraphicsPipeline();
+        return pipeline_cache.CurrentGraphicsPipeline(is_indexed);
     }()};
     if (!pipeline) {
         report_failure("no pipeline");

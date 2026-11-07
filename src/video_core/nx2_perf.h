@@ -245,6 +245,13 @@ enum class Opt : unsigned {
     /// holds an earlier frame's output and was not fully cleared this frame; treat indirect draws
     /// (draw_element_count == 0) as not small
     StaleTargetSkip,
+    /// Async shaders: when a depth-tested color draw is skipped, record its geometry identity and
+    /// skip depth-only draws for the same geometry for up to 2 frames or until the material
+    /// pipeline is built
+    GeometryConsistency,
+    /// Async shaders: reserve half the per-frame shader build budget for G-buffer draws and the
+    /// highest-priority deferred keys from the previous frame (G-buffer first, then by draw count)
+    BuildOrderPriority,
     Count,
 };
 
@@ -314,6 +321,8 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "compute_rebuild_async",
     "compute_preload_variants",
     "stale_target_skip",
+    "geometry_consistency",
+    "build_order_priority",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -616,6 +625,12 @@ static_assert(static_cast<unsigned>(Opt::ComputePreloadVariants) == 93 &&
 static_assert(static_cast<unsigned>(Opt::StaleTargetSkip) == 94 &&
               !IsOff(always_off, static_cast<size_t>(Opt::StaleTargetSkip)) &&
               !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::StaleTargetSkip)));
+static_assert(static_cast<unsigned>(Opt::GeometryConsistency) == 95 &&
+              !IsOff(always_off, static_cast<size_t>(Opt::GeometryConsistency)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::GeometryConsistency)));
+static_assert(static_cast<unsigned>(Opt::BuildOrderPriority) == 96 &&
+              !IsOff(always_off, static_cast<size_t>(Opt::BuildOrderPriority)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BuildOrderPriority)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -680,7 +695,8 @@ inline constexpr OffMask live_safe =
     Bit(Opt::FragmentBarrier) | Bit(Opt::FramesAhead) | Bit(Opt::SortedPageBatches) |
     Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
     Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded) |
-    Bit(Opt::ComputeRebuildAsync) | Bit(Opt::StaleTargetSkip);
+    Bit(Opt::ComputeRebuildAsync) | Bit(Opt::StaleTargetSkip) | Bit(Opt::GeometryConsistency) |
+    Bit(Opt::BuildOrderPriority);
 
 /// One control file: the whole arm, computed from the startup off-mask.
 struct ControlResult {
