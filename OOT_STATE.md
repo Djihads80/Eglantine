@@ -11,11 +11,14 @@ Measured on a Ryzen 9 9950X3D and an RTX 5090, Windows 11:
 
 | Scene | FPS |
 |---|---|
-| Kokiri Forest, at the spawn point | about 37 |
+| Kokiri Forest, at the spawn point | about 37 to 39 |
 | Kokiri Forest, after walking around | 43 to 45 |
 
 - **No screen flashes.** They came from letting the game run a frame ahead of the GPU emulation:
   the game rewrote buffers that hadn't been drawn yet. That mode is off by default.
+- **Volumetric fog and light shafts** render as on the console. A ported "opt-in" workaround was
+  on by default and scaled the fog down to a quarter; it is now really opt-in
+  (`EDEN_NX2_OOT_VISUAL_WORKAROUND=1`).
 - **Renders correctly** in the scenes we test, with no GPU device loss in our automated runs.
 - **Normal game speed below 60 FPS.** A built-in patch makes the game use the real frame time, so
   it doesn't run in slow motion.
