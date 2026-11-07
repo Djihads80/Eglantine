@@ -90,6 +90,10 @@ public:
         return surface_format.format;
     }
 
+    bool IsHdr10() const {
+        return surface_format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+    }
+
     VkSemaphore CurrentPresentSemaphore() const {
         return *present_semaphores[frame_index];
     }

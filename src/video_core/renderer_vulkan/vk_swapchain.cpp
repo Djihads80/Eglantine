@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <limits>
 #include <vector>
@@ -33,6 +34,17 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(vk::Span<VkSurfaceFormatKHR> formats)
         format.format = VK_FORMAT_B8G8R8A8_UNORM;
         format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
         return format;
+    }
+    // The game is told the display is HDR, so give it an HDR10 swapchain to draw PQ into
+    if (std::getenv("EDEN_NX2_HDR_PEAK")) {
+        const auto hdr = std::find_if(formats.begin(), formats.end(), [](const auto& format) {
+            return format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 &&
+                   format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+        });
+        if (hdr != formats.end()) {
+            return *hdr;
+        }
+        LOG_WARNING(Render_Vulkan, "No HDR10 surface format, presenting SDR");
     }
     const auto& found = std::find_if(formats.begin(), formats.end(), [](const auto& format) {
         return format.format == VK_FORMAT_B8G8R8A8_UNORM &&
@@ -339,7 +351,7 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
         .viewFormatCount = static_cast<u32>(view_formats.size()),
         .pViewFormats = view_formats.data(),
     };
-    if (device.IsKhrSwapchainMutableFormatEnabled()) {
+    if (device.IsKhrSwapchainMutableFormatEnabled() && !IsHdr10()) {
         format_list.pNext = std::exchange(swapchain_ci.pNext, &format_list);
         swapchain_ci.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
     }
@@ -359,6 +371,9 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
 #else
     image_view_format = VK_FORMAT_B8G8R8A8_UNORM;
 #endif
+    if (IsHdr10()) {
+        image_view_format = surface_format.format;
+    }
 }
 
 void Swapchain::CreateSemaphores() {
