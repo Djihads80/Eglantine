@@ -55,6 +55,9 @@ static inline bool AddressSpaceContains(const Common::PageTable& table, const Co
     return addr + size >= addr && addr + size <= max_addr;
 }
 
+/// The executable's base address, 0 off Windows (defined at the end of this file).
+static uintptr_t Nx2ModuleBase();
+
 // Implementation class used to keep the specifics of the memory subsystem hidden
 // from outside classes. This also allows modification to the internals of the memory
 // subsystem without needing to rebuild all files that make use of the memory interface.
@@ -93,6 +96,9 @@ struct Memory::Impl {
             if (!cow_rearm) {
                 cow_rearm = std::make_unique<u32[]>(CowListCapacity);
                 cow_collect = std::make_unique<u32[]>(CowListCapacity);
+            }
+            if (VideoCommon::Nx2Raw::On()) {
+                VideoCommon::Nx2Raw::SetModuleBase(Nx2ModuleBase());
             }
         }
     }
@@ -1488,6 +1494,38 @@ struct Memory::Impl {
         return result;
     }
 
+    /// run_ahead_raw_probe: see Memory::Nx2RawClassify.
+    void RawClassify(std::span<const u64> pages, std::span<u8> info) {
+        std::unique_lock war_lock{war_mutex, std::defer_lock};
+        if (war_probe) {
+            war_lock.lock();
+        }
+        for (size_t i = 0; i < pages.size() && i < info.size(); ++i) {
+            const u64 page = pages[i];
+            u8 value = 3; // No guest page
+            if (page != 0 &&
+                AddressSpaceContains(*current_page_table, page << YUZU_PAGEBITS, 1)) {
+                switch (std::as_const(current_page_table->entries)[page].Type()) {
+                case Common::PageType::Memory:
+                    value = 0;
+                    break;
+                case Common::PageType::RasterizerCachedMemory:
+                    value = 1;
+                    break;
+                case Common::PageType::DebugMemory:
+                    value = 2;
+                    break;
+                default:
+                    break;
+                }
+                if (cow_on && cow_armed.Contains(page)) {
+                    value |= VideoCommon::Nx2Raw::InfoArmed;
+                }
+            }
+            info[i] |= value;
+        }
+    }
+
     /// run_ahead_cover: see Memory::Nx2CoverClassify.
     bool CoverClassify(std::span<const u64> pages, std::span<u8> classes) {
         using VideoCommon::Nx2Ledger::TrackerClass;
@@ -2277,6 +2315,10 @@ Memory::Nx2CowArmResult Memory::Nx2CowArm() {
     return impl->CowArm(this);
 }
 
+void Memory::Nx2RawClassify(std::span<const u64> cpu_pages, std::span<u8> info) {
+    impl->RawClassify(cpu_pages, info);
+}
+
 bool Memory::Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value) {
     return impl->InflightOpen(fence_id, fence_value, prev_id, prev_value);
 }
@@ -2315,6 +2357,26 @@ bool Memory::InvalidateSeparateHeap(void* fault_address) {
     return impl->host_buffer->DeferredMapSeparateHeap(static_cast<u8*>(fault_address));
 #else
     return false;
+#endif
+}
+
+} // namespace Core::Memory
+
+// Last in the file, so windows.h's macros reach none of the code above.
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace Core::Memory {
+
+static uintptr_t Nx2ModuleBase() {
+#ifdef _WIN32
+    return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+#else
+    return 0;
 #endif
 }
 

@@ -147,6 +147,10 @@ public:
     size_t Nx2CowCollectCpuPages(const Memory::Memory* process, bool& full, u32* out,
                                  size_t capacity, bool& overflow);
 
+    /// run_ahead_raw_probe: whether a mapping made since the last Nx2CowCollectCpuPages covers
+    /// guest address vaddr (true when that record overflowed).
+    bool Nx2CowMappedSinceCollect(VAddr vaddr);
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};

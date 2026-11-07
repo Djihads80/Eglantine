@@ -21,6 +21,7 @@
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2_war_probe.h"
 
 namespace Service::Nvidia::Devices {
 
@@ -120,12 +121,14 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
 
     if (syncpoint_manager.IsFenceSignalled(params.fence)) {
         params.value.raw = syncpoint_manager.ReadSyncpointMinValue(fence_id);
+        VideoCommon::Nx2Raw::NoteGuestWait(fence_id, params.fence.value);
         return NvResult::Success;
     }
 
     if (const auto new_value = syncpoint_manager.UpdateMin(fence_id);
         syncpoint_manager.IsFenceSignalled(params.fence)) {
         params.value.raw = new_value;
+        VideoCommon::Nx2Raw::NoteGuestWait(fence_id, params.fence.value);
         return NvResult::Success;
     }
 
@@ -153,6 +156,7 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
                 system.UnstallApplication();
             }
             params.value.raw = target_value;
+            VideoCommon::Nx2Raw::NoteGuestWait(fence_id, target_value);
             return true;
         }
         return false;
@@ -199,7 +203,10 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     params.value.raw |= slot;
 
     event.wait_handle =
-        host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot]() {
+        host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot, fence_id,
+                                                                             target_value]() {
+            // run_ahead_raw_probe: the guest's event wait for (fence_id, target_value) is done.
+            VideoCommon::Nx2Raw::NoteGuestWaitSignalled(fence_id, target_value);
             auto& event_ = events[slot];
             if (event_.status.exchange(EventState::Signalling, std::memory_order_acq_rel) ==
                 EventState::Waiting) {

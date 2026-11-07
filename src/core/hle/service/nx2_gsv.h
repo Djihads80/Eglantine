@@ -2223,6 +2223,9 @@ private:
         const s64 hash_begin = Cow::NowNs();
         const u32 hashed = Cow::HashReply();
         const s64 hash_end = Cow::NowNs();
+        if (VideoCommon::Nx2Raw::On()) [[unlikely]] {
+            RawClassifyReply();
+        }
         Cow::OpenReaders();
         m_cow->NoteArm({
             .armed = arm.armed,
@@ -2243,9 +2246,47 @@ private:
             return;
         }
         VideoCommon::Nx2Cow::Close();
+        if (VideoCommon::Nx2Raw::On()) [[unlikely]] {
+            auto& device_memory = system.Host1x().MemoryManager();
+            VideoCommon::Nx2Raw::ClassifyGaps([&device_memory](u32 device_page) {
+                const u64 cpu = device_memory.GetCpuBackingAddress(u64{device_page} << 12);
+                return cpu != 0 && device_memory.Nx2CowMappedSinceCollect(cpu);
+            });
+        }
         if (const std::string line = m_cow->Close(); !line.empty()) {
             LOG_INFO(HW_GPU, "{}", line);
         }
+        if (const std::string line = m_cow->TakeRawLine(); !line.empty()) {
+            LOG_INFO(HW_GPU, "{}", line);
+        }
+    }
+
+    /// run_ahead_raw_probe, after HashReply: each reply page's state at the reply (cow arm set,
+    /// page type, several device mappings).
+    Common::ScratchBuffer<u32> m_raw_device_addresses;
+    void RawClassifyReply() {
+        namespace Raw = VideoCommon::Nx2Raw;
+        auto& raw = Raw::Get();
+        auto& device_memory = system.Host1x().MemoryManager();
+        VideoCommon::Nx2Cow::ClassifyReply(
+            raw.reply_device, raw.reply_cpu, raw.reply_info,
+            [&](std::span<const u32> device_pages, std::span<u64> cpu_pages, std::span<u8> info) {
+                for (size_t i = 0; i < device_pages.size(); ++i) {
+                    const u64 address = u64{device_pages[i]} << 12;
+                    cpu_pages[i] = device_memory.GetCpuBackingAddress(address) >> 12;
+                    const u64 phys = device_memory.GetPhysicalRawAddressFromDAddr(address);
+                    if (phys == 0) {
+                        continue;
+                    }
+                    size_t mappings = 0;
+                    device_memory.ApplyOpOnPAddr(phys, m_raw_device_addresses,
+                                                 [&mappings](u64) { ++mappings; });
+                    if (mappings > 1) {
+                        info[i] |= Raw::InfoMulti;
+                    }
+                }
+                system.ApplicationMemory().Nx2RawClassify(cpu_pages, info);
+            });
     }
 
     /// run_ahead_cover: the tracker state of the taken pages at the reply.

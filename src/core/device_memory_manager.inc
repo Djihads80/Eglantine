@@ -290,6 +290,21 @@ size_t DeviceMemoryManager<Traits>::Nx2CowCollectCpuPages(const Memory::Memory* 
 }
 
 template <typename Traits>
+bool DeviceMemoryManager<Traits>::Nx2CowMappedSinceCollect(VAddr vaddr) {
+    std::scoped_lock lk(mapping_guard);
+    if (nx2_cow_map_overflow) {
+        return true;
+    }
+    for (size_t i = 0; i < nx2_cow_map_count; ++i) {
+        const Nx2CowMap& map = nx2_cow_maps[i];
+        if (vaddr >= map.virtual_address && vaddr - map.virtual_address < map.size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename Traits>
 DAddr DeviceMemoryManager<Traits>::Allocate(size_t size) {
     return impl->Allocate(size);
 }
