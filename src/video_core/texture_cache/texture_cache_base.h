@@ -235,6 +235,26 @@ public:
     /// Get the imageview from the graphics descriptor table in the specified index
     [[nodiscard]] ImageView& GetImageView(u32 index) noexcept;
 
+    /// EDEN_NX2_QUICK_BIND: equal as long as views and samplers resolved for graphics draws stay
+    /// valid and prepared, but for the pools' contents (Tegra::g_nx2_pool_generation).
+    [[nodiscard]] u64 Nx2QuickSerial() const noexcept {
+        u64 serial = texture_bindings_serial * 0x9e3779b97f4a7c15ULL;
+        serial = (serial ^ nx2_quick_generation) * 0xff51afd7ed558ccdULL;
+        return serial ^ reinterpret_cast<std::uintptr_t>(this->channel_state);
+    }
+
+    /// Whether the full resolution of a view would upload its image first (verify mode).
+    [[nodiscard]] bool Nx2NeedsPrepare(ImageViewId id) const noexcept {
+        if (!id) {
+            return false;
+        }
+        const ImageViewBase& view = slot_image_views[id];
+        if (view.IsBuffer() || !view.image_id) {
+            return false;
+        }
+        return True(slot_images[view.image_id].flags & ImageFlagBits::CpuModified);
+    }
+
     /// EDEN_NX2_CL_SPECULATE: the modification tick of the image behind a view (0: none).
     [[nodiscard]] u64 Nx2ModificationTick(ImageViewId id) const noexcept {
         if (!id) {
@@ -562,6 +582,9 @@ private:
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
     u64 texture_bindings_serial = 0;
+    /// EDEN_NX2_QUICK_BIND: moves when images or views come or go, an image needs uploading or
+    /// aliases synchronizing, images are rescaled, and at each frame (Nx2QuickSerial).
+    u64 nx2_quick_generation = 0;
     u64 last_feedback_loop_serial = 0;
     u64 last_feedback_texture_serial = 0;
     bool last_feedback_loop_result = false;

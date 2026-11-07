@@ -24,6 +24,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/semaphore_ledger.h"
 
@@ -258,6 +259,10 @@ bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     if (!CanResumeAcquire(dma_pusher)) {
         return false;
     }
+    if (pending_acquire) {
+        // What the CPU wrote while the channel waited (texture pools among it).
+        Nx2BumpPoolGeneration();
+    }
     // Only a resume from a suspension counts: DmaPusher::Step calls this before every entry, and
     // counting those made the count odd ("suspended") at random, so submit-time snapshots were
     // thrown away for about half of all entries (CommandList::snapshot_suspensions).
@@ -384,6 +389,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
         // written the commands this channel runs next: suspend the channel until the value is
         // met instead of reading ahead (approach from changes.patch).
+        Nx2BumpPoolGeneration();
         PendingAcquire acquire{
             .address = regs.semaphore_address.SemaphoreAddress(),
             .value = regs.semaphore_sequence,
@@ -465,6 +471,7 @@ void Puller::ProcessSemaphoreRelease(DmaPusher& dma_pusher) {
 }
 
 void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
+    Nx2BumpPoolGeneration();
     const auto value = regs.semaphore_acquire;
     if (AcquireMetWithoutDrain(dma_pusher, regs.semaphore_address.SemaphoreAddress(), value,
                                Ledger::Compare::Equal)) {
@@ -508,6 +515,9 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
     }
     if (operation == 6) { // REDUCTION: the word's value depends on what it held
         ForgetRelease(dma_pusher, address);
+    }
+    if (operation != 6) {
+        Nx2BumpPoolGeneration(); // an acquire
     }
     if (!payload_64 && operation <= 5 && operation != 1) {
         const Ledger::Compare compare = operation == 0   ? Ledger::Compare::Equal

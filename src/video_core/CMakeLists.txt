@@ -112,6 +112,7 @@ add_library(video_core STATIC
     native_query_trace.h
     nx2.h
     nx2_profile.h
+    nx2_quick_bind.h
     nx2_speculate.h
     nx2_strato.cpp
     nx2_strato.h

@@ -14,6 +14,7 @@
 
 #include "common/logging.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/nx2_speculate.h"
 #include "video_core/nx2_strato.h"
 
@@ -137,6 +138,31 @@ void MaybeReport() {
 } // namespace VideoCommon::Nx2Strato
 
 namespace Tegra {
+
+void Nx2ReportQuickBind() {
+    Nx2QuickBindStats& stats = g_nx2_quick_bind;
+    const u64 now = VideoCommon::Nx2Strato::Now();
+    u64 start = stats.window_start.load(std::memory_order_relaxed);
+    if (start == 0) {
+        stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed);
+        return;
+    }
+    if (now - start < 10'000'000'000ULL ||
+        !stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
+        return;
+    }
+    const u64 draws = stats.draws.exchange(0, std::memory_order_relaxed);
+    const u64 hits = stats.hits.exchange(0, std::memory_order_relaxed);
+    const u64 mismatches = stats.mismatches.exchange(0, std::memory_order_relaxed);
+    const u64 stale = stats.stale.exchange(0, std::memory_order_relaxed);
+    LOG_INFO(HW_GPU,
+             "Quick binds in {:.1f} s: {} draws, {} reused their textures ({:.0f}%){}",
+             static_cast<double>(now - start) / 1e9, draws, hits,
+             draws != 0 ? 100.0 * static_cast<double>(hits) / static_cast<double>(draws) : 0.0,
+             Nx2QuickBind() == 2 ? fmt::format("; verify: {} DIFFERED, {} had an image to prepare",
+                                               mismatches, stale)
+                                 : std::string{});
+}
 
 void Nx2ReportSpeculation() {
     Nx2SpeculationStats& stats = g_nx2_speculation;

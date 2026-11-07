@@ -358,6 +358,7 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    ++nx2_quick_generation; // images used by quick binds are touched again (LRU)
     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
     // rather than kept for the rest of the session.
     for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {
@@ -1003,6 +1004,7 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
         if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
             // Written at last: a backed image replaces it where it is used next.
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+            ++nx2_quick_generation;
             return;
         }
         if (True(image.flags & ImageFlagBits::SparseTiles)) {
@@ -1017,6 +1019,7 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             return;
         }
         image.flags |= ImageFlagBits::CpuModified;
+        ++nx2_quick_generation;
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
@@ -1143,6 +1146,7 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
         Image& image = slot_images[id];
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
+            ++nx2_quick_generation;
             if (True(image.flags & ImageFlagBits::Tracked)) {
                 UntrackImage(image, id);
             }
@@ -1971,6 +1975,7 @@ void TextureCache<P>::MarkLayersWritten(Image& image, DAddr cpu_addr, size_t siz
     const u32 layers = static_cast<u32>(image.info.resources.layers);
     if (False(image.flags & ImageFlagBits::CpuModified)) {
         image.flags |= ImageFlagBits::CpuModified;
+        ++nx2_quick_generation;
         image.dirty_layers.assign(Common::DivCeil(layers, 64U), 0);
     }
     const DAddr begin = (std::max<DAddr>)(cpu_addr, image.cpu_addr) - image.cpu_addr;
@@ -1997,6 +2002,7 @@ void TextureCache<P>::MarkRangeWritten(Image& image, DAddr cpu_addr, size_t size
         return;
     }
     image.flags |= ImageFlagBits::CpuModified;
+    ++nx2_quick_generation;
     image.dirty_ranges.emplace_back(begin - image.cpu_addr, end - begin);
 }
 
@@ -2231,6 +2237,7 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
 
 template <class P>
 ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
+    ++nx2_quick_generation;
     const bool native = gpu_memory->UsesNativeTiling();
     if (native && raw_config.BaseLayer() && NativeDrawDiagnostics()) {
         static u32 texture_view_traces{};
@@ -2614,6 +2621,7 @@ void TextureCache<P>::TickAsyncUnswizzle() {
 
 template <class P>
 bool TextureCache<P>::ScaleUp(Image& image) {
+    ++nx2_quick_generation;
     const bool has_copy = image.HasScaled();
     const bool rescaled = image.ScaleUp();
     if (!has_copy && image.HasScaled()) {
@@ -2628,6 +2636,7 @@ bool TextureCache<P>::ScaleUp(Image& image) {
 
 template <class P>
 bool TextureCache<P>::ScaleDown(Image& image) {
+    ++nx2_quick_generation;
     const bool rescaled = image.ScaleDown();
     if (!rescaled) {
         return false;
@@ -3404,6 +3413,7 @@ ImageViewId TextureCache<P>::FindOrEmplaceImageView(ImageId image_id, const Imag
 
 template <class P>
 void TextureCache<P>::RegisterImage(ImageId image_id) {
+    ++nx2_quick_generation;
     ImageBase& image = slot_images[image_id];
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
@@ -3438,6 +3448,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::UnregisterImage(ImageId image_id) {
+    ++nx2_quick_generation;
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered),
                "Trying to unregister an already registered image");
@@ -3570,6 +3581,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+    ++nx2_quick_generation;
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
@@ -3727,6 +3739,9 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 
 template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
+    if (!image.aliased_images.empty()) {
+        ++nx2_quick_generation; // its aliases are synchronized where it is sampled
+    }
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
 }
@@ -3834,6 +3849,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
                         image.gpu_addr);
             Tegra::Nx2SparseMarkWritten(image.gpu_addr, image.guest_size_bytes);
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+            ++nx2_quick_generation;
         }
         MarkModification(image);
     }

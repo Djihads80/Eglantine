@@ -26,6 +26,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/nx2_strato.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -117,6 +118,8 @@ DmaPusher::~DmaPusher() = default;
 void DmaPusher::DispatchCalls() {
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
     dma_state.is_last_call = true;
+    // A submission: the CPU may have written the texture pools since the last one.
+    Tegra::Nx2BumpPoolGeneration();
     while (system.IsPoweredOn()) {
         if (!Step()) {
             break;
@@ -771,6 +774,9 @@ void DmaPusher::CallMethod(u32 argument) {
                 split.NotePendingWriteAnywhere();
             }
         };
+        if (writer || direct_writer) {
+            Tegra::Nx2BumpPoolGeneration(); // may write the texture pools
+        }
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {
@@ -839,6 +845,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
                 split.NotePendingWriteAnywhere();
             }
         };
+        if (writer || direct_writer) {
+            Tegra::Nx2BumpPoolGeneration(); // may write the texture pools
+        }
         if (split.Active()) {
             const GPUVAddr segment = dma_state.dma_get + dma_state.dma_word_offset;
             if (split.FrontMacros()) {

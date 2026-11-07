@@ -19,6 +19,8 @@
 #include <fmt/format.h>
 
 #include "video_core/renderer_vulkan/pipeline_helper.h"
+#include "video_core/gpu_split.h"
+#include "video_core/nx2_quick_bind.h"
 
 #include "common/bit_field.h"
 #include "common/scope_exit.h"
@@ -487,12 +489,80 @@ void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
     transitions.push_back(transition);
 }
 
+void GraphicsPipeline::QuickBindTextures(std::span<VideoCommon::ImageViewInOut> views,
+                                         boost::container::small_vector<VideoCommon::SamplerId, 96>& samplers,
+                                         std::span<const u32> sampler_handles, int mode,
+                                         bool blacklist) {
+    // The views and samplers of the last full resolution, when what they came from is the same:
+    // the handles (read again for this draw), the pools' contents (pool generation) and the
+    // texture cache's images and views (Nx2QuickSerial). =verify resolves them anyway and
+    // compares.
+    auto& stats = Tegra::g_nx2_quick_bind;
+    stats.draws.fetch_add(1, std::memory_order_relaxed);
+    const u64 pool_generation = Tegra::g_nx2_pool_generation.load(std::memory_order_relaxed);
+    QuickBind& quick = quick_bind;
+    const bool same =
+        quick.valid && quick.serial == texture_cache.Nx2QuickSerial() &&
+        quick.pool_generation == pool_generation && quick.views.size() == views.size() &&
+        std::equal(views.begin(), views.end(), quick.views.begin(),
+                   [](const VideoCommon::ImageViewInOut& lhs,
+                      const VideoCommon::ImageViewInOut& rhs) {
+                       return lhs.index == rhs.index && lhs.blacklist == rhs.blacklist;
+                   }) &&
+        std::ranges::equal(sampler_handles, quick.sampler_handles);
+    if (same) {
+        stats.hits.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (same && mode == 1) {
+        for (size_t i = 0; i < views.size(); ++i) {
+            views[i].id = quick.views[i].id;
+        }
+        samplers.assign(quick.samplers.begin(), quick.samplers.end());
+        Tegra::Nx2ReportQuickBind();
+        return;
+    }
+    if (same) {
+        // An image the full resolution would upload first: the quick bind skips that.
+        const bool stale = std::ranges::any_of(quick.views, [&](const VideoCommon::ImageViewInOut& view) {
+            return texture_cache.Nx2NeedsPrepare(view.id);
+        });
+        stats.stale.fetch_add(stale ? 1 : 0, std::memory_order_relaxed);
+    }
+    for (const u32 handle : sampler_handles) {
+        samplers.push_back(texture_cache.GetSamplerId(handle, false));
+    }
+    texture_cache.FillImageViews(views, false, blacklist);
+    if (same) {
+        const bool differs =
+            !std::equal(views.begin(), views.end(), quick.views.begin(),
+                        [](const VideoCommon::ImageViewInOut& lhs,
+                           const VideoCommon::ImageViewInOut& rhs) { return lhs.id == rhs.id; }) ||
+            !std::ranges::equal(samplers, quick.samplers);
+        if (differs && stats.mismatches.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_WARNING(Render_Vulkan,
+                        "Quick bind of pipeline {:016x} differs from the full resolution "
+                        "({} views, {} samplers)",
+                        key.Hash(), views.size(), samplers.size());
+        }
+    }
+    quick.valid = true;
+    quick.serial = texture_cache.Nx2QuickSerial();
+    quick.pool_generation = pool_generation;
+    quick.views.assign(views.begin(), views.end());
+    quick.sampler_handles.assign(sampler_handles.begin(), sampler_handles.end());
+    quick.samplers.assign(samplers.begin(), samplers.end());
+    Tegra::Nx2ReportQuickBind();
+}
+
 template <typename Spec>
 bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
     views.reserve(num_image_elements);
     samplers.reserve(num_textures);
+    // EDEN_NX2_QUICK_BIND: sampler handles are looked up after the quick bind check.
+    const int quick_mode = VideoCommon::GpuSplit::Get().Active() ? 0 : Tegra::Nx2QuickBind();
+    boost::container::small_vector<u32, 96> sampler_handles;
 
     namespace Profile = VideoCommon::Nx2Profile;
     {
@@ -574,7 +644,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             for (u32 index = 0; index < desc.count; ++index) {
                 const auto handle{read_handle(desc, index)};
                 views.push_back({handle.first});
-
+                if (quick_mode != 0) {
+                    sampler_handles.push_back(handle.second);
+                    continue;
+                }
                 VideoCommon::SamplerId sampler{texture_cache.GetSamplerId(handle.second, false)};
                 samplers.push_back(sampler);
             }
@@ -606,12 +679,17 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
     }
     ASSERT(views.size() == num_image_elements);
-    ASSERT(samplers.size() == num_textures);
     {
         Profile::Scope scope{Profile::Zone::FillImageViews};
-        texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
-                                     Spec::has_images);
+        if (quick_mode == 0) {
+            texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
+                                         Spec::has_images);
+        } else {
+            QuickBindTextures(std::span(views.data(), views.size()), samplers, sampler_handles,
+                              quick_mode, Spec::has_images);
+        }
     }
+    ASSERT(samplers.size() == num_textures);
     if (FrameDump::RecordingResources()) [[unlikely]] {
         sampled_images.clear();
         written_images.clear();

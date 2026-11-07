@@ -11,6 +11,7 @@
 #include "video_core/engines/engine_upload.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_quick_bind.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/decoders.h"
 
@@ -34,6 +35,9 @@ void State::ProcessExec(const bool is_linear_) {
 }
 
 void State::ProcessData(const u32 data, const bool is_last_call) {
+    if (is_last_call) {
+        Tegra::Nx2BumpPoolGeneration(); // inline data may land in the texture pools
+    }
     const u32 sub_copy_size = (std::min)(4U, copy_size - write_offset);
     std::memcpy(&inner_buffer[write_offset], &data, sub_copy_size);
     write_offset += sub_copy_size;
@@ -53,6 +57,7 @@ void State::ProcessData(const u32 data, const bool is_last_call) {
 }
 
 void State::ProcessData(const u32* data, size_t num_data) {
+    Tegra::Nx2BumpPoolGeneration();
     if (native_partial && is_linear && regs.line_count == 1) {
         const auto count = std::min<size_t>(num_data * sizeof(u32), copy_size - write_offset);
         if (count) {
