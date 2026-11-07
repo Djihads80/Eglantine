@@ -802,8 +802,7 @@ void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                        vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, 0, image_barrier);
     });
-    // Each decode ends with a submit to the host GPU. Measured here
-    // (count and time per 5 s); EDEN_NX2_ASTC_FLUSH=0 waits for the host GPU to go idle instead.
+    // EDEN_NX2_ASTC_FLUSH=0 waits for the host GPU to go idle instead of submitting.
     static const bool flush_only = [] {
         const char* value = std::getenv("EDEN_NX2_ASTC_FLUSH");
         return value == nullptr || value[0] != '0';
@@ -812,24 +811,33 @@ void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
         return;
     }
     const auto start = std::chrono::steady_clock::now();
+    bool deferred = false;
     if (flush_only) {
-        scheduler.Flush();
+        deferred = scheduler.DeferFlush();
+        if (!deferred) {
+            scheduler.Flush();
+        }
     } else {
         scheduler.Finish();
     }
     const auto end = std::chrono::steady_clock::now();
     static u32 decodes{};
-    static std::chrono::nanoseconds waited{};
+    static u32 deferred_flushes{};
+    static std::chrono::nanoseconds operation_time{};
     static auto window_start = end;
     ++decodes;
-    waited += end - start;
+    deferred_flushes += deferred ? 1 : 0;
+    operation_time += end - start;
     if (end - window_start >= std::chrono::seconds{5}) {
-        LOG_INFO(Render_Vulkan, "ASTC GPU decodes: {} in {} ms, {} ms waiting ({})", decodes,
+        LOG_INFO(Render_Vulkan,
+                 "ASTC GPU decodes: {} in {} ms, {} deferred flushes, {} ms spent ({})", decodes,
                  std::chrono::duration_cast<std::chrono::milliseconds>(end - window_start).count(),
-                 std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(),
+                 deferred_flushes,
+                 std::chrono::duration_cast<std::chrono::milliseconds>(operation_time).count(),
                  flush_only ? "flush" : "finish");
         decodes = 0;
-        waited = {};
+        deferred_flushes = 0;
+        operation_time = {};
         window_start = end;
     }
 }
