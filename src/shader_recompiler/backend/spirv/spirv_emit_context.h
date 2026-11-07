@@ -20,8 +20,6 @@
 
 namespace Shader::Backend::SPIRV {
 
-static std::bitset<8> clip_distance_written;
-
 using Sirit::Id;
 
 class VectorTypes {
