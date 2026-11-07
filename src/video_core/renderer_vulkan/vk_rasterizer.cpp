@@ -580,7 +580,8 @@ VideoCommon::Nx2Diag::LiteAnswer DiagLiteAnswer(VideoCommon::Nx2Diag::Diagnostic
     if (!VideoCommon::Nx2Perf::Verify()) {
         return cached;
     }
-    const auto fresh = diag.Resolve(vs, ps, false);
+    // Polled like the synchronous Ablated/Inspecting calls.
+    const auto fresh = diag.Resolve(vs, ps, true);
     if (fresh.generation == cached.generation &&
         (fresh.vkey != cached.vkey || fresh.pkey != cached.pkey ||
          fresh.ablated_v != cached.ablated_v || fresh.ablated_p != cached.ablated_p ||

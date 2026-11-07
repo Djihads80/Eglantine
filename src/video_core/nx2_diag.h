@@ -168,8 +168,8 @@ inline bool StartLab() {
 inline const bool g_lab_autostart = StartLab();
 
 // diag_draw_lite: a drawing thread's cached answers per (vs, ps) and its draw counts per
-// (vs, ps, outcome), folded into Diagnostics under one lock (at a present, a dispatch's Note,
-// a full table or every 16 ms). Outcomes are string literals, compared by pointer.
+// (vs, ps, outcome), folded into Diagnostics under one lock (at a present, before the 1 s
+// summary, a full table or every 16 ms). Outcomes are string literals, compared by pointer.
 struct LiteAnswer {
     u64 vs{};
     u64 ps{};
@@ -246,8 +246,12 @@ public:
     void Note(bool dispatch, u64 vs, u64 ps, std::string_view outcome, u64 instances, u64 vertices,
               std::string_view detail = {}) {
         std::scoped_lock lock{mutex};
-        FoldOwnLocked();
         NoteLocked(dispatch, vs, ps, outcome, 1, instances, vertices, detail);
+        // diag_draw_lite: fold only when the summary is due, not at every dispatch.
+        if (lite_used.load(std::memory_order_relaxed) &&
+            std::chrono::steady_clock::now() - last_summary >= std::chrono::seconds{1}) {
+            FoldOwnLocked();
+        }
         SummaryLocked();
     }
 
