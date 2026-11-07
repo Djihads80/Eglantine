@@ -93,6 +93,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
 #endif
                         std::this_thread::yield();
                     } else {
+                        split.SetFrontActive(false);
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
                     }
                     continue;

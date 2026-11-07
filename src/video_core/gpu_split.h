@@ -123,11 +123,13 @@ public:
         hook_requested.store(true, std::memory_order_seq_cst);
     }
     /// Any thread, a hint (relaxed loads): whether the front waits for the back now, for a ring
-    /// position (WaitFor), a drain or a submission (hook_requested), or asleep in Backoff.
+    /// position (WaitFor), a drain or a submission (hook_requested), or asleep (or spinning,
+    /// spin_handoff) in Backoff.
     [[nodiscard]] bool FrontWaitsForBack() const {
         return wait_target.load(std::memory_order_relaxed) != ~u64{0} ||
                hook_requested.load(std::memory_order_relaxed) ||
-               front_waiting.load(std::memory_order_relaxed);
+               front_waiting.load(std::memory_order_relaxed) ||
+               front_spinning.load(std::memory_order_relaxed);
     }
     /// GPU thread, Nx2Perf spin_handoff: whether it works on a command list (the idle back spins
     /// for its next publish) or waits for the guest.
@@ -581,6 +583,8 @@ private:
     /// The front sleeps in Backoff (#161: instead of yielding).
     alignas(128) std::atomic<bool> front_waiting{};
     std::atomic<u32> front_wake{};
+    /// spin_handoff: the front spins in Backoff where it used to sleep (FrontWaitsForBack)
+    std::atomic<bool> front_spinning{};
     /// spin_handoff: the GPU thread parses a command list (SetFrontActive), a hint
     std::atomic<bool> front_active{};
     std::jthread back_thread;

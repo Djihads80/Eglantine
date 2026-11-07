@@ -246,6 +246,7 @@ void GpuSplit::Stop() {
     back_idle.store(false, std::memory_order_relaxed);
     front_waiting.store(false, std::memory_order_relaxed);
     front_active.store(false, std::memory_order_relaxed);
+    front_spinning.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -316,6 +317,9 @@ void GpuSplit::Drain(DrainSite site) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
             if (BackQuiet()) {
+                if (spin_handoff) [[unlikely]] {
+                    front_spinning.store(false, std::memory_order_relaxed);
+                }
                 publish_every = 8;
                 Nx2Profile::AddDrain(site, start);
                 return;
@@ -360,6 +364,9 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache >= target) {
+            if (spin_handoff) [[unlikely]] {
+                front_spinning.store(false, std::memory_order_relaxed);
+            }
             wait_target.store(~u64{0}, std::memory_order_relaxed);
             if (release_first) {
                 wait_release_first.store(~u64{0}, std::memory_order_relaxed);
@@ -383,6 +390,8 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
         if (spins == 16384) {
             deadline_ns = SteadyNs() + SpinHandoffNs();
             spin_over = false;
+            // Spinning, the front stays a waiter for submit_while_waited, as when it sleeps.
+            front_spinning.store(true, std::memory_order_relaxed);
         }
         if (!spin_over) {
             const bool running = back_running.load(std::memory_order_acquire);
@@ -392,6 +401,7 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
                 return;
             }
             spin_over = true;
+            front_spinning.store(false, std::memory_order_relaxed);
             if (running) {
                 (working ? g_front_handoff.expired : g_front_handoff.back_idle)
                     .fetch_add(1, std::memory_order_relaxed);
