@@ -1031,6 +1031,14 @@ void Maxwell3D::FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& spl
     FrontWrite(split, fs, method, argument, is_last_call, false);
 }
 
+void Maxwell3D::FrontWriteRun(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                              const u32* words, u32 count, bool ends_method) {
+    auto& fs = Front(system, split);
+    for (u32 i = 0; i < count; ++i) {
+        FrontWrite(split, fs, method + i, words[i], ends_method && i + 1 == count, false);
+    }
+}
+
 void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split,
                                      u32 method, const u32* base_start, u32 amount,
                                      u32 methods_pending) {
