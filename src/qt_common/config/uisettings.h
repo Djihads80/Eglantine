@@ -161,7 +161,7 @@ struct Values {
     Setting<bool> show_console{linkage, false, "showConsole", Category::Ui};
 
     // Screenshots
-    Setting<bool> enable_screenshot_save_as{linkage, true, "enable_screenshot_save_as",
+    Setting<bool> enable_screenshot_save_as{linkage, false, "enable_screenshot_save_as",
                                             Category::Screenshots};
     Setting<u32> screenshot_height{linkage, 0, "screenshot_height", Category::Screenshots};
 
