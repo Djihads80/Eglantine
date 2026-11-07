@@ -469,6 +469,9 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(CpuBackend, Dynarmic, tr("Dynarmic")),
                               PAIR(CpuBackend, Nce, tr("NCE")),
+#ifdef HAS_HYPERVISOR
+                              PAIR(CpuBackend, Hypervisor, tr("Hypervisor")),
+#endif
                           }});
     translations->insert({Settings::EnumMetadata<Settings::FullscreenMode>::Index(),
                           {
