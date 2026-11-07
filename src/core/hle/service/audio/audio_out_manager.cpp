@@ -90,8 +90,12 @@ Result IAudioOutManager::OpenAudioOutAuto(
                                                        aruid.pid));
 
     *out_audio_out = audio_out;
-    impl->sessions[new_session_id] = audio_out->GetImpl();
-    impl->applet_resource_user_ids[new_session_id] = aruid.pid;
+    {
+        // The manager thread walks the sessions under this mutex (BufferReleaseAndRegister).
+        std::scoped_lock l{impl->mutex};
+        impl->sessions[new_session_id] = audio_out->GetImpl();
+        impl->applet_resource_user_ids[new_session_id] = aruid.pid;
+    }
 
     auto& out_system = impl->sessions[new_session_id]->GetSystem();
     *out_parameter_internal =
