@@ -1,11 +1,35 @@
 ﻿# STATUS (shared, local-only; update it whenever a result changes the picture)
 
-Last updated: 2026-11-06 10:30 local, by session eglantine-14 (now the only coordinator; eglantine-6c is closed).
+Last updated: 2026-11-06 23:20 local (handoff from the long day session to a fresh one).
 
 ## Goal
 Play The Legend of Zelda: Ocarina of Time (`0400486024DEC000`) at a locked 60 FPS without crashes.
 
-## Where it stands (10:30, local-combined `535e8b8ea8`, eglantine.exe/eden-cli/tests built 10:20 from it)
+## HANDOFF 2026-11-06 23:20 (read this first; older sections below are history)
+**State:** `local-combined` at `f36f16a1c9` (+ this note), built (eglantine.exe, eden-cli, tests) and clean. Tests 305/306: `nup_writer` fails, pre-existing, unrelated. Nothing running, lab lock free. Not pushed: the user pushes (`git push origin local-combined:oot-60fps-wip`); never push for them.
+
+**Fixed today (all in the build):**
+- Flashes: frames_ahead / present_one_ahead off (run-ahead let the guest rewrite frame data the back still read).
+- Fog / light shafts: `b954c0a758` made Lichii's "TEMPORARY OoT visual workaround" (62701342cf) really opt-in (`EDEN_NX2_OOT_VISUAL_WORKAROUND=1`); it was on by default and scaled the fog to 0.25.
+- Async shader compilation on by default (`f36f16a1c9`); fresh configs froze on every new shader. UI: Configure > GraphicsExtra ("Extras") > Hacks.
+- Upstream nx2 merged (`4a0bbb2a95`); Duck's paired-pointer fix picked (`f52fb9cd40`, Vulkan cache version 29).
+
+**Release:** `E:\Projects\releases\eglantine-oot-wip-f36f16a1c9-windows-x64.zip` + `release-notes.md` (user publishes via GitHub web; gh CLI not installed). Testers' README: `OOT_STATE.md`.
+
+**Performance (lab, Kokiri spawn):** ~39 FPS (43-45 walking); user's play ~41; nx2-experimental ~50 only because it runs a frame ahead (flashes). Round 6 finding: the guest's ~12 ms fence wait is the **front thread** not having parsed the frame yet (back idles ~4 ms of it) -> front cost is the lever (macro JIT ~335 ms/s, dominant macro 0x01; pushbuffer parse ~200 ms/s; waits on back 100-140 ms/s). Second lever: safe run-ahead by snapshotting per-frame guest data at submit (+~9 FPS; round 6's write-wait approach failed: ~20k pages change per frame). Max Resolution patch costs nothing. Most nx2-experimental speed commits are already in ours (via Lichii ports). Round loop paused since round 6: resume with `Workflow({scriptPath: ".agent/handoff/d13/oot-60fps-r5plus.js", resumeFromRunId: "wf_1a88cb7c-0df"})` only if the user asks.
+
+**Open: save thumbnails garbled** (also in nx2-experimental). Each slot's `caption.sav` holds a JPEG whose headers are valid but whose scan data is corrupt ("bad Huffman code"): broken at encode time, when the save screen opens. No service is called then (no nvjpg/caps). Prime suspect: the GPU compute JPEG encoder, compute program `1f9b446c9291be1d` (one dispatch, 4340 groups x 64 threads), so shader lowering of its bit packing, or the readback of its output to the CPU. Repro: lab boot, + > R (System) > A (Save) shows the garbled preview without saving (lab uses the user's real saves: back them up first; a backup from 22:50 is in the old session scratchpad, which may be gone). Next: dump that program (`EDEN_NX2_SHADER_DUMP`), check its lowering (shifts/bitfield/atomics), and test a forced readback of its output buffer.
+
+**Lab speedups now in place:** fast boot (A every second until the `64x36x96` gameplay marker, ~37 s instead of ~135 s), `$LabFastBootDefault` in `lab_common.ps1`, `-SlowBoot` for the old way. FPS windows must start at the marker time (`.agent/lab/fps_windows.py`). Visual checks: `.agent/lab/fogscore.py` (mean luma of the upper-middle band; fog ~0.54, no fog ~0.20, black/loading frames <0.05 are invalid). Build any commit in `E:\Projects\Eglantine-exp` and score it: `.agent/lab/fogstep.ps1 -Commit <sha>` (exp clone; has `refs/ours/local-combined`). Build+capture loop for an env/code hypothesis: ~70 s.
+
+**Lessons from today (follow them):**
+1. For a visual difference, first grep the run's `eden_log.txt` for Warning lines naming shaders, workarounds or "TEMPORARY", and for env gates that default to on; then theorize.
+2. Before a bisect, verify both endpoints in the lab, and treat black or loading frames as untestable, never as a result.
+3. Before cherry-picking from another fork, check that the change isn't already in ours under another hash (grep the actual code, not only `git cherry`).
+4. Never ask the user to hand-test hypotheses; use the lab (~70 s per loop). Give realistic ETAs.
+5. Other worktrees/clones: `E:\Projects\Eglantine-exp` (nx2-experimental at 3f7bcc5b8d, built), `E:\Projects\Lichii` (user found it worse; deletable). `.agent/handoff/patches/oot-flash-fix.patch` is the flash fix for nx2-experimental devs.
+
+## Where it stood earlier (10:30, local-combined `535e8b8ea8`)
 - **Crash: fixed.** **Flashes: fixed** (frames_ahead and present_one_ahead always off; user confirmed in play).
 - **FPS at the lab save's Kokiri spawn spot: ~36; 43-45 after the walk** (round 4, 600-present windows). frames_ahead off costs ~5 ms/frame there; getting it back without flashes is the biggest open item (landed_prev_always and one_ahead_landed failed the flash gate). Unselected ideas: `.agent/handoff/d13/r4-proposals.md`.
 - **User data folder is now `%APPDATA%\eglantine`** (f4db7612f4, 798bb481d6). The old `%APPDATA%\eden` was copied there 10:22 (310 files, 653 MB; configs inside re-pointed) and left untouched as a backup; the GUI offers it as "LegacyEden" in the migration prompt. Lab config, scripts, skills and docs use the new folder. Log file name unchanged: `eden_log.txt`.
