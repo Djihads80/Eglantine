@@ -170,7 +170,7 @@ enum class Opt : unsigned {
     /// state of rewritten pages and the simulated run-ahead RAW stall per wait rule
     RunAheadCover,
     /// A suspended channel's 1 ms front sleep ends at once on a new submit or on a GPU release
-    /// that latches a waiter (nx2_pending_wake.h)
+    /// that latches a waiter (Tegra::Nx2PendingWake in nx2.h)
     PendingWake,
     Count,
 };
