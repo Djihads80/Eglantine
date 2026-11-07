@@ -18,7 +18,7 @@ constexpr size_t Index(Opt opt) {
 } // namespace
 
 TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_perf]") {
-    const u64 mask = ParseOffMask(false, "", "", false);
+    const auto mask = ParseOffMask(false, "", "", false);
     REQUIRE(mask == always_off);
     for (size_t i = 0; i < opt_names.size(); ++i) {
         const bool expected_off = i == Index(Opt::DispatchBatch) || i == Index(Opt::AcquireEarly) ||
@@ -60,7 +60,7 @@ TEST_CASE("Nx2Perf exact_noted_writes is off unless ON names it", "[nx2_perf]") 
 }
 
 TEST_CASE("Nx2Perf front_sync_trio turns on its three switches", "[nx2_perf]") {
-    const u64 trio = front_sync_trio_set;
+    const auto trio = front_sync_trio_set;
     REQUIRE(ParseOffMask(false, "front_sync_trio", "", false) == (always_off & ~trio));
     REQUIRE(ParseOffMask(true, "front_sync_trio", "", false) ==
             ((DefaultOffMask() | always_off) & ~trio));
@@ -98,23 +98,23 @@ TEST_CASE("Nx2Perf bind_memo_local is off unless ON names it", "[nx2_perf]") {
 }
 
 TEST_CASE("Nx2Perf OFF=bind_memo flips only bit 36", "[nx2_perf]") {
-    const u64 mask = ParseOffMask(false, "", "bind_memo", false);
-    REQUIRE(mask == (always_off | (u64{1} << 36)));
+    const auto mask = ParseOffMask(false, "", "bind_memo", false);
+    REQUIRE(mask == (always_off | Bit(Opt::BindMemo)));
     REQUIRE(!IsOff(mask, Index(Opt::IndexRebind)));
 }
 
 TEST_CASE("Nx2Perf OFF=dispatch_batch keeps method on", "[nx2_perf]") {
-    const u64 mask = ParseOffMask(false, "", "dispatch_batch", false);
+    const auto mask = ParseOffMask(false, "", "dispatch_batch", false);
     REQUIRE(IsOff(mask, Index(Opt::DispatchBatch)));
     REQUIRE(!IsOff(mask, Index(Opt::Method)));
     REQUIRE(mask == always_off);
 
-    const u64 on_then_off = ParseOffMask(false, "dispatch_batch", "dispatch_batch", false);
+    const auto on_then_off = ParseOffMask(false, "dispatch_batch", "dispatch_batch", false);
     REQUIRE(on_then_off == always_off);
 }
 
 TEST_CASE("Nx2Perf SAFE is the default-off set plus the always-off set", "[nx2_perf]") {
-    const u64 mask = ParseOffMask(true, "", "", false);
+    const auto mask = ParseOffMask(true, "", "", false);
     REQUIRE(mask == (DefaultOffMask() | always_off));
     for (size_t i = Index(Opt::Bounds); i <= Index(Opt::IndexRebind); ++i) {
         REQUIRE(!IsOff(mask, i));
@@ -125,20 +125,20 @@ TEST_CASE("Nx2Perf SAFE is the default-off set plus the always-off set", "[nx2_p
 }
 
 TEST_CASE("Nx2Perf ON=dispatch_batch clears bit 33", "[nx2_perf]") {
-    const u64 mask = ParseOffMask(false, "dispatch_batch", "", false);
+    const auto mask = ParseOffMask(false, "dispatch_batch", "", false);
     REQUIRE(!IsOff(mask, 33));
-    REQUIRE(mask == (always_off & ~(u64{1} << 33)));
+    REQUIRE(mask == (always_off & ~Bit(Opt::DispatchBatch)));
 }
 
 TEST_CASE("Nx2Perf FRAMES_AHEAD=0 and lists of names", "[nx2_perf]") {
-    REQUIRE(ParseOffMask(false, "", "", true) == (always_off | (u64{1} << Index(Opt::FramesAhead))));
-    const u64 mask = ParseOffMask(false, "acquire_early,dispatch_batch", "bounds,draw_preamble", false);
+    REQUIRE(ParseOffMask(false, "", "", true) == (always_off | Bit(Opt::FramesAhead)));
+    const auto mask = ParseOffMask(false, "acquire_early,dispatch_batch", "bounds,draw_preamble", false);
     REQUIRE(mask == ((always_off & ~(Bit(Opt::AcquireEarly) | Bit(Opt::DispatchBatch))) |
                      Bit(Opt::Bounds) | Bit(Opt::DrawPreamble)));
 }
 
 TEST_CASE("Nx2Perf live control: label, on and off lists", "[nx2_perf]") {
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult result =
         ParseControl(startup, "label B.3\non acquire_trigger_early,frames_ahead\noff cb_batch\n",
                      live_safe);
@@ -150,18 +150,18 @@ TEST_CASE("Nx2Perf live control: label, on and off lists", "[nx2_perf]") {
     REQUIRE(result.ignored.empty());
     REQUIRE(FormatControl(result, result.mask) ==
             fmt::format("set=B.3 on=frames_ahead,acquire_trigger_early off=cb_batch ignored=- "
-                        "mask=0x{:016x}",
-                        result.mask));
+                        "mask=0x{:016x}{:016x}",
+                        result.mask.hi, result.mask.lo));
 }
 
 TEST_CASE("Nx2Perf live control: safe, comments and CRLF", "[nx2_perf]") {
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult result =
         ParseControl(startup, "\xEF\xBB\xBF# arm\r\n\r\n  label A # name\r\nsafe\r\n", live_safe);
     REQUIRE(result.label == "A");
     REQUIRE(result.mask == (startup | (live_safe & (DefaultOffMask() | always_off))));
     REQUIRE(result.off_vs_startup == (Bit(Opt::FrontRun) | Bit(Opt::DownloadBatch)));
-    REQUIRE(result.on_vs_startup == 0);
+    REQUIRE(result.on_vs_startup == OffMask{});
     REQUIRE(result.ignored.empty());
     // In file order: a later "on" wins over "safe".
     REQUIRE(ParseControl(startup, "safe\non front_run", live_safe).mask ==
@@ -170,21 +170,21 @@ TEST_CASE("Nx2Perf live control: safe, comments and CRLF", "[nx2_perf]") {
 
 TEST_CASE("Nx2Perf live control: switches not live-safe and unknown names are ignored",
           "[nx2_perf]") {
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult result =
         ParseControl(startup, "on present_one_ahead,bogus\noff bounds\nfaster\n", live_safe);
     REQUIRE(result.mask == startup);
-    REQUIRE(result.on_vs_startup == 0);
-    REQUIRE(result.off_vs_startup == 0);
+    REQUIRE(result.on_vs_startup == OffMask{});
+    REQUIRE(result.off_vs_startup == OffMask{});
     REQUIRE(result.ignored == "present_one_ahead,bogus,bounds,faster");
     REQUIRE(FormatControl(result, startup).starts_with(
         "set=- on=- off=- ignored=present_one_ahead,bogus,bounds,faster mask=0x"));
     // Nothing is live-safe with EDEN_NX2_PERF_OPT=0.
-    REQUIRE(ParseControl(startup, "off cb_batch", 0).mask == startup);
+    REQUIRE(ParseControl(startup, "off cb_batch", OffMask{}).mask == startup);
 }
 
 TEST_CASE("Nx2Perf live control: each file is the whole arm", "[nx2_perf]") {
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult first = ParseControl(startup, "label A.1\noff clean_words\n", live_safe);
     REQUIRE(first.mask == (startup | Bit(Opt::CleanWords)));
     // The second file does not inherit the first one's "off".
@@ -196,11 +196,11 @@ TEST_CASE("Nx2Perf live control: each file is the whole arm", "[nx2_perf]") {
     REQUIRE(empty.mask == startup);
     REQUIRE(empty.label.empty());
     REQUIRE(FormatControl(empty, startup) ==
-            fmt::format("set=- on=- off=- ignored=- mask=0x{:016x}", startup));
+            fmt::format("set=- on=- off=- ignored=- mask=0x{:016x}{:016x}", startup.hi, startup.lo));
 }
 
 TEST_CASE("Nx2Perf live control: a label-only change still gets its own marker", "[nx2_perf]") {
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult a = ParseControl(startup, "label A.1\noff guest_ccd\n", live_safe);
     const ControlResult b = ParseControl(startup, "label A.2\noff guest_ccd\n", live_safe);
     REQUIRE(a.mask == b.mask);
@@ -210,10 +210,12 @@ TEST_CASE("Nx2Perf live control: a label-only change still gets its own marker",
 }
 
 TEST_CASE("Nx2Perf live-safe switches are all named", "[nx2_perf]") {
-    REQUIRE((live_safe >> opt_names.size()) == 0);
+    for (size_t i = opt_names.size(); i < 128; ++i) {
+        REQUIRE(!IsOff(live_safe, i));
+    }
     REQUIRE(!IsOff(live_safe, Index(Opt::PreflushAging)));
     // No On() call site: a live flip would change nothing, so it must land in ignored=.
-    const u64 startup = ParseOffMask(false, "", "", false);
+    const auto startup = ParseOffMask(false, "", "", false);
     const ControlResult dead = ParseControl(
         startup, "off bank_check,write_intersections,immediate_callbacks\n", live_safe);
     REQUIRE(dead.mask == startup);

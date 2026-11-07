@@ -22,7 +22,18 @@
 namespace VideoCommon::Nx2Perf {
 namespace {
 
-constexpr u64 all_opts = ~u64{0} >> (64 - static_cast<unsigned>(Opt::Count));
+constexpr OffMask all_opts = [] {
+    OffMask mask{};
+    for (size_t i = 0; i < static_cast<size_t>(Opt::Count); ++i) {
+        mask |= Bit(static_cast<Opt>(i));
+    }
+    return mask;
+}();
+
+void StoreLive(const OffMask& mask) {
+    detail::live_off_mask[1].store(mask.hi, std::memory_order_relaxed);
+    detail::live_off_mask[0].store(mask.lo, std::memory_order_relaxed);
+}
 
 std::string_view Trim(std::string_view text) {
     constexpr std::string_view space = " \t\r\v\f";
@@ -40,7 +51,7 @@ void Append(std::string& list, std::string_view name) {
     list += name;
 }
 
-std::string Names(u64 mask) {
+std::string Names(const OffMask& mask) {
     std::string list;
     for (size_t i = 0; i < opt_names.size(); ++i) {
         if (IsOff(mask, i)) {
@@ -61,7 +72,7 @@ std::optional<size_t> Find(std::string_view name) {
 
 /// The live poller: never calls On() (it runs while InitOffMask's static may still be
 /// initializing).
-void Poll(std::stop_token stop, std::string path_text, u64 startup_mask, bool enabled) {
+void Poll(std::stop_token stop, std::string path_text, OffMask startup_mask, bool enabled) {
     Common::SetCurrentThreadName("Nx2PerfLive");
     // Logged by the thread itself: the lab takes this line as proof that flips get applied.
     LOG_INFO(HW_GPU, "Nx2PerfLive: watching {} live_safe={}", path_text,
@@ -91,9 +102,9 @@ void Poll(std::stop_token stop, std::string path_text, u64 startup_mask, bool en
                 if (!applied || content != applied_text) {
                     // EDEN_NX2_PERF_OPT=0 keeps every switch off: nothing is live-safe then.
                     const ControlResult result =
-                        ParseControl(startup_mask, content, enabled ? live_safe : 0);
-                    const u64 effective = enabled ? result.mask : all_opts;
-                    detail::live_off_mask.store(effective, std::memory_order_relaxed);
+                        ParseControl(startup_mask, content, enabled ? live_safe : OffMask{});
+                    const OffMask effective = enabled ? result.mask : all_opts;
+                    StoreLive(effective);
                     LOG_INFO(HW_GPU, "Nx2PerfLive: {}", FormatControl(result, effective));
                     applied_text = std::move(content);
                     applied = true;
@@ -105,7 +116,7 @@ void Poll(std::stop_token stop, std::string path_text, u64 startup_mask, bool en
     }
 }
 
-void StartPoller(const char* path, u64 startup_mask, bool enabled) {
+void StartPoller(const char* path, const OffMask& startup_mask, bool enabled) {
     try {
         static std::jthread poller{Poll, std::string{path}, startup_mask, enabled};
     } catch (const std::system_error& error) {
@@ -115,7 +126,8 @@ void StartPoller(const char* path, u64 startup_mask, bool enabled) {
 
 } // Anonymous namespace
 
-ControlResult ParseControl(u64 startup_mask, std::string_view text, u64 live_safe_mask) {
+ControlResult ParseControl(const OffMask& startup_mask, std::string_view text,
+                           const OffMask& live_safe_mask) {
     ControlResult result{.mask = startup_mask};
     if (text.starts_with("\xEF\xBB\xBF")) {
         text.remove_prefix(3);
@@ -148,9 +160,9 @@ ControlResult ParseControl(u64 startup_mask, std::string_view text, u64 live_saf
                 if (!index || !IsOff(live_safe_mask, *index)) {
                     Append(result.ignored, name);
                 } else if (directive == "on") {
-                    result.mask &= ~(u64{1} << *index);
+                    result.mask &= ~Bit(static_cast<Opt>(*index));
                 } else {
-                    result.mask |= u64{1} << *index;
+                    result.mask |= Bit(static_cast<Opt>(*index));
                 }
             }
         } else {
@@ -162,21 +174,21 @@ ControlResult ParseControl(u64 startup_mask, std::string_view text, u64 live_saf
     return result;
 }
 
-std::string FormatControl(const ControlResult& result, u64 effective_mask) {
-    return fmt::format("set={} on={} off={} ignored={} mask={:#018x}",
+std::string FormatControl(const ControlResult& result, const OffMask& effective_mask) {
+    return fmt::format("set={} on={} off={} ignored={} mask=0x{:016x}{:016x}",
                        result.label.empty() ? "-" : result.label, Names(result.on_vs_startup),
                        Names(result.off_vs_startup), result.ignored.empty() ? "-" : result.ignored,
-                       effective_mask);
+                       effective_mask.hi, effective_mask.lo);
 }
 
 namespace detail {
 
-u64 InitOffMask() {
+OffMask InitOffMask() {
     [[maybe_unused]] static const bool initialized = [] {
         const char* on_list = std::getenv("EDEN_NX2_PERF_ON");
         const char* off_list = std::getenv("EDEN_NX2_PERF_OFF");
         const char* frames_ahead = std::getenv("EDEN_NX2_PERF_FRAMES_AHEAD");
-        const u64 mask = ParseOffMask(std::getenv("EDEN_NX2_PERF_SAFE") != nullptr,
+        const OffMask mask = ParseOffMask(std::getenv("EDEN_NX2_PERF_SAFE") != nullptr,
                                       on_list ? on_list : "", off_list ? off_list : "",
                                       frames_ahead && frames_ahead[0] == '0');
         std::string state;
@@ -185,15 +197,16 @@ u64 InitOffMask() {
         }
         LOG_INFO(HW_GPU, "Nx2Perf:{}", state);
         // Stored before the poller starts, so its first store is never overwritten.
-        live_off_mask.store(Enabled() ? mask : all_opts, std::memory_order_relaxed);
+        StoreLive(Enabled() ? mask : all_opts);
         if (const char* path = std::getenv("EDEN_NX2_PERF_CONTROL"); path && path[0] != '\0') {
             StartPoller(path, mask, Enabled());
         }
         return true;
     }();
-    // The live value: with every switch off (all 64 bits) it equals the sentinel and On() comes
-    // back here each time, which still answers right.
-    return live_off_mask.load(std::memory_order_relaxed);
+    // The live value: a word with every switch off equals the sentinel and On() comes back here
+    // each time, which still answers right.
+    return {live_off_mask[0].load(std::memory_order_relaxed),
+            live_off_mask[1].load(std::memory_order_relaxed)};
 }
 
 } // namespace detail
