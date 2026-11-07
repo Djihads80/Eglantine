@@ -402,11 +402,17 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u64((word_offset + index) * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;
+            const u32 called_method = dma_state.method;
             CallMethod(command_header.argument);
-            dma_state.method += !dma_state.non_incrementing ? 1 : 0;
+            dma_state.method += static_cast<u32>(!dma_state.non_incrementing);
             dma_state.non_incrementing |= dma_increment_once;
             dma_state.method_count--;
             index++;
+            // Only the puller methods (below non_puller_methods) can leave an acquire pending.
+            if (called_method < non_puller_methods && puller.HasPendingAcquire()) {
+                return index;
+            }
+            continue;
         } else {
             auto const command_header = commands[index]; //can copy
             // No command active - this is the first word of a new one
@@ -439,7 +445,7 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
             }
             index++;
         }
-        if (puller.HasPendingAcquire()) {
+        if (dma_state.method < non_puller_methods && puller.HasPendingAcquire()) {
             return index;
         }
     }
