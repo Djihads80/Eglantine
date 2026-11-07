@@ -1,0 +1,65 @@
+name: gitleaks
+
+on:
+  push:
+    branches:
+      - nx2
+  pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Full history so the weekly and manual runs scan every commit, not just the latest.
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The CLI scans an explicit commit range. gitleaks-action only follows the first parent of a
+      # push and reads the first page of a pull request's commits, so it can skip commits.
+      # --diff-merges=first-parent also scans what each merge commit brought in.
+      - name: Run gitleaks
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          # Pull requests: base..head. Pushes: the pushed range. Scheduled and manual runs, a new
+          # branch, or a force push whose old tip is gone: the whole history.
+          if [ "$EVENT" = "pull_request" ]; then
+            LOG_OPTS="--diff-merges=first-parent ${BASE_SHA}..${HEAD_SHA}"
+          elif [ "$EVENT" = "push" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            LOG_OPTS="--diff-merges=first-parent ${BEFORE_SHA}..${AFTER_SHA}"
+          else
+            LOG_OPTS="--diff-merges=first-parent --all"
+          fi
+          echo "git log options: ${LOG_OPTS}"
+          # A pull request's checkout is its proposed merge result, so its own copy of the rules
+          # could switch rules off for the very change that is scanned. Use the base branch's
+          # rules; only the pull request that first adds the file falls back to its own copy.
+          CONFIG="${RUNNER_TEMP}/gitleaks.toml"
+          if [ "$EVENT" = "pull_request" ] && git cat-file -e "${BASE_SHA}:.github/gitleaks.toml" 2>/dev/null; then
+            git show "${BASE_SHA}:.github/gitleaks.toml" > "$CONFIG"
+          else
+            cp .github/gitleaks.toml "$CONFIG"
+          fi
+          docker run --rm -v "$PWD:/repo" -v "$CONFIG:/gitleaks.toml:ro" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo \
+            --config /gitleaks.toml --log-opts="${LOG_OPTS}" \
+            --redact --verbose

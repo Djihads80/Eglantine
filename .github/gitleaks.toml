@@ -1,0 +1,29 @@
+# Gitleaks configuration for Eglantine.
+#
+# Extends the built-in ruleset; nothing here switches a default rule off. Add an allowlist entry
+# only for a measured false positive, scoped to the one rule it affects with targetRules, so every
+# other rule keeps scanning the whole tree.
+
+title = "Eglantine gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id          = "switch-console-keys"
+description = "Nintendo Switch key material (prod.keys / title.keys). These keys are console-derived and must never be committed."
+# prod.keys lines look like `master_key_00 = <32 hex>` or `aes_kek_generation_source = <32 hex>`;
+# title.keys lines look like `<32 hex rights id> = <32 hex key>`.
+# The m flag makes ^ and $ match at every line, not only at the start and end of the file.
+regex       = '''(?im)(master_key_[0-9a-f]{2}|titlekek_source|key_area_key_(application|ocean|system)_[0-9a-f]{2}|aes_kek_generation_source|header_key)\s*=\s*[0-9a-f]{32,}|^[0-9a-f]{32}\s*=\s*[0-9a-f]{32}\s*$'''
+tags        = ["switch", "keys"]
+
+[[allowlists]]
+description = "A 64-bit constant named reset_key in the Vulkan pipeline cache (measured false positive)"
+targetRules = ["generic-api-key"]
+paths = [
+    '''src/video_core/renderer_vulkan/vk_pipeline_cache\.cpp''',
+]
+regexes = [
+    '''constexpr u64 reset_key = 0x[0-9a-fA-F]+ULL;''',
+]
