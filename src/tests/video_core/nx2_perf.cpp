@@ -1053,12 +1053,17 @@ TEST_CASE("stale_target_skip: on by default and live-safe", "[nx2_perf]") {
 TEST_CASE("geometry_consistency and build_order_priority: on by default and live-safe", "[nx2_perf]") {
     static_assert(Index(Opt::GeometryConsistency) == 95);
     static_assert(Index(Opt::BuildOrderPriority) == 96);
+    static_assert(Index(Opt::ReplayDiskRecordings) == 97);
     REQUIRE(opt_names[Index(Opt::GeometryConsistency)] == "geometry_consistency");
     REQUIRE(opt_names[Index(Opt::BuildOrderPriority)] == "build_order_priority");
+    REQUIRE(opt_names[Index(Opt::ReplayDiskRecordings)] == "replay_disk_recordings");
     REQUIRE(!IsOff(DefaultOffMask(), Index(Opt::GeometryConsistency)));
     REQUIRE(!IsOff(always_off, Index(Opt::GeometryConsistency)));
     REQUIRE(!IsOff(DefaultOffMask(), Index(Opt::BuildOrderPriority)));
     REQUIRE(!IsOff(always_off, Index(Opt::BuildOrderPriority)));
+    REQUIRE(!IsOff(DefaultOffMask(), Index(Opt::ReplayDiskRecordings)));
+    REQUIRE(!IsOff(always_off, Index(Opt::ReplayDiskRecordings)));
     REQUIRE(IsOff(live_safe, Index(Opt::GeometryConsistency)));
     REQUIRE(IsOff(live_safe, Index(Opt::BuildOrderPriority)));
+    REQUIRE(IsOff(live_safe, Index(Opt::ReplayDiskRecordings)));
 }

@@ -420,6 +420,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       }()},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
+      disk_replay_workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : 2ULL,
+                          "VkDiskPipelineReplay", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
                            Common::ThreadPlacement::Background) {
     build_budget = std::chrono::milliseconds{[] {
@@ -1204,7 +1206,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             (used_pipelines.empty() ? queued_graphics >= MaxPipelinesWithoutUsedList
                                     : !used_pipelines.contains(hash))) {
             ++skipped_pipelines;
+            std::scoped_lock lock{state.mutex};
+            skipped_disk_envs.insert_or_assign(key, std::move(envs));
             return;
+        }
+        {
+            std::scoped_lock lock{state.mutex};
+            skipped_disk_envs.erase(key);
         }
         ++queued_graphics;
 
@@ -1578,8 +1586,83 @@ void PipelineCache::ChargeRuntimeBuild(std::chrono::steady_clock::time_point beg
     build_budget_spent += std::chrono::steady_clock::now() - begin;
 }
 
+void PipelineCache::DrainReadyDiskPipelines() {
+    if (!ready_disk_pipelines_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::unique_lock lock{ready_disk_pipelines_mutex, std::try_to_lock};
+    if (!lock.owns_lock()) {
+        return;
+    }
+    for (auto& [key, built] : ready_disk_pipelines) {
+        in_flight_disk_replays.erase(key.Hash());
+        if (built) {
+            auto [it, inserted] = graphics_cache.try_emplace(key, std::move(built));
+            if (inserted) {
+                ++disk_replayed_count;
+                QueueVulkanPipelineCacheFlush();
+            }
+        }
+    }
+    ready_disk_pipelines.clear();
+    ready_disk_pipelines_pending.store(false, std::memory_order_release);
+}
+
+bool PipelineCache::CanSkipForDiskReplay() const noexcept {
+    if (!use_asynchronous_shaders || !maxwell3d || maxwell3d->regs.IsMeshEnabled()) {
+        return false;
+    }
+    if (maxwell3d->regs.zeta_enable) {
+        return true;
+    }
+    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const bool stale_skip = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::StaleTargetSkip);
+    const bool is_small_draw = stale_skip
+                                   ? (draw_state.draw_element_count > 0 &&
+                                      draw_state.draw_element_count <= 6)
+                                   : (draw_state.draw_element_count <= 6);
+    if (is_small_draw) {
+        return stale_skip && texture_cache.ColorTargetHasPriorFrameOutput();
+    }
+    return true;
+}
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath(bool is_indexed) {
+    DrainReadyDiskPipelines();
+    const u64 key_hash = graphics_key.Hash();
+    if (in_flight_disk_replays.contains(key_hash)) {
+        RecordSkippedGeometry(is_indexed, nullptr);
+        graphics_miss = "disk-replay-async";
+        return nullptr;
+    }
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
+    if (is_new && VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ReplayDiskRecordings)) {
+        if (const auto disk_it = skipped_disk_envs.find(graphics_key);
+            disk_it != skipped_disk_envs.end() && CanSkipForDiskReplay()) {
+            auto envs = std::move(disk_it->second);
+            skipped_disk_envs.erase(disk_it);
+            graphics_cache.erase(pair);
+            in_flight_disk_replays.insert(key_hash);
+            const bool native_turing =
+                maxwell3d != nullptr && maxwell3d->GetNativeMacroEngine().native_turing;
+            disk_replay_workers.QueueWork(
+                [this, key = graphics_key, envs_ = std::move(envs), native_turing]() mutable {
+                    ShaderPools pools;
+                    boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+                    for (auto& env : envs_) {
+                        env_ptrs.push_back(&env);
+                    }
+                    auto built = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr,
+                                                        false, native_turing);
+                    std::scoped_lock lock{ready_disk_pipelines_mutex};
+                    ready_disk_pipelines.emplace_back(key, std::move(built));
+                    ready_disk_pipelines_pending.store(true, std::memory_order_release);
+                });
+            RecordSkippedGeometry(is_indexed, nullptr);
+            graphics_miss = "disk-replay-async";
+            return nullptr;
+        }
+    }
     if (is_new && DeferRuntimeBuild()) {
         graphics_cache.erase(pair);
         RecordSkippedGeometry(is_indexed, nullptr);
@@ -1611,6 +1694,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath(bool is_indexed
 }
 
 void PipelineCache::TickFrame() {
+    DrainReadyDiskPipelines();
     if (deferred_candidate_count != 0) {
         const auto span = std::span{deferred_candidates.data(), deferred_candidate_count};
         std::ranges::sort(span, [](const DeferredCandidate& lhs, const DeferredCandidate& rhs) {
@@ -1782,7 +1866,7 @@ struct PhaseTimer {
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-    bool build_in_parallel) try {
+    bool build_in_parallel, bool native_turing) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
     size_t env_index{0};
@@ -1806,9 +1890,12 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (key.unique_hashes[index] == 0) {
             continue;
         }
+        Shader::Environment& env{*envs[env_index]};
+        ++env_index;
+
         if (index == static_cast<size_t>(Maxwell::ShaderType::Geometry) &&
-            !device.IsGeometryShaderSupported() && maxwell3d != nullptr &&
-            maxwell3d->GetNativeMacroEngine().native_turing) {
+            !device.IsGeometryShaderSupported() &&
+            (native_turing || env.IsNativeProgram())) {
             // A native (Switch 2) geometry program on a device without geometry shaders: the
             // pipeline cannot run it, so its draws are skipped.
             static std::atomic<bool> logged{};
@@ -1817,8 +1904,6 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             }
             return nullptr;
         }
-        Shader::Environment& env{*envs[env_index]};
-        ++env_index;
 
         // Without VK_EXT_mesh_shader the driver cannot build a task/mesh pipeline; the draw is
         // skipped (see the pipeline check in the rasterizer).
@@ -2021,6 +2106,27 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
         ReportRuntimePipeline("Graphics", begin, after_eviction, from_disk);
         ChargeRuntimeBuild(begin);
     };
+    const bool native_turing =
+        maxwell3d != nullptr && maxwell3d->GetNativeMacroEngine().native_turing;
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ReplayDiskRecordings)) {
+        if (const auto disk_it = skipped_disk_envs.find(graphics_key);
+            disk_it != skipped_disk_envs.end()) {
+            auto envs = std::move(disk_it->second);
+            skipped_disk_envs.erase(disk_it);
+            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            for (auto& env : envs) {
+                env_ptrs.push_back(&env);
+            }
+            main_pools.ReleaseContents();
+            auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, MakeSpan(env_ptrs),
+                                                 nullptr, true, native_turing)};
+            if (pipeline && !pipeline_cache_filename.empty()) {
+                QueueVulkanPipelineCacheFlush();
+            }
+            return pipeline;
+        }
+    }
+    skipped_disk_envs.erase(graphics_key);
     GraphicsEnvironments environments;
     {
         PhaseTimer env_timer{BuildPhase::Environments, true};
@@ -2028,8 +2134,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     }
 
     main_pools.ReleaseContents();
-    auto pipeline{
-        CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
+    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr,
+                                         true, native_turing)};
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }

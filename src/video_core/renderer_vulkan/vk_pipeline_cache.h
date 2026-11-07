@@ -174,6 +174,9 @@ private:
     [[nodiscard]] bool ShouldSkipDepthOnlyGeometry(bool is_indexed) noexcept;
     void ClearSkippedGeometryIfDrawn(bool is_indexed) noexcept;
 
+    void DrainReadyDiskPipelines();
+    [[nodiscard]] bool CanSkipForDiskReplay() const noexcept;
+
     /// Nx2Perf shader_build_budget: whether a new graphics pipeline is left unbuilt this frame.
     [[nodiscard]] bool DeferRuntimeBuild();
     void ChargeRuntimeBuild(std::chrono::steady_clock::time_point begin);
@@ -183,7 +186,7 @@ private:
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel);
+        bool build_in_parallel, bool native_turing = false);
 
     [[nodiscard]] bool StaleNullPointerSlot(const ComputePipelineCacheEntry& entry) const;
 
@@ -302,7 +305,17 @@ private:
     std::atomic<size_t> last_cache_size{};
     std::atomic_bool flush_in_flight{};
 
+    ::Common::unordered_map<GraphicsPipelineCacheKey, std::vector<VideoCommon::FileEnvironment>>
+        skipped_disk_envs;
+    std::unordered_set<u64> in_flight_disk_replays;
+    std::mutex ready_disk_pipelines_mutex;
+    std::vector<std::pair<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>>
+        ready_disk_pipelines;
+    std::atomic_bool ready_disk_pipelines_pending{};
+    u64 disk_replayed_count{};
+
     Common::ThreadWorker workers;
+    Common::ThreadWorker disk_replay_workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
 };

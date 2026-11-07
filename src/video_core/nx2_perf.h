@@ -252,6 +252,9 @@ enum class Opt : unsigned {
     /// Async shaders: reserve half the per-frame shader build budget for G-buffer draws and the
     /// highest-priority deferred keys from the previous frame (G-buffer first, then by draw count)
     BuildOrderPriority,
+    /// Async shaders: keep FileEnvironments of graphics pipelines skipped at boot and replay their
+    /// translation and compilation on background workers on first skippable use
+    ReplayDiskRecordings,
     Count,
 };
 
@@ -323,6 +326,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "stale_target_skip",
     "geometry_consistency",
     "build_order_priority",
+    "replay_disk_recordings",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -631,6 +635,9 @@ static_assert(static_cast<unsigned>(Opt::GeometryConsistency) == 95 &&
 static_assert(static_cast<unsigned>(Opt::BuildOrderPriority) == 96 &&
               !IsOff(always_off, static_cast<size_t>(Opt::BuildOrderPriority)) &&
               !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::BuildOrderPriority)));
+static_assert(static_cast<unsigned>(Opt::ReplayDiskRecordings) == 97 &&
+              !IsOff(always_off, static_cast<size_t>(Opt::ReplayDiskRecordings)) &&
+              !IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ReplayDiskRecordings)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -696,7 +703,7 @@ inline constexpr OffMask live_safe =
     Bit(Opt::QueryDiagnostics) | Bit(Opt::QueryUploadScratch) | Bit(Opt::FrontRun) |
     Bit(Opt::DownloadBatch) | Bit(Opt::AcquireTriggerEarly) | Bit(Opt::PipelineKeepPreloaded) |
     Bit(Opt::ComputeRebuildAsync) | Bit(Opt::StaleTargetSkip) | Bit(Opt::GeometryConsistency) |
-    Bit(Opt::BuildOrderPriority);
+    Bit(Opt::BuildOrderPriority) | Bit(Opt::ReplayDiskRecordings);
 
 /// One control file: the whole arm, computed from the startup off-mask.
 struct ControlResult {
