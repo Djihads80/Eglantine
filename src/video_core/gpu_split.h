@@ -129,6 +129,13 @@ public:
                hook_requested.load(std::memory_order_relaxed) ||
                front_waiting.load(std::memory_order_relaxed);
     }
+    /// GPU thread, Nx2Perf spin_handoff: whether it works on a command list (the idle back spins
+    /// for its next publish) or waits for the guest.
+    void SetFrontActive(bool value) {
+        if (spin_handoff && front_active.load(std::memory_order_relaxed) != value) [[unlikely]] {
+            front_active.store(value, std::memory_order_relaxed);
+        }
+    }
 
     /// Nx2Perf hook_lazy_flush: how long a deferred submit may stay pending while the back works
     /// (EDEN_NX2_HOOK_FLUSH_US, default 1000 us), in steady clock nanoseconds.
@@ -497,6 +504,7 @@ private:
     bool active{};
     bool eager_publish{}; ///< Nx2Perf::Opt::EagerPublish, read once at Start
     bool release_before_hook{}; ///< Nx2Perf::Opt::ReleaseBeforeHook, read once at Start
+    bool spin_handoff{}; ///< Nx2Perf::Opt::SpinHandoff, read once at Start before the back starts
     /// Nx2Perf::Verify() with draw_begin_coalesce, read once at Start before the back starts
     bool verify_repeats{};
     bool front_macros{};
@@ -573,6 +581,8 @@ private:
     /// The front sleeps in Backoff (#161: instead of yielding).
     alignas(128) std::atomic<bool> front_waiting{};
     std::atomic<u32> front_wake{};
+    /// spin_handoff: the GPU thread parses a command list (SetFrontActive), a hint
+    std::atomic<bool> front_active{};
     std::jthread back_thread;
 };
 

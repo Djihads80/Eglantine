@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -48,6 +49,72 @@ void Pause() {
 }
 
 [[maybe_unused]] std::atomic<u32> g_back_thread_id{};
+
+s64 SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// Nx2Perf spin_handoff: how long either side spins for the other before it sleeps
+/// (EDEN_NX2_SPIN_HANDOFF_US, default 300 us), in nanoseconds.
+s64 SpinHandoffNs() {
+    static const s64 ns = [] {
+        const char* value = std::getenv("EDEN_NX2_SPIN_HANDOFF_US");
+        const s64 us = value != nullptr ? static_cast<s64>(std::atoll(value)) : s64{300};
+        return std::max<s64>(us, 0) * 1000;
+    }();
+    return ns;
+}
+
+/// spin_handoff counters, also kept with fence_timeline (the baseline). Slow paths only.
+bool HandoffCounters() {
+    static const bool on = Nx2Perf::On(Nx2Perf::Opt::SpinHandoff) || Nx2Perf::FenceTimeline::On();
+    return on;
+}
+struct alignas(64) FrontHandoffCounters {
+    std::atomic<u64> sleeps{};
+    std::atomic<u64> expired{};   ///< The spin hit EDEN_NX2_SPIN_HANDOFF_US
+    std::atomic<u64> back_idle{}; ///< The spin saw the back idle
+};
+struct alignas(64) BackHandoffCounters {
+    std::atomic<u64> sleeps{};
+    std::atomic<u64> hits{}; ///< A publish ended the spin
+    std::atomic<u64> expired{};
+    std::atomic<u64> verify_diffs{};
+};
+FrontHandoffCounters g_front_handoff;
+BackHandoffCounters g_back_handoff;
+
+/// Back thread: logs the counters' rates about once a second, and once when it exits.
+void ReportHandoff(bool at_exit) {
+    static s64 last_ns{};
+    static std::array<u64, 6> last{};
+    const s64 now = SteadyNs();
+    if (last_ns == 0) {
+        last_ns = now;
+    }
+    if (!at_exit && now - last_ns < 1'000'000'000) {
+        return;
+    }
+    constexpr auto relaxed = std::memory_order_relaxed;
+    const std::array<u64, 6> total{
+        g_front_handoff.sleeps.load(relaxed), g_back_handoff.sleeps.load(relaxed),
+        g_front_handoff.expired.load(relaxed), g_front_handoff.back_idle.load(relaxed),
+        g_back_handoff.hits.load(relaxed),     g_back_handoff.expired.load(relaxed),
+    };
+    const double seconds = (std::max)(static_cast<double>(now - last_ns) / 1e9, 1e-3);
+    const auto rate = [&](size_t i) {
+        return static_cast<u64>(static_cast<double>(total[i] - last[i]) / seconds + 0.5);
+    };
+    LOG_INFO(HW_GPU,
+             "Nx2Perf spin_handoff: front_sleeps {}/s back_sleeps {}/s front_expired {}/s "
+             "front_back_idle {}/s back_hits {}/s back_expired {}/s verify_diffs {}{}",
+             rate(0), rate(1), rate(2), rate(3), rate(4), rate(5),
+             g_back_handoff.verify_diffs.load(relaxed), at_exit ? " (back exit)" : "");
+    last = total;
+    last_ns = now;
+}
 
 } // Anonymous namespace
 
@@ -119,6 +186,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
     ring = std::make_unique<u64[]>(RingWords);
     verify_repeats = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::DrawBeginCoalesce);
+    spin_handoff = Nx2Perf::On(Nx2Perf::Opt::SpinHandoff);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
@@ -177,6 +245,7 @@ void GpuSplit::Stop() {
     back_waiting.store(false, std::memory_order_relaxed);
     back_idle.store(false, std::memory_order_relaxed);
     front_waiting.store(false, std::memory_order_relaxed);
+    front_active.store(false, std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -307,6 +376,28 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
         Pause();
         return;
     }
+    if (spin_handoff) [[unlikely]] {
+        // Keep spinning while the back executes toward the target, up to the limit per wait.
+        thread_local s64 deadline_ns;
+        thread_local bool spin_over;
+        if (spins == 16384) {
+            deadline_ns = SteadyNs() + SpinHandoffNs();
+            spin_over = false;
+        }
+        if (!spin_over) {
+            const bool running = back_running.load(std::memory_order_acquire);
+            const bool working = running && !back_idle.load(std::memory_order_relaxed);
+            if (working && ((spins & 1023) != 0 || SteadyNs() < deadline_ns)) {
+                Pause();
+                return;
+            }
+            spin_over = true;
+            if (running) {
+                (working ? g_front_handoff.expired : g_front_handoff.back_idle)
+                    .fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
     if (!Nx2Perf::On(Nx2Perf::Opt::FrontSleep) || !back_running.load(std::memory_order_acquire)) {
         std::this_thread::yield();
         return;
@@ -316,6 +407,9 @@ void GpuSplit::Backoff(u32 spins, u64 target) {
     front_waiting.store(true, std::memory_order_seq_cst);
     const u32 seen = front_wake.load(std::memory_order_seq_cst);
     if (consumed.load(std::memory_order_seq_cst) < target) {
+        if (HandoffCounters()) [[unlikely]] {
+            g_front_handoff.sleeps.fetch_add(1, std::memory_order_relaxed);
+        }
         front_wake.wait(seen, std::memory_order_seq_cst);
     }
     front_waiting.store(false, std::memory_order_relaxed);
@@ -736,6 +830,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     g_back_thread_id.store(GetCurrentThreadId(), std::memory_order_relaxed);
 #endif
     u64 read_position = 0;
+    const bool handoff_counters = HandoffCounters();
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
@@ -764,6 +859,44 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 }
                 available = published.load(std::memory_order_acquire);
             }
+            if (available == read_position && handoff_counters) [[unlikely]] {
+                ReportHandoff(false);
+                if (spin_handoff && front_active.load(std::memory_order_relaxed)) {
+                    // spin_handoff: the GPU thread is parsing, so its next publish usually comes
+                    // soon. The hook ran and back_quiet is set, as before a sleep.
+                    const s64 deadline_ns = SteadyNs() + SpinHandoffNs();
+                    for (u32 spins = 1;; ++spins) {
+                        Pause();
+                        available = published.load(std::memory_order_acquire);
+                        if (available != read_position ||
+                            hook_requested.load(std::memory_order_relaxed) ||
+                            stop_token.stop_requested()) {
+                            break;
+                        }
+                        if ((spins & 1023) == 0 && SteadyNs() >= deadline_ns) {
+                            g_back_handoff.expired.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
+                    }
+                    if (available != read_position) {
+                        g_back_handoff.hits.fetch_add(1, std::memory_order_relaxed);
+                        if (Nx2Perf::Verify() &&
+                            (!back_quiet.load(std::memory_order_relaxed) ||
+                             available < read_position)) [[unlikely]] {
+                            const u64 count =
+                                g_back_handoff.verify_diffs.fetch_add(1, std::memory_order_relaxed) +
+                                1;
+                            if (count <= 64) {
+                                LOG_ERROR(HW_GPU,
+                                          "Nx2Perf spin_handoff: spin ended at published {:#x} "
+                                          "read {:#x} quiet {} ({} so far)",
+                                          available, read_position,
+                                          back_quiet.load(std::memory_order_relaxed), count);
+                            }
+                        }
+                    }
+                }
+            }
             if (available == read_position) {
                 // Publish bumps `wake` when it sees back_waiting: read it before the last look
                 // at `published`, so a publish in between ends the wait at once.
@@ -772,6 +905,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     const u32 seen = wake.load(std::memory_order_seq_cst);
                     available = published.load(std::memory_order_seq_cst);
                     if (available == read_position && !stop_token.stop_requested()) {
+                        if (handoff_counters) [[unlikely]] {
+                            g_back_handoff.sleeps.fetch_add(1, std::memory_order_relaxed);
+                        }
                         wake.wait(seen, std::memory_order_seq_cst);
                         available = published.load(std::memory_order_acquire);
                     }
@@ -841,6 +977,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         if (release_first) {
             RunIdleHook(reason);
         }
+    }
+    if (handoff_counters) {
+        ReportHandoff(true);
     }
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);

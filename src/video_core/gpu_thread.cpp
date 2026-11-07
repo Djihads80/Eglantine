@@ -99,6 +99,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                 }
             } else {
                 Profile::Scope scope{Profile::Zone::Idle};
+                split.SetFrontActive(false);
                 state.queue.PopWait(next, stop_token);
             }
             if (stop_token.stop_requested()) {
@@ -116,6 +117,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                         VideoCommon::Nx2Perf::FenceTimeline::last_submit_pop_ns.store(
                             VideoCommon::Nx2Perf::FenceTimeline::NowNs(), std::memory_order_relaxed);
                     }
+                    split.SetFrontActive(true);
                     Profile::Scope scope{Profile::Zone::Push};
                     scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));
                 } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
