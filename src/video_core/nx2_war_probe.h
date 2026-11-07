@@ -358,6 +358,19 @@ inline std::string Report(size_t frames, u64 unarmed_changed,
                           std::span<const std::pair<u64, uintptr_t>> sites);
 } // namespace VideoCommon::Nx2Raw
 
+// Nx2Perf run_ahead_snapshot_probe (Nx2Snap at the end of this file): hooks the cow probe calls
+// when it is on.
+namespace VideoCommon::Nx2Snap {
+inline bool On();
+/// The front is in Maxwell3D::FrontDmaRead (macro DMA reads), not a list fetch.
+inline thread_local bool t_front_macro = false;
+/// The call site of the read Nx2Cow::ReadSlow is classifying.
+inline thread_local const void* t_site = nullptr;
+inline void NotePreImage(u32 pool_slot, bool tracked);
+inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
+                   size_t category, u32 touch_bits, u32 gen);
+} // namespace VideoCommon::Nx2Snap
+
 // Nx2Perf run_ahead_ledger (measurement only): the device pages the split back reads for frame N
 // (by category), which of them the guest changes between vi2's reply for present N and the entry
 // of present N+1, and, for guest reads of preflushed blocks written in frame N, how long after the
@@ -770,6 +783,9 @@ inline void NoteAny(u64 device_addr, u64 size, NoteKind kind, const void* site) 
         NoteSlow(device_addr, size);
     }
     if ((g_note & NoteCow) != 0) {
+        if (site == nullptr && Nx2Snap::On()) [[unlikely]] {
+            site = NX2_RETURN_ADDRESS();
+        }
         NoteCowRead(device_addr, size, kind, site);
     }
 }
@@ -1082,6 +1098,11 @@ public:
         valid = true;
         ++sum.frames;
         sum.hash_ns += NowNs() - start;
+    }
+
+    /// run_ahead_snapshot_probe: the device pages Take kept for this present, empty without.
+    std::span<const u64> TakenPages() const {
+        return valid ? std::span<const u64>(pages.data(), count) : std::span<const u64>{};
     }
 
     /// Right before the reply: the guest may read frame N's results from here on.
@@ -2026,6 +2047,9 @@ inline bool PreImage(u64 phys, const u8* host, TrapClass cls, bool guest_core) {
         }
         if (s.pool.compare_exchange_weak(pool, pool + 1, std::memory_order_acq_rel)) {
             const u32 slot = static_cast<u32>(pool);
+            if (Nx2Snap::On()) [[unlikely]] {
+                Nx2Snap::NotePreImage(slot, cls == TrapClass::Tracked);
+            }
             std::memcpy(s.bytes.get() + size_t{slot} * PageSize, host, PageSize);
             s.slot_phys[slot].store((u64{gen} << 32) | (phys + 1), std::memory_order_release);
             value = slot + 1;
@@ -2143,7 +2167,11 @@ inline bool ReadPage(size_t role, size_t category, u64 phys, const u8* host, u64
     const u8* const pre = s.bytes.get() + size_t{entry - 1} * PageSize;
     AddCat(role, category, HitPages, 1);
     if (len != 0) {
-        AddCat(role, category, HazardBytes, DiffBytes(pre + offset, host + offset, len));
+        const u64 hazard = DiffBytes(pre + offset, host + offset, len);
+        AddCat(role, category, HazardBytes, hazard);
+        if (hazard != 0 && Nx2Snap::On()) [[unlikely]] {
+            Nx2Snap::Hazard(phys, entry - 1, pre, hazard, role, category, old, gen);
+        }
     }
     if (check) {
         CheckPage(phys, pre, true, old, device_page, gen);
@@ -2175,6 +2203,9 @@ inline void ReadSlow(u64 device_addr, u64 size, Nx2Ledger::NoteKind kind, const 
     const size_t category =
         role == 0 ? FrontCategory
                   : (std::min<size_t>)(Nx2Ledger::g_ledger_category, Nx2Ledger::NumCategories - 1);
+    if (Nx2Snap::On()) [[unlikely]] {
+        Nx2Snap::t_site = site;
+    }
     if (kind == Nx2Ledger::NoteKind::Pointer) {
         Add(static_cast<Counter>(UnsizedReads + role));
         const u8* const host = DevicePointer(device_addr & ~(PageSize - 1));
@@ -3387,3 +3418,790 @@ inline std::string Report(size_t frames, u64 unarmed_changed,
 }
 
 } // namespace VideoCommon::Nx2Raw
+
+// Nx2Perf run_ahead_snapshot_probe (measurement only, needs run_ahead_cow_probe and frames_ahead).
+// At vi2's reply for present N, S_N is the union of the pages the front and back read in the last
+// 16 epochs (the cow probe's touch sets and the ledger's frame sets) plus the tracker pages the
+// guest wrote since their upload (the war_guard arm set). vi2 copies S_N into a fixed pool and
+// hashes each copy. Each hazard the cow probe finds (bytes an epoch-N read gets that differ from
+// the page's pre-image) is classed (a) covered: the page is in S_N and its copy equals the
+// pre-image (the page as of the reply's arm); (b) trap-covered: its first write after the reply
+// trapped through HandleRasterizerWrite; (c) residual. It also times the guest's first read of
+// GPU-written data after the reply. Nothing waits and no read is redirected.
+namespace VideoCommon::Nx2Snap {
+
+inline bool On() {
+    static const bool on = [] {
+        if (!Nx2Perf::On(Nx2Perf::Opt::RunAheadSnapshotProbe)) {
+            return false;
+        }
+        if (!Nx2Cow::On() || !Nx2Perf::On(Nx2Perf::Opt::FramesAhead)) {
+            LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_snapshot_probe: needs frames_ahead, "
+                              "run_ahead_ledger and run_ahead_cow_probe on; the probe stays off");
+            return false;
+        }
+        return true;
+    }();
+    return on;
+}
+
+inline constexpr u64 PageBits = Nx2Cow::PageBits;
+inline constexpr u64 PageSize = Nx2Cow::PageSize;
+inline constexpr size_t K = 16;
+inline constexpr u32 RingPages = 16384; ///< Pages one ring epoch keeps
+inline constexpr u32 PoolPages = 8192;  ///< 32 MiB, allocated once (S_N measured ~3-4k pages)
+inline constexpr u32 TableSlots = 65536;
+inline constexpr u32 TableLimit = TableSlots / 4 * 3;
+inline constexpr u32 MaxArmPages = 131072; ///< The war_guard set's capacity
+inline constexpr u32 NoPool = ~0U;
+inline constexpr size_t NumSites = 32;
+inline constexpr u32 WindowFrames = Nx2Cow::WindowFrames;
+static_assert(TableSlots == Nx2Cow::SetSlots, "Table shares TouchSet::Home");
+
+inline constexpr u8 FromUnion = 1;  ///< Read in one of the last K epochs
+inline constexpr u8 FromArmSet = 2; ///< In the war_guard arm set at the reply
+
+inline constexpr u8 PathTracked = 1;   ///< Pre-imaged through HandleRasterizerWrite
+inline constexpr u8 PathUntracked = 2; ///< Pre-imaged by the cow arm's trap
+
+inline constexpr u8 VerdictUnknown = 0;
+inline constexpr u8 VerdictEqual = 1;
+inline constexpr u8 VerdictDiffers = 2;
+
+enum ResCat : size_t {
+    Bank,
+    UFast,
+    UCached,
+    Storage,
+    Desc,
+    OtherCat,
+    FrontList,
+    FrontMacro,
+    NumResCats,
+};
+inline constexpr std::array<std::string_view, NumResCats> res_cat_names{
+    "bank", "ufast", "ucached", "storage", "desc", "other", "front_list", "front_macro"};
+
+enum Tracker : size_t { Untracked, Unregistered, HostWritten, NumTrackers };
+inline constexpr std::array<std::string_view, NumTrackers> tracker_names{"untracked",
+                                                                         "unregistered", "hostw"};
+
+enum Reason : size_t { Miss, Stale, PoolFull, NoSnapshot, NumReasons };
+inline constexpr std::array<std::string_view, NumReasons> reason_names{"miss", "stale",
+                                                                       "pool_full", "no_snapshot"};
+
+enum Counter : size_t {
+    BytesA,
+    BytesB,
+    BytesC,
+    ResCat0,
+    ResTracker0 = ResCat0 + NumResCats,
+    ResReason0 = ResTracker0 + NumTrackers,
+    TrappedGpuReads = ResReason0 + NumReasons,
+    UntrappedGpuReads,
+    UntrappedPreReply, ///< Its kept area is older than the reply
+    SiteOverflow,
+    NumCounters,
+};
+
+/// S_N of one epoch, keyed by physical page; vi2 builds it before the readers open.
+struct Table {
+    std::atomic<u32> gen{0}; ///< The epoch it holds, 0 while vi2 builds it
+    std::array<std::atomic<u32>, TableSlots> key{}; ///< phys + 1, 0 when empty
+    std::array<u8, TableSlots> from{};
+    std::array<u32, TableSlots> pool{}; ///< Pool page or NoPool
+    std::array<u64, TableSlots> pool_hash{};
+    std::array<std::atomic<u8>, TableSlots> verdict{};
+    std::array<std::atomic<u64>, TableSlots> ref_hash{}; ///< HashPage of the pre-image
+    std::array<u32, TableSlots> used{};
+    u32 used_count = 0;
+    u64 overflow = 0;
+    std::array<u64, TableSlots> sorted{}; ///< Verify: phys << 32 | slot, sorted
+    u32 sorted_count = 0;
+
+    void Clear() {
+        for (u32 i = 0; i < used_count; ++i) {
+            key[used[i]].store(0, std::memory_order_relaxed);
+        }
+        used_count = 0;
+        sorted_count = 0;
+        overflow = 0;
+    }
+
+    void Insert(u64 phys, u8 source) {
+        const u32 want = static_cast<u32>(phys) + 1;
+        for (u32 slot = Nx2Cow::TouchSet::Home(want);; slot = (slot + 1) & (TableSlots - 1)) {
+            const u32 current = key[slot].load(std::memory_order_relaxed);
+            if (current == want) {
+                from[slot] |= source;
+                return;
+            }
+            if (current != 0) {
+                continue;
+            }
+            if (used_count >= TableLimit) {
+                ++overflow;
+                return;
+            }
+            from[slot] = source;
+            pool[slot] = NoPool;
+            pool_hash[slot] = 0;
+            verdict[slot].store(VerdictUnknown, std::memory_order_relaxed);
+            ref_hash[slot].store(0, std::memory_order_relaxed);
+            key[slot].store(want, std::memory_order_relaxed);
+            used[used_count++] = slot;
+            return;
+        }
+    }
+
+    u32 Find(u64 phys) const {
+        const u32 want = static_cast<u32>(phys) + 1;
+        u32 slot = Nx2Cow::TouchSet::Home(want);
+        for (u32 probes = 0; probes < TableSlots; ++probes, slot = (slot + 1) & (TableSlots - 1)) {
+            const u32 current = key[slot].load(std::memory_order_relaxed);
+            if (current == want) {
+                return slot;
+            }
+            if (current == 0) {
+                return TableSlots;
+            }
+        }
+        return TableSlots;
+    }
+
+    /// Verify's old answer: a binary search of the sorted pages.
+    u32 FindSorted(u64 phys) const {
+        const u64* const begin = sorted.data();
+        const u64* const end = begin + sorted_count;
+        const u64* const it = std::lower_bound(begin, end, phys << 32);
+        return it != end && (*it >> 32) == phys ? static_cast<u32>(*it) : TableSlots;
+    }
+};
+
+struct State {
+    std::atomic<bool> ready{false}; ///< The pool and tables exist (vi2 sets it once)
+    std::unique_ptr<u8[]> pool;
+    std::array<std::unique_ptr<Table>, 2> tables; ///< By gen & 1
+    std::array<std::atomic<u8>, Nx2Cow::PoolSlots> pre_path{}; ///< Per cow pool slot (Path*)
+    std::atomic<s64> reply_ns{0};
+    std::atomic<u32> first_claim{0};
+    std::atomic<u32> first_done{0};
+    std::atomic<s64> first_ns{0};
+    std::array<std::atomic<u64>, NumCounters> c{};
+    std::array<std::atomic<uintptr_t>, NumSites> site_addr{};
+    std::array<std::atomic<u64>, NumSites> site_bytes{};
+    std::atomic<uintptr_t> module_base{0};
+    std::atomic<u64> verify_differences{0};
+};
+
+inline State& Get() {
+    static State state;
+    return state;
+}
+
+inline s64 NowNs() {
+    return Nx2WarProbe::NowNs();
+}
+
+inline void Add(size_t counter, u64 amount = 1) {
+    Get().c[counter].fetch_add(amount, std::memory_order_relaxed);
+}
+
+template <typename... Args>
+void VerifyDifference(fmt::format_string<Args...> format, Args&&... args) {
+    const u64 count = Get().verify_differences.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_snapshot_probe: {} ({} so far)",
+                  fmt::format(format, std::forward<Args>(args)...), count);
+    }
+}
+
+/// The executable's base, for sites as RVAs (core memory sets it on Windows).
+inline void SetModuleBase(uintptr_t base) {
+    Get().module_base.store(base, std::memory_order_relaxed);
+}
+
+inline void NotePreImage(u32 pool_slot, bool tracked) {
+    if (pool_slot < Nx2Cow::PoolSlots) {
+        Get().pre_path[pool_slot].store(tracked ? PathTracked : PathUntracked,
+                                        std::memory_order_release);
+    }
+}
+
+inline size_t ResCatOf(size_t role, size_t category) {
+    if (role == 0) {
+        return t_front_macro ? FrontMacro : FrontList;
+    }
+    using C = Nx2Ledger::Category;
+    switch (static_cast<C>(category)) {
+    case C::BankCompare:
+        return Bank;
+    case C::UniformFast:
+        return UFast;
+    case C::UniformCached:
+        return UCached;
+    case C::Storage:
+        return Storage;
+    case C::Descriptor:
+        return Desc;
+    default:
+        return OtherCat;
+    }
+}
+
+/// Residual bytes by call site (nullptr: unknown).
+inline void NoteSite(const void* site, u64 bytes) {
+    State& s = Get();
+    const uintptr_t address = site == nullptr ? 1 : reinterpret_cast<uintptr_t>(site);
+    size_t i = static_cast<size_t>((u64{address} * 0x9E3779B97F4A7C15ULL) >> 59);
+    for (size_t probes = 0; probes < NumSites; ++probes, i = (i + 1) % NumSites) {
+        uintptr_t current = s.site_addr[i].load(std::memory_order_acquire);
+        if (current == 0 &&
+            s.site_addr[i].compare_exchange_strong(current, address, std::memory_order_acq_rel)) {
+            current = address;
+        }
+        if (current == address) {
+            s.site_bytes[i].fetch_add(bytes, std::memory_order_relaxed);
+            return;
+        }
+    }
+    Add(SiteOverflow);
+}
+
+/// Nx2Cow::ReadPage: an epoch-gen read of phys got `bytes` bytes that differ from its pre-image
+/// (cow pool slot pool_slot, bytes pre).
+inline void Hazard(u64 phys, u32 pool_slot, const u8* pre, u64 bytes, size_t role,
+                   size_t category, u32 touch_bits, u32 gen) {
+    State& s = Get();
+    bool covered = false;
+    Reason reason = NoSnapshot;
+    u8 from = 0;
+    if (s.ready.load(std::memory_order_acquire)) {
+        Table& t = *s.tables[gen & 1];
+        if (t.gen.load(std::memory_order_acquire) == gen) {
+            u32 slot = t.Find(phys);
+            if (Nx2Perf::Verify()) {
+                const u32 old = t.FindSorted(phys);
+                if (old != slot) {
+                    VerifyDifference("page {:#x}: the table says slot {}, the sorted list {}",
+                                     phys << PageBits, slot, old);
+                    slot = old;
+                }
+            }
+            if (slot == TableSlots) {
+                reason = Miss;
+            } else if (const u32 index = t.pool[slot]; index == NoPool) {
+                from = t.from[slot];
+                reason = PoolFull;
+            } else {
+                from = t.from[slot];
+                reason = Stale;
+                u8 verdict = t.verdict[slot].load(std::memory_order_acquire);
+                if (verdict == VerdictUnknown) {
+                    const u64 ref = Nx2Ledger::HashPage(pre);
+                    bool equal = ref == t.pool_hash[slot];
+                    if (Nx2Perf::Verify()) {
+                        const bool old = std::memcmp(s.pool.get() + size_t{index} * PageSize, pre,
+                                                     PageSize) == 0;
+                        if (old != equal) {
+                            VerifyDifference("page {:#x}: the pool copy is {} by its hash, {} by "
+                                             "a byte compare",
+                                             phys << PageBits, equal ? "equal" : "different",
+                                             old ? "equal" : "different");
+                            equal = old;
+                        }
+                    }
+                    t.ref_hash[slot].store(ref, std::memory_order_relaxed);
+                    const u8 mine = equal ? VerdictEqual : VerdictDiffers;
+                    u8 expected = VerdictUnknown;
+                    verdict = t.verdict[slot].compare_exchange_strong(expected, mine,
+                                                                      std::memory_order_acq_rel)
+                                  ? mine
+                                  : expected;
+                }
+                covered = verdict == VerdictEqual;
+            }
+            if (t.gen.load(std::memory_order_acquire) != gen) {
+                // vi2 rebuilt the table meanwhile (a read two epochs late).
+                covered = false;
+                reason = NoSnapshot;
+                from = 0;
+            }
+        }
+    }
+    if (covered) {
+        Add(BytesA, bytes);
+        return;
+    }
+    if (s.pre_path[pool_slot % Nx2Cow::PoolSlots].load(std::memory_order_acquire) == PathTracked) {
+        Add(BytesB, bytes);
+        return;
+    }
+    Add(BytesC, bytes);
+    Add(ResCat0 + ResCatOf(role, category), bytes);
+    const Tracker tracker = (touch_bits & Nx2Cow::BitHostWritten) != 0 ? HostWritten
+                            : (from & FromArmSet) != 0                ? Untracked
+                                                                      : Unregistered;
+    Add(ResTracker0 + tracker, bytes);
+    Add(ResReason0 + reason, bytes);
+    NoteSite(t_site, bytes);
+}
+
+/// The cow epoch the guest reads in (core memory tags its kept read areas with it).
+inline u32 EpochGen() {
+    return Nx2Cow::Get().gen.load(std::memory_order_acquire);
+}
+
+/// A guest read of GPU-written data while an epoch is open: trapped (it reached GetFlushArea) or
+/// served from a read area core memory kept since area_gen's epoch.
+inline void GpuRead(bool trapped, u32 area_gen) {
+    const Nx2Cow::State& cow = Nx2Cow::Get();
+    if (!cow.open.load(std::memory_order_acquire)) {
+        return;
+    }
+    const u32 gen = cow.gen.load(std::memory_order_acquire);
+    State& s = Get();
+    if (trapped) {
+        Add(TrappedGpuReads);
+    } else {
+        Add(UntrappedGpuReads);
+        if (area_gen != gen) {
+            Add(UntrappedPreReply);
+        }
+    }
+    u32 claimed = s.first_claim.load(std::memory_order_relaxed);
+    if (claimed != gen &&
+        s.first_claim.compare_exchange_strong(claimed, gen, std::memory_order_acq_rel)) {
+        s.first_ns.store(NowNs() - s.reply_ns.load(std::memory_order_relaxed),
+                         std::memory_order_relaxed);
+        s.first_done.store(gen, std::memory_order_release);
+    }
+}
+
+/// GetFlushArea's answer on this thread: whether the area holds GPU-written data.
+inline thread_local bool t_flush_gpu = false;
+
+/// BufferCache::GetFlushArea, before it returns an area for a trapped guest read.
+inline void FlushArea(bool gpu_written) {
+    t_flush_gpu = gpu_written;
+    if (gpu_written && !Nx2Ledger::g_is_back) {
+        GpuRead(true, 0);
+    }
+}
+
+/// Maxwell3D::FrontDmaRead: the front's reads in its scope are macro DMA reads.
+class FrontMacroScope {
+public:
+    FrontMacroScope() : on{On()} {
+        if (on) [[unlikely]] {
+            previous = t_front_macro;
+            t_front_macro = true;
+        }
+    }
+    ~FrontMacroScope() {
+        if (on) [[unlikely]] {
+            t_front_macro = previous;
+        }
+    }
+    FrontMacroScope(const FrontMacroScope&) = delete;
+    FrontMacroScope& operator=(const FrontMacroScope&) = delete;
+
+private:
+    bool on;
+    bool previous = false;
+};
+
+/// vi2's side: builds and copies S_N at each reply, checks and logs at each close.
+class Vi2Window {
+public:
+    Vi2Window()
+        : arm{std::make_unique<std::array<u32, MaxArmPages>>()}, ring{std::make_unique<Ring>()} {
+        State& s = Get();
+        if (!s.ready.load(std::memory_order_acquire)) {
+            s.pool = std::make_unique<u8[]>(size_t{PoolPages} * PageSize);
+            s.tables[0] = std::make_unique<Table>();
+            s.tables[1] = std::make_unique<Table>();
+            s.ready.store(true, std::memory_order_release);
+        }
+        LOG_INFO(HW_GPU,
+                 "Nx2RunAheadSnapshot: probe on (measurement only; EDEN_NX2_PERF_ON=frames_ahead,"
+                 "run_ahead_ledger,run_ahead_cow_probe,run_ahead_snapshot_probe; flashes there "
+                 "are expected, not a result). S_N = pages the front and back read in the last {} "
+                 "epochs + the war_guard arm set at the reply, copied into a {}-page pool. "
+                 "Hazard bytes: a = page in S_N and its copy equals the pre-image (the page at "
+                 "the reply's arm), b = its first write after the reply trapped through "
+                 "HandleRasterizerWrite, c = residual. Residual tracker classes: untracked = in "
+                 "the arm set at the reply (tracker-registered, unprotected), unregistered = "
+                 "outside it, hostw = written through device memory this epoch. Sites are "
+                 "return addresses (RVAs). Decision rules: union_snapshot PASS when c p99 == 0 "
+                 "and copy_ms p50 < 1.5; raw_hold PASS when every untrapped read of GPU-written "
+                 "data hits a core-kept area (re-armable at the reply) and t_first p50 >= 3 ms "
+                 "(fastmem reads of kept areas are not visible to the probe)",
+                 K, PoolPages);
+    }
+
+    /// Scratch for core memory's arm set (physical pages).
+    std::span<u32> ArmScratch() {
+        return {arm->data(), arm->size()};
+    }
+
+    /// vi2, after the cow arm and before the readers open: S_N for the new epoch.
+    /// ledger_pages: this present's ledger frame set (device pages); the first arm_count pages
+    /// of ArmScratch hold the arm set, arm_total its full size.
+    void Reply(std::span<const u64> ledger_pages, size_t arm_count, u64 arm_total) {
+        State& s = Get();
+        const Nx2Cow::State& cow = Nx2Cow::Get();
+        const u32 gen = cow.gen.load(std::memory_order_acquire);
+        const uintptr_t base = cow.physical_base.load(std::memory_order_relaxed);
+        if (!have_base) {
+            window_base = Take();
+            epoch_base = window_base;
+            have_base = true;
+        }
+        const s64 start = NowNs();
+        // The ring's new epoch: the closed epoch's front and back reads, the ledger frame set.
+        auto& entry = ring->pages[ring->head];
+        u32 n = 0;
+        const auto push = [&](u64 phys) {
+            if (n == RingPages) {
+                ++sum.ring_overflow;
+                return;
+            }
+            entry[n++] = static_cast<u32>(phys);
+        };
+        if (gen >= 2) {
+            const Nx2Cow::TouchSet& closed = *cow.touch[(gen - 1) & 1];
+            const u32 used = (std::min)(closed.used_count.load(std::memory_order_acquire),
+                                        Nx2Cow::SetSlots);
+            for (u32 i = 0; i < used; ++i) {
+                const u32 slot = closed.used[i].load(std::memory_order_acquire);
+                if ((closed.bits[slot].load(std::memory_order_relaxed) &
+                     (Nx2Cow::BitFront | Nx2Cow::BitBack)) == 0) {
+                    continue;
+                }
+                if (const u32 key = closed.key[slot].load(std::memory_order_relaxed); key != 0) {
+                    push(key - 1);
+                }
+            }
+        }
+        for (const u64 page : ledger_pages) {
+            if (const u8* const host = Nx2Cow::DevicePointer(page << PageBits); host != nullptr) {
+                push(Nx2Cow::PhysOf(host));
+            }
+        }
+        ring->size[ring->head] = n;
+        ring->head = (ring->head + 1) % K;
+        ring->count = (std::min)(ring->count + 1, K);
+
+        Table& t = *s.tables[gen & 1];
+        t.gen.store(0, std::memory_order_release);
+        t.Clear();
+        for (size_t j = 0; j < ring->count; ++j) {
+            const size_t r = (ring->head + K - 1 - j) % K;
+            for (u32 i = 0; i < ring->size[r]; ++i) {
+                t.Insert(ring->pages[r][i], FromUnion);
+            }
+        }
+        const u32 union_pages = t.used_count;
+        for (size_t i = 0; i < arm_count; ++i) {
+            t.Insert((*arm)[i], FromArmSet);
+        }
+        const s64 built = NowNs();
+        u8* const pool = s.pool.get();
+        u32 pooled = 0;
+        for (u32 i = 0; i < t.used_count; ++i) {
+            const u32 slot = t.used[i];
+            const u64 phys = t.key[slot].load(std::memory_order_relaxed) - 1;
+            if (pooled == PoolPages || base == 0 || phys >= Nx2Cow::NumPhysPages) {
+                ++sum.pool_overflow;
+                continue;
+            }
+            std::memcpy(pool + size_t{pooled} * PageSize,
+                        reinterpret_cast<const u8*>(base) + (phys << PageBits), PageSize);
+            t.pool[slot] = pooled++;
+        }
+        const s64 copied = NowNs();
+        for (u32 i = 0; i < t.used_count; ++i) {
+            const u32 slot = t.used[i];
+            if (t.pool[slot] != NoPool) {
+                t.pool_hash[slot] =
+                    Nx2Ledger::HashPage(pool + size_t{t.pool[slot]} * PageSize);
+            }
+        }
+        const s64 hashed = NowNs();
+        if (Nx2Perf::Verify()) {
+            for (u32 i = 0; i < t.used_count; ++i) {
+                const u32 slot = t.used[i];
+                t.sorted[i] = (u64{t.key[slot].load(std::memory_order_relaxed) - 1} << 32) | slot;
+            }
+            std::sort(t.sorted.begin(), t.sorted.begin() + t.used_count);
+            t.sorted_count = t.used_count;
+        }
+        sum.table_overflow += t.overflow;
+        sum.union_pages += union_pages;
+        sum.arm_pages += t.used_count - union_pages;
+        sum.arm_total += arm_total;
+        sum.arm_overflow += arm_total > arm_count ? arm_total - arm_count : 0;
+        if (frames < WindowFrames) {
+            metrics[PagesM][frames] = static_cast<float>(t.used_count);
+            metrics[KibM][frames] = static_cast<float>(pooled) * 4.0f;
+            metrics[BuildMsM][frames] = static_cast<float>(built - start) / 1e6f;
+            metrics[CopyMsM][frames] = static_cast<float>(copied - built) / 1e6f;
+            metrics[HashMsM][frames] = static_cast<float>(hashed - copied) / 1e6f;
+        }
+        s.reply_ns.store(NowNs(), std::memory_order_relaxed);
+        t.gen.store(gen, std::memory_order_release);
+        epoch_gen = gen;
+    }
+
+    /// vi2, after Nx2Cow::Close: the epoch's self-checks; the report lines every WindowFrames.
+    std::array<std::string, 4> Close() {
+        std::array<std::string, 4> lines{};
+        State& s = Get();
+        if (epoch_gen == 0) {
+            return lines;
+        }
+        const u32 gen = std::exchange(epoch_gen, 0);
+        // Every class-(a) pool page still hashes to its pre-image's hash.
+        const Table& t = *s.tables[gen & 1];
+        if (t.gen.load(std::memory_order_acquire) == gen) {
+            for (u32 i = 0; i < t.used_count; ++i) {
+                const u32 slot = t.used[i];
+                if (t.verdict[slot].load(std::memory_order_acquire) != VerdictEqual) {
+                    continue;
+                }
+                const u8* const copy = s.pool.get() + size_t{t.pool[slot]} * PageSize;
+                if (Nx2Ledger::HashPage(copy) != t.ref_hash[slot].load(std::memory_order_relaxed)) {
+                    const u64 count = ++differs;
+                    if (count <= 64) {
+                        LOG_ERROR(HW_GPU,
+                                  "Nx2Perf run_ahead_snapshot_probe: class-a pool page {:#x} "
+                                  "differs from its reply hash ({} so far)",
+                                  u64{t.key[slot].load(std::memory_order_relaxed) - 1} << PageBits,
+                                  count);
+                    }
+                }
+            }
+        }
+        if (s.first_done.load(std::memory_order_acquire) == gen) {
+            if (n_first < WindowFrames) {
+                t_first[n_first++] =
+                    static_cast<float>(s.first_ns.load(std::memory_order_relaxed)) / 1e6f;
+            }
+        } else {
+            ++no_gpu_read;
+        }
+        const Counts now = Take();
+        if (frames < WindowFrames) {
+            for (size_t i = 0; i < 3; ++i) {
+                metrics[AM + i][frames] =
+                    static_cast<float>(now.c[BytesA + i] - epoch_base.c[BytesA + i]);
+            }
+        }
+        epoch_base = now;
+        ++frames;
+        if (Nx2Perf::Verify()) {
+            const s64 time = NowNs();
+            const u64 count = s.verify_differences.load(std::memory_order_relaxed);
+            if (count != verify_logged && time - verify_log_ns >= 1'000'000'000) {
+                LOG_INFO(HW_GPU, "Nx2Perf run_ahead_snapshot_probe: {} verify differences so far",
+                         count);
+                verify_logged = count;
+                verify_log_ns = time;
+            }
+        }
+        if (frames < WindowFrames) {
+            return lines;
+        }
+        Report(now, lines);
+        frames = 0;
+        n_first = 0;
+        no_gpu_read = 0;
+        sum = Sums{};
+        window_base = now;
+        return lines;
+    }
+
+private:
+    enum Metric : size_t { PagesM, KibM, BuildMsM, CopyMsM, HashMsM, AM, BM, CM, NumMetrics };
+
+    struct Counts {
+        std::array<u64, NumCounters> c{};
+        std::array<u64, NumSites> site{};
+        u64 cow_hazard = 0;
+    };
+
+    struct Sums {
+        u64 union_pages = 0;
+        u64 arm_pages = 0;
+        u64 arm_total = 0;
+        u64 arm_overflow = 0;
+        u64 pool_overflow = 0;
+        u64 table_overflow = 0;
+        u64 ring_overflow = 0;
+    };
+
+    struct Ring {
+        std::array<std::array<u32, RingPages>, K> pages{};
+        std::array<u32, K> size{};
+        size_t head = 0;
+        size_t count = 0;
+    };
+
+    static Counts Take() {
+        State& s = Get();
+        const Nx2Cow::State& cow = Nx2Cow::Get();
+        Counts counts;
+        for (size_t i = 0; i < NumCounters; ++i) {
+            counts.c[i] = s.c[i].load(std::memory_order_relaxed);
+        }
+        for (size_t i = 0; i < NumSites; ++i) {
+            counts.site[i] = s.site_bytes[i].load(std::memory_order_relaxed);
+        }
+        for (size_t r = 0; r < Nx2Cow::NumRoles; ++r) {
+            for (size_t c = 0; c < Nx2Cow::NumCats; ++c) {
+                counts.cow_hazard +=
+                    cow.cat[Nx2Cow::CatIndex(r, c, Nx2Cow::HazardBytes)].load(
+                        std::memory_order_relaxed);
+            }
+        }
+        return counts;
+    }
+
+    float Pct(std::array<float, WindowFrames>& values, size_t n, size_t percent) {
+        if (n == 0) {
+            return 0.0f;
+        }
+        const size_t index = (percent * n + 99) / 100 - 1;
+        std::nth_element(values.begin(), values.begin() + index, values.begin() + n);
+        return values[index];
+    }
+
+    float MetricPct(Metric metric, size_t percent) {
+        std::copy_n(metrics[metric].begin(), frames, sorted.begin());
+        return Pct(sorted, frames, percent);
+    }
+
+    void Report(const Counts& now, std::array<std::string, 4>& lines) {
+        State& s = Get();
+        const double n = static_cast<double>(frames);
+        const auto delta = [&](size_t counter) {
+            return now.c[counter] - window_base.c[counter];
+        };
+        const auto per = [n](u64 value) { return static_cast<double>(value) / n; };
+        const auto range = [](size_t first, size_t count, auto&& names, auto&& value) {
+            std::string out;
+            for (size_t i = 0; i < count; ++i) {
+                out += fmt::format(" {}={:.1f}", names[i], value(first + i));
+            }
+            return out;
+        };
+        const auto per_delta = [&](size_t counter) { return per(delta(counter)); };
+        const std::string by_cat = range(ResCat0, NumResCats, res_cat_names, per_delta);
+        const std::string by_tracker = range(ResTracker0, NumTrackers, tracker_names, per_delta);
+        const std::string by_reason = range(ResReason0, NumReasons, reason_names, per_delta);
+        // Residual sites this window, most bytes first.
+        std::array<std::pair<u64, uintptr_t>, NumSites> sites{};
+        for (size_t i = 0; i < NumSites; ++i) {
+            sites[i] = {now.site[i] - window_base.site[i],
+                        s.site_addr[i].load(std::memory_order_relaxed)};
+        }
+        std::sort(sites.begin(), sites.end(), std::greater<>{});
+        const uintptr_t module = s.module_base.load(std::memory_order_relaxed);
+        std::string top;
+        size_t shown = 0;
+        for (const auto& [bytes, address] : sites) {
+            if (bytes == 0 || shown == 8) {
+                continue;
+            }
+            ++shown;
+            if (address == 1) {
+                top += fmt::format(" unknown:{}", bytes);
+            } else if (module != 0 && address >= module) {
+                top += fmt::format(" {:#x}:{}", address - module, bytes);
+            } else {
+                top += fmt::format(" abs{:#x}:{}", address, bytes);
+            }
+        }
+        const float pages50 = MetricPct(PagesM, 50);
+        const float pages99 = MetricPct(PagesM, 99);
+        const float kib50 = MetricPct(KibM, 50);
+        const float kib99 = MetricPct(KibM, 99);
+        const float build50 = MetricPct(BuildMsM, 50);
+        const float build99 = MetricPct(BuildMsM, 99);
+        const float copy50 = MetricPct(CopyMsM, 50);
+        const float copy99 = MetricPct(CopyMsM, 99);
+        const float hash50 = MetricPct(HashMsM, 50);
+        const float hash99 = MetricPct(HashMsM, 99);
+        const float a50 = MetricPct(AM, 50);
+        const float a99 = MetricPct(AM, 99);
+        const float b50 = MetricPct(BM, 50);
+        const float b99 = MetricPct(BM, 99);
+        const float c50 = MetricPct(CM, 50);
+        const float c99 = MetricPct(CM, 99);
+        const float first10 = Pct(t_first, n_first, 10);
+        const float first50 = Pct(t_first, n_first, 50);
+        const float first90 = Pct(t_first, n_first, 90);
+        const u64 untrapped = delta(UntrappedGpuReads);
+        const u64 untrapped_pre = delta(UntrappedPreReply);
+        const u64 trapped = delta(TrappedGpuReads);
+        const u64 abc = delta(BytesA) + delta(BytesB) + delta(BytesC);
+        const u64 cow_hazard = now.cow_hazard - window_base.cow_hazard;
+        lines[0] = fmt::format(
+            "Nx2Perf run_ahead_snapshot_probe: epochs={} pages p50/p99={:.0f}/{:.0f} (union "
+            "{:.0f} + arm set {:.0f} per epoch; arm set total {:.0f}, arm_overflow {}) bytes "
+            "p50/p99={:.0f}/{:.0f} KiB copy_ms p50/p99={:.3f}/{:.3f} hash_ms p50/p99={:.3f}/{:.3f} "
+            "build_ms p50/p99={:.3f}/{:.3f} overflow={} (pool {} pages) table_overflow={} "
+            "ring_overflow={} hazard_bytes a/b/c p50/p99={:.0f}/{:.0f} {:.0f}/{:.0f} "
+            "{:.0f}/{:.0f} (window totals {}/{}/{}) residual_by_cat(B/epoch):{} "
+            "residual_by_tracker:{} residual_by_reason:{} top_residual_sites_rva(base {:#x}):{} "
+            "site_overflow={} untrapped_gpu_reads={} (area kept before the reply {}) "
+            "trapped_gpu_reads={} t_first_ms p10/p50/p90={:.2f}/{:.2f}/{:.2f} ({} epochs, {} "
+            "without a GPU data read) verify_differences={}",
+            frames, pages50, pages99, per(sum.union_pages), per(sum.arm_pages),
+            per(sum.arm_total), sum.arm_overflow, kib50, kib99, copy50, copy99, hash50, hash99,
+            build50, build99, sum.pool_overflow, PoolPages, sum.table_overflow, sum.ring_overflow,
+            a50, a99, b50, b99, c50, c99, delta(BytesA), delta(BytesB), delta(BytesC), by_cat,
+            by_tracker, by_reason, module, top, delta(SiteOverflow), untrapped, untrapped_pre,
+            trapped, first10, first50, first90, n_first, no_gpu_read,
+            s.verify_differences.load(std::memory_order_relaxed));
+        lines[1] = fmt::format(
+            "Nx2Perf run_ahead_snapshot_probe: self-check mismatch={} (a+b+c {} vs cow hazard "
+            "bytes {} this window), differs={} (class-a pool pages that differ from their reply "
+            "hash, all windows)",
+            static_cast<s64>(cow_hazard - abc), abc, cow_hazard, differs);
+        const bool union_pass = c99 == 0.0f && copy50 < 1.5f;
+        lines[2] = fmt::format(
+            "Nx2Perf run_ahead_snapshot_probe: union_snapshot rule {} (residual c p99 {:.0f} B, "
+            "needs 0; copy_ms p50 {:.3f}, needs < 1.5)",
+            union_pass ? "PASS" : "FAIL", c99, copy50);
+        // Each visible untrapped read hits a core-kept read area, which a reply re-arm drops.
+        const u64 rearmable = untrapped;
+        const bool raw_pass = (untrapped == 0 || rearmable == untrapped) && n_first != 0 &&
+                              first50 >= 3.0f;
+        lines[3] = fmt::format(
+            "Nx2Perf run_ahead_snapshot_probe: raw_hold rule {} (untrapped_gpu_reads {}, "
+            "re-armable at the reply {}, {} of them in areas kept before the reply; t_first p50 "
+            "{:.2f} ms over {} epochs, needs >= 3)",
+            raw_pass ? "PASS" : "FAIL", untrapped, rearmable, untrapped_pre, first50, n_first);
+    }
+
+    std::unique_ptr<std::array<u32, MaxArmPages>> arm;
+    std::unique_ptr<Ring> ring;
+    std::array<std::array<float, WindowFrames>, NumMetrics> metrics{};
+    std::array<float, WindowFrames> sorted{};
+    std::array<float, WindowFrames> t_first{};
+    size_t n_first = 0;
+    u64 no_gpu_read = 0;
+    size_t frames = 0;
+    u32 epoch_gen = 0;
+    bool have_base = false;
+    Counts epoch_base{};
+    Counts window_base{};
+    Sums sum{};
+    u64 differs = 0;
+    u64 verify_logged = 0;
+    s64 verify_log_ns = 0;
+};
+
+} // namespace VideoCommon::Nx2Snap

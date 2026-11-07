@@ -119,6 +119,25 @@ TEST_CASE("Nx2Perf run_ahead_raw_probe is off unless ON names it", "[nx2_perf]")
             always_off);
 }
 
+TEST_CASE("Nx2Perf run_ahead_snapshot_probe is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::RunAheadSnapshotProbe) == 79);
+    REQUIRE(opt_names[Index(Opt::RunAheadSnapshotProbe)] == "run_ahead_snapshot_probe");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::RunAheadSnapshotProbe)));
+    REQUIRE(IsOff(always_off, Index(Opt::RunAheadSnapshotProbe)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::RunAheadSnapshotProbe)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::RunAheadSnapshotProbe)));
+    REQUIRE(ParseOffMask(false, "run_ahead_snapshot_probe", "", false) ==
+            (always_off & ~Bit(Opt::RunAheadSnapshotProbe)));
+    REQUIRE(ParseOffMask(false,
+                         "frames_ahead,run_ahead_ledger,run_ahead_cow_probe,"
+                         "run_ahead_snapshot_probe",
+                         "", false) ==
+            (always_off & ~(Bit(Opt::FramesAhead) | Bit(Opt::RunAheadLedger) |
+                            Bit(Opt::RunAheadCowProbe) | Bit(Opt::RunAheadSnapshotProbe))));
+    REQUIRE(ParseOffMask(false, "run_ahead_snapshot_probe", "run_ahead_snapshot_probe", false) ==
+            always_off);
+}
+
 TEST_CASE("Nx2Perf list_writer_hook_copies_only is off unless ON names it", "[nx2_perf]") {
     REQUIRE(opt_names[Index(Opt::ListWriterHookCopiesOnly)] == "list_writer_hook_copies_only");
     REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ListWriterHookCopiesOnly)));

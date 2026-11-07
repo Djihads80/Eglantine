@@ -2226,6 +2226,9 @@ private:
         if (VideoCommon::Nx2Raw::On()) [[unlikely]] {
             RawClassifyReply();
         }
+        if (VideoCommon::Nx2Snap::On()) [[unlikely]] {
+            SnapReply();
+        }
         Cow::OpenReaders();
         m_cow->NoteArm({
             .armed = arm.armed,
@@ -2259,6 +2262,30 @@ private:
         if (const std::string line = m_cow->TakeRawLine(); !line.empty()) {
             LOG_INFO(HW_GPU, "{}", line);
         }
+        if (m_snap) [[unlikely]] {
+            for (const std::string& line : m_snap->Close()) {
+                if (!line.empty()) {
+                    LOG_INFO(HW_GPU, "{}", line);
+                }
+            }
+        }
+    }
+
+    /// run_ahead_snapshot_probe: vi2's window, allocated at the first reply.
+    std::unique_ptr<VideoCommon::Nx2Snap::Vi2Window> m_snap;
+
+    /// After the cow arm, before the readers open: S_N for the new epoch and its copy.
+    void SnapReply() {
+        namespace Snap = VideoCommon::Nx2Snap;
+        if (!m_snap) {
+            m_snap = std::make_unique<Snap::Vi2Window>();
+        }
+        const std::span<const u64> ledger_pages =
+            m_ledger ? m_ledger->TakenPages() : std::span<const u64>{};
+        u64 arm_total = 0;
+        const size_t arm_count =
+            system.ApplicationMemory().Nx2SnapshotArmSet(m_snap->ArmScratch(), arm_total);
+        m_snap->Reply(ledger_pages, arm_count, arm_total);
     }
 
     /// run_ahead_raw_probe, after HashReply: each reply page's state at the reply (cow arm set,
