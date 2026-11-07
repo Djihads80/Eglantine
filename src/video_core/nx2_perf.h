@@ -149,6 +149,9 @@ enum class Opt : unsigned {
     /// (back-published program records, final QMD and descriptor words) notes those ranges; a
     /// command list fetch waits only for the writers that can touch its pages
     ComputeWriterRanges,
+    /// Split front: a semaphore acquire is met from the payload of a release still queued in
+    /// the ring when no entry queued after it can write the word's 16 bytes (no drain)
+    AcquireQueuedRelease,
     Count,
 };
 
@@ -189,6 +192,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dma_forward_memo",
     "run_ahead_ledger",
     "compute_writer_ranges",
+    "acquire_queued_release",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -259,7 +263,7 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::SplitRings, Opt::BindMemoLocal, Opt::GuestLandedSyncpoints,
                           Opt::WarGuardProbe, Opt::DrawBeginCoalesce, Opt::InflightWriteWait,
                           Opt::InflightReadExact,
-                          Opt::FenceTimeline, Opt::RunAheadLedger, Opt::ComputeWriterRanges}) {
+                          Opt::FenceTimeline, Opt::RunAheadLedger, Opt::ComputeWriterRanges, Opt::AcquireQueuedRelease}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -297,7 +301,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::InflightReadExact) |
                                   Bit(Opt::FenceTimeline) | Bit(Opt::DmaForwardMemo) |
                                   Bit(Opt::RunAheadLedger) |
-                                  Bit(Opt::ComputeWriterRanges);
+                                  Bit(Opt::ComputeWriterRanges) |
+                                  Bit(Opt::AcquireQueuedRelease);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -336,6 +341,10 @@ static_assert(static_cast<unsigned>(Opt::RunAheadLedger) == 64 &&
 static_assert(static_cast<unsigned>(Opt::ComputeWriterRanges) == 65 &&
               IsOff(always_off, static_cast<size_t>(Opt::ComputeWriterRanges)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ComputeWriterRanges)));
+
+static_assert(static_cast<unsigned>(Opt::AcquireQueuedRelease) == 66 &&
+              IsOff(always_off, static_cast<size_t>(Opt::AcquireQueuedRelease)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::AcquireQueuedRelease)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

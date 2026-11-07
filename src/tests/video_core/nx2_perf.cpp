@@ -46,7 +46,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::FenceTimeline) ||
                                   i == Index(Opt::DmaForwardMemo) ||
                                   i == Index(Opt::RunAheadLedger) ||
-                                  i == Index(Opt::ComputeWriterRanges);
+                                  i == Index(Opt::ComputeWriterRanges) ||
+                                  i == Index(Opt::AcquireQueuedRelease);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -210,6 +211,19 @@ TEST_CASE("Nx2Perf live control: a label-only change still gets its own marker",
     REQUIRE(a.ignored == "guest_ccd");
     REQUIRE(FormatControl(b, b.mask).starts_with("set=A.2 on=- off=- ignored=guest_ccd mask="));
     REQUIRE(FormatControl(a, a.mask) != FormatControl(b, b.mask));
+}
+
+TEST_CASE("Nx2Perf acquire_queued_release lives in the high word", "[nx2_perf]") {
+    static_assert(Index(Opt::AcquireQueuedRelease) == 66);
+    REQUIRE(opt_names[Index(Opt::AcquireQueuedRelease)] == "acquire_queued_release");
+    REQUIRE(Bit(Opt::AcquireQueuedRelease) == OffMask{0, 4});
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::AcquireQueuedRelease)));
+    const auto on = ParseOffMask(false, "acquire_queued_release", "", false);
+    REQUIRE(on == (always_off & ~Bit(Opt::AcquireQueuedRelease)));
+    REQUIRE(!IsOff(on, Index(Opt::AcquireQueuedRelease)));
+    REQUIRE(IsOff(on, Index(Opt::DmaForwardMemo)));
+    REQUIRE(FormatControl(ParseControl(on, "", live_safe), on)
+                .ends_with(fmt::format("mask=0x{:016x}{:016x}", on.hi, on.lo)));
 }
 
 TEST_CASE("Nx2Perf live-safe switches are all named", "[nx2_perf]") {
