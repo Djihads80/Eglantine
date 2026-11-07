@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -21,6 +23,13 @@
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "video_core/nx2_perf.h"
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#define NX2_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define NX2_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 
 // Nx2Perf inflight_write_wait / inflight_read_exact: with frames_ahead, vi2 replies to present N
 // after frame N-1's fence and opens an epoch for fence N. Core memory write-protects the pages the
@@ -375,6 +384,22 @@ inline thread_local bool g_is_back = false;
 /// What the reading code is doing (Category), Other outside every LedgerScope.
 inline thread_local u8 g_ledger_category = 0;
 
+/// Read hooks this thread runs: NoteLedger (the back, run_ahead_ledger) and NoteCow (the front or
+/// back, run_ahead_cow_probe). 0 keeps every Note at one not-taken branch.
+inline constexpr u8 NoteLedger = 1;
+inline constexpr u8 NoteCow = 2;
+inline thread_local u8 g_note = 0;
+
+enum class NoteKind : u8 {
+    Sized,   ///< [address, address + size) is read
+    Pointer, ///< GetPointer: the page is known, the size is not
+    Span,    ///< GetSpan: the caller reads or writes through the span
+};
+
+/// run_ahead_cow_probe (Nx2Cow below).
+inline void NoteCowRead(u64 device_addr, u64 size, NoteKind kind, const void* site);
+inline void NoteCowStartBack();
+
 class LedgerScope {
 public:
     explicit LedgerScope(Category category) : previous{g_ledger_category} {
@@ -683,6 +708,8 @@ inline void StartBackThread() {
         state.sets[1] = std::make_unique<PageSet>();
     }
     g_is_back = true;
+    g_note |= NoteLedger;
+    NoteCowStartBack();
 }
 
 inline void NoteSlow(u64 device_addr, u64 size) {
@@ -704,10 +731,19 @@ inline void NoteSlow(u64 device_addr, u64 size) {
     }
 }
 
-/// Back: device memory [device_addr, device_addr + size) is read; size 0 when unknown (GetPointer).
-inline void Note(u64 device_addr, u64 size) {
-    if (g_is_back) [[unlikely]] {
+inline void NoteAny(u64 device_addr, u64 size, NoteKind kind, const void* site) {
+    if ((g_note & NoteLedger) != 0) {
         NoteSlow(device_addr, size);
+    }
+    if ((g_note & NoteCow) != 0) {
+        NoteCowRead(device_addr, size, kind, site);
+    }
+}
+
+/// Back: device memory [device_addr, device_addr + size) is read; size 0 when unknown (GetPointer).
+inline void Note(u64 device_addr, u64 size, NoteKind kind = NoteKind::Sized) {
+    if (g_note != 0) [[unlikely]] {
+        NoteAny(device_addr, size, kind, nullptr);
     }
 }
 
@@ -1462,5 +1498,1078 @@ private:
     Sums sum{};
     std::unique_ptr<Cover> cover; ///< run_ahead_cover only
 };
+
+} // namespace VideoCommon::Nx2Ledger
+
+// Nx2Perf run_ahead_cow_probe (measurement only, needs run_ahead_ledger; meaningful with
+// frames_ahead and present_one_ahead on). At vi2's Ocarina reply core memory write-protects every
+// device-mapped guest page of type Memory (later epochs re-arm only the pages given back and new
+// device mappings). The first guest write of each one, or of a tracker-protected page, copies the
+// page into a fixed pool before the write goes on. Until each passes the fence's increment, the
+// front and back record their reads: pages, bytes, pre-imaged hits, bytes that differ from the
+// pre-image (hazard), unsized reads by call site and host writes into pre-imaged pages. Nothing
+// waits and no read is redirected. Shared by core memory (arm, traps), device memory (reads,
+// writes), the fence manager and engines (boundaries) and vi2 (epochs, log).
+namespace VideoCommon::Nx2Cow {
+
+inline bool On() {
+    static const bool on = Nx2Ledger::On() && Nx2Perf::On(Nx2Perf::Opt::RunAheadCowProbe);
+    return on;
+}
+
+/// Set once the probe's state exists; host write hooks test it.
+inline std::atomic<bool> g_enabled{false};
+
+inline constexpr u64 PageBits = 12;
+inline constexpr u64 PageSize = u64{1} << PageBits;
+inline constexpr u32 PoolSlots = 4096; ///< 16 MiB of pre-images per epoch
+inline constexpr u32 SlotBits = 13;    ///< Index entry: generation << SlotBits | slot + 1
+inline constexpr u32 SlotMask = (1U << SlotBits) - 1;
+inline constexpr u32 SlotOverflow = SlotMask; ///< Trapped with the pool full: no bytes kept
+inline constexpr u32 GenMask = (1U << (32 - SlotBits)) - 1;
+inline constexpr size_t NumPhysPages = size_t{1} << 23; ///< 35-bit physical layout
+inline constexpr u32 SetSlots = 65536;
+inline constexpr u32 SetLimit = SetSlots / 4 * 3;
+inline constexpr u32 MaxReplyHashes = 16384;
+inline constexpr size_t NumSites = 32;
+inline constexpr u32 NumIds = 192;
+inline constexpr u32 WindowFrames = 600;
+static_assert(PoolSlots < SlotOverflow);
+
+enum class Role : u8 { None, Front, Back };
+inline constexpr size_t NumRoles = 2;
+inline constexpr size_t NumCats = Nx2Ledger::NumCategories + 1;
+inline constexpr size_t FrontCategory = Nx2Ledger::NumCategories; ///< The front: macro/list
+static_assert(NumCats <= 16);
+
+enum class TrapClass : u8 { Tracked, Untracked, Bank };
+inline constexpr size_t NumTrapClasses = 3;
+
+// Touch set bits: categories read in the low 16, then who touched the page.
+inline constexpr u32 BitFront = 1U << 16;
+inline constexpr u32 BitBack = 1U << 17;
+inline constexpr u32 BitHostWritten = 1U << 18;
+inline constexpr u32 BitChecked = 1U << 19;
+
+enum Counter : size_t {
+    TrapsGuest = 0, ///< + TrapClass
+    TrapsService = TrapsGuest + NumTrapClasses,
+    TrapNsGuest = TrapsService + NumTrapClasses,
+    TrapNsService,
+    TrapsClosed, ///< Given back while no epoch was arming or open: no pre-image
+    PoolOverflow,
+    ClaimLost,
+    UnsizedReads, ///< + role
+    UnsizedHits = UnsizedReads + NumRoles,
+    SpanHits = UnsizedHits + NumRoles,
+    OverflowHits = SpanHits + NumRoles,
+    WriteThrough = OverflowHits + NumRoles, ///< + front, back, other thread
+    WriteThroughBytes = WriteThrough + 3,
+    UnarmedChanged,
+    UnarmedChecked,
+    Unhashed,
+    HostChanged,
+    PreimageStale,
+    CheckNs,
+    TouchOverflow,
+    SiteOverflow,
+    FrontPassedAtOpen,
+    BackPassedAtOpen,
+    FrontBeforeAtClose,
+    BackBeforeAtClose,
+    NumCounters,
+};
+
+enum CatField : size_t { Calls, Pages, Bytes, HitPages, HazardBytes, NumCatFields };
+inline constexpr size_t NumCatCounters = NumRoles * NumCats * NumCatFields;
+
+inline constexpr size_t CatIndex(size_t role, size_t category, CatField field) {
+    return (role * NumCats + category) * NumCatFields + field;
+}
+
+/// Pages one epoch touched, keyed by physical page: open addressing, lock-free inserts.
+struct TouchSet {
+    std::array<std::atomic<u32>, SetSlots> key{}; ///< phys + 1, 0 when empty
+    std::array<std::atomic<u32>, SetSlots> bits{};
+    std::array<std::atomic<u32>, SetSlots> used{};
+    std::atomic<u32> used_count{0};
+
+    static u32 Home(u32 key_value) {
+        static_assert(SetSlots == 65536);
+        return (key_value * 0x9E3779B1U) >> 16;
+    }
+
+    /// The page's slot, inserting it; SetSlots when the set is full.
+    u32 Insert(u64 phys) {
+        const u32 want = static_cast<u32>(phys) + 1;
+        u32 slot = Home(want);
+        for (u32 probes = 0; probes < SetSlots; ++probes, slot = (slot + 1) & (SetSlots - 1)) {
+            u32 current = key[slot].load(std::memory_order_acquire);
+            if (current == want) {
+                return slot;
+            }
+            if (current != 0) {
+                continue;
+            }
+            if (used_count.load(std::memory_order_relaxed) >= SetLimit) {
+                return SetSlots;
+            }
+            if (key[slot].compare_exchange_strong(current, want, std::memory_order_acq_rel)) {
+                const u32 n = used_count.fetch_add(1, std::memory_order_acq_rel);
+                used[n].store(slot, std::memory_order_release);
+                return slot;
+            }
+            if (current == want) {
+                return slot;
+            }
+        }
+        return SetSlots;
+    }
+
+    u32 Find(u64 phys) const {
+        const u32 want = static_cast<u32>(phys) + 1;
+        u32 slot = Home(want);
+        for (u32 probes = 0; probes < SetSlots; ++probes, slot = (slot + 1) & (SetSlots - 1)) {
+            const u32 current = key[slot].load(std::memory_order_acquire);
+            if (current == want) {
+                return slot;
+            }
+            if (current == 0) {
+                return SetSlots;
+            }
+        }
+        return SetSlots;
+    }
+
+    /// vi2, with no reader of this set left (two epochs old).
+    void Clear() {
+        const u32 n = (std::min)(used_count.load(std::memory_order_acquire), SetSlots);
+        for (u32 i = 0; i < n; ++i) {
+            const u32 slot = used[i].load(std::memory_order_relaxed);
+            key[slot].store(0, std::memory_order_relaxed);
+            bits[slot].store(0, std::memory_order_relaxed);
+        }
+        used_count.store(0, std::memory_order_release);
+    }
+};
+
+/// Hashes at the reply of the pages the previous epoch read; built by vi2 before readers open.
+struct ReplySet {
+    std::array<std::atomic<u32>, SetSlots> key{};
+    std::array<std::atomic<u64>, SetSlots> hash{};
+    std::array<u32, SetSlots> used{};
+    u32 used_count = 0;
+
+    void Clear() {
+        for (u32 i = 0; i < used_count; ++i) {
+            key[used[i]].store(0, std::memory_order_relaxed);
+        }
+        used_count = 0;
+    }
+
+    void Insert(u64 phys, u64 value) {
+        const u32 want = static_cast<u32>(phys) + 1;
+        for (u32 slot = TouchSet::Home(want);; slot = (slot + 1) & (SetSlots - 1)) {
+            const u32 current = key[slot].load(std::memory_order_relaxed);
+            if (current == want) {
+                hash[slot].store(value, std::memory_order_relaxed);
+                return;
+            }
+            if (current == 0) {
+                hash[slot].store(value, std::memory_order_relaxed);
+                key[slot].store(want, std::memory_order_release);
+                used[used_count++] = slot;
+                return;
+            }
+        }
+    }
+
+    bool Find(u64 phys, u64& value) const {
+        const u32 want = static_cast<u32>(phys) + 1;
+        u32 slot = TouchSet::Home(want);
+        for (u32 probes = 0; probes < SetSlots; ++probes, slot = (slot + 1) & (SetSlots - 1)) {
+            const u32 current = key[slot].load(std::memory_order_acquire);
+            if (current == want) {
+                value = hash[slot].load(std::memory_order_relaxed);
+                return true;
+            }
+            if (current == 0) {
+                return false;
+            }
+        }
+        return false;
+    }
+};
+
+/// Device memory's host pointer of a device address, without a ledger note.
+using DevicePointerFn = const u8* (*)(const void* device, u64 device_addr);
+
+struct State {
+    std::mutex init_mutex;
+    std::atomic<bool> ready{false};
+
+    // Epoch: vi2 arms with pool_active set, then opens the readers; both end at the close.
+    std::atomic<bool> pool_active{false};
+    std::atomic<bool> open{false};
+    std::atomic<u32> gen{0};
+    std::atomic<u64> pool{0}; ///< gen << 32 | slots taken
+    std::atomic<u32> fence_id{~0U};
+    std::atomic<u32> fence_value{0};
+
+    // Boundaries: the n-th front parse of an id's increment is the back's n-th increment of it.
+    std::array<std::atomic<u32>, NumIds> front_count{};
+    std::array<std::atomic<u32>, NumIds> back_count{};
+    std::array<std::atomic<u32>, NumIds> back_value{};
+
+    // Pre-images, allocated once.
+    std::unique_ptr<u8[]> bytes;
+    std::unique_ptr<std::atomic<u32>[]> index; ///< Per physical page
+    std::array<std::atomic<u64>, PoolSlots> slot_phys{}; ///< gen << 32 | phys + 1
+    std::array<std::unique_ptr<TouchSet>, 2> touch;      ///< By gen & 1
+    std::unique_ptr<ReplySet> reply;
+
+    std::atomic<const void*> device{nullptr};
+    std::atomic<DevicePointerFn> device_pointer{nullptr};
+    std::atomic<uintptr_t> physical_base{0};
+
+    std::array<std::atomic<u64>, NumCounters> c{};
+    std::array<std::atomic<u64>, NumCatCounters> cat{};
+    std::array<std::atomic<uintptr_t>, NumSites> site_addr{};
+    std::array<std::atomic<u64>, NumSites> site_hits{};
+    std::atomic<u64> verify_differences{};
+};
+
+inline State& Get() {
+    static State state;
+    return state;
+}
+
+inline thread_local Role t_role = Role::None;
+inline thread_local u32 t_seen_gen = 0;
+inline thread_local bool t_before = false;
+inline thread_local bool t_skip_pointer = false;
+inline thread_local const void* t_site = nullptr;
+
+inline s64 NowNs() {
+    return Nx2WarProbe::NowNs();
+}
+
+inline void Add(Counter counter, u64 amount = 1) {
+    Get().c[counter].fetch_add(amount, std::memory_order_relaxed);
+}
+
+inline void AddCat(size_t role, size_t category, CatField field, u64 amount) {
+    Get().cat[CatIndex(role, category, field)].fetch_add(amount, std::memory_order_relaxed);
+}
+
+template <typename... Args>
+void VerifyDifference(fmt::format_string<Args...> format, Args&&... args) {
+    const u64 count = Get().verify_differences.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 64) {
+        LOG_ERROR(HW_GPU, "Nx2Perf run_ahead_cow_probe: {} ({} so far)",
+                  fmt::format(format, std::forward<Args>(args)...), count);
+    }
+}
+
+/// Allocates the probe's state once (switch on only).
+inline void EnsureInit() {
+    State& s = Get();
+    if (s.ready.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::scoped_lock lock{s.init_mutex};
+    if (s.ready.load(std::memory_order_relaxed)) {
+        return;
+    }
+    s.bytes = std::make_unique<u8[]>(size_t{PoolSlots} * PageSize);
+    s.index = std::make_unique<std::atomic<u32>[]>(NumPhysPages);
+    s.touch[0] = std::make_unique<TouchSet>();
+    s.touch[1] = std::make_unique<TouchSet>();
+    s.reply = std::make_unique<ReplySet>();
+    s.ready.store(true, std::memory_order_release);
+    g_enabled.store(true, std::memory_order_release);
+}
+
+/// Device memory (the GPU's manager) at bind time.
+inline void RegisterDevice(const void* device, DevicePointerFn fn, uintptr_t physical_base) {
+    if (!On()) {
+        return;
+    }
+    EnsureInit();
+    State& s = Get();
+    s.physical_base.store(physical_base, std::memory_order_relaxed);
+    s.device.store(device, std::memory_order_relaxed);
+    s.device_pointer.store(fn, std::memory_order_release);
+}
+
+inline const u8* DevicePointer(u64 device_addr) {
+    State& s = Get();
+    const DevicePointerFn fn = s.device_pointer.load(std::memory_order_acquire);
+    return fn == nullptr ? nullptr : fn(s.device.load(std::memory_order_relaxed), device_addr);
+}
+
+inline u64 PhysOf(const u8* host) {
+    return (reinterpret_cast<uintptr_t>(host) -
+            Get().physical_base.load(std::memory_order_relaxed)) >>
+           PageBits;
+}
+
+/// Whether role has passed the open epoch's fence increment.
+inline bool Passed(Role role) {
+    State& s = Get();
+    const u32 id = s.fence_id.load(std::memory_order_acquire);
+    if (id >= NumIds) {
+        return true;
+    }
+    const u32 value = s.fence_value.load(std::memory_order_relaxed);
+    u32 reached = s.back_value[id].load(std::memory_order_acquire);
+    if (role == Role::Front) {
+        reached += s.front_count[id].load(std::memory_order_acquire) -
+                   s.back_count[id].load(std::memory_order_acquire);
+    }
+    return static_cast<s32>(reached - value) >= 0;
+}
+
+/// The calling GPU thread reads for the open epoch's frame (before its boundary).
+inline bool BeforeBoundary(u32 gen) {
+    if (t_seen_gen != gen) {
+        t_seen_gen = gen;
+        t_before = !Passed(t_role);
+    }
+    return t_before;
+}
+
+/// Front (Maxwell3D sync_info, puller fence action): an increment of id is parsed.
+inline void FrontIncrement(u32 id) {
+    if (id >= NumIds) {
+        return;
+    }
+    if (t_role == Role::None) {
+        EnsureInit();
+        t_role = Role::Front;
+        Nx2Ledger::g_note |= Nx2Ledger::NoteCow;
+    }
+    State& s = Get();
+    s.front_count[id].fetch_add(1, std::memory_order_acq_rel);
+    if (t_role == Role::Front && t_before && Passed(Role::Front)) {
+        t_before = false;
+    }
+}
+
+/// Back (fence manager), before it raises id's guest value to value.
+inline void BackIncrement(u32 id, u32 value) {
+    if (id >= NumIds) {
+        return;
+    }
+    State& s = Get();
+    // Count first: a front reading in between sees itself behind, never ahead.
+    s.back_count[id].fetch_add(1, std::memory_order_acq_rel);
+    s.back_value[id].store(value, std::memory_order_release);
+    if (t_before && Passed(Role::Back)) {
+        t_before = false;
+    }
+}
+
+/// The page's pre-image entry in this generation: slot + 1, SlotOverflow, or 0.
+inline u32 PreImageEntry(u64 phys, u32 gen) {
+    State& s = Get();
+    if (phys >= NumPhysPages) {
+        return 0;
+    }
+    const u32 tag = (gen & GenMask) << SlotBits;
+    const u32 entry = s.index[phys].load(std::memory_order_acquire);
+    u32 fast = (entry & ~SlotMask) == tag ? (entry & SlotMask) : 0;
+    if (Nx2Perf::Verify() && fast != SlotOverflow) {
+        // The old answer: a scan of the slots taken this generation.
+        u32 old = 0;
+        const u64 pool = s.pool.load(std::memory_order_acquire);
+        if ((pool >> 32) == gen) {
+            const u32 taken = (std::min)(static_cast<u32>(pool), PoolSlots);
+            const u64 want = (u64{gen} << 32) | (phys + 1);
+            for (u32 i = 0; i < taken; ++i) {
+                if (s.slot_phys[i].load(std::memory_order_acquire) == want) {
+                    old = i + 1;
+                    break;
+                }
+            }
+        }
+        if (old != fast) {
+            VerifyDifference("pre-image index says slot {} for page {:#x}, the pool scan {}",
+                             fast, phys << PageBits, old);
+            fast = old;
+        }
+    }
+    return fast;
+}
+
+inline bool IsBankPage(u64 phys, u32 gen) {
+    State& s = Get();
+    constexpr u32 bank = 1U << static_cast<u32>(Nx2Ledger::Category::BankCompare);
+    for (const u32 parity : {gen & 1, (gen - 1) & 1}) {
+        const TouchSet& set = *s.touch[parity];
+        if (const u32 slot = set.Find(phys);
+            slot != SetSlots && (set.bits[slot].load(std::memory_order_relaxed) & bank) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Core memory, on a page's first write since the arm and before it lands: copies the page.
+/// Returns whether this write was the page's first in the epoch (a trap the CoW would take).
+inline bool PreImage(u64 phys, const u8* host, TrapClass cls, bool guest_core) {
+    State& s = Get();
+    if (!s.ready.load(std::memory_order_acquire) ||
+        !s.pool_active.load(std::memory_order_acquire)) {
+        Add(TrapsClosed);
+        return false;
+    }
+    if (phys >= NumPhysPages) {
+        return false;
+    }
+    const u32 gen = s.gen.load(std::memory_order_acquire);
+    const u32 tag = (gen & GenMask) << SlotBits;
+    std::atomic<u32>& entry = s.index[phys];
+    u32 current = entry.load(std::memory_order_acquire);
+    if ((current & ~SlotMask) == tag && (current & SlotMask) != 0) {
+        return false;
+    }
+    u64 pool = s.pool.load(std::memory_order_acquire);
+    u32 value = SlotOverflow;
+    for (;;) {
+        if ((pool >> 32) != gen) {
+            return false;
+        }
+        if (static_cast<u32>(pool) >= PoolSlots) {
+            Add(PoolOverflow);
+            break;
+        }
+        if (s.pool.compare_exchange_weak(pool, pool + 1, std::memory_order_acq_rel)) {
+            const u32 slot = static_cast<u32>(pool);
+            std::memcpy(s.bytes.get() + size_t{slot} * PageSize, host, PageSize);
+            s.slot_phys[slot].store((u64{gen} << 32) | (phys + 1), std::memory_order_release);
+            value = slot + 1;
+            break;
+        }
+    }
+    if (!entry.compare_exchange_strong(current, tag | value, std::memory_order_acq_rel)) {
+        if (value != SlotOverflow) {
+            s.slot_phys[value - 1].store(0, std::memory_order_release);
+            Add(ClaimLost);
+        }
+        return false;
+    }
+    if (cls != TrapClass::Bank && IsBankPage(phys, gen)) {
+        cls = TrapClass::Bank;
+    }
+    Add(static_cast<Counter>((guest_core ? TrapsGuest : TrapsService) + static_cast<size_t>(cls)));
+    return true;
+}
+
+/// Core memory: a trap's cost (pre-image and giving the page back).
+inline void AddTrapNs(s64 ns, bool guest_core) {
+    Add(guest_core ? TrapNsGuest : TrapNsService, static_cast<u64>((std::max<s64>)(ns, 0)));
+}
+
+/// Whether pre-images are being taken (an epoch arms or is open).
+inline bool PoolActive() {
+    return Get().pool_active.load(std::memory_order_acquire);
+}
+
+/// Bytes of [a, a + len) and [b, b + len) that differ.
+inline u64 DiffBytes(const u8* a, const u8* b, u64 len) {
+    u64 differ = 0;
+    for (u64 offset = 0; offset < len; offset += 64) {
+        const u64 n = (std::min<u64>)(64, len - offset);
+        if (std::memcmp(a + offset, b + offset, n) == 0) {
+            continue;
+        }
+        for (u64 i = 0; i < n; ++i) {
+            differ += a[offset + i] != b[offset + i] ? 1 : 0;
+        }
+    }
+    if (Nx2Perf::Verify()) {
+        u64 old = 0;
+        for (u64 i = 0; i < len; ++i) {
+            old += a[i] != b[i] ? 1 : 0;
+        }
+        if (old != differ) {
+            VerifyDifference("hazard bytes {} by chunks, {} by bytes", differ, old);
+            differ = old;
+        }
+    }
+    return differ;
+}
+
+/// First check of a page this epoch: its bytes (the pre-image when it has one) against its hash
+/// at the reply.
+inline void CheckPage(u64 phys, const u8* bytes, bool preimaged, u32 bits) {
+    State& s = Get();
+    const s64 start = NowNs();
+    u64 reply_hash = 0;
+    if (!s.reply->Find(phys, reply_hash)) {
+        Add(Unhashed);
+    } else {
+        Add(UnarmedChecked);
+        if (Nx2Ledger::HashPage(bytes) != reply_hash) {
+            Add(preimaged                      ? PreimageStale
+                : (bits & BitHostWritten) != 0 ? HostChanged
+                                               : UnarmedChanged);
+        }
+    }
+    Add(CheckNs, static_cast<u64>((std::max<s64>)(NowNs() - start, 0)));
+}
+
+/// One page of a read before the boundary; len 0 for an unsized read. Returns whether the page
+/// has a pre-image.
+inline bool ReadPage(size_t role, size_t category, u64 phys, const u8* host, u64 offset, u64 len,
+                     u32 gen) {
+    State& s = Get();
+    TouchSet& set = *s.touch[gen & 1];
+    const u32 role_bit = role == 0 ? BitFront : BitBack;
+    const u32 slot = set.Insert(phys);
+    u32 old = 0;
+    bool check = false;
+    if (slot != SetSlots) {
+        old = set.bits[slot].fetch_or(role_bit | (1U << category) | BitChecked,
+                                      std::memory_order_acq_rel);
+        check = (old & BitChecked) == 0;
+        if ((old & role_bit) == 0) {
+            AddCat(role, category, Pages, 1);
+        }
+    } else {
+        Add(TouchOverflow);
+    }
+    const u32 entry = PreImageEntry(phys, gen);
+    if (entry == SlotOverflow) {
+        Add(static_cast<Counter>(OverflowHits + role));
+        return true;
+    }
+    if (entry == 0) {
+        if (check) {
+            CheckPage(phys, host, false, old);
+        }
+        return false;
+    }
+    const u8* const pre = s.bytes.get() + size_t{entry - 1} * PageSize;
+    AddCat(role, category, HitPages, 1);
+    if (len != 0) {
+        AddCat(role, category, HazardBytes, DiffBytes(pre + offset, host + offset, len));
+    }
+    if (check) {
+        CheckPage(phys, pre, true, old);
+    }
+    return true;
+}
+
+inline void NoteSite(const void* site) {
+    State& s = Get();
+    const uintptr_t address = reinterpret_cast<uintptr_t>(site);
+    size_t i = static_cast<size_t>((u64{address} * 0x9E3779B97F4A7C15ULL) >> 59);
+    for (size_t probes = 0; probes < NumSites; ++probes, i = (i + 1) % NumSites) {
+        uintptr_t current = s.site_addr[i].load(std::memory_order_acquire);
+        if (current == 0 &&
+            s.site_addr[i].compare_exchange_strong(current, address, std::memory_order_acq_rel)) {
+            current = address;
+        }
+        if (current == address) {
+            s.site_hits[i].fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    Add(SiteOverflow);
+}
+
+inline void ReadSlow(u64 device_addr, u64 size, Nx2Ledger::NoteKind kind, const void* site,
+                     u32 gen) {
+    const size_t role = t_role == Role::Front ? 0 : 1;
+    const size_t category =
+        role == 0 ? FrontCategory
+                  : (std::min<size_t>)(Nx2Ledger::g_ledger_category, Nx2Ledger::NumCategories - 1);
+    if (kind == Nx2Ledger::NoteKind::Pointer) {
+        Add(static_cast<Counter>(UnsizedReads + role));
+        const u8* const host = DevicePointer(device_addr & ~(PageSize - 1));
+        if (host != nullptr && ReadPage(role, category, PhysOf(host), host, 0, 0, gen)) {
+            Add(static_cast<Counter>(UnsizedHits + role));
+            NoteSite(site);
+        }
+        return;
+    }
+    if (size == 0) {
+        return;
+    }
+    AddCat(role, category, Calls, 1);
+    AddCat(role, category, Bytes, size);
+    bool span_hit = false;
+    const u64 end = device_addr + size;
+    for (u64 page = device_addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
+        const u8* const host = DevicePointer(page << PageBits);
+        if (host == nullptr) {
+            continue;
+        }
+        const u64 begin = (std::max)(device_addr, page << PageBits) - (page << PageBits);
+        const u64 stop = (std::min)(end, (page + 1) << PageBits) - (page << PageBits);
+        span_hit |= ReadPage(role, category, PhysOf(host), host, begin, stop - begin, gen);
+    }
+    if (span_hit && kind == Nx2Ledger::NoteKind::Span) {
+        Add(static_cast<Counter>(SpanHits + role));
+    }
+}
+
+/// Device memory, before a host write of [device_addr, device_addr + size) lands.
+inline void HostWriteSlow(u64 device_addr, u64 size) {
+    State& s = Get();
+    if (size == 0 || !s.open.load(std::memory_order_acquire)) {
+        return;
+    }
+    const u32 gen = s.gen.load(std::memory_order_acquire);
+    size_t who = 2; // A thread without a boundary (fencing, services)
+    bool count = true;
+    if (t_role != Role::None) {
+        who = t_role == Role::Front ? 0 : 1;
+        count = BeforeBoundary(gen);
+    }
+    TouchSet& set = *s.touch[gen & 1];
+    const u64 end = device_addr + size;
+    for (u64 page = device_addr >> PageBits; page <= (end - 1) >> PageBits; ++page) {
+        const u8* const host = DevicePointer(page << PageBits);
+        if (host == nullptr) {
+            continue;
+        }
+        const u64 phys = PhysOf(host);
+        if (const u32 slot = set.Insert(phys); slot != SetSlots) {
+            set.bits[slot].fetch_or(BitHostWritten, std::memory_order_acq_rel);
+        }
+        if (count && PreImageEntry(phys, gen) != 0) {
+            const u64 len = (std::min)(end, (page + 1) << PageBits) -
+                            (std::max)(device_addr, page << PageBits);
+            Add(static_cast<Counter>(WriteThrough + who));
+            Add(WriteThroughBytes, len);
+        }
+    }
+}
+
+/// Device memory and the GPU's memory manager: a host write is about to land.
+inline void HostWrite(u64 device_addr, u64 size) {
+    if (g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        HostWriteSlow(device_addr, size);
+    }
+}
+
+/// The next unsized note on this thread starts an access noted with its size.
+inline void SkipNextPointer() {
+    if ((Nx2Ledger::g_note & Nx2Ledger::NoteCow) != 0) [[unlikely]] {
+        t_skip_pointer = true;
+    }
+}
+
+/// The next unsized note on this thread is reported at site (a wrapper's caller).
+inline void SetSite(const void* site) {
+    if ((Nx2Ledger::g_note & Nx2Ledger::NoteCow) != 0) [[unlikely]] {
+        t_site = site;
+    }
+}
+
+/// vi2, at the reply: a new epoch for fence (id, value); pre-images are taken from here on.
+inline void Begin(u32 id, u32 value) {
+    EnsureInit();
+    State& s = Get();
+    const u32 gen = s.gen.load(std::memory_order_relaxed) + 1;
+    s.touch[gen & 1]->Clear();
+    s.fence_id.store(id, std::memory_order_relaxed);
+    s.fence_value.store(value, std::memory_order_relaxed);
+    s.pool.store(u64{gen} << 32, std::memory_order_release);
+    s.gen.store(gen, std::memory_order_release);
+    s.pool_active.store(true, std::memory_order_release);
+    if (Passed(Role::Front)) {
+        Add(FrontPassedAtOpen);
+    }
+    if (Passed(Role::Back)) {
+        Add(BackPassedAtOpen);
+    }
+}
+
+/// vi2, after the arm: hashes the pages the previous epoch read. Returns how many.
+inline u32 HashReply() {
+    State& s = Get();
+    ReplySet& reply = *s.reply;
+    reply.Clear();
+    const uintptr_t base = s.physical_base.load(std::memory_order_relaxed);
+    const u32 gen = s.gen.load(std::memory_order_relaxed);
+    if (base == 0 || gen < 2) {
+        return 0;
+    }
+    const TouchSet& previous = *s.touch[(gen - 1) & 1];
+    const u32 n = (std::min)(previous.used_count.load(std::memory_order_acquire), SetSlots);
+    u32 hashed = 0;
+    for (u32 i = 0; i < n && hashed < MaxReplyHashes; ++i) {
+        const u32 slot = previous.used[i].load(std::memory_order_acquire);
+        if ((previous.bits[slot].load(std::memory_order_relaxed) & (BitFront | BitBack)) == 0) {
+            continue;
+        }
+        const u32 key = previous.key[slot].load(std::memory_order_relaxed);
+        if (key == 0) {
+            continue;
+        }
+        const u64 phys = key - 1;
+        reply.Insert(phys, Nx2Ledger::HashPage(reinterpret_cast<const u8*>(base) +
+                                               (phys << PageBits)));
+        ++hashed;
+    }
+    return hashed;
+}
+
+/// vi2, right before the reply: the front and back record their reads from here on.
+inline void OpenReaders() {
+    Get().open.store(true, std::memory_order_release);
+}
+
+/// vi2, at the next present after its wait: the epoch ends.
+inline void Close() {
+    State& s = Get();
+    if (!s.pool_active.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!Passed(Role::Front)) {
+        Add(FrontBeforeAtClose);
+    }
+    if (!Passed(Role::Back)) {
+        Add(BackBeforeAtClose);
+    }
+    s.open.store(false, std::memory_order_release);
+    s.pool_active.store(false, std::memory_order_release);
+}
+
+/// One arm by core memory and vi2's hashing, for the window.
+struct ArmSample {
+    u64 armed = 0;         ///< Pages write-protected now
+    u64 protect_calls = 0; ///< Host protect calls (runs)
+    u64 armed_total = 0;   ///< Pages armed after it
+    u64 new_mapped = 0;    ///< Pages of device mappings made since the last arm
+    u64 full = 0;          ///< 1 when every device-mapped page was collected
+    u64 overflow = 0;      ///< Pages the fixed lists could not hold
+    s64 arm_ns = 0;
+    s64 hash_ns = 0;
+    u64 hashed = 0;
+};
+
+/// vi2's side: per-frame samples and the line once per WindowFrames presents.
+class Vi2Window {
+public:
+    Vi2Window() {
+        LOG_INFO(HW_GPU,
+                 "Nx2RunAheadCow: probe on (measurement only; meaningful with EDEN_NX2_PERF_ON="
+                 "frames_ahead,present_one_ahead,run_ahead_ledger,run_ahead_cow_probe; flashes "
+                 "there are expected, not a result). Decision rules: build run_ahead_cow next "
+                 "only if traps x ns/trap <= ~8 ms/frame on guest threads, the pre-imaged pages "
+                 "fit 4096/frame (pool_overflow 0), unarmed_changed == 0 and the unsized hazards "
+                 "come from <= ~5 call sites. If hazard_bytes is ~0 outside bank and unsized "
+                 "reads while flashes persist, the flash is RAW (the guest reading GPU results): "
+                 "pursue raw_landing_wait instead. trap_ns excludes the host fault dispatch; "
+                 "unarmed_changed is checked once per page and epoch, at its first read, against "
+                 "its hash at the reply (pages the previous epoch read; others count unhashed); "
+                 "unsized sites are return addresses (ref={:#x} is Nx2Cow::Get)",
+                 reinterpret_cast<uintptr_t>(&Get));
+    }
+
+    void NoteArm(const ArmSample& sample) {
+        arm = sample;
+        have_arm = true;
+        sum.armed += sample.armed;
+        sum.protect_calls += sample.protect_calls;
+        sum.new_mapped += sample.new_mapped;
+        sum.full += sample.full;
+        sum.overflow += sample.overflow;
+        sum.hash_ns += sample.hash_ns;
+        sum.hashed += sample.hashed;
+        armed_total = sample.armed_total;
+    }
+
+    /// At the close: one frame. Returns the report line every WindowFrames frames.
+    std::string Close() {
+        State& s = Get();
+        const Snapshot now = Take();
+        if (have_frame_base && have_arm) {
+            const auto delta = [&](size_t counter) {
+                return now.c[counter] - frame_base.c[counter];
+            };
+            const size_t f = frames;
+            metrics[TrapTrackedM][f] =
+                static_cast<float>(delta(TrapsGuest) + delta(TrapsService));
+            metrics[TrapUntrackedM][f] =
+                static_cast<float>(delta(TrapsGuest + 1) + delta(TrapsService + 1));
+            metrics[TrapBankM][f] =
+                static_cast<float>(delta(TrapsGuest + 2) + delta(TrapsService + 2));
+            metrics[TrapMsGuestM][f] = static_cast<float>(delta(TrapNsGuest)) / 1e6f;
+            metrics[ArmMsM][f] = static_cast<float>(arm.arm_ns) / 1e6f;
+            metrics[PreimagedM][f] = static_cast<float>((std::min<u64>)(
+                static_cast<u32>(s.pool.load(std::memory_order_acquire)), PoolSlots));
+            u64 front_bytes = 0;
+            u64 back_bytes = 0;
+            u64 hazard = 0;
+            for (size_t c = 0; c < NumCats; ++c) {
+                front_bytes +=
+                    now.cat[CatIndex(0, c, Bytes)] - frame_base.cat[CatIndex(0, c, Bytes)];
+                back_bytes +=
+                    now.cat[CatIndex(1, c, Bytes)] - frame_base.cat[CatIndex(1, c, Bytes)];
+                for (size_t r = 0; r < NumRoles; ++r) {
+                    hazard += now.cat[CatIndex(r, c, HazardBytes)] -
+                              frame_base.cat[CatIndex(r, c, HazardBytes)];
+                }
+            }
+            metrics[FrontKibM][f] = static_cast<float>(front_bytes) / 1024.0f;
+            metrics[BackKibM][f] = static_cast<float>(back_bytes) / 1024.0f;
+            metrics[HazardM][f] = static_cast<float>(hazard);
+            metrics[UnarmedM][f] = static_cast<float>(delta(UnarmedChanged));
+            ++frames;
+        }
+        frame_base = now;
+        have_frame_base = true;
+        have_arm = false;
+        if (!have_window_base) {
+            window_base = now;
+            have_window_base = true;
+        }
+        if (Nx2Perf::Verify()) {
+            const s64 t = NowNs();
+            const u64 count = s.verify_differences.load(std::memory_order_relaxed);
+            if (count != verify_logged && t - verify_log_ns >= 1'000'000'000) {
+                LOG_INFO(HW_GPU, "Nx2Perf run_ahead_cow_probe: {} verify differences so far",
+                         count);
+                verify_logged = count;
+                verify_log_ns = t;
+            }
+        }
+        if (frames < WindowFrames) {
+            return {};
+        }
+        std::string line = Report(now);
+        frames = 0;
+        window_base = now;
+        sum = Sums{};
+        return line;
+    }
+
+private:
+    enum Metric : size_t {
+        TrapTrackedM,
+        TrapUntrackedM,
+        TrapBankM,
+        TrapMsGuestM,
+        ArmMsM,
+        PreimagedM,
+        FrontKibM,
+        BackKibM,
+        HazardM,
+        UnarmedM,
+        NumMetrics,
+    };
+
+    struct Snapshot {
+        std::array<u64, NumCounters> c{};
+        std::array<u64, NumCatCounters> cat{};
+        std::array<u64, NumSites> site_hits{};
+    };
+
+    struct Sums {
+        u64 armed = 0;
+        u64 protect_calls = 0;
+        u64 new_mapped = 0;
+        u64 full = 0;
+        u64 overflow = 0;
+        u64 hashed = 0;
+        s64 hash_ns = 0;
+    };
+
+    static Snapshot Take() {
+        State& s = Get();
+        Snapshot snapshot;
+        for (size_t i = 0; i < NumCounters; ++i) {
+            snapshot.c[i] = s.c[i].load(std::memory_order_relaxed);
+        }
+        for (size_t i = 0; i < NumCatCounters; ++i) {
+            snapshot.cat[i] = s.cat[i].load(std::memory_order_relaxed);
+        }
+        for (size_t i = 0; i < NumSites; ++i) {
+            snapshot.site_hits[i] = s.site_hits[i].load(std::memory_order_relaxed);
+        }
+        return snapshot;
+    }
+
+    std::string Percentiles(Metric metric) {
+        std::copy_n(metrics[metric].begin(), frames, sorted.begin());
+        const auto at = [&](size_t percent) {
+            const size_t index = (std::min<size_t>)(frames - 1, frames * percent / 100);
+            std::nth_element(sorted.begin(), sorted.begin() + index, sorted.begin() + frames);
+            return sorted[index];
+        };
+        const float p50 = at(50);
+        const float p99 = at(99);
+        return fmt::format("{:.1f}/{:.1f}", p50, p99);
+    }
+
+    static std::string_view CategoryName(size_t c) {
+        return c == FrontCategory ? std::string_view{"macro_list"}
+                                  : Nx2Ledger::category_names[c];
+    }
+
+    std::string Report(const Snapshot& now) {
+        State& s = Get();
+        const double n = static_cast<double>(frames);
+        const auto delta = [&](size_t counter) { return now.c[counter] - window_base.c[counter]; };
+        const auto per = [&](u64 value) { return static_cast<double>(value) / n; };
+        const auto cat_delta = [&](size_t role, size_t c, CatField field) {
+            return now.cat[CatIndex(role, c, field)] - window_base.cat[CatIndex(role, c, field)];
+        };
+        // Reads by thread and category: calls/pages/KiB/hit pages/hazard bytes per frame.
+        std::string reads;
+        std::array<u64, NumCats> hazard_by_cat{};
+        for (size_t role = 0; role < NumRoles; ++role) {
+            reads += role == 0 ? " front:" : " back:";
+            for (size_t c = 0; c < NumCats; ++c) {
+                const u64 calls = cat_delta(role, c, Calls);
+                const u64 pages = cat_delta(role, c, Pages);
+                const u64 hazard = cat_delta(role, c, HazardBytes);
+                hazard_by_cat[c] += hazard;
+                if (calls == 0 && pages == 0) {
+                    continue;
+                }
+                reads += fmt::format(" {}={:.1f}/{:.1f}/{:.1f}/{:.2f}/{:.1f}", CategoryName(c),
+                                     per(calls), per(pages),
+                                     per(cat_delta(role, c, Bytes)) / 1024.0,
+                                     per(cat_delta(role, c, HitPages)), per(hazard));
+            }
+        }
+        std::string hazards;
+        for (size_t c = 0; c < NumCats; ++c) {
+            if (hazard_by_cat[c] != 0) {
+                hazards += fmt::format(" {}={:.1f}", CategoryName(c), per(hazard_by_cat[c]));
+            }
+        }
+        // Front capture: back bytes whose ranges the front has at parse vs derived lazily.
+        using Nx2Ledger::Category;
+        const auto back_kib = [&](std::initializer_list<Category> categories) {
+            u64 total = 0;
+            for (const Category c : categories) {
+                total += cat_delta(1, static_cast<size_t>(c), Bytes);
+            }
+            return per(total) / 1024.0;
+        };
+        const double known = back_kib({Category::UniformFast, Category::UniformCached,
+                                       Category::Vertex, Category::Index, Category::Indirect});
+        const double lazy = back_kib({Category::Storage, Category::Descriptor,
+                                      Category::TextureUpload, Category::BankCompare});
+        const double other = back_kib({Category::Other});
+        // Unsized-hit call sites this window, most hits first.
+        std::array<std::pair<u64, size_t>, NumSites> sites{};
+        for (size_t i = 0; i < NumSites; ++i) {
+            sites[i] = {now.site_hits[i] - window_base.site_hits[i], i};
+        }
+        std::sort(sites.begin(), sites.end(), std::greater<>{});
+        std::string top;
+        size_t site_count = 0;
+        for (const auto& [hits, i] : sites) {
+            if (hits == 0) {
+                continue;
+            }
+            if (++site_count <= 8) {
+                top += fmt::format(" {:#x}:{}", s.site_addr[i].load(std::memory_order_relaxed),
+                                   hits);
+            }
+        }
+        const u64 traps_guest = delta(TrapsGuest) + delta(TrapsGuest + 1) + delta(TrapsGuest + 2);
+        const double ns_per_trap = traps_guest == 0
+                                       ? 0.0
+                                       : static_cast<double>(delta(TrapNsGuest)) /
+                                             static_cast<double>(traps_guest);
+        return fmt::format(
+            "Nx2RunAheadCow: frames={} traps/frame p50/p99 tracked={} untracked={} bank={} "
+            "service={:.1f}/frame (ns {:.0f}) guest_trap_ms p50/p99={} ns_per_trap={:.0f} "
+            "closed_traps={:.1f}/frame arm_ms p50/p99={} arm_calls={:.1f}/frame "
+            "armed={:.1f}/frame armed_total={} new_mapped={:.1f}/frame full_arms={} "
+            "arm_overflow={} preimaged p50/p99={} pool_overflow={} claim_lost={} "
+            "reads(calls/pages/KiB/hit pages/hazard B per frame):{} KiB p50/p99 front={} "
+            "back={} hazard_bytes p50/p99={} by_cat:{} unsized(reads/hits per frame) "
+            "front={:.1f}/{:.2f} back={:.1f}/{:.2f} sites={}{} site_overflow={} "
+            "overflow_hits={}/{} getspan_hits front={} back={} host_write_through "
+            "front/back/other={}/{}/{} ({:.1f} KiB/frame) unarmed_changed={} p50/p99={} "
+            "(checked {}, unhashed {}, host_changed {}, preimage_stale {}) check_ms={:.3f}/frame "
+            "reply_hashed={:.0f}/frame reply_hash_ms={:.3f}/frame capture(back KiB/frame "
+            "known/lazy/other)={:.1f}/{:.1f}/{:.1f} boundary(front/back passed at open {}/{}, "
+            "before at close {}/{}) touch_overflow={} verify_differences={}",
+            frames, Percentiles(TrapTrackedM), Percentiles(TrapUntrackedM),
+            Percentiles(TrapBankM),
+            per(delta(TrapsService) + delta(TrapsService + 1) + delta(TrapsService + 2)),
+            per(delta(TrapNsService)), Percentiles(TrapMsGuestM), ns_per_trap,
+            per(delta(TrapsClosed)), Percentiles(ArmMsM), per(sum.protect_calls), per(sum.armed),
+            armed_total, per(sum.new_mapped), sum.full, sum.overflow, Percentiles(PreimagedM),
+            delta(PoolOverflow), delta(ClaimLost), reads, Percentiles(FrontKibM),
+            Percentiles(BackKibM), Percentiles(HazardM), hazards, per(delta(UnsizedReads)),
+            per(delta(UnsizedHits)), per(delta(UnsizedReads + 1)), per(delta(UnsizedHits + 1)),
+            site_count, top, delta(SiteOverflow), delta(OverflowHits), delta(OverflowHits + 1),
+            delta(SpanHits), delta(SpanHits + 1), delta(WriteThrough), delta(WriteThrough + 1),
+            delta(WriteThrough + 2), per(delta(WriteThroughBytes)) / 1024.0,
+            delta(UnarmedChanged), Percentiles(UnarmedM), delta(UnarmedChecked), delta(Unhashed),
+            delta(HostChanged), delta(PreimageStale),
+            static_cast<double>(delta(CheckNs)) / 1e6 / n, per(sum.hashed),
+            static_cast<double>(sum.hash_ns) / 1e6 / n, known, lazy, other,
+            delta(FrontPassedAtOpen), delta(BackPassedAtOpen), delta(FrontBeforeAtClose),
+            delta(BackBeforeAtClose), delta(TouchOverflow),
+            s.verify_differences.load(std::memory_order_relaxed));
+    }
+
+    std::array<std::array<float, WindowFrames>, NumMetrics> metrics{};
+    std::array<float, WindowFrames> sorted{};
+    size_t frames = 0;
+    Snapshot frame_base{};
+    Snapshot window_base{};
+    bool have_frame_base = false;
+    bool have_window_base = false;
+    bool have_arm = false;
+    ArmSample arm{};
+    Sums sum{};
+    u64 armed_total = 0;
+    u64 verify_logged = 0;
+    s64 verify_log_ns = 0;
+};
+
+} // namespace VideoCommon::Nx2Cow
+
+namespace VideoCommon::Nx2Ledger {
+
+inline void NoteCowRead(u64 device_addr, u64 size, NoteKind kind, const void* site) {
+    if (kind == NoteKind::Pointer) {
+        if (Nx2Cow::t_site != nullptr) {
+            site = Nx2Cow::t_site;
+            Nx2Cow::t_site = nullptr;
+        }
+        if (Nx2Cow::t_skip_pointer) {
+            Nx2Cow::t_skip_pointer = false;
+            return;
+        }
+    } else {
+        // A skip or site whose GetPointer returned early (unmapped) ends here.
+        Nx2Cow::t_skip_pointer = false;
+        Nx2Cow::t_site = nullptr;
+    }
+    Nx2Cow::State& s = Nx2Cow::Get();
+    if (!s.open.load(std::memory_order_acquire)) {
+        return;
+    }
+    const u32 gen = s.gen.load(std::memory_order_acquire);
+    if (!Nx2Cow::BeforeBoundary(gen)) {
+        return;
+    }
+    Nx2Cow::ReadSlow(device_addr, size, kind, site, gen);
+}
+
+inline void NoteCowStartBack() {
+    if (!Nx2Cow::On()) {
+        return;
+    }
+    Nx2Cow::EnsureInit();
+    Nx2Cow::t_role = Nx2Cow::Role::Back;
+    g_note |= NoteCow;
+}
 
 } // namespace VideoCommon::Nx2Ledger

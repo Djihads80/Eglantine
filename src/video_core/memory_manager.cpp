@@ -342,6 +342,13 @@ u32 MemoryManager::ReadU32(GPUVAddr addr, ReadPageCache& cache) const {
 
 template <typename T>
 void MemoryManager::Write(GPUVAddr addr, T data) {
+    if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        // run_ahead_cow_probe: a host write, not an unsized read.
+        if (const auto device = GpuToCpuAddress(addr)) {
+            VideoCommon::Nx2Cow::HostWriteSlow(*device, sizeof(T));
+        }
+        VideoCommon::Nx2Cow::SkipNextPointer();
+    }
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
         std::memcpy(page_pointer, &data, sizeof(T));
@@ -374,7 +381,7 @@ u8* MemoryManager::GetPointer(GPUVAddr gpu_addr) {
     if (!address) {
         return {};
     }
-
+    VideoCommon::Nx2Cow::SetSite(NX2_RETURN_ADDRESS());
     return memory.GetPointer<u8>(*address);
 }
 
@@ -383,7 +390,7 @@ const u8* MemoryManager::GetPointer(GPUVAddr gpu_addr) const {
     if (!address) {
         return {};
     }
-
+    VideoCommon::Nx2Cow::SetSite(NX2_RETURN_ADDRESS());
     return memory.GetPointer<u8>(*address);
 }
 
@@ -475,6 +482,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
+        VideoCommon::Nx2Cow::SkipNextPointer();
         if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             VideoCommon::Nx2Ledger::Note(dev_addr_base, copy_amount);
             std::memcpy(dest_buffer, physical, copy_amount);
@@ -490,8 +498,11 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         }
         // A continuous big page may still have no host memory (a Switch 2 region backed as it is
         // written, while its backing is pending): the per-page copy handles that.
-        u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
-                                                             : nullptr;
+        const bool continuous = IsBigPageContinuous(page_index);
+        if (continuous) {
+            VideoCommon::Nx2Cow::SkipNextPointer();
+        }
+        u8* const physical = continuous ? memory.GetPointer<u8>(dev_addr_base) : nullptr;
         if (physical != nullptr) [[likely]] {
             VideoCommon::Nx2Ledger::Note(dev_addr_base, copy_amount);
             std::memcpy(dest_buffer, physical, copy_amount);
@@ -517,8 +528,9 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
     // in title 1). Anything else, unmapped or sparse pages included, takes the full path.
     constexpr std::size_t SmallPage = 0x1000;
     if (size <= SmallPage && (gpu_src_addr & (SmallPage - 1)) + size <= SmallPage) {
+        VideoCommon::Nx2Cow::SkipNextPointer();
         if (const u8* const pointer = GetPointer(gpu_src_addr)) {
-            if (VideoCommon::Nx2Ledger::g_is_back) [[unlikely]] {
+            if (VideoCommon::Nx2Ledger::g_note != 0) [[unlikely]] {
                 VideoCommon::Nx2Ledger::Note(*GpuToCpuAddress(gpu_src_addr), size);
             }
             std::memcpy(dest_buffer, pointer, size);
@@ -551,6 +563,8 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
+        VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount);
+        VideoCommon::Nx2Cow::SkipNextPointer();
         if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
         }
@@ -565,8 +579,12 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
-        u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
-                                                             : nullptr;
+        const bool continuous = IsBigPageContinuous(page_index);
+        if (continuous) {
+            VideoCommon::Nx2Cow::HostWrite(dev_addr_base, copy_amount);
+            VideoCommon::Nx2Cow::SkipNextPointer();
+        }
+        u8* const physical = continuous ? memory.GetPointer<u8>(dev_addr_base) : nullptr;
         if (physical != nullptr) [[likely]] {
             std::memcpy(physical, src_buffer, copy_amount);
         } else {

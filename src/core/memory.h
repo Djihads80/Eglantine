@@ -514,6 +514,24 @@ public:
      */
     bool Nx2CoverClassify(std::span<const u64> cpu_pages, std::span<u8> classes);
 
+    /// run_ahead_cow_probe (video_core/nx2_war_probe.h, measurement only): one arm's counts.
+    struct Nx2CowArmResult {
+        u64 armed{};         ///< Pages write-protected by this arm
+        u64 protect_calls{}; ///< Host protect calls (coalesced runs)
+        u64 armed_total{};   ///< Pages armed after it
+        u64 new_mapped{};    ///< Guest pages behind device mappings collected for it
+        u64 full{};          ///< 1 when every device-mapped page was collected
+        u64 overflow{};      ///< Pages a fixed list could not hold
+        s64 arm_ns{};
+    };
+
+    /**
+     * run_ahead_cow_probe, at vi2's reply: write-protects every device-mapped guest page of type
+     * Memory not armed yet (the first time all of them, then the pages given back since and new
+     * device mappings). The first write of each one copies the page before it continues.
+     */
+    Nx2CowArmResult Nx2CowArm();
+
     /**
      * inflight_write_wait / inflight_read_exact (video_core/nx2_war_probe.h): vi2 replies to the
      * present of fence (fence_id, fence_value) having waited only for (prev_id, prev_value).

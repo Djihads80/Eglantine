@@ -81,11 +81,19 @@ struct Memory::Impl {
             Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce &&
             current_page_table->GetAddressSpaceBits() <= 43;
         war_inflight = war_capable && VideoCommon::Nx2Inflight::Any();
+        cow_on = war_capable && VideoCommon::Nx2Cow::On();
         // run_ahead_cover keeps the arm set to classify pages; it never arms it.
         war_probe = war_capable && (VideoCommon::Nx2WarProbe::On() || war_inflight ||
-                                    VideoCommon::Nx2Ledger::CoverOn());
+                                    VideoCommon::Nx2Ledger::CoverOn() || cow_on);
         if (war_probe) {
             war_unprotected.Init();
+        }
+        if (cow_on) {
+            cow_armed.Init();
+            if (!cow_rearm) {
+                cow_rearm = std::make_unique<u32[]>(CowListCapacity);
+                cow_collect = std::make_unique<u32[]>(CowListCapacity);
+            }
         }
     }
 
@@ -364,7 +372,7 @@ struct Memory::Impl {
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
-        if (war_inflight) [[unlikely]] {
+        if (war_inflight || cow_on) [[unlikely]] {
             WarOnWrite(GetInteger(addr), size);
         }
         return WalkBlock(addr, size,
@@ -383,7 +391,7 @@ struct Memory::Impl {
     }
 
     bool ZeroBlock(const Common::ProcessAddress addr, const std::size_t size) {
-        if (war_inflight) [[unlikely]] {
+        if (war_inflight || cow_on) [[unlikely]] {
             WarOnWrite(GetInteger(addr), size);
         }
         return WalkBlock(addr, size,
@@ -974,6 +982,9 @@ struct Memory::Impl {
         if (war_probe) [[unlikely]] {
             WarNoteTracked(v_address, VideoCommon::Nx2WarProbe::Category::Cached);
         }
+        if (cow_on) [[unlikely]] {
+            CowTrackedWrite(v_address, size);
+        }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
@@ -1023,8 +1034,8 @@ struct Memory::Impl {
     // (Memory, read/write) on its first write. The bytes and order of accesses do not change.
 
     /// Page numbers in a fixed-capacity hash set with a dense list (no allocation after Init).
-    struct WarPageSet {
-        static constexpr u32 SlotBits = 18;
+    template <u32 SlotBits>
+    struct WarPageSetT {
         static constexpr u32 Slots = 1U << SlotBits;
         static constexpr u32 MaxEntries = Slots / 2;
         std::unique_ptr<u32[]> slot_key;   ///< page + 1, 0 when empty
@@ -1104,6 +1115,10 @@ struct Memory::Impl {
             slot_key[hole] = 0;
         }
     };
+    using WarPageSet = WarPageSetT<18>;
+    /// run_ahead_cow_probe: every device-mapped page can be armed (up to 4 GiB).
+    using CowPageSet = WarPageSetT<21>;
+    static constexpr u32 CowListCapacity = CowPageSet::MaxEntries;
 
     bool WarGuestCore() const {
         return system.GetCurrentHostThreadID() < Core::Hardware::NUM_CPU_CORES;
@@ -1142,25 +1157,36 @@ struct Memory::Impl {
     /// The kernel or the debugger is about to change [vaddr, vaddr + size): the probe lets go of
     /// those pages first. Caller holds war_mutex.
     void WarForget(u64 vaddr, u64 size) {
-        if (war_unprotected.count == 0 || size == 0) {
+        if (size == 0) {
             return;
         }
         const u64 first = vaddr >> YUZU_PAGEBITS;
         const u64 end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
-        if (end - first <= war_unprotected.count) {
+        WarForgetIn(war_unprotected, first, end);
+        if (cow_on) {
+            WarForgetIn(cow_armed, first, end);
+        }
+    }
+
+    template <typename Set>
+    void WarForgetIn(Set& set, u64 first, u64 end) {
+        if (set.count == 0) {
+            return;
+        }
+        if (end - first <= set.count) {
             for (u64 page = first; page != end; ++page) {
-                if (war_unprotected.Contains(page)) {
+                if (set.Contains(page)) {
                     WarUnguard(page);
-                    war_unprotected.Erase(page);
+                    set.Erase(page);
                 }
             }
             return;
         }
-        for (u32 i = war_unprotected.count; i-- > 0;) {
-            const u64 page = war_unprotected.list[i];
+        for (u32 i = set.count; i-- > 0;) {
+            const u64 page = set.list[i];
             if (page >= first && page < end) {
                 WarUnguard(page);
-                war_unprotected.Erase(page);
+                set.Erase(page);
             }
         }
     }
@@ -1173,17 +1199,28 @@ struct Memory::Impl {
             if (cached) {
                 // MarkRasterizerCached already replaced a guard's page type.
                 war_unprotected.Erase(page);
+                if (cow_on) {
+                    cow_armed.Erase(page);
+                }
                 continue;
             }
             auto& entry = current_page_table->entries.GetUnchecked(page);
             auto [pointer, type, block] = entry.PointerTypeBlock(true);
-            if (type == Common::PageType::DebugMemory && war_unprotected.Contains(page)) {
+            const bool cow = cow_on && cow_armed.Contains(page);
+            if (type == Common::PageType::DebugMemory && (war_unprotected.Contains(page) || cow)) {
                 // Read/write is set already; an uncached page's type is Memory.
                 entry.Store(false, Common::PageType::Memory, block, pointer);
                 type = Common::PageType::Memory;
             }
+            if (cow) {
+                cow_armed.Erase(page);
+            }
             if (type == Common::PageType::Memory) {
                 war_unprotected.Insert(page);
+                if (cow_on) {
+                    // run_ahead_cow_probe: writable now, armed again at the next reply.
+                    CowRearmPush(page);
+                }
             }
         }
     }
@@ -1203,13 +1240,39 @@ struct Memory::Impl {
             if (war_inflight) [[unlikely]] {
                 InflightBeforeWrite(vaddr, size);
             }
+            const s64 cow_start = cow_on ? VideoCommon::Nx2Cow::NowNs() : 0;
             std::scoped_lock lk{war_mutex};
-            if (!war_unprotected.Contains(page) || !WarUnguard(page)) {
+            const bool war = war_unprotected.Contains(page);
+            const bool cow = cow_on && cow_armed.Contains(page);
+            if (!war && !cow) {
                 continue; // A debugger's page, or given back meanwhile
             }
+            bool cow_first = false;
+            if (cow) {
+                // run_ahead_cow_probe: the copy is taken while the page is still protected.
+                if (const u8* const host = GetPointerFromDebugMemory(page << YUZU_PAGEBITS)) {
+                    cow_first = VideoCommon::Nx2Cow::PreImage(
+                        CowPhysPage(host), host, VideoCommon::Nx2Cow::TrapClass::Untracked,
+                        WarGuestCore());
+                }
+            }
+            const bool unguarded = WarUnguard(page);
+            if (cow) {
+                cow_armed.Erase(page);
+                CowRearmPush(page);
+                if (cow_first) {
+                    VideoCommon::Nx2Cow::AddTrapNs(VideoCommon::Nx2Cow::NowNs() - cow_start,
+                                                   WarGuestCore());
+                }
+            }
+            if (!unguarded) {
+                continue;
+            }
             using VideoCommon::Nx2WarProbe::Category;
-            VideoCommon::Nx2WarProbe::NoteTrap(
-                WarIsBankPage(page) ? Category::Bank : Category::Unprotected, WarGuestCore());
+            if (war) {
+                VideoCommon::Nx2WarProbe::NoteTrap(
+                    WarIsBankPage(page) ? Category::Bank : Category::Unprotected, WarGuestCore());
+            }
             if (VideoCommon::Nx2Perf::Verify()) {
                 const auto [pointer, type, block] =
                     std::as_const(current_page_table->entries)[page].PointerTypeBlock(true);
@@ -1298,6 +1361,123 @@ struct Memory::Impl {
                 ++result.bank_unguardable;
             }
         }
+        return result;
+    }
+
+    // Nx2Perf run_ahead_cow_probe (video_core/nx2_war_probe.h, Nx2Cow), with the war_guard pages.
+
+    u64 CowPhysPage(const u8* host) const {
+        return system.DeviceMemory().GetRawPhysicalAddr(host) >> YUZU_PAGEBITS;
+    }
+
+    /// Caller holds war_mutex: the page is writable again and is armed at the next reply.
+    void CowRearmPush(u64 page) {
+        if (cow_rearm_count == CowListCapacity) {
+            ++cow_rearm_overflow;
+            return;
+        }
+        cow_rearm[cow_rearm_count++] = static_cast<u32>(page);
+    }
+
+    /// HandleRasterizerWrite: a write of tracker-protected pages traps anyway; its first one in
+    /// the epoch takes the page's pre-image before it lands.
+    void CowTrackedWrite(u64 vaddr, size_t size) {
+        vaddr &= 0xffffffffffffULL;
+        if (size == 0 || !VideoCommon::Nx2Cow::PoolActive() ||
+            !AddressSpaceContains(*current_page_table, vaddr, size)) {
+            return;
+        }
+        const bool guest_core = WarGuestCore();
+        const u64 end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+        for (u64 page = vaddr >> YUZU_PAGEBITS; page != end; ++page) {
+            const auto [pointer, type, block] =
+                std::as_const(current_page_table->entries)[page].PointerTypeBlock(true);
+            if (type != Common::PageType::RasterizerCachedMemory || pointer == 0) {
+                continue;
+            }
+            const u8* const host = reinterpret_cast<const u8*>(pointer) + (page << YUZU_PAGEBITS);
+            const s64 start = VideoCommon::Nx2Cow::NowNs();
+            if (VideoCommon::Nx2Cow::PreImage(CowPhysPage(host), host,
+                                              VideoCommon::Nx2Cow::TrapClass::Tracked,
+                                              guest_core)) {
+                VideoCommon::Nx2Cow::AddTrapNs(VideoCommon::Nx2Cow::NowNs() - start, guest_core);
+            }
+        }
+    }
+
+    /// vi2's reply: write-protects the device-mapped pages of type Memory not armed yet (all of
+    /// them the first time; then the pages given back since and new device mappings).
+    Memory::Nx2CowArmResult CowArm(const Memory* owner) {
+        Memory::Nx2CowArmResult result{};
+        if (!cow_on) {
+            return result;
+        }
+        const s64 start = VideoCommon::Nx2Cow::NowNs();
+        if (!gpu_device_memory) [[unlikely]] {
+            gpu_device_memory = &system.Host1x().MemoryManager();
+        }
+        // Outside war_mutex: the collection takes device memory's mapping lock.
+        bool full = cow_full_pending;
+        bool collect_overflow = false;
+        const size_t collected = gpu_device_memory->Nx2CowCollectCpuPages(
+            owner, full, cow_collect.get(), CowListCapacity, collect_overflow);
+        cow_full_pending = false;
+        result.full = full ? 1 : 0;
+        result.new_mapped = collected;
+        result.overflow += collect_overflow ? 1 : 0;
+
+        std::scoped_lock lk{war_mutex};
+        if (cow_rearm_overflow != 0) {
+            // Pages given back were lost: collect every mapped page at the next arm.
+            result.overflow += cow_rearm_overflow;
+            cow_rearm_overflow = 0;
+            cow_full_pending = true;
+        }
+        u32 to_protect = 0;
+        const auto consider = [&](u64 page) {
+            if (page == 0 || !AddressSpaceContains(*current_page_table, page << YUZU_PAGEBITS, 1) ||
+                cow_armed.Contains(page)) {
+                return;
+            }
+            if (std::as_const(current_page_table->entries)[page].Type() !=
+                Common::PageType::Memory) {
+                return; // Tracker-protected pages trap through HandleRasterizerWrite
+            }
+            auto& entry = current_page_table->entries.GetUnchecked(page);
+            const auto [pointer, type, block] = entry.PointerTypeBlock(true);
+            if (type != Common::PageType::Memory || pointer == 0) {
+                return;
+            }
+            if (cow_armed.count == CowPageSet::MaxEntries) {
+                ++result.overflow;
+                return;
+            }
+            entry.Store(true, Common::PageType::DebugMemory, block, pointer);
+            cow_armed.Insert(page);
+            cow_armed.scratch[to_protect++] = static_cast<u32>(page);
+        };
+        for (size_t i = 0; i < collected; ++i) {
+            consider(cow_collect[i]);
+        }
+        for (u32 i = 0; i < cow_rearm_count; ++i) {
+            consider(cow_rearm[i]);
+        }
+        cow_rearm_count = 0;
+        u32* const pages = cow_armed.scratch.get();
+        std::sort(pages, pages + to_protect);
+        for (u32 i = 0; i < to_protect;) {
+            u32 run = 1;
+            while (i + run < to_protect && pages[i + run] == pages[i] + run) {
+                ++run;
+            }
+            host_buffer->Protect(u64{pages[i]} << YUZU_PAGEBITS, u64{run} << YUZU_PAGEBITS,
+                                 Common::MemoryPermission::Read);
+            ++result.protect_calls;
+            i += run;
+        }
+        result.armed = to_protect;
+        result.armed_total = cow_armed.count;
+        result.arm_ns = VideoCommon::Nx2Cow::NowNs() - start;
         return result;
     }
 
@@ -1874,6 +2054,14 @@ struct Memory::Impl {
     WarPageSet war_unprotected;
     std::array<u64, VideoCommon::Nx2WarProbe::MaxBankPages> war_bank_pages{};
     size_t war_bank_count = 0;
+    // run_ahead_cow_probe (war_mutex): armed pages, pages to arm again, the collection buffer.
+    bool cow_on = false;
+    CowPageSet cow_armed;
+    std::unique_ptr<u32[]> cow_rearm;
+    std::unique_ptr<u32[]> cow_collect;
+    u32 cow_rearm_count = 0;
+    u64 cow_rearm_overflow = 0;
+    bool cow_full_pending = true;
 #ifdef __ANDROID__
     std::optional<Common::HeapTracker> heap_tracker;
     Common::HeapTracker* host_buffer{};
@@ -2076,6 +2264,10 @@ Memory::Nx2WarProbeArmResult Memory::Nx2WarProbeArm(std::span<const u64> bank_cp
 
 bool Memory::Nx2CoverClassify(std::span<const u64> cpu_pages, std::span<u8> classes) {
     return impl->CoverClassify(cpu_pages, classes);
+}
+
+Memory::Nx2CowArmResult Memory::Nx2CowArm() {
+    return impl->CowArm(this);
 }
 
 bool Memory::Nx2InflightOpen(u32 fence_id, u32 fence_value, u32 prev_id, u32 prev_value) {

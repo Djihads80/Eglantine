@@ -140,6 +140,13 @@ public:
     /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
     void ArmReadTraps(DAddr addr, size_t size);
 
+    /// run_ahead_cow_probe (video_core/nx2_war_probe.h): guest pages (vaddr >> 12) of process
+    /// behind device pages, written to out; every mapped one when full is set (or the record of
+    /// new mappings overflowed, which sets it), else those mapped since the last call. overflow:
+    /// out could not hold them all.
+    size_t Nx2CowCollectCpuPages(const Memory::Memory* process, bool& full, u32* out,
+                                 size_t capacity, bool& overflow);
+
 private:
     struct TranslationEntry {
         DAddr guest_page{};
@@ -244,6 +251,17 @@ private:
     }
 
     std::atomic<u64> translation_generation{1}; ///< Bumped by Map and Unmap
+
+    // run_ahead_cow_probe: mappings made since the last collection (under mapping_guard).
+    struct Nx2CowMap {
+        VAddr virtual_address;
+        size_t size;
+        const Memory::Memory* process;
+    };
+    std::array<Nx2CowMap, 256> nx2_cow_maps{};
+    size_t nx2_cow_map_count = 0;
+    bool nx2_cow_map_overflow = false;
+    static const u8* Nx2CowPointer(const void* self, u64 address);
     using CounterType = u8;
     using CounterAtomicType = std::atomic_uint8_t;
     static constexpr size_t subentries = 8 / sizeof(CounterType);

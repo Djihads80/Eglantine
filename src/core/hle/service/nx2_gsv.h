@@ -1859,6 +1859,12 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        // run_ahead_cow_probe (measurement only): the previous reply's epoch ends here.
+        const bool cow_probe =
+            app_program_id == OcarinaOfTimeProgramId && VideoCommon::Nx2Cow::On();
+        if (cow_probe) [[unlikely]] {
+            CowClose();
+        }
         if (ledger && ~w[22] < 192) [[unlikely]] {
             // The back is done with this frame: hash the pages it read for it.
             m_ledger->Take(~w[22], w[24], [this](u64 address) -> const u8* {
@@ -1978,6 +1984,9 @@ private:
                 LedgerCoverClassify();
             }
             m_ledger->Reply();
+        }
+        if (cow_probe) [[unlikely]] {
+            CowOpen(~w[22], w[24]);
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
@@ -2192,6 +2201,45 @@ private:
                 return system.Host1x().MemoryManager().GetPointer<u8>(address);
             },
             [](u64 address) { return Tegra::Nx2IsGpuWritten(address); });
+    }
+
+    /// run_ahead_cow_probe: vi2's window, allocated at the first reply.
+    std::unique_ptr<VideoCommon::Nx2Cow::Vi2Window> m_cow;
+
+    /// Right before the reply: a new epoch for this fence, the arm and the reply-time hashes.
+    void CowOpen(u32 fence_id, u32 fence_value) {
+        namespace Cow = VideoCommon::Nx2Cow;
+        if (!m_cow) {
+            m_cow = std::make_unique<Cow::Vi2Window>();
+        }
+        Cow::Begin(fence_id, fence_value);
+        const auto arm = system.ApplicationMemory().Nx2CowArm();
+        const s64 hash_begin = Cow::NowNs();
+        const u32 hashed = Cow::HashReply();
+        const s64 hash_end = Cow::NowNs();
+        Cow::OpenReaders();
+        m_cow->NoteArm({
+            .armed = arm.armed,
+            .protect_calls = arm.protect_calls,
+            .armed_total = arm.armed_total,
+            .new_mapped = arm.new_mapped,
+            .full = arm.full,
+            .overflow = arm.overflow,
+            .arm_ns = arm.arm_ns,
+            .hash_ns = hash_end - hash_begin,
+            .hashed = hashed,
+        });
+    }
+
+    /// After the wait: the epoch ends; the Nx2RunAheadCow line every 600 frames.
+    void CowClose() {
+        if (!m_cow) {
+            return;
+        }
+        VideoCommon::Nx2Cow::Close();
+        if (const std::string line = m_cow->Close(); !line.empty()) {
+            LOG_INFO(HW_GPU, "{}", line);
+        }
     }
 
     /// run_ahead_cover: the tracker state of the taken pages at the reply.

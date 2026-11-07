@@ -29,6 +29,7 @@
 #include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/textures/texture.h"
 #ifdef ARCHITECTURE_x86_64
@@ -1670,6 +1671,9 @@ void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 met
     if (VideoCommon::Nx2Perf::FenceTimeline::On() &&
         method == MAXWELL3D_REG_INDEX(sync_info)) [[unlikely]] {
         VideoCommon::Nx2Perf::FenceTimeline::StampFront(value & 0xffff); // sync_info.sync_point
+    }
+    if (method == MAXWELL3D_REG_INDEX(sync_info) && VideoCommon::Nx2Cow::On()) [[unlikely]] {
+        VideoCommon::Nx2Cow::FrontIncrement(value & 0xffff); // run_ahead_cow_probe boundary
     }
     const u8 cls = fs.class_table ? FrontClass(method, fs.verify) : u8{0};
     if (IsDrawProgramRegister(method)) {
