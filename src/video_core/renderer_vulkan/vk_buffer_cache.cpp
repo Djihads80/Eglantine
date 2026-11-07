@@ -618,6 +618,8 @@ bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
     return true;
 }
 
+/// Bind an index buffer, skipping the record when this command buffer
+/// already has the same one bound.
 void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat index_format,
                                          u32 base_vertex, u32 num_indices, VkBuffer buffer,
                                          u32 offset, [[maybe_unused]] u32 size) {
@@ -644,12 +646,24 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
         ReserveNullBuffer();
         vk_buffer = *null_buffer;
     }
+    const u64 epoch = scheduler.RecordingEpoch();
+    if (bound_index_valid && vk_buffer == bound_index_buffer && vk_offset == bound_index_offset &&
+        vk_index_type == bound_index_type && epoch == bound_index_epoch) {
+        return;
+    }
+    bound_index_valid = true;
+    bound_index_buffer = vk_buffer;
+    bound_index_offset = vk_offset;
+    bound_index_type = vk_index_type;
+    bound_index_epoch = epoch;
     scheduler.Record([vk_buffer, vk_offset, vk_index_type](vk::CommandBuffer cmdbuf) {
         cmdbuf.BindIndexBuffer(vk_buffer, vk_offset, vk_index_type);
     });
 }
 
+/// Bind the quad index buffer and drop any cached index bind.
 void BufferCacheRuntime::BindQuadIndexBuffer(PrimitiveTopology topology, u32 first, u32 count) {
+    bound_index_valid = false;
     if (count == 0) {
         ReserveNullBuffer();
         scheduler.Record([this](vk::CommandBuffer cmdbuf) {
