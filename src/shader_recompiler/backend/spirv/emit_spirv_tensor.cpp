@@ -1,19 +1,117 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <optional>
+#include <vector>
+
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "common/common_types.h"
 #include "shader_recompiler/frontend/ir/program.h"
 
 namespace Shader::Backend::SPIRV {
+namespace {
+
+constexpr u32 GUEST_WARP_LANES = 32;
+
+// A cooperative matrix needs its whole subgroup: every row of the workgroup fills whole warps and
+// the pipeline is created with full subgroups. Cooperative matrices also need the Vulkan memory
+// model, which has no Coherent decoration, so a program that needs coherent memory keeps the
+// emulation.
+bool SupportsCooperativeHmma(const IR::Program& program) {
+    return program.stage == Stage::Compute && program.workgroup_size[0] != 0 &&
+           program.workgroup_size[0] % GUEST_WARP_LANES == 0 &&
+           !program.info.requires_coherent_global_memory &&
+           !program.info.requires_coherent_image_memory;
+}
+
+// Sirit lacks the two cooperative matrix instructions. They are emitted as an OpTypeStruct and an
+// OpSelect, which have the same word layout, and PatchCooperativeHmma replaces the opcodes after
+// assembly. The operands are constants that no real structure has as members.
+CooperativeHmmaTypes DefineCooperativeHmmaTypes(Sirit::Module& module, Id u32_type,
+                                                u32 spirv_version) {
+    module.AddExtension("SPV_KHR_cooperative_matrix");
+    module.AddCapability(spv::Capability::CooperativeMatrixKHR);
+    module.AddCapability(spv::Capability::Float16);
+    if (spirv_version < 0x00010500) {
+        module.AddExtension("SPV_KHR_vulkan_memory_model");
+    }
+    module.AddCapability(spv::Capability::VulkanMemoryModel);
+    module.AddCapability(spv::Capability::VulkanMemoryModelDeviceScope);
+    module.SetMemoryModel(spv::AddressingModel::Logical, spv::MemoryModel::Vulkan);
+    const Id float16{module.TypeFloat(16)};
+    const auto constant{[&](u32 value) { return module.Constant(u32_type, value); }};
+    const Id scope{constant(static_cast<u32>(spv::Scope::Subgroup))};
+    const auto matrix{[&](u32 columns, spv::CooperativeMatrixUse use) {
+        return module.TypeStruct(float16, scope, constant(16), constant(columns),
+                                 constant(static_cast<u32>(use)));
+    }};
+    return CooperativeHmmaTypes{
+        .float16 = float16,
+        .float16x2 = module.TypeVector(float16, 2),
+        .matrix_a = matrix(16, spv::CooperativeMatrixUse::MatrixAKHR),
+        .matrix_b = matrix(8, spv::CooperativeMatrixUse::MatrixBKHR),
+        .matrix_c = matrix(8, spv::CooperativeMatrixUse::MatrixAccumulatorKHR),
+    };
+}
+
+// HMMA.16816.F16 on a cooperative matrix. Each lane already holds its share of the matrices in
+// registers, so no data moves between lanes or through memory: the lane's halves become the
+// matrix's local elements. Vulkan leaves their order to the driver; NVIDIA's is the guest's except
+// that A's middle registers swap (see the self-test in vk_cooperative_hmma_test.cpp).
+Id EmitCooperativeHmma(Sirit::Module& module, const CooperativeHmmaTypes& types, Id u32_type,
+                       Id u32x2_type, Id a, Id b, Id c) {
+    const auto insert_word{[&](Id matrix_type, Id matrix, Id vector, u32 word, u32 slot) {
+        const Id halves{module.OpBitcast(types.float16x2,
+                                         module.OpCompositeExtract(u32_type, vector, word))};
+        for (u32 half = 0; half < 2; ++half) {
+            matrix = module.OpCompositeInsert(
+                matrix_type, module.OpCompositeExtract(types.float16, halves, half), matrix,
+                slot * 2 + half);
+        }
+        return matrix;
+    }};
+    constexpr std::array<u32, 4> a_words{0, 2, 1, 3};
+    Id matrix_a{module.OpUndef(types.matrix_a)};
+    for (u32 slot = 0; slot < a_words.size(); ++slot) {
+        matrix_a = insert_word(types.matrix_a, matrix_a, a, a_words[slot], slot);
+    }
+    Id matrix_b{module.OpUndef(types.matrix_b)};
+    Id matrix_c{module.OpUndef(types.matrix_c)};
+    for (u32 slot = 0; slot < 2; ++slot) {
+        matrix_b = insert_word(types.matrix_b, matrix_b, b, slot, slot);
+        matrix_c = insert_word(types.matrix_c, matrix_c, c, slot, slot);
+    }
+    // OpCooperativeMatrixMulAddKHR after PatchCooperativeHmma.
+    const Id matrix_d{module.OpSelect(types.matrix_c, matrix_a, matrix_b, matrix_c)};
+    const auto extract_word{[&](u32 word) {
+        return module.OpBitcast(
+            u32_type,
+            module.OpCompositeConstruct(
+                types.float16x2, module.OpCompositeExtract(types.float16, matrix_d, word * 2),
+                module.OpCompositeExtract(types.float16, matrix_d, word * 2 + 1)));
+    }};
+    return module.OpCompositeConstruct(u32x2_type, extract_word(0), extract_word(1));
+}
+
+} // Anonymous namespace
+
 void DefineSoftwareMatrixFunctions(EmitContext& ctx, const IR::Program& program) {
+    const bool cooperative{ctx.profile.support_cooperative_hmma && SupportsCooperativeHmma(program)};
     std::array<bool, 2> needed{};
     for (const auto* block : program.blocks) {
         for (const auto& inst : block->Instructions()) {
             if (inst.GetOpcode() != IR::Opcode::TensorMulAdd || inst.Flags<u32>() == 0) continue;
             const u32 depth = inst.Flags<u32>();
             if (depth != 8 && depth != 16) throw LogicError("Invalid software HMMA depth");
+            if (depth == 16 && cooperative) {
+                if (!ctx.cooperative_hmma) {
+                    ctx.cooperative_hmma =
+                        DefineCooperativeHmmaTypes(ctx, ctx.U32[1], ctx.profile.supported_spirv);
+                }
+                continue;
+            }
             needed[depth == 16] = true;
         }
     }
@@ -142,7 +240,95 @@ Id EmitTensorMulAdd(EmitContext& ctx, IR::Inst* inst, Id a, Id b, Id c) {
     if (depth != 8 && depth != 16) {
         throw NotImplementedException("Unsupported matrix multiply depth");
     }
+    if (depth == 16 && ctx.cooperative_hmma) {
+        return EmitCooperativeHmma(ctx, *ctx.cooperative_hmma, ctx.U32[1], ctx.U32[2], a, b, c);
+    }
     return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_functions[depth == 16], a, b, c);
+}
+
+void PatchCooperativeHmma(std::vector<u32>& code, const CooperativeHmmaTypes& types) {
+    for (size_t offset = 5; offset < code.size();) {
+        const u32 word_count{code[offset] >> 16};
+        if (word_count == 0) {
+            return;
+        }
+        const auto opcode{static_cast<spv::Op>(code[offset] & 0xFFFFu)};
+        std::optional<spv::Op> replacement;
+        if (opcode == spv::Op::OpTypeStruct) {
+            const u32 result{code[offset + 1]};
+            if (result == types.matrix_a.value || result == types.matrix_b.value ||
+                result == types.matrix_c.value) {
+                replacement = spv::Op::OpTypeCooperativeMatrixKHR;
+            }
+        } else if (opcode == spv::Op::OpSelect && code[offset + 1] == types.matrix_c.value) {
+            replacement = spv::Op::OpCooperativeMatrixMulAddKHR;
+        }
+        if (replacement) {
+            code[offset] = (code[offset] & 0xFFFF0000u) | static_cast<u32>(*replacement);
+        }
+        offset += word_count;
+    }
+}
+
+std::vector<u32> EmitCooperativeHmmaTest(u32 spirv_version) {
+    Sirit::Module module{spirv_version};
+    module.AddCapability(spv::Capability::Shader);
+    module.AddCapability(spv::Capability::GroupNonUniform);
+
+    const Id void_type{module.TypeVoid()};
+    const Id u32_type{module.TypeUInt(32)};
+    const Id u32x2_type{module.TypeVector(u32_type, 2)};
+    const Id u32x4_type{module.TypeVector(u32_type, 4)};
+    const CooperativeHmmaTypes types{DefineCooperativeHmmaTypes(module, u32_type, spirv_version)};
+
+    const Id words_type{module.TypeRuntimeArray(u32_type)};
+    module.Decorate(words_type, spv::Decoration::ArrayStride, 4U);
+    const Id block_type{module.TypeStruct(words_type)};
+    module.Decorate(block_type, spv::Decoration::Block);
+    module.MemberDecorate(block_type, 0U, spv::Decoration::Offset, 0U);
+    const Id buffer{module.AddGlobalVariable(
+        module.TypePointer(spv::StorageClass::StorageBuffer, block_type),
+        spv::StorageClass::StorageBuffer)};
+    module.Decorate(buffer, spv::Decoration::DescriptorSet, 0U);
+    module.Decorate(buffer, spv::Decoration::Binding, 0U);
+    const Id lane_variable{module.AddGlobalVariable(
+        module.TypePointer(spv::StorageClass::Input, u32_type), spv::StorageClass::Input)};
+    module.Decorate(lane_variable, spv::Decoration::BuiltIn,
+                    spv::BuiltIn::SubgroupLocalInvocationId);
+    const Id word_pointer{module.TypePointer(spv::StorageClass::StorageBuffer, u32_type)};
+    const Id zero{module.Constant(u32_type, 0U)};
+
+    const Id main{module.OpFunction(void_type, spv::FunctionControlMask::MaskNone,
+                                    module.TypeFunction(void_type))};
+    module.AddLabel();
+    const Id base{module.OpIMul(u32_type, module.OpLoad(u32_type, lane_variable),
+                                module.Constant(u32_type, COOPERATIVE_HMMA_TEST_LANE_WORDS))};
+    const auto word_at{[&](u32 index) {
+        return module.OpAccessChain(word_pointer, buffer, zero,
+                                    module.OpIAdd(u32_type, base,
+                                                  module.Constant(u32_type, index)));
+    }};
+    const auto load{[&](u32 index) { return module.OpLoad(u32_type, word_at(index)); }};
+    const Id a{module.OpCompositeConstruct(u32x4_type, load(0), load(1), load(2), load(3))};
+    const Id b{module.OpCompositeConstruct(u32x2_type, load(4), load(5))};
+    const Id c{module.OpCompositeConstruct(u32x2_type, load(6), load(7))};
+    const Id d{EmitCooperativeHmma(module, types, u32_type, u32x2_type, a, b, c)};
+    module.OpStore(word_at(8), module.OpCompositeExtract(u32_type, d, 0U));
+    module.OpStore(word_at(9), module.OpCompositeExtract(u32_type, d, 1U));
+    module.OpReturn();
+    module.OpFunctionEnd();
+
+    // Since SPIR-V 1.4 the interface lists every global the entry point uses.
+    std::vector<Id> interfaces{lane_variable};
+    if (spirv_version >= 0x00010400U) {
+        interfaces.push_back(buffer);
+    }
+    module.AddEntryPoint(spv::ExecutionModel::GLCompute, main, "main", interfaces);
+    module.AddExecutionMode(main, spv::ExecutionMode::LocalSize, GUEST_WARP_LANES, 1U, 1U);
+
+    std::vector<u32> code{module.Assemble()};
+    PatchCooperativeHmma(code, types);
+    return code;
 }
 
 } // namespace Shader::Backend::SPIRV
