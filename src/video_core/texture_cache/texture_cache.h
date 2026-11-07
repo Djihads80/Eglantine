@@ -498,6 +498,30 @@ void TextureCache<P>::MarkModification(ImageId id) noexcept {
 }
 
 template <class P>
+bool TextureCache<P>::PublishComputeCollisionImage(u32 index) {
+    const auto view_id = VisitImageView(index, true);
+    if (!view_id || !slot_image_views[view_id].image_id) {
+        return false;
+    }
+    Image& image = slot_images[slot_image_views[view_id].image_id];
+    const auto& info = image.info;
+    // The title writes a CPU-readable 256x256 pitch-linear SNORM height map.
+    if (info.type != ImageType::Linear || info.format != PixelFormat::R16G16B16A16_SNORM ||
+        info.size.width != 256 || info.size.height != 256 || info.size.depth != 1 ||
+        info.pitch != 2048 || info.resources.layers != 1 || info.resources.levels != 1 ||
+        !IsDownloadable(image) ||
+        !gpu_memory->IsFullyMappedRange(image.gpu_addr, image.guest_size_bytes)) {
+        return false;
+    }
+    const auto copies = FullDownloadCopies(info);
+    auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
+    image.DownloadMemory(map, copies);
+    runtime.Finish();
+    SwizzleImage(*gpu_memory, image.gpu_addr, info, copies, map.mapped_span, swizzle_data_buffer);
+    image.flags &= ~ImageFlagBits::GpuModified;
+    return true;
+}
+template <class P>
 void TextureCache<P>::FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist) {
     bool has_blacklisted = false;
     do {
