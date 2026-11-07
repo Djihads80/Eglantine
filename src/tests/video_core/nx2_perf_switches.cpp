@@ -79,15 +79,16 @@ TEST_CASE("Nx2Perf sync_free_fetch is off unless ON names it", "[nx2_perf]") {
     REQUIRE(!IsOff(live_safe, Index(Opt::SyncFreeFetch)));
 }
 
-TEST_CASE("Nx2Perf pending_wake is off unless ON names it", "[nx2_perf]") {
+TEST_CASE("Nx2Perf pending_wake is on by default and off under SAFE", "[nx2_perf]") {
     static_assert(Index(Opt::PendingWake) == 74);
     REQUIRE(opt_names[Index(Opt::PendingWake)] == "pending_wake");
     REQUIRE(IsOff(DefaultOffMask(), Index(Opt::PendingWake)));
-    REQUIRE(IsOff(always_off, Index(Opt::PendingWake)));
+    REQUIRE(!IsOff(always_off, Index(Opt::PendingWake)));
+    REQUIRE(!IsOff(ParseOffMask(false, "", "", false), Index(Opt::PendingWake)));
     REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::PendingWake)));
-    REQUIRE(ParseOffMask(false, "pending_wake", "", false) ==
-            (always_off & ~Bit(Opt::PendingWake)));
-    REQUIRE(ParseOffMask(false, "pending_wake", "pending_wake", false) == always_off);
+    REQUIRE(!IsOff(ParseOffMask(true, "pending_wake", "", false), Index(Opt::PendingWake)));
+    REQUIRE(ParseOffMask(false, "", "pending_wake", false) ==
+            (always_off | Bit(Opt::PendingWake)));
 }
 
 TEST_CASE("Nx2Perf bank_hash_shadow is off unless ON names it", "[nx2_perf]") {

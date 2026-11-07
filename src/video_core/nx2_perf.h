@@ -177,7 +177,7 @@ enum class Opt : unsigned {
     /// fetches; implies the acquire_trigger_early and list_fetch_after_sync paths
     SyncFreeFetch,
     /// A suspended channel's 1 ms front sleep ends at once on a new submit or on a GPU release
-    /// that latches a waiter (Tegra::Nx2PendingWake in nx2.h)
+    /// that latches a waiter (Tegra::Nx2PendingWake in nx2.h). On by default (round 9: +1.5 FPS)
     PendingWake,
     /// Native uniform banks: per-page 64-bit hashes of the guest bytes replace the 64 KiB byte
     /// shadow's memcmp/memcpy (nx2_page_hash.h)
@@ -334,10 +334,10 @@ inline constexpr OffMask DefaultOffMask() {
 /// acquire_queued_release (no gain, ~46 acquires/s forwarded), nonwriter_proof_memo (+0.3 FPS,
 /// round 7); inflight_wait_v2 (verify: bank pages changed before the fence, 16 reads differ),
 /// list_fetch_after_sync (+0.2 FPS), spin_handoff (+0.3 FPS), run_ahead_cover (measurement; round 8),
-/// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch,
-/// pending_wake, bank_hash_shadow (round 9).
-/// dma_forward and draw_begin_coalesce are on
-/// by default (round 5); SAFE turns them off.
+/// run_ahead_cow_probe (measurement, adds page traps; round 9), sync_free_fetch (-0.5 FPS),
+/// bank_hash_shadow (-0.3 FPS; round 9).
+/// dma_forward and draw_begin_coalesce (round 5) and pending_wake (round 9) are on
+/// by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
                                   Bit(Opt::DispatchBatch) | Bit(Opt::MacroReadOverlayWriters) |
                                   Bit(Opt::GpuCorePin) | Bit(Opt::PresentGuestWait) |
@@ -363,7 +363,6 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadCover) |
                                   Bit(Opt::RunAheadCowProbe) |
                                   Bit(Opt::SyncFreeFetch) |
-                                  Bit(Opt::PendingWake) |
                                   Bit(Opt::BankHashShadow);
 
 static_assert(IsOff(always_off, 33));
@@ -435,7 +434,7 @@ static_assert(static_cast<unsigned>(Opt::SyncFreeFetch) == 73 &&
               IsOff(always_off, static_cast<size_t>(Opt::SyncFreeFetch)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::SyncFreeFetch)));
 static_assert(static_cast<unsigned>(Opt::PendingWake) == 74 &&
-              IsOff(always_off, static_cast<size_t>(Opt::PendingWake)) &&
+              !IsOff(always_off, static_cast<size_t>(Opt::PendingWake)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::PendingWake)));
 static_assert(static_cast<unsigned>(Opt::BankHashShadow) == 75 &&
               IsOff(always_off, static_cast<size_t>(Opt::BankHashShadow)) &&
