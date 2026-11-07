@@ -115,6 +115,8 @@ host graphics card is not the limit: rendering at full resolution costs nothing 
 
 ## For developers
 
+- `UPSTREAM_CANDIDATES.md`: which commits here are worth sending to upstream Eglantine, in what
+  order, and which belong to other authors.
 - `NX2_NOTES.md`: notes on the Switch 2 GPU emulation.
 - `.agent/STATUS.md`: dated log of every measurement and decision, newest first.
 - `.agent/prompts/overnight/round*-base.md` and `round*-integrate.md`: per-round profiles, A/B
