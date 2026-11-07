@@ -30,7 +30,10 @@ u32 EvaluateTextureHandle(const Shader::Info& info, u32 program, Tegra::MemoryMa
                    if (cbuf == 0) {
                        return 0U;
                    }
-                   const GPUVAddr base{gpu_memory.Read<u64>(cbuf + descriptor.cbuf_offset)};
+                   GPUVAddr base{gpu_memory.Read<u64>(cbuf + descriptor.cbuf_offset)};
+                   if (base != 0 && descriptor.indirect_offset != ~0U) {
+                       base = gpu_memory.Read<u64>(base + descriptor.indirect_offset);
+                   }
                    return base != 0 ? gpu_memory.Read<u32>(base + offset) : 0U;
                })
         .value_or(0U);

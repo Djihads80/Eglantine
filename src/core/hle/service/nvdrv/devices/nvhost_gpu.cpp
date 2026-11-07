@@ -5,6 +5,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -456,10 +457,29 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             entries.submitted_words.resize(words);
             entries.submitted_offsets.reserve(entries.command_lists.size());
             size_t offset = 0;
-            for (const auto& entry : entries.command_lists) {
+            for (u32 i = 0; i < entries.command_lists.size(); ++i) {
+                const auto& entry = entries.command_lists[i];
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
-                channel_state->memory_manager->ReadBlockUnsafe(
-                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                // GMMU maps run on the GPU thread (GPU::MapInOrder): an entry on addresses a
+                // queued map changes would copy as zeros (Pokopia's first lists). DmaPusher::Push
+                // copies it after the map instead.
+                const u64 bytes = static_cast<u64>(entry.size) * sizeof(u32);
+                static std::atomic<u64> counted_entries{};
+                static std::atomic<u64> deferred_total{};
+                const u64 counted = ++counted_entries;
+                if (system.GPU().IsMapPending(entry.addr, bytes)) {
+                    entries.deferred_entries.push_back(i);
+                    if (const u64 deferred = ++deferred_total; deferred <= 8 || deferred % 1000 == 0) {
+                        LOG_INFO(Service_NVDRV,
+                                 "Command list entry {:#x}+{:#x} is behind a queued GPU map and is "
+                                 "copied after it ({} of {} entries so far)",
+                                 u64{entry.addr}, bytes, deferred, counted);
+                    }
+                } else {
+                    channel_state->memory_manager->ReadBlockUnsafe(
+                        entry.addr, entries.submitted_words.data() + offset,
+                        entry.size * sizeof(u32));
+                }
                 offset += entry.size;
             }
         }

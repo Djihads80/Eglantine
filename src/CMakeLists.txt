@@ -8,7 +8,7 @@
 include_directories(.)
 
 # Dynarmic
-if ((ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64 OR ARCHITECTURE_riscv64 OR ARCHITECTURE_loongarch64) AND NOT YUZU_STATIC_ROOM)
+if((ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64 OR ARCHITECTURE_riscv64 OR ARCHITECTURE_loongarch64) AND NOT YUZU_STATIC_ROOM)
     add_subdirectory(dynarmic)
     add_library(dynarmic::dynarmic ALIAS dynarmic)
 endif()
@@ -17,34 +17,34 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY
     COMPILE_DEFINITIONS $<$<CONFIG:Debug>:_DEBUG> $<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
 
-if (YUZU_STATIC_BUILD)
+if(YUZU_STATIC_BUILD)
     add_compile_definitions(QT_STATICPLUGIN)
 endif()
 
 # Build identifiers
-if (NIGHTLY_BUILD)
+if(NIGHTLY_BUILD)
     add_compile_definitions(NIGHTLY_BUILD)
 endif()
 
 # Legacy (android only)
-if (YUZU_LEGACY)
+if(YUZU_LEGACY)
     message(WARNING "Making legacy build. Performance may suffer.")
     add_compile_definitions(YUZU_LEGACY)
 endif()
 
 # Genshin Spoof (android only)
-if (GENSHIN_SPOOF)
+if(GENSHIN_SPOOF)
     message(WARNING "Making Genshin spoof build")
     add_compile_definitions(GENSHIN_SPOOF)
 endif()
 
 # Build ID (mingw only right now)
 # Pretty much just refers to the CI "target" for this build
-if (NOT BUILD_ID)
-    if (ARCHITECTURE_x86_64)
+if(NOT BUILD_ID)
+    if(ARCHITECTURE_x86_64)
         set(BUILD_ID amd64)
     elseif(ARCHITECTURE_arm64)
-        if (WIN32)
+        if(WIN32)
             set(BUILD_ID arm64)
         else()
             set(BUILD_ID aarch64)
@@ -57,7 +57,7 @@ endif()
 add_compile_definitions(BUILD_ID="${BUILD_ID}")
 
 # Set compilation flags
-if (MSVC AND NOT CXX_CLANG)
+if(MSVC AND NOT CXX_CLANG)
     set(CMAKE_CONFIGURATION_TYPES Debug Release CACHE STRING "" FORCE)
 
     # Silence "deprecation" warnings
@@ -102,7 +102,7 @@ if (MSVC AND NOT CXX_CLANG)
 
         # External headers diagnostics
         /external:anglebrackets # Treats all headers included by #include <header>, where the header file is enclosed in angle brackets (< >), as external headers
-        /external:W0            # Sets the default warning level to 0 for external headers, effectively disabling warnings for them.
+        /external:W0 # Sets the default warning level to 0 for external headers, effectively disabling warnings for them.
 
         /we4062 # Enumerator 'identifier' in a switch of enum 'enumeration' is not handled
         /we4189 # 'identifier': local variable is initialized but not referenced
@@ -113,7 +113,7 @@ if (MSVC AND NOT CXX_CLANG)
         /we4457 # Declaration of 'identifier' hides function parameter
         /we4458 # Declaration of 'identifier' hides class member
         /we4459 # Declaration of 'identifier' hides global declaration
-        /w4505 # 'function': unreferenced local function has been removed
+        /w45505 # 'function': unreferenced local function has been removed
         /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
         /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
         /we4555 # Expression has no effect; expected expression with side-effect
@@ -127,12 +127,12 @@ if (MSVC AND NOT CXX_CLANG)
         /wd4201 # nonstandard extension used : nameless struct/union
         /wd4702 # unreachable code (when used with LTO)
 
-        $<$<CONFIG:Release>:/GS->   # No stack buffer overflow checks
-        /Gy                         # Enable function level linking
-        /GR-                        # Disable run time type information
+        $<$<CONFIG:Release>:/GS-> # No stack buffer overflow checks
+        /Gy # Enable function level linking
+        /GR- # Disable run time type information
     )
 
-    if (NOT CXX_CLANG)
+    if(NOT CXX_CLANG)
         add_compile_options(
             # Warnings
             /W4
@@ -140,14 +140,14 @@ if (MSVC AND NOT CXX_CLANG)
         )
     endif()
 
-    if (ARCHITECTURE_x86_64)
+    if(ARCHITECTURE_x86_64)
         add_compile_options(/QIntel-jcc-erratum)
     endif()
 
-    set(CMAKE_EXE_LINKER_FLAGS_DEBUG   "/DEBUG /MANIFEST:NO" CACHE STRING "" FORCE)
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "/DEBUG /MANIFEST:NO" CACHE STRING "" FORCE)
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "/DEBUG /MANIFEST:NO /INCREMENTAL:NO /OPT:REF,ICF" CACHE STRING "" FORCE)
 else()
-    if (NOT MSVC)
+    if(NOT MSVC)
         add_compile_options(
             $<$<COMPILE_LANGUAGE:C,CXX>:-fwrapv>
             $<$<COMPILE_LANGUAGE:C,CXX>:-pipe>
@@ -155,7 +155,7 @@ else()
             $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
     endif()
 
-    if (ENABLE_WERROR)
+    if(ENABLE_WERROR)
         add_compile_options(
             $<$<COMPILE_LANGUAGE:C,CXX>:-Werror=all>
             $<$<COMPILE_LANGUAGE:C,CXX>:-Werror=extra>
@@ -178,15 +178,15 @@ else()
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-unused-parameter>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-missing-field-initializers>)
 
-    if (ENABLE_WERROR AND (NOT MSVC))
+    if(ENABLE_WERROR AND (NOT MSVC))
         add_compile_options(
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error=unused>
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error=unused-function>
         )
-        endif()
+    endif()
 
-    if (CXX_CLANG OR CXX_ICC OR CXX_APPLE) # Clang, AppleClang, or Intel C++
-        if (NOT MSVC)
+    if(CXX_CLANG OR CXX_ICC OR CXX_APPLE) # Clang, AppleClang, or Intel C++
+        if(NOT MSVC)
             add_compile_options(
                 $<$<COMPILE_LANGUAGE:C,CXX>:-Wshadow-uncaptured-local>
                 $<$<COMPILE_LANGUAGE:C,CXX>:-Wimplicit-fallthrough>
@@ -198,19 +198,19 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-nullability-completeness>)
     endif()
 
-    if (ARCHITECTURE_x86_64)
+    if(ARCHITECTURE_x86_64)
         add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mcx16>)
-        if (LINUX OR FREEBSD)
+        if(LINUX OR FREEBSD)
             add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mtls-dialect=gnu2>)
         endif()
     endif()
 
-    if (APPLE AND CXX_CLANG)
+    if(APPLE AND CXX_CLANG)
         add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-stdlib=libc++>)
     endif()
 
     # GCC bugs
-    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11" AND CXX_GCC)
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11" AND CXX_GCC)
         # These diagnostics would be great if they worked, but are just completely broken
         # and produce bogus errors on external libraries like fmt.
         add_compile_options(
@@ -228,7 +228,7 @@ else()
         add_compile_definitions(_FILE_OFFSET_BITS=64)
     endif()
 
-    if (YUZU_STATIC_BUILD AND NOT APPLE AND NOT MSVC)
+    if(YUZU_STATIC_BUILD AND NOT APPLE AND NOT MSVC)
         add_compile_options(-static)
 
         # yuzu-cmd requires us to explicitly link libpthread, libgcc, and libstdc++ as static
@@ -236,11 +236,11 @@ else()
         add_link_options(-static-libgcc -static-libstdc++)
     endif()
 
-    if (MINGW)
+    if(MINGW)
         add_compile_definitions(MINGW_HAS_SECURE_API)
 
         # Only windows has this requirement
-        if (WIN32 AND ARCHITECTURE_x86_64)
+        if(WIN32 AND ARCHITECTURE_x86_64)
             add_compile_options("-msse4.1")
         endif()
     endif()
@@ -248,8 +248,8 @@ else()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR MINGW)
         # GNU ar: Create thin archive files.
         # Requires binutils-2.19 or later.
-        set(CMAKE_C_ARCHIVE_CREATE   "<CMAKE_AR> qcTP <TARGET> <LINK_FLAGS> <OBJECTS>")
-        set(CMAKE_C_ARCHIVE_APPEND   "<CMAKE_AR> qTP  <TARGET> <LINK_FLAGS> <OBJECTS>")
+        set(CMAKE_C_ARCHIVE_CREATE "<CMAKE_AR> qcTP <TARGET> <LINK_FLAGS> <OBJECTS>")
+        set(CMAKE_C_ARCHIVE_APPEND "<CMAKE_AR> qTP  <TARGET> <LINK_FLAGS> <OBJECTS>")
         set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> qcTP <TARGET> <LINK_FLAGS> <OBJECTS>")
         set(CMAKE_CXX_ARCHIVE_APPEND "<CMAKE_AR> qTP  <TARGET> <LINK_FLAGS> <OBJECTS>")
     endif()
@@ -258,16 +258,16 @@ endif()
 add_subdirectory(common)
 add_subdirectory(network)
 
-if (YUZU_ROOM)
+if(YUZU_ROOM)
     add_subdirectory(dedicated_room)
 endif()
 
-if (YUZU_ROOM_STANDALONE)
+if(YUZU_ROOM_STANDALONE)
     add_subdirectory(yuzu_room_standalone)
     set_target_properties(yuzu-room PROPERTIES OUTPUT_NAME "eden-room")
 endif()
 
-if (YUZU_STATIC_ROOM)
+if(YUZU_STATIC_ROOM)
     return()
 endif()
 
@@ -279,25 +279,25 @@ add_subdirectory(input_common)
 add_subdirectory(frontend_common)
 add_subdirectory(shader_recompiler)
 
-if (YUZU_TESTS)
+if(YUZU_TESTS)
     add_subdirectory(tests)
 endif()
 
-if (YUZU_CMD)
+if(YUZU_CMD)
     add_subdirectory(yuzu_cmd)
     set_target_properties(yuzu-cmd PROPERTIES OUTPUT_NAME "eden-cli")
 endif()
 
-if (ENABLE_QT)
+if(ENABLE_QT)
     add_subdirectory(qt_common)
     add_subdirectory(yuzu)
 endif()
 
-if (ENABLE_WEB_SERVICE)
+if(ENABLE_WEB_SERVICE)
     add_subdirectory(web_service)
 endif()
 
-if (ANDROID)
+if(ANDROID)
     add_subdirectory(android/app/src/main/jni)
     target_include_directories(yuzu-android PRIVATE android/app/src/main)
 endif()

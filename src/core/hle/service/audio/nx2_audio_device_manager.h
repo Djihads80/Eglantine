@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -17,22 +18,23 @@
 
 #include <fmt/ranges.h>
 
+#include "audio_core/audio_core.h"
 #include "common/string_util.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_event.h"
-#include "core/memory.h"
+#include "core/hle/service/audio/errors.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/service.h"
+#include "core/memory.h"
 
 namespace Service::Audio {
 
 // Switch 2 sound mixer streams (nn::audio::sysmix, behind audsmx:u). A stream is a ring buffer in
 // the game's own memory: CreateStream hands over its address and size (4 KiB aligned), OpenStream
 // its format and length in frames, and once the streams are engaged the system takes frames out of
-// the ring at the stream's sample rate. Eden doesn't mix these into its output yet; it drains the
-// rings in real time so the game sees its audio being played (Switch Sports' menu movie feeds one).
+// the ring at the stream's sample rate. Supported PCM streams are queued to the normal output sink.
 // The ring's shared indices, in frames modulo (frame count + 1): the system's read index at
 // buffer + 0x44, the game's write index at buffer + 0x1004.
 struct Nx2SysmixStream {
@@ -51,6 +53,10 @@ struct Nx2SysmixStream {
     s32 data_threshold{}; ///< free frames that signal the data event
     Kernel::KEvent* state_event{};
     Kernel::KEvent* data_event{};
+    AudioCore::Sink::SinkStream* output{};
+    u64 data_offset{0x1040};
+    f32 gain{1.0f};
+    bool reported_samples{};
 };
 
 struct Nx2SysmixStreams {
@@ -66,9 +72,10 @@ inline std::shared_ptr<Nx2SysmixStreams> Nx2SysmixStreamList() {
     return list;
 }
 
-// Switch 2 virtual output devices (nn::audio::ListVirtualOutputDevices and friends), reached through
-// the object auddmg:u command 0 returns. Eden plays everything through one stereo 48 kHz output, so
-// there is one virtual device. The nx2: name keeps the other commands auto-stubbed and logged.
+// Switch 2 virtual output devices (nn::audio::ListVirtualOutputDevices and friends), reached
+// through the object auddmg:u command 0 returns. Eden plays everything through one stereo 48 kHz
+// output, so there is one virtual device. The nx2: name keeps the other commands auto-stubbed and
+// logged.
 // - 0(u32): u32 count, the device names in the out buffer (0x100 bytes each).
 // - 100(u32): the default device's name in the out buffer.
 // - 300(16-byte stream format, name buffer): whether the format is supported (result only).
@@ -237,10 +244,12 @@ private:
 // - 12(name buffer): rename.
 class INx2SysmixStreamSession final : public ServiceFramework<INx2SysmixStreamSession> {
 public:
-    explicit INx2SysmixStreamSession(Core::System& system_, std::shared_ptr<Nx2SysmixStreams> streams_,
+    explicit INx2SysmixStreamSession(Core::System& system_,
+                                     std::shared_ptr<Nx2SysmixStreams> streams_,
                                      std::shared_ptr<Nx2SysmixStream> stream_)
-        : ServiceFramework{system_, "nx2:audsmx:u:stream"}, service_context{system_, "nx2:audsmx:u:stream"},
-          streams{std::move(streams_)}, stream{std::move(stream_)} {
+        : ServiceFramework{system_, "nx2:audsmx:u:stream"},
+          service_context{system_, "nx2:audsmx:u:stream"}, streams{std::move(streams_)},
+          stream{std::move(stream_)} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &INx2SysmixStreamSession::OpenStream, "OpenStream"},
@@ -269,6 +278,10 @@ public:
         {
             std::scoped_lock lk{streams->mutex};
             streams->streams.erase(stream->id);
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             service_context.CloseEvent(stream->state_event);
             service_context.CloseEvent(stream->data_event);
             stream->state_event = nullptr;
@@ -287,14 +300,40 @@ private:
         const auto prefill = rp.Pop<u32>();
         const auto flags = rp.Pop<u32>();
         LOG_INFO(Service_Audio,
-                 "stream {} open: sample type {}, {} channels, {} Hz, {} frames, prefill {}, flags {:#x}",
+                 "stream {} open: sample type {}, {} channels, {} Hz, {} frames, prefill {}, flags "
+                 "{:#x}",
                  stream->id, sample_type, channels, sample_rate, frames, prefill, flags);
+        const u32 sample_bytes = sample_type == 5 ? 4 : sample_type == 2 ? 2 : 0;
+        const u64 data_offset = 0x1040 + ((flags & 1) ? 0x80 : 0);
+        if (!frames || frames > 48000 || !channels || channels > 8 ||
+            (sample_bytes &&
+             data_offset + u64{frames + 1} * channels * sample_bytes > stream->size)) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.Push(ResultInvalidArgument);
+            return;
+        }
         {
             std::scoped_lock lk{streams->mutex};
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             stream->sample_type = sample_type;
             stream->channels = channels;
             stream->sample_rate = sample_rate;
             stream->frames = frames;
+            stream->data_offset = data_offset;
+            if (sample_bytes && sample_rate == 48000 &&
+                (channels == 1 || channels == 2 || channels == 6)) {
+                stream->output = system.AudioCore().GetOutputSink().AcquireSinkStream(
+                    system, channels == 1 ? 2 : channels, "NX2 Sysmix",
+                    AudioCore::Sink::StreamType::Out);
+                stream->output->SetSystemVolume(stream->gain);
+            } else {
+                LOG_WARNING(Service_Audio,
+                            "Unsupported sysmix output format: type {} channels {} rate {}",
+                            sample_type, channels, sample_rate);
+            }
             stream->owed_frames = 0;
             stream->open = true;
             stream->state_event->Signal(system.Kernel());
@@ -307,6 +346,10 @@ private:
         {
             std::scoped_lock lk{streams->mutex};
             stream->open = false;
+            if (stream->output) {
+                system.AudioCore().GetOutputSink().CloseStream(stream->output);
+                stream->output = nullptr;
+            }
             stream->state_event->Signal(system.Kernel());
         }
         IPC::ResponseBuilder rb{ctx, 2};
@@ -326,14 +369,19 @@ private:
     }
 
     void GetStreamGain(HLERequestContext& ctx) {
+        std::scoped_lock lk{streams->mutex};
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push(gain);
+        rb.Push(stream->gain);
     }
 
     void SetStreamGain(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
-        gain = rp.Pop<f32>();
+        const f32 gain = rp.Pop<f32>();
+        std::scoped_lock lk{streams->mutex};
+        stream->gain = std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 0.0f;
+        if (stream->output)
+            stream->output->SetSystemVolume(stream->gain);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -348,7 +396,8 @@ private:
         IPC::RequestParser rp{ctx};
         const auto mode = rp.Pop<u32>();
         const auto threshold = rp.Pop<s32>();
-        LOG_INFO(Service_Audio, "stream {} data event: mode {}, threshold {}", stream->id, mode, threshold);
+        LOG_INFO(Service_Audio, "stream {} data event: mode {}, threshold {}", stream->id, mode,
+                 threshold);
         {
             // The game waits on this before its first write, so signal it at once when the ring
             // already has room (it is empty right after OpenStream); the drain timer keeps it up.
@@ -380,7 +429,6 @@ private:
     KernelHelpers::ServiceContext service_context;
     std::shared_ptr<Nx2SysmixStreams> streams;
     std::shared_ptr<Nx2SysmixStream> stream;
-    f32 gain{1.0f};
 };
 
 // The session audsmx:u command 0 returns. Commands:
@@ -389,7 +437,8 @@ private:
 // - 2 / 3(buffer of u32 stream ids): engage / disengage those streams.
 class INx2SysmixUserSession final : public ServiceFramework<INx2SysmixUserSession> {
 public:
-    explicit INx2SysmixUserSession(Core::System& system_) : ServiceFramework{system_, "nx2:audsmx:u:session"} {
+    explicit INx2SysmixUserSession(Core::System& system_)
+        : ServiceFramework{system_, "nx2:audsmx:u:session"} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {1, &INx2SysmixUserSession::CreateStream, "CreateStream"},
@@ -400,8 +449,8 @@ public:
         RegisterHandlers(functions);
         drain_timer = Core::Timing::CreateEvent(
             "nx2:audsmx:u drain",
-            [streams = streams, &system = system, owner = session_id](s64, std::chrono::nanoseconds)
-                -> std::optional<std::chrono::nanoseconds> {
+            [streams = streams, &system = system, owner = session_id](
+                s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
                 Drain(system, *streams, owner);
                 return std::nullopt;
             });
@@ -435,12 +484,62 @@ private:
                 continue;
             }
             u32 filled = (write + capacity - read) % capacity;
+            if (!stream->engaged && stream->output && !stream->output->IsPaused()) {
+                stream->output->Stop();
+                stream->output->ClearQueue();
+            }
             if (stream->engaged) {
-                stream->owed_frames += stream->sample_rate *
-                                       std::chrono::duration<double>(DrainInterval).count();
+                stream->owed_frames +=
+                    stream->sample_rate * std::chrono::duration<double>(DrainInterval).count();
                 const auto owed = static_cast<u32>(stream->owed_frames);
                 stream->owed_frames -= owed;
+                if (stream->output && stream->output->GetQueueSize() >= 8)
+                    continue;
                 const u32 taken = (std::min)(filled, owed);
+                if (stream->output && owed) {
+                    const u32 channels = stream->channels;
+                    const u32 output_channels = channels == 1 ? 2 : channels;
+                    std::vector<s16> samples(owed * output_channels, 0);
+                    const u32 sample_bytes = stream->sample_type == 5 ? 4 : 2;
+                    std::vector<u8> input(taken * channels * sample_bytes);
+                    const u32 first = (std::min)(taken, capacity - read);
+                    const u64 data = stream->buffer + stream->data_offset;
+                    const u64 stride = channels * sample_bytes;
+                    memory.ReadBlock(data + read * stride, input.data(), first * stride);
+                    if (first < taken) {
+                        memory.ReadBlock(data, input.data() + first * stride,
+                                         (taken - first) * stride);
+                    }
+                    s32 peak{};
+                    for (u32 frame = 0; frame < taken; ++frame) {
+                        for (u32 channel = 0; channel < output_channels; ++channel) {
+                            const u32 source = frame * channels + (channels == 1 ? 0 : channel);
+                            s16 sample{};
+                            if (sample_bytes == 4) {
+                                f32 value{};
+                                std::memcpy(&value, input.data() + source * 4, 4);
+                                if (std::isfinite(value)) {
+                                    const f32 scaled = std::clamp(value, -1.0f, 1.0f) * 32768.0f;
+                                    sample =
+                                        static_cast<s16>(std::clamp(scaled, -32768.0f, 32767.0f));
+                                }
+                            } else {
+                                std::memcpy(&sample, input.data() + source * 2, 2);
+                            }
+                            samples[frame * output_channels + channel] = sample;
+                            peak = (std::max)(peak, std::abs(static_cast<s32>(sample)));
+                        }
+                    }
+                    AudioCore::Sink::SinkBuffer buffer{owed, 0, 0, false};
+                    stream->output->AppendBuffer(buffer, samples);
+                    stream->output->Start();
+                    if (peak && !stream->reported_samples) {
+                        stream->reported_samples = true;
+                        LOG_INFO(Service_Audio,
+                                 "sysmix stream {} output active: {} frames, PCM16 peak {}",
+                                 stream->id, taken, peak);
+                    }
+                }
                 if (taken != 0) {
                     memory.Write32(stream->buffer + ReadIndexOffset, (read + taken) % capacity);
                     filled -= taken;
@@ -495,7 +594,8 @@ private:
                 }
             }
         }
-        LOG_INFO(Service_Audio, "{} streams {}", engaged ? "engage" : "disengage", fmt::join(ids, ","));
+        LOG_INFO(Service_Audio, "{} streams {}", engaged ? "engage" : "disengage",
+                 fmt::join(ids, ","));
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
