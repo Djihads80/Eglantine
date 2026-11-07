@@ -31,6 +31,7 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
@@ -2131,6 +2132,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
 template <class P>
 template <typename StagingBuffer>
 void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::TextureUpload};
     const std::span<u8> mapped_span = staging.mapped_span;
     const GPUVAddr gpu_addr = image.gpu_addr;
 

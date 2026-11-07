@@ -24,6 +24,7 @@
 #include "core/device_memory_manager.h"
 #include "core/memory.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_war_probe.h"
 
 namespace Core {
 
@@ -365,6 +366,7 @@ u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
+        VideoCommon::Nx2Ledger::Note(src_addr, size);
         return GetPointer<u8>(src_addr);
     }
     return nullptr;
@@ -375,6 +377,7 @@ const u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
+        VideoCommon::Nx2Ledger::Note(src_addr, size);
         return GetPointer<u8>(src_addr);
     }
     return nullptr;
@@ -402,6 +405,7 @@ T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) {
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0) [[unlikely]]
         return nullptr;
+    VideoCommon::Nx2Ledger::Note(address, 0);
     return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
 }
 
@@ -413,6 +417,7 @@ const T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) const {
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0)
         return nullptr;
+    VideoCommon::Nx2Ledger::Note(address, 0);
     return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
 }
 
@@ -467,6 +472,7 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
 template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, size_t size) {
     device_inter->FlushRegion(address, size);
+    VideoCommon::Nx2Ledger::Note(address, size);
     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);
@@ -532,6 +538,7 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_pointer, size_t size) {
+    VideoCommon::Nx2Ledger::Note(address, size);
     const std::size_t page_offset = address & Memory::YUZU_PAGEMASK;
     if (size <= Memory::YUZU_PAGESIZE - page_offset) {
         const DAddr guest_page = address & ~static_cast<DAddr>(Memory::YUZU_PAGEMASK);

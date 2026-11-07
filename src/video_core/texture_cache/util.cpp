@@ -28,6 +28,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_war_probe.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/decode_bc.h"
 #include "video_core/texture_cache/format_lookup_table.h"
@@ -862,6 +863,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 
     if (info.type == ImageType::Linear) {
         ASSERT(output.size_bytes() >= guest_size_bytes);
+        Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::TextureUpload};
         gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
 
         ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
@@ -1109,6 +1111,7 @@ std::vector<BufferImageCopy> UnswizzleImageRects(Tegra::MemoryManager& gpu_memor
                                       u64{row} * level.blocks_per_row * level.block_bytes +
                                       u64{blocks.first_block} * level.block_bytes;
             swizzled.assign(row_bytes, 0);
+            Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::TextureUpload};
             gpu_memory.ReadBlockUnsafe(row_addr, swizzled.data(), row_bytes);
             UnswizzleTexture(output.subspan(output_offset, bytes), swizzled, 1U << bpp_log2, width,
                              texel_rows, 1, level.block_height, 0, 0,
@@ -1264,6 +1267,7 @@ void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan&
     std::vector<u8> run;
     for (const auto& r : plan.runs) {
         run.resize(r.guest_bytes);
+        Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::TextureUpload};
         gpu_memory.ReadBlockUnsafe(r.src_addr, run.data(), r.guest_bytes);
         Tegra::Texture::UnswizzleTexture(output.subspan(r.host_offset, r.host_bytes),
                                          run, 1U << plan.bpp_log2, r.run_tiles, r.tile_rows, 1,

@@ -1779,6 +1779,12 @@ private:
         } else if (frames_ahead == -1 && app_program_id == OcarinaOfTimeProgramId) {
             frames_ahead = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FramesAhead) ? 1 : 0;
         }
+        // run_ahead_ledger (measurement only): compares the last frame's pages and arms the
+        // back's set swap for this fence, before the wait and outside its timing.
+        const bool ledger = VideoCommon::Nx2Ledger::On();
+        if (ledger) [[unlikely]] {
+            LedgerEnter(~w[22], w[24]);
+        }
         const auto entered = std::chrono::steady_clock::now();
         // fence_timeline (measurement only): the back's idle total and the last submit at entry.
         namespace Timeline = VideoCommon::Nx2Perf::FenceTimeline;
@@ -1850,6 +1856,12 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        if (ledger && ~w[22] < 192) [[unlikely]] {
+            // The back is done with this frame: hash the pages it read for it.
+            m_ledger->Take(~w[22], w[24], [this](u64 address) -> const u8* {
+                return system.Host1x().MemoryManager().GetPointer<u8>(address);
+            });
+        }
         // war_guard_probe (measurement only): from here the guest may touch this frame's data.
         const bool war_probe =
             app_program_id == OcarinaOfTimeProgramId && VideoCommon::Nx2WarProbe::On();
@@ -1938,6 +1950,11 @@ private:
                      Ms(window.interval_us.p99), Ms(window.interval_us.max), Ms(window.fence_us.p50),
                      Ms(window.fence_us.p99), Ms(window.fence_us.max), window.intervals_over_20ms);
         }
+        if (ledger) [[unlikely]] {
+            if (const std::string line = m_ledger->Report(); !line.empty()) {
+                LOG_INFO(HW_GPU, "{}", line);
+            }
+        }
         if (war_probe) [[unlikely]] {
             VideoCommon::Nx2WarProbe::Get().reply_ns.store(VideoCommon::Nx2WarProbe::NowNs(),
                                                            std::memory_order_release);
@@ -1948,6 +1965,9 @@ private:
                 WaitForFrame(~w[22], w[24]);
             }
             InflightLog();
+        }
+        if (ledger) [[unlikely]] {
+            m_ledger->Reply();
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
@@ -2144,6 +2164,25 @@ private:
     u32 m_landed_timeouts{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
+
+    /// run_ahead_ledger: vi2's side of the probe, allocated at the first present.
+    std::unique_ptr<VideoCommon::Nx2Ledger::Vi2Window> m_ledger;
+    void LedgerEnter(u32 fence_id, u32 fence_value) {
+        if (!m_ledger) {
+            m_ledger = std::make_unique<VideoCommon::Nx2Ledger::Vi2Window>();
+        }
+        if (fence_id >= 192) {
+            return;
+        }
+        const bool reached =
+            system.Host1x().GetSyncpointManager().IsReadyGuest(fence_id, fence_value);
+        m_ledger->Enter(
+            fence_id, fence_value, reached,
+            [this](u64 address) -> const u8* {
+                return system.Host1x().MemoryManager().GetPointer<u8>(address);
+            },
+            [](u64 address) { return Tegra::Nx2IsGpuWritten(address); });
+    }
 
     /// inflight_write_wait / inflight_read_exact: the epochs' counters, about once a second.
     std::chrono::steady_clock::time_point m_inflight_log_time{};

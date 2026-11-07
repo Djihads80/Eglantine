@@ -337,6 +337,9 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
         if (Nx2Inflight::Any()) [[unlikely]] {
             Nx2InflightNoteRead(device_addr_start_aligned, device_addr_end_aligned);
         }
+        if (Nx2Ledger::On()) [[unlikely]] {
+            Nx2Ledger::NoteGuestRead(device_addr_start_aligned, device_addr_end_aligned);
+        }
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,
@@ -1335,6 +1338,7 @@ bool BufferCache<P>::IsRegionCpuModified(DAddr addr, size_t size) {
 
 template <class P>
 void BufferCache<P>::BindHostIndexBuffer() {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Index};
     Buffer& buffer = slot_buffers[channel_state->index_buffer.buffer_id];
     TouchBuffer(buffer, channel_state->index_buffer.buffer_id);
     const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
@@ -1430,6 +1434,7 @@ void BufferCache<P>::RefreshRepackedVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostVertexBuffers() {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Vertex};
     RefreshRepackedVertexBuffers();
 
 #ifdef __ANDROID__
@@ -1528,6 +1533,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostDrawIndirectBuffers() {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Indirect};
     const auto bind_buffer = [this](const Binding& binding) {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
@@ -1609,6 +1615,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         gpu_memory->UsesNativeTiling() &&
         (bank_mode == '3' || (*channel_state->uniform_buffer_sizes)[stage][index] == 0x10000)) {
         Nx2Profile::Scope bank_scope{Nx2Profile::Zone::BindUniformBank};
+        Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::BankCompare};
         // The bank size is only an upper limit: stop at the end of the mapped memory.
         // Only mark 4 KiB pages whose guest bytes actually changed since the last upload so
         // unchanged banks do not toggle VirtualProtect or break the Vulkan render pass on every draw.
@@ -1674,6 +1681,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                     if (ptr == nullptr) {
                         break;
                     }
+                    Nx2Ledger::Note(cur_addr, chunk_size);
                     const u32 page_bit = 1U << (page_idx & 31);
                     const bool page_initialized = (shadow->initialized_mask & page_bit) != 0;
                     const bool already_cpu_modified =
@@ -1717,6 +1725,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             && !memory_tracker.IsRegionGpuModified(device_addr, size));
     if (use_fast_buffer) {
         Nx2Profile::Scope stream_scope{Nx2Profile::Zone::BindUniformStream};
+        Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::UniformFast};
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
                 // Fast path for Nvidia
@@ -1754,6 +1763,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         return;
     }
     Nx2Profile::Scope cached_scope{Nx2Profile::Zone::BindUniformCached};
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::UniformCached};
     BindMemo* const memo =
         BindMemoEnabled() && has_host_buffer ? &uniform_bind_memo[stage][index] : nullptr;
     const bool memo_hit = memo != nullptr && BindMemoHit(*memo, buffer, binding.buffer_id,
@@ -1881,6 +1891,7 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Storage};
     nx2_graphics_stage = static_cast<int>(stage + 1);
     SCOPE_EXIT {
         nx2_graphics_stage = -1;
@@ -2072,6 +2083,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostComputeStorageBuffers() {
+    Nx2Ledger::LedgerScope ledger_scope{Nx2Ledger::Category::Storage};
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
         const Binding& binding = channel_state->compute_storage_buffers[index];
