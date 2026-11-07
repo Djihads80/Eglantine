@@ -231,6 +231,62 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
 template <typename Traits>
 void DeviceMemoryManager<Traits>::BindInterface(DeviceInterface* device_inter_) {
     device_inter = device_inter_;
+    VideoCommon::Nx2Cow::RegisterDevice(this, &Nx2CowPointer, physical_base);
+}
+
+template <typename Traits>
+const u8* DeviceMemoryManager<Traits>::Nx2CowPointer(const void* self, u64 address) {
+    const auto* const manager = static_cast<const DeviceMemoryManager*>(self);
+    const auto phys_addr = manager->tracked_entries[address >> page_bits].compressed_physical_ptr;
+    if (phys_addr == 0) {
+        return nullptr;
+    }
+    return manager->template GetPointerFromRaw<u8>((PAddr(phys_addr - 1) << page_bits) +
+                                                   (address & page_mask));
+}
+
+template <typename Traits>
+size_t DeviceMemoryManager<Traits>::Nx2CowCollectCpuPages(const Memory::Memory* process,
+                                                          bool& full, u32* out, size_t capacity,
+                                                          bool& overflow) {
+    std::scoped_lock lk(mapping_guard);
+    size_t count = 0;
+    const auto push = [&](VAddr page) {
+        if (count == capacity) {
+            overflow = true;
+            return;
+        }
+        out[count++] = static_cast<u32>(page);
+    };
+    full = full || nx2_cow_map_overflow;
+    if (full) {
+        for (size_t page = 0; page < (device_as_size >> page_bits); ++page) {
+            if (tracked_entries[page].compressed_physical_ptr == 0) {
+                continue;
+            }
+            const auto [asid, vaddr] = ExtractCPUBacking(page);
+            if (vaddr == 0 || asid.id >= registered_processes.size() ||
+                registered_processes[asid.id] != process) {
+                continue;
+            }
+            push(vaddr >> page_bits);
+        }
+    } else {
+        for (size_t i = 0; i < nx2_cow_map_count; ++i) {
+            const Nx2CowMap& map = nx2_cow_maps[i];
+            if (map.process != process) {
+                continue;
+            }
+            const VAddr end = map.virtual_address + map.size;
+            for (VAddr page = map.virtual_address >> page_bits; (page << page_bits) < end;
+                 ++page) {
+                push(page);
+            }
+        }
+    }
+    nx2_cow_map_count = 0;
+    nx2_cow_map_overflow = false;
+    return count;
 }
 
 template <typename Traits>
@@ -285,6 +341,13 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
         impl->multi_dev_address.Register(new_dev, start_id);
     }
     translation_generation.fetch_add(1, std::memory_order_release);
+    if (VideoCommon::Nx2Cow::g_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
+        if (nx2_cow_map_count == nx2_cow_maps.size()) {
+            nx2_cow_map_overflow = true;
+        } else {
+            nx2_cow_maps[nx2_cow_map_count++] = {virtual_address, size, process_memory};
+        }
+    }
     if (track) {
         TrackContinuityImpl(address, virtual_address, size, asid);
     }
@@ -366,7 +429,8 @@ u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::size_t
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
-        VideoCommon::Nx2Ledger::Note(src_addr, size);
+        VideoCommon::Nx2Ledger::Note(src_addr, size, VideoCommon::Nx2Ledger::NoteKind::Span);
+        VideoCommon::Nx2Cow::SkipNextPointer();
         return GetPointer<u8>(src_addr);
     }
     return nullptr;
@@ -377,7 +441,8 @@ const u8* DeviceMemoryManager<Traits>::GetSpan(const DAddr src_addr, const std::
     size_t page_index = src_addr >> page_bits;
     size_t subbits = src_addr & page_mask;
     if ((static_cast<size_t>(tracked_entries[page_index].continuity_tracker+1) << page_bits) >= size + subbits) {
-        VideoCommon::Nx2Ledger::Note(src_addr, size);
+        VideoCommon::Nx2Ledger::Note(src_addr, size, VideoCommon::Nx2Ledger::NoteKind::Span);
+        VideoCommon::Nx2Cow::SkipNextPointer();
         return GetPointer<u8>(src_addr);
     }
     return nullptr;
@@ -405,7 +470,10 @@ T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) {
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0) [[unlikely]]
         return nullptr;
-    VideoCommon::Nx2Ledger::Note(address, 0);
+    if (VideoCommon::Nx2Ledger::g_note != 0) [[unlikely]] {
+        VideoCommon::Nx2Ledger::NoteAny(address, 0, VideoCommon::Nx2Ledger::NoteKind::Pointer,
+                                        NX2_RETURN_ADDRESS());
+    }
     return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
 }
 
@@ -417,13 +485,18 @@ const T* DeviceMemoryManager<Traits>::GetPointer(DAddr address) const {
     auto phys_addr = tracked_entries[index].compressed_physical_ptr;
     if (phys_addr == 0)
         return nullptr;
-    VideoCommon::Nx2Ledger::Note(address, 0);
+    if (VideoCommon::Nx2Ledger::g_note != 0) [[unlikely]] {
+        VideoCommon::Nx2Ledger::NoteAny(address, 0, VideoCommon::Nx2Ledger::NoteKind::Pointer,
+                                        NX2_RETURN_ADDRESS());
+    }
     return GetPointerFromRaw<T>((PAddr(phys_addr - 1) << Memory::YUZU_PAGEBITS) + offset);
 }
 
 template <typename Traits>
 template <typename T>
 void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
+    VideoCommon::Nx2Cow::HostWrite(address, sizeof(T));
+    VideoCommon::Nx2Cow::SkipNextPointer();
     T* ptr = GetPointer<T>(address);
     if (!ptr) [[unlikely]] {
         return;
@@ -434,6 +507,12 @@ void DeviceMemoryManager<Traits>::Write(DAddr address, T value) {
 template <typename Traits>
 template <typename T>
 T DeviceMemoryManager<Traits>::Read(DAddr address) const {
+    if ((VideoCommon::Nx2Ledger::g_note & VideoCommon::Nx2Ledger::NoteCow) != 0) [[unlikely]] {
+        // run_ahead_cow_probe: the size is known here; the GetPointer below is not unsized.
+        VideoCommon::Nx2Ledger::NoteCowRead(address, sizeof(T),
+                                            VideoCommon::Nx2Ledger::NoteKind::Sized, nullptr);
+        VideoCommon::Nx2Cow::t_skip_pointer = true;
+    }
     const T* ptr = GetPointer<T>(address);
     T result{};
     if (!ptr) [[unlikely]] {
@@ -516,6 +595,7 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
 
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_pointer, size_t size) {
+    VideoCommon::Nx2Cow::HostWrite(address, size);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
@@ -583,6 +663,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* src_pointer,
                                                    size_t size) {
+    VideoCommon::Nx2Cow::HostWrite(address, size);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {

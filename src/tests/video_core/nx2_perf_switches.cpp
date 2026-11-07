@@ -26,3 +26,21 @@ TEST_CASE("Nx2Perf spin_handoff is off unless ON names it", "[nx2_perf]") {
             (always_off & ~Bit(Opt::SpinHandoff)));
     REQUIRE(ParseOffMask(false, "spin_handoff", "spin_handoff", false) == always_off);
 }
+
+TEST_CASE("Nx2Perf run_ahead_cow_probe is off unless ON names it", "[nx2_perf]") {
+    static_assert(Index(Opt::RunAheadCowProbe) == 72);
+    REQUIRE(opt_names[Index(Opt::RunAheadCowProbe)] == "run_ahead_cow_probe");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::RunAheadCowProbe)));
+    REQUIRE(IsOff(always_off, Index(Opt::RunAheadCowProbe)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::RunAheadCowProbe)));
+    REQUIRE(IsOff(ParseOffMask(true, "", "", false), Index(Opt::RunAheadCowProbe)));
+    REQUIRE(ParseOffMask(false, "run_ahead_cow_probe", "", false) ==
+            (always_off & ~Bit(Opt::RunAheadCowProbe)));
+    REQUIRE(ParseOffMask(false,
+                         "frames_ahead,present_one_ahead,run_ahead_ledger,run_ahead_cow_probe",
+                         "", false) ==
+            (always_off & ~(Bit(Opt::FramesAhead) | Bit(Opt::PresentOneAhead) |
+                            Bit(Opt::RunAheadLedger) | Bit(Opt::RunAheadCowProbe))));
+    REQUIRE(ParseOffMask(false, "run_ahead_cow_probe", "run_ahead_cow_probe", false) ==
+            always_off);
+}

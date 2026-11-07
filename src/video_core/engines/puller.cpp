@@ -715,6 +715,10 @@ void Puller::ProcessFenceActionMethod(DmaPusher& dma_pusher) {
             VideoCommon::Nx2Perf::FenceTimeline::StampFront(
                 static_cast<u32>(regs.fence_action.syncpoint_id.Value()));
         }
+        if (VideoCommon::Nx2Cow::On()) [[unlikely]] {
+            VideoCommon::Nx2Cow::FrontIncrement(
+                static_cast<u32>(regs.fence_action.syncpoint_id.Value()));
+        }
         OnBack(
             [rasterizer = dma_pusher.rasterizer,
              id = static_cast<u32>(regs.fence_action.syncpoint_id.Value())] {

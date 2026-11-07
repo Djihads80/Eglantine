@@ -133,6 +133,10 @@ public:
             LOG_ERROR(HW_GPU, "Signal of syncpoint {} past the table, ignored", value);
             return;
         }
+        if (Nx2Cow::t_role == Nx2Cow::Role::Back) [[unlikely]] {
+            // run_ahead_cow_probe: the back's boundary for this increment's frame.
+            Nx2Cow::BackIncrement(value, syncpoint_manager.GetGuestSyncpointValue(value) + 1);
+        }
         if (Nx2Perf::GuestLandedSyncpoints()) {
             // The guest value rises with the landed host value, so a guest fence wait that
             // passes finds this fence's downloads and query results in guest memory.
