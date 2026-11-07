@@ -145,8 +145,10 @@ inline std::string_view Classify(std::span<const u32> code, u32 start, u32 macro
 
 /// One call's reads and emits as the JIT made them.
 struct Recorder {
-    std::array<Pair, MaxReads> reads{};
-    std::array<Pair, MaxEmits> emits{};
+    // Not zeroed: one is built on every front JIT call, also with the switch off. Only the
+    // first num_reads/num_emits pairs are read.
+    std::array<Pair, MaxReads> reads;
+    std::array<Pair, MaxEmits> emits;
     u32 num_reads{};
     u32 num_emits{};  ///< All emits, also past MaxEmits
     bool overflow{};  ///< Over a limit, or a read of a register an earlier emit may have changed
