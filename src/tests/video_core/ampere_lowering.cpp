@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <vector>
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -439,5 +440,101 @@ TEST_CASE("Ampere Ocarina byte constant loads, ULEA carries to UP3 and two-sourc
     INFO(convert.error);
     REQUIRE(static_cast<bool>(convert));
     CHECK(field(FindMaxwell(convert, 0x5cb, 52), 41, 2) == 3);
+}
+TEST_CASE("Ampere TLD4 lowers per-pixel offsets", "[video_core][ampere]") {
+    // Welcome Tour's TLD4.PTP instruction: x/y in R4/R5 and packed per-tap offsets in R8/R9.
+    const std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+
+    const u64 gather = FindMaxwell(lowered, 0xc8, 56);
+    REQUIRE(gather != 0);
+    CHECK(((gather >> 28) & 7) == 2); // 2D
+    CHECK(((gather >> 20) & 0xff) == 246); // packed PTP offsets in the meta register
+    CHECK(((gather >> 54) & 3) == 2); // per-pixel offsets
+}
+
+TEST_CASE("Ampere TLD4 rejects shadowed per-tap offset registers", "[video_core][ampere]") {
+    std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x338004f2, 0x041e2f08, 0x100fc200}},
+        EXIT,
+    }};
+    REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+    code[0].words[1] = 0x338004f3;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+    code[0].words[1] = 0x338004f4;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
+TEST_CASE("Ampere TLD4 lowers a single offset register", "[video_core][ampere]") {
+    std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041e1f08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    const u64 gather = FindMaxwell(lowered, 0xc8, 56);
+    REQUIRE(gather != 0);
+    CHECK(((gather >> 54) & 3) == 1);
+    code[0].words[2] |= 1U << 13;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
+TEST_CASE("Ampere TLD4 packs half results in component order", "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041eaf08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    std::vector<u64> conversions;
+    for (const u64 word : lowered.instructions) {
+        if ((word >> 48) == 0x5ca8) {
+            conversions.push_back(word);
+        }
+    }
+    REQUIRE(conversions.size() == 4);
+    CHECK(((conversions[0] >> 20) & 0xff) == 249);
+    CHECK(((conversions[1] >> 20) & 0xff) == 248);
+    CHECK(((conversions[2] >> 20) & 0xff) == 247);
+    CHECK(((conversions[3] >> 20) & 0xff) == 246);
+}
+
+TEST_CASE("Ampere array depth samples use a second descriptor buffer", "[video_core][ampere]") {
+    const std::array<Instruction, 3> code{{
+        {{0x040a7b60, 0xb0000008, 0x000e41ff, 0}},
+        {{0x040a7b60, 0xb0400008, 0x000e41ff, 0}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    CHECK(lowered.required_texture_buffer == 0);
+    constexpr u64 sample_mask = 0xffc0000000000000ULL;
+    const auto count_sample = [&](u64 opcode) {
+        return std::count_if(lowered.instructions.begin(), lowered.instructions.end(),
+                             [=](u64 word) { return (word & sample_mask) == opcode; });
+    };
+    CHECK(count_sample(0xc000000000000000ULL) == 1);
+    CHECK(count_sample(0xde00000000000000ULL) == 0);
+    CHECK(count_sample(0xde80000000000000ULL) == 1);
+    CHECK(count_sample(0xdec0000000000000ULL) == 0);
+    const u64 bound = FindMaxwell(lowered, 0xc0, 56);
+    const u64 bindless = FindMaxwell(lowered, 0xde, 56);
+    REQUIRE(bound != 0);
+    REQUIRE(bindless != 0);
+    CHECK(((bound >> 36) & 0x1fff) == 0);
+    CHECK(((bound >> 20) & 0xff) == 9);
+    CHECK(((bindless >> 20) & 0xff) == 246);
+    const u64 handle_load = FindMaxwell(lowered, 0x4c98, 48);
+    REQUIRE(handle_load != 0);
+    CHECK((handle_load & 0xff) == 246);
+    CHECK(((handle_load >> 34) & 0x1f) == 1);
+    CHECK(((handle_load >> 20) & 0x3fff) == 0);
+    CHECK(std::find(lowered.instructions.begin(), lowered.instructions.end(),
+                    0x5c980780009700f7ULL) != lowered.instructions.end());
 }
 } // namespace

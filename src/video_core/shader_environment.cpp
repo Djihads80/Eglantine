@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -377,6 +378,25 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     const GPUVAddr descriptor_addr{tic_addr + index * sizeof(Tegra::Texture::TICEntry)};
     Tegra::Texture::TICEntry entry;
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
+    // Diagnostic: the first descriptors the programs read, with the fields that decide the
+    // sampled colour (format, component types, channel swizzle) and the raw words.
+    static const bool diagnostics = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
+    static std::atomic<u32> described{};
+    if (diagnostics && described.fetch_add(1, std::memory_order_relaxed) < 150) {
+        std::array<u32, 8> words{};
+        gpu_memory->ReadBlock(descriptor_addr, words.data(), sizeof(words));
+        LOG_INFO(Shader,
+                 "TIC {:#x} idx {} fmt {:#x} types {}/{}/{}/{} swz {}/{}/{}/{} type {} {}x{}x{} "
+                 "srgb {}: {:08x} {:08x} {:08x} {:08x}",
+                 descriptor_addr, index, static_cast<u32>(entry.format.Value()),
+                 static_cast<u32>(entry.r_type.Value()), static_cast<u32>(entry.g_type.Value()),
+                 static_cast<u32>(entry.b_type.Value()), static_cast<u32>(entry.a_type.Value()),
+                 static_cast<u32>(entry.x_source.Value()), static_cast<u32>(entry.y_source.Value()),
+                 static_cast<u32>(entry.z_source.Value()), static_cast<u32>(entry.w_source.Value()),
+                 static_cast<u32>(entry.texture_type.Value()), entry.Width(), entry.Height(),
+                 entry.Depth(), static_cast<u32>(entry.srgb_conversion.Value()), words[0], words[1],
+                 words[2], words[3]);
+    }
     return entry;
 }
 
