@@ -2173,9 +2173,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool per_tap_offsets = insn.Bits(77, 1) != 0;
             const bool offset_registers = offsets || per_tap_offsets;
             if (insn.Bits(61, 3) != 1 || insn.Bits(78, 2) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                (offsets && per_tap_offsets) ||
+                (source_b != 255 && source_b >= shadow_boundary) ||
                 (offset_registers && (bindless || source_b == 255 ||
-                                      (per_tap_offsets && source_b >= 245) ||
-                                      (source_a != 255 && source_a >= 245))) ||
+                                      (per_tap_offsets && source_b + 1 >= shadow_boundary) ||
+                                      (source_a != 255 && source_a + 1 >= shadow_boundary))) ||
                 insn.Bits(89, 1) || mask == 0 ||
                 (bindless ? (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))
                           : (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||

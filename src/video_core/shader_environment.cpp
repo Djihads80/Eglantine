@@ -349,8 +349,9 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
     // Diagnostic: the first descriptors the programs read, with the fields that decide the
     // sampled colour (format, component types, channel swizzle) and the raw words.
+    static const bool diagnostics = std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS") != nullptr;
     static std::atomic<u32> described{};
-    if (described.fetch_add(1, std::memory_order_relaxed) < 150) {
+    if (diagnostics && described.fetch_add(1, std::memory_order_relaxed) < 150) {
         std::array<u32, 8> words{};
         gpu_memory->ReadBlock(descriptor_addr, words.data(), sizeof(words));
         LOG_INFO(Shader,

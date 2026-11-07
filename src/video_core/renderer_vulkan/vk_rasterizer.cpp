@@ -480,7 +480,18 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     }();
     const u64 pixel_shader =
         (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-    if (!trace || regs.rt[0].width < 1280 || traced >= 600 || seen_events++ < skip ||
+    if (!trace) {
+        return;
+    }
+    u32 width = regs.rt[0].width;
+    if (regs.rt[0].tile_mode.is_pitch_linear) {
+        const auto format = VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(regs.rt[0].format);
+        if (!format) {
+            return;
+        }
+        width /= VideoCore::Surface::BytesPerBlock(*format);
+    }
+    if (width < 1280 || traced >= 600 || seen_events++ < skip ||
         (only_ps != 0 && pixel_shader != only_ps)) {
         return;
     }
@@ -491,7 +502,7 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
              "nx2 window {} rt0={:#x} fmt={:#x} {}x{} count={} clear={:#x} color=({},{},{},{}) mask_common={} "
              "mask0={:#x} rt_count={} vp scale=({},{}) translate=({},{}) scissor en={} x={}..{} "
              "y={}..{} blend0={} vs={:#x} ps={:#x} rasterize={}",
-             kind, regs.rt[0].Address(), static_cast<u32>(regs.rt[0].format), regs.rt[0].width,
+             kind, regs.rt[0].Address(), static_cast<u32>(regs.rt[0].format), width,
              regs.rt[0].height, count,
              regs.clear_surface.raw, regs.clear_color[0],
              regs.clear_color[1], regs.clear_color[2], regs.clear_color[3], regs.color_mask_common,
@@ -504,12 +515,23 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     if (kind[0] != 'd') {
         return;
     }
+    const auto read_trace = [&](GPUVAddr address, void* data, size_t size) {
+        if (size == 0 || address > std::numeric_limits<GPUVAddr>::max() - (size - 1) ||
+            !memory.IsWithinGPUAddressRange(address) ||
+            !memory.IsWithinGPUAddressRange(address + size - 1) ||
+            !memory.IsFullyMappedRange(address, size)) {
+            return false;
+        }
+        memory.ReadBlockUnsafe(address, data, size);
+        return true;
+    };
     // Pixel-stage constant buffer 3: colour constants of the loading-screen passes.
     if (const auto& cb3 = maxwell3d.state.shader_stages[4].const_buffers[3]; cb3.enabled) {
         std::array<f32, 8> values{};
-        memory.ReadBlockUnsafe(cb3.address, values.data(), sizeof(values));
-        LOG_INFO(HW_GPU, "nx2 window ps c[3]@{:#x} size={}: {}", cb3.address, cb3.size,
-                 fmt::join(values, " "));
+        if (cb3.size >= sizeof(values) && read_trace(cb3.address, values.data(), sizeof(values))) {
+            LOG_INFO(HW_GPU, "nx2 window ps c[3]@{:#x} size={}: {}", cb3.address, cb3.size,
+                     fmt::join(values, " "));
+        }
     }
     static u32 texture_traces{};
     if (texture_traces++ > 200) {
@@ -517,11 +539,17 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     }
     // Texture used by the pixel shader's first bound TEX (handle in c[2][0x20]) and its TIC.
     const auto& cb = maxwell3d.state.shader_stages[4].const_buffers[2];
-    const u32 handle = cb.enabled ? memory.Read<u32>(cb.address + 0x20) : 0;
+    u32 handle{};
+    if (!cb.enabled || cb.size < 0x24 || cb.address > std::numeric_limits<GPUVAddr>::max() - 0x20 ||
+        !read_trace(cb.address + 0x20, &handle, sizeof(handle))) {
+        return;
+    }
     const u32 tic_index = handle & 0xfffff;
     const GPUVAddr tic_address = regs.tex_header.Address() + u64{tic_index} * 32;
     std::array<u32, 8> tic{};
-    memory.ReadBlockUnsafe(tic_address, tic.data(), sizeof(tic));
+    if (tic_index > regs.tex_header.limit || !read_trace(tic_address, tic.data(), sizeof(tic))) {
+        return;
+    }
     LOG_INFO(HW_GPU,
              "nx2 window texture: cb2={:#x} en={} handle={:#x} tic pool={:#x} limit={} "
              "sampler pool={:#x} tic[{}]={:08x}",
@@ -530,16 +558,19 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     // First bytes of the texture's memory (block-linear, so just a sample).
     const GPUVAddr texture = (GPUVAddr{tic[2] & 0xffff} << 32) | tic[1];
     std::array<u32, 16> texels{};
-    memory.ReadBlockUnsafe(texture, texels.data(), sizeof(texels));
+    if (!read_trace(texture, texels.data(), sizeof(texels))) {
+        return;
+    }
     LOG_INFO(HW_GPU, "nx2 window texture {:#x} {}x{}: {:08x}", texture, (tic[4] & 0xffff) + 1,
              (tic[5] & 0xffff) + 1, fmt::join(texels, " "));
     // EDEN_NX2_TEXTURE_DUMP=<file>: save the first 4 MiB of the last traced texture's memory.
     if (const char* path = std::getenv("EDEN_NX2_TEXTURE_DUMP"); path != nullptr) {
         std::vector<u8> bytes(2048u * 10240u);
-        memory.ReadBlockUnsafe(texture, bytes.data(), bytes.size());
-        if (std::FILE* file = std::fopen(path, "wb")) {
-            std::fwrite(bytes.data(), 1, bytes.size(), file);
-            std::fclose(file);
+        if (read_trace(texture, bytes.data(), bytes.size())) {
+            if (std::FILE* file = std::fopen(path, "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), file);
+                std::fclose(file);
+            }
         }
     }
 }

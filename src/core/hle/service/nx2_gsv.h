@@ -46,6 +46,7 @@
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_resource_limit.h"
+#include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_server_session.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_hardware_timer.h"
@@ -78,13 +79,22 @@ namespace Service {
 // works from a domain too, for callers that want a raw session handle.
 template <class T>
 inline Kernel::KClientSession* CreateRawSession(Core::System& system, HLERequestContext& ctx,
-                                                std::shared_ptr<T> iface) {
+                                                std::shared_ptr<T> iface, Result& result) {
     auto& kernel = system.Kernel();
-    ASSERT(Kernel::GetCurrentProcess(kernel).GetResourceLimit()->Reserve(
-        kernel, Kernel::LimitableResource::SessionCountMax, 1));
+    Kernel::KScopedResourceReservation reservation{
+        kernel, &Kernel::GetCurrentProcess(kernel), Kernel::LimitableResource::SessionCountMax};
+    if (!reservation.Succeeded()) {
+        result = Kernel::ResultLimitReached;
+        return nullptr;
+    }
 
     auto* session = Kernel::KSession::Create(kernel);
+    if (session == nullptr) {
+        result = Kernel::ResultOutOfResource;
+        return nullptr;
+    }
     session->Initialize(kernel, nullptr, 0);
+    reservation.Commit();
     Kernel::KSession::Register(kernel, session);
 
     auto manager =
@@ -120,7 +130,17 @@ inline void TipcHandshake(HLERequestContext& ctx, std::string_view session) {
 // Replies with success and a copied handle to a new session served by `iface`.
 template <class T>
 inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::shared_ptr<T> iface) {
-    auto* client = CreateRawSession(system, ctx, std::move(iface));
+    Result result = ResultSuccess;
+    auto* client = CreateRawSession(system, ctx, std::move(iface), result);
+    if (client == nullptr) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        if (ctx.IsTipc()) {
+            rb.PushRaw<u32>(result.raw);
+        } else {
+            rb.Push(result);
+        }
+        return;
+    }
     IPC::ResponseBuilder rb{ctx, 2, 1, 0};
     rb.Push(ResultSuccess);
     rb.PushCopyObjects(ctx, *client);
@@ -1461,6 +1481,7 @@ struct Nx2NativeObjects {
         // A decoder image the client reads on the GPU (gsv 428/426): written block-linear.
         bool gpu_read{};
         bool pitch_frame{}; // holds a frame written before gpu_read was set
+        std::shared_ptr<std::mutex> decoder_mutex;
         u32 gpu_maps{};     // outstanding 426 maps
         bool mapped_here{}; // 426 added its GPU mapping (no other mapping covered it)
     };
@@ -1469,6 +1490,12 @@ struct Nx2NativeObjects {
     std::map<u32, Image> images;
     u32 next_memory{1};
     u32 next_image{1};
+
+    std::shared_ptr<std::mutex> DecoderMutex(u32 id) {
+        std::scoped_lock lk{mutex};
+        const auto image = images.find(id);
+        return image != images.end() ? image->second.decoder_mutex : nullptr;
+    }
 };
 
 // Block-linear layout of an InterModuleUserImagePreference (16 words): word 2 holds
@@ -2855,13 +2882,18 @@ private:
     // Writes a decoded frame into an output image; returns the size the frame reports.
     std::pair<u32, u32> WriteImage(Tegra::Host1x::Nx2VideoDecoder* decoder, u32 image_id,
                                    const Decoded& frame, std::vector<u8>& bytes) {
+        const auto image_mutex = m_objects->DecoderMutex(image_id);
+        if (!image_mutex) {
+            return {m_width, m_height};
+        }
+        std::scoped_lock image_lock{*image_mutex};
         u64 address{};
         Nx2DecoderImageLayout layout{};
         bool block_linear{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
-            if (image == m_objects->images.end()) {
+            if (image == m_objects->images.end() || image->second.decoder_mutex != image_mutex) {
                 return {m_width, m_height};
             }
             layout = Nx2CalculateDecoderImageLayout(image->second.preference.data());
@@ -3205,7 +3237,13 @@ private:
     // 1121() returns a session the SDK handshakes with right away (move handle at word 3).
     void OpenSession1121(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1121, returning a nx2:gsv:1121 session");
-        auto* client = CreateRawSession(system, ctx, std::make_shared<INx2Session1121>(system));
+        Result result = ResultSuccess;
+        auto* client = CreateRawSession(system, ctx, std::make_shared<INx2Session1121>(system), result);
+        if (client == nullptr) {
+            IPC::ResponseBuilder rb{ctx, 2};
+            rb.PushRaw<u32>(result.raw);
+            return;
+        }
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
         rb.PushMoveObjects(ctx, *client);
@@ -3585,6 +3623,11 @@ private:
     // (offset 0 once mapped). 426 maps the image at its own address for the GPU: decoder pool
     // memory is process memory (114) that no GPU mapping covers, and the blit read zeros.
     bool QueryDecoderImage(HLERequestContext& ctx, u32 handle) {
+        const auto image_mutex = m_objects->DecoderMutex(handle);
+        if (!image_mutex) {
+            return false;
+        }
+        std::scoped_lock image_lock{*image_mutex};
         const bool map = ctx.GetCommand() == 426;
         u64 address{};
         u64 size{};
@@ -3596,7 +3639,7 @@ private:
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(handle);
-            if (image == m_objects->images.end() || !image->second.decoder) {
+            if (image == m_objects->images.end() || image->second.decoder_mutex != image_mutex) {
                 return false;
             }
             const auto memory = m_objects->memories.find(image->second.memory);
@@ -3655,6 +3698,11 @@ private:
     void UnmapNativeImage(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         const u32 handle = w[2];
+        const auto image_mutex = m_objects->DecoderMutex(handle);
+        std::unique_lock<std::mutex> image_lock;
+        if (image_mutex) {
+            image_lock = std::unique_lock{*image_mutex};
+        }
         std::optional<std::pair<u64, u64>> unmap;
         {
             std::scoped_lock lk{m_objects->mutex};
@@ -3707,6 +3755,7 @@ private:
             image.size = layout.size;
             image.offset = layout.size * i;
             image.decoder = true;
+            image.decoder_mutex = std::make_shared<std::mutex>();
         }
         LOG_INFO(Service, "nx2:gsv 911 decoder images {}..{} code={} {}x{} in memory {}", first,
                  first + count - 1, layout.code, layout.width, layout.height, w[19]);
@@ -3748,6 +3797,11 @@ private:
 
     void DestroyNativeImage(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
+        const auto image_mutex = m_objects->DecoderMutex(id);
+        std::unique_lock<std::mutex> image_lock;
+        if (image_mutex) {
+            image_lock = std::unique_lock{*image_mutex};
+        }
         std::optional<std::pair<u64, u64>> unmap;
         {
             std::scoped_lock lk{m_objects->mutex};

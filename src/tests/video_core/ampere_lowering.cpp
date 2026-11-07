@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -163,5 +164,64 @@ TEST_CASE("Ampere TLD4 lowers per-pixel offsets", "[video_core][ampere]") {
     CHECK(((gather >> 28) & 7) == 2); // 2D
     CHECK(((gather >> 20) & 0xff) == 246); // packed PTP offsets in the meta register
     CHECK(((gather >> 54) & 3) == 2); // per-pixel offsets
+}
+
+TEST_CASE("Ampere TLD4 rejects shadowed per-tap offset registers", "[video_core][ampere]") {
+    std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x338004f2, 0x041e2f08, 0x100fc200}},
+        EXIT,
+    }};
+    REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+    code[0].words[1] = 0x338004f3;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+    code[0].words[1] = 0x338004f4;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
+TEST_CASE("Ampere TLD4 lowers a single offset register", "[video_core][ampere]") {
+    std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041e1f08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    const u64 gather = FindMaxwell(lowered, 0xc8, 56);
+    REQUIRE(gather != 0);
+    CHECK(((gather >> 54) & 3) == 1);
+    code[0].words[2] |= 1U << 13;
+    CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
+TEST_CASE("Ampere TLD4 packs half results in component order", "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{
+        {{0x040a7b63, 0x33800408, 0x041eaf08, 0x100fc200}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    std::vector<u64> conversions;
+    for (const u64 word : lowered.instructions) {
+        if ((word >> 48) == 0x5ca8) {
+            conversions.push_back(word);
+        }
+    }
+    REQUIRE(conversions.size() == 4);
+    CHECK(((conversions[0] >> 20) & 0xff) == 249);
+    CHECK(((conversions[1] >> 20) & 0xff) == 248);
+    CHECK(((conversions[2] >> 20) & 0xff) == 247);
+    CHECK(((conversions[3] >> 20) & 0xff) == 246);
+}
+
+TEST_CASE("Ampere array depth samples use a second descriptor buffer", "[video_core][ampere]") {
+    const std::array<Instruction, 3> code{{
+        {{0x040a7b60, 0xb0000008, 0x000e41ff, 0}},
+        {{0x040a7b60, 0xb0400008, 0x000e41ff, 0}},
+        EXIT,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    CHECK(lowered.required_texture_buffer == 0);
+    CHECK(FindMaxwell(lowered, 0xc0, 56) != 0);
+    CHECK(FindMaxwell(lowered, 0xde, 56) != 0);
 }
 } // namespace
