@@ -1391,8 +1391,9 @@ void PipelineCache::EvictUnusedPipelines() {
     }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
-    // Nx2Perf pipeline_keep_preloaded: the ones built at boot from the used list that this
-    // session has not drawn with yet keep LastUse() == 0; they are kept, not rebuilt on the walk.
+    // Nx2Perf pipeline_keep_preloaded (on by default): the ones built at boot from the used list
+    // that this session has not drawn with yet keep LastUse() == 0; they are kept, not evicted after
+    // 150 s and rebuilt on the GPU thread when the player enters their area.
     const bool keep_preloaded =
         VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::PipelineKeepPreloaded);
     size_t evicted = 0;

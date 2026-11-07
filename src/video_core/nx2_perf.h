@@ -368,7 +368,7 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::SubmitWhileWaited, Opt::GpuCorePin, Opt::PresentOneAhead,
                           Opt::PresentGuestWait,
                           Opt::ReleaseBeforeHook,
-                          Opt::AcquireTriggerEarly, Opt::PipelineKeepPreloaded,
+                          Opt::AcquireTriggerEarly,
                           Opt::WriterSetExec, Opt::ExactNotedWrites, Opt::GuestCcd, Opt::DmaForward,
                           Opt::HookLazyFlush, Opt::DmaForwardMemo,
                           Opt::BankOncePerFrame, Opt::LandedPrevAlways, Opt::OneAheadLanded,
@@ -414,7 +414,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// frames_ahead (same hazard: the lab's flash check sees 25-40% of frames at another brightness
 /// with it on, 0 with it off; ~5 ms/frame slower at the Kokiri spawn without it);
 /// release_before_hook (+0.0 FPS);
-/// acquire_trigger_early (+0.2 FPS); pipeline_keep_preloaded, writer_set_exec,
+/// acquire_trigger_early (+0.2 FPS); writer_set_exec,
 /// exact_noted_writes, guest_ccd, landed_prev_always, one_ahead_landed, split_rings,
 /// bind_memo_local, guest_landed_syncpoints (+0.9 FPS), hook_lazy_flush (+0.9 FPS);
 /// war_guard_probe (measurement, adds page traps); inflight_write_wait and inflight_read_exact
@@ -441,7 +441,7 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::PresentOneAhead) | Bit(Opt::FramesAhead) |
                                   Bit(Opt::ReleaseBeforeHook) |
                                   Bit(Opt::AcquireTriggerEarly) |
-                                  Bit(Opt::PipelineKeepPreloaded) | Bit(Opt::WriterSetExec) |
+                                  Bit(Opt::WriterSetExec) |
                                   Bit(Opt::ExactNotedWrites) | Bit(Opt::GuestCcd) |
                                   Bit(Opt::HookLazyFlush) |
                                   Bit(Opt::LandedPrevAlways) | Bit(Opt::OneAheadLanded) |
@@ -478,7 +478,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::ComputeRebuildAsync);
 
 static_assert(IsOff(always_off, 33));
-static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
+static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && !IsOff(always_off, 44) &&
+              !IsOff(DefaultOffMask(), 44));
 static_assert(IsOff(always_off, 45) && IsOff(DefaultOffMask(), 45));
 static_assert(IsOff(DefaultOffMask(), 36));
 static_assert(!IsOff(DefaultOffMask(), 0));
