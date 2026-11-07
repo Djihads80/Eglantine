@@ -1758,6 +1758,23 @@ Texture::TICEntry KeplerCompute::GetTICEntry(u32 tic_index) const {
     return tic_entry;
 }
 
+// The TIC entry an image handle in constant bank 0 points to.
+std::optional<Texture::TICEntry> KeplerCompute::ComputeImageHandle(u32 offset) const {
+    const auto& cbuf = launch_description.const_buffer_config[0];
+    const GPUVAddr address = (GPUVAddr{cbuf.address_high.Value()} << 32) | cbuf.address_low;
+    if (!(launch_description.const_buffer_enable_mask & 1) || cbuf.size.Value() < offset + 4 ||
+        !memory_manager.IsFullyMappedRange(address + offset, sizeof(u32))) {
+        return std::nullopt;
+    }
+    const u32 index = memory_manager.Read<u32>(address + offset) & 0xfffff;
+    if (index > regs.tic.limit ||
+        !memory_manager.IsFullyMappedRange(regs.tic.Address() + u64{index} * sizeof(Texture::TICEntry),
+                                           sizeof(Texture::TICEntry))) {
+        return std::nullopt;
+    }
+    return GetTICEntry(index);
+}
+
 Texture::TSCEntry KeplerCompute::GetTSCEntry(u32 tsc_index) const {
     const GPUVAddr tsc_address_gpu{regs.tsc.Address() + tsc_index * sizeof(Texture::TSCEntry)};
 

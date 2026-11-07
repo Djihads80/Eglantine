@@ -387,6 +387,9 @@ private:
     /// Retrieves information about a specific TIC entry from the TIC buffer.
     Texture::TICEntry GetTICEntry(u32 tic_index) const;
 
+    /// The TIC entry an image handle in constant bank 0 points to.
+    std::optional<Texture::TICEntry> ComputeImageHandle(u32 offset) const;
+
     /// Retrieves information about a specific TSC entry from the TSC buffer.
     Texture::TSCEntry GetTSCEntry(u32 tsc_index) const;
 
