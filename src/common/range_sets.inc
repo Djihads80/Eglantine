@@ -207,6 +207,11 @@ void RangeSet<AddressType>::Add(AddressType base_address, size_t size) {
 
 template <typename AddressType>
 void RangeSet<AddressType>::Subtract(AddressType base_address, size_t size) {
+    // Most subtractions miss every range (the buffer cache clears several sets per write): the
+    // lookup is far cheaper than the interval set's subtract.
+    if (!Intersects(base_address, size)) {
+        return;
+    }
     m_impl->Subtract(base_address, size);
 }
 
