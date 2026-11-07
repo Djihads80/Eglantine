@@ -322,6 +322,18 @@ public:
         channel_state->unresolved_uniform_buffers[stage] |= 1U << index;
     }
 
+    /// Nx2Perf exec_same_drop verify (RasterizerInterface::Nx2UniformBinding).
+    void Nx2UniformBinding(size_t stage, u32 index, std::array<u64, 6>& out) const {
+        const Binding& binding = channel_state->uniform_buffers[stage][index];
+        out = {binding.device_addr,
+               binding.gpu_addr,
+               binding.map_serial,
+               binding.size,
+               binding.buffer_id.index,
+               ((channel_state->unresolved_uniform_buffers[stage] >> index) & 1U) |
+                   (channel_state->has_deleted_buffers ? 2U : 0U)};
+    }
+
     void DisableGraphicsUniformBuffer(size_t stage, u32 index) {
         auto& current = channel_state->uniform_buffers[stage][index];
         if (current.device_addr == 0 && current.size == 0 && current.buffer_id == NULL_BUFFER_ID)

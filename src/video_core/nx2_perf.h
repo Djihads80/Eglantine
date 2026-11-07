@@ -213,6 +213,9 @@ enum class Opt : unsigned {
     /// sent (its idle hook runs before that), not for Drain's back_quiet; unmet or flushed
     /// words take the full drain
     AcquireDrainLite,
+    /// Split front: executable writes the back would run as a no-op are left out (store-only
+    /// registers holding the value, constant buffer binds repeating the last one sent)
+    ExecSameDrop,
     Count,
 };
 
@@ -272,6 +275,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "dma_forward_tape",
     "run_ahead_overlay_budget",
     "acquire_drain_lite",
+    "exec_same_drop",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -359,7 +363,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::ReportSubmitEarly,
                           Opt::DmaForwardTape,
                           Opt::RunAheadOverlayBudget,
-                          Opt::AcquireDrainLite}) {
+                          Opt::AcquireDrainLite,
+                          Opt::ExecSameDrop}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -389,7 +394,7 @@ inline constexpr OffMask DefaultOffMask() {
 /// front_macro_memo (unmeasured; round 10), run_ahead_snapshot_probe (measurement; round 11),
 /// report_submit_early (submit timing; round 11),
 /// dma_forward_tape (unmeasured; round 11), run_ahead_overlay_budget (measurement; round 12),
-/// acquire_drain_lite (unmeasured; round 12).
+/// acquire_drain_lite (unmeasured; round 12), exec_same_drop (unmeasured; round 12).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -425,7 +430,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::ReportSubmitEarly) |
                                   Bit(Opt::DmaForwardTape) |
                                   Bit(Opt::RunAheadOverlayBudget) |
-                                  Bit(Opt::AcquireDrainLite);
+                                  Bit(Opt::AcquireDrainLite) |
+                                  Bit(Opt::ExecSameDrop);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -528,6 +534,9 @@ static_assert(static_cast<unsigned>(Opt::RunAheadOverlayBudget) == 83 &&
 static_assert(static_cast<unsigned>(Opt::AcquireDrainLite) == 84 &&
               IsOff(always_off, static_cast<size_t>(Opt::AcquireDrainLite)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::AcquireDrainLite)));
+static_assert(static_cast<unsigned>(Opt::ExecSameDrop) == 85 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ExecSameDrop)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ExecSameDrop)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.
@@ -776,5 +785,44 @@ inline bool Find(u32 id, u32 value, s64& front_ns, s64& back_ns) {
     return false;
 }
 } // namespace FenceTimeline
+
+/// exec_same_drop: the last constant buffer bind the split front sent for each shader stage,
+/// with what the back's bind reads (the CB address and size registers) and what may change its
+/// translation (a queued function, the GPU map serial).
+struct ExecBindMemo {
+    struct Entry {
+        u32 word;
+        u32 address_high;
+        u32 address_low;
+        u32 size;
+        u64 function_position;
+        u64 map_serial;
+        bool valid;
+    };
+    static constexpr size_t NumStages = 5;
+    std::array<Entry, NumStages> stages{};
+
+    /// Whether binding `word` on `stage` repeats the last bind sent there.
+    [[nodiscard]] bool Same(size_t stage, u32 word, u32 address_high, u32 address_low, u32 size,
+                            u64 function_position, u64 map_serial) const {
+        const Entry& entry = stages[stage];
+        return entry.valid && entry.word == word && entry.address_high == address_high &&
+               entry.address_low == address_low && entry.size == size &&
+               entry.function_position == function_position && entry.map_serial == map_serial;
+    }
+    void Record(size_t stage, u32 word, u32 address_high, u32 address_low, u32 size,
+                u64 function_position, u64 map_serial) {
+        stages[stage] = {word, address_high, address_low, size, function_position, map_serial,
+                         true};
+    }
+    void Forget(size_t stage) {
+        stages[stage].valid = false;
+    }
+    void Clear() {
+        for (Entry& entry : stages) {
+            entry.valid = false;
+        }
+    }
+};
 
 } // namespace VideoCommon::Nx2Perf

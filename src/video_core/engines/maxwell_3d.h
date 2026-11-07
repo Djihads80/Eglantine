@@ -3443,6 +3443,13 @@ private:
                                                            FrontState& state);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
+    /// Nx2Perf exec_same_drop: 0 if the back would run this store-only executable write as a
+    /// no-op, 1 for such a constant buffer bind, ~0 to send it. Runs for every executable write.
+    u32 FrontExecSameDrop(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 value,
+                          bool shadow_kept);
+    /// Its Verify check on the back: runs the write as GpuSplit::Execute would, logs a change.
+    void VerifyExecSameDrop(Core::System& system, u32 method, u32 argument, bool is_last,
+                            u32 kind);
     std::unique_ptr<FrontState> front;
     bool front_macros{};
     // EDEN_NX2_SPLIT_VERIFY: the last SET_SHADOW_RAM_CONTROL writes each side saw (argument,
