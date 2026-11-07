@@ -3413,4 +3413,130 @@ void Maxwell3D::FinishFrontMacro(Core::System& system) {
     draw_manager.DrawDeferred(*this);
 }
 
+// Nx2Perf back_replay_lean: GpuSplit::Execute's fast_maxwell3d Method path, one unit (what one
+// Execute call runs) after another, with BackLoop's per-entry checks between units.
+size_t Maxwell3D::BackRun(Core::System& system, const u64* entry, size_t words,
+                          BackRunControl& control) {
+    using Control = BackRunControl;
+    using Reason = Control::Reason;
+    constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    const bool verify = VideoCommon::Nx2Perf::Verify();
+    const bool cb_batch = VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::CbBatch);
+    // Classify leaves out macro methods and SET_SHADOW_RAM_CONTROL, so CallMethod would take
+    // CallMethodFast whenever these hold (and executing_macro is 0).
+    const bool front_release = front_macros && !VideoCommon::GpuSplit::OnBackThread();
+    const bool lean_exec = fast_maxwell3d && !front_release && !verify;
+    const auto call = [&](u32 method, u32 argument, bool is_last) {
+        if (lean_exec && executing_macro == 0) {
+            CallMethodFast(method, argument, is_last);
+            return;
+        }
+        if (verify) [[unlikely]] {
+            // The old answer is CallMethod's: compare its route with the lean one.
+            const bool lean_fast = fast_maxwell3d && executing_macro == 0;
+            const bool old_fast = fast_maxwell3d && executing_macro == 0 &&
+                                  method < MacroRegistersStart &&
+                                  method != MAXWELL3D_REG_INDEX(shadow_ram_control);
+            if (lean_fast != old_fast) {
+                ++control.verify_diffs;
+                static std::atomic<u32> reports{};
+                if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf back_replay_lean: {:#x} = {:#x} at {:#x}: lean route {}, "
+                              "CallMethod route {}",
+                              method, argument, control.last_start, lean_fast ? "fast" : "slow",
+                              old_fast ? "fast" : "slow");
+                }
+            }
+        }
+        CallMethod(system, method, argument, is_last);
+    };
+    size_t consumed = 0;
+    u64 target_seen = ~u64{0};
+    for (;;) {
+        const u64* const unit = entry + consumed;
+        const u64 head = unit[0];
+        const size_t left = words - consumed;
+        const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+        const u32 argument = static_cast<u32>(head >> 32);
+        control.last_start = control.position + consumed;
+        control.last_target = target_seen;
+        size_t size = 1;
+        if (method - cb_data < 16 && cb_batch) {
+            std::array<u32, 64> methods;
+            std::array<u32, 64> arguments;
+            methods[0] = method;
+            arguments[0] = argument;
+            u32 count = 1;
+            while (count < methods.size() && count < left) {
+                const u64 next = unit[count];
+                const u32 next_method = static_cast<u32>((next >> 8) & 0xffff);
+                if ((next & Control::KindMask) != Control::KindMethod ||
+                    (next & Control::HasSegment) != 0 || next_method - cb_data >= 16) {
+                    break;
+                }
+                methods[count] = next_method;
+                arguments[count] = static_cast<u32>(next >> 32);
+                ++count;
+            }
+            ConsumeSink(system);
+            if (count == 1) {
+                call(method, argument, true);
+            } else {
+                CallConstBufferWords(system, methods.data(), arguments.data(), count);
+            }
+            size = count;
+        } else if (!execution_mask[method] && !verify) {
+            if (!method_sink.empty()) [[unlikely]] {
+                ConsumeSink(system);
+            }
+            size = CallStateMethodRun(unit, left);
+        } else if ((head & Control::Direct) != 0) {
+            ConsumeSink(system);
+            call(method, argument, true);
+        } else if (!execution_mask[method]) {
+            method_sink.emplace_back(method, argument);
+        } else {
+            ConsumeSink(system);
+            call(method, argument, (head & Control::IsLast) != 0);
+        }
+        consumed += size;
+        ++control.units;
+        // BackLoop's checks after each Execute: any of them hands the position back to it.
+        if (consumed >= words) {
+            control.stop = Reason::End;
+            break;
+        }
+        const u64 position = control.position + consumed;
+        if (control.hook_requested != nullptr &&
+            control.hook_requested->load(std::memory_order_relaxed)) {
+            control.stop = Reason::Hook;
+            break;
+        }
+        target_seen = control.wait_target->load(std::memory_order_relaxed);
+        if (position >= target_seen) {
+            control.stop = Reason::Release;
+            break;
+        }
+        if (position - control.last_store >= Control::StoreEvery) {
+            control.stop = Reason::Store;
+            break;
+        }
+        const u64 next = entry[consumed];
+        const Reason reason = Control::Classify(next);
+        if (reason != Reason::None) {
+            control.stop = reason;
+            break;
+        }
+        // What BackLoop does before each Execute.
+        if (control.read_position != nullptr) {
+            control.read_position->store(position, std::memory_order_relaxed);
+        }
+        if (control.unit_hook != nullptr) [[unlikely]] {
+            control.unit_hook(control.context, next, position);
+        }
+    }
+    return consumed;
+}
+
 } // namespace Tegra::Engines

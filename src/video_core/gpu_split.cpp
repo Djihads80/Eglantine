@@ -193,6 +193,7 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     Tegra::g_nx2_list_fetch_after_sync.store(track_back_read, std::memory_order_relaxed);
     spin_handoff = Nx2Perf::On(Nx2Perf::Opt::SpinHandoff);
     verify_folds = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::StateDeadStore);
+    back_replay_lean = Nx2Perf::On(Nx2Perf::Opt::BackReplayLean);
     if (verify_folds) {
         fold_claims = std::make_unique<FoldClaim[]>(FoldClaims);
         fold_anchors =
@@ -261,6 +262,10 @@ void GpuSplit::Stop() {
         ReportFold(false, nullptr, 0, 0, 0, 0, 0, 0); // the totals at shutdown
     }
     verify_folds = false;
+    if (back_replay_lean) {
+        ReportLean(true);
+    }
+    lean_report_ns = 0; // the next session's first rates start at its own first run
     fold_claims.reset();
     fold_anchors.reset();
     fold_claim_write.store(0, std::memory_order_relaxed);
@@ -972,6 +977,120 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
     return 1;
 }
 
+size_t GpuSplit::ExecuteLean(const u64* entry, size_t words, u64 position, u64 last_store) {
+    using Tegra::Engines::Maxwell3D;
+    using Control = Maxwell3D::BackRunControl;
+    using Reason = Control::Reason;
+    static_assert(Control::KindMethod == static_cast<u64>(Kind::Method) &&
+                  Control::IsLast == IsLast && Control::HasSegment == HasSegment &&
+                  Control::Direct == Direct && Control::Repeatable == Repeatable &&
+                  Control::RepeatMask == RepeatMask);
+    static_assert(static_cast<size_t>(Reason::Count) <=
+                  std::tuple_size_v<decltype(LeanStats::stops)>);
+    const u64 head = entry[0];
+    Reason reason = Control::Classify(head);
+    if (reason == Reason::None && !back_engine->fast_maxwell3d) {
+        reason = Reason::Engine;
+    }
+    if (reason != Reason::None) {
+        ++lean_stats.fallbacks[static_cast<size_t>(reason)];
+        return Execute(entry, words);
+    }
+    if (verify_repeats) [[unlikely]] {
+        VerifyRepeat(head);
+    }
+    if (verify_folds) [[unlikely]] {
+        VerifyFold(head);
+    }
+    Control control;
+    control.position = position;
+    control.last_store = last_store;
+    control.wait_target = &wait_target;
+    control.hook_requested = idle_hook != nullptr ? &hook_requested : nullptr;
+    control.read_position = track_back_read ? &back_read_position : nullptr;
+    if (verify_repeats || verify_folds) [[unlikely]] {
+        control.unit_hook = &LeanUnitHook;
+        control.context = this;
+    }
+    const size_t size =
+        static_cast<Maxwell3D*>(back_engine)->BackRun(*system, entry, words, control);
+    ++lean_stats.calls;
+    lean_stats.units += control.units;
+    lean_stats.words += size;
+    ++lean_stats.stops[static_cast<size_t>(control.stop)];
+    lean_stats.verify_diffs += control.verify_diffs;
+    // A later unit must start where BackLoop would not have released or handed space back.
+    if (control.units > 1 && (control.last_start >= control.last_target ||
+                              control.last_start - last_store >= Control::StoreEvery))
+        [[unlikely]] {
+        if (++lean_stats.past_target <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf back_replay_lean: unit at {:#x} ran past target {:#x} (last "
+                      "store {:#x}, run from {:#x}, {} so far)",
+                      control.last_start, control.last_target, last_store, position,
+                      lean_stats.past_target);
+        }
+    }
+    if (Nx2Perf::Verify() && control.units > 1 &&
+        control.last_start >= wait_target.load(std::memory_order_acquire)) [[unlikely]] {
+        ++lean_stats.late_target;
+    }
+    if ((lean_stats.calls & 4095) == 0) [[unlikely]] {
+        ReportLean(false);
+    }
+    return size;
+}
+
+void GpuSplit::LeanUnitHook(void* context, u64 head, u64 position) {
+    auto& split = *static_cast<GpuSplit*>(context);
+    if (split.verify_folds) {
+        split.verify_fold_position = position;
+    }
+    if (split.verify_repeats) {
+        split.VerifyRepeat(head);
+    }
+    if (split.verify_folds) {
+        split.VerifyFold(head);
+    }
+}
+
+void GpuSplit::ReportLean(bool at_exit) {
+    using Reason = Tegra::Engines::Maxwell3D::BackRunControl::Reason;
+    static_assert(static_cast<size_t>(Reason::End) == 1 &&
+                  static_cast<size_t>(Reason::ShadowControl) == 8 &&
+                  static_cast<size_t>(Reason::Engine) == 9);
+    const s64 now = SteadyNs();
+    if (lean_report_ns == 0) {
+        lean_report_ns = now;
+    }
+    if (!at_exit && now - lean_report_ns < 1'000'000'000) {
+        return;
+    }
+    const LeanStats& t = lean_stats;
+    const LeanStats& r = lean_reported;
+    const double seconds = (std::max)(static_cast<double>(now - lean_report_ns) / 1e9, 1e-3);
+    const auto rate = [seconds](u64 total, u64 last) {
+        return static_cast<u64>(static_cast<double>(total - last) / seconds + 0.5);
+    };
+    const u64 calls = t.calls - r.calls;
+    const double per_call = calls != 0 ? 1.0 / static_cast<double>(calls) : 0.0;
+    const auto stop = [&](size_t i) { return rate(t.stops[i], r.stops[i]); };
+    const auto fallback = [&](size_t i) { return rate(t.fallbacks[i], r.fallbacks[i]); };
+    LOG_INFO(HW_GPU,
+             "Nx2Perf back_replay_lean: {} runs/s, {} entries/s (avg run {:.2} entries, {:.2} "
+             "units); stops/s end {} hook {} release {} store {} kind {} flags {} macro {} "
+             "shadow {}; fallbacks/s kind {} flags {} macro {} shadow {} engine {}; past target "
+             "{} (must be 0), late targets {}, verify diffs {}{}",
+             rate(t.calls, r.calls), rate(t.words, r.words),
+             static_cast<double>(t.words - r.words) * per_call,
+             static_cast<double>(t.units - r.units) * per_call, stop(1), stop(2), stop(3),
+             stop(4), stop(5), stop(6), stop(7), stop(8), fallback(5), fallback(6), fallback(7),
+             fallback(8), fallback(9), t.past_target, t.late_target, t.verify_diffs,
+             at_exit ? " (total at stop)" : "");
+    lean_reported = lean_stats;
+    lean_report_ns = now;
+}
+
 void GpuSplit::RunIdleHook(IdleHookReason reason) {
     Nx2Profile::Scope scope{Nx2Profile::Zone::BackIdleHook};
     idle_hook(idle_argument, reason);
@@ -1154,8 +1273,10 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             {
                 Nx2Profile::Scope replay_scope{Nx2Profile::Zone::BackReplay};
-                size = Execute(&ring[index],
-                               std::min<u64>(available - read_position, RingWords - index));
+                const size_t words = std::min<u64>(available - read_position, RingWords - index);
+                size = back_replay_lean
+                           ? ExecuteLean(&ring[index], words, read_position, last_store)
+                           : Execute(&ring[index], words);
             }
             read_position += size != 0 ? size : RingWords - index;
             if (hook_requested.load(std::memory_order_relaxed) &&
