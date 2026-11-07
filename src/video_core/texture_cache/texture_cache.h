@@ -2943,12 +2943,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         const u32 width = new_info.size.width;
         const u32 height = new_info.size.height;
-        if (regs.clear_control.use_scissor != 0) {
-            const auto& scissor = regs.scissor_test[0];
-            if (scissor.min_x != 0 || scissor.min_y != 0 || scissor.max_x < width ||
-                scissor.max_y < height) {
-                return false;
-            }
+        if (!ClearCovers(width, height)) {
+            return false;
         }
         // The clear covers the framebuffer's render area, the smallest bound target.
         for (u32 index = 0; index < regs.rt_control.count && index < NUM_RT; ++index) {
@@ -2966,9 +2962,11 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         const bool full_stencil = surface.S && regs.stencil_front_mask == 0xFF;
         switch (VideoCore::Surface::GetFormatType(new_info.format)) {
         case VideoCore::Surface::SurfaceType::ColorTexture: {
+            // OpenGL clears draw buffer RT, which writes target rt_control.Map(RT).
             const u32 index = surface.RT;
             return surface.R && surface.G && surface.B && surface.A && index < NUM_RT &&
-                   index < regs.rt_control.count && regs.rt[index].Address() == gpu_addr;
+                   index < regs.rt_control.count && regs.rt_control.Map(index) == index &&
+                   regs.rt[index].Address() == gpu_addr;
         }
         case VideoCore::Surface::SurfaceType::Depth:
             return is_depth_target && surface.Z;
@@ -4147,19 +4145,36 @@ bool TextureCache<P>::IsFullClear(ImageViewId id) {
     const ImageViewBase& image_view = slot_image_views[id];
     const ImageBase& image = slot_images[image_view.image_id];
     const Extent3D size = image_view.size;
-    const auto& regs = maxwell3d->regs;
-    const auto& scissor = regs.scissor_test[0];
     if (image.info.resources.levels > 1 || image.info.resources.layers > 1) {
         // Images with multiple resources can't be cleared in a single call
         return false;
     }
+    // Make sure the clear covers all texels in the subresource
+    return ClearCovers(size.width, size.height);
+}
+
+template <class P>
+bool TextureCache<P>::ClearCovers(u32 width, u32 height) const {
+    const auto& regs = maxwell3d->regs;
+    // The render area is the surface clip's size.
+    if (regs.surface_clip.width < width || regs.surface_clip.height < height) {
+        return false;
+    }
     if (regs.clear_control.use_scissor == 0) {
-        // If scissor testing is disabled, the clear is always full
         return true;
     }
-    // Make sure the clear covers all texels in the subresource
-    return scissor.min_x == 0 && scissor.min_y == 0 && scissor.max_x >= size.width &&
-           scissor.max_y >= size.height;
+    // With a lower-left window origin, the clear's scissor is flipped around the surface clip's
+    // height (GetScissorState).
+    const auto& scissor = regs.scissor_test[0];
+    const bool lower_left =
+        regs.window_origin.mode != Tegra::Engines::Maxwell3D::Regs::WindowOrigin::Mode::UpperLeft;
+    const s32 clip_height = static_cast<s32>(regs.surface_clip.height.Value());
+    const s32 min_y = static_cast<s32>(scissor.min_y.Value());
+    const s32 max_y = static_cast<s32>(scissor.max_y.Value());
+    const s32 top = lower_left ? clip_height - max_y : min_y;
+    const s32 bottom = lower_left ? clip_height - min_y : max_y;
+    return scissor.min_x == 0 && top <= 0 && scissor.max_x >= width &&
+           bottom >= static_cast<s32>(height);
 }
 
 template <class P>
