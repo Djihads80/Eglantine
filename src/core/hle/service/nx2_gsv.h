@@ -3346,7 +3346,7 @@ private:
             return;
         }
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-        rb.Push(ResultSuccess);
+        rb.PushRaw<u32>(ResultSuccess.raw);
         rb.PushMoveObjects(ctx, *client);
     }
 

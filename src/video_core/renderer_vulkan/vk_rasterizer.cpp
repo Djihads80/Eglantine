@@ -604,6 +604,12 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
     if (regs.rt[0].tile_mode.is_pitch_linear) {
         const auto format = VideoCore::Surface::TryPixelFormatFromRenderTargetFormat(regs.rt[0].format);
         if (!format) {
+            static u32 unknown_formats{};
+            if (unknown_formats++ < 8) {
+                LOG_INFO(HW_GPU, "nx2 window {} undecodable pitch-linear rt0={:#x} fmt={:#x} pitch={} height={}",
+                         kind, regs.rt[0].Address(), static_cast<u32>(regs.rt[0].format),
+                         regs.rt[0].width, regs.rt[0].height);
+            }
             return;
         }
         width /= VideoCore::Surface::BytesPerBlock(*format);
@@ -682,7 +688,7 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
              (tic[5] & 0xffff) + 1, fmt::join(texels, " "));
     // EDEN_NX2_TEXTURE_DUMP=<file>: save the first 4 MiB of the last traced texture's memory.
     if (const char* path = std::getenv("EDEN_NX2_TEXTURE_DUMP"); path != nullptr) {
-        std::vector<u8> bytes(2048u * 10240u);
+        std::vector<u8> bytes(4 * 1024 * 1024);
         if (read_trace(texture, bytes.data(), bytes.size())) {
             if (std::FILE* file = std::fopen(path, "wb")) {
                 std::fwrite(bytes.data(), 1, bytes.size(), file);

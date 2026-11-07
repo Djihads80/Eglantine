@@ -513,7 +513,28 @@ TEST_CASE("Ampere array depth samples use a second descriptor buffer", "[video_c
     const auto lowered = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(lowered));
     CHECK(lowered.required_texture_buffer == 0);
-    CHECK(FindMaxwell(lowered, 0xc0, 56) != 0);
-    CHECK(FindMaxwell(lowered, 0xde, 56) != 0);
+    constexpr u64 sample_mask = 0xffc0000000000000ULL;
+    const auto count_sample = [&](u64 opcode) {
+        return std::count_if(lowered.instructions.begin(), lowered.instructions.end(),
+                             [=](u64 word) { return (word & sample_mask) == opcode; });
+    };
+    CHECK(count_sample(0xc000000000000000ULL) == 1);
+    CHECK(count_sample(0xde00000000000000ULL) == 0);
+    CHECK(count_sample(0xde80000000000000ULL) == 1);
+    CHECK(count_sample(0xdec0000000000000ULL) == 0);
+    const u64 bound = FindMaxwell(lowered, 0xc0, 56);
+    const u64 bindless = FindMaxwell(lowered, 0xde, 56);
+    REQUIRE(bound != 0);
+    REQUIRE(bindless != 0);
+    CHECK(((bound >> 36) & 0x1fff) == 0);
+    CHECK(((bound >> 20) & 0xff) == 9);
+    CHECK(((bindless >> 20) & 0xff) == 246);
+    const u64 handle_load = FindMaxwell(lowered, 0x4c98, 48);
+    REQUIRE(handle_load != 0);
+    CHECK((handle_load & 0xff) == 246);
+    CHECK(((handle_load >> 34) & 0x1f) == 1);
+    CHECK(((handle_load >> 20) & 0x3fff) == 0);
+    CHECK(std::find(lowered.instructions.begin(), lowered.instructions.end(),
+                    0x5c980780009700f7ULL) != lowered.instructions.end());
 }
 } // namespace
