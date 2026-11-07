@@ -401,6 +401,9 @@ struct Memory::Impl {
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             if (!unsafe) {
                 HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
+            } else if (bank_on) [[unlikely]] {
+                // bank_dirty_skip: an unsafe write of a tracker-protected page skips the tracker.
+                BankMarkRange(GetInteger(current_vaddr), copy_amount);
             }
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         });
