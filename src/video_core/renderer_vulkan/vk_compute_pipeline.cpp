@@ -87,7 +87,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
     }
 
-    auto func{[this, shader_notify, pipeline_statistics] {
+    const auto queued_at = std::chrono::steady_clock::now();
+    auto func{[this, shader_notify, pipeline_statistics, queued_at] {
+        const auto started_at = std::chrono::steady_clock::now();
         const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
             .pNext = nullptr,
@@ -152,6 +154,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
         // lives.
         spv_module.reset();
+        ReportPipelineBuild("Compute", shader_hash, queued_at, started_at);
         std::scoped_lock lock{build_mutex};
         is_built = true;
         build_condvar.notify_one();
@@ -314,8 +317,13 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
-            std::unique_lock lock{build_mutex};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+            const auto begin = std::chrono::steady_clock::now();
+            {
+                std::unique_lock lock{build_mutex};
+                build_condvar.wait(lock,
+                                   [this] { return is_built.load(std::memory_order::relaxed); });
+            }
+            ReportPipelineBuildWait("Compute", shader_hash, begin);
         });
     }
 

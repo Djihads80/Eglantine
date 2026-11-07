@@ -335,7 +335,9 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
+    const auto queued_at = std::chrono::steady_clock::now();
+    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics, queued_at] {
+        const auto started_at = std::chrono::steady_clock::now();
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
         try {
@@ -358,6 +360,7 @@ GraphicsPipeline::GraphicsPipeline(
         for (vk::ShaderModule& module : spv_modules) {
             module.reset();
         }
+        ReportPipelineBuild("Graphics", key.Hash(), queued_at, started_at);
 
         std::scoped_lock lock{build_mutex};
         is_built = true;
@@ -769,8 +772,13 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
-            std::unique_lock lock{build_mutex};
-            build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+            const auto begin = std::chrono::steady_clock::now();
+            {
+                std::unique_lock lock{build_mutex};
+                build_condvar.wait(lock,
+                                   [this] { return is_built.load(std::memory_order::relaxed); });
+            }
+            ReportPipelineBuildWait("Graphics", key.Hash(), begin);
         });
     }
     const bool is_rescaling{texture_cache.IsRescaling()};

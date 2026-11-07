@@ -6,12 +6,15 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 
 #include <boost/container/small_vector.hpp>
 
 #include "common/common_types.h"
+#include "common/logging.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -23,6 +26,31 @@
 namespace Vulkan {
 
 using Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS;
+
+// Timing of pipelines built on the workers, logged only when slow, to tell a wait for the worker
+// queue from a slow driver compile, and how long a draw/dispatch held the submission thread.
+inline void ReportPipelineBuild(const char* kind, u64 hash,
+                                std::chrono::steady_clock::time_point queued,
+                                std::chrono::steady_clock::time_point started) {
+    static std::atomic<u32> logged{};
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    if ((now - queued > std::chrono::milliseconds{50}) && logged.fetch_add(1) < 400) {
+        LOG_INFO(Render_Vulkan, "{} pipeline {:016x}: {:.1f} ms in the worker queue, {:.1f} ms to build",
+                 kind, hash, ms(started - queued), ms(now - started));
+    }
+}
+
+inline void ReportPipelineBuildWait(const char* kind, u64 hash,
+                                    std::chrono::steady_clock::time_point begin) {
+    static std::atomic<u32> logged{};
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    if (elapsed > std::chrono::milliseconds{2} && logged.fetch_add(1) < 400) {
+        LOG_INFO(Render_Vulkan,
+                 "Submission thread waited {:.1f} ms for {} pipeline {:016x} to finish building",
+                 std::chrono::duration<double, std::milli>(elapsed).count(), kind, hash);
+    }
+}
 
 [[nodiscard]] inline std::optional<PixelFormat> PixelFormatFromImageFormat(
     Shader::ImageFormat format) {
