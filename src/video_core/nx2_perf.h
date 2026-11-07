@@ -198,6 +198,9 @@ enum class Opt : unsigned {
     /// Lab diagnostics (EDEN_NX2_DIAG*): the back counts draws in a thread-local table with
     /// cached ablate/inspect answers and folds them into the shared state under one lock
     DiagDrawLite,
+    /// Split back: a report a forwarded 0x16 call waited on before is covered by a fence submitted
+    /// at the next draw boundary; the next wait for it waits on that fence instead of a new one
+    ReportSubmitEarly,
     Count,
 };
 
@@ -253,6 +256,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "front_macro_memo",
     "run_ahead_snapshot_probe",
     "diag_draw_lite",
+    "report_submit_early",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -336,7 +340,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::ListWriterHookCopiesOnly,
                           Opt::FrontMacroMemo,
                           Opt::RunAheadSnapshotProbe,
-                          Opt::DiagDrawLite}) {
+                          Opt::DiagDrawLite,
+                          Opt::ReportSubmitEarly}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -364,7 +369,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// bank_hash_shadow (-0.3 FPS; round 9), run_ahead_raw_probe (measurement; round 10),
 /// list_writer_hook_copies_only (submit timing; round 10),
 /// front_macro_memo (unmeasured; round 10), run_ahead_snapshot_probe (measurement; round 11),
-/// diag_draw_lite (lab diagnostics only; round 11).
+/// diag_draw_lite (lab diagnostics only; round 11),
+/// report_submit_early (submit timing; round 11).
 /// dma_forward and draw_begin_coalesce (round 5) and pending_wake (round 9) are on
 /// by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -397,7 +403,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::ListWriterHookCopiesOnly) |
                                   Bit(Opt::FrontMacroMemo) |
                                   Bit(Opt::RunAheadSnapshotProbe) |
-                                  Bit(Opt::DiagDrawLite);
+                                  Bit(Opt::DiagDrawLite) |
+                                  Bit(Opt::ReportSubmitEarly);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -488,6 +495,9 @@ static_assert(static_cast<unsigned>(Opt::RunAheadSnapshotProbe) == 79 &&
 static_assert(static_cast<unsigned>(Opt::DiagDrawLite) == 80 &&
               IsOff(always_off, static_cast<size_t>(Opt::DiagDrawLite)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::DiagDrawLite)));
+static_assert(static_cast<unsigned>(Opt::ReportSubmitEarly) == 81 &&
+              IsOff(always_off, static_cast<size_t>(Opt::ReportSubmitEarly)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::ReportSubmitEarly)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

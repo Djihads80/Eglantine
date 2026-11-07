@@ -278,6 +278,10 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
                                 "once the GPU is idle",
                  submit_waited_draws, submit_idle_draws);
     }
+    report_submit_early =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ReportSubmitEarly);
+    report_measure =
+        report_submit_early || VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceTimeline);
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -1561,6 +1565,59 @@ void RasterizerVulkan::ResetCounter(VideoCommon::QueryType type) {
 void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                              VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
+    if (report_submit_early) [[unlikely]] {
+        NoteEarlyReport(gpu_addr);
+    }
+}
+
+void RasterizerVulkan::NoteEarlyReport(GPUVAddr gpu_addr) {
+    if (!VideoCommon::GpuSplit::OnBackThread()) {
+        report_foreign.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    auto& early = report_early;
+    const u64 seq = ++early.report_seq;
+    if (early.hot_count == 0) {
+        return;
+    }
+    const auto device_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!device_addr) {
+        return;
+    }
+    // 16 bytes: the report with its timestamp.
+    const DAddr begin = *device_addr;
+    const DAddr end = begin + 16;
+    for (u32 i = 0; i < early.hot_count; ++i) {
+        ReportHotRange& range = early.hot[i];
+        if (begin < range.end && range.begin < end) {
+            range.last_report = seq;
+            early.flush_pending = true;
+        }
+    }
+}
+
+void RasterizerVulkan::SubmitEarlyReports() {
+    auto& early = report_early;
+    early.flush_pending = false;
+    const u64 id = ++early.marker_issued;
+    const u64 foreign = report_foreign.load(std::memory_order_relaxed);
+    // The same marker FlushQueryResults queues: it runs once this fence's report writes have.
+    fence_manager.SyncOperation([this, id] {
+        auto& wait = report_early_wait;
+        std::scoped_lock lock{wait.mutex};
+        if (wait.done.load(std::memory_order_relaxed) < id) {
+            wait.done.store(id, std::memory_order_release);
+        }
+        wait.cv.notify_all();
+    });
+    fence_manager.SignalFence([] {});
+    {
+        VideoCommon::Nx2Profile::FlushOriginTag tag{VideoCommon::Nx2Profile::FlushOrigin::Fence};
+        scheduler.Flush();
+    }
+    early.markers[id % early.markers.size()] = {
+        .id = id, .covers = early.report_seq, .foreign = foreign};
+    report_stats.early_submits.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RasterizerVulkan::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr,
@@ -1590,6 +1647,10 @@ void RasterizerVulkan::SubmitNx2ListCopies() {
 }
 
 void RasterizerVulkan::FlushSplitIdle(VideoCommon::IdleHookReason reason) {
+    if (report_submit_early && VideoCommon::GpuSplit::OnBackThread() &&
+        report_early.flush_pending) [[unlikely]] {
+        SubmitEarlyReports();
+    }
     if (buffer_cache.HasPendingNx2ListCopies()) {
         std::scoped_lock lock{buffer_cache.mutex};
         SubmitNx2ListCopies();
@@ -1650,9 +1711,17 @@ void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
 }
 
 void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {
+    if (report_measure) [[unlikely]] {
+        FlushQueryResultsMeasured(addr, size);
+        return;
+    }
     if (addr == 0 || size == 0 || !query_cache.SemiFlushRegion(addr, size)) {
         return;
     }
+    WaitQueryResultsFence(addr);
+}
+
+bool RasterizerVulkan::WaitQueryResultsFence(DAddr addr) {
     // Below High GPU accuracy a fence runs its callback at once, so wait for an operation queued
     // behind the pending report writes instead. On the split's back the fence's submission may be
     // deferred, and the fencing thread would wait for this thread to submit it.
@@ -1683,12 +1752,158 @@ void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {
             LOG_WARNING(Render_Vulkan, "FlushQueryResults: gave up waiting for query results "
                                        "at {:#x} after 2 s",
                         addr);
-            return;
+            return false;
         }
         lock.unlock();
         scheduler.FlushDeferred();
         lock.lock();
     }
+    return true;
+}
+
+void RasterizerVulkan::FlushQueryResultsMeasured(DAddr addr, u64 size) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+    auto& stats = report_stats;
+    const bool back = VideoCommon::GpuSplit::OnBackThread();
+    (back ? stats.calls_back : stats.calls_other).fetch_add(1, std::memory_order_relaxed);
+    if (query_cache.SemiFlushRegion(addr, size)) {
+        stats.pending.fetch_add(1, std::memory_order_relaxed);
+        const auto start = std::chrono::steady_clock::now();
+        if (!(report_submit_early && back && WaitEarlyReportFence(addr, size))) {
+            WaitQueryResultsFence(addr);
+        }
+        const u64 ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            std::chrono::steady_clock::now() - start)
+                                            .count());
+        stats.blocked_ns.fetch_add(ns, std::memory_order_relaxed);
+        u64 max = stats.blocked_max_ns.load(std::memory_order_relaxed);
+        while (ns > max &&
+               !stats.blocked_max_ns.compare_exchange_weak(max, ns, std::memory_order_relaxed)) {
+        }
+    }
+    LogReportStats();
+}
+
+bool RasterizerVulkan::WaitEarlyReportFence(DAddr addr, u64 size) {
+    auto& early = report_early;
+    auto& stats = report_stats;
+    const DAddr end = addr + size;
+    ReportHotRange* range = nullptr;
+    for (u32 i = 0; i < early.hot_count; ++i) {
+        if (early.hot[i].begin <= addr && end <= early.hot[i].end) {
+            range = &early.hot[i];
+            break;
+        }
+    }
+    if (range == nullptr) {
+        range = early.hot_count < early.hot.size()
+                    ? &early.hot[early.hot_count++]
+                    : &*std::ranges::min_element(early.hot, {}, &ReportHotRange::last_use);
+        // Reports into it before now are not tracked: only a fence after now covers them.
+        *range = {.begin = addr, .end = end, .last_report = 0, .tracked_since = early.report_seq};
+    }
+    range->last_use = ++early.use_clock;
+    // The earliest early fence after every back report into the range, with no report from
+    // another thread since (their order against the fence is unknown).
+    const u64 needed = (std::max)(range->last_report, range->tracked_since);
+    const u64 foreign = report_foreign.load(std::memory_order_relaxed);
+    const ReportEarlyMarker* marker = nullptr;
+    for (const ReportEarlyMarker& candidate : early.markers) {
+        if (candidate.id != 0 && candidate.covers >= needed && candidate.foreign == foreign &&
+            (marker == nullptr || candidate.id < marker->id)) {
+            marker = &candidate;
+        }
+    }
+    if (marker == nullptr) {
+        stats.fallbacks.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const u64 id = marker->id;
+    auto& wait = report_early_wait;
+    if (wait.done.load(std::memory_order_acquire) < id) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        std::unique_lock lock{wait.mutex};
+        while (!wait.cv.wait_for(lock, std::chrono::milliseconds(5), [&wait, id] {
+            return wait.done.load(std::memory_order_relaxed) >= id;
+        })) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                LOG_WARNING(Render_Vulkan, "FlushQueryResults: gave up waiting for the early "
+                                           "report fence at {:#x} after 2 s",
+                            addr);
+                stats.fallbacks.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            lock.unlock();
+            scheduler.FlushDeferred();
+            lock.lock();
+        }
+    }
+    // A report still pending was not covered: take the new-fence path.
+    if (query_cache.SemiFlushRegion(addr, size)) {
+        stats.recheck_fails.fetch_add(1, std::memory_order_relaxed);
+        stats.fallbacks.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    stats.early_waits.fetch_add(1, std::memory_order_relaxed);
+    if (VideoCommon::Nx2Perf::Verify()) [[unlikely]] {
+        // The old answer: a new fence and its full wait. The caller reads its words.
+        std::array<u8, 0x1000> early_words;
+        std::array<u8, 0x1000> old_words;
+        const size_t bytes = static_cast<size_t>((std::min<u64>)(size, early_words.size()));
+        device_memory.ReadBlockUnsafe(addr, early_words.data(), bytes);
+        WaitQueryResultsFence(addr);
+        device_memory.ReadBlockUnsafe(addr, old_words.data(), bytes);
+        for (size_t i = 0; i < bytes; ++i) {
+            if (early_words[i] != old_words[i]) {
+                const u64 count = stats.verify_diffs.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (count <= 64) {
+                    LOG_ERROR(HW_GPU,
+                              "Nx2Perf report_submit_early: words differ at {:#x} ({} so far)",
+                              addr + i, count);
+                }
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+void RasterizerVulkan::LogReportStats() {
+    auto& stats = report_stats;
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    s64 last = stats.last_log_ns.load(std::memory_order_relaxed);
+    if (last == 0) {
+        stats.last_log_ns.compare_exchange_strong(last, now, std::memory_order_relaxed);
+        return;
+    }
+    if (now - last < 1'000'000'000 ||
+        !stats.last_log_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        return;
+    }
+    const double seconds = static_cast<double>(now - last) / 1e9;
+    const auto rate = [seconds](std::atomic<u64>& counter) {
+        return static_cast<double>(counter.exchange(0, std::memory_order_relaxed)) / seconds;
+    };
+    const double pending = rate(stats.pending);
+    const double blocked_ms = rate(stats.blocked_ns) / 1e6;
+    const u64 max_us = stats.blocked_max_ns.exchange(0, std::memory_order_relaxed) / 1000;
+    const double early_submits = rate(stats.early_submits);
+    const double early_waits = rate(stats.early_waits);
+    const double fallbacks = rate(stats.fallbacks);
+    const double calls_back = rate(stats.calls_back);
+    const double calls_other = rate(stats.calls_other);
+    const double recheck_fails = rate(stats.recheck_fails);
+    LOG_INFO(HW_GPU,
+             "Nx2Perf report_submit_early: pending {:.0f}/s, blocked {:.2f} ms/s (max {} us), "
+             "early submits {:.0f}/s, waits on early fence {:.0f}/s, fallbacks {:.0f}/s; calls "
+             "{:.0f}/s on the back, {:.0f}/s elsewhere, rechecks failed {:.0f}/s, words differ {} "
+             "in all",
+             pending, blocked_ms, max_us, early_submits, early_waits, fallbacks, calls_back,
+             calls_other, recheck_fails, stats.verify_diffs.load(std::memory_order_relaxed));
 }
 
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
@@ -2208,6 +2423,10 @@ void RasterizerVulkan::FlushWork() {
     static constexpr u32 CHECK_MASK = 31;
 #endif // __ANDROID__
     static_assert(DRAWS_TO_DISPATCH % (CHECK_MASK + 1) == 0);
+    if (report_submit_early && VideoCommon::GpuSplit::OnBackThread() &&
+        report_early.flush_pending) [[unlikely]] {
+        SubmitEarlyReports();
+    }
     if (submit_while_waited) {
         scheduler.NoteDraw();
     }
