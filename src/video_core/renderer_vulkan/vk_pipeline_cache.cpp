@@ -991,30 +991,49 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         entry = CreateComputePipeline(key, shader);
     } else if (!entry.pending && !entry.null_pointer_slots.empty() &&
                entry.rebuilds < MaxComputeRebuilds && StaleNullPointerSlot(entry)) {
-        // The translation dropped accesses through a pointer that was null back then. Which slots
-        // the game fills depends on the area, so the new one keeps binding every pointer this one
-        // binds, null now or not: a null pointer binds nothing.
-        auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
-        if (rebuilt.pipeline) {
-            if (rebuild_async && entry.pipeline && !rebuilt.pipeline->IsBuilt()) {
-                entry.pending = std::move(rebuilt.pipeline);
-                entry.null_pointer_slots = std::move(rebuilt.null_pointer_slots);
-                entry.mapped_pointers = std::move(rebuilt.mapped_pointers);
-                ++entry.rebuilds;
-            } else {
-                if (entry.pipeline) {
-                    retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
-                                                           std::move(entry.pipeline));
+        bool swapped_alternate = false;
+        if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputePreloadVariants)) {
+            for (auto& alt : entry.alternates) {
+                ComputePipelineCacheEntry alt_check{
+                    .null_pointer_slots = alt.null_pointer_slots,
+                };
+                if (alt.pipeline && alt.pipeline->IsBuilt() && !StaleNullPointerSlot(alt_check)) {
+                    std::swap(entry.pipeline, alt.pipeline);
+                    std::swap(entry.null_pointer_slots, alt.null_pointer_slots);
+                    std::swap(entry.mapped_pointers, alt.mapped_pointers);
+                    ++entry.rebuilds;
+                    swapped_alternate = true;
+                    break;
                 }
-                rebuilt.rebuilds = entry.rebuilds + 1;
-                entry = std::move(rebuilt);
             }
-        } else {
-            // Keep the working translation when the new one cannot be built (for example a
-            // narrow access that now stays global across two buffers), and stop retrying.
-            LOG_WARNING(Render_Vulkan, "Keeping compute shader {:016x}: rebuild failed: {}",
-                        key.unique_hash, rebuilt.failure);
-            entry.rebuilds = MaxComputeRebuilds;
+        }
+        if (!swapped_alternate) {
+            // The translation dropped accesses through a pointer that was null back then. Which slots
+            // the game fills depends on the area, so the new one keeps binding every pointer this one
+            // binds, null now or not: a null pointer binds nothing.
+            auto rebuilt{CreateComputePipeline(key, shader, entry.mapped_pointers)};
+            if (rebuilt.pipeline) {
+                if (rebuild_async && entry.pipeline && !rebuilt.pipeline->IsBuilt()) {
+                    entry.pending = std::move(rebuilt.pipeline);
+                    entry.null_pointer_slots = std::move(rebuilt.null_pointer_slots);
+                    entry.mapped_pointers = std::move(rebuilt.mapped_pointers);
+                    ++entry.rebuilds;
+                } else {
+                    if (entry.pipeline) {
+                        retired_compute_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                               std::move(entry.pipeline));
+                    }
+                    rebuilt.alternates = std::move(entry.alternates);
+                    rebuilt.rebuilds = entry.rebuilds + 1;
+                    entry = std::move(rebuilt);
+                }
+            } else {
+                // Keep the working translation when the new one cannot be built (for example a
+                // narrow access that now stays global across two buffers), and stop retrying.
+                LOG_WARNING(Render_Vulkan, "Keeping compute shader {:016x}: rebuild failed: {}",
+                            key.unique_hash, rebuilt.failure);
+                entry.rebuilds = MaxComputeRebuilds;
+            }
         }
     }
     if (entry.pipeline && !entry.pending &&
@@ -1078,17 +1097,44 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
         compute_envs[key].push_back(std::move(env));
     }};
+    const bool preload_variants =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputePreloadVariants);
     const auto queue_compute{[&](const ComputePipelineCacheKey& key,
                                  std::vector<FileEnvironment> candidates) {
-        workers.QueueWork([this, key, envs_ = std::move(candidates), &state,
+        workers.QueueWork([this, key, envs_ = std::move(candidates), preload_variants, &state,
                            &callback]() mutable {
             ShaderPools pools;
             ComputePipelineCacheEntry entry;
+            std::vector<std::vector<u64>> built_keys;
             for (auto& env : envs_) {
+                std::vector<u64> mapped;
+                if (preload_variants && entry.pipeline) {
+                    mapped = env.MappedStoragePointerKeys();
+                    if (std::ranges::find(built_keys, mapped) != built_keys.end()) {
+                        continue;
+                    }
+                }
                 pools.ReleaseContents();
-                entry = CreateComputePipeline(pools, key, env, state.statistics.get(), false);
-                if (entry.pipeline) {
-                    break;
+                auto candidate =
+                    CreateComputePipeline(pools, key, env, state.statistics.get(), false);
+                if (!candidate.pipeline) {
+                    continue;
+                }
+                if (!entry.pipeline) {
+                    if (preload_variants) {
+                        built_keys.push_back(candidate.mapped_pointers);
+                    }
+                    entry = std::move(candidate);
+                    if (!preload_variants) {
+                        break;
+                    }
+                } else {
+                    built_keys.push_back(std::move(mapped));
+                    entry.alternates.push_back(ComputePipelineVariant{
+                        .pipeline = std::move(candidate.pipeline),
+                        .null_pointer_slots = std::move(candidate.null_pointer_slots),
+                        .mapped_pointers = std::move(candidate.mapped_pointers),
+                    });
                 }
             }
             std::scoped_lock lock{state.mutex};

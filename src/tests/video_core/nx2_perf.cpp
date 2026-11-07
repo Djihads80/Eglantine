@@ -131,7 +131,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::BankDirtySkip) ||
                                   i == Index(Opt::BackReplayLean) ||
                                   i == Index(Opt::FrontMacroCall) ||
-                                  i == Index(Opt::ComputeRebuildAsync);
+                                  i == Index(Opt::ComputeRebuildAsync) ||
+                                  i == Index(Opt::ComputePreloadVariants);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -1028,4 +1029,14 @@ TEST_CASE("compute_rebuild_async: off by default and live-safe", "[nx2_perf]") {
     REQUIRE(ParseOffMask(false, "compute_rebuild_async", "", false) ==
             (always_off & ~Bit(Opt::ComputeRebuildAsync)));
     REQUIRE(IsOff(live_safe, Index(Opt::ComputeRebuildAsync)));
+}
+
+TEST_CASE("compute_preload_variants: off by default", "[nx2_perf]") {
+    static_assert(Index(Opt::ComputePreloadVariants) == 93);
+    REQUIRE(opt_names[Index(Opt::ComputePreloadVariants)] == "compute_preload_variants");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::ComputePreloadVariants)));
+    REQUIRE(IsOff(always_off, Index(Opt::ComputePreloadVariants)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::ComputePreloadVariants)));
+    REQUIRE(ParseOffMask(false, "compute_preload_variants", "", false) ==
+            (always_off & ~Bit(Opt::ComputePreloadVariants)));
 }

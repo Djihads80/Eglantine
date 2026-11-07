@@ -108,10 +108,18 @@ struct ShaderPools {
     Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block{32};
 };
 
+struct ComputePipelineVariant {
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::vector<std::pair<u32, u32>> null_pointer_slots;
+    std::vector<u64> mapped_pointers;
+};
+
 struct ComputePipelineCacheEntry {
     std::unique_ptr<ComputePipeline> pipeline;
     /// Replacement pipeline from a stale-slot rebuild, kept here until its worker compile finishes
     std::unique_ptr<ComputePipeline> pending;
+    /// Extra persisted variants with distinct MappedStoragePointerKeys built at boot
+    std::vector<ComputePipelineVariant> alternates;
     std::string failure;
     /// Constant buffer slots that were null pointers at translation (see NullStoragePointerSlots)
     std::vector<std::pair<u32, u32>> null_pointer_slots;
