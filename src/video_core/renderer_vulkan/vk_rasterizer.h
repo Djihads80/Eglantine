@@ -209,7 +209,8 @@ private:
     /// the GPU makes them now (BufferCache::Nx2CopyListPages).
     void SubmitNx2ListCopies();
     /// The split back's idle hook: submits pending list copies and deferred work (with
-    /// Nx2Perf hook_lazy_flush, deferred work only when `reason` or its age asks for it).
+    /// Nx2Perf hook_lazy_flush, deferred work only when `reason` or its age asks for it; with
+    /// list_writer_hook_copies_only, not for WaitLists unless it holds list copies).
     void FlushSplitIdle(VideoCommon::IdleHookReason reason);
 
     void UpdateDynamicStates(bool has_dynamic_vertex_input = false);
@@ -288,6 +289,7 @@ private:
     u32 submit_waited_draws{64};
     u32 submit_idle_draws{128};
     bool hook_lazy_flush{}; ///< Nx2Perf hook_lazy_flush, read once
+    u64 list_copy_deferred_tick{}; ///< The tick of the last list copies DeferFlush held back
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
 };
 

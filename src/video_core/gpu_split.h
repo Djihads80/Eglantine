@@ -65,13 +65,14 @@ inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> 
 };
 
 /// Why the split's back runs its idle hook (Nx2Perf hook_lazy_flush submits deferred work at
-/// once only for the first three).
+/// once only for the first three; list_writer_hook_copies_only skips it for WaitLists).
 enum class IdleHookReason : u32 {
     Sleep,       ///< The back is about to sleep for work (Drain waits for this one)
     Requested,   ///< hook_requested: a drain or Scheduler::WaitSubmitted asked
     WaitResults, ///< The front waits for this position at a site that needs GPU results
     WaitMemory,  ///< The front waits at a site reading only guest memory (macro DMA writes, ...)
     BatchEnd,    ///< A batch ended and nobody waits for it
+    WaitLists,   ///< The front waits for a GPU-written command list; only list copies are needed
 };
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
@@ -145,11 +146,17 @@ public:
     /// (EDEN_NX2_HOOK_FLUSH_US, default 1000 us), in steady clock nanoseconds.
     static s64 HookFlushDeadlineNs();
     /// Back, hook_lazy_flush: the idle hook left the deferred submit pending since `since_ns`
-    /// (steady clock).
-    void NoteLazySkip(s64 since_ns) {
+    /// (steady clock). `lists`: list_writer_hook_copies_only skipped it.
+    void NoteLazySkip(s64 since_ns, bool lists = false) {
         if (lazy_skip_since.load(std::memory_order_relaxed) == 0) {
+            lazy_skip_lists.store(lists, std::memory_order_relaxed);
             lazy_skip_since.store(since_ns, std::memory_order_relaxed);
         }
+    }
+    /// A deferred submit list_writer_hook_copies_only skipped is pending.
+    bool ListSkipPending() const {
+        return lazy_skip_since.load(std::memory_order_relaxed) != 0 &&
+               lazy_skip_lists.load(std::memory_order_relaxed);
     }
     /// The scheduler submitted: no skipped deferred submit is pending.
     void ClearLazySkip() {
@@ -599,6 +606,7 @@ private:
     /// hook_lazy_flush: when the deferred submit the idle hook skipped became pending (steady
     /// clock ns), 0 when none is.
     std::atomic<s64> lazy_skip_since{};
+    std::atomic<bool> lazy_skip_lists{}; ///< The pending skip is list_writer_hook_copies_only's
     alignas(128) std::atomic<bool> back_waiting{};
     std::atomic<bool> back_idle{}; ///< The back is spinning or sleeping for work (EagerPublish)
     std::atomic<u32> wake{};
