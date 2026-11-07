@@ -107,6 +107,7 @@ private:
     QComboBox* vsync_mode_combobox;
     QPushButton* vsync_restore_global_button;
     QWidget* vulkan_device_widget;
+    std::vector<QWidget*> hdr_widgets;
     QWidget* api_widget;
     QComboBox* aspect_ratio_combobox;
     QComboBox* resolution_combobox;

@@ -55,10 +55,11 @@ public:
                         Scheduler& scheduler, const PresentFilters& filters);
     ~BlitScreen();
 
+    /// Composites layers into a frame; hdr_output bypasses SDR effects and is false for captures.
     void DrawToFrame(const Device& device, RasterizerVulkan& rasterizer, Frame* frame,
                      std::span<const Tegra::FramebufferConfig> framebuffers,
                      const Layout::FramebufferLayout& layout, size_t current_swapchain_image_count,
-                     VkFormat current_swapchain_view_format);
+                     VkFormat current_swapchain_view_format, bool hdr_output);
 
     void PrepareFrame(const Device& device, Frame* frame, const Layout::FramebufferLayout& layout);
 

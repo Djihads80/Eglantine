@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <vector>
 
 #include "common/common_types.h"
@@ -22,6 +23,8 @@ class Scheduler;
 
 class Swapchain {
 public:
+    /// Creates the initial SDR swapchain without probing HDR encodings.
+    /// Throws on startup failure rather than constructing an unusable presenter.
     explicit Swapchain(
         VkSurfaceKHR_T* surface,
         const Device& device,
@@ -30,11 +33,13 @@ public:
         u32 height);
     ~Swapchain();
 
-    /// Creates (or recreates) the swapchain with a given size.
-    void Create(
+    /// Creates (or recreates) the swapchain; returns false when deferred for zero extent.
+    bool Create(
         VkSurfaceKHR_T* surface,
         u32 width,
-        u32 height);
+        u32 height,
+        VkFormat requested_format = VK_FORMAT_B8G8R8A8_UNORM,
+        VkColorSpaceKHR requested_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
 
     /// Acquires the next image in the swapchain, waits as needed.
     /// `may_flush`: false on the async present thread (see Scheduler::Wait).
@@ -90,6 +95,20 @@ public:
         return surface_format.format;
     }
 
+    /// Returns the cached SDR surface format, including while an HDR swapchain is active.
+    VkFormat GetSdrImageFormat() const {
+        return sdr_image_format.load();
+    }
+
+    /// Returns the producer format requested by the latest creation attempt.
+    VkFormat GetRequestedFormat() const {
+        return requested_format;
+    }
+
+    VkColorSpaceKHR GetRequestedColorSpace() const {
+        return requested_color_space;
+    }
+
     VkSemaphore CurrentPresentSemaphore() const {
         return *present_semaphores[frame_index];
     }
@@ -142,6 +161,9 @@ private:
     VkExtent2D extent{};
     VkPresentModeKHR present_mode{};
     VkSurfaceFormatKHR surface_format{};
+    std::atomic<VkFormat> sdr_image_format{VK_FORMAT_B8G8R8A8_UNORM};
+    VkFormat requested_format{VK_FORMAT_B8G8R8A8_UNORM};
+    VkColorSpaceKHR requested_color_space{VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
     bool has_imm{false};
     bool has_mailbox{false};
     bool has_fifo_relaxed{false};

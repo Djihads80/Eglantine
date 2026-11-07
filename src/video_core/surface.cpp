@@ -240,6 +240,8 @@ PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format) 
         return PixelFormat::B8G8R8A8_UNORM;
     case Service::android::PixelFormat::Rgba1010102:
         return PixelFormat::A2B10G10R10_UNORM;
+    case Service::android::PixelFormat::RgbaFp16:
+        return PixelFormat::R16G16B16A16_FLOAT;
     default:
         UNIMPLEMENTED_MSG("Unimplemented format={}", format);
         return PixelFormat::A8B8G8R8_UNORM;

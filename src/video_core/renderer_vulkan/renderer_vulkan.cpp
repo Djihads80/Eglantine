@@ -221,25 +221,50 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     RenderScreenshot(framebuffers);
     Frame* frame = present_manager.GetRenderFrame();
 
+#ifdef __ANDROID__
+    VkFormat output_format = VK_FORMAT_R8G8B8A8_UNORM;
+#else
+    VkFormat output_format = VK_FORMAT_B8G8R8A8_UNORM;
+#endif
+    const bool hdr_output =
+        Settings::values.hdr.GetValue() && framebuffers.size() == 1 &&
+        framebuffers.front().color_space != Tegra::ColorSpace::RGB709;
+    if (hdr_output) {
+        // The guest sees HDR availability, not individual encodings. Presentation must reject an
+        // unavailable pair rather than reinterpret an already-rendered HDR frame as SDR.
+        switch (framebuffers.front().color_space) {
+        case Tegra::ColorSpace::RGB2020_PQ:
+            output_format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            frame->color_space = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+            break;
+        case Tegra::ColorSpace::RGB709_Linear:
+            output_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            frame->color_space = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+            break;
+        default:
+            break;
+        }
+    }
+
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
-                               render_window.GetFramebufferLayout(),
-                               present_manager.SwapchainImageCount(),
-                               swapchain.GetImageViewFormat());
+                              render_window.GetFramebufferLayout(),
+                              present_manager.SwapchainImageCount(), output_format, hdr_output);
 
 #ifdef HAS_LSFG
-    void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
+    if (!hdr_output) {
+        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
 
-    frame_gen.Process(device, frame, present_manager.SwapchainImageFormat(),
-                      GuestExtent(framebuffers));
+        frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 
-    const size_t generated_frames = frame_gen.GeneratedFrameCount();
-    for (size_t generation = 0; generation < generated_frames; ++generation) {
-        Frame* generated = present_manager.GetRenderFrame();
-        blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
-        frame_gen.GenerateInto(device, generated, generation);
-        scheduler.Flush(*generated->render_ready);
-        present_manager.Present(generated);
+        const size_t generated_frames = frame_gen.GeneratedFrameCount();
+        for (size_t generation = 0; generation < generated_frames; ++generation) {
+            Frame* generated = present_manager.GetRenderFrame();
+            blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
+            frame_gen.GenerateInto(device, generated, generation);
+            scheduler.Flush(*generated->render_ready);
+            present_manager.Present(generated);
+        }
     }
 #endif
 
@@ -286,7 +311,7 @@ vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConf
     }();
 
     auto dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
-    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format);
+    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format, false);
 
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([&](vk::CommandBuffer cmdbuf) {
@@ -365,7 +390,7 @@ void RendererVulkan::RenderAppletCaptureLayer(
 
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_applet.DrawToFrame(device, rasterizer, &applet_frame, capture_layers, VideoCore::Capture::Layout, 1,
-                            CaptureFormat);
+                            CaptureFormat, false);
 }
 
 } // namespace Vulkan

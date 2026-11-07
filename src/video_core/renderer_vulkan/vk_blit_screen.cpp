@@ -42,6 +42,12 @@ void BlitScreen::SetWindowAdaptPass(const Device& device) {
     layers.clear();
     scaling_filter = filters.get_scaling_filter();
 
+    if (swapchain_view_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+        swapchain_view_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+        window_adapt = MakeBilinear(device, swapchain_view_format);
+        return;
+    }
+
     switch (scaling_filter) {
     case Settings::ScalingFilter::NearestNeighbor:
         window_adapt = MakeNearestNeighbor(device, swapchain_view_format);
@@ -93,7 +99,9 @@ void BlitScreen::PrepareFrame(const Device& device, Frame* frame,
         return;
     }
 
-    if (frame->width != layout.width || frame->height != layout.height) {
+    if (frame->width != layout.width || frame->height != layout.height ||
+        frame->format != swapchain_view_format ||
+        frame->image_format != present_manager.GetFrameImageFormat(swapchain_view_format)) {
         WaitIdle(device);
     } else if (!present_manager.NeedsStorage(frame, true)) {
         return;
@@ -107,7 +115,7 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
                              std::span<const Tegra::FramebufferConfig> framebuffers,
                              const Layout::FramebufferLayout& layout,
                              size_t current_swapchain_image_count,
-                             VkFormat current_swapchain_view_format) {
+                             VkFormat current_swapchain_view_format, bool hdr_output) {
     bool resource_update_required = false;
     bool presentation_recreate_required = false;
 
@@ -121,6 +129,8 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
     }
 
     if (swapchain_view_format != current_swapchain_view_format ||
+        frame->format != current_swapchain_view_format ||
+        frame->image_format != present_manager.GetFrameImageFormat(current_swapchain_view_format) ||
         layout.width != frame->width || layout.height != frame->height) {
         resource_update_required = true;
         presentation_recreate_required = true;
@@ -156,7 +166,8 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         }
     }
 
-    window_adapt->Draw(device, rasterizer, scheduler, image_index, layers, framebuffers, layout, frame);
+    window_adapt->Draw(device, rasterizer, scheduler, image_index, layers, framebuffers, layout, frame,
+                       hdr_output);
 
     if (++image_index >= image_count) {
         image_index = 0;
