@@ -48,6 +48,27 @@ inline thread_local Nx2WriteCoverage t_nx2_write_coverage{};
 /// Logs a mark outside t_nx2_write_coverage's ranges (kepler_compute.cpp).
 void Nx2CheckWriteCoverage(u64 device_address, u64 size);
 
+// Nx2Perf list_fetch_after_sync: a fetch that skipped the wait for queued writers stores
+// {device page + 1, ring position after the last entry sent before it} here (direct-mapped by
+// page). A page first GPU-written by an entry before that position trips the detector, and the
+// front waits for every writer again.
+inline constexpr size_t Nx2ListFetchSlots = 4096;
+inline std::atomic<bool> g_nx2_list_fetch_after_sync{false};
+inline std::atomic<bool> g_nx2_list_fetch_tripped{false};
+inline std::atomic<u64> g_nx2_list_fetch_trips{0};
+inline std::array<std::array<std::atomic<u64>, 2>, Nx2ListFetchSlots>& Nx2ListFetchStamps() {
+    static std::array<std::array<std::atomic<u64>, 2>, Nx2ListFetchSlots> stamps{};
+    return stamps;
+}
+inline void Nx2StampListFetch(u64 device_page, u64 position) {
+    auto& slot = Nx2ListFetchStamps()[device_page & (Nx2ListFetchSlots - 1)];
+    slot[1].store(position, std::memory_order_relaxed);
+    slot[0].store(device_page + 1, std::memory_order_release);
+}
+/// Back: checks the pages that just became GPU-written (`new_bits` of g_nx2_gpu_written_pages
+/// word `word_index`) against the stamps (gpu_split.cpp).
+void Nx2CheckListFetchFirstWrites(u64 word_index, u64 new_bits);
+
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
         return;
@@ -78,7 +99,10 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
         const u64 mask = (bits == 64 ? ~u64{0} : (u64{1} << bits) - 1) << first_bit;
         auto& word = g_nx2_gpu_written_pages[page / 64];
         if ((word.load(std::memory_order_relaxed) & mask) != mask) {
-            word.fetch_or(mask, std::memory_order_relaxed);
+            const u64 old = word.fetch_or(mask, std::memory_order_relaxed);
+            if (g_nx2_list_fetch_after_sync.load(std::memory_order_relaxed)) [[unlikely]] {
+                Nx2CheckListFetchFirstWrites(page / 64, mask & ~old);
+            }
         }
         page += bits;
     }

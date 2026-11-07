@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -119,6 +121,8 @@ void GpuSplit::MaybeStart(Core::System& system_) {
     check_owner = std::getenv("EDEN_NX2_SPLIT_CHECK") != nullptr;
     ring = std::make_unique<u64[]>(RingWords);
     verify_repeats = Nx2Perf::Verify() && Nx2Perf::On(Nx2Perf::Opt::DrawBeginCoalesce);
+    track_back_read = Nx2Perf::On(Nx2Perf::Opt::ListFetchAfterSync);
+    Tegra::g_nx2_list_fetch_after_sync.store(track_back_read, std::memory_order_relaxed);
     back_thread = std::jthread([this](std::stop_token stop_token) { BackLoop(stop_token); });
     active = true;
     eager_publish = Nx2Perf::On(Nx2Perf::Opt::EagerPublish);
@@ -167,6 +171,14 @@ void GpuSplit::Stop() {
     note_page = ~GPUVAddr{0};
     published_local = 0;
     consumed_cache = 0;
+    // The next session's positions restart at 0: old stamps would trip the detector.
+    Tegra::g_nx2_list_fetch_after_sync.store(false, std::memory_order_relaxed);
+    Tegra::g_nx2_list_fetch_tripped.store(false, std::memory_order_relaxed);
+    for (auto& slot : Tegra::Nx2ListFetchStamps()) {
+        slot[0].store(0, std::memory_order_relaxed);
+        slot[1].store(0, std::memory_order_relaxed);
+    }
+    back_read_position.store(0, std::memory_order_relaxed);
     repeat_end = ~u64{0};
     publish_every = PublishEvery;
     front_engine = nullptr;
@@ -269,6 +281,10 @@ bool GpuSplit::WaitForWriters() {
 
 bool GpuSplit::WaitForSync() {
     return WaitFor(std::min(last_sync_position, write_position), DrainSite::ListSync);
+}
+
+bool GpuSplit::WaitForListSync() {
+    return WaitFor(std::min(last_sync_position, write_position), DrainSite::ListFetchSync);
 }
 
 bool GpuSplit::WaitFor(u64 target, DrainSite site) {
@@ -794,6 +810,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         while (read_position != available) {
             const size_t index = read_position & RingMask;
             size_t size;
+            if (track_back_read) {
+                back_read_position.store(read_position, std::memory_order_relaxed);
+            }
             {
                 Nx2Profile::Scope replay_scope{Nx2Profile::Zone::BackReplay};
                 size = Execute(&ring[index],
@@ -848,3 +867,32 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
 }
 
 } // namespace VideoCommon
+
+namespace Tegra {
+
+void Nx2CheckListFetchFirstWrites(u64 word_index, u64 new_bits) {
+    if (new_bits == 0 || !VideoCommon::GpuSplit::OnBackThread()) {
+        return;
+    }
+    // Pairs with the front's fence between its stamps and its second look at the written bits.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    const u64 position = VideoCommon::GpuSplit::Get().BackReadPosition();
+    auto& stamps = Nx2ListFetchStamps();
+    for (; new_bits != 0; new_bits &= new_bits - 1) {
+        const u64 page = word_index * 64 + static_cast<u64>(std::countr_zero(new_bits));
+        auto& slot = stamps[page & (Nx2ListFetchSlots - 1)];
+        if (slot[0].load(std::memory_order_acquire) != page + 1 ||
+            slot[1].load(std::memory_order_relaxed) <= position) {
+            continue;
+        }
+        g_nx2_list_fetch_tripped.store(true, std::memory_order_relaxed);
+        if (g_nx2_list_fetch_trips.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf list_fetch_after_sync: list page {:#x} first GPU-written by a "
+                      "writer queued before its fetch",
+                      page << Nx2WrittenPageBits);
+        }
+    }
+}
+
+} // namespace Tegra

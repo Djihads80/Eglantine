@@ -225,6 +225,8 @@ bool DmaPusher::Step() {
         if (auto& split = VideoCommon::GpuSplit::Get(); !gpu_written && split.Active()) {
             static const bool writer_ranges =
                 VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeWriterRanges);
+            static const bool fetch_after_sync =
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ListFetchAfterSync);
             if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) &&
                 g_nx2_ampere.load(std::memory_order_relaxed)) {
                 gpu_written =
@@ -232,6 +234,9 @@ bool DmaPusher::Step() {
             } else if (writer_ranges && g_nx2_ampere.load(std::memory_order_relaxed)) {
                 gpu_written = WaitForLocalizedListWriters(dma_state.dma_get,
                                                           size_t{header.size} * sizeof(u32));
+            } else if (fetch_after_sync) {
+                gpu_written =
+                    WaitForListFetchSync(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             } else if (split.WaitForWriters()) {
                 gpu_written =
                     IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
@@ -932,6 +937,121 @@ bool DmaPusher::WaitForLocalizedListWriters(GPUVAddr address, size_t size) {
                           "Nx2Perf compute_writer_ranges: list at {:#x} ({} words): word {} is "
                           "{:#x} narrowed, {:#x} after the full wait",
                           address, narrowed.size(), i, narrowed[i], full_words[i]);
+            }
+            break;
+        }
+    }
+    return old_written;
+}
+
+namespace {
+
+/// list_fetch_after_sync: the front's counters, logged about once a second (profile or verify).
+struct ListFetchSyncStats {
+    u64 fetches{};
+    u64 sync_waits{};
+    u64 skips{};     ///< Writers were still queued: the skip mattered (pages stamped)
+    u64 raced{};     ///< A queued writer marked the pages while they were stamped
+    u64 fallbacks{}; ///< Full waits after the detector tripped
+};
+ListFetchSyncStats g_list_fetch_sync_stats;
+
+void ReportListFetchSync(u64 mismatches) {
+    static auto last = std::chrono::steady_clock::now();
+    static u32 calls{};
+    if (++calls % 256 != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds{1}) {
+        return;
+    }
+    last = now;
+    auto& stats = g_list_fetch_sync_stats;
+    const u64 trips = Tegra::g_nx2_list_fetch_trips.load(std::memory_order_relaxed);
+    const std::string text = fmt::format(
+        "Nx2Perf list_fetch_after_sync: {} fetches, {} sync waits, {} skips, {} raced, {} full "
+        "waits after a trip; {} detector trips, {} verify mismatches in all",
+        stats.fetches, stats.sync_waits, stats.skips, stats.raced, stats.fallbacks, trips,
+        mismatches);
+    if (mismatches != 0 || trips != 0) {
+        LOG_ERROR(HW_GPU, "{}", text);
+    } else {
+        LOG_INFO(HW_GPU, "{}", text);
+    }
+    stats = {};
+}
+
+} // Anonymous namespace
+
+bool DmaPusher::WaitForListFetchSync(GPUVAddr address, size_t size) {
+    auto& split = VideoCommon::GpuSplit::Get();
+    auto& stats = g_list_fetch_sync_stats;
+    static u64 mismatches{};
+    const bool verify = VideoCommon::Nx2Perf::Verify();
+    if (verify || VideoCommon::Nx2Profile::Enabled()) {
+        ReportListFetchSync(mismatches);
+    }
+    ++stats.fetches;
+    if (Tegra::g_nx2_list_fetch_tripped.load(std::memory_order_relaxed)) {
+        ++stats.fallbacks;
+        return split.WaitForWriters() && IsGpuWrittenCommands(address, size);
+    }
+    const bool waited = split.WaitForListSync();
+    stats.sync_waits += waited ? 1 : 0;
+    bool written = waited && IsGpuWrittenCommands(address, size);
+    if (!written && split.WriterTarget() > split.ConsumedNow()) {
+        // A writer queued before this fetch may still write these pages for the first time:
+        // stamp them for the back's detector, then look again (a mark in between was missed).
+        ++stats.skips;
+        const u64 position = split.WritePosition();
+        for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
+            if (const auto device = memory_manager.GpuToCpuAddress(page)) {
+                Tegra::Nx2StampListFetch(*device >> Tegra::Nx2WrittenPageBits, position);
+            }
+        }
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (IsGpuWrittenCommands(address, size)) {
+            ++stats.raced;
+            Tegra::g_nx2_list_fetch_tripped.store(true, std::memory_order_relaxed);
+            if (Tegra::g_nx2_list_fetch_trips.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf list_fetch_after_sync: list at {:#x} first GPU-written by a "
+                          "queued writer while its fetch skipped the wait",
+                          address);
+            }
+            written = true;
+        }
+    } else if (!written) {
+        // The writers ran since the pages were last looked at: one may have marked them.
+        written = IsGpuWrittenCommands(address, size);
+    }
+    if (!verify) {
+        return written;
+    }
+    // The old wait for every queued writer, and the words before and after it.
+    std::vector<u32> early(size / sizeof(u32));
+    memory_manager.ReadBlockUnsafe(address, early.data(), early.size() * sizeof(u32));
+    split.WaitForWriters();
+    const bool old_written = IsGpuWrittenCommands(address, size);
+    if (old_written != written) {
+        if (mismatches++ < 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf list_fetch_after_sync: list at {:#x} ({} words) is {}GPU-written "
+                      "after the sync wait, {}GPU-written after the wait for every writer",
+                      address, early.size(), written ? "" : "not ", old_written ? "" : "not ");
+        }
+        return old_written;
+    }
+    std::vector<u32> drained(early.size());
+    memory_manager.ReadBlockUnsafe(address, drained.data(), drained.size() * sizeof(u32));
+    for (size_t i = 0; i < early.size(); ++i) {
+        if (early[i] != drained[i]) {
+            if (mismatches++ < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf list_fetch_after_sync: list at {:#x} ({} words): word {} is "
+                          "{:#x} after the sync wait, {:#x} after the wait for every writer",
+                          address, early.size(), i, early[i], drained[i]);
             }
             break;
         }
