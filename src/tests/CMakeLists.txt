@@ -45,6 +45,7 @@ add_executable(tests
     video_core/nx2_perf_texture_writes.cpp
     video_core/nx2_perf_native_qmd.cpp
     video_core/nx2_perf_query_callback.cpp
+    video_core/nx2_perf_switches.cpp
     video_core/memory_manager_runs.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
