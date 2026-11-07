@@ -16,7 +16,7 @@ constexpr size_t Index(Opt opt) {
 } // namespace
 
 TEST_CASE("Nx2Perf spin_handoff is off unless ON names it", "[nx2_perf]") {
-    static_assert(Index(Opt::SpinHandoff) == 68);
+    static_assert(Index(Opt::SpinHandoff) == 70);
     REQUIRE(opt_names[Index(Opt::SpinHandoff)] == "spin_handoff");
     REQUIRE(IsOff(DefaultOffMask(), Index(Opt::SpinHandoff)));
     REQUIRE(IsOff(always_off, Index(Opt::SpinHandoff)));
