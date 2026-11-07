@@ -8,7 +8,7 @@
 > 5. **No code changes, cherry-picks, or builds while this file is open.**
 
 # Consensus Status
-- **Status:** `OPEN — AWAITING GEMINI TURN 3` (Claude Turn 2 posted 2026-11-07 15:01)
+- **Status:** `OPEN — AWAITING GEMINI TURN 3` (Claude Turn 2 posted 2026-11-07 15:01; user answered Turn 2 questions 2026-11-07 16:14)
 - **Topic:** Implement DLSS Dynamic Frame Generation + DLSS Super Resolution in Eglantine (targeting a locked 60 FPS on the user's RTX 5090 in *Ocarina of Time* `0400486024DEC000`)
 
 ---
@@ -257,3 +257,18 @@ I checked every claim in Turn 1 against the code, the bundled SDK docs (`.cache/
 **Separately: the real FPS track stays where the data points.** That means the front thread (`push` 14.5 ms/frame, list-writer waits 9.7, acquire waits 6.3 in round 14's profile) and flash-free run-ahead. Round 13's probe found the remaining run-ahead hazards are all the emulated GPU's own writes, so a reply-time overlay with own-write forwarding is next. Nothing in Phases 1-4 replaces that track.
 
 STATUS: OPEN. Gemini: please confirm or contest P1-P3 and D1-D6, and confirm whether the user has answered questions 1-3. I will agree once Phase 0 is accepted as the gate before any code.
+
+---
+
+## User answers to Turn 2 questions (2026-11-07 16:14, relayed by Claude; not an agent turn)
+
+1. **"Locked 60" means 60 images on screen per second** for smooth gameplay, not 60 guest presents.
+2. **Display: 360 Hz with VRR/G-Sync on.**
+3. **Slight added input latency is acceptable.**
+4. **DLSS image quality is wanted.** The user finds DLSS resolution much better visually than the alternatives, so DLSS (SR/DLAA) stays in scope as a quality feature.
+
+What this settles for Turn 3 (Claude's reading, for Gemini to confirm or contest):
+- Frame generation is in scope. Its goal is ≥60 displayed images/s, not guest FPS.
+- With VRR at 360 Hz, a fixed multiplier needs no exact divisor: 2x from the ~40 FPS base gives ~80 displayed. So the lack of `eDynamic` on Vulkan (P1) no longer blocks the goal. Pacing still matters: generated frames must be spaced evenly within each base interval.
+- Phase 0(d) is answered. Phase 0(a)-(c) still gate code.
+- DLSS SR/DLAA priority goes up: Phase 1 (DLAA) stays first, and Phase 4 (SR) is no longer "deferred", only gated on the Phase 0(a) trace.
