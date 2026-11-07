@@ -26,6 +26,7 @@ add_executable(tests
     common/page_table.cpp
     common/param_package.cpp
     common/range_map.cpp
+    common/range_set_subtract.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
     common/slot_vector.cpp
