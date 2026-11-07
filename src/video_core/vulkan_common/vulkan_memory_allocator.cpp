@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <bit>
 #include <limits>
@@ -231,7 +232,38 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     // backed: VMA would quietly place them in system memory once VRAM is full. They take the
     // unbacked sparse fallback below.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    bool huge = texels > (u64{1} << 28);
+    // Without sparse residency (MoltenVK, KosmicKrisp) a huge array can't be backed layer by
+    // layer, so an unbacked one stays black (title 1's terrain). On unified-memory hosts with
+    // room to spare, back it whole instead if its memory stays under 2 GiB: the texture cache
+    // measures image sizes in 32 bits, so a larger one (the BC6H terrain array, ~5.8 GB) would
+    // overflow in the upload and keeps the unbacked fallback. EDEN_NX2_BACK_HUGE=0 turns this
+    // off, =1 forces it on; the default is on for macOS only.
+    static const bool back_huge = [] {
+        if (const char* env = std::getenv("EDEN_NX2_BACK_HUGE")) {
+            return env[0] != '0';
+        }
+#ifdef __APPLE__
+        return true;
+#else
+        return false;
+#endif
+    }();
+    if (huge && back_huge && !device.IsSparseBindingSupported()) {
+        const auto& dld = device.GetDispatchLoader();
+        VkImage probe{};
+        if (dld.vkCreateImage(*device.GetLogical(), &ci, nullptr, &probe) == VK_SUCCESS) {
+            VkMemoryRequirements requirements{};
+            dld.vkGetImageMemoryRequirements(*device.GetLogical(), probe, &requirements);
+            dld.vkDestroyImage(*device.GetLogical(), probe, nullptr);
+            huge = requirements.size > (u64{2} << 30);
+            LOG_WARNING(Render_Vulkan,
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) needs {} MiB: {}",
+                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
+                        ci.arrayLayers, static_cast<u32>(ci.format), requirements.size >> 20,
+                        huge ? "too large to back without sparse residency" : "backing it whole");
+        }
+    }
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
@@ -267,7 +299,9 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                         ci.arrayLayers, static_cast<u32>(ci.format));
         }
     }
-    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
+    if (result != VK_SUCCESS && ci.imageType != VK_IMAGE_TYPE_1D) {
+        // Any failure takes this path: unified-memory drivers report OUT_OF_HOST_MEMORY for
+        // these, not DEVICE, and the throw below would abort the emulator.
         if (!huge) {
             pressure_events.fetch_add(1, std::memory_order_relaxed);
         }
@@ -276,10 +310,10 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         // nothing bound, so views and copies still work, instead of aborting.
         if (vk::Image sparse = CreateUnbackedImage(ci)) {
             LOG_WARNING(Render_Vulkan,
-                        "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
-                        "unbacked sparse image",
+                        "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit ({}); using "
+                        "an unbacked sparse image",
                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
-                        ci.arrayLayers, static_cast<u32>(ci.format));
+                        ci.arrayLayers, static_cast<u32>(ci.format), static_cast<int>(result));
             return sparse;
         }
     }

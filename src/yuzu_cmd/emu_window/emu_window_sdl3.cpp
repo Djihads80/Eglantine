@@ -38,10 +38,12 @@ EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Co
     titlebar_timer = SDL_AddTimer(2000, [](void *userdata, SDL_TimerID, Uint32) -> Uint32 {
         auto* this_ = (EmuWindow_SDL3*)userdata;
         auto const results = this_->system.GetAndResetPerfStats();
-        auto* const title = new std::string(fmt::format("{} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname, Common::g_scm_branch, Common::g_scm_desc, results.average_game_fps, results.emulation_speed * 100.0f));
-        // Timers run on their own thread and AppKit throws when a title is set off the main
-        // thread: ApplyPendingTitle sets it from the main loop.
-        delete this_->pending_title.exchange(title);
+        auto const title = fmt::format("{} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname, Common::g_scm_branch, Common::g_scm_desc, results.average_game_fps, results.emulation_speed * 100.0f);
+#ifdef __APPLE__
+        LOG_INFO(Frontend, "{}", title);   // macOS: AppKit throws when a window title is set off the main thread (this runs on SDL's timer thread)
+#else
+        SDL_SetWindowTitle(this_->render_window, title.c_str());
+#endif
         return 2000;
     }, this);
     mouse_timer = SDL_AddTimer(100, [](void *userdata, SDL_TimerID, Uint32) -> Uint32 {
@@ -57,7 +59,6 @@ EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Co
 EmuWindow_SDL3::~EmuWindow_SDL3() {
     SDL_RemoveTimer(titlebar_timer);
     SDL_RemoveTimer(mouse_timer);
-    delete pending_title.exchange(nullptr);
     system.HIDCore().UnloadInputDevices();
     input_subsystem->Shutdown();
     SDL_Quit();
@@ -155,13 +156,6 @@ void EmuWindow_SDL3::OnKeyEvent(int key, u8 state) {
 
 bool EmuWindow_SDL3::IsOpen() const {
     return is_open;
-}
-
-void EmuWindow_SDL3::ApplyPendingTitle() {
-    if (std::string* const title = pending_title.exchange(nullptr)) {
-        SDL_SetWindowTitle(render_window, title->c_str());
-        delete title;
-    }
 }
 
 bool EmuWindow_SDL3::IsShown() const {
