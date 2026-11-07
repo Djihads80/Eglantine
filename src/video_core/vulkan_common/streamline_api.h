@@ -12,9 +12,13 @@
 
 #include <sl.h>
 #include <sl_dlss.h>
+#include <sl_reflex.h>
+#include <sl_pcl.h>
 #include <sl_helpers_vk.h>
 
 namespace Vulkan::Streamline {
+
+using PFun_slReflexSetMarker = sl::Result(sl::PCLMarker marker, const sl::FrameToken& frame);
 
 struct Api {
     PFun_slInit* init{};
@@ -28,6 +32,11 @@ struct Api {
     PFun_slEvaluateFeature* evaluate_feature{};
     PFun_slFreeResources* free_resources{};
     PFun_slSetVulkanInfo* set_vulkan_info{};
+    PFun_slPCLSetMarker* pcl_set_marker{};
+    PFun_slReflexSleep* reflex_sleep{};
+    PFun_slReflexSetOptions* reflex_set_options{};
+    PFun_slReflexSetMarker* reflex_set_marker{};
+    PFun_slReflexGetState* reflex_get_state{};
 };
 
 /// The loaded functions; only valid while IsDlssAvailable().
