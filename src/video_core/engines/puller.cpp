@@ -189,6 +189,17 @@ void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
     VideoCommon::GpuSplit::Get().Drain(site);
 }
 
+// An acquire met early, in place of the drain. Nx2Perf sync_free_fetch: no sync point for list
+// fetches (the word was read after every possible writer ran).
+void NoteEarlyMetSync() {
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SyncFreeFetch)) {
+        split.NoteSyncExceptFetch();
+    } else {
+        split.NoteSync();
+    }
+}
+
 // MacroReadWriterSet: whether the proven draws queued past `consumed` still store nothing, as
 // checked in Maxwell3D::FrontDmaReadEarly. `exact`: Opt::ExactNotedWrites.
 bool QueuedDrawProofsHold(const VideoCommon::GpuSplit& split, u64 consumed, bool exact) {
@@ -815,10 +826,11 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 VideoCommon::Nx2Profile::Add(
                     VideoCommon::Nx2Profile::Counter::AcquireTriggerEarly, 1);
                 // In place of the drain: list fetches after it wait for the work before it.
-                VideoCommon::GpuSplit::Get().NoteSync();
+                NoteEarlyMetSync();
                 return;
             }
-        } else if (Nx2Perf::On(Nx2Perf::Opt::AcquireTriggerEarly)) {
+        } else if (Nx2Perf::On(Nx2Perf::Opt::AcquireTriggerEarly) ||
+                   Nx2Perf::On(Nx2Perf::Opt::SyncFreeFetch)) {
             // Only an early "met" decides: an unmet or missing early word takes the drain below.
             trigger_early = true;
             early = ReadSemaphoreWordEarly(dma_pusher, acquire.address, true,
@@ -828,7 +840,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             if (met && !Nx2Perf::Verify()) {
                 VideoCommon::Nx2Profile::Add(
                     VideoCommon::Nx2Profile::Counter::AcquireTriggerEarly, 1);
-                VideoCommon::GpuSplit::Get().NoteSync();
+                NoteEarlyMetSync();
                 return;
             }
             if (!met) {

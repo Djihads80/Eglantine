@@ -226,7 +226,8 @@ bool DmaPusher::Step() {
             static const bool writer_ranges =
                 VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ComputeWriterRanges);
             static const bool fetch_after_sync =
-                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ListFetchAfterSync);
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::ListFetchAfterSync) ||
+                VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SyncFreeFetch);
             if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SplitOverlap) &&
                 g_nx2_ampere.load(std::memory_order_relaxed)) {
                 gpu_written =
@@ -956,6 +957,11 @@ struct ListFetchSyncStats {
 };
 ListFetchSyncStats g_list_fetch_sync_stats;
 
+/// sync_free_fetch with EDEN_NX2_PERF_VERIFY: fetches that skipped part of the old sync wait,
+/// and those whose list differed after it (since start).
+u64 g_sync_free_checks{};
+u64 g_sync_free_mismatches{};
+
 void ReportListFetchSync(u64 mismatches) {
     static auto last = std::chrono::steady_clock::now();
     static u32 calls{};
@@ -980,6 +986,17 @@ void ReportListFetchSync(u64 mismatches) {
         LOG_INFO(HW_GPU, "{}", text);
     }
     stats = {};
+    static const bool sync_free =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SyncFreeFetch);
+    if (sync_free && VideoCommon::Nx2Perf::Verify()) {
+        if (g_sync_free_mismatches != 0) {
+            LOG_ERROR(HW_GPU, "Nx2Perf sync_free_fetch: {} verify differences in {} checks",
+                      g_sync_free_mismatches, g_sync_free_checks);
+        } else {
+            LOG_INFO(HW_GPU, "Nx2Perf sync_free_fetch: 0 verify differences in {} checks",
+                     g_sync_free_checks);
+        }
+    }
 }
 
 } // Anonymous namespace
@@ -997,7 +1014,31 @@ bool DmaPusher::WaitForListFetchSync(GPUVAddr address, size_t size) {
         ++stats.fallbacks;
         return split.WaitForWriters() && IsGpuWrittenCommands(address, size);
     }
-    const bool waited = split.WaitForListSync();
+    static const bool sync_free =
+        VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SyncFreeFetch);
+    const u64 old_sync_target = split.SyncTarget();
+    bool waited = split.WaitForListSync();
+    if (sync_free && verify && split.ConsumedNow() < old_sync_target) {
+        // sync_free_fetch: the list before and after the old sync wait, which is used.
+        ++g_sync_free_checks;
+        const bool early_written = IsGpuWrittenCommands(address, size);
+        std::vector<u32> early(size / sizeof(u32));
+        memory_manager.ReadBlockUnsafe(address, early.data(), early.size() * sizeof(u32));
+        waited = split.WaitUntil(old_sync_target, VideoCommon::DrainSite::ListFetchSync) || waited;
+        const bool old_written = IsGpuWrittenCommands(address, size);
+        std::vector<u32> after_sync(early.size());
+        memory_manager.ReadBlockUnsafe(address, after_sync.data(), after_sync.size() * sizeof(u32));
+        if (early_written != old_written || early != after_sync) {
+            if (g_sync_free_mismatches++ < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf sync_free_fetch: list at {:#x} ({} words) is {}GPU-written "
+                          "after the fetch sync wait, {}GPU-written after the old sync wait{}",
+                          address, early.size(), early_written ? "" : "not ",
+                          old_written ? "" : "not ",
+                          early != after_sync ? "; its words differ" : "");
+            }
+        }
+    }
     stats.sync_waits += waited ? 1 : 0;
     bool written = waited && IsGpuWrittenCommands(address, size);
     if (!written && split.WriterTarget() > split.ConsumedNow()) {

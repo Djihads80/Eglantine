@@ -259,6 +259,9 @@ enum class Counter : u32 {
     AcquireQueuedUnmet,
     AcquireQueuedGpuWritten,
     AcquireQueuedProof,
+    /// Nx2Perf sync_free_fetch: list fetch sync waits skipped because only an early-met
+    /// acquire's sync (NoteSyncExceptFetch) was still queued
+    ListFetchSyncSkipped,
     Count,
 };
 
@@ -454,6 +457,9 @@ inline void Report(const char* thread_name = "GPU thread") {
                             per_second(Counter::AcquireQueuedUnmet),
                             per_second(Counter::AcquireQueuedGpuWritten),
                             per_second(Counter::AcquireQueuedProof));
+    }
+    if (const double skipped = per_second(Counter::ListFetchSyncSkipped); skipped != 0) {
+        line += fmt::format(" | list fetch sync waits skipped (sync_free_fetch) {:.0f}", skipped);
     }
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",

@@ -309,11 +309,21 @@ public:
     /// commands after it are fetched.
     void NoteSync() {
         last_sync_position = write_position;
+        last_fetch_sync_position = write_position;
+    }
+    /// Nx2Perf sync_free_fetch: NoteSync for everything but list fetches (an acquire met early).
+    void NoteSyncExceptFetch() {
+        last_sync_position = write_position;
+    }
+    /// What WaitForSync waits for.
+    [[nodiscard]] u64 SyncTarget() const {
+        return (std::min)(last_sync_position, write_position);
     }
     /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
     /// of it was still queued.
     bool WaitForSync();
-    /// Nx2Perf list_fetch_after_sync: the same, profiled as DrainSite::ListFetchSync.
+    /// Nx2Perf list_fetch_after_sync: the same, profiled as DrainSite::ListFetchSync. With
+    /// sync_free_fetch, only the work before the last NoteSync (not NoteSyncExceptFetch).
     bool WaitForListSync();
     /// Back: the ring position of the entry it runs (stored only with list_fetch_after_sync).
     [[nodiscard]] u64 BackReadPosition() const {
@@ -517,7 +527,7 @@ private:
     bool spin_handoff{}; ///< Nx2Perf::Opt::SpinHandoff, read once at Start before the back starts
     /// Nx2Perf::Verify() with draw_begin_coalesce, read once at Start before the back starts
     bool verify_repeats{};
-    /// Nx2Perf list_fetch_after_sync, read once at Start before the back starts
+    /// Nx2Perf list_fetch_after_sync or sync_free_fetch, read once at Start before the back starts
     bool track_back_read{};
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
@@ -527,6 +537,7 @@ private:
     u64 last_writer_position{};
     u64 last_unlocalized_writer_position{}; ///< NoteWriter only (compute_writer_ranges)
     u64 last_sync_position{};
+    u64 last_fetch_sync_position{}; ///< NoteSync only (sync_free_fetch)
     u64 last_function_position{};
     SplitWriteTracker writes;
     /// MacroReadCbOverlay: queued constant buffer words, oldest first, popped by RetireWrites.
