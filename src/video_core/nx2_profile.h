@@ -70,6 +70,14 @@ enum class Zone : u32 {
     DrainRun,         ///< Of the split drains: work that reads what the back wrote (CPU reads)
     DrainSync,        ///< Of the split drains: command lists that signal a sync fence
     SplitDmaWait,     ///< As SplitWriters, for a macro DMA read (writes queued for its pages)
+    SyncBuffer,       ///< BufferCache::SynchronizeBuffer (CPU writes uploaded before a bind)
+    MarkWritten,      ///< BufferCache::MarkWrittenBuffer (a writable binding's range noted)
+    BindIndex,        ///< Of update buffers: BindHostIndexBuffer
+    BindVertex,       ///< Of update buffers: BindHostVertexBuffers
+    UpdateOther,      ///< Of update buffers: feedback, indirect and multi-range updates
+    SsboBind,         ///< Of bind stage buffers: BindHostGraphicsStorageBuffers
+    TexBufBind,       ///< Of bind stage buffers: BindHostGraphicsTextureBuffers
+    UboTracker,       ///< Of bind stage buffers: a uniform buffer's GPU-modified checks
     Count,
 };
 
@@ -83,7 +91,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "fence skipped", "method", "split drain", "split wait", "split writers", "split dma read",
     "update index", "update vertex", "update stages", "ubo reuse", "ubo copy", "ubo cached",
     "flush submit", "cmd list flush", "cmd list copy", "drain acquire", "drain cmd list",
-    "drain run", "drain sync", "split dma wait",
+    "drain run", "drain sync", "split dma wait", "sync buffer", "mark written",
+    "bind index", "bind vertex", "update other", "ssbo bind", "texbuf bind", "ubo tracker",
 };
 
 // Set at startup, or by System::Load when a gpu_profile file is in the user directory (Android
@@ -103,7 +112,7 @@ inline u64 Now() {
 struct ThreadData {
     std::array<u64, static_cast<size_t>(Zone::Count)> exclusive_ns{};
     std::array<u64, static_cast<size_t>(Zone::Count)> count{};
-    std::array<u64, 32> counters{}; ///< See Counter
+    std::array<u64, 48> counters{}; ///< See Counter
     u64 child_ns{};    ///< Time of the zones nested in the current one
     u64 window_start{};
     u64 sample_tick{}; ///< SampledScope: which constructions time themselves
@@ -238,6 +247,17 @@ enum class Counter : u32 {
     CbBindsSkipped,   ///< Constant buffer binds not sent: same slot, buffer and size as last time
     CommandListFlushes,    ///< GPU-written command list ranges downloaded (one GPU wait each)
     CommandListPagesAlong, ///< Other command list pages downloaded in those waits
+    UboBinds,       ///< Graphics uniform buffers bound (BindHostGraphicsUniformBuffer)
+    UboSame,        ///< Of UboBinds: same address and size as that slot's previous bind
+    SsboBinds,      ///< Graphics storage buffers bound
+    SsboSame,       ///< Of SsboBinds: same address and size as that slot's previous bind
+    SsboWritten,    ///< Of SsboBinds: writable (MarkWrittenBuffer)
+    VertexDirty,    ///< Vertex buffer slots updated (dirty)
+    VertexSame,     ///< Of VertexDirty: the same binding as before
+    IndexUpdates,   ///< Index buffer updates (dirty)
+    IndexSame,      ///< Of IndexUpdates: the same binding as before
+    SyncCalls,      ///< SynchronizeBuffer calls
+    SyncWalks,      ///< Of SyncCalls: past both early outs (the range's pages walked)
 };
 
 /// Device pages (4 KiB) the native MME has DMA-read since start (GPU thread only; filled only
@@ -321,6 +341,18 @@ inline void Report(const char* thread_name = "GPU thread") {
                         static_cast<double>(data.counters[23]) * 1e9 / window,
                         static_cast<double>(data.counters[24]) * 1e9 / window,
                         static_cast<double>(data.counters[25]) * 1e9 / window);
+    const auto per_second = [&](Counter counter) {
+        return static_cast<double>(data.counters[static_cast<size_t>(counter)]) * 1e9 / window;
+    };
+    line += fmt::format(" | UBO binds {:.0f} ({:.0f} same), SSBO binds {:.0f} ({:.0f} same, {:.0f} "
+                        "written), vertex updates {:.0f} ({:.0f} same), index updates {:.0f} "
+                        "({:.0f} same), syncs {:.0f} ({:.0f} walked)",
+                        per_second(Counter::UboBinds), per_second(Counter::UboSame),
+                        per_second(Counter::SsboBinds), per_second(Counter::SsboSame),
+                        per_second(Counter::SsboWritten), per_second(Counter::VertexDirty),
+                        per_second(Counter::VertexSame), per_second(Counter::IndexUpdates),
+                        per_second(Counter::IndexSame), per_second(Counter::SyncCalls),
+                        per_second(Counter::SyncWalks));
     line += fmt::format(" | cmd list flushes {:.0f} ({:.0f} pages along)",
                         static_cast<double>(data.counters[26]) * 1e9 / window,
                         static_cast<double>(data.counters[27]) * 1e9 / window);

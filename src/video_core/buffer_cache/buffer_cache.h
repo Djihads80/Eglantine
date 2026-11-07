@@ -610,9 +610,11 @@ template <class P>
 void BufferCache<P>::BindHostStageBuffers(size_t stage) {
     BindHostGraphicsUniformBuffers(stage);
     if (channel_state->enabled_storage_buffers[stage] != 0) {
+        Nx2Profile::Scope scope{Nx2Profile::Zone::SsboBind};
         BindHostGraphicsStorageBuffers(stage);
     }
     if (channel_state->enabled_texture_buffers[stage] != 0) {
+        Nx2Profile::Scope scope{Nx2Profile::Zone::TexBufBind};
         BindHostGraphicsTextureBuffers(stage);
     }
 }
@@ -1097,6 +1099,7 @@ bool BufferCache<P>::IsRegionCpuModified(DAddr addr, size_t size) {
 
 template <class P>
 void BufferCache<P>::BindHostIndexBuffer() {
+    Nx2Profile::Scope profile_scope{Nx2Profile::Zone::BindIndex};
     Buffer& buffer = slot_buffers[channel_state->index_buffer.buffer_id];
     TouchBuffer(buffer, channel_state->index_buffer.buffer_id);
     const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
@@ -1194,6 +1197,7 @@ void BufferCache<P>::RefreshRepackedVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostVertexBuffers() {
+    Nx2Profile::Scope profile_scope{Nx2Profile::Zone::BindVertex};
     RefreshRepackedVertexBuffers();
 
 #ifdef __ANDROID__
@@ -1340,6 +1344,13 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const Binding& binding = channel_state->uniform_buffers[stage][index];
     const DAddr device_addr = binding.device_addr;
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
+    if (Nx2Profile::Enabled()) {
+        auto& previous = nx2_previous_ubos[stage][index];
+        Nx2Profile::Add(Nx2Profile::Counter::UboBinds, 1);
+        Nx2Profile::Add(Nx2Profile::Counter::UboSame,
+                        previous.first == device_addr && previous.second == size ? 1 : 0);
+        previous = {device_addr, size};
+    }
     Buffer& buffer = slot_buffers[binding.buffer_id];
     TouchBuffer(buffer, binding.buffer_id);
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
@@ -1383,9 +1394,12 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                                    (std::min<u64>)(mapped_size, size));
         }
     }
-    const bool use_fast_buffer = needs_alignment_stream
-        || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
-            && !memory_tracker.IsRegionGpuModified(device_addr, size));
+    const bool small_host = has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size;
+    const bool gpu_modified = [&] {
+        Nx2Profile::Scope scope{Nx2Profile::Zone::UboTracker};
+        return small_host && memory_tracker.IsRegionGpuModified(device_addr, size);
+    }();
+    const bool use_fast_buffer = needs_alignment_stream || (small_host && !gpu_modified);
     if (use_fast_buffer) {
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
@@ -1545,6 +1559,17 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         const Binding& binding = channel_state->storage_buffers[stage][index];
         const bool is_written = ((channel_state->written_storage_buffers[stage] >> index) & 1) != 0;
+        if (Nx2Profile::Enabled()) {
+            auto& previous = nx2_previous_ssbos[stage][index];
+            Nx2Profile::Add(Nx2Profile::Counter::SsboBinds, 1);
+            Nx2Profile::Add(Nx2Profile::Counter::SsboSame,
+                            previous.first == binding.device_addr &&
+                                    previous.second == binding.size
+                                ? 1
+                                : 0);
+            Nx2Profile::Add(Nx2Profile::Counter::SsboWritten, is_written ? 1 : 0);
+            previous = {binding.device_addr, binding.size};
+        }
         if (BindMultiRangeStorage(binding, is_written, graphics_segments)) {
             return;
         }
@@ -1757,7 +1782,10 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
             Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateVertex};
             UpdateVertexBuffers();
         }
-        UpdateTransformFeedbackBuffers();
+        {
+            Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateOther};
+            UpdateTransformFeedbackBuffers();
+        }
         {
             Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateStages};
             for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
@@ -1766,6 +1794,7 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
                 UpdateTextureBuffers(stage);
             }
         }
+        Nx2Profile::Scope scope{Nx2Profile::Zone::UpdateOther};
         if (current_draw_indirect) {
             UpdateDrawIndirect();
         }
@@ -1856,11 +1885,22 @@ void BufferCache<P>::UpdateIndexBuffer() {
         channel_state->index_buffer = NULL_BINDING;
         return;
     }
-    channel_state->index_buffer = Binding{
+    const Binding index_binding{
         .device_addr = *device_addr,
         .size = size,
         .buffer_id = FindBuffer(*device_addr, size, false),
     };
+    if (Nx2Profile::Enabled()) {
+        const Binding& previous = channel_state->index_buffer;
+        Nx2Profile::Add(Nx2Profile::Counter::IndexUpdates, 1);
+        Nx2Profile::Add(Nx2Profile::Counter::IndexSame,
+                        previous.device_addr == index_binding.device_addr &&
+                                previous.size == index_binding.size &&
+                                previous.buffer_id == index_binding.buffer_id
+                            ? 1
+                            : 0);
+    }
+    channel_state->index_buffer = index_binding;
 }
 
 template <class P>
@@ -1914,6 +1954,16 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
         .size = size,
         .buffer_id = buffer_id,
     };
+    if (Nx2Profile::Enabled()) {
+        const Binding& previous = channel_state->vertex_buffers[index];
+        Nx2Profile::Add(Nx2Profile::Counter::VertexDirty, 1);
+        Nx2Profile::Add(Nx2Profile::Counter::VertexSame,
+                        previous.device_addr == binding.device_addr &&
+                                previous.size == binding.size &&
+                                previous.buffer_id == binding.buffer_id
+                            ? 1
+                            : 0);
+    }
     channel_state->vertex_buffers[index] = binding;
     UpdateVertexBufferSlot(index, binding);
 }
@@ -2065,6 +2115,7 @@ void BufferCache<P>::NoteGpuWrite(Buffer& buffer, DAddr device_addr, u64 size) {
 
 template <class P>
 void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size, bool needs_sync) {
+    Nx2Profile::Scope profile_scope{Nx2Profile::Zone::MarkWritten};
     if constexpr (!IS_OPENGL) {
         Buffer& buffer = slot_buffers[buffer_id];
         NoteGpuWrite(buffer, device_addr, size);
@@ -2682,6 +2733,8 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 /// untracked bits is already synchronized.
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    Nx2Profile::Scope profile_scope{Nx2Profile::Zone::SyncBuffer};
+    Nx2Profile::Add(Nx2Profile::Counter::SyncCalls, 1);
     // A vertex, index, or storage buffer the guest has not written since its last upload
     // has a clean dirty bitmap. Walking that bitmap on every later draw is the bulk of
     // the "update buffers" time (#562).
@@ -2715,6 +2768,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
     if (generation != 0) {
         synced = SyncedRange{&buffer, device_addr, size, generation};
     }
+    Nx2Profile::Add(Nx2Profile::Counter::SyncWalks, 1);
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else

@@ -825,6 +825,12 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+    /// EDEN_NX2_GPU_PROFILE: each graphics slot's previous bind (counted unchanged binds).
+    std::array<std::array<std::pair<DAddr, u32>, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>
+        nx2_previous_ubos{};
+    std::array<std::array<std::pair<DAddr, u32>, NUM_STORAGE_BUFFERS>, NUM_STAGES>
+        nx2_previous_ssbos{};
+
     /// EDEN_NX2_CL_SPECULATE: the storage ranges the dispatch being recorded writes.
     boost::container::small_vector<std::pair<DAddr, u64>, 8> nx2_pending_writes;
     bool nx2_writer_global{};
