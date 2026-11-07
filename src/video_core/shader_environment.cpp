@@ -1131,7 +1131,7 @@ void LoadPipelines(
     std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
     Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics,
-    bool with_mesh_state) try {
+    bool with_mesh_state, u32 min_compatible_version, CacheUpgrade* upgrade) try {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         return;
@@ -1144,7 +1144,13 @@ void LoadPipelines(
     u32 cache_version;
     file.read(magic_number.data(), magic_number.size())
         .read(reinterpret_cast<char*>(&cache_version), sizeof(cache_version));
-    if (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version) {
+    const bool upgrading = upgrade != nullptr && magic_number == MAGIC_NUMBER &&
+                           cache_version >= min_compatible_version &&
+                           cache_version < expected_cache_version;
+    if (upgrading) {
+        upgrade->from_version = cache_version;
+    }
+    if (!upgrading && (magic_number != MAGIC_NUMBER || cache_version != expected_cache_version)) {
         file.close();
         if (Common::FS::RemoveFile(filename)) {
             if (magic_number != MAGIC_NUMBER) {
@@ -1164,24 +1170,69 @@ void LoadPipelines(
         if (stop_loading.stop_requested()) {
             return;
         }
+        const auto record_begin{file.tellg()};
         u32 num_envs{};
         file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
         std::vector<FileEnvironment> envs(num_envs);
         for (FileEnvironment& env : envs) {
             env.Deserialize(file, with_mesh_state);
         }
-        if (envs.front().ShaderStage() == Shader::Stage::Compute) {
+        const bool is_compute{envs.front().ShaderStage() == Shader::Stage::Compute};
+        if (is_compute) {
             load_compute(file, std::move(envs.front()));
         } else {
             load_graphics(file, std::move(envs));
+        }
+        if (upgrading) {
+            const auto record_end{file.tellg()};
+            std::string& record =
+                upgrade->records.emplace_back(static_cast<size_t>(record_end - record_begin), '\0');
+            file.seekg(record_begin);
+            file.read(record.data(), static_cast<std::streamsize>(record.size()));
+            upgrade->is_compute.push_back(is_compute);
         }
     }
 
 } catch (const std::ios_base::failure& e) {
     LOG_ERROR(Common_Filesystem, "{}", e.what());
+    if (upgrade != nullptr && upgrade->from_version != 0) {
+        // The records read so far are written again under the current version.
+        return;
+    }
     if (!Common::FS::RemoveFile(filename)) {
         LOG_ERROR(Common_Filesystem, "Failed to delete pipeline cache file {}",
                   Common::FS::PathToUTF8String(filename));
+    }
+}
+
+void RewritePipelines(const std::filesystem::path& filename, u32 cache_version, u32 old_version,
+                      std::span<const std::string* const> records) try {
+    auto temporary{filename};
+    temporary += ".tmp";
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        file.exceptions(std::ofstream::failbit);
+        file.write(MAGIC_NUMBER.data(), MAGIC_NUMBER.size())
+            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
+        for (const std::string* const record : records) {
+            file.write(record->data(), static_cast<std::streamsize>(record->size()));
+        }
+    }
+    auto backup{filename};
+    backup += fmt::format(".v{}.bak", old_version);
+    std::filesystem::rename(filename, backup);
+    std::filesystem::rename(temporary, filename);
+    std::error_code error;
+    std::filesystem::remove(backup, error);
+} catch (const std::exception& e) {
+    LOG_ERROR(Common_Filesystem, "Failed to write pipeline cache file {} again: {}",
+              Common::FS::PathToUTF8String(filename), e.what());
+    // Keep the old file when the new one couldn't take its place.
+    auto backup{filename};
+    backup += fmt::format(".v{}.bak", old_version);
+    std::error_code error;
+    if (!std::filesystem::exists(filename, error) && std::filesystem::exists(backup, error)) {
+        std::filesystem::rename(backup, filename, error);
     }
 }
 
