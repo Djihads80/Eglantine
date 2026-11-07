@@ -209,6 +209,10 @@ enum class Opt : unsigned {
     /// (unprotected union pages, timed copy), trap coverage of the arm set, span-read hazard bytes
     /// and the front_macro residual's page category
     RunAheadOverlayBudget,
+    /// Split front: a trigger or polled acquire waits only until the back consumed everything
+    /// sent (its idle hook runs before that), not for Drain's back_quiet; unmet or flushed
+    /// words take the full drain
+    AcquireDrainLite,
     Count,
 };
 
@@ -267,6 +271,7 @@ inline constexpr std::array<std::string_view, static_cast<size_t>(Opt::Count)> o
     "report_submit_early",
     "dma_forward_tape",
     "run_ahead_overlay_budget",
+    "acquire_drain_lite",
 };
 
 static_assert(static_cast<size_t>(Opt::Count) <= 128, "the off-mask is 128 bits");
@@ -353,7 +358,8 @@ inline constexpr OffMask DefaultOffMask() {
                           Opt::DiagDrawLite,
                           Opt::ReportSubmitEarly,
                           Opt::DmaForwardTape,
-                          Opt::RunAheadOverlayBudget}) {
+                          Opt::RunAheadOverlayBudget,
+                          Opt::AcquireDrainLite}) {
         mask |= Bit(opt);
     }
     return mask;
@@ -382,7 +388,8 @@ inline constexpr OffMask DefaultOffMask() {
 /// list_writer_hook_copies_only (submit timing; round 10),
 /// front_macro_memo (unmeasured; round 10), run_ahead_snapshot_probe (measurement; round 11),
 /// report_submit_early (submit timing; round 11),
-/// dma_forward_tape (unmeasured; round 11), run_ahead_overlay_budget (measurement; round 12).
+/// dma_forward_tape (unmeasured; round 11), run_ahead_overlay_budget (measurement; round 12),
+/// acquire_drain_lite (unmeasured; round 12).
 /// dma_forward and draw_begin_coalesce (round 5), pending_wake (round 9) and diag_draw_lite
 /// (round 11) are on by default; SAFE turns them off.
 inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireEarly) |
@@ -417,7 +424,8 @@ inline constexpr OffMask always_off = Bit(Opt::SplitOverlap) | Bit(Opt::AcquireE
                                   Bit(Opt::RunAheadSnapshotProbe) |
                                   Bit(Opt::ReportSubmitEarly) |
                                   Bit(Opt::DmaForwardTape) |
-                                  Bit(Opt::RunAheadOverlayBudget);
+                                  Bit(Opt::RunAheadOverlayBudget) |
+                                  Bit(Opt::AcquireDrainLite);
 
 static_assert(IsOff(always_off, 33));
 static_assert(static_cast<unsigned>(Opt::PipelineKeepPreloaded) == 44 && IsOff(always_off, 44));
@@ -517,6 +525,9 @@ static_assert(static_cast<unsigned>(Opt::DmaForwardTape) == 82 &&
 static_assert(static_cast<unsigned>(Opt::RunAheadOverlayBudget) == 83 &&
               IsOff(always_off, static_cast<size_t>(Opt::RunAheadOverlayBudget)) &&
               IsOff(DefaultOffMask(), static_cast<size_t>(Opt::RunAheadOverlayBudget)));
+static_assert(static_cast<unsigned>(Opt::AcquireDrainLite) == 84 &&
+              IsOff(always_off, static_cast<size_t>(Opt::AcquireDrainLite)) &&
+              IsOff(DefaultOffMask(), static_cast<size_t>(Opt::AcquireDrainLite)));
 
 /// Switches the name front_sync_trio (an alias with no bit of its own) turns on together.
 /// EDEN_NX2_PERF_OFF still turns each of them off.

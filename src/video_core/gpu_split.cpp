@@ -350,6 +350,18 @@ void GpuSplit::Drain(DrainSite site) {
     }
 }
 
+bool GpuSplit::WaitCaughtUp(DrainSite site) {
+    if (!active) {
+        return false;
+    }
+    const bool waited = WaitFor(write_position, site);
+    // As Drain: the back is about to idle, so publish the next entries soon.
+    if (waited || !BackQuiet()) {
+        publish_every = 8;
+    }
+    return waited;
+}
+
 bool GpuSplit::WaitForWriters() {
     return WaitFor(std::min(last_writer_position, write_position), DrainSite::ListWriters);
 }

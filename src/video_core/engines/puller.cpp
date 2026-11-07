@@ -189,6 +189,95 @@ void DrainBack(VideoCommon::DrainSite site = VideoCommon::DrainSite::Acquire) {
     VideoCommon::GpuSplit::Get().Drain(site);
 }
 
+// Nx2Perf acquire_drain_lite counters (split front only).
+struct DrainLiteStats {
+    std::atomic<u64> met{};
+    std::atomic<u64> unmet{};
+    std::atomic<u64> flush{};
+    std::atomic<u64> diffs{};
+    s64 window_ns{};
+};
+DrainLiteStats g_drain_lite;
+
+void ReportDrainLite() {
+    auto& stats = g_drain_lite;
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    if (stats.window_ns == 0) {
+        stats.window_ns = now;
+        return;
+    }
+    if (now - stats.window_ns < 1'000'000'000) {
+        return;
+    }
+    stats.window_ns = now;
+    LOG_INFO(HW_GPU,
+             "Nx2Perf acquire_drain_lite: lite_met {} fallback_unmet {} fallback_flush {} "
+             "word differs {}",
+             stats.met.exchange(0, std::memory_order_relaxed),
+             stats.unmet.exchange(0, std::memory_order_relaxed),
+             stats.flush.exchange(0, std::memory_order_relaxed),
+             stats.diffs.load(std::memory_order_relaxed));
+}
+
+// acquire_drain_lite: the word once the back caught up (GpuSplit::WaitCaughtUp). An unmet word or
+// one the buffer cache must flush takes the full drain; Verify drains after a met one too.
+u32 ReadWordLite(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
+                 VideoCommon::DrainSite site, bool verify) {
+    auto& stats = g_drain_lite;
+    VideoCommon::GpuSplit::Get().WaitCaughtUp(site);
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(acquire.address);
+        device && dma_pusher.rasterizer->MustFlushRegion(*device, sizeof(u32),
+                                                          VideoCommon::CacheType::BufferCache)) {
+        stats.flush.fetch_add(1, std::memory_order_relaxed);
+        DrainBack(site);
+        return ReadSemaphoreWord(dma_pusher, acquire.address);
+    }
+    const u32 word = dma_pusher.memory_manager.Read<u32>(acquire.address);
+    if (!acquire.Matches(word)) {
+        stats.unmet.fetch_add(1, std::memory_order_relaxed);
+        DrainBack(site);
+        return ReadSemaphoreWord(dma_pusher, acquire.address);
+    }
+    stats.met.fetch_add(1, std::memory_order_relaxed);
+    if (!verify) [[likely]] {
+        return word;
+    }
+    DrainBack(site);
+    const u32 full = ReadSemaphoreWord(dma_pusher, acquire.address);
+    if (full != word) {
+        const u64 count = stats.diffs.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 64) {
+            LOG_ERROR(HW_GPU,
+                      "Nx2Perf acquire_drain_lite: word differs ({}, {:#x}, lite {:#x}, full "
+                      "{:#x}) ({} so far)",
+                      VideoCommon::drain_site_names[static_cast<size_t>(site)], acquire.address,
+                      word, full, count);
+        }
+    }
+    return full;
+}
+
+// DrainBack(site) then ReadSemaphoreWord, or acquire_drain_lite's read.
+u32 DrainAndReadWord(DmaPusher& dma_pusher, const Puller::PendingAcquire& acquire,
+                     VideoCommon::DrainSite site) {
+    namespace Nx2Perf = VideoCommon::Nx2Perf;
+    // hook_lazy_flush may skip the batch-end submit that the lite wait relies on.
+    static const bool lite = Nx2Perf::On(Nx2Perf::Opt::AcquireDrainLite) &&
+                             !Nx2Perf::On(Nx2Perf::Opt::HookLazyFlush);
+    if (!lite || !VideoCommon::GpuSplit::Get().Active()) {
+        DrainBack(site);
+        return ReadSemaphoreWord(dma_pusher, acquire.address);
+    }
+    const bool verify = Nx2Perf::Verify();
+    const u32 word = ReadWordLite(dma_pusher, acquire, site, verify);
+    if (verify) [[unlikely]] {
+        ReportDrainLite();
+    }
+    return word;
+}
+
 // An acquire met early, in place of the drain. Nx2Perf sync_free_fetch: no sync point for list
 // fetches (the word was read after every possible writer ran).
 void NoteEarlyMetSync() {
@@ -545,8 +634,8 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
         Profile::Add(Profile::Counter::AcquirePollsMet, 1);
         if (Nx2PendingWake::verify_resume) [[unlikely]] {
             // pending_wake (Verify): a resume after a wake must still be met or latched.
-            DrainBack(VideoCommon::DrainSite::AcquirePoll);
-            const u32 word = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
+            const u32 word = DrainAndReadWord(dma_pusher, *pending_acquire,
+                                              VideoCommon::DrainSite::AcquirePoll);
             if (!pending_acquire->Matches(word) && !Nx2SemaphoreWaiters::Get().Latched(this)) {
                 const u64 count = Nx2PendingWake::verify_unmet.fetch_add(1) + 1;
                 if (count <= 64) {
@@ -607,8 +696,8 @@ bool Puller::PollAcquire(DmaPusher& dma_pusher) {
     }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
-    DrainBack(VideoCommon::DrainSite::AcquirePoll);
-    const u32 current = ReadSemaphoreWord(dma_pusher, pending_acquire->address);
+    const u32 current =
+        DrainAndReadWord(dma_pusher, *pending_acquire, VideoCommon::DrainSite::AcquirePoll);
     if (early && Nx2Perf::Verify()) {
         VerifyAcquireWord("poll",*pending_acquire, *early, current);
     }
@@ -892,8 +981,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             }
             forward_verify = true;
         }
-        DrainBack(VideoCommon::DrainSite::AcquireTrigger);
-        const u32 drained = ReadSemaphoreWord(dma_pusher, acquire.address);
+        const u32 drained =
+            DrainAndReadWord(dma_pusher, acquire, VideoCommon::DrainSite::AcquireTrigger);
         if (trigger_early && Nx2Perf::Verify()) {
             VerifyTriggerEarly(acquire, early, proof_changed, drained);
         } else if (early && Nx2Perf::Verify()) {
