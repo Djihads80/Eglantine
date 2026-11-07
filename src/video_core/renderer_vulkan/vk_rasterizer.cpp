@@ -59,6 +59,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_speculate.h"
 #include "video_core/nx2_strato.h"
 
 namespace Vulkan {
@@ -1345,6 +1346,32 @@ void RasterizerVulkan::DispatchCompute() {
     };
 
     const auto& qmd{kepler_compute->launch_description};
+    // EDEN_NX2_CL_SPECULATE: what the dispatch writes gets the signature of what it reads.
+    const auto sign_dispatch = [&](u64 inputs) {
+        if (!Tegra::Nx2ClSpeculate()) {
+            return;
+        }
+        Tegra::Nx2SignTimer timer;
+        // Reads the signatures don't follow: its output can change while they stay the same.
+        if (pipeline->Nx2UntrackedInputs()) {
+            buffer_cache.Nx2SetWriterUntracked(true);
+            buffer_cache.Nx2FinishDispatchSig(Tegra::Nx2UniqueSig());
+            return;
+        }
+        u64 sig = Tegra::Nx2SigMix(Tegra::Nx2SigMix(pipeline->ShaderHash(), native_key), inputs);
+        bool samples_images = false;
+        for (const VideoCommon::ImageViewId id : pipeline->Nx2Views()) {
+            sig = Tegra::Nx2SigMix(Tegra::Nx2SigMix(sig, id.index),
+                                   texture_cache.Nx2ModificationTick(id));
+            samples_images |= static_cast<bool>(id);
+        }
+        if (samples_images) {
+            sig = Tegra::Nx2SigMix(
+                sig, Tegra::g_nx2_image_upload_generation.load(std::memory_order_relaxed));
+        }
+        buffer_cache.Nx2FinishDispatchSig(
+            Tegra::Nx2SigMix(sig, buffer_cache.Nx2ComputeInputSig()));
+    };
     const auto publish_collision_map = [&] {
         static const bool enabled = [] {
             const char* value = std::getenv("EDEN_MKW_WATER_FEEDBACK");
@@ -1387,6 +1414,10 @@ void RasterizerVulkan::DispatchCompute() {
         if (frame_dump.Capturing()) [[unlikely]] {
             frame_dump.TimeEnd(true);
         }
+        // Its grid is the arguments' contents.
+        sign_dispatch(Tegra::Nx2ClSpeculate()
+                          ? Tegra::Nx2RangeSig(buffer->CpuAddr() + offset, 12)
+                          : 0);
         SubmitNx2ListCopies();
         publish_collision_map();
         return;
@@ -1414,6 +1445,7 @@ void RasterizerVulkan::DispatchCompute() {
     if (frame_dump.Capturing()) [[unlikely]] {
         frame_dump.TimeEnd(true);
     }
+    sign_dispatch(Tegra::Nx2SigMix(Tegra::Nx2SigMix(dim[0], dim[1]), dim[2]));
     SubmitNx2ListCopies();
     publish_collision_map();
 

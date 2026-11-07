@@ -34,6 +34,7 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_speculate.h"
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
@@ -1797,6 +1798,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    if (Tegra::Nx2ClSpeculate()) {
+        Tegra::g_nx2_image_upload_generation.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {

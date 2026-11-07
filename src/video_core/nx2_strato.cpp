@@ -14,6 +14,7 @@
 
 #include "common/logging.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_speculate.h"
 #include "video_core/nx2_strato.h"
 
 namespace VideoCommon::Nx2Strato {
@@ -134,3 +135,42 @@ void MaybeReport() {
 }
 
 } // namespace VideoCommon::Nx2Strato
+
+namespace Tegra {
+
+void Nx2ReportSpeculation() {
+    Nx2SpeculationStats& stats = g_nx2_speculation;
+    const u64 now = VideoCommon::Nx2Strato::Now();
+    u64 start = stats.window_start.load(std::memory_order_relaxed);
+    if (start == 0) {
+        stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed);
+        return;
+    }
+    if (now - start < 10'000'000'000ULL ||
+        !stats.window_start.compare_exchange_strong(start, now, std::memory_order_relaxed)) {
+        return;
+    }
+    const auto take = [](std::atomic<u64>& value) {
+        return value.exchange(0, std::memory_order_relaxed);
+    };
+    const u64 reads = take(stats.reads);
+    const u64 waits = take(stats.waits);
+    const u64 same = take(stats.same);
+    const u64 predicted = take(stats.predicted);
+    const u64 predicted_waits = take(stats.predicted_waits);
+    const u64 right = take(stats.right);
+    const u64 wrong = take(stats.wrong);
+    const u64 waited_ns = take(stats.waited_ns);
+    const u64 untracked = take(stats.untracked);
+    const u64 sign_ns = take(g_nx2_sign_ns);
+    LOG_INFO(HW_GPU,
+             "Command list speculation in {:.1f} s: {} copy reads with a read before ({} "
+             "waited), {} got the same words; {} not predicted (written by a dispatch with "
+             "untracked inputs); predicted the same for {} ({} of them waited): {} right, {} "
+             "WRONG; {:.1f} ms of waits a right prediction would have saved, {:.1f} ms signing",
+             static_cast<double>(now - start) / 1e9, reads, waits, same, untracked, predicted,
+             predicted_waits, right, wrong, static_cast<double>(waited_ns) / 1e6,
+             static_cast<double>(sign_ns) / 1e6);
+}
+
+} // namespace Tegra

@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/nx2_speculate.h"
 #include "video_core/nx2_strato.h"
 #include "video_core/texture_cache/util.h"
 
@@ -448,6 +449,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
     NoteGpuWrite(dest_buffer, *cpu_dest_address, amount);
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
+    if (Tegra::Nx2ClSpeculate()) {
+        Tegra::Nx2SetRangeSig(*cpu_dest_address, amount,
+                              Tegra::Nx2SigMix(0x646d61ULL, Tegra::Nx2RangeSig(*cpu_src_address,
+                                                                               amount)));
+    }
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
@@ -482,6 +488,9 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     const u32 offset = dest_buffer.Offset(*cpu_dst_address);
     NoteGpuWrite(dest_buffer, *cpu_dst_address, size);
     runtime.ClearBuffer(dest_buffer, offset, size, value);
+    if (Tegra::Nx2ClSpeculate()) {
+        Tegra::Nx2SetRangeSig(*cpu_dst_address, size, Tegra::Nx2SigMix(0x636c656172ULL, value));
+    }
     dest_buffer.MarkUsage(offset, size);
     return true;
 }
@@ -518,6 +527,9 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         break;
     case ObtainBufferOperation::NoteGpuWrite:
         NoteGpuWrite(slot_buffers[buffer_id], device_addr, size);
+        if (Tegra::Nx2ClSpeculate()) {
+            Tegra::Nx2SetRangeUnique(device_addr, size, runtime.CurrentTick());
+        }
         break;
     case ObtainBufferOperation::DiscardWrite: {
         ClearDownload(device_addr, size);
@@ -2054,6 +2066,14 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     if constexpr (!IS_OPENGL) {
         Buffer& buffer = slot_buffers[buffer_id];
         NoteGpuWrite(buffer, device_addr, size);
+        if (Tegra::Nx2ClSpeculate()) {
+            // A dispatch's writes get the signature of its inputs once all are bound.
+            if (nx2_collect_list_copies) {
+                nx2_pending_writes.emplace_back(device_addr, size);
+            } else {
+                Tegra::Nx2SetRangeUnique(device_addr, size, runtime.CurrentTick());
+            }
+        }
         if (needs_sync) {
             buffer.setWriteTick(runtime.CurrentTick());
         }
@@ -2155,6 +2175,7 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             entry.copy = staging;
             entry.copy_writes = entry.writes;
             entry.copy_tick = tick;
+            entry.untracked = nx2_writer_untracked;
             entry.copy_begin = static_cast<u32>(begin - page);
             entry.copy_end = static_cast<u32>(end - page);
         }
@@ -2197,6 +2218,48 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             entry.read_hash = hash;
             return same;
         };
+        // EDEN_NX2_CL_SPECULATE=measure: the words' content signature before any wait, and
+        // whether it predicted that they are those of the read before (nx2_speculate.h).
+        const bool speculate = Tegra::Nx2ClSpeculate() != 0;
+        const u64 content_sig = speculate ? Tegra::Nx2RangeSig(device_addr, out.size()) : 0;
+        const auto note_speculation = [&](Nx2ListPage& entry, bool waited, u64 wait_ns) {
+            if (!speculate) {
+                return;
+            }
+            Tegra::Nx2SignTimer timer;
+            const u64 hash =
+                Common::CityHash64(reinterpret_cast<const char*>(out.data()), out.size());
+            auto& spans = entry.spans;
+            const auto span = std::ranges::find_if(spans, [&](const Nx2ListPage::Span& s) {
+                return s.offset == offset && s.size == out.size();
+            });
+            if (span == spans.end()) {
+                if (spans.size() >= 8) {
+                    spans.erase(spans.begin());
+                }
+                spans.push_back({static_cast<u32>(offset), static_cast<u32>(out.size()),
+                                 content_sig, hash});
+                return;
+            }
+            auto& stats = Tegra::g_nx2_speculation;
+            stats.untracked.fetch_add(entry.untracked ? 1 : 0, std::memory_order_relaxed);
+            const bool predicted = !entry.untracked && span->sig == content_sig;
+            const bool same = span->hash == hash;
+            stats.reads.fetch_add(1, std::memory_order_relaxed);
+            stats.waits.fetch_add(waited ? 1 : 0, std::memory_order_relaxed);
+            stats.same.fetch_add(same ? 1 : 0, std::memory_order_relaxed);
+            if (predicted) {
+                stats.predicted.fetch_add(1, std::memory_order_relaxed);
+                stats.predicted_waits.fetch_add(waited ? 1 : 0, std::memory_order_relaxed);
+                (same ? stats.right : stats.wrong).fetch_add(1, std::memory_order_relaxed);
+                if (waited && same) {
+                    stats.waited_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+                }
+            }
+            span->sig = content_sig;
+            span->hash = hash;
+            Tegra::Nx2ReportSpeculation();
+        };
         u64 tick{};
         u64 writes{};
         {
@@ -2220,6 +2283,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
                 if (stats) {
                     same_words(it->second);
                 }
+                note_speculation(it->second, false, 0);
                 return Nx2ListRead::Copied;
             }
             tick = entry.copy_tick;
@@ -2246,16 +2310,17 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
                     same_words(it->second);
                     VideoCommon::Nx2Strato::NoteGenSkip(VideoCommon::Nx2Strato::Wait::ListCopy);
                 }
+                note_speculation(it->second, false, 0);
                 return Nx2ListRead::Copied;
             }
         }
         // Whether the last GPU write to the page was done already (only its copy was not).
         const u64 write_tick = stats ? Tegra::Nx2LastGpuWriteTick(device_addr, out.size()) : 0;
         const bool write_done = write_tick != 0 && runtime.TickComplete(write_tick);
-        const u64 wait_start = stats ? VideoCommon::Nx2Strato::Now() : 0;
+        const u64 wait_start = stats || speculate ? VideoCommon::Nx2Strato::Now() : 0;
         // Submitted with the work that wrote the page (Nx2CopyListPages's caller flushes).
         runtime.WaitSubmittedTick(tick);
-        const u64 waited = stats ? VideoCommon::Nx2Strato::Now() - wait_start : 0;
+        const u64 waited = stats || speculate ? VideoCommon::Nx2Strato::Now() - wait_start : 0;
         std::scoped_lock lock{nx2_list_mutex};
         const auto it = nx2_list_pages.find(page);
         if (it == nx2_list_pages.end() || !current(it->second) || it->second.copy_tick != tick ||
@@ -2267,6 +2332,7 @@ auto BufferCache<P>::Nx2ReadListCopy(DAddr device_addr, std::span<u8> out) -> Nx
             return Nx2ListRead::Unknown;
         }
         std::memcpy(out.data(), it->second.copy->mapped_span.data() + offset, out.size());
+        note_speculation(it->second, true, waited);
         if (stats) {
             if (same_words(it->second)) {
                 VideoCommon::Nx2Strato::NoteSameWords(waited);
@@ -2345,6 +2411,44 @@ void BufferCache<P>::Nx2NoteListHostWrite(DAddr device_addr, u64 size) {
             }
         }
     }
+}
+
+template <class P>
+u64 BufferCache<P>::Nx2ComputeInputSig() {
+    using Tegra::Nx2SigMix;
+    u64 sig = 0x636f6d70ULL;
+    // Uniform buffers by their bytes in guest memory: they may be read from there (streamed).
+    ForEachEnabledBit(channel_state->enabled_compute_uniform_buffer_mask, [&](u32 index) {
+        const Binding& binding = channel_state->compute_uniform_buffers[index];
+        const u32 size =
+            (std::min)(binding.size, (*channel_state->compute_uniform_buffer_sizes)[index]);
+        sig = Nx2SigMix(Nx2SigMix(sig, index), binding.device_addr);
+        if (binding.device_addr != 0 && size != 0) {
+            tmp_buffer.resize_destructive(size);
+            device_memory.ReadBlockUnsafe(binding.device_addr, tmp_buffer.data(), size);
+            sig = Nx2SigMix(sig, Common::CityHash64(reinterpret_cast<const char*>(tmp_buffer.data()),
+                                                    size));
+        }
+    });
+    ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
+        const Binding& binding = channel_state->compute_storage_buffers[index];
+        sig = Nx2SigMix(Nx2SigMix(Nx2SigMix(sig, 0x100 + index), binding.device_addr),
+                        Tegra::Nx2RangeSig(binding.device_addr, binding.size));
+    });
+    ForEachEnabledBit(channel_state->enabled_compute_texture_buffers, [&](u32 index) {
+        const Binding& binding = channel_state->compute_texture_buffers[index];
+        sig = Nx2SigMix(Nx2SigMix(Nx2SigMix(sig, 0x200 + index), binding.device_addr),
+                        Tegra::Nx2RangeSig(binding.device_addr, binding.size));
+    });
+    return sig;
+}
+
+template <class P>
+void BufferCache<P>::Nx2FinishDispatchSig(u64 writer) {
+    for (const auto& [device_addr, size] : nx2_pending_writes) {
+        Tegra::Nx2SetRangeSig(device_addr, size, Tegra::Nx2SigMix(writer, device_addr));
+    }
+    nx2_pending_writes.clear();
 }
 
 template <class P>
@@ -2721,6 +2825,9 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
+            if (Tegra::Nx2ClSpeculate()) {
+                Tegra::Nx2NoteUploadSig(device_addr, std::span<const u8>(src_pointer, copy.size));
+            }
             // Large uploads are mostly geometry the host GPU now has its own copy of: TickFrame
             // marks their guest memory cold (see TextureCache::RefreshContents).
             if (copy.size >= 256_KiB) {
@@ -2775,6 +2882,9 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         }};
         u8* const src_pointer = upload_staging.mapped_span.data();
         std::memcpy(src_pointer, inlined_buffer.data(), copy_size);
+        if (Tegra::Nx2ClSpeculate()) {
+            Tegra::Nx2NoteUploadSig(dest_address, inlined_buffer.first(copy_size));
+        }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
         NoteGpuWrite(buffer, dest_address, copy_size);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);

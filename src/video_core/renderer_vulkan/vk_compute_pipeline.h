@@ -66,6 +66,17 @@ public:
         return shader_hash;
     }
 
+    /// EDEN_NX2_CL_SPECULATE: whether the program reads memory outside its bindings (global
+    /// memory fallbacks for storage buffers it could not track, pointers chosen at run time).
+    [[nodiscard]] bool Nx2UntrackedInputs() const noexcept {
+        return info.uses_global_memory || info.native_global_bounds;
+    }
+
+    /// EDEN_NX2_CL_SPECULATE: the image views the last Configure bound.
+    [[nodiscard]] std::span<const VideoCommon::ImageViewId> Nx2Views() const noexcept {
+        return nx2_views;
+    }
+
     struct SampledImage {
         u32 tic;
         VideoCommon::ImageViewId id;
@@ -90,6 +101,7 @@ private:
     u32 num_descriptor_entries{};
     std::vector<VideoCommon::ImageViewId> written_images;
     std::vector<SampledImage> sampled_images;
+    std::vector<VideoCommon::ImageViewId> nx2_views;
 
     VideoCommon::ComputeUniformBufferSizes uniform_buffer_sizes{};
 

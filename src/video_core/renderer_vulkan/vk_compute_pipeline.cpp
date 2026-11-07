@@ -10,6 +10,7 @@
 #include <boost/container/small_vector.hpp>
 #include <fmt/format.h>
 
+#include "video_core/nx2_speculate.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -273,6 +274,12 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    if (Tegra::Nx2ClSpeculate()) {
+        nx2_views.clear();
+        for (const VideoCommon::ImageViewInOut& view : views) {
+            nx2_views.push_back(view.id);
+        }
+    }
     if (FrameDump::RecordingResources()) [[unlikely]] {
         written_images.clear();
         sampled_images.clear();

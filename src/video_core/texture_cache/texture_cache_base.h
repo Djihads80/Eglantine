@@ -235,6 +235,15 @@ public:
     /// Get the imageview from the graphics descriptor table in the specified index
     [[nodiscard]] ImageView& GetImageView(u32 index) noexcept;
 
+    /// EDEN_NX2_CL_SPECULATE: the modification tick of the image behind a view (0: none).
+    [[nodiscard]] u64 Nx2ModificationTick(ImageViewId id) const noexcept {
+        if (!id) {
+            return 0;
+        }
+        const ImageId image_id = slot_image_views[id].image_id;
+        return image_id ? slot_images[image_id].modification_tick : 0;
+    }
+
     // Publish the CPU-readable collision image. Caller holds the cache mutex.
     bool PublishComputeCollisionImage(u32 index);
 

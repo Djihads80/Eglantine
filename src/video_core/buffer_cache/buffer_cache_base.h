@@ -363,8 +363,20 @@ public:
         nx2_collect_list_copies = collect;
         if (!collect) {
             nx2_list_copy_requests.clear();
+            nx2_pending_writes.clear();
+            nx2_writer_untracked = false;
         }
     }
+    /// EDEN_NX2_CL_SPECULATE: the dispatch being recorded reads memory signatures don't follow.
+    void Nx2SetWriterUntracked(bool untracked) {
+        nx2_writer_untracked = untracked;
+    }
+    /// EDEN_NX2_CL_SPECULATE (nx2_speculate.h): the signature of what the compute dispatch being
+    /// recorded reads through the buffer cache (uniform buffer bytes, storage and texture buffer
+    /// ranges with their signatures, written ones as they are before it).
+    u64 Nx2ComputeInputSig();
+    /// The dispatch whose inputs sign `writer` was recorded: its storage writes hold its output.
+    void Nx2FinishDispatchSig(u64 writer);
     /// True when it recorded copies, which the GPU completes at `tick` (the caller submits).
     bool Nx2CopyListPages(u64 tick);
     enum class Nx2ListRead { Unknown, Copied, Synced };
@@ -795,6 +807,17 @@ private:
         u64 read_hash{};
         u32 read_offset{};
         u32 read_size{};
+        /// EDEN_NX2_CL_SPECULATE: the lists read from the page, with the content signature and
+        /// the hash of their words at their last read.
+        struct Span {
+            u32 offset;
+            u32 size;
+            u64 sig;
+            u64 hash;
+        };
+        boost::container::small_vector<Span, 4> spans;
+        /// The copy is of a dispatch that reads memory the signatures don't follow.
+        bool untracked{};
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
@@ -802,6 +825,9 @@ private:
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;
     bool nx2_collect_list_copies{};
+    /// EDEN_NX2_CL_SPECULATE: the storage ranges the dispatch being recorded writes.
+    boost::container::small_vector<std::pair<DAddr, u64>, 8> nx2_pending_writes;
+    bool nx2_writer_untracked{};
 
     /// Downloads waiting for EndDownloadBatch. Deferred staging: a submission inside the batch
     /// must not let another download reuse it before it is read.
