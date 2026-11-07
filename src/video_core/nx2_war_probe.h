@@ -2987,16 +2987,21 @@ inline u64 HashRange(u64 addr, u64 size, bool& truncated) {
     return hash;
 }
 
-/// Copies [addr, addr + size) (size <= VerifyBytes), unmapped bytes as 0.
-inline void CopyRange(u64 addr, u64 size, u8* out) {
+/// Copies [addr, addr + size) (size <= VerifyBytes), unmapped bytes as 0. Returns HashRange of
+/// the copied bytes, so the hash and the copy are one snapshot.
+inline u64 CopyRange(u64 addr, u64 size, u8* out) {
+    u64 hash = 0x27D4EB2F165667C5ULL ^ size;
     ForEachPiece(addr, size, [&](const u8* host, u64 length) {
         if (host != nullptr) {
             std::memcpy(out, host, length);
+            hash = HashBytes(out, length, hash);
         } else {
             std::memset(out, 0, length);
+            hash = std::rotl(hash, 7) ^ length;
         }
         out += length;
     });
+    return hash;
 }
 
 inline void Account(bool writer_known, bool covered, bool covered_any, bool stale, u64 size) {
@@ -3026,10 +3031,12 @@ inline void Free(Pending& p) {
 inline void Resolve(Pending& p, s64 now) {
     State& s = Get();
     bool truncated = false;
-    bool stale = HashRange(p.addr, p.size, truncated) != p.hash;
-    if (p.verify) {
+    bool stale = false;
+    if (!p.verify) {
+        stale = HashRange(p.addr, p.size, truncated) != p.hash;
+    } else {
         std::array<u8, VerifyBytes> current{};
-        CopyRange(p.addr, p.size, current.data());
+        stale = CopyRange(p.addr, p.size, current.data()) != p.hash;
         const bool byte_stale = std::memcmp(current.data(), p.bytes.data(), p.size) != 0;
         if (byte_stale != stale) {
             VerifyDifference("read of {:#x}+{} is {} by its hash, {} by a byte compare", p.addr,
@@ -3123,7 +3130,9 @@ inline void GuestRead(u64 begin, u64 end, u64 addr, u64 size) {
     p->any_key = any_key;
     p->verify = Nx2Perf::Verify() && size <= VerifyBytes && (s.verify_seq++ % VerifyEvery) == 0;
     if (p->verify) {
-        CopyRange(addr, size, p->bytes.data());
+        // The hash and the bytes from one copy: a landing since the hash above would otherwise
+        // show up as a verify difference.
+        p->hash = CopyRange(addr, size, p->bytes.data());
     }
     ++s.active;
     s.writers += writer_known ? 1 : 0;
