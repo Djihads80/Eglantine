@@ -536,6 +536,7 @@ public:
 
 private:
     friend struct GpuSplitTestAccess;
+    friend struct GpuSplitLeanTestAccess;
 
     enum class Kind : u64 {
         Wrap,   ///< The rest of the ring is unused: continue at its start
@@ -621,6 +622,13 @@ private:
     void BackLoop(std::stop_token stop_token);
     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
     size_t Execute(const u64* entry, size_t words);
+    /// back_replay_lean: Execute, or Maxwell3D::BackRun for a run of plain 3D Method entries
+    /// starting at ring position `position` (`last_store`: the last `consumed` store).
+    size_t ExecuteLean(const u64* entry, size_t words, u64 position, u64 last_store);
+    /// back_replay_lean: the verify hooks Execute runs per entry, for BackRun's later units.
+    static void LeanUnitHook(void* context, u64 head, u64 position);
+    /// back_replay_lean: logs the counters about once a second, and at Stop.
+    void ReportLean(bool at_exit);
     /// A Method entry with a repeat count (RepeatableMethod): the call, then the repeats.
     void ExecuteRepeated(u64 head);
     /// EDEN_NX2_PERF_VERIFY with draw_begin_coalesce: checks that a Repeatable entry directly
@@ -666,6 +674,8 @@ private:
     bool track_back_read{};
     /// Nx2Perf state_dead_store with Verify(), read once at Start before the back starts
     bool verify_folds{};
+    /// Nx2Perf back_replay_lean, read once at Start before the back starts
+    bool back_replay_lean{};
     bool front_macros{};
     std::unique_ptr<u64[]> ring;
 
@@ -720,6 +730,21 @@ private:
     u64 fold_exec_seen{};
     u64 fold_checked{};
     u64 fold_report_ns{};
+    /// back_replay_lean counters (back thread; Stop reads them after the join). Indexed by
+    /// Maxwell3D::BackRunControl::Reason.
+    struct LeanStats {
+        u64 calls{};
+        u64 units{};
+        u64 words{};
+        std::array<u64, 16> stops{};
+        std::array<u64, 16> fallbacks{};
+        u64 past_target{}; ///< A unit ran from a position BackLoop would have released at
+        u64 late_target{}; ///< Verify: the front lowered the target during the last unit
+        u64 verify_diffs{};
+    };
+    LeanStats lean_stats{};
+    LeanStats lean_reported{};
+    s64 lean_report_ns{};
 
     /// Whether the back is done with the Vulkan scheduler until it gets more work: set after its
     /// idle hook ran, cleared before it executes entries.

@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <memory>
 #include <random>
 #include <span>
 #include <utility>
@@ -12,9 +14,59 @@
 #include <fmt/format.h>
 
 #include "common/common_types.h"
+#include "core/core.h"
+#include "core/device_memory.h"
+#include "tests/core/system_test_context.h"
+#include "video_core/dirty_flags.h"
+#include "video_core/engines/maxwell_3d.h"
+#include "video_core/gpu.h"
+#include "video_core/gpu_split.h"
 #include "video_core/macro_dma_forward.h"
+#include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_war_probe.h"
+#include "video_core/renderer_null/null_rasterizer.h"
+
+namespace VideoCommon {
+
+struct GpuSplitLeanTestAccess {
+    static void Initialize(GpuSplit& split, Core::System& system) {
+        split.system = &system;
+        split.ring = std::make_unique<u64[]>(GpuSplit::RingWords);
+        split.publish_every = GpuSplit::RingWords;
+    }
+    static u64 End(const GpuSplit& split) {
+        return split.write_position;
+    }
+    static u64 Word(const GpuSplit& split, u64 position) {
+        return split.ring[position & GpuSplit::RingMask];
+    }
+    /// One BackLoop step with back_replay_lean off (Execute) or on (ExecuteLean).
+    static u64 Step(GpuSplit& split, bool lean, u64 position, u64 available, u64 last_store) {
+        const size_t index = position & GpuSplit::RingMask;
+        const size_t words = std::min<u64>(available - position, GpuSplit::RingWords - index);
+        u64* const entry = &split.ring[index];
+        const size_t size = lean ? split.ExecuteLean(entry, words, position, last_store)
+                                 : split.Execute(entry, words);
+        return position + (size != 0 ? size : GpuSplit::RingWords - index);
+    }
+    static void SetRelease(GpuSplit& split, u64 target, bool hook) {
+        split.wait_target.store(target, std::memory_order_relaxed);
+        split.hook_requested.store(hook, std::memory_order_relaxed);
+        split.idle_hook = [](void*, IdleHookReason) {};
+    }
+    static u64 PastTarget(const GpuSplit& split) {
+        return split.lean_stats.past_target;
+    }
+    static u64 LeanUnits(const GpuSplit& split) {
+        return split.lean_stats.units;
+    }
+    static u64 LeanCalls(const GpuSplit& split) {
+        return split.lean_stats.calls;
+    }
+};
+
+} // namespace VideoCommon
 
 namespace {
 
@@ -74,7 +126,8 @@ TEST_CASE("Nx2Perf default mask turns off only the always-off switches", "[nx2_p
                                   i == Index(Opt::RunAheadOverlayBudget) ||
                                   i == Index(Opt::AcquireDrainLite) ||
                                   i == Index(Opt::ExecSameDrop) ||
-                                  i == Index(Opt::StateDeadStore);
+                                  i == Index(Opt::StateDeadStore) ||
+                                  i == Index(Opt::BackReplayLean);
         INFO(opt_names[i]);
         REQUIRE(IsOff(mask, i) == expected_off);
     }
@@ -570,4 +623,217 @@ TEST_CASE("exec_same_drop: a bind repeats only the last one sent on its stage", 
     REQUIRE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
     memo.Clear();
     REQUIRE_FALSE(memo.Same(4, 0x11, 0, 0x3000, 0x40, 7, 3));
+}
+
+TEST_CASE("back_replay_lean: off by default", "[nx2_perf]") {
+    REQUIRE(opt_names[Index(Opt::BackReplayLean)] == "back_replay_lean");
+    REQUIRE(IsOff(DefaultOffMask(), Index(Opt::BackReplayLean)));
+    REQUIRE(IsOff(ParseOffMask(false, "", "", false), Index(Opt::BackReplayLean)));
+    REQUIRE(ParseOffMask(false, "back_replay_lean", "", false) ==
+            (always_off & ~Bit(Opt::BackReplayLean)));
+}
+
+TEST_CASE("back_replay_lean: a mixed ring replays as Execute does and stops where BackLoop "
+          "releases",
+          "[nx2_perf]") {
+    using Tegra::Engines::Maxwell3D;
+    using Access = VideoCommon::GpuSplitLeanTestAccess;
+    using Control = Maxwell3D::BackRunControl;
+    using Reason = Control::Reason;
+    constexpr u32 CbSize = MAXWELL3D_REG_INDEX(const_buffer.size);
+    constexpr u32 CbAddressHigh = MAXWELL3D_REG_INDEX(const_buffer.address_high);
+    constexpr u32 CbAddressLow = MAXWELL3D_REG_INDEX(const_buffer.address_low);
+    constexpr u32 CbOffset = MAXWELL3D_REG_INDEX(const_buffer.offset);
+    constexpr u32 CbData = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    constexpr u32 DrawBegin = MAXWELL3D_REG_INDEX(draw.begin);
+    constexpr u32 DrawEnd = MAXWELL3D_REG_INDEX(draw.end);
+    constexpr u32 ShadowControl = MAXWELL3D_REG_INDEX(shadow_ram_control);
+    constexpr std::array<u32, 9> executable{
+        MAXWELL3D_REG_INDEX(vertex_buffer.first),
+        MAXWELL3D_REG_INDEX(vertex_buffer.count),
+        MAXWELL3D_REG_INDEX(index_buffer.first),
+        MAXWELL3D_REG_INDEX(index_buffer.count),
+        MAXWELL3D_REG_INDEX(topology_override),
+        MAXWELL3D_REG_INDEX(bind_groups[0].raw_config),
+        MAXWELL3D_REG_INDEX(bind_groups[4].raw_config),
+        Maxwell3D::RootTables::SelectMethod,
+        Maxwell3D::RootTables::LoadMethod,
+    };
+
+    ScopedSystemTestContext context;
+    Core::System system;
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    Tegra::MemoryManager memory{system, device_memory, 32, 1ULL << 31};
+    Tegra::GPU gpu{system, false, false};
+    Null::RasterizerNull rasterizer{gpu};
+    // [0] Execute's unit boundaries, [1] back_replay_lean off, [2] on.
+    std::array<std::unique_ptr<Maxwell3D>, 3> engines;
+    std::array<std::unique_ptr<VideoCommon::GpuSplit>, 3> splits;
+    std::array<u32, 3> calls{};
+    for (size_t e = 0; e < engines.size(); ++e) {
+        engines[e] = std::make_unique<Maxwell3D>(memory);
+        Maxwell3D& engine = *engines[e];
+        engine.fast_maxwell3d = true;
+        engine.BindRasterizer(&rasterizer);
+        VideoCommon::Dirty::SetupDirtyFlags(engine.dirty.tables);
+        // Every register gets a flag, so that a missed or extra write shows.
+        for (u32 method = 0; method < Maxwell3D::Regs::NUM_REGS; ++method) {
+            if (engine.dirty.tables[1][method] == 0) {
+                engine.dirty.tables[1][method] =
+                    static_cast<u8>(VideoCommon::Dirty::LastCommonEntry + method % 61);
+            }
+        }
+        engine.dirty.flags.reset();
+        // An unmapped buffer: uploads write nothing, the offset still advances.
+        engine.CallMethod(system, CbAddressHigh, 0x1, true);
+        engine.CallMethod(system, CbAddressLow, 0x2000'0000, true);
+        engine.CallMethod(system, CbSize, 0x10000, true);
+        splits[e] = std::make_unique<VideoCommon::GpuSplit>();
+        Access::Initialize(*splits[e], system);
+    }
+    std::vector<u32> state_methods;
+    for (u32 method = 0; method < Maxwell3D::Regs::NUM_REGS; ++method) {
+        if (!engines[0]->execution_mask[method] && (method < CbSize || method > CbAddressLow) &&
+            method != ShadowControl) {
+            state_methods.push_back(method);
+        }
+    }
+
+    // The same ring for each engine: state runs (Method and macro writes), constant buffer
+    // words, draws, other executable writes, counted draw.begin repeats, Call entries,
+    // segment entries (the method sink) and shadow RAM control writes.
+    const GPUVAddr segment = 0x1234'0000;
+    for (size_t e = 0; e < engines.size(); ++e) {
+        auto& split = *splits[e];
+        Maxwell3D* const engine = engines[e].get();
+        u32* const counter = &calls[e];
+        std::mt19937 rng{7};
+        for (u32 step = 0; step < 6000; ++step) {
+            const u32 kind = rng() % 100;
+            if (kind < 35) {
+                const u32 run = 1 + rng() % 12;
+                for (u32 i = 0; i < run; ++i) {
+                    const u32 method = state_methods[rng() % state_methods.size()];
+                    const u32 value = rng() % 4;
+                    if (rng() % 3 == 0) {
+                        split.MacroWrite(engine, method, value);
+                    } else {
+                        split.Method(engine, method, value, rng() % 2 == 0, nullptr);
+                    }
+                }
+            } else if (kind < 50) {
+                if (rng() % 4 == 0) {
+                    split.Method(engine, CbOffset, (rng() % 0x400) * 4, true, nullptr);
+                }
+                const u32 run = 1 + rng() % 8;
+                for (u32 i = 0; i < run; ++i) {
+                    split.MacroWrite(engine, CbData + rng() % 16, rng());
+                }
+            } else if (kind < 65) {
+                split.MacroWrite(engine, DrawBegin, rng() % 8);
+                split.MacroWrite(engine, executable[0], rng() % 4);
+                split.MacroWrite(engine, executable[1], 3 + rng() % 4);
+                split.MacroWrite(engine, DrawEnd, 0);
+            } else if (kind < 78) {
+                const u32 method = executable[rng() % executable.size()];
+                split.Method(engine, method, rng() % 64, rng() % 2 == 0, nullptr);
+            } else if (kind < 84) {
+                const u32 begin = (1u << 26) | (rng() % 8);
+                const u32 repeats = 1 + rng() % 3;
+                for (u32 i = 0; i < repeats; ++i) {
+                    split.RepeatableMethod(engine, DrawBegin, begin, true, true,
+                                           VideoCommon::GpuSplit::Effect::Unknown, false);
+                }
+                split.MacroWrite(engine, DrawEnd, 0);
+            } else if (kind < 90) {
+                split.Defer([counter] { ++*counter; });
+            } else if (kind < 95) {
+                split.Method(engine, state_methods[rng() % state_methods.size()], rng() % 4,
+                             true, &segment);
+            } else {
+                split.Method(engine, ShadowControl, rng() % 4, true, nullptr);
+            }
+        }
+    }
+    const u64 end = Access::End(*splits[0]);
+    REQUIRE(Access::End(*splits[1]) == end);
+    REQUIRE(Access::End(*splits[2]) == end);
+
+    std::vector<u64> boundaries;
+    for (u64 position = 0; position < end;) {
+        position = Access::Step(*splits[0], false, position, end, 0);
+        boundaries.push_back(position);
+    }
+
+    const auto compare = [&] {
+        const Maxwell3D& a = *engines[1];
+        const Maxwell3D& b = *engines[2];
+        REQUIRE(a.regs.reg_array == b.regs.reg_array);
+        REQUIRE(a.shadow_state.reg_array == b.shadow_state.reg_array);
+        REQUIRE(a.shadow_state.shadow_ram_control == b.shadow_state.shadow_ram_control);
+        REQUIRE(a.dirty.flags == b.dirty.flags);
+        REQUIRE(a.method_sink == b.method_sink);
+        REQUIRE(a.draw_manager.draw_state.instance_count ==
+                b.draw_manager.draw_state.instance_count);
+        REQUIRE(a.draw_manager.draw_state.drawn_instances ==
+                b.draw_manager.draw_state.drawn_instances);
+        REQUIRE(a.draw_manager.HasDeferredDraw() == b.draw_manager.HasDeferredDraw());
+        REQUIRE(calls[1] == calls[2]);
+    };
+
+    std::mt19937 rng{11};
+    u64 off_position = 0;
+    u64 position = 0;
+    u64 last_store = 0;
+    size_t next = 0; // The first boundary after `position`
+    while (position < end) {
+        CAPTURE(position);
+        // A release target ahead (at or inside a unit), a requested hook, or neither.
+        u64 target = ~u64{0};
+        bool hook = false;
+        const u32 pick = rng() % 10;
+        if (pick < 3) {
+            target = boundaries[std::min<size_t>(next + rng() % 24, boundaries.size() - 1)];
+            if (rng() % 2 == 0 && target > position + 1) {
+                target -= 1;
+            }
+        } else if (pick == 3) {
+            hook = true;
+        }
+        Access::SetRelease(*splits[2], target, hook);
+        // Where BackLoop gets the position back: after one Execute unless BackRun takes the
+        // entry, then at the first boundary that ends the run.
+        u64 expected = boundaries[next];
+        if (Control::Classify(Access::Word(*splits[2], position)) == Reason::None) {
+            for (size_t i = next; i < boundaries.size(); ++i) {
+                const u64 b = boundaries[i];
+                expected = b;
+                if (b == end || hook || b >= target || b - last_store >= Control::StoreEvery ||
+                    Control::Classify(Access::Word(*splits[2], b)) != Reason::None) {
+                    break;
+                }
+            }
+        }
+        const u64 lean_position = Access::Step(*splits[2], true, position, end, last_store);
+        REQUIRE(lean_position == expected);
+        while (off_position < lean_position) {
+            off_position = Access::Step(*splits[1], false, off_position, end, 0);
+        }
+        REQUIRE(off_position == lean_position);
+        compare();
+        position = lean_position;
+        while (next < boundaries.size() && boundaries[next] <= position) {
+            ++next;
+        }
+        // BackLoop stores `consumed` at a release and every 4096 words.
+        if (position >= target || position - last_store >= Control::StoreEvery) {
+            last_store = position;
+        }
+    }
+    REQUIRE(Access::PastTarget(*splits[2]) == 0);
+    // Some runs took more than one unit.
+    REQUIRE(Access::LeanUnits(*splits[2]) > Access::LeanCalls(*splits[2]));
+    REQUIRE(calls[1] == calls[0]);
+    REQUIRE(calls[1] > 0);
 }

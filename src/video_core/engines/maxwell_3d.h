@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cmath>
 #include <cstdlib>
@@ -3217,6 +3218,75 @@ public:
     /// GpuSplit's back (fast_maxwell3d): processes a contiguous run of non-executable state
     /// register writes from the SPSC ring in one loop.
     size_t CallStateMethodRun(const u64* entry, size_t max_words);
+
+    /// GpuSplit's back, Nx2Perf back_replay_lean: what BackRun needs from the back's loop. The
+    /// ring word layout is GpuSplit's (checked there).
+    struct BackRunControl {
+        static constexpr u64 KindMask = 0xf;
+        static constexpr u64 KindMethod = 2;
+        static constexpr u64 IsLast = u64{1} << 4;
+        static constexpr u64 HasSegment = u64{1} << 5;
+        static constexpr u64 Direct = u64{1} << 6;
+        static constexpr u64 Repeatable = u64{1} << 7;
+        static constexpr u64 RepeatMask = u64{0xff} << 24;
+        /// Every `consumed` store is due here (BackLoop's 4096-word hand back).
+        static constexpr u64 StoreEvery = 4096;
+
+        /// Why a run ended, or why an entry is not one BackRun takes.
+        enum class Reason : u8 {
+            None,          ///< A plain entry
+            End,           ///< No words left
+            Hook,          ///< hook_requested
+            Release,       ///< The front waits for this position
+            Store,         ///< The 4096-word store is due
+            Kind,          ///< Not a Method entry
+            Flags,         ///< Segment, repeat count or Repeatable
+            Macro,         ///< A macro method
+            ShadowControl, ///< SET_SHADOW_RAM_CONTROL
+            Engine,        ///< The engine has no fast path (ExecuteLean only)
+            Count,
+        };
+
+        /// Whether BackRun takes the entry starting with `head`.
+        static Reason Classify(u64 head) {
+            if ((head & KindMask) != KindMethod) {
+                return Reason::Kind;
+            }
+            if ((head & (HasSegment | Repeatable | RepeatMask)) != 0) {
+                return Reason::Flags;
+            }
+            const u32 method = static_cast<u32>((head >> 8) & 0xffff);
+            if (method >= Regs::NUM_REGS) {
+                return Reason::Macro;
+            }
+            if (method == MAXWELL3D_REG_INDEX(shadow_ram_control)) {
+                return Reason::ShadowControl;
+            }
+            return Reason::None;
+        }
+
+        // In.
+        u64 position{};   ///< Ring position of the first entry
+        u64 last_store{}; ///< The back's last `consumed` store
+        const std::atomic<u64>* wait_target{};
+        const std::atomic<bool>* hook_requested{}; ///< nullptr without an idle hook
+        std::atomic<u64>* read_position{};         ///< BackReadPosition when tracked
+        /// Verify hooks GpuSplit::Execute runs per entry (nullptr when none): before each unit
+        /// after the first.
+        void (*unit_hook)(void* context, u64 head, u64 position){};
+        void* context{};
+        // Out.
+        u32 units{};
+        Reason stop{};
+        u64 last_start{};  ///< Position of the last unit run
+        u64 last_target{}; ///< The wait target seen before it (~0 for the first unit)
+        u32 verify_diffs{};
+    };
+    /// Nx2Perf back_replay_lean: runs consecutive plain 3D Method entries (BackRunControl::
+    /// Classify; the first one must be) as GpuSplit::Execute would, one unit at a time, and
+    /// stops at the first unit boundary where the back's loop would release the front, run its
+    /// idle hook or hand back ring space. Returns the words consumed (at least one unit).
+    size_t BackRun(Core::System& system, const u64* entry, size_t words, BackRunControl& control);
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
