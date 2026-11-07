@@ -3231,6 +3231,15 @@ public:
                             const u32* words, u32 count, bool incrementing, u32 methods_pending);
     /// EDEN_NX2_PERF_VERIFY (FrontRun): FrontCallMethod appends its register writes here.
     std::vector<std::array<u32, 3>>* front_run_record{};
+    /// Nx2Perf front_macro_call: runs macro `method` with all of its words, straight from its
+    /// header. False (nothing done) while the front holds a macro call's parameters.
+    bool FrontCallMacro(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                        std::span<const u32> words);
+    /// Whether FrontCallMacro would run (no macro call pending on the front).
+    [[nodiscard]] bool FrontMacroIdle(Core::System& system, VideoCommon::GpuSplit& split);
+    /// EDEN_NX2_PERF_VERIFY (front_macro_call): FrontRunMacro appends each call as macro method,
+    /// parameter count, ring position (low, high), then the parameters.
+    std::vector<u32>* front_macro_record{};
 
     [[nodiscard]] static bool FrontIsWriterDraw(const Regs& regs);
     [[nodiscard]] static bool FrontIsWriterDraw(const std::array<u32, Regs::NUM_REGS>& regs) {
