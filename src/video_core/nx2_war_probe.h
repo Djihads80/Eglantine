@@ -503,6 +503,7 @@ struct CoverState {
     std::array<u64, NumCoverSlots> slot_commit{};
     u64 slot_push = 0;
     u64 slot_pop = 0;
+    u64 slot_dropped = 0; ///< Oldest slots dropped on a full FIFO; their pops land nothing
     std::array<CoverFence, NumCoverFences> fences{};
     std::atomic<u64> fence_armed{0}; ///< Last seq armed in fences
     // RAW samples at State::raw_a's index: the writer's stamp, frame N's seq, fence N-1's time.
@@ -566,6 +567,7 @@ inline void CoverCommitEnd(u64 number, bool downloads) {
         NoteCoverDifference("download slot FIFO full, a landing is lost", cover.slot_push,
                             cover.slot_pop);
         ++cover.slot_pop;
+        ++cover.slot_dropped;
     }
     cover.slot_commit[cover.slot_push++ % NumCoverSlots] = number;
 }
@@ -573,6 +575,11 @@ inline void CoverCommitEnd(u64 number, bool downloads) {
 /// PopAsyncBuffers (buffer cache mutex): a slot with bytes was written to guest memory.
 inline void CoverPopped() {
     CoverState& cover = CoverGet();
+    if (cover.slot_dropped != 0) {
+        // The dropped slots were the oldest: keep the rest paired with their pops.
+        --cover.slot_dropped;
+        return;
+    }
     if (cover.slot_pop == cover.slot_push) {
         NoteCoverDifference("download slot popped with none queued", cover.slot_pop,
                             cover.slot_push);
