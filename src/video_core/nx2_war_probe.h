@@ -462,8 +462,11 @@ inline void StartBackThread() {
         return;
     }
     State& state = Get();
-    state.sets[0] = std::make_unique<PageSet>();
-    state.sets[1] = std::make_unique<PageSet>();
+    // Allocated once: a restarted back must not free a set vi2 may still take as published.
+    if (!state.sets[0]) {
+        state.sets[0] = std::make_unique<PageSet>();
+        state.sets[1] = std::make_unique<PageSet>();
+    }
     g_is_back = true;
 }
 
@@ -681,6 +684,7 @@ public:
             for (u32 i = 0; i < set.used_count; ++i) {
                 const Entry& entry = set.entries[set.used[i]];
                 AddByCategory(sum.category_pages, entry.category_mask, 1);
+                sum.pointer_only += entry.bytes == 0 ? 1 : 0;
                 if (i < count) {
                     pages[i] = entry.device_page;
                     masks[i] = entry.category_mask;
@@ -774,7 +778,8 @@ public:
             total_bytes += bytes;
         }
         std::string line = fmt::format(
-            "Nx2Ledger: frames={} pages={:.0f} read={:.0f}K ptr_notes={:.0f} changed={:.1f} "
+            "Nx2Ledger: frames={} pages={:.0f} read={:.0f}K ptr_notes={:.0f} ptr_only={:.0f} "
+            "changed={:.1f} "
             "changed_copied={:.1f} gpu_written={:.1f} misses={:.1f} changed_misses={:.1f} "
             "overflow={:.1f} capped={:.1f} unmatched={} unconsumed={} hash_ms={:.3f} "
             "compare_ms={:.3f} cat(pages/KiB read/changed pages/changed KiB, first {} pages):{} "
@@ -782,7 +787,8 @@ public:
             "raw_b_minus_a_ms p50={:.2f} p90={:.2f} raw_pre_reply={} raw_unfenced={} "
             "raw_older={} raw_untracked={} verify_differences={}",
             sum.frames, per_frame(sum.pages), per_frame(total_bytes) / 1024.0,
-            per_frame(sum.pointer_notes), per_frame(sum.changed), per_frame(sum.changed_copied),
+            per_frame(sum.pointer_notes), per_frame(sum.pointer_only), per_frame(sum.changed),
+            per_frame(sum.changed_copied),
             per_frame(sum.gpu_written), per_frame(sum.misses), per_frame(sum.changed_misses),
             per_frame(sum.overflow), per_frame(sum.capped), sum.unmatched,
             sum.unconsumed - unconsumed_reported,
@@ -804,6 +810,7 @@ private:
         u64 frames = 0;
         u64 pages = 0;
         u64 pointer_notes = 0;
+        u64 pointer_only = 0; ///< Pages read only through GetPointer: no size known
         u64 overflow = 0;
         u64 capped = 0;
         u64 unmatched = 0;
