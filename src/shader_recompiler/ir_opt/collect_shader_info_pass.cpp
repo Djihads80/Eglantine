@@ -458,9 +458,13 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::SetAttributeIndexed:
         info.stores_indexed_attributes = true;
         break;
-    case IR::Opcode::SetFragColor:
-        info.stores_frag_color[inst.Arg(0).U32()] = true;
+    case IR::Opcode::SetFragColor: {
+        const u32 render_target{inst.Arg(0).U32()};
+        info.stores_frag_color[render_target] = true;
+        info.frag_color_components[render_target] |=
+            static_cast<u8>(1U << inst.Arg(1).U32());
         break;
+    }
     case IR::Opcode::SetSampleMask:
         info.stores_sample_mask = true;
         break;

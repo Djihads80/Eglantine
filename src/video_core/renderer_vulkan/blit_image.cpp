@@ -806,6 +806,7 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
         cmdbuf.Draw(3, 1, 0, 0);
         cmdbuf.EndRenderPass();
     });
+    // The blit replaced the bound pipeline and its static state, the color write mask among it.
     scheduler.InvalidateState();
 }
 

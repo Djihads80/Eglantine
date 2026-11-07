@@ -230,7 +230,9 @@ private:
     void SubmitEarlyReports();
     void LogReportStats();
 
-    void UpdateDynamicStates(bool has_dynamic_vertex_input = false);
+    /// Records the dynamic state of the draw being prepared with `pipeline` (null for
+    /// DrawTexture's blit).
+    void UpdateDynamicStates(const GraphicsPipeline* pipeline);
 
     void HandleTransformFeedback();
 
@@ -262,7 +264,7 @@ private:
     void UpdateStencilOp(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateLogicOp(Tegra::Engines::Maxwell3D::Regs& regs);
-    void UpdateBlending(Tegra::Engines::Maxwell3D::Regs& regs);
+    void UpdateBlending(Tegra::Engines::Maxwell3D::Regs& regs, const GraphicsPipeline* pipeline);
     void UpdateColorWriteEnable(Tegra::Engines::Maxwell3D::Regs& regs);
 
     void UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs);
@@ -315,6 +317,8 @@ private:
     bool hook_lazy_flush{}; ///< Nx2Perf hook_lazy_flush, read once
     u64 list_copy_deferred_tick{}; ///< The tick of the last list copies DeferFlush held back
     bool mesh_draw{}; ///< the draw being prepared uses a task/mesh pipeline
+    /// Fragment output components the dynamic color write mask was last recorded with
+    u32 last_color_output_mask{};
 
     bool report_submit_early{}; ///< Nx2Perf report_submit_early, read once
     bool report_measure{};      ///< report_submit_early or fence_timeline: count FlushQueryResults
