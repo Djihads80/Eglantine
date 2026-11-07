@@ -255,9 +255,64 @@ bool DmaPusher::Step() {
                                (command_list.snapshot_suspensions & 1) == 0 &&
                                command_list.snapshot_suspensions ==
                                    suspensions.load(std::memory_order_acquire) &&
+                               !std::ranges::binary_search(
+                                   command_list.deferred_entries,
+                                   static_cast<u32>(dma_pushbuffer_subindex)) &&
                                !gpu_written &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        if (Nx2CmdPageDiag::g_enabled && !submitted &&
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size()) {
+            // An entry parsed from memory instead of its submit-time copy is the way a command
+            // ring the game already refilled gets read as this frame's commands (garbage methods,
+            // unbound subchannels, render targets of absurd size). Count how often the words
+            // differ, by the reason the copy was skipped. Bounded: the first entries only.
+            enum Reason : u32 { Resumed, SuspendedCopy, SuspensionsChanged, GpuWritten, SafeDirty, Count };
+            static std::array<std::atomic<u64>, Count> checked{};
+            static std::array<std::atomic<u64>, Count> differing{};
+            static std::atomic<u64> total_checked{};
+            static constexpr std::array<const char*, Count> names{
+                "resumed entry", "copied during a suspension", "suspension count changed",
+                "GPU-written page", "safe read of dirty memory"};
+            if (total_checked.load(std::memory_order_relaxed) < 50000) {
+                const Reason reason = command_resume_offset != 0                      ? Resumed
+                                      : (command_list.snapshot_suspensions & 1) != 0  ? SuspendedCopy
+                                      : command_list.snapshot_suspensions !=
+                                              suspensions.load(std::memory_order_acquire)
+                                          ? SuspensionsChanged
+                                      : gpu_written ? GpuWritten
+                                                    : SafeDirty;
+                std::vector<u32> live(header.size);
+                memory_manager.ReadBlockUnsafe(dma_state.dma_get, live.data(),
+                                               live.size() * sizeof(u32));
+                const CommandHeader* const copy = command_list.submitted_words.data() +
+                                                  command_list.submitted_offsets[dma_pushbuffer_subindex];
+                u32 first = ~0U, words = 0;
+                for (u32 i = 0; i < header.size; ++i) {
+                    if (copy[i].argument != live[i]) {
+                        first = std::min(first, i);
+                        ++words;
+                    }
+                }
+                ++checked[reason];
+                const u64 n = total_checked.fetch_add(1) + 1;
+                if (words != 0) {
+                    const u64 seen = differing[reason].fetch_add(1);
+                    if (seen < 4) {
+                        LOG_WARNING(HW_GPU,
+                                    "Entry {:#x}+{:#x} parsed from memory ({}) differs from its "
+                                    "submit-time copy in {} words, first at word {}",
+                                    u64{header.addr}, u64{header.size}, names[reason], words, first);
+                    }
+                }
+                if ((n % 10000) == 0) {
+                    for (u32 r = 0; r < Count; ++r) {
+                        LOG_INFO(HW_GPU, "Entries parsed from memory ({}): {} checked, {} differ from the submit-time copy",
+                                 names[r], checked[r].load(), differing[r].load());
+                    }
+                }
+            }
+        }
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
@@ -943,6 +998,23 @@ void DmaPusher::RefreshSnapshot(CommandList& list, u64 now) {
         memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
                                        entry.size * sizeof(u32));
     }
+    list.deferred_entries.clear();
+}
+
+void DmaPusher::RefreshDeferredEntries(CommandList& list) {
+    for (const u32 i : list.deferred_entries) {
+        if (i >= list.command_lists.size() || i >= list.submitted_offsets.size()) {
+            continue;
+        }
+        const CommandListHeader& entry = list.command_lists[i];
+        const u32 offset = list.submitted_offsets[i];
+        if (offset + entry.size > list.submitted_words.size()) {
+            continue;
+        }
+        memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
+                                       entry.size * sizeof(u32));
+    }
+    list.deferred_entries.clear();
 }
 
 bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {

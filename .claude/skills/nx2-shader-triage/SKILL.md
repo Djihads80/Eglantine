@@ -41,6 +41,14 @@ same on every GPU. The repo vendors an older copy of this skill under `.claude/s
   image. Don't add it to a run command "to see more rejections" without saying it alters the
   output. For a colour cast or tint, A/B three ways before anything else: TENSOR unset,
   `=1`, `=stub` (every HMMA returns C). A tint that stays with `stub` isn't the HMMA emulation.
+- **Start from the game's shader catalogue** (`tools/nx2/catalog/<program id>.json`, `python3 -I
+  tools/nx2/catalog.py find <key or hash>`): programs others already identified (trees, grass,
+  culling computes) with how they were found. Add every program you identify (`catalog.py add`, or
+  the shader lab's Catalogue box), and before committing run `catalog.py status` / `merge` as
+  AGENTS.md says.
+- **A running Qt build with `EDEN_NX2_DEBUG_SERVER` answers live** (`tools/nx2/debug_mcp.py --call`:
+  screenshot, `reject_shaders`, `capture_frame`, `read_memory`, `input_sequence`;
+  `docs/nx2/debug-mcp.md`). Use it before asking for a relaunch, and restore every reject.
 - **Visual bugs (tint, missing effect): drive the game yourself** with `lab_ctl.py` (hidden
   `eden-cli`, scripted keys, capture plus RGB stats), not by asking the user for runs. Load
   `nx2-lab-automation` for the run mechanics; the investigation procedure is in

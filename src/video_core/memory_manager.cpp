@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"

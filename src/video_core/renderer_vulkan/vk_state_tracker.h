@@ -290,7 +290,8 @@ public:
 
     void ChangeChannel(Tegra::Control::ChannelState& channel_state);
 
-    void ResetChannel() {
+    /// Stops using the bound channel's flags, for when it goes away.
+    void ClearChannel() {
         flags = &default_flags;
     }
 

@@ -37,8 +37,11 @@ add_executable(tests
     core/ldn.cpp
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
+    core/nx2_debug_server.cpp
+    core/nx2_movie_pacing.cpp
     core/priority_queue.cpp
     core/internal_network/network.cpp
+    video_core/frame_dump_schedule.cpp
     video_core/memory_tracker.cpp
     video_core/nx2_frame_stats.cpp
     video_core/nx2_perf.cpp
@@ -48,6 +51,11 @@ add_executable(tests
     video_core/nx2_perf_query_callback.cpp
     video_core/nx2_perf_switches.cpp
     video_core/memory_manager_runs.cpp
+    video_core/spirv_storage_alignment.cpp
+    video_core/pipeline_optimization.cpp
+    video_core/spirv_atomic_retry.cpp
+    video_core/spirv_fragment_shuffle.cpp
+    video_core/ampere_depth_compare.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
     video_core/virtual_range_cache.cpp
@@ -55,6 +63,7 @@ add_executable(tests
     video_core/spirv_software_matrix.cpp
     video_core/ampere_geometry.cpp
     video_core/ampere_i2f.cpp
+    video_core/ampere_gradient.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_guarded_ulea.cpp
     video_core/ampere_compute_lowering.cpp

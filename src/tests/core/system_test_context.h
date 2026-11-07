@@ -38,7 +38,8 @@ private:
     const s32 previous_user = Settings::values.current_user.GetValue();
     const Settings::MemoryLayout previous_memory = Settings::values.memory_layout_mode.GetValue();
     const bool previous_multicore = Settings::values.use_multi_core.GetValue();
-    const std::filesystem::path directory = std::filesystem::temp_directory_path() /
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() /
         ("hwacod-system-test-" +
          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 };

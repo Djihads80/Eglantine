@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -159,7 +160,7 @@ public:
 
     void TickFrame();
 
-    [[nodiscard]] ComputePipeline* CurrentComputePipeline();
+    [[nodiscard]] ComputePipeline* CurrentComputePipeline(u64& native_key);
 
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
@@ -260,6 +261,8 @@ private:
     Shader::HostTranslateInfo host_info;
 
     std::filesystem::path pipeline_cache_filename;
+    /// Task and mesh pipelines, with the mesh state they are translated with.
+    std::filesystem::path mesh_pipeline_cache_filename;
 
     /// Key hashes of the graphics pipelines in the disk cache. Only those a recent session used
     /// (used_pipelines) are built at boot; the rest are built when first needed, and not stored
@@ -318,6 +321,24 @@ private:
     Common::ThreadWorker disk_replay_workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
+
+    /// Cached graphics pipelines boot skipped (not in used_pipelines) are built on background
+    /// threads once the game runs, so a draw that needs one finds it built instead of translating
+    /// it on the GPU thread. EDEN_NX2_BACKGROUND_PIPELINES=0 turns it off.
+    std::unique_ptr<GraphicsPipeline> TakeBackgroundPipeline(const GraphicsPipelineCacheKey& key);
+    void StopBackgroundPipelines();
+    std::mutex background_mutex;
+    /// Built and not yet asked for by a draw.
+    std::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> background_ready;
+    /// Keys the GPU thread built itself meanwhile: their background build is skipped or dropped.
+    std::unordered_set<GraphicsPipelineCacheKey> background_claimed;
+    std::atomic_bool background_active{};
+    std::atomic_bool background_stop{};
+    std::atomic<size_t> background_left{};
+    size_t background_taken{}; ///< Under background_mutex
+    std::chrono::steady_clock::time_point background_start{};
+    /// Last: destroyed (its threads joined) before the state above.
+    std::unique_ptr<Common::ThreadWorker> background_workers;
 };
 
 } // namespace Vulkan

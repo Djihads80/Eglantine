@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <optional>
@@ -1609,7 +1610,14 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     if (!has_global_memory) {
         return;
     }
-    const size_t max_ssbos{StorageBufferLimit(host_info)};
+    // EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the 32-binding limit for A/B testing.
+    static const bool wide_ssbos = [] {
+        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
+        return !(value && value[0] == '0');
+    }();
+    const size_t max_ssbos{
+        wide_ssbos ? StorageBufferLimit(host_info)
+                   : (std::min)(StorageBufferLimit(host_info), size_t{Info::MAX_GRAPHICS_SSBOS})};
     TrackingConditions conditions{program};
     StorageInfo info;
     // Without 64-bit integers the backend cannot route global accesses among bound buffers.

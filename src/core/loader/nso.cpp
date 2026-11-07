@@ -178,6 +178,34 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
     }
 
+    // Star Fox output pacing for the tested build. The engine's explicit-rate path
+    // updates its render delta as well; simulation timing and the guest clock stay unchanged.
+    if (name == "main" && process.GetProgramId() == 0x0400E88025B1A000ULL) {
+        constexpr u32 Fps = 60;
+        constexpr size_t Offset = 0xB444ADC;
+        constexpr std::array<u32, 3> Original{0xBD4223E1, 0x1E202028, 0x540000ED};
+        constexpr std::array<u8, 20> BuildId{
+            0xA7, 0x73, 0x0D, 0x0F, 0x74, 0xD1, 0x68, 0xD9, 0x04, 0x22,
+            0x35, 0x4C, 0x83, 0x17, 0xF7, 0x6F, 0xF7, 0x8A, 0xD9, 0x38};
+        const auto& text = nso_header.segments[0];
+        if (std::equal(BuildId.begin(), BuildId.end(), nso_header.build_id.begin()) &&
+            Offset >= text.location && Offset + sizeof(Original) <= u64{text.location} + text.size &&
+            module_start + Offset + sizeof(Original) <= codeset.memory.size() &&
+            std::memcmp(codeset.memory.data() + module_start + Offset, Original.data(),
+                        sizeof(Original)) == 0) {
+            constexpr std::array<u32, 3> replacement{
+                0x52800019U | (Fps << 5), // mov w25, #60
+                0x1E2E1000,              // fmov s0, #1.0
+                0x14000035};             // b main+0xB444BB8 (explicit output-rate path)
+            std::memcpy(codeset.memory.data() + module_start + Offset, replacement.data(),
+                        sizeof(replacement));
+            LOG_INFO(Loader, "Star Fox output interval: {} FPS; guest clock unchanged", Fps);
+        } else {
+            LOG_WARNING(Loader,
+                        "Star Fox output patch skipped: unsupported build or instructions");
+        }
+    }
+
     // Mario Kart World selects a 1- or 2-vblank frame mode in its main loop. Force its native
     // 30 FPS mode, or let it choose dynamically using the whole frame time (CPU + GPU wait).
     // Match the instruction sequence instead of relying on a title-version-specific address.

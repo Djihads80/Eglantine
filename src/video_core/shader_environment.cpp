@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -34,7 +35,9 @@
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_diag.h"
+#include "video_core/mkw_wave_workaround.h"
 #include "video_core/shader_environment.h"
 #include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/textures/texture.h"
@@ -46,6 +49,14 @@ constexpr std::array<char, 8> MAGIC_NUMBER{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h
 constexpr size_t INST_SIZE = sizeof(u64);
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+
+// The shader hash of lowered native code (frame dump "shaders", pipeline cache keys), with a
+// version tag that isolates this experimental ABI.
+static u64 NativeShaderHash(std::span<const u64> code) {
+    return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
+                              code.size() * sizeof(u64)) ^
+           0x4f554e4345000002ULL;
+}
 
 static u64 MakeCbufKey(u32 index, u32 offset) {
     return (static_cast<u64>(index) << 32) | offset;
@@ -266,8 +277,7 @@ void GenericEnvironment::KeepStoragePointers(std::span<const u64> keys) {
 std::optional<u64> GenericEnvironment::Analyze() {
     if (native_source_size) {
         // Include the converted header and a version tag to isolate this experimental ABI.
-        return Common::CityHash64(reinterpret_cast<const char*>(code.data()),
-                                  code.size() * sizeof(u64)) ^ 0x4f554e4345000002ULL;
+        return NativeShaderHash(code);
     }
     const std::optional<u64> size{TryFindSize()};
     if (!size) {
@@ -318,7 +328,7 @@ void GenericEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
 }
 
-void GenericEnvironment::Serialize(std::ofstream& file) const {
+void GenericEnvironment::Serialize(std::ofstream& file, bool with_mesh_state) const {
     const u64 code_size{static_cast<u64>(CachedSizeBytes())};
     const u64 num_texture_types{static_cast<u64>(texture_types.size())};
     const u64 num_texture_pixel_formats{static_cast<u64>(texture_pixel_formats.size())};
@@ -373,7 +383,7 @@ void GenericEnvironment::Serialize(std::ofstream& file) const {
             file.write(reinterpret_cast<const char*>(&gp_passthrough_mask),
                        sizeof(gp_passthrough_mask));
         }
-        if (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh) {
+        if (with_mesh_state && (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh)) {
             file.write(reinterpret_cast<const char*>(&mesh_registers), sizeof(mesh_registers))
                 .write(reinterpret_cast<const char*>(&mesh_primitive_header),
                        sizeof(mesh_primitive_header));
@@ -631,13 +641,15 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
             program_base, lowered.error_offset, lowered.error, words[0] & 0xfff, words[0],
             words[1], words[2], words[3]);
     }
+    VideoCommon::ApplyMkwZeroDepthFallback(native, lowered);
     auto result = std::make_shared<LoweredNativeCode>();
+    result->native_program_key = Shader::Ampere::NativeProgramKey(native);
     static const bool hash_for_indirect_reset = [] {
         const char* value = std::getenv("EDEN_NX2_RESETFIX");
         return !value || std::string_view{value} != "0";
     }();
     if (hash_for_indirect_reset) {
-        result->diagnostic_key = Shader::Ampere::NativeProgramKey(native);
+        result->diagnostic_key = result->native_program_key;
     }
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = native_header_size + lowered.source_size;
@@ -654,6 +666,42 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(u32
     // unreachable data. Existing disk-cache serialization carries it with code.
     lowered_code.push_back(0);
     Shader::Ampere::AppendNativeAddressMap(lowered_code, lowered.source_instruction_offsets);
+    // What Analyze returns for this program once the environment holds the lowered code.
+    const u64 shader_hash = NativeShaderHash(lowered_code);
+    if (VideoCommon::Nx2Diag::Active()) {
+        VideoCommon::Nx2Diag::Diagnostics::Get().RegisterProgram(
+            program_base, result->native_program_key, shader_hash);
+    }
+    // EDEN_NX2_REJECT_HASH=<hash>,...: like EDEN_NX2_REJECT, but by native program key (shader
+    // dump file names) or shader hash (frame dump "shaders"), which stay the same between runs.
+    if (static const std::string reject_hashes =
+            [] {
+                const char* text = std::getenv("EDEN_NX2_REJECT_HASH");
+                std::string list = text ? "," + std::string{text} + "," : std::string{};
+                std::ranges::transform(list, list.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                return list;
+            }();
+        !reject_hashes.empty()) {
+        for (const u64 hash : {result->native_program_key, shader_hash}) {
+            if (reject_hashes.find(fmt::format(",{:016x},", hash)) != std::string::npos) {
+                throw Shader::RuntimeError(
+                    "Native shader at {:#x} ({:016x}) rejected by EDEN_NX2_REJECT_HASH",
+                    program_base, hash);
+            }
+        }
+    }
+    // The same list, changed at runtime by the debug server (docs/nx2/debug-mcp.md).
+    if (VideoCore::Nx2Debug::AnyRejected()) {
+        for (const u64 hash : {result->native_program_key, shader_hash}) {
+            if (VideoCore::Nx2Debug::IsRejected(hash)) {
+                throw Shader::RuntimeError(
+                    "Native shader at {:#x} ({:016x}) rejected by the debug server", program_base,
+                    hash);
+            }
+        }
+    }
     LOG_DEBUG(Shader, "Lowered native shader at {:#x}: {} source bytes, {} instructions",
               program_base, result->source_size, lowered.instructions.size());
     return result;
@@ -879,7 +927,7 @@ u32 ComputeEnvironment::ReadViewportTransformState() {
     return viewport_transform_state;
 }
 
-void FileEnvironment::Deserialize(std::ifstream& file) {
+void FileEnvironment::Deserialize(std::ifstream& file, bool with_mesh_state) {
     u64 code_size{};
     u64 num_texture_types{};
     u64 num_texture_pixel_formats{};
@@ -949,7 +997,7 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
         if (stage == Shader::Stage::Geometry) {
             file.read(reinterpret_cast<char*>(&gp_passthrough_mask), sizeof(gp_passthrough_mask));
         }
-        if (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh) {
+        if (with_mesh_state && (stage == Shader::Stage::Task || stage == Shader::Stage::Mesh)) {
             file.read(reinterpret_cast<char*>(&mesh_registers), sizeof(mesh_registers))
                 .read(reinterpret_cast<char*>(&mesh_primitive_header),
                       sizeof(mesh_primitive_header));
@@ -1065,7 +1113,8 @@ std::optional<Shader::ReplaceConstant> FileEnvironment::GetReplaceConstBuffer(u3
 }
 
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
-                       const std::filesystem::path& filename, u32 cache_version) try {
+                       const std::filesystem::path& filename, u32 cache_version,
+                       bool with_mesh_state) try {
     std::ofstream file(filename, std::ios::binary | std::ios::ate | std::ios::app);
     file.exceptions(std::ifstream::failbit);
     if (!file.is_open()) {
@@ -1084,7 +1133,7 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
     const u32 num_envs{static_cast<u32>(envs.size())};
     file.write(reinterpret_cast<const char*>(&num_envs), sizeof(num_envs));
     for (const GenericEnvironment* const env : envs) {
-        env->Serialize(file);
+        env->Serialize(file, with_mesh_state);
     }
     file.write(key.data(), key.size_bytes());
 
@@ -1099,7 +1148,8 @@ void SerializePipeline(std::span<const char> key, std::span<const GenericEnviron
 void LoadPipelines(
     std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) try {
+    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics,
+    bool with_mesh_state) try {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         return;
@@ -1147,7 +1197,7 @@ void LoadPipelines(
         file.read(reinterpret_cast<char*>(&num_envs), sizeof(num_envs));
         std::vector<FileEnvironment> envs(num_envs);
         for (FileEnvironment& env : envs) {
-            env.Deserialize(file);
+            env.Deserialize(file, with_mesh_state);
         }
         if (envs.front().ShaderStage() == Shader::Stage::Compute) {
             load_compute(file, std::move(envs.front()));

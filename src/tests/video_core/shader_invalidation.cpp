@@ -5,9 +5,11 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include "core/device_memory.h"
+#include "video_core/nx2_debug_control.h"
 #include "video_core/shader_cache.h"
 
 namespace VideoCommon {
@@ -22,6 +24,21 @@ struct ShaderCacheTestAccess {
     }
     static const ShaderInfo* Find(const ShaderCache& cache, VAddr address) {
         return cache.TryGet(address);
+    }
+    static void RegisterNative(ShaderCache& cache, VAddr address, u64 hash, u64 key) {
+        auto data = std::make_unique<ShaderInfo>();
+        data->unique_hash = hash;
+        auto lowered = std::make_shared<LoweredNativeCode>();
+        lowered->native_program_key = key;
+        data->lowered_native = std::move(lowered);
+        cache.Register(std::move(data), address, 0x100);
+    }
+    static void Reject(ShaderCache& cache, VAddr address) {
+        cache.rejected_native.emplace(address,
+                                      std::make_exception_ptr(std::runtime_error{"rejected"}));
+    }
+    static bool IsRejected(ShaderCache& cache, VAddr address) {
+        return cache.IsRejected(address);
     }
 };
 } // namespace VideoCommon
@@ -79,6 +96,47 @@ TEST_CASE("Shader empty batches preserve pending invalidations", "[shader_invali
     const std::array unrelated{std::pair<DAddr, size_t>{address + 0x100000, 4096}};
     cache->InvalidateRegions(unrelated);
     REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, address));
+}
+
+TEST_CASE("Debug server rejections drop matching native programs", "[shader_invalidation]") {
+    Core::DeviceMemory memory;
+    Tegra::MaxwellDeviceMemoryManager device_memory{memory};
+    auto cache = ShaderCacheTestAccess::Create(device_memory);
+    constexpr VAddr by_key = 0x100000;
+    constexpr VAddr by_hash = 0x200000;
+    constexpr VAddr kept = 0x300000;
+    constexpr VAddr maxwell = 0x400000;
+    constexpr VAddr earlier = 0x500000;
+    ShaderCacheTestAccess::RegisterNative(*cache, by_key, 0x11, 0xaaaa);
+    ShaderCacheTestAccess::RegisterNative(*cache, by_hash, 0x22, 0xbbbb);
+    ShaderCacheTestAccess::RegisterNative(*cache, kept, 0x33, 0xcccc);
+    ShaderCacheTestAccess::Register(*cache, maxwell, 0x100, 0xaaaa);
+    ShaderCacheTestAccess::Reject(*cache, earlier);
+
+    VideoCore::Nx2Debug::BeginSession();
+    const std::array<u64, 2> rejected{0xaaaa, 0x22};
+    const u64 generation = VideoCore::Nx2Debug::SetRejected(rejected, true);
+    const auto change = VideoCore::Nx2Debug::TakeRejectChange();
+    REQUIRE(change);
+    REQUIRE(change->generation == generation);
+    REQUIRE_FALSE(change->unrejected);
+    cache->RefreshDebugRejections(change->unrejected);
+    REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, by_key));
+    REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, by_hash));
+    REQUIRE(ShaderCacheTestAccess::Find(*cache, kept));
+    // Only lowered native programs are matched; a Maxwell program with the same hash stays.
+    REQUIRE(ShaderCacheTestAccess::Find(*cache, maxwell));
+    REQUIRE(ShaderCacheTestAccess::IsRejected(*cache, earlier));
+
+    const std::array<u64, 1> restored{0xaaaa};
+    VideoCore::Nx2Debug::SetRejected(restored, false);
+    const auto undo = VideoCore::Nx2Debug::TakeRejectChange();
+    REQUIRE(undo);
+    REQUIRE(undo->unrejected);
+    cache->RefreshDebugRejections(undo->unrejected);
+    REQUIRE_FALSE(ShaderCacheTestAccess::IsRejected(*cache, earlier));
+    REQUIRE(VideoCore::Nx2Debug::RejectedHashes() == std::vector<u64>{0x22});
+    VideoCore::Nx2Debug::EndSession();
 }
 
 TEST_CASE("Shader invalidation CPU benchmark", "[.][cache_bench]") {

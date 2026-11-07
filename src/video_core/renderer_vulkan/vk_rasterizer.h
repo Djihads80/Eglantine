@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <span>
 
 #include <boost/container/static_vector.hpp>
 
@@ -24,6 +25,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
@@ -230,6 +232,11 @@ private:
     void SubmitEarlyReports();
     void LogReportStats();
 
+    /// Frame dump: starts a pass when the framebuffer changed (EDEN_NX2_FRAME_DUMP).
+    void FrameDumpPass(const Framebuffer* framebuffer);
+    /// Records the uniform and storage buffers of the current draw or dispatch for the frame dump.
+    bool FrameDumpBuffers(bool compute, std::span<const u64> shader_hashes);
+
     /// Records the dynamic state of the draw being prepared with `pipeline` (null for
     /// DrawTexture's blit).
     void UpdateDynamicStates(const GraphicsPipeline* pipeline);
@@ -275,6 +282,7 @@ private:
     const Device& device;
     MemoryAllocator& memory_allocator;
     StateTracker& state_tracker;
+    s32 bound_channel_id = -1;
     Scheduler& scheduler;
 
     StagingBufferPool staging_pool;
@@ -301,8 +309,9 @@ private:
         std::atomic<u64> done{};
     } report_early_wait;
     FenceManager fence_manager;
+    FrameDump frame_dump;
 
-    vk::Event wfi_event;
+    vk::Event wfi_event; // Only used when EGLANTINE_SYNC_FIX=0
 
     boost::container::static_vector<u32, MAX_IMAGE_VIEWS> image_view_indices;
     std::array<VideoCommon::ImageViewId, MAX_IMAGE_VIEWS> image_view_ids;

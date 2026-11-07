@@ -43,6 +43,12 @@ all without the user. Built on `eden-cli` (SDL frontend) and the shader lab's di
 - **Lab-run every port before the user gets the build**, at least boot-to-save plus a walk.
   Sync and fence-timing changes from forks can deadlock in this tree's GPU split even when they
   work in the fork; the user should never be the first to boot an untested change.
+- **A "capped at 30 fps" report is often `gpu_fence_behavior=Balanced` (value 2) in the user's
+  `qt-config.ini`, not a code regression.** Balanced costs ~11 ms of front-thread time here:
+  same 50.4 ms GPU-bound lab frame, front 16.7 ms with Default (fence 33.8 ms) against 28.2 ms with
+  Balanced (fence 20–24 ms), which is exactly what turns a ~17 ms frame into two-vblank 33 ms
+  frames. Check the setting before bisecting commits; the lab is GPU-bound, so measure the front as
+  `frame - fence - pacing` rather than by frame time.
 
 ## Tooling (repo `tools/nx2/lab_ctl.py`, branch `scratch/oot-shader-lab`)
 
@@ -133,8 +139,6 @@ tr -d '\000' < $LOG | grep -a -E "LogSettings: M- Renderer.gpu_accuracy|GPU thre
 - **Stale results across runs:** capture numbers restart per process. `launch` clears the old
   `capture-*.tga`/`draw-list-*.tsv`, and `capture` matches by mtime.
 - **Hidden runs still use the GPU fully:** keep `--max-seconds`.
-<<<<<<< HEAD
-=======
 - **Don't `pkill -f <script name>` from a shell command that mentions that name:** it matches
   and kills your own shell, cutting the output. Stop runs with `lab_ctl stop` or by pid.
 - **Fixed boot sleeps waste most of a run.** Time a title once with a capture every 10 s (luma
@@ -145,9 +149,11 @@ tr -d '\000' < $LOG | grep -a -E "LogSettings: M- Renderer.gpu_accuracy|GPU thre
   `--env EDEN_NX2_SPLIT_VERIFY=1`: "Split front register" warnings right after the restart mean the
   front's macro state went stale. The verifier resyncs what it finds, so verified runs don't hang;
   compare the difference counts instead.
->>>>>>> 8fcdba8f88 (nx2_gsv: save a burst of consecutive presents on request)
 - The shader lab browser UI (`EDEN_NX2_LAB=open`) and `lab_ctl` share the same files and can run
-  together.
+  together. The lab shows each program's shader catalogue entry and saves new names to the local
+  catalogue (`tools/nx2/catalog.py`); `catalog.py status` / `merge` before a commit (AGENTS.md).
+- The debug server (`EDEN_NX2_DEBUG_SERVER`, `docs/nx2/debug-mcp.md`) works in `eden-cli` too:
+  `input_sequence` replays exact frame-timed moves, `capture_frame` dumps the frame's passes.
 
 ## References
 

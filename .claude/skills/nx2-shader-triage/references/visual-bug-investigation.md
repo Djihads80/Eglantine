@@ -42,6 +42,19 @@ or stage where the image goes bad, with runs the agent drives itself.
 
 ## Pitfalls
 
+- **A full-screen white wash with black plant silhouettes is missing geometry, not a bloom
+  bug.** Ocarina of Time's vegetation is culled on the GPU through pointers loaded from memory
+  (pointer tables, a pointer behind a cbuf pointer). If the storage buffer pass can't follow them
+  the loads read 0, every instance is culled and the plants draw unlit. Auto-exposure then
+  overexposes the rest. Check that storage buffers behind loaded pointers bind
+  (`indirect_offset`, table pointers) before touching tone mapping. Luma that holds steady while
+  walking means exposure works; luma swinging 0.84 to 0.43 means it doesn't.
+- **`EDEN_NX2_SPLIT_CHECK` needs the Linux reporter** (`1789b05d94`). Before that commit it only
+  worked on Windows and printed nothing on Linux. A GPU-thread SEGV in
+  `CopyBuffer`/`InlineMemoryImplementation` under `SignalFence` or `ReleaseFences` means the
+  split's front used back-owned Vulkan state after a drain: route it through `GpuSplit::Run`.
+
+
 - **Ablation can't prove a producer.** An ablated program stops writing, and its output image keeps
   the last (bad) frame, so `bisect` reports "still bad with everything ablated". Bisect with
   ablation only for effects drawn fresh each frame. For persistent images, dump instead.
@@ -52,3 +65,7 @@ or stage where the image goes bad, with runs the agent drives itself.
   scanning `LoweredProgram::instructions`. Map back with `source_instruction_offsets[ampere_index]`.
 - **`capture` matches files by mtime.** Capture numbers restart each run, so stale
   `capture-N.tga` from a previous run must not count. `launch` clears them.
+
+- **One material pure white for 1-2 frames, camera still (OoT tunic/leaves):** stale per-draw data in a native program's 64 KiB uniform bank, not the GPU split or fences. Bursts (`nx2-lab-automation` scripts/oot_burst.sh + flash_scan.py) A/B it: re-uploading the bank on every bind (`EDEN_NX2_BANK_REUPLOAD`, default 2) took it from ~1/600 presents to 0/1800. Sync GPU makes it more frequent, which is the quickest repro.
+- **Distant/LOD vegetation flashing white for a frame:** check the `diag 1s` line's `cs:failed` rate, not just the logged rejections (only the first per program is logged). OoT had 5 compute programs rejected on every dispatch (ULDC.U8/U16, ULEA carry to UP3, two-source F2IP, I2F.U8 of a UR byte); lowering them stopped the LOD flashes. With `EDEN_NX2_RESNAPSHOT=0` the same flashes became ~25x more frequent, a quick way to make them reproducible. Re-list the dump dir before a hash-regression run: lab runs keep adding programs.
+- **Catching a 1-2 frame artifact objectively:** `EDEN_NX2_FRAME_CAPTURE=<dir>` plus `EDEN_NX2_FLASH_WATCH=1` examines every present and logs `flash watch: present N has K near-white pixels (median M)`, saving `flash-N.tga` with `before-N.tga`. Calibrate the threshold from a normal frame first: OoT's misty Kokiri Forest has 0 pixels with min(R,G,B)>245 normally and 7000+ when vegetation flashes. Bright mist views in the lab pulse in brightness and trip any absolute count, so the watcher is a user-session tool, not a lab one; the burst scanner (`flash_scan.py`) is the lab equivalent.

@@ -6,34 +6,17 @@ Do not, under any circumstances, ever submit PRs or push commits on behalf of th
 
 Keep comments to a reasonable level. Do not overexplain or add/remove comments from unrelated parts of the codebase.
 
-## Multi-Agent & Git Worktree Workflow
+## Switch 2 (NX2) work
 
-Multiple agents may work on different bugs and features concurrently. Follow these rules strictly to prevent branch cross-contamination:
+- Build: `ninja -C build -j$(nproc) yuzu eden-cli tests` (`bin/eglantine` is the Qt app, `bin/eden-cli` the SDL one used for unattended runs). Lowering tests: `./build/bin/tests "[ampere]"`.
+- Skills under `.claude/skills/`: `nx2-shader-triage` (rejected native shaders, lowering, visual bugs) and `nx2-lab-automation` (booting a game hidden, scripted keys, frame capture with `tools/nx2/lab_ctl.py`).
+- Bound every unattended emulator run (`lab_ctl.py launch --max-seconds`, then `lab_ctl.py stop`): a forgotten hidden instance holds the user's GPU.
+- Live debug server (`EDEN_NX2_DEBUG_SERVER=127.0.0.1:6545`, adapter `tools/nx2/debug_mcp.py`): status, screenshots, log tail, frame captures, shader rejects, guest memory reads and input on a running game, without a relaunch. See `docs/nx2/debug-mcp.md`. Try a live experiment before asking the user for a new build or run, restore every hash you reject, and never start or stop an emulator the user launched.
 
-1. **Keep the Main Workspace on `local-combined`:**
-   - The main repository directory (`e:\Projects\Eglantine`) hosts the shared `build/` directory and must remain checked out on `local-combined` for local integration builds and testing.
-   - Do **not** run `git checkout` to switch branches in `e:\Projects\Eglantine` while working on a feature or bugfix.
+## Shader catalogue
 
-2. **Use a Dedicated `git worktree` per Feature/Bugfix:**
-   - Every feature or bugfix branch must be branched directly off `upstream/nx2` (never stacked on top of another feature branch or `local-combined`).
-   - Create or check out a dedicated sibling worktree for the task:
-     ```bash
-     # New feature/bugfix branch off upstream/nx2:
-     git worktree add -b fix/<topic-name> ../Eglantine-<short-topic> upstream/nx2
+`tools/nx2/catalog/<program id>.json` lists, per game, the native programs people have identified (what they draw, how it was found), so the next investigation starts from them. Entries are keyed by native program key (the shader dump and shader lab key, the same in every build); `hash` is the frame dump / `reject_shaders` hash, which changes when that program's lowering changes. `tools/nx2/catalog/README.md` has the format.
 
-     # Existing feature/bugfix branch:
-     git worktree add ../Eglantine-<short-topic> fix/<topic-name>
-     ```
-   - Perform all code edits and commits for that task inside its worktree (`e:\Projects\Eglantine-<short-topic>`).
-   - Verify that only the intended commit(s) are on the branch against `upstream/nx2` (`git log --oneline upstream/nx2..fix/<topic-name>`), and never commit local `AGENTS.md` changes to PR branches.
-
-3. **Integrating into `local-combined` & Building:**
-   - After committing changes in the topic worktree, merge the topic branch into `local-combined` in `e:\Projects\Eglantine`:
-     ```bash
-     git merge --no-edit fix/<topic-name>
-     ```
-   - Run builds from `e:\Projects\Eglantine` against the shared `build/` folder:
-     ```powershell
-     . .\tools\windows\load-msvc-env.ps1; cmake --build build
-     ```
-   - If resetting `local-combined` to `upstream/nx2` to re-merge active topic branches, preserve the local `AGENTS.md` modifications on `local-combined`.
+- The shader lab (`tools/nx2/shader_lab.py`) saves what you name to your local copy (`EDEN_NX2_CATALOG_DIR`, default `%APPDATA%\eglantine\nx2-catalog` or `~/.local/share/eglantine/nx2-catalog`), which carries over between builds and checkouts. Programs identified another way (debug server rejects, frame dumps): `python3 -I tools/nx2/catalog.py add --title <program id> --key <key> [--hash <hash>] --object "..." --how "..."`.
+- **Every commit uploads the catalogue when yours has more.** Before each commit run `python3 -I tools/nx2/catalog.py status`. If it exits 1 (your local copy has entries the repo copy lacks, or newer ones), run `python3 -I tools/nx2/catalog.py merge` and commit the changed `tools/nx2/catalog/*.json` as its own commit (`tools/nx2: catalogue: <game>: <n> programs`) next to your work, so it goes up with the same push. If the repo copy already has everything, change nothing. `merge` only adds and updates; never delete entries from the repo copy.
+- Names, stages and short notes only: no shader code, textures, dumps or other game data.

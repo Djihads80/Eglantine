@@ -298,13 +298,26 @@ Node SiblingFromNephew(Node uncle, Node nephew) noexcept {
 }
 
 bool AreOrdered(Node left_sibling, Node right_sibling) noexcept {
+    if (left_sibling == right_sibling) {
+        return false;
+    }
+    // Walk forward from both siblings at once: whichever meets the other or the end first
+    // decides, so the cost is the shorter walk instead of everything after right_sibling.
     const Node end{right_sibling->up->children.end()};
-    for (auto it = right_sibling; it != end; ++it) {
-        if (it == left_sibling) {
+    for (Node left = left_sibling, right = right_sibling;;) {
+        if (++right == left_sibling) {
+            return false;
+        }
+        if (right == end) {
+            return true;
+        }
+        if (++left == right_sibling) {
+            return true;
+        }
+        if (left == end) {
             return false;
         }
     }
-    return true;
 }
 
 bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
