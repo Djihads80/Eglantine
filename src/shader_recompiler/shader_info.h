@@ -354,6 +354,10 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    bool requires_coherent_global_memory{};
+    bool requires_coherent_image_memory{};
+    /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
+    bool uses_cooperative_matrix{};
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
@@ -392,7 +396,7 @@ struct Info {
     [[nodiscard]] bool UsesWarpOps() const noexcept {
         return removed_conditional_barrier || uses_subgroup_vote || uses_subgroup_invocation_id ||
                uses_subgroup_shuffles || uses_subgroup_mask || uses_quad_shuffles ||
-               uses_fswzadd;
+               uses_fswzadd || uses_cooperative_matrix;
     }
 };
 
