@@ -249,6 +249,16 @@ enum class Counter : u32 {
     /// Nx2Perf draw_begin_coalesce: draw.begin writes counted into the entry before them (with
     /// EDEN_NX2_PERF_VERIFY: that would have been)
     DrawBeginCoalesced,
+    /// Nx2Perf acquire_queued_release: acquires met from a queued release's payload, then the
+    /// checks that took the drained path by reason (in puller.cpp's QueuedOutcome order)
+    AcquireQueuedForwarded,
+    AcquireQueuedNoEntry,
+    AcquireQueuedConsumed,
+    AcquireQueuedUnknownWrite,
+    AcquireQueuedNewerWriter,
+    AcquireQueuedUnmet,
+    AcquireQueuedGpuWritten,
+    AcquireQueuedProof,
     Count,
 };
 
@@ -428,6 +438,22 @@ inline void Report(const char* thread_name = "GPU thread") {
         line += fmt::format(" (drained instead: not met {:.0f}, no early word {:.0f}, proof "
                             "changed {:.0f})",
                             not_met, no_answer, proof);
+    }
+    if (std::any_of(data.counters.begin() + static_cast<size_t>(Counter::AcquireQueuedForwarded),
+                    data.counters.begin() + static_cast<size_t>(Counter::AcquireQueuedProof) + 1,
+                    [](u64 count) { return count != 0; })) {
+        line += fmt::format(" | acquires met from a queued release {:.0f} (drained instead: no "
+                            "entry {:.0f}, consumed {:.0f}, unknown write {:.0f}, newer writer "
+                            "{:.0f}, payload unmet {:.0f}, GPU-written page {:.0f}, proof "
+                            "changed {:.0f})",
+                            per_second(Counter::AcquireQueuedForwarded),
+                            per_second(Counter::AcquireQueuedNoEntry),
+                            per_second(Counter::AcquireQueuedConsumed),
+                            per_second(Counter::AcquireQueuedUnknownWrite),
+                            per_second(Counter::AcquireQueuedNewerWriter),
+                            per_second(Counter::AcquireQueuedUnmet),
+                            per_second(Counter::AcquireQueuedGpuWritten),
+                            per_second(Counter::AcquireQueuedProof));
     }
     line += fmt::format(" | MME DMA reads without a drain {:.0f} (waited for: unknown writes "
                         "{:.0f}, GPU work {:.0f}, writes to the words {:.0f})",
