@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <optional>
@@ -1578,15 +1579,31 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
         }
     };
     collect();
-    if (info.tables_seen && info.set.size() < Info::MAX_SSBOS) {
+    // Compute programs may bind up to Info::MAX_SSBOS (64) storage buffers, so pointer table
+    // entries still fit when the program's own pointers take most of 32. Ocarina of Time's foliage
+    // list builder has 29 of its own: the table entries of its last two sections (Hyrule Field
+    // grass) did not fit, read zeros and the grass list stayed empty.
+    // EDEN_NX2_WIDE_COMPUTE_SSBOS=0 restores the 32-binding limit.
+    static const bool wide_compute = [] {
+        const char* const value = std::getenv("EDEN_NX2_WIDE_COMPUTE_SSBOS");
+        return !(value && value[0] == '0');
+    }();
+    const size_t max_ssbos{env.ShaderStage() == Stage::Compute && wide_compute
+                               ? Info::MAX_SSBOS
+                               : Info::MAX_GRAPHICS_SSBOS};
+    if (info.tables_seen && info.set.size() < max_ssbos) {
         // Again with pointer table entries, in the bindings the first pass left free.
         StorageInfo with_tables;
         with_tables.iterator_words = std::move(info.iterator_words);
         with_tables.atomic_pointers = std::move(info.atomic_pointers);
         with_tables.tables_enabled = true;
-        with_tables.table_budget = Info::MAX_SSBOS - info.set.size();
+        with_tables.table_budget = max_ssbos - info.set.size();
         info = std::move(with_tables);
         collect();
+    }
+    if (info.set.size() > max_ssbos) {
+        throw NotImplementedException("{} storage buffers, the limit is {}", info.set.size(),
+                                      max_ssbos);
     }
     program.info.native_global_bounds |= info.native_runtime_bounds;
     for (const StorageBufferAddr& storage_buffer : info.set) {
