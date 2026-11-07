@@ -417,7 +417,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                            Common::ThreadPlacement::Background) {
     build_budget = std::chrono::milliseconds{[] {
         const char* const value = std::getenv("EDEN_NX2_SHADER_BUDGET_MS");
-        return value != nullptr ? std::max(1, std::atoi(value)) : 8;
+        return value != nullptr ? std::max(1, std::atoi(value)) : 24;
     }()};
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
